@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="FitDash">
+    <meta name="theme-color" content="#4361ee">
+
+    <title>Fitness Intelligence</title>
+
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <h1>Fitness Intelligence</h1>
+            <p class="subtitle" id="goal-subtitle">Evidence-based training</p>
+        </header>
+
+        <!-- Navigation Tabs (scrollable) -->
+        <nav class="tab-nav scrollable">
+            <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+            <button class="tab-btn" data-tab="graphs">Graphs</button>
+            <button class="tab-btn" data-tab="workout">Workout</button>
+            <button class="tab-btn" data-tab="history">History</button>
+            <button class="tab-btn" data-tab="log">Log</button>
+            <button class="tab-btn" data-tab="settings">Settings</button>
+        </nav>
+
+        <!-- Dashboard Tab -->
+        <section id="dashboard" class="tab-content active">
+            <!-- KPI Cards -->
+            <div class="kpi-grid">
+                <div class="kpi-card">
+                    <span class="kpi-value" id="total-sets">--</span>
+                    <span class="kpi-label">Weekly Sets</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-value" id="progression">--</span>
+                    <span class="kpi-label">Progressing</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-value" id="readiness">--</span>
+                    <span class="kpi-label">Readiness</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-value" id="sessions">--</span>
+                    <span class="kpi-label">Sessions</span>
+                </div>
+            </div>
+
+            <!-- Alerts Section -->
+            <div class="section" id="alerts-section">
+                <h2 class="section-title">Alerts</h2>
+                <div id="alerts-container"></div>
+            </div>
+
+            <!-- Muscle Groups -->
+            <div class="section">
+                <h2 class="section-title">Muscle Groups</h2>
+                <div id="muscle-container" class="card-list"></div>
+            </div>
+
+            <!-- Exercise Tracking -->
+            <div class="section">
+                <h2 class="section-title">Exercise Progress</h2>
+                <div id="exercise-container" class="card-list"></div>
+            </div>
+        </section>
+
+        <!-- Graphs Tab (Key Insights) -->
+        <section id="graphs" class="tab-content">
+            <!-- Key Insights -->
+            <div class="section">
+                <h2 class="section-title">Key Insights</h2>
+                <div id="insights-container" class="insights-grid"></div>
+            </div>
+
+            <!-- e1RM Trends Chart -->
+            <div class="section">
+                <h2 class="section-title">Strength Progression</h2>
+                <div class="chart-container">
+                    <canvas id="progressChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Volume by Muscle Chart -->
+            <div class="section">
+                <h2 class="section-title">Volume Distribution</h2>
+                <div class="chart-container">
+                    <canvas id="volumeChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Push/Pull Balance Chart -->
+            <div class="section">
+                <h2 class="section-title">Push/Pull Balance</h2>
+                <div class="chart-container small">
+                    <canvas id="pushPullChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Advanced Stats Summary -->
+            <div class="section">
+                <h2 class="section-title">Training Consistency</h2>
+                <div class="kpi-grid">
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="current-streak">--</span>
+                        <span class="kpi-label">Current Streak</span>
+                    </div>
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="longest-streak">--</span>
+                        <span class="kpi-label">Best Streak</span>
+                    </div>
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="weekly-avg">--</span>
+                        <span class="kpi-label">Weekly Avg</span>
+                    </div>
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="consistency-pct">--</span>
+                        <span class="kpi-label">Consistency</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Personal Records -->
+            <div class="section">
+                <h2 class="section-title">Personal Records</h2>
+                <div id="prs-container" class="card-list"></div>
+            </div>
+        </section>
+
+        <!-- Next Workout Tab -->
+        <section id="workout" class="tab-content">
+            <div class="workout-header" id="workout-header">
+                <h2>Next Workout</h2>
+                <p class="workout-focus" id="workout-focus">Loading...</p>
+                <p class="workout-duration" id="workout-duration"></p>
+                <p class="workout-goal" id="workout-goal"></p>
+            </div>
+
+            <div id="workout-exercises" class="card-list"></div>
+
+            <div class="section" id="avoid-section" style="display:none;">
+                <h3 class="section-title warning">Muscles to Avoid</h3>
+                <div id="avoid-container"></div>
+            </div>
+
+            <!-- Complete Workout Button -->
+            <div class="section">
+                <button id="start-workout-btn" class="btn-primary btn-large">Start This Workout</button>
+            </div>
+        </section>
+
+        <!-- History Tab (Past Workouts) -->
+        <section id="history" class="tab-content">
+            <div class="section">
+                <div class="history-header">
+                    <h2 class="section-title">Workout History</h2>
+                    <button id="export-btn" class="btn-secondary btn-small">Export MD</button>
+                </div>
+            </div>
+
+            <div id="history-stats" class="kpi-grid small">
+                <div class="kpi-card">
+                    <span class="kpi-value" id="history-total">--</span>
+                    <span class="kpi-label">Total Workouts</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-value" id="history-volume">--</span>
+                    <span class="kpi-label">Total Volume</span>
+                </div>
+            </div>
+
+            <div id="history-container" class="card-list"></div>
+        </section>
+
+        <!-- Log Tab -->
+        <section id="log" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Log Soreness</h2>
+                <form id="soreness-form" class="form">
+                    <div class="form-group">
+                        <label>Muscle Group</label>
+                        <select id="soreness-muscle" required>
+                            <option value="">Select muscle...</option>
+                            <option value="chest">Chest</option>
+                            <option value="back">Back</option>
+                            <option value="shoulders">Shoulders</option>
+                            <option value="quads">Quads</option>
+                            <option value="hamstrings">Hamstrings</option>
+                            <option value="biceps">Biceps</option>
+                            <option value="triceps">Triceps</option>
+                            <option value="calves">Calves</option>
+                            <option value="core">Core</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Soreness Level: <span id="soreness-value">5</span>/10</label>
+                        <input type="range" id="soreness-level" min="0" max="10" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>Notes (optional)</label>
+                        <input type="text" id="soreness-notes" placeholder="e.g., Mild DOMS">
+                    </div>
+                    <button type="submit" class="btn-primary">Log Soreness</button>
+                </form>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Quick Log Set</h2>
+                <form id="workout-form" class="form">
+                    <div class="form-group">
+                        <label>Exercise</label>
+                        <select id="workout-exercise" required>
+                            <option value="">Select exercise...</option>
+                            <option value="Chest Press">Chest Press</option>
+                            <option value="Lat Pulldown">Lat Pulldown</option>
+                            <option value="Mid Row">Mid Row</option>
+                            <option value="Shoulder Press">Shoulder Press</option>
+                            <option value="Leg Press">Leg Press</option>
+                            <option value="Leg Curl">Leg Curl</option>
+                            <option value="Seated Dip">Seated Dip</option>
+                            <option value="Biceps Curl">Biceps Curl</option>
+                            <option value="Calf Raise">Calf Raise</option>
+                            <option value="Crunch Machine">Crunch Machine</option>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Weight (lbs)</label>
+                            <input type="number" id="workout-weight" required min="0" step="2.5">
+                        </div>
+                        <div class="form-group">
+                            <label>Reps</label>
+                            <input type="number" id="workout-reps" required min="1" max="50">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>RPE: <span id="rpe-value">7</span>/10</label>
+                        <input type="range" id="workout-rpe" min="1" max="10" value="7" step="0.5">
+                    </div>
+                    <button type="submit" class="btn-primary">Log Set</button>
+                </form>
+            </div>
+        </section>
+
+        <!-- Settings Tab -->
+        <section id="settings" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Training Goal</h2>
+                <p class="section-desc">Your goal determines rep ranges, rest times, and intensity recommendations.</p>
+
+                <div id="goals-container" class="goals-grid"></div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Weekly Target</h2>
+                <div class="form-group">
+                    <label>Sessions per week: <span id="target-value">3</span></label>
+                    <input type="range" id="sessions-target" min="1" max="6" value="3">
+                </div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Workout Duration</h2>
+                <p class="section-desc">How much time do you have? Workouts will adjust accordingly.</p>
+                <div id="time-options-container" class="time-options-grid"></div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Recovery Status</h2>
+                <div id="deload-container" class="status-card"></div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Injury Risk</h2>
+                <div id="injury-risk-container" class="status-card"></div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Data</h2>
+                <div class="btn-group">
+                    <button id="export-all-btn" class="btn-secondary">Export All Data</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- iOS Install Banner -->
+        <div id="install-banner" class="install-banner" style="display:none;">
+            <p>Install this app: tap <strong>Share</strong> then <strong>Add to Home Screen</strong></p>
+            <button id="close-banner">Got it</button>
+        </div>
+
+        <!-- Active Workout Modal -->
+        <div id="workout-modal" class="modal" style="display:none;">
+            <div class="modal-content">
+                <h2>Logging Workout</h2>
+                <div id="active-workout-exercises"></div>
+                <div class="modal-actions">
+                    <button id="cancel-workout" class="btn-secondary">Cancel</button>
+                    <button id="complete-workout" class="btn-primary">Complete Workout</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
