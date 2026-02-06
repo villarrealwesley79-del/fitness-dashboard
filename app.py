@@ -11,9 +11,93 @@ from enum import Enum
 import json
 import os
 import socket
+import sqlite3
+import urllib.request
+import urllib.error
+import time
+
+# Load .env file if present (for OURA_API_TOKEN etc.)
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
 from data_loader import parse_workout_log, get_workout_summary
+from oura_client import (
+    OuraClient,
+    init_oura_db,
+    upsert_oura_daily,
+    get_oura_daily,
+    get_oura_daily_range,
+    compute_hrv_trend,
+)
 
 app = Flask(__name__)
+
+# ==================== DATA PERSISTENCE ====================
+# Store data in JSON files in the same directory as the app
+DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+WORKOUTS_FILE = os.path.join(DATA_DIR, "data_workouts.json")
+SORENESS_FILE = os.path.join(DATA_DIR, "data_soreness.json")
+SETTINGS_FILE = os.path.join(DATA_DIR, "data_settings.json")
+CARDIO_FILE = os.path.join(DATA_DIR, "data_cardio.json")
+RECOVERY_FILE = os.path.join(DATA_DIR, "data_recovery.json")
+BASELINES_FILE = os.path.join(DATA_DIR, "data_baselines.json")
+BODY_FILE = os.path.join(DATA_DIR, "data_body.json")
+SLEEP_FILE = os.path.join(DATA_DIR, "data_sleep.json")
+OURA_DB_FILE = os.path.join(DATA_DIR, "oura_daily.sqlite3")
+
+# ==================== WEATHER (wttr.in) ====================
+# Lightweight cache to avoid hammering the free endpoint.
+_WEATHER_CACHE = {
+    "ts": 0,
+    "location": "San_Antonio",
+    "data": None,
+    "error": None,
+}
+
+
+def load_json(filepath, default):
+    """Load data from JSON file.
+
+    If the file is missing: return default.
+    If the file is malformed: move it aside (".corrupt-<ts>.json") and recreate with default.
+
+    This prevents a single bad write from bricking the whole app.
+    """
+    if not os.path.exists(filepath):
+        return default
+
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        try:
+            ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+            corrupt_path = f"{filepath}.corrupt-{ts}.json"
+            os.replace(filepath, corrupt_path)
+            print(f"Warning: {filepath} was malformed JSON; moved to {corrupt_path} ({e})")
+            save_json(filepath, default)
+        except Exception as e2:
+            print(f"Warning: Could not recover malformed JSON file {filepath}: {e2}")
+        return default
+    except IOError as e:
+        print(f"Warning: Could not load {filepath}: {e}")
+        return default
+
+
+def save_json(filepath, data):
+    """Save data to JSON file (atomic best-effort)."""
+    try:
+        tmp = f"{filepath}.tmp"
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str, ensure_ascii=False)
+        os.replace(tmp, filepath)
+    except IOError as e:
+        print(f"Warning: Could not save {filepath}: {e}")
 
 
 # ==================== TRAINING GOAL CONFIGURATION ====================
@@ -120,12 +204,21 @@ GOAL_PARAMETERS = {
     }
 }
 
-# Current user settings (in production, stored in database per user)
-USER_SETTINGS = {
+# Default user settings
+DEFAULT_SETTINGS = {
     "training_goal": TrainingGoal.HYPERTROPHY.value,
     "sessions_per_week_target": 3,
-    "available_time_minutes": 60  # Default 60 minutes
+    "available_time_minutes": 60,
+    "target_weight_lbs": 180,
+    "target_body_fat_pct": 15,
+    "fatigue_threshold": 72,
+    "volume_landmarks": {
+        "default": {"mv": 6, "mev": 9, "mav_min": 12, "mav_max": 18, "mrv": 22}
+    }
 }
+
+# Load user settings from file (or use defaults)
+USER_SETTINGS = load_json(SETTINGS_FILE, DEFAULT_SETTINGS.copy())
 
 # Time options for workouts (in minutes)
 TIME_OPTIONS = [
@@ -140,6 +233,96 @@ TIME_OPTIONS = [
 # Track recommended vs actual workouts
 WORKOUT_RECOMMENDATIONS = []  # Stores what was recommended
 COMPLETED_WORKOUTS = []  # Stores what was actually done
+
+# ==================== CARDIO RECOMMENDATIONS ====================
+# Heart rate zones based on % of max HR (220 - age, assume age 30 for now = 190 max HR)
+# Zone 1: 50-60% - Recovery/Warmup (95-114 BPM)
+# Zone 2: 60-70% - Fat Burning/Endurance Base (114-133 BPM)
+# Zone 3: 70-80% - Aerobic/Cardio (133-152 BPM)
+# Zone 4: 80-90% - Threshold/Performance (152-171 BPM)
+# Zone 5: 90-100% - Maximum Effort (171-190 BPM)
+
+CARDIO_RECOMMENDATIONS = {
+    TrainingGoal.STRENGTH.value: {
+        "include_cardio": False,
+        "reason": "Cardio can interfere with maximal strength recovery. Skip or do light walking on off days.",
+        "type": None,
+        "duration_minutes": 0,
+        "zone": None,
+        "heart_rate_range": None
+    },
+    TrainingGoal.HYPERTROPHY.value: {
+        "include_cardio": False,
+        "reason": "Post-workout cardio can interfere with muscle protein synthesis. Consider low-intensity cardio on rest days.",
+        "type": None,
+        "duration_minutes": 0,
+        "zone": None,
+        "heart_rate_range": None
+    },
+    TrainingGoal.ENDURANCE.value: {
+        "include_cardio": True,
+        "reason": "Cardio complements muscular endurance training and improves overall conditioning.",
+        "type": "Stairmaster",
+        "duration_minutes": 20,
+        "zone": "Zone 2-3",
+        "zone_description": "Fat Burning to Aerobic",
+        "heart_rate_range": "114-152 BPM",
+        "intensity": "Steady state, conversational pace",
+        "technique": "Full steps, engage glutes, maintain upright posture"
+    },
+    TrainingGoal.WEIGHT_LOSS.value: {
+        "include_cardio": True,
+        "reason": "Cardio after weights maximizes fat oxidation - glycogen depleted state enhances fat burning.",
+        "type": "Stairmaster",
+        "duration_minutes": 15,
+        "zone": "Zone 2",
+        "zone_description": "Fat Burning Zone",
+        "heart_rate_range": "114-133 BPM",
+        "intensity": "Steady, sustainable pace you can maintain",
+        "technique": "Light grip on rails, step through heels, keep core engaged"
+    },
+    TrainingGoal.TONING.value: {
+        "include_cardio": True,
+        "reason": "Light cardio helps with calorie expenditure and muscle definition.",
+        "type": "Stairmaster",
+        "duration_minutes": 10,
+        "zone": "Zone 2",
+        "zone_description": "Fat Burning Zone",
+        "heart_rate_range": "114-133 BPM",
+        "intensity": "Easy, recovery pace",
+        "technique": "Natural stride, minimal rail support"
+    },
+    TrainingGoal.HYBRID_STRENGTH_HYPERTROPHY.value: {
+        "include_cardio": False,
+        "reason": "Focus on recovery between sessions. Light walking on rest days is acceptable.",
+        "type": None,
+        "duration_minutes": 0,
+        "zone": None,
+        "heart_rate_range": None
+    },
+    TrainingGoal.HYBRID_HYPERTROPHY_ENDURANCE.value: {
+        "include_cardio": True,
+        "reason": "Concurrent training goal - moderate cardio supports endurance adaptation.",
+        "type": "Stairmaster",
+        "duration_minutes": 15,
+        "zone": "Zone 2-3",
+        "zone_description": "Fat Burning to Aerobic",
+        "heart_rate_range": "114-152 BPM",
+        "intensity": "Moderate effort, slightly elevated breathing",
+        "technique": "Skip every other step for glute emphasis, or single steps for quads"
+    },
+    TrainingGoal.HYBRID_WEIGHT_LOSS_TONING.value: {
+        "include_cardio": True,
+        "reason": "Cardio is essential for creating calorie deficit while preserving muscle tone.",
+        "type": "Stairmaster",
+        "duration_minutes": 20,
+        "zone": "Zone 2-3",
+        "zone_description": "Fat Burning to Aerobic",
+        "heart_rate_range": "114-152 BPM",
+        "intensity": "Moderate steady state with intervals",
+        "technique": "Alternate 2 min easy / 1 min faster pace"
+    }
+}
 
 
 class ProgressionStatus(Enum):
@@ -183,9 +366,86 @@ class SorenessEntry:
     notes: str = ""
 
 
-# In-memory data store (would be database in production)
-WORKOUTS = []
-SORENESS_DATA = []
+# Load data from JSON files (persists across restarts)
+WORKOUTS = load_json(WORKOUTS_FILE, [])
+SORENESS_DATA = load_json(SORENESS_FILE, [])
+CARDIO_DATA = load_json(CARDIO_FILE, [])
+RECOVERY_DATA = load_json(RECOVERY_FILE, [])
+BASELINES_DATA = load_json(BASELINES_FILE, {})
+BODY_DATA = load_json(BODY_FILE, [])
+SLEEP_DATA = load_json(SLEEP_FILE, [])
+
+# Initialize Oura SQLite storage (safe no-op if file exists)
+init_oura_db(OURA_DB_FILE)
+
+
+# ==================== API HELPERS / VALIDATION ====================
+
+def api_error(message: str, status: int = 400, code: str = "bad_request", details=None):
+    payload = {"status": "error", "error": {"code": code, "message": message}}
+    if details is not None:
+        payload["error"]["details"] = details
+    return jsonify(payload), status
+
+
+def get_json_body(required: bool = True):
+    """Parse JSON body safely.
+
+    Returns (data, error_response) where error_response is a Flask response or None.
+    """
+    data = request.get_json(silent=True)
+    if data is None:
+        if required:
+            return None, api_error("Expected JSON body", status=400, code="invalid_json")
+        return {}, None
+    if not isinstance(data, dict):
+        return None, api_error("JSON body must be an object", status=400, code="invalid_json")
+    return data, None
+
+
+def _coerce_int(v, field_name: str, min_v=None, max_v=None, allow_none: bool = False):
+    if v is None and allow_none:
+        return None, None
+    try:
+        iv = int(v)
+    except Exception:
+        return None, api_error(f"{field_name} must be an integer", 400, code="invalid_field")
+    if min_v is not None and iv < min_v:
+        return None, api_error(f"{field_name} must be >= {min_v}", 400, code="invalid_field")
+    if max_v is not None and iv > max_v:
+        return None, api_error(f"{field_name} must be <= {max_v}", 400, code="invalid_field")
+    return iv, None
+
+
+def _coerce_str(v, field_name: str, required: bool = True, max_len: int | None = 2000):
+    if v is None:
+        if required:
+            return None, api_error(f"Missing field: {field_name}", 400, code="missing_field")
+        return "", None
+    if not isinstance(v, str):
+        return None, api_error(f"{field_name} must be a string", 400, code="invalid_field")
+    s = v.strip()
+    if required and not s:
+        return None, api_error(f"{field_name} cannot be empty", 400, code="invalid_field")
+    if max_len is not None and len(s) > max_len:
+        return None, api_error(f"{field_name} is too long (max {max_len} chars)", 400, code="invalid_field")
+    return s, None
+
+
+def _coerce_float(v, field_name: str, min_v=None, max_v=None, allow_none: bool = False):
+    if v is None:
+        if allow_none:
+            return None, None
+        return None, api_error(f"Missing field: {field_name}", 400, code="missing_field")
+    try:
+        fv = float(v)
+    except Exception:
+        return None, api_error(f"{field_name} must be a number", 400, code="invalid_field")
+    if min_v is not None and fv < min_v:
+        return None, api_error(f"{field_name} must be >= {min_v}", 400, code="invalid_field")
+    if max_v is not None and fv > max_v:
+        return None, api_error(f"{field_name} must be <= {max_v}", 400, code="invalid_field")
+    return fv, None
 
 
 def calculate_e1rm(weight: float, reps: int) -> float:
@@ -339,16 +599,24 @@ def calculate_progression_status(workouts):
         else:
             status = "On Track"
 
-        if history[0]["e1rm"] > 0:
-            trend_pct = ((current_e1rm - history[0]["e1rm"]) / history[0]["e1rm"]) * 100
+        # Calculate trend from peak (for status-consistent display)
+        if peak_e1rm > 0:
+            trend_pct = ((current_e1rm - peak_e1rm) / peak_e1rm) * 100
         else:
             trend_pct = 0
+
+        # Also track overall progress from first workout
+        if history[0]["e1rm"] > 0:
+            total_progress_pct = ((current_e1rm - history[0]["e1rm"]) / history[0]["e1rm"]) * 100
+        else:
+            total_progress_pct = 0
 
         results[exercise] = {
             "status": status,
             "current_e1rm": round(current_e1rm, 1),
             "peak_e1rm": round(peak_e1rm, 1),
-            "trend_pct": round(trend_pct, 1),
+            "trend_pct": round(trend_pct, 1),  # vs peak (for status consistency)
+            "total_progress_pct": round(total_progress_pct, 1),  # vs first workout
             "history": history
         }
 
@@ -361,20 +629,38 @@ def calculate_volume(workouts, weeks=4):
     muscle_volume = {}
 
     for workout in workouts:
-        workout_date = datetime.strptime(workout["date"], '%Y-%m-%d')
+        # Be resilient to partial/legacy entries
+        date_s = workout.get("date")
+        if not date_s:
+            continue
+        try:
+            workout_date = datetime.strptime(date_s, '%Y-%m-%d')
+        except Exception:
+            continue
         if workout_date < cutoff:
             continue
 
-        for exercise in workout.get("exercises", []):
-            muscle = exercise["muscle_group"]
+        for exercise in workout.get("exercises", []) or []:
+            if not isinstance(exercise, dict):
+                continue
+            muscle = (exercise.get("muscle_group") or "unknown")
             if muscle not in muscle_volume:
-                muscle_volume[muscle] = {"sets": 0, "volume_load": 0, "last_trained": workout["date"]}
+                muscle_volume[muscle] = {"sets": 0, "volume_load": 0, "last_trained": date_s}
 
-            for s in exercise.get("sets", []):
+            for s in exercise.get("sets", []) or []:
+                if not isinstance(s, dict):
+                    continue
+                w = s.get("weight_lbs") or 0
+                r = s.get("reps") or 0
+                try:
+                    w = float(w)
+                    r = float(r)
+                except Exception:
+                    w, r = 0, 0
                 muscle_volume[muscle]["sets"] += 1
-                muscle_volume[muscle]["volume_load"] += s["weight_lbs"] * s["reps"]
+                muscle_volume[muscle]["volume_load"] += w * r
 
-            muscle_volume[muscle]["last_trained"] = max(muscle_volume[muscle]["last_trained"], workout["date"])
+            muscle_volume[muscle]["last_trained"] = max(muscle_volume[muscle]["last_trained"], date_s)
 
     for muscle, data in muscle_volume.items():
         sets = data["sets"]
@@ -397,10 +683,91 @@ def calculate_volume(workouts, weeks=4):
     return muscle_volume
 
 
-def get_readiness_score(muscle, soreness_data, volume_data):
-    """Calculate readiness score for a muscle group."""
-    muscle_soreness = [s for s in soreness_data if s["muscle"] == muscle]
-    soreness_level = muscle_soreness[-1]["soreness_level"] if muscle_soreness else 0
+def get_cardio_muscle_impact(cardio_data, muscle, days=2):
+    """Calculate cardio impact on a specific muscle group."""
+    # Mapping of cardio activities to affected muscles with fatigue factors
+    CARDIO_MUSCLE_IMPACT = {
+        "stairmaster": {"quads": 2, "glutes": 2, "calves": 1.5, "hamstrings": 1},
+        "treadmill": {"quads": 1.5, "hamstrings": 1.5, "calves": 2, "glutes": 1},
+        "running": {"quads": 1.5, "hamstrings": 1.5, "calves": 2, "glutes": 1},
+        "basketball": {"quads": 2, "calves": 2, "core": 1, "hamstrings": 1},
+        "cycling": {"quads": 2, "hamstrings": 1.5, "calves": 1, "glutes": 1},
+        "elliptical": {"quads": 1, "glutes": 1, "hamstrings": 1, "calves": 0.5},
+        "rowing": {"back": 2, "biceps": 1.5, "core": 1.5, "quads": 1},
+        "swimming": {"back": 1.5, "shoulders": 1.5, "core": 1, "triceps": 1}
+    }
+
+    cutoff = datetime.now() - timedelta(days=days)
+    total_impact = 0
+
+    for session in cardio_data:
+        try:
+            session_date = datetime.strptime(session.get("date", ""), '%Y-%m-%d')
+            if session_date < cutoff:
+                continue
+
+            activity = session.get("activity_type", "").lower()
+            duration = session.get("duration_minutes", 0)
+            intensity = session.get("intensity", 5)
+
+            if activity in CARDIO_MUSCLE_IMPACT:
+                muscle_factor = CARDIO_MUSCLE_IMPACT[activity].get(muscle, 0)
+                # Scale impact by duration (30 min = baseline) and intensity
+                duration_factor = duration / 30
+                intensity_factor = intensity / 5  # 5 = baseline intensity
+                total_impact += muscle_factor * duration_factor * intensity_factor
+        except (ValueError, TypeError):
+            continue
+
+    return min(3, total_impact)  # Cap at 3 points of fatigue
+
+
+def _parse_soreness_timestamp(entry):
+    """Best-effort parse of soreness entry timestamp.
+
+    Supports:
+      - created_at (ISO)
+      - timestamp (ISO)
+      - date (YYYY-MM-DD) (assumed local noon)
+    """
+    ts = entry.get("created_at") or entry.get("timestamp")
+    if ts:
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            pass
+
+    d = entry.get("date")
+    if d:
+        try:
+            # Assume noon local time to avoid accidental exclusion for "today" logs
+            return datetime.strptime(d, "%Y-%m-%d") + timedelta(hours=12)
+        except Exception:
+            return None
+    return None
+
+
+def filter_recent_soreness(soreness_data, hours=24):
+    cutoff = datetime.now() - timedelta(hours=hours)
+    recent = []
+    for s in soreness_data or []:
+        ts = _parse_soreness_timestamp(s)
+        if ts and ts >= cutoff:
+            recent.append(s)
+    return recent
+
+
+def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None):
+    """Calculate readiness score for a muscle group.
+
+    Note: only soreness entries from the last 24h are considered (time-decay).
+    """
+    if cardio_data is None:
+        cardio_data = []
+
+    recent_soreness = filter_recent_soreness(soreness_data, hours=24)
+    muscle_soreness = [s for s in recent_soreness if s.get("muscle") == muscle]
+    soreness_level = muscle_soreness[-1].get("soreness_level", 0) if muscle_soreness else 0
 
     last_trained = volume_data.get(muscle, {}).get("last_trained")
     recovery_debt = 0
@@ -409,7 +776,10 @@ def get_readiness_score(muscle, soreness_data, volume_data):
         if days_since < 2:
             recovery_debt = 2
 
-    readiness = 10 - soreness_level - recovery_debt
+    # Add cardio impact to fatigue calculation
+    cardio_fatigue = get_cardio_muscle_impact(cardio_data, muscle)
+
+    readiness = 10 - soreness_level - recovery_debt - cardio_fatigue
 
     if readiness < 5:
         recommendation = "Skip or reduced volume"
@@ -422,16 +792,21 @@ def get_readiness_score(muscle, soreness_data, volume_data):
         color = "green"
 
     return {
-        "score": readiness,
+        "score": max(0, readiness),  # Don't go below 0
         "soreness": soreness_level,
         "recovery_debt": recovery_debt,
+        "cardio_fatigue": round(cardio_fatigue, 1),
         "recommendation": recommendation,
         "color": color
     }
 
 
-def generate_next_workout(workouts, soreness_data, goal=None, available_time=None):
-    """Generate optimal workout prescription based on training goal and available time."""
+def generate_next_workout(workouts, soreness_data, goal=None, available_time=None, persist=False):
+    """Generate optimal workout prescription based on training goal and available time.
+    
+    Args:
+        persist: If True, store recommendation for adherence tracking. False for read-only views.
+    """
     if goal is None:
         goal = USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
 
@@ -453,12 +828,12 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
 
     readiness_scores = {}
     for muscle in muscle_groups:
-        readiness_scores[muscle] = get_readiness_score(muscle, soreness_data, volume_data)
+        readiness_scores[muscle] = get_readiness_score(muscle, soreness_data, volume_data, CARDIO_DATA)
 
     available_muscles = [m for m, r in readiness_scores.items() if r["score"] >= 5]
 
     # If not enough muscles available, add default ones
-    default_muscles = ["chest", "back", "quads", "shoulders", "hamstrings", "biceps", "triceps", "core", "calves"]
+    default_muscles = ["chest", "back", "quads", "shoulders", "hamstrings", "glutes", "adductors", "biceps", "triceps", "core", "calves"]
     for m in default_muscles:
         if m not in available_muscles and len(available_muscles) < max_exercises:
             available_muscles.append(m)
@@ -475,6 +850,8 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
         "biceps": ("Biceps Curl", False),
         "core": ("Crunch Machine", False),
         "calves": ("Calf Raise", False),
+        "glutes": ("Hip Abductor", True),
+        "adductors": ("Hip Adductor", True),
     }
 
     exercises = []
@@ -489,6 +866,15 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
         readiness_scores.get(m, {}).get("score", 0) * -1     # Higher readiness
     ))
 
+    # Default baseline weights for exercises without history
+    DEFAULT_BASELINES = {
+        "Chest Press": 100, "Lat Pulldown": 100, "Mid Row": 80,
+        "Shoulder Press": 60, "Leg Press": 180, "Leg Curl": 80,
+        "Seated Dip": 100, "Biceps Curl": 50, "Calf Raise": 120, "Crunch Machine": 60,
+        "Hip Abductor": 100,
+        "Hip Adductor": 100
+    }
+
     for muscle in sorted_muscles[:max_exercises]:
         if muscle not in exercise_map:
             continue
@@ -496,10 +882,27 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
         exercise_name, is_compound = exercise_map[muscle]
         ex_progression = progression.get(exercise_name, {})
         status = ex_progression.get("status", "On Track")
-        current_e1rm = ex_progression.get("current_e1rm", 100)
+
+        # Use progression e1rm, or baseline, or default
+        if ex_progression.get("current_e1rm"):
+            current_e1rm = ex_progression["current_e1rm"]
+            has_history = True
+        elif BASELINES_DATA.get(exercise_name):
+            current_e1rm = BASELINES_DATA[exercise_name]
+            has_history = False
+            status = "Baseline"
+        else:
+            current_e1rm = DEFAULT_BASELINES.get(exercise_name, 100)
+            has_history = False
+            status = "Baseline"
 
         # Apply goal-specific intensity and adjust for progression status
-        if status == "On Track":
+        if status == "Baseline":
+            # Start conservative for new exercises
+            target_weight = round(current_e1rm * intensity_pct * 0.9, 0)
+            rationale = f"{goal_params['name']}: Starting weight (configure in Settings)"
+            sets = target_sets
+        elif status == "On Track":
             target_weight = round(current_e1rm * intensity_pct + 5, 0)
             rationale = f"{goal_params['name']}: +5 lbs progression"
             sets = target_sets
@@ -536,7 +939,7 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
     ]
 
     upper = {"chest", "back", "shoulders", "biceps", "triceps"}
-    lower = {"quads", "hamstrings", "glutes", "calves"}
+    lower = {"quads", "hamstrings", "glutes", "calves", "adductors"}
     has_upper = any(m in upper for m in available_muscles)
     has_lower = any(m in lower for m in available_muscles)
 
@@ -552,6 +955,53 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
     # Calculate actual estimated duration
     total_exercise_time = sum(e.get("estimated_time", 10) for e in exercises)
     total_time = total_exercise_time + 10  # Add warmup/cooldown
+
+    # Get cardio recommendation for this goal
+    cardio_rec = CARDIO_RECOMMENDATIONS.get(goal, CARDIO_RECOMMENDATIONS[TrainingGoal.HYPERTROPHY.value])
+    cardio_data = None
+
+    # Calculate remaining time for cardio (ensure we don't exceed available time)
+    remaining_time = available_time - total_time
+    cardio_duration = cardio_rec.get("duration_minutes", 0)
+
+    if cardio_rec.get("include_cardio") and remaining_time >= 10:
+        # Adjust cardio duration if needed to fit within time frame
+        actual_cardio_duration = min(cardio_duration, remaining_time)
+
+        # Only include cardio if we have at least 10 minutes
+        if actual_cardio_duration >= 10:
+            cardio_data = {
+                "type": cardio_rec.get("type"),
+                "duration_minutes": actual_cardio_duration,
+                "zone": cardio_rec.get("zone"),
+                "zone_description": cardio_rec.get("zone_description"),
+                "heart_rate_range": cardio_rec.get("heart_rate_range"),
+                "intensity": cardio_rec.get("intensity"),
+                "technique": cardio_rec.get("technique"),
+                "reason": cardio_rec.get("reason")
+            }
+            # Add note if duration was reduced
+            if actual_cardio_duration < cardio_duration:
+                cardio_data["reason"] = f"Time-adjusted: {actual_cardio_duration} min (normally {cardio_duration} min). " + cardio_rec.get("reason", "")
+            total_time += actual_cardio_duration
+        else:
+            cardio_data = {
+                "include_cardio": False,
+                "reason": f"Skipped cardio - only {remaining_time} min remaining. {cardio_rec.get('reason', '')}"
+            }
+    elif cardio_rec.get("include_cardio") and remaining_time < 10:
+        # Not enough time for cardio
+        cardio_data = {
+            "include_cardio": False,
+            "reason": f"No time for cardio today ({remaining_time} min remaining). Consider cardio on a rest day."
+        }
+    elif cardio_rec.get("reason"):
+        # Include reason even if not including cardio
+        cardio_data = {
+            "include_cardio": False,
+            "reason": cardio_rec.get("reason")
+        }
+
     duration_str = f"{total_time} min"
 
     recommendation = {
@@ -564,12 +1014,14 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
         "estimated_minutes": total_time,
         "available_time": available_time,
         "exercises": exercises,
+        "cardio": cardio_data,
         "muscles_to_avoid": avoid_muscles,
         "time_adjusted": available_time < 60  # Flag if workout was time-constrained
     }
 
-    # Store recommendation for tracking
-    WORKOUT_RECOMMENDATIONS.append(recommendation)
+    # Store recommendation for tracking (only when explicitly requested)
+    if persist:
+        WORKOUT_RECOMMENDATIONS.append(recommendation)
 
     return recommendation
 
@@ -707,13 +1159,21 @@ def calculate_push_pull_ratio(workouts: list, weeks: int = 4) -> dict:
     pull_muscles = {"back", "biceps"}
 
     for workout in workouts:
-        workout_date = datetime.strptime(workout["date"], '%Y-%m-%d')
+        date_s = workout.get("date")
+        if not date_s:
+            continue
+        try:
+            workout_date = datetime.strptime(date_s, '%Y-%m-%d')
+        except Exception:
+            continue
         if workout_date < cutoff:
             continue
 
-        for exercise in workout.get("exercises", []):
-            muscle = exercise["muscle_group"]
-            num_sets = len(exercise.get("sets", []))
+        for exercise in workout.get("exercises", []) or []:
+            if not isinstance(exercise, dict):
+                continue
+            muscle = exercise.get("muscle_group") or "unknown"
+            num_sets = len(exercise.get("sets", []) or [])
 
             if muscle in push_muscles:
                 push_sets += num_sets
@@ -906,16 +1366,259 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     }
 
 
+# ==================== READINESS FACTORS (ACWR / SLEEP DEBT / RECOVERY) ====================
+
+def _parse_iso_date_or_datetime(s: str | None):
+    if not s:
+        return None
+    try:
+        # Handles YYYY-MM-DD and full ISO timestamps
+        return datetime.fromisoformat(s)
+    except Exception:
+        try:
+            return datetime.strptime(s, "%Y-%m-%d")
+        except Exception:
+            return None
+
+
+def calculate_acwr(workouts: list) -> dict:
+    """Calculate Acute:Chronic Workload Ratio (ACWR) from logged workouts.
+
+    Load definition: sum over all sets of (1 * reps * weight).
+    Acute: sum of last 7 days.
+    Chronic: average 7-day load over the last 28 days (uses available days if < 28).
+    """
+    today = datetime.now().date()
+    if not workouts:
+        return {
+            "acwr": 0.0,
+            "acute_load": 0,
+            "chronic_load": 0,
+            "risk": "detraining",
+            "message": "No workouts logged yet; ACWR unavailable."
+        }
+
+    def workout_load(w: dict) -> float:
+        total = 0.0
+        for ex in w.get("exercises", []) or []:
+            for s in ex.get("sets", []) or []:
+                reps = s.get("reps")
+                weight = s.get("weight_lbs")
+                try:
+                    reps_f = float(reps) if reps is not None else 0.0
+                    weight_f = float(weight) if weight is not None else 0.0
+                except Exception:
+                    reps_f, weight_f = 0.0, 0.0
+                total += reps_f * weight_f
+        return total
+
+    # Build daily loads for the last 28 days
+    start_28 = today - timedelta(days=27)
+    daily = {}
+    min_seen = None
+    for w in workouts:
+        d_s = w.get("date")
+        try:
+            d = datetime.strptime(d_s, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d < start_28 or d > today:
+            continue
+        if min_seen is None or d < min_seen:
+            min_seen = d
+        daily[d] = daily.get(d, 0.0) + workout_load(w)
+
+    if not daily:
+        return {
+            "acwr": 0.0,
+            "acute_load": 0,
+            "chronic_load": 0,
+            "risk": "detraining",
+            "message": "No workouts in the last 28 days; ACWR indicates detraining."
+        }
+
+    # Acute = last 7 days sum (inclusive)
+    start_7 = today - timedelta(days=6)
+    acute_total = sum(v for d, v in daily.items() if d >= start_7)
+
+    # Chronic = average weekly load over last 28 days
+    observed_days = min(28, (today - (min_seen or start_28)).days + 1)
+    chronic_total = sum(daily.values())
+    chronic_weekly_avg = (chronic_total / max(1, observed_days)) * 7.0
+
+    acute_i = int(round(acute_total))
+    chronic_i = int(round(chronic_weekly_avg))
+
+    if chronic_weekly_avg <= 0:
+        acwr = 0.0
+    else:
+        acwr = float(acute_total / chronic_weekly_avg)
+
+    # Risk bands
+    if acwr < 0.8:
+        risk = "detraining"
+        msg = "Training load is low vs recent baseline (detraining risk)."
+    elif acwr <= 1.3:
+        risk = "optimal"
+        msg = "ACWR is in the optimal range."
+    elif acwr <= 1.5:
+        risk = "caution"
+        msg = "ACWR is elevated; consider moderating intensity/volume."
+    else:
+        risk = "high"
+        msg = "ACWR is high; elevated injury risk—prioritize recovery/deload."
+
+    return {
+        "acwr": round(acwr, 3),
+        "acute_load": acute_i,
+        "chronic_load": chronic_i,
+        "risk": risk,
+        "message": msg,
+    }
+
+
+def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
+    """Calculate accumulated sleep debt over the last N days from Oura SQLite cache."""
+    target = 420  # minutes
+    days = max(1, int(days or 7))
+
+    try:
+        conn = sqlite3.connect(oura_db_file)
+        conn.row_factory = sqlite3.Row
+        try:
+            cur = conn.execute(
+                "SELECT day, sleep_duration_min FROM oura_daily WHERE sleep_duration_min IS NOT NULL ORDER BY day DESC LIMIT ?",
+                (days,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+        finally:
+            conn.close()
+    except Exception as e:
+        return {
+            "debt_minutes": 0,
+            "debt_hours": 0.0,
+            "nights_under": 0,
+            "avg_sleep_min": 0.0,
+            "status": "good",
+            "message": f"Sleep debt unavailable (DB error: {str(e)}).",
+        }
+
+    if not rows:
+        return {
+            "debt_minutes": 0,
+            "debt_hours": 0.0,
+            "nights_under": 0,
+            "avg_sleep_min": 0.0,
+            "status": "good",
+            "message": "No recent sleep-duration data available from Oura cache.",
+        }
+
+    debt = 0
+    nights_under = 0
+    total_sleep = 0
+    n = 0
+    for r in rows:
+        sd = r.get("sleep_duration_min")
+        try:
+            sd_i = int(sd)
+        except Exception:
+            continue
+        n += 1
+        total_sleep += sd_i
+        if sd_i < target:
+            nights_under += 1
+            debt += (target - sd_i)
+
+    avg_sleep = (total_sleep / n) if n else 0.0
+
+    if debt < 60:
+        status = "good"
+    elif debt <= 180:
+        status = "mild"
+    elif debt <= 300:
+        status = "moderate"
+    else:
+        status = "severe"
+
+    msg = f"{status.title()} sleep debt: {debt} min over last {n} nights (avg {avg_sleep:.0f} min)."
+
+    return {
+        "debt_minutes": int(debt),
+        "debt_hours": round(debt / 60.0, 2),
+        "nights_under": int(nights_under),
+        "avg_sleep_min": round(avg_sleep, 1),
+        "status": status,
+        "message": msg,
+    }
+
+
+def calculate_recovery_bonus(recovery_data: list, hours: int = 48) -> dict:
+    """Compute recovery modality bonus points based on entries in the last N hours."""
+    hours = max(1, int(hours or 48))
+    cutoff = datetime.now() - timedelta(hours=hours)
+
+    weights = {
+        "cold_plunge": 5,
+        "ice_bath": 5,
+        "sauna": 3,
+        "massage": 2,
+        "foam_roll": 2,
+        "stretching": 1,
+        "yoga": 1,
+    }
+
+    used = []
+    bonus = 0
+
+    for r in recovery_data or []:
+        dt = _parse_iso_date_or_datetime(r.get("created_at") or r.get("date"))
+        if not dt:
+            continue
+        if dt < cutoff:
+            continue
+        rt = (r.get("recovery_type") or "").strip().lower()
+        if not rt:
+            continue
+
+        # Normalize a few common variations
+        rt_norm = rt.replace("-", "_").replace(" ", "_")
+        if rt_norm in weights:
+            bonus += weights[rt_norm]
+            used.append(rt_norm)
+
+    used_unique = sorted(set(used))
+    if bonus:
+        msg = f"Recovery modalities in last {hours}h: {', '.join(used_unique)} (+{bonus})."
+    else:
+        msg = f"No recovery modalities logged in last {hours}h."
+
+    return {
+        "bonus_points": int(bonus),
+        "modalities_used": used_unique,
+        "message": msg,
+    }
+
+
 # Initialize with real data if available, otherwise use sample data
-WORKOUT_LOG_PATH = os.path.join(os.path.dirname(__file__), "support/Workout_Log_LogTab_Past_Workouts.md")
-if os.path.exists(WORKOUT_LOG_PATH):
-    print(f"Loading real workout data from {WORKOUT_LOG_PATH}")
-    WORKOUTS, SORENESS_DATA = parse_workout_log(WORKOUT_LOG_PATH)
-    summary = get_workout_summary(WORKOUTS)
-    print(f"Loaded {summary['total_sessions']} sessions, {summary['total_sets']} sets")
+# Data loading priority:
+# 1. JSON files (user's saved data) - these persist across restarts
+# 2. Markdown workout log (initial import)
+# 3. Sample data (demo mode)
+if WORKOUTS:
+    print(f"Loaded {len(WORKOUTS)} workouts from saved JSON data")
 else:
-    print("No workout log found, using sample data")
-    WORKOUTS, SORENESS_DATA = get_sample_data()
+    WORKOUT_LOG_PATH = os.path.join(os.path.dirname(__file__), "support/Workout_Log_LogTab_Past_Workouts.md")
+    if os.path.exists(WORKOUT_LOG_PATH):
+        print(f"Loading workout data from {WORKOUT_LOG_PATH}")
+        WORKOUTS, SORENESS_DATA = parse_workout_log(WORKOUT_LOG_PATH)
+        summary = get_workout_summary(WORKOUTS)
+        print(f"Loaded {summary['total_sessions']} sessions, {summary['total_sets']} sets")
+        # Save to JSON for future use
+        save_json(WORKOUTS_FILE, WORKOUTS)
+        save_json(SORENESS_FILE, SORENESS_DATA)
+    else:
+        print("No saved data found, using sample data")
+        WORKOUTS, SORENESS_DATA = get_sample_data()
 
 
 @app.route('/')
@@ -934,12 +1637,12 @@ def api_dashboard():
     improving = sum(1 for d in progression.values() if d["status"] == "On Track")
     total_exercises = len(progression)
 
-    readiness_scores = [get_readiness_score(m, SORENESS_DATA, volume)["score"] for m in volume.keys()]
+    readiness_scores = [get_readiness_score(m, SORENESS_DATA, volume, CARDIO_DATA)["score"] for m in volume.keys()]
     avg_readiness = sum(readiness_scores) / len(readiness_scores) if readiness_scores else 7
 
     muscle_data = []
     for muscle, data in volume.items():
-        readiness = get_readiness_score(muscle, SORENESS_DATA, volume)
+        readiness = get_readiness_score(muscle, SORENESS_DATA, volume, CARDIO_DATA)
         muscle_data.append({
             "muscle": muscle.title(),
             "sets": data["sets"],
@@ -975,6 +1678,49 @@ def api_dashboard():
     injury_risk = calculate_injury_risk(WORKOUTS, SORENESS_DATA)
     summary_stats = calculate_workout_summary_stats(WORKOUTS)
 
+    # Readiness factors (new)
+    acwr = calculate_acwr(WORKOUTS)
+    sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
+    recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
+
+    # Body stats
+    body_stats = {}
+    if BODY_DATA:
+        sorted_body = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
+        latest = sorted_body[0]
+        body_stats["latest_weight"] = latest.get("weight_lbs")
+        body_stats["latest_body_fat"] = latest.get("body_fat_pct")
+        
+        # 30-day weight change
+        today = datetime.now().date()
+        thirty_days_ago = today - timedelta(days=30)
+        old_entries = [
+            e for e in BODY_DATA
+            if e.get("date") and datetime.strptime(e["date"], "%Y-%m-%d").date() <= thirty_days_ago
+        ]
+        if old_entries:
+            oldest_in_range = sorted(old_entries, key=lambda x: x.get("date") or "")[-1]
+            old_weight = oldest_in_range.get("weight_lbs")
+            if old_weight and body_stats["latest_weight"]:
+                body_stats["weight_change_30d"] = round(body_stats["latest_weight"] - old_weight, 1)
+        
+        # Trend direction
+        recent_7 = sorted_body[:7]
+        if len(recent_7) >= 3:
+            weights = [e.get("weight_lbs") for e in recent_7 if e.get("weight_lbs")]
+            if len(weights) >= 3:
+                x = list(range(len(weights)))
+                n = len(weights)
+                x_mean = sum(x) / n
+                y_mean = sum(weights) / n
+                numerator = sum((x[i] - x_mean) * (weights[i] - y_mean) for i in range(n))
+                denominator = sum((x[i] - x_mean) ** 2 for i in range(n))
+                if denominator != 0:
+                    slope = numerator / denominator
+                    body_stats["trend"] = "increasing" if slope > 0.1 else "decreasing" if slope < -0.1 else "stable"
+                else:
+                    body_stats["trend"] = "unknown"
+
     return jsonify({
         "headline": {
             "total_sets": total_sets,
@@ -987,6 +1733,12 @@ def api_dashboard():
         "exercises": exercise_data,
         "alerts": generate_alerts(WORKOUTS, SORENESS_DATA),
         "next_workout": generate_next_workout(WORKOUTS, SORENESS_DATA),
+        "readiness_factors": {
+            "acwr": acwr,
+            "sleep_debt": sleep_debt,
+            "recovery_bonus": recovery_bonus,
+        },
+        "body_stats": body_stats,
         "advanced_kpis": {
             "personal_records": prs,
             "consistency": consistency,
@@ -998,20 +1750,277 @@ def api_dashboard():
     })
 
 
+@app.route('/api/acwr')
+def api_acwr():
+    """Return ACWR (Acute:Chronic Workload Ratio) computed from recent workouts."""
+    return jsonify(calculate_acwr(WORKOUTS))
+
+
 @app.route('/api/add-workout', methods=['POST'])
 def add_workout():
-    """Add a new workout."""
-    data = request.json
-    WORKOUTS.append(data)
-    return jsonify({"status": "success"})
+    """Add a new workout (legacy endpoint).
+
+    Prefer /api/complete-workout for the primary flow.
+    """
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    # Minimal validation
+    date_s, err2 = _coerce_str(data.get("date"), "date", required=True, max_len=32)
+    if err2:
+        return err2
+    session_type, err2 = _coerce_str(data.get("session_type"), "session_type", required=True, max_len=32)
+    if err2:
+        return err2
+    duration, err2 = _coerce_int(data.get("duration_minutes", 0), "duration_minutes", min_v=0, max_v=600)
+    if err2:
+        return err2
+    exercises = data.get("exercises")
+    if exercises is None:
+        exercises = []
+    if not isinstance(exercises, list):
+        return api_error("exercises must be a list", 400, code="invalid_field")
+
+    notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
+    if err2:
+        return err2
+
+    entry = {
+        "date": date_s,
+        "session_type": session_type,
+        "duration_minutes": duration,
+        "exercises": exercises,
+        "overall_fatigue": data.get("overall_fatigue", 5),
+        "notes": notes,
+    }
+
+    WORKOUTS.append(entry)
+    save_json(WORKOUTS_FILE, WORKOUTS)
+    return jsonify({"status": "success", "workout": entry})
 
 
 @app.route('/api/add-soreness', methods=['POST'])
 def add_soreness():
     """Add soreness data."""
-    data = request.json
-    SORENESS_DATA.append(data)
-    return jsonify({"status": "success"})
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    muscle, err2 = _coerce_str(data.get("muscle"), "muscle", required=True, max_len=64)
+    if err2:
+        return err2
+    level, err2 = _coerce_int(data.get("soreness_level"), "soreness_level", min_v=1, max_v=10)
+    if err2:
+        return err2
+    notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
+    if err2:
+        return err2
+
+    entry = {
+        "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
+        "muscle": muscle,
+        "soreness_level": level,
+        "notes": notes,
+        # Stamp with a precise timestamp so we can apply natural time-decay.
+        "created_at": datetime.now().isoformat(),
+    }
+
+    SORENESS_DATA.append(entry)
+    save_json(SORENESS_FILE, SORENESS_DATA)  # Persist to file
+    return jsonify({"status": "success", "soreness": entry})
+
+
+@app.route('/api/add-cardio', methods=['POST'])
+def add_cardio():
+    """Add cardio session data."""
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    activity_type, err2 = _coerce_str(data.get("activity_type"), "activity_type", required=True, max_len=64)
+    if err2:
+        return err2
+    duration, err2 = _coerce_int(data.get("duration_minutes"), "duration_minutes", min_v=1, max_v=600)
+    if err2:
+        return err2
+    intensity, err2 = _coerce_int(data.get("intensity", 5), "intensity", min_v=1, max_v=10)
+    if err2:
+        return err2
+    avg_hr, err2 = _coerce_int(data.get("avg_heart_rate"), "avg_heart_rate", min_v=30, max_v=250, allow_none=True)
+    if err2:
+        return err2
+    notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
+    if err2:
+        return err2
+
+    entry = {
+        "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
+        "activity_type": activity_type,
+        "duration_minutes": duration,
+        "avg_heart_rate": avg_hr,
+        "intensity": intensity,
+        "notes": notes,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    CARDIO_DATA.append(entry)
+    save_json(CARDIO_FILE, CARDIO_DATA)  # Persist to file
+    return jsonify({"status": "success", "cardio": entry})
+
+
+@app.route('/api/add-recovery', methods=['POST'])
+def add_recovery():
+    """Add recovery session data (sauna, cold plunge, etc)."""
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    recovery_type, err2 = _coerce_str(data.get("recovery_type"), "recovery_type", required=True, max_len=64)
+    if err2:
+        return err2
+    duration, err2 = _coerce_int(data.get("duration_minutes"), "duration_minutes", min_v=1, max_v=600)
+    if err2:
+        return err2
+    temperature, err2 = _coerce_int(data.get("temperature"), "temperature", min_v=-40, max_v=250, allow_none=True)
+    if err2:
+        return err2
+    notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
+    if err2:
+        return err2
+
+    entry = {
+        "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
+        "recovery_type": recovery_type,
+        "duration_minutes": duration,
+        "temperature": temperature,
+        "notes": notes,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    RECOVERY_DATA.append(entry)
+    save_json(RECOVERY_FILE, RECOVERY_DATA)  # Persist to file
+    return jsonify({"status": "success", "recovery": entry})
+
+
+@app.route('/api/add-body-measurement', methods=['POST'])
+def add_body_measurement():
+    """Add body composition measurement (weight, body fat %)."""
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    weight_lbs, err2 = _coerce_float(data.get("weight_lbs"), "weight_lbs", min_v=50.0, max_v=1000.0)
+    if err2:
+        return err2
+    body_fat_pct, err2 = _coerce_float(data.get("body_fat_pct"), "body_fat_pct", min_v=1.0, max_v=60.0, allow_none=True)
+    if err2:
+        return err2
+    notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
+    if err2:
+        return err2
+
+    entry = {
+        "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
+        "weight_lbs": weight_lbs,
+        "body_fat_pct": body_fat_pct,
+        "neck_in": data.get("neck_in"),
+        "waist_in": data.get("waist_in"),
+        "chest_in": data.get("chest_in"),
+        "hips_in": data.get("hips_in"),
+        "arms": data.get("arms"),
+        "legs": data.get("legs"),
+        "notes": notes,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    BODY_DATA.append(entry)
+    save_json(BODY_FILE, BODY_DATA)
+    return jsonify({"status": "success", "body_measurement": entry})
+
+
+@app.route('/api/body-history')
+def body_history():
+    """Return body measurement history with calculated fields."""
+    sorted_data = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
+    
+    # Calculate weight changes and trend
+    for i, entry in enumerate(sorted_data):
+        if i < len(sorted_data) - 1:
+            prev_weight = sorted_data[i + 1].get("weight_lbs")
+            curr_weight = entry.get("weight_lbs")
+            if prev_weight and curr_weight:
+                entry["weight_change"] = round(curr_weight - prev_weight, 1)
+            else:
+                entry["weight_change"] = None
+        else:
+            entry["weight_change"] = None
+    
+    # Calculate trend (last 7 entries linear regression)
+    recent_7 = sorted_data[:7]
+    if len(recent_7) >= 3:
+        weights = [e.get("weight_lbs") for e in recent_7 if e.get("weight_lbs")]
+        if len(weights) >= 3:
+            x = list(range(len(weights)))
+            n = len(weights)
+            x_mean = sum(x) / n
+            y_mean = sum(weights) / n
+            numerator = sum((x[i] - x_mean) * (weights[i] - y_mean) for i in range(n))
+            denominator = sum((x[i] - x_mean) ** 2 for i in range(n))
+            if denominator != 0:
+                slope = numerator / denominator
+                trend = "increasing" if slope > 0.1 else "decreasing" if slope < -0.1 else "stable"
+            else:
+                trend = "unknown"
+        else:
+            trend = "unknown"
+    else:
+        trend = "unknown"
+    
+    return jsonify({"status": "success", "history": sorted_data, "trend": trend})
+
+
+@app.route('/api/protocols')
+def protocols():
+    """Return evidence-based training protocols."""
+    return jsonify({
+        "lean_gain": {
+            "protein": {
+                "target": "1.6-2.2g per kg bodyweight",
+                "timing": "Every 3-5 hours, 20-40g per meal",
+                "sources": "Whey, chicken, fish, eggs, Greek yogurt"
+            },
+            "calories": {
+                "surplus": "200-300 kcal/day above TDEE",
+                "note": "Larger surpluses add more fat without faster muscle gain"
+            },
+            "training": {
+                "frequency": "3-5x/week",
+                "volume": "10-20 hard sets per muscle/week",
+                "overload": "Add weight or reps each session when RPE allows",
+                "rest": "2-3 min between compound sets, 1-2 min isolation"
+            },
+            "sleep": {
+                "target": "7-9 hours",
+                "why": "Growth hormone peaks during deep sleep; sleep debt impairs protein synthesis"
+            },
+            "hydration": {
+                "target": "0.5-1 oz per lb bodyweight daily"
+            },
+            "supplements": [
+                "Creatine monohydrate 5g/day",
+                "Vitamin D 2000-5000 IU if deficient",
+                "Whey protein for convenience (not required)"
+            ],
+            "key_principles": [
+                "Progressive overload is the #1 driver of muscle growth",
+                "Track your lifts — you can't improve what you don't measure",
+                "Deload every 4-6 weeks or when recovery metrics decline",
+                "Prioritize compound movements (press, row, squat, deadlift)",
+                "Body recomp (lose fat + gain muscle) works best for beginners or returning lifters"
+            ]
+        }
+    })
 
 
 @app.route('/api/settings', methods=['GET', 'POST'])
@@ -1025,6 +2034,10 @@ def settings():
             "goal_details": goal_params,
             "sessions_per_week_target": USER_SETTINGS.get("sessions_per_week_target", 3),
             "available_time_minutes": USER_SETTINGS.get("available_time_minutes", 60),
+            "target_weight_lbs": USER_SETTINGS.get("target_weight_lbs", 180),
+            "target_body_fat_pct": USER_SETTINGS.get("target_body_fat_pct", 15),
+            "fatigue_threshold": USER_SETTINGS.get("fatigue_threshold", 72),
+            "volume_landmarks": USER_SETTINGS.get("volume_landmarks", DEFAULT_SETTINGS["volume_landmarks"]),
             "available_goals": [
                 {"value": g, "name": p["name"], "description": p["description"]}
                 for g, p in GOAL_PARAMETERS.items()
@@ -1032,14 +2045,678 @@ def settings():
             "time_options": TIME_OPTIONS
         })
     else:
-        data = request.json
+        data, err = get_json_body(required=True)
+        if err:
+            return err
+
         if "training_goal" in data:
-            USER_SETTINGS["training_goal"] = data["training_goal"]
+            goal = data.get("training_goal")
+            if goal not in GOAL_PARAMETERS:
+                return api_error("Invalid training_goal", 400, code="invalid_field")
+            USER_SETTINGS["training_goal"] = goal
+
         if "sessions_per_week_target" in data:
-            USER_SETTINGS["sessions_per_week_target"] = data["sessions_per_week_target"]
+            s, err2 = _coerce_int(data.get("sessions_per_week_target"), "sessions_per_week_target", min_v=1, max_v=14)
+            if err2:
+                return err2
+            USER_SETTINGS["sessions_per_week_target"] = s
+
         if "available_time_minutes" in data:
-            USER_SETTINGS["available_time_minutes"] = data["available_time_minutes"]
+            t, err2 = _coerce_int(data.get("available_time_minutes"), "available_time_minutes", min_v=10, max_v=240)
+            if err2:
+                return err2
+            USER_SETTINGS["available_time_minutes"] = t
+
+        if "target_weight_lbs" in data:
+            tw, err2 = _coerce_float(data.get("target_weight_lbs"), "target_weight_lbs", min_v=80, max_v=500)
+            if err2:
+                return err2
+            USER_SETTINGS["target_weight_lbs"] = tw
+
+        if "target_body_fat_pct" in data:
+            tbf, err2 = _coerce_float(data.get("target_body_fat_pct"), "target_body_fat_pct", min_v=4, max_v=60)
+            if err2:
+                return err2
+            USER_SETTINGS["target_body_fat_pct"] = tbf
+
+        if "fatigue_threshold" in data:
+            ft, err2 = _coerce_int(data.get("fatigue_threshold"), "fatigue_threshold", min_v=40, max_v=95)
+            if err2:
+                return err2
+            USER_SETTINGS["fatigue_threshold"] = ft
+
+        if "volume_landmarks" in data and isinstance(data.get("volume_landmarks"), dict):
+            USER_SETTINGS["volume_landmarks"] = data.get("volume_landmarks")
+
+        save_json(SETTINGS_FILE, USER_SETTINGS)  # Persist to file
         return jsonify({"status": "success", "settings": USER_SETTINGS})
+
+
+# ==================== WEATHER (wttr.in) ====================
+
+def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
+    """Fetch current weather from wttr.in (best-effort).
+
+    Returns dict:
+      {available, location, temp_f, humidity_pct, condition, feelslike_f, raw}
+    """
+    now = int(time.time())
+    if (
+        _WEATHER_CACHE.get("data")
+        and _WEATHER_CACHE.get("location") == location
+        and (now - int(_WEATHER_CACHE.get("ts") or 0)) <= max_age_s
+    ):
+        return {"available": True, "location": location, **_WEATHER_CACHE["data"], "source": "cache"}
+
+    url = f"https://wttr.in/{location}?format=j1"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "fitness-dashboard/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+
+        cur = (payload.get("current_condition") or [{}])[0]
+        temp_f = float(cur.get("temp_F")) if cur.get("temp_F") not in (None, "") else None
+        feels_f = float(cur.get("FeelsLikeF")) if cur.get("FeelsLikeF") not in (None, "") else None
+        humidity = float(cur.get("humidity")) if cur.get("humidity") not in (None, "") else None
+        condition = ((cur.get("weatherDesc") or [{}])[0].get("value"))
+
+        data = {
+            "temp_f": temp_f,
+            "feelslike_f": feels_f,
+            "humidity_pct": humidity,
+            "condition": condition,
+            "raw": {"current_condition": cur},
+        }
+        _WEATHER_CACHE.update({"ts": now, "location": location, "data": data, "error": None})
+        return {"available": True, "location": location, **data, "source": "api"}
+    except Exception as e:
+        _WEATHER_CACHE.update({"ts": now, "location": location, "data": None, "error": str(e)})
+        return {"available": False, "location": location, "error": str(e)}
+
+
+@app.route('/api/weather')
+def weather_api():
+    loc = request.args.get("location") or _WEATHER_CACHE.get("location") or "San_Antonio"
+    return jsonify(_fetch_wttr(loc))
+
+
+# ==================== OURA INTEGRATION ====================
+
+@app.after_request
+def add_cors_headers(response):
+    """Allow remote access (ngrok, etc) without compromising data safety."""
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return response
+
+@app.route('/api/oura/status')
+def oura_status():
+    """Return today's Oura readiness, HRV, and sleep score.
+
+    Persists into SQLite for historical tracking.
+    Use ?refresh=true to force re-fetch from Oura API.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    force_refresh = request.args.get('refresh', '').lower() == 'true'
+
+    def _best_effort_steps_activity(steps, activity_score):
+        """Oura daily_activity can lag behind readiness/sleep. If today's DB row doesn't
+        have steps/activity yet, fall back to the most recent day that does."""
+        activity_day = today
+        if steps is None or activity_score is None:
+            try:
+                start = (datetime.now().date() - timedelta(days=14)).strftime("%Y-%m-%d")
+                rows = get_oura_daily_range(OURA_DB_FILE, start, today)
+                for r in reversed(rows):
+                    if r.get("steps") is not None or r.get("activity_score") is not None:
+                        if steps is None:
+                            steps = r.get("steps")
+                        if activity_score is None:
+                            activity_score = r.get("activity_score")
+                        activity_day = r.get("day") or activity_day
+                        break
+            except Exception:
+                pass
+        return steps, activity_score, activity_day
+
+    # Prefer DB cached values (unless force refresh)
+    if not force_refresh:
+        cached = get_oura_daily(OURA_DB_FILE, today)
+        if cached:
+            steps, activity_score, activity_day = _best_effort_steps_activity(
+                cached.get("steps"),
+                cached.get("activity_score"),
+            )
+            return jsonify({
+                "date": today,
+                "readiness": cached.get("readiness_score"),
+                "sleep_score": cached.get("sleep_score"),
+                "hrv": cached.get("hrv"),
+                "steps": steps,
+                "activity_score": activity_score,
+                "activity_day": activity_day,
+                "resting_hr": cached.get("resting_hr"),
+                "temperature_deviation": cached.get("temperature_deviation"),
+                "sleep_duration_min": cached.get("sleep_duration_min"),
+                "sleep_breakdown_min": {
+                    "deep": cached.get("sleep_deep_min"),
+                    "rem": cached.get("sleep_rem_min"),
+                    "light": cached.get("sleep_light_min"),
+                    "awake": cached.get("sleep_awake_min"),
+                },
+                "source": "db"
+            })
+
+    # Fetch from API (best-effort). If API/token fails, fall back to cached DB if present.
+    try:
+        client = OuraClient()
+    except Exception as e:
+        cached = get_oura_daily(OURA_DB_FILE, today)
+        if cached:
+            steps, activity_score, activity_day = _best_effort_steps_activity(
+                cached.get("steps"),
+                cached.get("activity_score"),
+            )
+            return jsonify({
+                "date": today,
+                "readiness": cached.get("readiness_score"),
+                "sleep_score": cached.get("sleep_score"),
+                "hrv": cached.get("hrv"),
+                "steps": steps,
+                "activity_score": activity_score,
+                "activity_day": activity_day,
+                "resting_hr": cached.get("resting_hr"),
+                "temperature_deviation": cached.get("temperature_deviation"),
+                "sleep_duration_min": cached.get("sleep_duration_min"),
+                "sleep_breakdown_min": {
+                    "deep": cached.get("sleep_deep_min"),
+                    "rem": cached.get("sleep_rem_min"),
+                    "light": cached.get("sleep_light_min"),
+                    "awake": cached.get("sleep_awake_min"),
+                },
+                "source": "db",
+                "warning": f"Oura unavailable: {str(e)}"
+            })
+        return jsonify({"available": False, "error": str(e)}), 503
+
+    try:
+        readiness_score, sleep_score, hrv, metrics, raw = client.get_today_metrics(today)
+
+        # Oura daily_activity can lag by a day; keep readiness/sleep on "today", but
+        # store activity metrics against their actual day when possible.
+        activity_day = metrics.get("activity_day") or today
+
+        upsert_oura_daily(
+            OURA_DB_FILE,
+            day=today,
+            readiness_score=readiness_score,
+            sleep_score=sleep_score,
+            hrv=hrv,
+            raw_json=raw,
+            steps=metrics.get("steps") if activity_day == today else None,
+            activity_score=metrics.get("activity_score") if activity_day == today else None,
+            resting_hr=metrics.get("resting_hr"),
+            temperature_deviation=metrics.get("temperature_deviation"),
+            sleep_duration_min=metrics.get("sleep_duration_min"),
+            sleep_deep_min=metrics.get("sleep_deep_min"),
+            sleep_rem_min=metrics.get("sleep_rem_min"),
+            sleep_light_min=metrics.get("sleep_light_min"),
+            sleep_awake_min=metrics.get("sleep_awake_min"),
+        )
+
+        if activity_day and activity_day != today:
+            upsert_oura_daily(
+                OURA_DB_FILE,
+                day=activity_day,
+                readiness_score=None,
+                sleep_score=None,
+                hrv=None,
+                raw_json=None,
+                steps=metrics.get("steps"),
+                activity_score=metrics.get("activity_score"),
+            )
+        steps = metrics.get("steps")
+        activity_score = metrics.get("activity_score")
+        if steps is None and activity_score is None:
+            steps, activity_score, activity_day = _best_effort_steps_activity(steps, activity_score)
+
+        return jsonify({
+            "date": today,
+            "readiness": readiness_score,
+            "sleep_score": sleep_score,
+            "hrv": hrv,
+            "steps": steps,
+            "activity_score": activity_score,
+            "activity_day": activity_day,
+            "resting_hr": metrics.get("resting_hr"),
+            "temperature_deviation": metrics.get("temperature_deviation"),
+            "sleep_duration_min": metrics.get("sleep_duration_min"),
+            "sleep_breakdown_min": {
+                "deep": metrics.get("sleep_deep_min"),
+                "rem": metrics.get("sleep_rem_min"),
+                "light": metrics.get("sleep_light_min"),
+                "awake": metrics.get("sleep_awake_min"),
+            },
+            "source": "api"
+        })
+    except Exception as e:
+        cached = get_oura_daily(OURA_DB_FILE, today)
+        if cached:
+            return jsonify({
+                "date": today,
+                "readiness": cached.get("readiness_score"),
+                "sleep_score": cached.get("sleep_score"),
+                "hrv": cached.get("hrv"),
+                "steps": cached.get("steps"),
+                "activity_score": cached.get("activity_score"),
+                "resting_hr": cached.get("resting_hr"),
+                "temperature_deviation": cached.get("temperature_deviation"),
+                "sleep_duration_min": cached.get("sleep_duration_min"),
+                "sleep_breakdown_min": {
+                    "deep": cached.get("sleep_deep_min"),
+                    "rem": cached.get("sleep_rem_min"),
+                    "light": cached.get("sleep_light_min"),
+                    "awake": cached.get("sleep_awake_min"),
+                },
+                "source": "db",
+                "warning": f"Oura API error: {str(e)}"
+            })
+        return jsonify({"available": False, "error": str(e)}), 502
+
+
+@app.route('/api/oura/trends')
+def oura_trends():
+    """Return 7-day HRV trend (and the series) for readiness guidance."""
+    end = datetime.now().date()
+    start = end - timedelta(days=6)
+    start_s = start.strftime("%Y-%m-%d")
+    end_s = end.strftime("%Y-%m-%d")
+
+    rows = get_oura_daily_range(OURA_DB_FILE, start_s, end_s)
+
+    # If we don't have enough cached days, fetch and upsert from API.
+    if len(rows) < 3:
+        try:
+            client = OuraClient()
+            daily = client.get_daily_range(start_s, end_s)
+            for d in daily:
+                upsert_oura_daily(
+                    OURA_DB_FILE,
+                    day=d.get("day"),
+                    readiness_score=d.get("readiness_score"),
+                    sleep_score=d.get("sleep_score"),
+                    hrv=d.get("hrv"),
+                    raw_json=d.get("raw_json"),
+                    steps=d.get("steps"),
+                    activity_score=d.get("activity_score"),
+                    resting_hr=d.get("resting_hr"),
+                    temperature_deviation=d.get("temperature_deviation"),
+                    sleep_duration_min=d.get("sleep_duration_min"),
+                    sleep_deep_min=d.get("sleep_deep_min"),
+                    sleep_rem_min=d.get("sleep_rem_min"),
+                    sleep_light_min=d.get("sleep_light_min"),
+                    sleep_awake_min=d.get("sleep_awake_min"),
+                )
+            rows = get_oura_daily_range(OURA_DB_FILE, start_s, end_s)
+        except Exception as e:
+            # Still return whatever we have
+            return jsonify({
+                "start_date": start_s,
+                "end_date": end_s,
+                "hrv_trend": "unknown",
+                "series": rows,
+                "error": str(e)
+            }), 200
+
+    trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
+    return jsonify({
+        "start_date": start_s,
+        "end_date": end_s,
+        "hrv_trend": trend,
+        "series": rows
+    })
+
+
+@app.route('/api/oura/sync-sleep', methods=['POST'])
+def sync_oura_sleep():
+    """Sync latest sleep data from Oura API."""
+    from oura_sleep_sync import create_sleep_table, sync_sleep_data, get_latest_sleep
+    
+    # Get optional start_date parameter (default to last 30 days)
+    data = request.get_json(silent=True) or {}
+    days_back = data.get("days_back", 30)
+    
+    try:
+        start_date = (datetime.now().date() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        
+        # Ensure table exists
+        create_sleep_table(OURA_DB_FILE)
+        
+        # Get API token
+        api_token = os.environ.get("OURA_API_TOKEN")
+        if not api_token:
+            return jsonify({"status": "error", "message": "OURA_API_TOKEN not configured"}), 500
+        
+        # Sync data
+        sync_sleep_data(OURA_DB_FILE, api_token, start_date=start_date)
+        
+        # Return latest sleep records
+        latest = get_latest_sleep(OURA_DB_FILE, days=7)
+        
+        return jsonify({
+            "status": "success",
+            "synced_from": start_date,
+            "latest_records": latest
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/oura/sleep-summary')
+def oura_sleep_summary():
+    """Get sleep summary for dashboard (last night + 7-day trends)."""
+    from oura_sleep_sync import get_latest_sleep, get_sleep_range, calculate_bedtime_variance
+    
+    try:
+        # Get last night's sleep
+        latest = get_latest_sleep(OURA_DB_FILE, days=1, long_sleep_only=True)
+        last_night = latest[0] if latest else None
+        
+        # Get 7-day data
+        end = datetime.now().date()
+        start = end - timedelta(days=6)
+        week_data = get_sleep_range(
+            OURA_DB_FILE,
+            start.strftime("%Y-%m-%d"),
+            end.strftime("%Y-%m-%d"),
+            long_sleep_only=True
+        )
+        
+        # Calculate 7-day averages
+        avg_duration = 0
+        avg_score = 0
+        avg_deep = 0
+        avg_rem = 0
+        avg_hr = 0
+        
+        if week_data:
+            durations = [r.get("total_sleep_min") or 0 for r in week_data]
+            scores = [r.get("sleep_score") or 0 for r in week_data if r.get("sleep_score")]
+            deeps = [r.get("deep_sleep_min") or 0 for r in week_data]
+            rems = [r.get("rem_sleep_min") or 0 for r in week_data]
+            hrs = [r.get("avg_heart_rate") or 0 for r in week_data if r.get("avg_heart_rate")]
+            
+            avg_duration = int(sum(durations) / len(durations)) if durations else 0
+            avg_score = int(sum(scores) / len(scores)) if scores else 0
+            avg_deep = int(sum(deeps) / len(deeps)) if deeps else 0
+            avg_rem = int(sum(rems) / len(rems)) if rems else 0
+            avg_hr = round(sum(hrs) / len(hrs), 1) if hrs else 0
+        
+        # Bedtime consistency
+        bedtime_variance = calculate_bedtime_variance(OURA_DB_FILE, days=7)
+        
+        # Consistency status
+        if bedtime_variance is None:
+            consistency_status = "unknown"
+        elif bedtime_variance < 30:
+            consistency_status = "excellent"
+        elif bedtime_variance < 60:
+            consistency_status = "good"
+        elif bedtime_variance < 90:
+            consistency_status = "fair"
+        else:
+            consistency_status = "poor"
+        
+        return jsonify({
+            "last_night": {
+                "date": last_night.get("day") if last_night else None,
+                "total_sleep_min": last_night.get("total_sleep_min") if last_night else 0,
+                "deep_sleep_min": last_night.get("deep_sleep_min") if last_night else 0,
+                "rem_sleep_min": last_night.get("rem_sleep_min") if last_night else 0,
+                "light_sleep_min": last_night.get("light_sleep_min") if last_night else 0,
+                "awake_time_min": last_night.get("awake_time_min") if last_night else 0,
+                "sleep_score": last_night.get("sleep_score") if last_night else 0,
+                "avg_heart_rate": last_night.get("avg_heart_rate") if last_night else 0,
+                "efficiency": last_night.get("efficiency") if last_night else 0,
+            },
+            "week_average": {
+                "duration_min": avg_duration,
+                "score": avg_score,
+                "deep_min": avg_deep,
+                "rem_min": avg_rem,
+                "avg_heart_rate": avg_hr,
+            },
+            "consistency": {
+                "bedtime_variance_min": bedtime_variance,
+                "status": consistency_status,
+            },
+            "trend_data": [
+                {
+                    "date": r.get("day"),
+                    "duration_min": r.get("total_sleep_min") or 0,
+                    "score": r.get("sleep_score") or 0,
+                }
+                for r in week_data
+            ]
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/recommendation/smart')
+def smart_recommendation_api():
+    """Smart recommendation factoring Oura readiness + HRV trend + recent soreness."""
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Oura metrics (best-effort)
+    readiness = None
+    sleep_score = None
+    hrv = None
+    try:
+        cached = get_oura_daily(OURA_DB_FILE, today)
+        if cached:
+            readiness = cached.get("readiness_score")
+            sleep_score = cached.get("sleep_score")
+            hrv = cached.get("hrv")
+        else:
+            client = OuraClient()
+            readiness, sleep_score, hrv, metrics, raw = client.get_today_metrics(today)
+            upsert_oura_daily(
+                OURA_DB_FILE,
+                day=today,
+                readiness_score=readiness,
+                sleep_score=sleep_score,
+                hrv=hrv,
+                raw_json=raw,
+                steps=metrics.get("steps"),
+                activity_score=metrics.get("activity_score"),
+                resting_hr=metrics.get("resting_hr"),
+                temperature_deviation=metrics.get("temperature_deviation"),
+                sleep_duration_min=metrics.get("sleep_duration_min"),
+                sleep_deep_min=metrics.get("sleep_deep_min"),
+                sleep_rem_min=metrics.get("sleep_rem_min"),
+                sleep_light_min=metrics.get("sleep_light_min"),
+                sleep_awake_min=metrics.get("sleep_awake_min"),
+            )
+    except Exception:
+        pass
+
+    # HRV trend (best-effort)
+    hrv_trend = "unknown"
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=6)
+        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
+    except Exception:
+        pass
+
+    recent = filter_recent_soreness(SORENESS_DATA, hours=24)
+    avoid = [s.get("muscle") for s in recent if (s.get("soreness_level") or 0) >= 6 and s.get("muscle")]
+    avoid = sorted(set(avoid))
+
+    # Readiness factors (ACWR / sleep debt / recovery bonus)
+    acwr_data = calculate_acwr(WORKOUTS)
+    sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
+    recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
+
+    effective_readiness = None
+    if readiness is not None:
+        try:
+            effective_readiness = float(readiness) + float(recovery_bonus.get("bonus_points") or 0)
+            effective_readiness = max(0.0, min(100.0, effective_readiness))
+        except Exception:
+            effective_readiness = float(readiness)
+
+    def _downgrade_once(rec: str) -> str:
+        if rec == "intensity":
+            return "moderate"
+        if rec == "moderate":
+            return "recovery"
+        return rec
+
+    # Determine base intensity from (effective) readiness
+    recommendation = "moderate"
+    if effective_readiness is not None:
+        if effective_readiness < 70:
+            recommendation = "recovery"
+        elif effective_readiness > 85:
+            recommendation = "intensity"
+
+    # HRV trend adjustment
+    if hrv_trend == "declining":
+        if recommendation == "intensity":
+            recommendation = "moderate"
+        elif recommendation == "moderate":
+            recommendation = "recovery"
+
+    # Sleep debt adjustment
+    if (sleep_debt.get("debt_minutes") or 0) > 300:
+        recommendation = _downgrade_once(recommendation)
+
+    # ACWR adjustments
+    acwr_v = acwr_data.get("acwr")
+    try:
+        acwr_f = float(acwr_v)
+    except Exception:
+        acwr_f = None
+
+    if acwr_f is not None:
+        if acwr_f > 1.5:
+            recommendation = "recovery"
+        elif acwr_f >= 1.3:
+            recommendation = _downgrade_once(recommendation)
+
+    upper = {"chest", "back", "shoulders", "biceps", "triceps"}
+    lower = {"quads", "hamstrings", "glutes", "calves", "adductors"}
+    avoid_set = set(avoid)
+
+    if avoid_set & lower and not (avoid_set & upper):
+        suggested = "Upper body focus - avoid leg exercises due to soreness"
+    elif avoid_set & upper and not (avoid_set & lower):
+        suggested = "Lower body focus - avoid upper-body loading due to soreness"
+    elif avoid_set:
+        suggested = "Recovery / light movement - multiple sore areas"
+    else:
+        suggested = "Normal training - choose session based on your plan"
+
+    # Reasoning: mention max soreness
+    reason_bits = []
+    if readiness is not None:
+        if effective_readiness is not None and round(float(effective_readiness), 1) != round(float(readiness), 1):
+            reason_bits.append(f"Readiness {readiness} (+{recovery_bonus.get('bonus_points', 0)} recovery bonus → {round(effective_readiness, 1)})")
+        else:
+            reason_bits.append(f"Readiness {readiness}")
+    if hrv_trend and hrv_trend != "unknown":
+        reason_bits.append(f"HRV trend {hrv_trend}")
+    if (sleep_debt.get('debt_minutes') or 0) > 0:
+        reason_bits.append(f"Sleep debt {sleep_debt.get('debt_minutes')} min ({sleep_debt.get('status')})")
+    if acwr_data.get('chronic_load', 0) > 0:
+        reason_bits.append(f"ACWR {acwr_data.get('acwr')} ({acwr_data.get('risk')})")
+    if recent:
+        worst = max(recent, key=lambda s: s.get("soreness_level") or 0)
+        ts = _parse_soreness_timestamp(worst)
+        age_h = None
+        if ts:
+            age_h = round((datetime.now() - ts).total_seconds() / 3600, 1)
+        if age_h is not None:
+            reason_bits.append(f"{worst.get('muscle')} soreness {worst.get('soreness_level')} logged {age_h}h ago")
+        else:
+            reason_bits.append(f"{worst.get('muscle')} soreness {worst.get('soreness_level')}")
+
+    # Weather adjustment (best-effort)
+    weather = None
+    try:
+        weather = _fetch_wttr(_WEATHER_CACHE.get("location") or "San_Antonio")
+        if weather.get("available"):
+            temp = weather.get("feelslike_f") if weather.get("feelslike_f") is not None else weather.get("temp_f")
+            hum = weather.get("humidity_pct")
+            if temp is not None:
+                # Extreme heat: reduce intensity
+                if temp >= 95 or (temp >= 90 and (hum or 0) >= 75):
+                    reason_bits.append(f"Weather {temp}F feels-like (hot)")
+                    if recommendation == "intensity":
+                        recommendation = "moderate"
+                    elif recommendation == "moderate":
+                        recommendation = "recovery"
+                # Extreme cold: be conservative
+                elif temp <= 40:
+                    reason_bits.append(f"Weather {temp}F feels-like (cold)")
+                    if recommendation == "intensity":
+                        recommendation = "moderate"
+    except Exception:
+        weather = None
+
+    # Time-of-day hint
+    hour = datetime.now().hour
+    time_of_day = "morning" if hour < 12 else "afternoon" if hour < 18 else "evening"
+    reason_bits.append(f"Time of day: {time_of_day}")
+
+    # Workout history context (simple: last trained major muscle groups)
+    history_context = []
+    try:
+        if WORKOUTS:
+            today_d = datetime.now().date()
+            last_by_muscle = {}
+            for w in sorted(WORKOUTS, key=lambda x: x.get("date", ""), reverse=True):
+                d_s = w.get("date")
+                if not d_s:
+                    continue
+                try:
+                    d = datetime.strptime(d_s, "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                for ex in w.get("exercises", []) or []:
+                    mg = (ex.get("muscle_group") or "").strip().lower()
+                    if mg and mg not in last_by_muscle:
+                        last_by_muscle[mg] = (today_d - d).days
+                if len(last_by_muscle) >= 6:
+                    break
+            for mg, days_ago in sorted(last_by_muscle.items(), key=lambda kv: kv[1])[:4]:
+                history_context.append(f"Last {mg}: {days_ago}d ago")
+    except Exception:
+        history_context = []
+
+    return jsonify({
+        "recommendation": recommendation,
+        "readiness": readiness,
+        "effective_readiness": round(effective_readiness, 1) if effective_readiness is not None else None,
+        "sleep_score": sleep_score,
+        "hrv": hrv,
+        "hrv_trend": hrv_trend,
+        "readiness_factors": {
+            "acwr": acwr_data,
+            "sleep_debt": sleep_debt,
+            "recovery_bonus": recovery_bonus,
+        },
+        "avoid_muscles": avoid,
+        "suggested_workout": suggested,
+        "weather": weather,
+        "time_of_day": time_of_day,
+        "history_context": history_context,
+        "reasoning": "; ".join(reason_bits) if reason_bits else "No Oura/soreness data available"
+    })
 
 
 @app.route('/api/history')
@@ -1065,13 +2742,116 @@ def workout_history():
     return jsonify({"workouts": workouts_list, "count": len(workouts_list)})
 
 
+@app.route('/api/history-all')
+def all_history():
+    """Get all history including workouts, cardio, and recovery sessions."""
+    # Process workouts
+    workouts_list = []
+    for w in sorted(WORKOUTS, key=lambda x: x.get("date", ""), reverse=True):
+        total_sets = sum(len(e.get("sets", [])) for e in w.get("exercises", []))
+        total_volume = sum(
+            s.get("weight_lbs", 0) * s.get("reps", 0)
+            for e in w.get("exercises", [])
+            for s in e.get("sets", [])
+        )
+        workouts_list.append({
+            "date": w.get("date", ""),
+            "session_type": w.get("session_type", "general"),
+            "duration_minutes": w.get("duration_minutes", 0),
+            "exercises": w.get("exercises", []),
+            "total_sets": total_sets,
+            "total_volume": round(total_volume),
+            "notes": w.get("notes", "")
+        })
+
+    # Process cardio (sorted by date descending)
+    cardio_list = sorted(CARDIO_DATA, key=lambda x: x.get("date", ""), reverse=True)
+
+    # Process recovery (sorted by date descending)
+    recovery_list = sorted(RECOVERY_DATA, key=lambda x: x.get("date", ""), reverse=True)
+
+    return jsonify({
+        "workouts": workouts_list,
+        "cardio": cardio_list,
+        "recovery": recovery_list
+    })
+
+
+@app.route('/api/delete-history', methods=['POST'])
+def delete_history():
+    """Delete a history entry by type and index (index is in *sorted* order)."""
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    entry_type, err2 = _coerce_str(data.get("type"), "type", required=True, max_len=16)
+    if err2:
+        return err2
+    index, err2 = _coerce_int(data.get("index"), "index", min_v=0, max_v=10_000)
+    if err2:
+        return err2
+
+    try:
+        if entry_type == "workout":
+            sorted_workouts = sorted(enumerate(WORKOUTS), key=lambda x: x[1].get("date", ""), reverse=True)
+            if not (0 <= index < len(sorted_workouts)):
+                return api_error("Index out of range", 404, code="not_found")
+            original_index = sorted_workouts[index][0]
+            deleted = WORKOUTS.pop(original_index)
+            save_json(WORKOUTS_FILE, WORKOUTS)
+            return jsonify({"status": "success", "deleted": deleted})
+
+        if entry_type == "cardio":
+            sorted_cardio = sorted(enumerate(CARDIO_DATA), key=lambda x: x[1].get("date", ""), reverse=True)
+            if not (0 <= index < len(sorted_cardio)):
+                return api_error("Index out of range", 404, code="not_found")
+            original_index = sorted_cardio[index][0]
+            deleted = CARDIO_DATA.pop(original_index)
+            save_json(CARDIO_FILE, CARDIO_DATA)
+            return jsonify({"status": "success", "deleted": deleted})
+
+        if entry_type == "recovery":
+            sorted_recovery = sorted(enumerate(RECOVERY_DATA), key=lambda x: x[1].get("date", ""), reverse=True)
+            if not (0 <= index < len(sorted_recovery)):
+                return api_error("Index out of range", 404, code="not_found")
+            original_index = sorted_recovery[index][0]
+            deleted = RECOVERY_DATA.pop(original_index)
+            save_json(RECOVERY_FILE, RECOVERY_DATA)
+            return jsonify({"status": "success", "deleted": deleted})
+
+        return api_error("Invalid type (expected workout|cardio|recovery)", 400, code="invalid_field")
+    except Exception as e:
+        return api_error("Failed to delete history entry", 500, code="server_error", details=str(e))
+
+
 @app.route('/api/complete-workout', methods=['POST'])
 def complete_workout():
     """Complete a workout and track adherence to recommendations."""
-    data = request.json
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
     recommendation_id = data.get("recommendation_id")
     actual_exercises = data.get("exercises", [])
-    notes = data.get("notes", "")
+    if not isinstance(actual_exercises, list):
+        return api_error("exercises must be a list", 400, code="invalid_field")
+
+    # Validate we have at least one completed exercise with at least 1 set
+    if len(actual_exercises) == 0:
+        return api_error("Workout must include at least one exercise", 400, code="invalid_field")
+
+    for ex in actual_exercises:
+        if not isinstance(ex, dict):
+            return api_error("Each exercise must be an object", 400, code="invalid_field")
+        if not ex.get("machine"):
+            return api_error("Each exercise must include machine", 400, code="invalid_field")
+        sets = ex.get("sets") or []
+        if not isinstance(sets, list) or len(sets) == 0:
+            return api_error("Each exercise must include at least one set", 400, code="invalid_field")
+
+    notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
+    if err2:
+        return err2
 
     # Find the recommendation
     recommendation = None
@@ -1104,12 +2884,31 @@ def complete_workout():
                             })
 
     # Create workout entry
+    # Coerce a few fields (best-effort, keep app resilient)
+    session_type = data.get("session_type", "general")
+    if not isinstance(session_type, str) or not session_type.strip():
+        session_type = "general"
+
+    duration_minutes = data.get("duration_minutes", 45)
+    try:
+        duration_minutes = int(duration_minutes)
+    except Exception:
+        duration_minutes = 45
+    duration_minutes = max(0, min(duration_minutes, 600))
+
+    overall_fatigue = data.get("fatigue", 5)
+    try:
+        overall_fatigue = int(overall_fatigue)
+    except Exception:
+        overall_fatigue = 5
+    overall_fatigue = max(1, min(overall_fatigue, 10))
+
     workout_entry = {
         "date": datetime.now().strftime("%Y-%m-%d"),
-        "session_type": data.get("session_type", "general"),
-        "duration_minutes": data.get("duration_minutes", 45),
+        "session_type": session_type,
+        "duration_minutes": duration_minutes,
         "exercises": actual_exercises,
-        "overall_fatigue": data.get("fatigue", 5),
+        "overall_fatigue": overall_fatigue,
         "notes": notes,
         "recommendation_id": recommendation_id,
         "adherence": adherence
@@ -1117,12 +2916,115 @@ def complete_workout():
 
     WORKOUTS.append(workout_entry)
     COMPLETED_WORKOUTS.append(workout_entry)
+    save_json(WORKOUTS_FILE, WORKOUTS)  # Persist to file
 
     return jsonify({
         "status": "success",
         "adherence": adherence,
         "message": "Workout logged! Navigating to history..."
     })
+
+
+@app.route('/api/export-backup')
+def export_backup():
+    """Export all data as a single JSON backup file."""
+    backup_data = {
+        "version": "1.0",
+        "exported_at": datetime.now().isoformat(),
+        "data": {
+            "workouts": WORKOUTS,
+            "soreness": SORENESS_DATA,
+            "cardio": CARDIO_DATA,
+            "recovery": RECOVERY_DATA,
+            "settings": USER_SETTINGS,
+            "baselines": BASELINES_DATA,
+            "body": BODY_DATA,
+            "sleep": SLEEP_DATA
+        }
+    }
+
+    filename = f"fitness_backup_{datetime.now().strftime('%Y-%m-%d')}.json"
+
+    return Response(
+        json.dumps(backup_data, indent=2, default=str),
+        mimetype="application/json",
+        headers={"Content-Disposition": f"attachment;filename={filename}"}
+    )
+
+
+@app.route('/api/import-backup', methods=['POST'])
+def import_backup():
+    """Import data from a backup JSON file."""
+    global WORKOUTS, SORENESS_DATA, CARDIO_DATA, RECOVERY_DATA, USER_SETTINGS, BASELINES_DATA, BODY_DATA, SLEEP_DATA
+
+    try:
+        backup_data, err = get_json_body(required=True)
+        if err:
+            return err
+
+        # Validate backup structure
+        if "data" not in backup_data or not isinstance(backup_data.get("data"), dict):
+            return api_error("Invalid backup format: missing 'data' object", 400, code="invalid_field")
+
+        data = backup_data["data"]
+
+        # Restore each data type if present
+        if "workouts" in data:
+            WORKOUTS.clear()
+            WORKOUTS.extend(data["workouts"])
+            save_json(WORKOUTS_FILE, WORKOUTS)
+
+        if "soreness" in data:
+            SORENESS_DATA.clear()
+            SORENESS_DATA.extend(data["soreness"])
+            save_json(SORENESS_FILE, SORENESS_DATA)
+
+        if "cardio" in data:
+            CARDIO_DATA.clear()
+            CARDIO_DATA.extend(data["cardio"])
+            save_json(CARDIO_FILE, CARDIO_DATA)
+
+        if "recovery" in data:
+            RECOVERY_DATA.clear()
+            RECOVERY_DATA.extend(data["recovery"])
+            save_json(RECOVERY_FILE, RECOVERY_DATA)
+
+        if "settings" in data:
+            USER_SETTINGS.clear()
+            USER_SETTINGS.update(data["settings"])
+            save_json(SETTINGS_FILE, USER_SETTINGS)
+
+        if "baselines" in data:
+            BASELINES_DATA.clear()
+            BASELINES_DATA.update(data["baselines"])
+            save_json(BASELINES_FILE, BASELINES_DATA)
+
+        if "body" in data:
+            BODY_DATA.clear()
+            BODY_DATA.extend(data["body"])
+            save_json(BODY_FILE, BODY_DATA)
+
+        if "sleep" in data:
+            SLEEP_DATA.clear()
+            SLEEP_DATA.extend(data["sleep"])
+            save_json(SLEEP_FILE, SLEEP_DATA)
+
+        return jsonify({
+            "status": "success",
+            "message": "Backup restored successfully",
+            "imported": {
+                "workouts": len(data.get("workouts", [])),
+                "soreness": len(data.get("soreness", [])),
+                "cardio": len(data.get("cardio", [])),
+                "recovery": len(data.get("recovery", [])),
+                "settings": bool(data.get("settings")),
+                "baselines": len(data.get("baselines", {})),
+                "body": len(data.get("body", [])),
+                "sleep": len(data.get("sleep", []))
+            }
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
 
 
 @app.route('/api/export-md')
@@ -1301,6 +3203,333 @@ def workout_adherence():
     })
 
 
+@app.route('/api/baselines', methods=['GET', 'POST'])
+def baselines():
+    """Get or set baseline weights for exercises without history."""
+    # All exercises with their muscle groups and suggested starting weights
+    ALL_EXERCISES = [
+        {"name": "Chest Press", "muscle": "chest", "suggested": 100},
+        {"name": "Lat Pulldown", "muscle": "back", "suggested": 100},
+        {"name": "Mid Row", "muscle": "back", "suggested": 80},
+        {"name": "Shoulder Press", "muscle": "shoulders", "suggested": 60},
+        {"name": "Leg Press", "muscle": "quads", "suggested": 180},
+        {"name": "Leg Curl", "muscle": "hamstrings", "suggested": 80},
+        {"name": "Hip Abductor", "muscle": "glutes", "suggested": 100},
+        {"name": "Seated Dip", "muscle": "triceps", "suggested": 100},
+        {"name": "Biceps Curl", "muscle": "biceps", "suggested": 50},
+        {"name": "Calf Raise", "muscle": "calves", "suggested": 120},
+        {"name": "Crunch Machine", "muscle": "core", "suggested": 60},
+    ]
+
+    if request.method == 'GET':
+        # Get progression data to see which exercises have history
+        progression = calculate_progression_status(WORKOUTS)
+
+        exercises_with_status = []
+        for ex in ALL_EXERCISES:
+            has_history = ex["name"] in progression
+            baseline_weight = BASELINES_DATA.get(ex["name"])
+            current_e1rm = progression.get(ex["name"], {}).get("current_e1rm")
+
+            exercises_with_status.append({
+                "name": ex["name"],
+                "muscle": ex["muscle"],
+                "suggested": ex["suggested"],
+                "has_history": has_history,
+                "baseline_weight": baseline_weight or (current_e1rm if has_history else None),
+            })
+
+        return jsonify({"exercises": exercises_with_status, "baselines": BASELINES_DATA})
+    else:
+        # Save baselines
+        data, err = get_json_body(required=True)
+        if err:
+            return err
+        new_baselines = data.get("baselines", {})
+        if not isinstance(new_baselines, dict):
+            return api_error("baselines must be an object", 400, code="invalid_field")
+
+        cleaned = {}
+        for k, v in new_baselines.items():
+            if not isinstance(k, str) or not k.strip():
+                continue
+            try:
+                cleaned[k] = float(v)
+            except Exception:
+                return api_error(f"Baseline for '{k}' must be a number", 400, code="invalid_field")
+
+        BASELINES_DATA.update(cleaned)
+        save_json(BASELINES_FILE, BASELINES_DATA)
+        return jsonify({"status": "success", "baselines": BASELINES_DATA})
+
+
+@app.route('/api/muscle-fatigue')
+def muscle_fatigue():
+    """Get muscle fatigue/readiness data for muscle group calculations."""
+    volume = calculate_volume(WORKOUTS, weeks=2)  # Last 2 weeks
+
+    # All muscle groups
+    all_muscles = [
+        "chest", "back", "shoulders", "biceps", "triceps",
+        "quads", "hamstrings", "glutes", "adductors", "calves", "core"
+    ]
+
+    fatigue_data = {}
+    for muscle in all_muscles:
+        readiness = get_readiness_score(muscle, SORENESS_DATA, volume, CARDIO_DATA)
+
+        # Calculate fatigue level (inverse of readiness)
+        # 10 = fully recovered (green), 0 = extremely fatigued (red)
+        readiness_score = readiness["score"]
+
+        # Map to fatigue color
+        if readiness_score >= 8:
+            fatigue_level = "recovered"  # Green
+            color = "#10b981"
+        elif readiness_score >= 6:
+            fatigue_level = "mild"  # Light yellow
+            color = "#84cc16"
+        elif readiness_score >= 4:
+            fatigue_level = "moderate"  # Orange
+            color = "#f59e0b"
+        elif readiness_score >= 2:
+            fatigue_level = "high"  # Red-orange
+            color = "#f97316"
+        else:
+            fatigue_level = "severe"  # Red
+            color = "#ef4444"
+
+        # Get recent soreness data for this muscle
+        muscle_soreness = [s for s in SORENESS_DATA if s.get("muscle") == muscle]
+        recent_soreness = muscle_soreness[-1] if muscle_soreness else None
+
+        fatigue_data[muscle] = {
+            "readiness": readiness_score,
+            "fatigue_level": fatigue_level,
+            "color": color,
+            "soreness": readiness["soreness"],
+            "recovery_debt": readiness["recovery_debt"],
+            "cardio_fatigue": readiness.get("cardio_fatigue", 0),
+            "recommendation": readiness["recommendation"],
+            "last_trained": volume.get(muscle, {}).get("last_trained"),
+            "weekly_sets": volume.get(muscle, {}).get("sets", 0),
+            "recent_soreness_note": recent_soreness.get("notes") if recent_soreness else None
+        }
+
+    return jsonify(fatigue_data)
+
+
+
+
+# ==================== BODY RECOMP / SLEEP IMPORT / ANALYTICS ====================
+
+def _rolling_avg(vals, window=7):
+    out=[]
+    for i in range(len(vals)):
+        seg=vals[max(0,i-window+1):i+1]
+        seg=[v for v in seg if v is not None]
+        out.append(round(sum(seg)/len(seg),2) if seg else None)
+    return out
+
+def _decayed_soreness(muscle, half_life_days=2.0):
+    import math
+    now=datetime.now()
+    score=0.0
+    for e in SORENESS_DATA[-120:]:
+        if e.get('muscle')!=muscle: continue
+        try: d=datetime.fromisoformat((e.get('date') or '')[:10])
+        except Exception: continue
+        age=max(0,(now-d).days)
+        weight=0.5 ** (age/max(half_life_days,0.2))
+        score += float(e.get('soreness_level',0))*weight
+    return min(10.0, round(score,2))
+
+def _last_n_sessions_rpe(n=3):
+    vals=[]
+    for w in sorted(WORKOUTS, key=lambda x:x.get('date',''), reverse=True):
+        r=[]
+        for ex in (w.get('exercises') or []):
+            for s in (ex.get('sets') or []):
+                try:r.append(float(s.get('rpe')))
+                except Exception:pass
+        if r: vals.append(sum(r)/len(r))
+        if len(vals)>=n: break
+    return vals
+
+@app.route('/api/body-recomp')
+def body_recomp():
+    hist = sorted(BODY_DATA, key=lambda x: x.get('date') or '')
+    if not hist:
+        return jsonify({"history": [], "summary": {}})
+    dates=[h.get('date') for h in hist]
+    weights=[h.get('weight_lbs') for h in hist]
+    bf=[h.get('body_fat_pct') for h in hist]
+    roll=_rolling_avg(weights,7)
+    lean=[]; fat=[]
+    for w,b in zip(weights,bf):
+        if w is None or b is None: lean.append(None); fat.append(None)
+        else:
+            fm = w*(b/100.0); lm=w-fm
+            lean.append(round(lm,2)); fat.append(round(fm,2))
+    latest=hist[-1]
+    tw=USER_SETTINGS.get('target_weight_lbs')
+    curr=latest.get('weight_lbs')
+    eta_weeks=None
+    if tw and curr and len(weights)>=14:
+        first=weights[max(0,len(weights)-14)]
+        weekly=(curr-first)/2.0
+        if weekly!=0:
+            eta_weeks=round((tw-curr)/weekly,1)
+    return jsonify({
+        "history": hist, "dates": dates, "weight": weights, "weight_7d_avg": roll,
+        "body_fat_pct": bf, "lean_mass_lbs": lean, "fat_mass_lbs": fat,
+        "summary": {"latest": latest, "target_weight_lbs": tw, "target_body_fat_pct": USER_SETTINGS.get('target_body_fat_pct'), "eta_weeks": eta_weeks}
+    })
+
+@app.route('/api/body/navy-calc', methods=['POST'])
+def navy_calc():
+    data,err=get_json_body(required=True)
+    if err: return err
+    sex=(data.get('sex') or 'male').lower()
+    h,err2=_coerce_float(data.get('height_in'), 'height_in', min_v=48, max_v=96)
+    if err2:return err2
+    neck,err2=_coerce_float(data.get('neck_in'), 'neck_in', min_v=8, max_v=30)
+    if err2:return err2
+    waist,err2=_coerce_float(data.get('waist_in'), 'waist_in', min_v=18, max_v=80)
+    if err2:return err2
+    import math
+    if sex=='female':
+        hip,err2=_coerce_float(data.get('hip_in'), 'hip_in', min_v=20, max_v=80)
+        if err2:return err2
+        bf=163.205*math.log10(waist+hip-neck)-97.684*math.log10(h)-78.387
+    else:
+        bf=86.010*math.log10(max(waist-neck,0.1))-70.041*math.log10(h)+36.76
+    bf=max(3.0,min(60.0,round(bf,2)))
+    return jsonify({"body_fat_pct": bf})
+
+@app.route('/api/sleep/import', methods=['POST'])
+def sleep_import():
+    data,err=get_json_body(required=True)
+    if err: return err
+    entries=[]
+    if isinstance(data.get('entries'), list):
+        raw=data['entries']
+    elif isinstance(data.get('csv'), str):
+        import csv, io
+        raw=list(csv.DictReader(io.StringIO(data['csv'])))
+    else:
+        return api_error('Provide entries[] or csv text', 400, code='invalid_field')
+    for r in raw:
+        date=(r.get('date') or r.get('day') or '')[:10]
+        if not date: continue
+        e={
+            'date':date,
+            'source': r.get('source') or 'apple_watch',
+            'sleep_duration_min': int(float(r.get('sleep_duration_min') or r.get('duration_min') or 0)),
+            'time_in_bed_min': int(float(r.get('time_in_bed_min') or r.get('in_bed_min') or 0)),
+            'deep_min': int(float(r.get('deep_min') or 0)),
+            'rem_min': int(float(r.get('rem_min') or 0)),
+            'light_min': int(float(r.get('light_min') or 0)),
+            'awake_min': int(float(r.get('awake_min') or 0)),
+            'sleep_start': r.get('sleep_start'),
+            'sleep_end': r.get('sleep_end')
+        }
+        entries.append(e)
+    merged={x.get('date'):x for x in SLEEP_DATA}
+    for e in entries: merged[e['date']]=e
+    SLEEP_DATA.clear(); SLEEP_DATA.extend(sorted(merged.values(), key=lambda x:x.get('date')))
+    save_json(SLEEP_FILE, SLEEP_DATA)
+    return jsonify({'status':'success','imported':len(entries)})
+
+@app.route('/api/sleep/analytics')
+def sleep_analytics():
+    rows=sorted(SLEEP_DATA, key=lambda x:x.get('date'))
+    if not rows: return jsonify({'history':[],'consistency_score':None,'sleep_perf_correlation':None})
+    # prefer apple watch source if duplicates
+    dedup={}
+    for r in rows:
+        d=r.get('date')
+        if d not in dedup or r.get('source')=='apple_watch': dedup[d]=r
+    rows=sorted(dedup.values(), key=lambda x:x.get('date'))
+    import statistics, math
+    bed=[]
+    for r in rows:
+        ss=r.get('sleep_start') or ''
+        try:
+            t=datetime.fromisoformat(ss.replace('Z','+00:00'))
+            bed.append(t.hour*60+t.minute)
+        except Exception:
+            pass
+    consistency= None
+    if len(bed)>=4:
+        std=statistics.pstdev(bed)
+        consistency=max(0,min(100, round(100-(std/90*100),1)))
+    # next-day performance correlation with avg e1rm
+    perf_by_day={}
+    for w in WORKOUTS:
+        e1=[]
+        for ex in (w.get('exercises') or []):
+            for s in (ex.get('sets') or []):
+                try:e1.append(calculate_e1rm(float(s.get('weight_lbs')), int(s.get('reps'))))
+                except Exception: pass
+        if e1: perf_by_day[w.get('date')]=sum(e1)/len(e1)
+    xs=[]; ys=[]
+    for r in rows:
+        d=r.get('date')
+        nd=(datetime.fromisoformat(d)+timedelta(days=1)).strftime('%Y-%m-%d')
+        if nd in perf_by_day and r.get('sleep_duration_min'):
+            xs.append(float(r.get('sleep_duration_min'))); ys.append(perf_by_day[nd])
+    corr=None
+    if len(xs)>=3:
+        mx=sum(xs)/len(xs); my=sum(ys)/len(ys)
+        num=sum((a-mx)*(b-my) for a,b in zip(xs,ys))
+        den=(sum((a-mx)**2 for a in xs)*sum((b-my)**2 for b in ys))**0.5
+        corr=round(num/den,3) if den else None
+    return jsonify({'history':rows,'consistency_score':consistency,'sleep_perf_correlation':corr})
+
+@app.route('/api/analytics/advanced')
+def analytics_advanced():
+    # volume per muscle current week
+    vol=calculate_volume(WORKOUTS, weeks=1)
+    lm=USER_SETTINGS.get('volume_landmarks', {}).get('default', {"mv":6,"mev":9,"mav_min":12,"mav_max":18,"mrv":22})
+    volume_landmarks=[]
+    for m,v in vol.items():
+        sets=v.get('sets',0)
+        zone='below_mv' if sets<lm['mv'] else 'mv' if sets<lm['mev'] else 'mev_to_mav' if sets<=lm['mav_max'] else 'mrv_risk' if sets>=lm['mrv'] else 'mav_high'
+        volume_landmarks.append({'muscle':m,'sets':sets,'landmarks':lm,'zone':zone})
+    # fatigue composite
+    try:
+        hrv_trend=compute_hrv_trend(OURA_DB_FILE).get('trend')
+    except Exception:
+        hrv_trend='unknown'
+    hrv_pen={'up':0,'stable':5,'down':12}.get(hrv_trend,6)
+    sleep=calculate_sleep_debt(OURA_DB_FILE,7)
+    sleep_pen=min(20,max(0,(sleep.get('debt_minutes') or 0)/30))
+    vol_load=0
+    for w in WORKOUTS[-12:]:
+        for ex in (w.get('exercises') or []):
+            for s in (ex.get('sets') or []):
+                try: vol_load += float(s.get('weight_lbs'))*int(s.get('reps'))
+                except Exception: pass
+    vol_pen=min(25, vol_load/12000)
+    sore_pen=sum(_decayed_soreness(m,2.0) for m in ['chest','back','quads','hamstrings'])/4*2
+    rpes=_last_n_sessions_rpe(3)
+    ar_pen=8 if rpes and sum(rpes)/len(rpes)>8.5 else 0
+    weeks_since=detect_deload_need(WORKOUTS,SORENESS_DATA).get('weeks_since_deload') or 0
+    meso_pen=min(15, float(weeks_since)*2.5)
+    fatigue=min(100, round(22+hrv_pen+sleep_pen+vol_pen+sore_pen+ar_pen+meso_pen,1))
+    deload= fatigue >= USER_SETTINGS.get('fatigue_threshold',72)
+    perf_decline = detect_deload_need(WORKOUTS,SORENESS_DATA).get('recommended',False)
+    return jsonify({
+        'volume_landmarks': volume_landmarks,
+        'fatigue_score': fatigue,
+        'deload_recommended': bool(deload or perf_decline),
+        'mesocycle_weeks': weeks_since,
+        'autoregulation': {'avg_rpe_last_3': round(sum(rpes)/len(rpes),2) if rpes else None, 'reduce_intensity': ar_pen>0},
+        'recovery': {'score': max(0,100-fatigue), 'suggested_intensity': 'recovery' if fatigue>80 else 'light' if fatigue>68 else 'moderate' if fatigue>52 else 'hard'},
+        'factors': {'hrv_trend': hrv_trend, 'sleep_debt_min': sleep.get('debt_minutes'), 'volume_load': round(vol_load,1)}
+    })
+
 @app.route('/manifest.json')
 def manifest():
     """PWA manifest."""
@@ -1324,6 +3553,59 @@ def manifest():
 def service_worker():
     """Service worker for offline support."""
     return app.send_static_file('js/sw.js'), 200, {'Content-Type': 'application/javascript'}
+
+
+@app.route('/test-chart')
+def test_chart():
+    """Standalone chart test page - no service worker, no caching."""
+    return '''<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head><body style="background:#1a1a2e;padding:20px;margin:0;">
+<h2 style="color:white;font-family:sans-serif;">Sleep Chart Test</h2>
+<div style="background:#16213e;border-radius:12px;padding:16px;position:relative;height:250px;width:100%;">
+<canvas id="testChart"></canvas>
+</div>
+<pre id="log" style="color:lime;font-size:12px;"></pre>
+<script>
+const log = document.getElementById('log');
+fetch('/api/oura/sleep-summary')
+  .then(r => r.json())
+  .then(data => {
+    log.textContent = 'Data: ' + JSON.stringify(data.trend_data);
+    const ctx = document.getElementById('testChart').getContext('2d');
+    new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: data.trend_data.map(d => d.date.slice(5)),
+        datasets: [{
+          label: 'Duration (hrs)',
+          data: data.trend_data.map(d => (d.duration_min/60).toFixed(1)),
+          borderColor: '#4361ee',
+          backgroundColor: 'rgba(67,97,238,0.1)',
+          tension: 0.3, fill: true
+        },{
+          label: 'Score',
+          data: data.trend_data.map(d => d.score),
+          borderColor: '#e040fb',
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { title: { display: true, text: '7-Day Sleep', color: '#fff' },
+                   legend: { labels: { color: '#ccc' } } },
+        scales: {
+          x: { ticks: { color: '#999' } },
+          y: { min: 0, max: 100, ticks: { color: '#999' } }
+        }
+      }
+    });
+    log.textContent += '\\n\\nChart rendered!';
+  })
+  .catch(e => { log.textContent = 'ERROR: ' + e; });
+</script></body></html>''', 200, {'Cache-Control': 'no-store'}
 
 
 def get_local_ip():
@@ -1352,4 +3634,8 @@ if __name__ == '__main__':
     print("  Then use the ngrok URL on your phone")
     print("\n" + "="*60 + "\n")
 
-    app.run(host='0.0.0.0', port=port, debug=True)
+    # Debug mode controlled by env var - NEVER expose debug=True via ngrok
+    debug_mode = os.getenv("FLASK_DEBUG", "0") == "1"
+
+    # Bind to localhost only — Tailscale Serve handles external access
+    app.run(host='127.0.0.1', port=port, debug=debug_mode)

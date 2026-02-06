@@ -1,0 +1,27 @@
+Loaded 17 workouts from saved JSON data
+
+============================================================
+  FITNESS INTELLIGENCE DASHBOARD
+============================================================
+
+  Local access:     http://localhost:5050
+  WiFi access:      http://10.5.0.2:5050
+
+  For cellular data access, run:
+    ngrok http 5050
+  Then use the ngrok URL on your phone
+
+============================================================
+
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://127.0.0.1:5050
+[33mPress CTRL+C to quit[0m
+127.0.0.1 - - [04/Feb/2026 23:25:10] "GET /api/body-history HTTP/1.1" 200 -
+127.0.0.1 - - [05/Feb/2026 07:00:20] "[33mGET /api/status HTTP/1.1[0m" 404 -
+127.0.0.1 - - [05/Feb/2026 07:00:33] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [05/Feb/2026 07:00:33] "[35m[1mGET /api/oura/status HTTP/1.1[0m" 503 -
+127.0.0.1 - - [05/Feb/2026 07:21:08] "[35m[1mGET /api/oura/status HTTP/1.1[0m" 503 -
+127.0.0.1 - - [05/Feb/2026 07:21:51] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [05/Feb/2026 07:22:00] "GET / HTTP/1.1" 200 -

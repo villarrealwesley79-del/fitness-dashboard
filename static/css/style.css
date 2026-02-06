@@ -68,6 +68,17 @@ body {
     margin-top: 4px;
 }
 
+.offline-banner {
+    margin: 8px 0 12px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(245, 158, 11, 0.15);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    text-align: center;
+}
+
 /* Navigation Tabs */
 .tab-nav {
     display: flex;
@@ -384,6 +395,7 @@ body {
     padding: 16px;
     border: 1px solid var(--border);
     height: 250px;
+    position: relative;
 }
 
 /* Forms */
@@ -1062,6 +1074,33 @@ body {
     background: rgba(67, 97, 238, 0.1);
 }
 
+.btn-danger {
+    width: 100%;
+    padding: 12px;
+    margin-top: 12px;
+    border: none;
+    border-radius: 10px;
+    background: #ef4444;
+    color: white;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.btn-danger:active {
+    background: #dc2626;
+}
+
+.btn-danger .material-icons {
+    font-size: 1.1rem;
+    color: white;
+}
+
 .btn-group {
     display: flex;
     gap: 12px;
@@ -1172,4 +1211,327 @@ body {
     font-size: 0.7rem;
     font-weight: 600;
     margin-left: auto;
+}
+
+/* ==================== Recovery Card (Oura) ==================== */
+.recovery-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 14px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+}
+
+.recovery-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.recovery-row:last-child {
+    margin-bottom: 0;
+}
+
+.recovery-metric {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    padding: 10px;
+}
+
+.recovery-metric.wide {
+    grid-column: span 2;
+}
+
+.recovery-metric .label {
+    font-size: 0.72rem;
+    letter-spacing: 0.02em;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+}
+
+.recovery-metric .value {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.recovery-footer {
+    margin-top: 6px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+@media (max-width: 420px) {
+    .recovery-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .recovery-metric.wide {
+        grid-column: span 2;
+    }
+}
+
+/* ==================== History Filter Buttons ==================== */
+
+.date-range-filter {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.date-range-btn {
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.date-range-btn:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+}
+
+.date-range-btn.active {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: white;
+}
+
+.history-filter-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.history-filter-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.history-filter-btn:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+}
+
+.history-filter-btn.active {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: white;
+}
+
+.history-filter-btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* ==================== Recommendation Reasoning ==================== */
+
+.recommendation-reasoning {
+    background: rgba(67, 97, 238, 0.1);
+    border: 1px solid rgba(67, 97, 238, 0.3);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-top: 12px;
+}
+
+.reasoning-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--primary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: 8px;
+}
+
+.reasoning-factors {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.reasoning-factor {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.reasoning-factor .icon {
+    font-size: 1rem;
+}
+
+.reasoning-factor.positive {
+    color: var(--success);
+}
+
+.reasoning-factor.negative {
+    color: var(--danger);
+}
+
+.reasoning-factor.neutral {
+    color: var(--warning);
+}
+
+/* ==================== Material Icons Styling ==================== */
+
+.material-icons {
+    font-size: 1.2em;
+    vertical-align: middle;
+    color: var(--primary);
+}
+
+/* Heart icon - make it red/pink */
+.material-icons.favorite,
+.cardio-hr .material-icons,
+.cardio-history-hr .material-icons {
+    color: #ef4444;
+}
+
+/* Running icon - keep primary color */
+.section-title .material-icons {
+    color: var(--primary);
+    margin-right: 6px;
+}
+
+/* Spa/recovery icon */
+.material-icons.spa {
+    color: var(--success);
+}
+
+/* Cardio section specific styling */
+#cardio-container .material-icons {
+    color: var(--primary);
+}
+
+.cardio-hr {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.cardio-hr .material-icons {
+    color: #ef4444 !important;
+}
+
+.cardio-history-hr {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-secondary);
+}
+
+.cardio-history-hr .material-icons {
+    font-size: 1rem;
+    color: #ef4444 !important;
+}
+
+/* ==================== Cardio Recommendation Card ==================== */
+
+.cardio-card {
+    background: var(--bg-card);
+    border-radius: 12px;
+    padding: 14px;
+    border: 1px solid var(--border);
+}
+
+.cardio-recommendation {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.cardio-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+.cardio-type {
+    font-weight: 600;
+    font-size: 1rem;
+    color: var(--text-primary);
+}
+
+.cardio-duration {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    background: rgba(67, 97, 238, 0.1);
+    padding: 4px 8px;
+    border-radius: 8px;
+}
+
+.cardio-zone {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.zone-label {
+    font-weight: 600;
+    color: var(--primary);
+    font-size: 0.9rem;
+}
+
+.zone-desc {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.cardio-intensity {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    padding: 8px;
+    background: rgba(67, 97, 238, 0.05);
+    border-radius: 8px;
+    border-left: 2px solid var(--primary);
+}
+
+.cardio-technique {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.cardio-technique strong {
+    color: var(--text-primary);
+}
+
+.cardio-reason {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-style: italic;
+    padding-top: 4px;
+    border-top: 1px solid var(--border);
+}
+
+.cardio-skip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    background: rgba(67, 97, 238, 0.1);
+    border-radius: 8px;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
 }

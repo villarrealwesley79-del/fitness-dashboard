@@ -1,6 +1,17 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <script>
+    // Force-clear stale service workers
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+            regs.forEach(function(r) { r.unregister(); });
+        });
+        caches.keys().then(function(names) {
+            names.forEach(function(n) { caches.delete(n); });
+        });
+    }
+    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -13,7 +24,7 @@
     <link rel="manifest" href="/manifest.json">
     <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
 
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260205c">
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -25,13 +36,18 @@
             <p class="subtitle" id="goal-subtitle">Evidence-based training</p>
         </header>
 
+        <div id="offline-banner" class="offline-banner" style="display:none;">
+            You're offline — showing cached data where available.
+        </div>
+
         <!-- Navigation Tabs (scrollable) -->
         <nav class="tab-nav scrollable">
             <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
-            <button class="tab-btn" data-tab="graphs">Graphs</button>
-            <button class="tab-btn" data-tab="workout">Workout</button>
-            <button class="tab-btn" data-tab="history">History</button>
+            <button class="tab-btn" data-tab="workout">Next Workout</button>
             <button class="tab-btn" data-tab="log">Log</button>
+            <button class="tab-btn" data-tab="history">History</button>
+            <button class="tab-btn" data-tab="body">Body</button>
+            <button class="tab-btn" data-tab="analytics">Analytics</button>
             <button class="tab-btn" data-tab="settings">Settings</button>
         </nav>
 
@@ -55,6 +71,114 @@
                     <span class="kpi-value" id="sessions">--</span>
                     <span class="kpi-label">Sessions</span>
                 </div>
+                <div class="kpi-card">
+                    <span class="kpi-value" id="oura-readiness">--</span>
+                    <span class="kpi-label">Oura Readiness</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-value" id="oura-hrv">--</span>
+                    <span class="kpi-label">HRV Trend</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-value" id="body-weight">--</span>
+                    <span class="kpi-label">Weight (lbs)</span>
+                </div>
+                <div class="kpi-card" style="cursor: pointer;" onclick="location.href='/?refresh=1'" title="Refresh Oura data">
+                    <span class="kpi-value">🔄</span>
+                    <span class="kpi-label">Refresh</span>
+                </div>
+            </div>
+
+            <!-- Recovery Dashboard Card (Oura) -->
+            <div class="section">
+                <h2 class="section-title">Recovery</h2>
+                <div class="recovery-card" id="recovery-card">
+                    <div class="recovery-row">
+                        <div class="recovery-metric">
+                            <div class="label">Steps</div>
+                            <div class="value" id="oura-steps">--</div>
+                        </div>
+                        <div class="recovery-metric">
+                            <div class="label">Activity</div>
+                            <div class="value" id="oura-activity-score">--</div>
+                        </div>
+                        <div class="recovery-metric">
+                            <div class="label">RHR</div>
+                            <div class="value" id="oura-rhr">--</div>
+                        </div>
+                        <div class="recovery-metric">
+                            <div class="label">Temp Δ</div>
+                            <div class="value" id="oura-temp">--</div>
+                        </div>
+                    </div>
+                    <div class="recovery-row">
+                        <div class="recovery-metric wide">
+                            <div class="label">Sleep (total)</div>
+                            <div class="value" id="oura-sleep-duration">--</div>
+                        </div>
+                        <div class="recovery-metric">
+                            <div class="label">Deep</div>
+                            <div class="value" id="oura-sleep-deep">--</div>
+                        </div>
+                        <div class="recovery-metric">
+                            <div class="label">REM</div>
+                            <div class="value" id="oura-sleep-rem">--</div>
+                        </div>
+                        <div class="recovery-metric">
+                            <div class="label">Light</div>
+                            <div class="value" id="oura-sleep-light">--</div>
+                        </div>
+                        <div class="recovery-metric">
+                            <div class="label">Awake</div>
+                            <div class="value" id="oura-sleep-awake">--</div>
+                        </div>
+                    </div>
+                    <div class="recovery-footer" id="oura-recovery-note"></div>
+                </div>
+            </div>
+
+            <!-- Sleep Insights Section -->
+            <div class="section">
+                <h2 class="section-title">Sleep Insights</h2>
+                <div class="kpi-grid">
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="sleep-last-night-duration">--</span>
+                        <span class="kpi-label">Last Night (hrs)</span>
+                    </div>
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="sleep-last-night-score">--</span>
+                        <span class="kpi-label">Sleep Score</span>
+                    </div>
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="sleep-week-avg">--</span>
+                        <span class="kpi-label">7-Day Avg (hrs)</span>
+                    </div>
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="sleep-consistency">--</span>
+                        <span class="kpi-label">Consistency</span>
+                    </div>
+                </div>
+                <div class="chart-container" style="position:relative; height:220px; width:100%;">
+                    <canvas id="sleepTrendChart" style="width:100%; height:100%;"></canvas>
+                </div>
+                <div class="kpi-grid small" id="sleep-breakdown">
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="sleep-deep-pct">--</span>
+                        <span class="kpi-label">Deep %</span>
+                    </div>
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="sleep-rem-pct">--</span>
+                        <span class="kpi-label">REM %</span>
+                    </div>
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="sleep-light-pct">--</span>
+                        <span class="kpi-label">Light %</span>
+                    </div>
+                    <div class="kpi-card">
+                        <span class="kpi-value" id="sleep-hr">--</span>
+                        <span class="kpi-label">Avg HR</span>
+                    </div>
+                </div>
             </div>
 
             <!-- Alerts Section -->
@@ -76,8 +200,29 @@
             </div>
         </section>
 
+
+        <!-- Body Tab -->
+        <section id="body" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Body Recomp Summary</h2>
+                <div id="body-summary" class="kpi-grid"></div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">Weight & 7-Day Average</h2>
+                <div class="chart-container"><canvas id="bodyWeightTrendChart"></canvas></div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">Lean vs Fat Mass</h2>
+                <div class="chart-container"><canvas id="bodyCompositionChart"></canvas></div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">Sleep Consistency + Performance Correlation</h2>
+                <div id="sleep-summary" class="status-card"></div>
+            </div>
+        </section>
+
         <!-- Graphs Tab (Key Insights) -->
-        <section id="graphs" class="tab-content">
+        <section id="analytics" class="tab-content">
             <!-- Key Insights -->
             <div class="section">
                 <h2 class="section-title">Key Insights</h2>
@@ -97,6 +242,14 @@
                 <h2 class="section-title">Volume Distribution</h2>
                 <div class="chart-container">
                     <canvas id="volumeChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Body Weight Trend Chart -->
+            <div class="section">
+                <h2 class="section-title">Body Weight Trend</h2>
+                <div class="chart-container">
+                    <canvas id="weightChart"></canvas>
                 </div>
             </div>
 
@@ -145,9 +298,23 @@
                 <p class="workout-focus" id="workout-focus">Loading...</p>
                 <p class="workout-duration" id="workout-duration"></p>
                 <p class="workout-goal" id="workout-goal"></p>
+                <p class="workout-goal" id="smart-reco" style="margin-top:6px;"></p>
+                <div id="recommendation-reasoning" class="recommendation-reasoning" style="display:none;">
+                    <div class="reasoning-title">📊 Why this recommendation?</div>
+                    <div id="reasoning-factors" class="reasoning-factors"></div>
+                </div>
             </div>
 
             <div id="workout-exercises" class="card-list"></div>
+
+            <!-- Cardio Recommendation Section -->
+            <div class="section" id="cardio-section" style="display:none;">
+                <h3 class="section-title">
+                    <span class="material-icons">directions_run</span>
+                    Cardio Recommendation
+                </h3>
+                <div id="cardio-container" class="cardio-card"></div>
+            </div>
 
             <div class="section" id="avoid-section" style="display:none;">
                 <h3 class="section-title warning">Muscles to Avoid</h3>
@@ -164,19 +331,57 @@
         <section id="history" class="tab-content">
             <div class="section">
                 <div class="history-header">
-                    <h2 class="section-title">Workout History</h2>
+                    <h2 class="section-title">Activity History</h2>
                     <button id="export-btn" class="btn-secondary btn-small">Export MD</button>
                 </div>
+            </div>
+
+            <!-- Date Range Filter -->
+            <div class="date-range-filter">
+                <button class="date-range-btn active" data-range="all">All Time</button>
+                <button class="date-range-btn" data-range="7">7 Days</button>
+                <button class="date-range-btn" data-range="30">30 Days</button>
+                <button class="date-range-btn" data-range="90">90 Days</button>
+                <button class="date-range-btn" data-range="custom">Custom</button>
+            </div>
+
+            <!-- Custom Date Range Inputs (hidden by default) -->
+            <div id="custom-date-range" class="custom-date-range" style="display: none;">
+                <div class="date-input-group">
+                    <label for="date-from">From</label>
+                    <input type="date" id="date-from">
+                </div>
+                <div class="date-input-group">
+                    <label for="date-to">To</label>
+                    <input type="date" id="date-to">
+                </div>
+                <button id="apply-date-range" class="btn-secondary btn-small">Apply</button>
+            </div>
+
+            <!-- History Filter Tabs -->
+            <div class="history-filter-tabs">
+                <button class="history-filter-btn active" data-filter="workouts">
+                    <span class="material-icons">fitness_center</span>
+                    Workouts
+                </button>
+                <button class="history-filter-btn" data-filter="cardio">
+                    <span class="material-icons">directions_run</span>
+                    Cardio
+                </button>
+                <button class="history-filter-btn" data-filter="recovery">
+                    <span class="material-icons">spa</span>
+                    Recovery
+                </button>
             </div>
 
             <div id="history-stats" class="kpi-grid small">
                 <div class="kpi-card">
                     <span class="kpi-value" id="history-total">--</span>
-                    <span class="kpi-label">Total Workouts</span>
+                    <span class="kpi-label" id="history-total-label">Total Workouts</span>
                 </div>
                 <div class="kpi-card">
                     <span class="kpi-value" id="history-volume">--</span>
-                    <span class="kpi-label">Total Volume</span>
+                    <span class="kpi-label" id="history-volume-label">Total Volume</span>
                 </div>
             </div>
 
@@ -185,6 +390,76 @@
 
         <!-- Log Tab -->
         <section id="log" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Log Cardio</h2>
+                <form id="cardio-form" class="form">
+                    <div class="form-group">
+                        <label>Activity Type</label>
+                        <select id="cardio-type" required>
+                            <option value="">Select activity...</option>
+                            <option value="stairmaster">Stairmaster</option>
+                            <option value="treadmill">Treadmill</option>
+                            <option value="basketball">Basketball</option>
+                            <option value="running">Running (Outdoor)</option>
+                            <option value="cycling">Cycling</option>
+                            <option value="elliptical">Elliptical</option>
+                            <option value="rowing">Rowing</option>
+                            <option value="swimming">Swimming</option>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Duration (min)</label>
+                            <input type="number" id="cardio-duration" required min="1" max="180" placeholder="30">
+                        </div>
+                        <div class="form-group">
+                            <label>Avg Heart Rate</label>
+                            <input type="number" id="cardio-hr" min="60" max="220" placeholder="135">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Intensity: <span id="cardio-intensity-value">5</span>/10</label>
+                        <input type="range" id="cardio-intensity" min="1" max="10" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>Notes (optional)</label>
+                        <input type="text" id="cardio-notes" placeholder="e.g., Zone 2 steady state">
+                    </div>
+                    <button type="submit" class="btn-primary">Log Cardio</button>
+                </form>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Log Recovery (Sauna)</h2>
+                <form id="sauna-form" class="form">
+                    <div class="form-group">
+                        <label>Recovery Type</label>
+                        <select id="recovery-type" required>
+                            <option value="">Select type...</option>
+                            <option value="sauna">Sauna (Dry)</option>
+                            <option value="steam">Steam Room</option>
+                            <option value="cold_plunge">Cold Plunge</option>
+                            <option value="contrast">Contrast Therapy</option>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Duration (min)</label>
+                            <input type="number" id="recovery-duration" required min="1" max="60" placeholder="15">
+                        </div>
+                        <div class="form-group">
+                            <label>Temperature (°F)</label>
+                            <input type="number" id="recovery-temp" min="40" max="220" placeholder="180">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Notes (optional)</label>
+                        <input type="text" id="recovery-notes" placeholder="e.g., Post-workout recovery">
+                    </div>
+                    <button type="submit" class="btn-primary">Log Recovery</button>
+                </form>
+            </div>
+
             <div class="section">
                 <h2 class="section-title">Log Soreness</h2>
                 <form id="soreness-form" class="form">
@@ -195,10 +470,12 @@
                             <option value="chest">Chest</option>
                             <option value="back">Back</option>
                             <option value="shoulders">Shoulders</option>
-                            <option value="quads">Quads</option>
-                            <option value="hamstrings">Hamstrings</option>
                             <option value="biceps">Biceps</option>
                             <option value="triceps">Triceps</option>
+                            <option value="quads">Quads</option>
+                            <option value="hamstrings">Hamstrings</option>
+                            <option value="glutes">Glutes</option>
+                            <option value="adductors">Hip Adductors</option>
                             <option value="calves">Calves</option>
                             <option value="core">Core</option>
                         </select>
@@ -214,6 +491,43 @@
                     <button type="submit" class="btn-primary">Log Soreness</button>
                 </form>
             </div>
+
+            <div class="section">
+                <h2 class="section-title">Body Measurement</h2>
+                <form id="body-form" class="form">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Weight (lbs)</label>
+                            <input type="number" id="body-weight-input" required min="50" max="1000" step="0.1" placeholder="180">
+                        </div>
+                        <div class="form-group">
+                            <label>Body Fat % (optional)</label>
+                            <input type="number" id="body-fat" min="1" max="60" step="0.1" placeholder="15">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Neck (in)</label><input type="number" id="body-neck" step="0.1" placeholder="15"></div>
+                        <div class="form-group"><label>Waist (in)</label><input type="number" id="body-waist" step="0.1" placeholder="32"></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Chest (in)</label><input type="number" id="body-chest" step="0.1"></div>
+                        <div class="form-group"><label>Hips (in)</label><input type="number" id="body-hips" step="0.1"></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Arm L/R (in)</label><input type="text" id="body-arms" placeholder="14.2/14.0"></div>
+                        <div class="form-group"><label>Leg L/R (in)</label><input type="text" id="body-legs" placeholder="23.5/23.3"></div>
+                    </div>
+                    <div class="form-group">
+                        <button type="button" id="navy-calc-btn" class="btn-secondary btn-small">Estimate BF% (Navy)</button>
+                    </div>
+                    <div class="form-group">
+                        <label>Notes (optional)</label>
+                        <input type="text" id="body-notes" placeholder="e.g., Measured after morning workout">
+                    </div>
+                    <button type="submit" class="btn-primary">Log Measurement</button>
+                </form>
+            </div>
+
 
             <div class="section">
                 <h2 class="section-title">Quick Log Set</h2>
@@ -263,6 +577,14 @@
             </div>
 
             <div class="section">
+                <h2 class="section-title">Evidence-Based Protocols</h2>
+                <p class="section-desc">Science-backed guidelines for lean muscle gain and optimal body composition.</p>
+                <div id="protocols-container" style="display: grid; gap: 12px; margin-top: 12px;">
+                    <!-- Populated by JavaScript -->
+                </div>
+            </div>
+
+            <div class="section">
                 <h2 class="section-title">Weekly Target</h2>
                 <div class="form-group">
                     <label>Sessions per week: <span id="target-value">3</span></label>
@@ -287,9 +609,22 @@
             </div>
 
             <div class="section">
+                <h2 class="section-title">Exercise Baseline Weights</h2>
+                <p class="section-desc">Set starting weights for exercises without history. These will be used as your baseline.</p>
+                <div id="baseline-container" class="baseline-grid"></div>
+                <button id="save-baseline-btn" class="btn-primary" style="margin-top:12px;">Save Baselines</button>
+            </div>
+
+            <div class="section">
                 <h2 class="section-title">Data</h2>
-                <div class="btn-group">
-                    <button id="export-all-btn" class="btn-secondary">Export All Data</button>
+                <p class="section-desc">Backup and restore your fitness data.</p>
+                <div class="btn-group" style="flex-direction: column; gap: 12px;">
+                    <button id="export-backup-btn" class="btn-primary">Export Backup (JSON)</button>
+                    <div class="import-backup-container">
+                        <input type="file" id="import-backup-input" accept=".json" style="display: none;">
+                        <button id="import-backup-btn" class="btn-secondary" style="width: 100%;">Import Backup</button>
+                    </div>
+                    <button id="export-all-btn" class="btn-secondary" style="width: 100%;">Export to Markdown</button>
                 </div>
             </div>
         </section>
@@ -303,16 +638,50 @@
         <!-- Active Workout Modal -->
         <div id="workout-modal" class="modal" style="display:none;">
             <div class="modal-content">
-                <h2>Logging Workout</h2>
-                <div id="active-workout-exercises"></div>
-                <div class="modal-actions">
-                    <button id="cancel-workout" class="btn-secondary">Cancel</button>
-                    <button id="complete-workout" class="btn-primary">Complete Workout</button>
+                <!-- Step 1: Exercises -->
+                <div id="workout-step-exercises" class="workout-step">
+                    <h2>Logging Workout</h2>
+                    <div id="active-workout-exercises"></div>
+                    <div class="form-group modal-notes">
+                        <label>Workout Notes (optional)</label>
+                        <textarea id="workout-notes" rows="3" placeholder="How did the workout feel? Any adjustments made? Energy levels?"></textarea>
+                    </div>
+                    <div class="modal-actions">
+                        <button id="cancel-workout" class="btn-secondary">Cancel</button>
+                        <button id="next-step-btn" class="btn-primary">Complete Workout</button>
+                    </div>
+                </div>
+
+                <!-- Step 2: Cardio (shown only if cardio was recommended) -->
+                <div id="workout-step-cardio" class="workout-step" style="display:none;">
+                    <h2>Log Cardio</h2>
+                    <div id="cardio-recommendation-info" class="cardio-step-info"></div>
+                    <div class="form-group">
+                        <label>Actual Duration (min)</label>
+                        <input type="number" id="cardio-actual-duration" min="0" max="120" placeholder="15">
+                    </div>
+                    <div class="form-group">
+                        <label>Average Heart Rate (BPM)</label>
+                        <input type="number" id="cardio-actual-hr" min="60" max="220" placeholder="130">
+                    </div>
+                    <div class="form-group">
+                        <label>Intensity: <span id="cardio-actual-intensity-value">5</span>/10</label>
+                        <input type="range" id="cardio-actual-intensity" min="1" max="10" value="5">
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="cardio-skipped"> I skipped cardio today
+                        </label>
+                    </div>
+                    <div class="modal-actions">
+                        <button id="back-to-exercises" class="btn-secondary">Back</button>
+                        <button id="complete-workout" class="btn-primary">Complete Workout</button>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v=20260205c"></script>
 </body>
 </html>

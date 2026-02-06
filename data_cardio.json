@@ -1,0 +1,27 @@
+[
+  {
+    "date": "2026-01-27",
+    "activity_type": "basketball",
+    "duration_minutes": 30,
+    "avg_heart_rate": 162,
+    "intensity": 7,
+    "notes": ""
+  },
+  {
+    "date": "2026-02-01",
+    "activity_type": "stairmaster",
+    "duration_minutes": 20,
+    "avg_heart_rate": 148,
+    "intensity": 5,
+    "notes": "Post-workout Zone 2-3"
+  },
+  {
+    "date": "2026-02-03",
+    "activity_type": "run",
+    "duration_minutes": 20,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "test",
+    "created_at": "2026-02-03T22:36:50.356458"
+  }
+]

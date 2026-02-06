@@ -1,0 +1,29 @@
+[
+  {
+    "date": "2026-02-03",
+    "muscle": "adductors",
+    "soreness_level": 9,
+    "notes": "High DOMS"
+  },
+  {
+    "date": "2026-02-04",
+    "muscle": "adductors",
+    "soreness_level": 10,
+    "notes": "Server DOMS",
+    "created_at": "2026-02-03T21:02:45.527924"
+  },
+  {
+    "date": "2026-02-03",
+    "muscle": "chest",
+    "soreness_level": 5,
+    "notes": "<script>alert(1)</script> 😀",
+    "created_at": "2026-02-03T22:36:50.332058"
+  },
+  {
+    "date": "2026-02-04",
+    "muscle": "adductors",
+    "soreness_level": 3,
+    "notes": "",
+    "created_at": "2026-02-04T16:42:45.749074"
+  }
+]

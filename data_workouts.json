@@ -1,0 +1,3348 @@
+[
+  {
+    "date": "2025-09-11",
+    "session_type": "upper",
+    "duration_minutes": 40,
+    "exercises": [
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 9,
+            "notes": "struggling"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": "Use wide bar instead of narrow"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 9,
+            "notes": "struggling"
+          }
+        ]
+      },
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "Use wide bar instead of narrow"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "Use wide bar instead of narrow"
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2025-09-13",
+    "session_type": "lower",
+    "duration_minutes": 32,
+    "exercises": [
+      {
+        "machine": "Back Extension",
+        "muscle_group": "lower_back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 60.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 60.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 60.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Low Back",
+        "muscle_group": "lower_back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 130.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 130.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 130.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Adductor",
+        "muscle_group": "adductors",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 100.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 100.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 100.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Crunch Machine",
+        "muscle_group": "core",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2025-09-18",
+    "session_type": "upper",
+    "duration_minutes": 40,
+    "exercises": [
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 45.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2025-09-21",
+    "session_type": "upper",
+    "duration_minutes": 40,
+    "exercises": [
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "Body weight is 186.1"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "Body weight is 186.1"
+          }
+        ]
+      },
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 145.0,
+            "reps": 8,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "Could not do any more"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 5,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 65.0,
+            "reps": 7,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 45.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "Left arm gave out bad form"
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2025-10-03",
+    "session_type": "upper",
+    "duration_minutes": 8,
+    "exercises": [
+      {
+        "machine": "Shoulder Press",
+        "muscle_group": "shoulders",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 0.0,
+            "reps": 3,
+            "rpe": 7.5,
+            "notes": "Body weight is 186.1"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 0.0,
+            "reps": 5,
+            "rpe": 8,
+            "notes": "hard but kept good form"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 0.0,
+            "reps": 3,
+            "rpe": 8,
+            "notes": "hard but kept good form"
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2025-10-05",
+    "session_type": "upper",
+    "duration_minutes": 16,
+    "exercises": [
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 9,
+            "notes": "left arm struggle but still keep form"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "DOMS on set for 3 days"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "DOMS on set for 3 days"
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "hard but kept good form"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 9,
+            "notes": "left arm struggle but still keep form"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 9,
+            "notes": "left arm struggle but still keep form"
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2025-12-13",
+    "session_type": "upper",
+    "duration_minutes": 48,
+    "exercises": [
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "hard but kept good form"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": "DOMS on set for 3 days"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 7,
+            "rpe": 8.5,
+            "notes": "DOMS on set for 3 days"
+          }
+        ]
+      },
+      {
+        "machine": "Shoulder Press",
+        "muscle_group": "shoulders",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 40.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": "DOMS on set for 3 days"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 40.0,
+            "reps": 8,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 30.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "DOMS on set for 3 days"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "DOMS on set for 3 days"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 10,
+            "notes": "Failed at 4 rep had to decrease to 30 for remaining 4"
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 9,
+            "notes": "left arm struggle but still keep form. DOMS on set for 3 days"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "hard but kept good form. DOMS on set for 3 days"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 45.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "hard but kept good form"
+          }
+        ]
+      },
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "DOMS on set for 3 days"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 9,
+            "notes": "left arm struggle but still keep form. DOMS on set for 3 days"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 10,
+            "notes": "left arm failed 6 rep. DOMS on set for 3 days"
+          }
+        ]
+      },
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "DOMS on set for 3 days"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": "DOMS on set for 3 days"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 8.5,
+            "notes": "DOMS on set for 3 days"
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2025-12-22",
+    "session_type": "full_body",
+    "duration_minutes": 64,
+    "exercises": [
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 12,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 12,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Calf Raise",
+        "muscle_group": "calves",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 40.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": "Last set extremely difficult"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 60.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 80.0,
+            "reps": 8,
+            "rpe": 8.5,
+            "notes": "Felt like shitting myself"
+          }
+        ]
+      },
+      {
+        "machine": "Crunch Machine",
+        "muscle_group": "core",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 165.0,
+            "reps": 8,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 9,
+            "notes": "Struggled last rep"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 7,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Seated Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 240.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 240.0,
+            "reps": 12,
+            "rpe": 9,
+            "notes": "Started struggling at rep 6, brief pauses 2-8s"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 280.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": "Easy"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 300.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "Started feeling it after rep 7"
+          }
+        ]
+      },
+      {
+        "machine": "Seated Leg Curl",
+        "muscle_group": "hamstrings",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 100.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": "Quick rest at reps 5 and 8"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 120.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "Had to pause around rep 6"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 120.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2025-12-26",
+    "session_type": "full_body",
+    "duration_minutes": 64,
+    "exercises": [
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "set_number": 0,
+            "weight_lbs": 200.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 240.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "Burn started around rep 8"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 280.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "Burn started around rep 4"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 280.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 300.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Leg Curl",
+        "muscle_group": "hamstrings",
+        "sets": [
+          {
+            "set_number": 0,
+            "weight_lbs": 80.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "Felt sensation behind right knee into hamstring around rep 8, no pain"
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 120.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": "Felt it strongly starting around rep 4"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 120.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 140.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "Felt nothing"
+          }
+        ]
+      },
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 0,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": "Top set"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": "Dropped to finish"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 125.0,
+            "reps": 4,
+            "rpe": 8.5,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 105.0,
+            "reps": 4,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Calf Raise",
+        "muscle_group": "calves",
+        "sets": [
+          {
+            "set_number": 0,
+            "weight_lbs": 30.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": "Setup unsure, foot placement issue"
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 70.0,
+            "reps": 15,
+            "rpe": 6,
+            "notes": "Fixed foot placement, felt it"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 150.0,
+            "reps": 15,
+            "rpe": 7.5,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 150.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "Lost count, approx 15. Burn toward end"
+          }
+        ]
+      },
+      {
+        "machine": "Crunch Machine",
+        "muscle_group": "core",
+        "sets": [
+          {
+            "set_number": 0,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 8,
+            "notes": "Burn around rep 7"
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 125.0,
+            "reps": 15,
+            "rpe": 6,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 145.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "Felt burn around rep 7"
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 0,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "Set 3 fatigue, had to drop"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "Drop set to finish set 3"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 6,
+            "rpe": 8.5,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 85.0,
+            "reps": 2,
+            "rpe": 7.5,
+            "notes": "Left wrist popping early reps, no pain"
+          }
+        ]
+      },
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "set_number": 0,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 0,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 8,
+            "notes": "Burn under armpit area starting around rep 6, felt like lat engagement"
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "Ramp. Stack jumps noted: 30,45,85,105,124,145,etc"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 11,
+            "rpe": 8.5,
+            "notes": "Slight pop right tricep, no pain"
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2025-12-28",
+    "session_type": "full_body",
+    "duration_minutes": 72,
+    "exercises": [
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 45.0,
+            "reps": 12,
+            "rpe": 6,
+            "notes": "Felt good"
+          }
+        ]
+      },
+      {
+        "machine": "Deltoid Fly",
+        "muscle_group": "shoulders",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 40.0,
+            "reps": 12,
+            "rpe": 6,
+            "notes": "Left chest felt tight"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 60.0,
+            "reps": 12,
+            "rpe": 7.5,
+            "notes": "Left arm fatigued early, right felt fine"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 60.0,
+            "reps": 10,
+            "rpe": 9,
+            "notes": "Left arm struggled around rep 7"
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 200.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "Same as set 2"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 240.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "Burn around rep 8"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 240.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "Seat closer, burn started around rep 6"
+          }
+        ]
+      },
+      {
+        "machine": "Calf Raise",
+        "muscle_group": "calves",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 150.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "Burn started around rep 10"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 150.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "Burn around rep 7"
+          }
+        ]
+      },
+      {
+        "machine": "Crunch Machine",
+        "muscle_group": "core",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 125.0,
+            "reps": 15,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 145.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "Felt heavy but controlled"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "Inner elbow discomfort"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "Burn around rep 7, bending arm helped"
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 9,
+            "notes": "Felt good, slight struggle near reps 7–8"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 9,
+            "notes": "Struggled around rep 6"
+          }
+        ]
+      },
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 9,
+            "notes": "Left side struggled more"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "Burn under right armpit around rep 7"
+          }
+        ]
+      },
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 8,
+            "notes": "Burn felt, elbow flared slightly"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "Ramp"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 85.0,
+            "reps": 12,
+            "rpe": 8.5,
+            "notes": "Light pop in right tricep, no pain"
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2025-12-29",
+    "session_type": "full_body",
+    "duration_minutes": 72,
+    "exercises": [
+      {
+        "machine": "Shoulder Press",
+        "muscle_group": "shoulders",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 10.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "very easy"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 15.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "easy"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 20.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "strong effort"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 20.0,
+            "reps": 12,
+            "rpe": 7.5,
+            "notes": "fatigue"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 20.0,
+            "reps": 12,
+            "rpe": 7.5,
+            "notes": "fatigue"
+          }
+        ]
+      },
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt good"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt good"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "solid effort"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "controlled"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "controlled"
+          }
+        ]
+      },
+      {
+        "machine": "Leg Curl",
+        "muscle_group": "hamstrings",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt good"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 110.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt good"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 140.0,
+            "reps": 8,
+            "rpe": 9,
+            "notes": "struggling"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 125.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": "tough"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 125.0,
+            "reps": 6,
+            "rpe": 10,
+            "notes": "near failure"
+          }
+        ]
+      },
+      {
+        "machine": "Crunch Machine",
+        "muscle_group": "core",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "good"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "good"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 145.0,
+            "reps": 15,
+            "rpe": 8,
+            "notes": "burn"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "ok"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "ok"
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 45.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "ok"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 45.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "ok"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "solid"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 45.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "easy"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 45.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "easy"
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 160.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt good"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 220.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt good"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 240.0,
+            "reps": 12,
+            "rpe": 8,
+            "notes": "felt burn"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 260.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": "backoff first by mistake"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 240.0,
+            "reps": 11,
+            "rpe": 8,
+            "notes": "felt burn"
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt good"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt good"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn starting rep 8"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 85.0,
+            "reps": 12,
+            "rpe": 9,
+            "notes": "struggled near end"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 85.0,
+            "reps": 12,
+            "rpe": 9,
+            "notes": "struggled to finish"
+          }
+        ]
+      },
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt good"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt good"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 125.0,
+            "reps": 6,
+            "rpe": 10,
+            "notes": "failed at 6"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 2,
+            "rpe": 8.5,
+            "notes": "drop to finish reps"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 9,
+            "notes": "struggling"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 9,
+            "notes": "struggling"
+          }
+        ]
+      },
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt good"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 8,
+            "notes": "burn started mid set"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn early"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn"
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2026-01-02",
+    "session_type": "full_body",
+    "duration_minutes": 72,
+    "exercises": [
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Shoulder Press",
+        "muscle_group": "shoulders",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 20.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 25.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 60.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn at rep 6"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 40.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn near end"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 40.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn near end"
+          }
+        ]
+      },
+      {
+        "machine": "Leg Curl",
+        "muscle_group": "hamstrings",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 70.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 95.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 120.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn from top"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 110.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 110.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Crunch Machine",
+        "muscle_group": "core",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 125.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 185.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn at rep 8"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 145.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn at rep 7"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 145.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn at rep 7"
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 30.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 45.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn at rep 7"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 45.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn at rep 6"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 45.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn at rep 6"
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 140.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "knee felt off first rep"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 190.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 240.0,
+            "reps": 8,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 220.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 220.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn around rep 8"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 45.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 9,
+            "notes": "struggled after rep 6"
+          },
+          {
+            "set_number": 5,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 9,
+            "notes": "struggled after rep 6"
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2026-01-09",
+    "session_type": "full_body",
+    "duration_minutes": 32,
+    "exercises": [
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 145.0,
+            "reps": 5,
+            "rpe": 8.5,
+            "notes": "could not continue"
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 145.0,
+            "reps": 4,
+            "rpe": 10,
+            "notes": "failed at 4"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 6,
+            "rpe": 7.5,
+            "notes": "arms shaking"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 125.0,
+            "reps": 4,
+            "rpe": 8.5,
+            "notes": "second part"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 125.0,
+            "reps": 8,
+            "rpe": 9,
+            "notes": "struggled rep 4"
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 240.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": "left knee pain at start"
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 220.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 1,
+            "weight_lbs": 145.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 190.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "left knee felt something"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 220.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2026-01-16",
+    "session_type": "full_body",
+    "duration_minutes": 32,
+    "exercises": [
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 105.0,
+            "reps": 6,
+            "rpe": 8,
+            "notes": "No pre-workout, felt harder"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 145.0,
+            "reps": 6,
+            "rpe": 8,
+            "notes": "No pre-workout, felt harder"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 125.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 125.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 160.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 220.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 200.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 200.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2026-01-18",
+    "session_type": "full_body",
+    "duration_minutes": 72,
+    "exercises": [
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Leg Curl",
+        "muscle_group": "hamstrings",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 40.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 120.0,
+            "reps": 12,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 110.0,
+            "reps": 12,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Shoulder Press",
+        "muscle_group": "shoulders",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 30.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 40.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 60.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 40.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 30.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 45.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 65.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 45.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Crunch Machine",
+        "muscle_group": "core",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 100.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 125.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 185.0,
+            "reps": 20,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 145.0,
+            "reps": 12,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 45.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 140.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 190.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 240.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 220.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 105.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 45.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 6,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 85.0,
+            "reps": 8,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2026-01-22",
+    "session_type": "full_body",
+    "duration_minutes": 56,
+    "exercises": [
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85.0,
+            "reps": 6,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 110.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 95.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Deltoid Fly",
+        "muscle_group": "shoulders",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 30.0,
+            "reps": 10,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 55.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn at rep 6"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 70.0,
+            "reps": 4,
+            "rpe": 8.5,
+            "notes": "couldn’t finish"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 45.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65.0,
+            "reps": 8,
+            "rpe": 9,
+            "notes": "no struggle"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 125.0,
+            "reps": 10,
+            "rpe": 9,
+            "notes": "heavy but no struggle"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 20,
+            "rpe": 8,
+            "notes": "burn started at rep 17"
+          }
+        ]
+      },
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 45.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 65.0,
+            "reps": 6,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 105.0,
+            "reps": 11,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 85.0,
+            "reps": 10,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 150.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 190.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 250.0,
+            "reps": 10,
+            "rpe": 8.5,
+            "notes": ""
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 230.0,
+            "reps": 12,
+            "rpe": 7.5,
+            "notes": ""
+          }
+        ]
+      },
+      {
+        "machine": "Leg Curl",
+        "muscle_group": "hamstrings",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 40.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": "felt nothing"
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 130.0,
+            "reps": 10,
+            "rpe": 8,
+            "notes": "burn at rep 7"
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 120.0,
+            "reps": 12,
+            "rpe": 8,
+            "notes": "burn at rep 7"
+          }
+        ]
+      },
+      {
+        "machine": "Crunch Machine",
+        "muscle_group": "core",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 105.0,
+            "reps": 8,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 125.0,
+            "reps": 7,
+            "rpe": 6,
+            "notes": ""
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 205.0,
+            "reps": 11,
+            "rpe": 8,
+            "notes": "burn at rep 8"
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 165.0,
+            "reps": 12,
+            "rpe": 8,
+            "notes": "felt burn"
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 6,
+    "notes": ""
+  },
+  {
+    "date": "2026-02-01",
+    "session_type": "full body",
+    "duration_minutes": 61,
+    "exercises": [
+      {
+        "machine": "Lat Pulldown",
+        "muscle_group": "unknown",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 85,
+            "reps": 17,
+            "rpe": 7
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "unknown",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 65,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 65,
+            "reps": 17,
+            "rpe": 7
+          }
+        ]
+      },
+      {
+        "machine": "Hip Abductor",
+        "muscle_group": "unknown",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 70,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 70,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 70,
+            "reps": 17,
+            "rpe": 7
+          }
+        ]
+      },
+      {
+        "machine": "Leg Curl",
+        "muscle_group": "unknown",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 70,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 70,
+            "reps": 17,
+            "rpe": 7
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "unknown",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 140,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 140,
+            "reps": 17,
+            "rpe": 7
+          }
+        ]
+      },
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "unknown",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 85,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 85,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 85,
+            "reps": 17,
+            "rpe": 7
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "unknown",
+        "sets": [
+          {
+            "set_number": 1,
+            "weight_lbs": 45,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 2,
+            "weight_lbs": 45,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 3,
+            "weight_lbs": 45,
+            "reps": 17,
+            "rpe": 7
+          },
+          {
+            "set_number": 4,
+            "weight_lbs": 45,
+            "reps": 17,
+            "rpe": 7
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 5,
+    "notes": "it was difficult",
+    "recommendation_id": "20260201164400",
+    "adherence": {
+      "followed": false,
+      "skipped": [
+        "Calf Raise",
+        "Crunch Machine",
+        "Shoulder Press"
+      ],
+      "modified": [
+        {
+          "exercise": "Hip Abductor",
+          "recommended_weight": 45.0,
+          "actual_weight": 70
+        }
+      ],
+      "added": []
+    }
+  }
+]

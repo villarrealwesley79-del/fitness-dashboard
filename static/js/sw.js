@@ -1,6 +1,6 @@
 // Fitness Dashboard Service Worker
 
-const CACHE_NAME = 'fitness-dashboard-v1';
+const CACHE_NAME = 'fitness-dashboard-v3';
 const STATIC_ASSETS = [
     '/',
     '/static/css/style.css',
