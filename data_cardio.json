@@ -1,11 +1,30 @@
 [
   {
-    "date": "2026-01-27",
-    "activity_type": "basketball",
-    "duration_minutes": 30,
-    "avg_heart_rate": 162,
+    "date": "2026-02-04",
+    "activity_type": "walking",
+    "duration_minutes": 10,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "27 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.414123"
+  },
+  {
+    "date": "2026-02-04",
+    "activity_type": "run",
+    "duration_minutes": 10,
+    "avg_heart_rate": null,
     "intensity": 7,
-    "notes": ""
+    "notes": "30 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.410883"
+  },
+  {
+    "date": "2026-02-03",
+    "activity_type": "run",
+    "duration_minutes": 20,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "test",
+    "created_at": "2026-02-03T22:36:50.356458"
   },
   {
     "date": "2026-02-01",
@@ -16,12 +35,2090 @@
     "notes": "Post-workout Zone 2-3"
   },
   {
-    "date": "2026-02-03",
+    "date": "2026-01-31",
+    "activity_type": "walking",
+    "duration_minutes": 12,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "39 cal, 0.09 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.418375"
+  },
+  {
+    "date": "2026-01-31",
     "activity_type": "run",
-    "duration_minutes": 20,
+    "duration_minutes": 12,
     "avg_heart_rate": null,
     "intensity": 7,
-    "notes": "test",
-    "created_at": "2026-02-03T22:36:50.356458"
+    "notes": "45 cal, 0.09 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.416242"
+  },
+  {
+    "date": "2026-01-27",
+    "activity_type": "basketball",
+    "duration_minutes": 30,
+    "avg_heart_rate": 162,
+    "intensity": 7,
+    "notes": ""
+  },
+  {
+    "date": "2026-01-26",
+    "activity_type": "basketball",
+    "duration_minutes": 29,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "324 cal, 0.86 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.422198"
+  },
+  {
+    "date": "2026-01-26",
+    "activity_type": "run",
+    "duration_minutes": 29,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "336 cal, 1.0 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.420310"
+  },
+  {
+    "date": "2026-01-25",
+    "activity_type": "walking",
+    "duration_minutes": 10,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "35 cal, 0.06 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.433207"
+  },
+  {
+    "date": "2026-01-25",
+    "activity_type": "run",
+    "duration_minutes": 10,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "40 cal, 0.06 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.431433"
+  },
+  {
+    "date": "2026-01-25",
+    "activity_type": "walking",
+    "duration_minutes": 12,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "52 cal, 0.33 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.429530"
+  },
+  {
+    "date": "2026-01-25",
+    "activity_type": "run",
+    "duration_minutes": 12,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "60 cal, 0.33 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.427835"
+  },
+  {
+    "date": "2026-01-24",
+    "activity_type": "stairmaster",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "236 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.435018"
+  },
+  {
+    "date": "2026-01-17",
+    "activity_type": "run",
+    "duration_minutes": 23,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "99 cal, 0.93 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.440536"
+  },
+  {
+    "date": "2026-01-17",
+    "activity_type": "run",
+    "duration_minutes": 25,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "88 cal, 0.96 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.438565"
+  },
+  {
+    "date": "2026-01-17",
+    "activity_type": "walking",
+    "duration_minutes": 25,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "88 cal, 0.96 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.436737"
+  },
+  {
+    "date": "2026-01-16",
+    "activity_type": "walking",
+    "duration_minutes": 12,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "30 cal, 0.23 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.444528"
+  },
+  {
+    "date": "2026-01-16",
+    "activity_type": "run",
+    "duration_minutes": 12,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "36 cal, 0.23 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.442584"
+  },
+  {
+    "date": "2026-01-12",
+    "activity_type": "basketball",
+    "duration_minutes": 41,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "451 cal, 1.36 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.446517"
+  },
+  {
+    "date": "2026-01-11",
+    "activity_type": "stairmaster",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "266 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.448378"
+  },
+  {
+    "date": "2026-01-10",
+    "activity_type": "run",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "259 cal, 1.41 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.450205"
+  },
+  {
+    "date": "2026-01-08",
+    "activity_type": "basketball",
+    "duration_minutes": 42,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "462 cal, 1.36 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.452043"
+  },
+  {
+    "date": "2026-01-04",
+    "activity_type": "run",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "256 cal, 1.54 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.453905"
+  },
+  {
+    "date": "2026-01-01",
+    "activity_type": "stairmaster",
+    "duration_minutes": 20,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "183 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.455805"
+  },
+  {
+    "date": "2025-12-31",
+    "activity_type": "run",
+    "duration_minutes": 29,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "96 cal, 1.15 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.459550"
+  },
+  {
+    "date": "2025-12-31",
+    "activity_type": "run",
+    "duration_minutes": 6,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "23 cal, 0.26 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.457673"
+  },
+  {
+    "date": "2025-12-30",
+    "activity_type": "run",
+    "duration_minutes": 12,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "15 cal, 0.04 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.463260"
+  },
+  {
+    "date": "2025-12-30",
+    "activity_type": "basketball",
+    "duration_minutes": 48,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "447 cal, 1.64 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.461396"
+  },
+  {
+    "date": "2025-12-29",
+    "activity_type": "run",
+    "duration_minutes": 13,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "41 cal, 0.25 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.465157"
+  },
+  {
+    "date": "2025-12-28",
+    "activity_type": "run",
+    "duration_minutes": 12,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "44 cal, 0.27 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.468935"
+  },
+  {
+    "date": "2025-12-28",
+    "activity_type": "run",
+    "duration_minutes": 7,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "24 cal, 0.28 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.467003"
+  },
+  {
+    "date": "2025-12-26",
+    "activity_type": "walking",
+    "duration_minutes": 12,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "29 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.470841"
+  },
+  {
+    "date": "2025-12-21",
+    "activity_type": "run",
+    "duration_minutes": 18,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "152 cal, 1.24 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.474622"
+  },
+  {
+    "date": "2025-12-21",
+    "activity_type": "walking",
+    "duration_minutes": 4,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "21 cal, 0.19 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.472742"
+  },
+  {
+    "date": "2025-12-20",
+    "activity_type": "walking",
+    "duration_minutes": 28,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "73 cal, 0.46 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.476615"
+  },
+  {
+    "date": "2025-12-18",
+    "activity_type": "run",
+    "duration_minutes": 11,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "49 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.482740"
+  },
+  {
+    "date": "2025-12-18",
+    "activity_type": "basketball",
+    "duration_minutes": 63,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "615 cal, 1.93 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.480751"
+  },
+  {
+    "date": "2025-12-18",
+    "activity_type": "walking",
+    "duration_minutes": 13,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "33 cal, 0.07 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.478621"
+  },
+  {
+    "date": "2025-12-16",
+    "activity_type": "walking",
+    "duration_minutes": 13,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "36 cal, 0.1 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.486723"
+  },
+  {
+    "date": "2025-12-16",
+    "activity_type": "basketball",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "297 cal, 0.81 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.484728"
+  },
+  {
+    "date": "2025-12-13",
+    "activity_type": "walking",
+    "duration_minutes": 10,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "32 cal, 0.2 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.488722"
+  },
+  {
+    "date": "2025-12-10",
+    "activity_type": "basketball",
+    "duration_minutes": 45,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "475 cal, 1.42 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.490676"
+  },
+  {
+    "date": "2025-12-09",
+    "activity_type": "walking",
+    "duration_minutes": 12,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "40 cal, 0.28 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.492626"
+  },
+  {
+    "date": "2025-12-06",
+    "activity_type": "walking",
+    "duration_minutes": 21,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "62 cal, 0.34 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.496644"
+  },
+  {
+    "date": "2025-12-05",
+    "activity_type": "walking",
+    "duration_minutes": 16,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "46 cal, 0.25 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.498658"
+  },
+  {
+    "date": "2025-12-04",
+    "activity_type": "basketball",
+    "duration_minutes": 38,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "412 cal, 1.24 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.502799"
+  },
+  {
+    "date": "2025-12-04",
+    "activity_type": "walking",
+    "duration_minutes": 10,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "17 cal, 0.09 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.500795"
+  },
+  {
+    "date": "2025-12-03",
+    "activity_type": "walking",
+    "duration_minutes": 10,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "45 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.504818"
+  },
+  {
+    "date": "2025-12-01",
+    "activity_type": "basketball",
+    "duration_minutes": 35,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "355 cal, 1.14 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.506865"
+  },
+  {
+    "date": "2025-11-30",
+    "activity_type": "run",
+    "duration_minutes": 21,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "203 cal, 1.53 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.508917"
+  },
+  {
+    "date": "2025-11-28",
+    "activity_type": "basketball",
+    "duration_minutes": 55,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "424 cal, 1.72 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.510931"
+  },
+  {
+    "date": "2025-11-27",
+    "activity_type": "stairmaster",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "284 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.512982"
+  },
+  {
+    "date": "2025-11-25",
+    "activity_type": "basketball",
+    "duration_minutes": 48,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "511 cal, 1.51 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.515108"
+  },
+  {
+    "date": "2025-11-24",
+    "activity_type": "basketball",
+    "duration_minutes": 26,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "292 cal, 0.77 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.517316"
+  },
+  {
+    "date": "2025-11-23",
+    "activity_type": "walking",
+    "duration_minutes": 15,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "13 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.519415"
+  },
+  {
+    "date": "2025-11-19",
+    "activity_type": "basketball",
+    "duration_minutes": 60,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "680 cal, 1.61 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.521530"
+  },
+  {
+    "date": "2025-11-16",
+    "activity_type": "walking",
+    "duration_minutes": 24,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "64 cal, 0.76 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.525673"
+  },
+  {
+    "date": "2025-11-16",
+    "activity_type": "stairmaster",
+    "duration_minutes": 22,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "235 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.523599"
+  },
+  {
+    "date": "2025-11-13",
+    "activity_type": "walking",
+    "duration_minutes": 7,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "64 cal, 0.29 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.530236"
+  },
+  {
+    "date": "2025-11-13",
+    "activity_type": "basketball",
+    "duration_minutes": 36,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "373 cal, 1.06 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.527700"
+  },
+  {
+    "date": "2025-11-11",
+    "activity_type": "cycling",
+    "duration_minutes": 119,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "996 cal, 24.97 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.532340"
+  },
+  {
+    "date": "2025-11-10",
+    "activity_type": "stairmaster",
+    "duration_minutes": 32,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "344 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.534447"
+  },
+  {
+    "date": "2025-11-05",
+    "activity_type": "stairmaster",
+    "duration_minutes": 15,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "179 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.536499"
+  },
+  {
+    "date": "2025-11-04",
+    "activity_type": "walking",
+    "duration_minutes": 17,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "54 cal, 0.69 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.540178"
+  },
+  {
+    "date": "2025-11-02",
+    "activity_type": "stairmaster",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "319 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.542591"
+  },
+  {
+    "date": "2025-10-25",
+    "activity_type": "basketball",
+    "duration_minutes": 128,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "1349 cal, 3.1 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.544790"
+  },
+  {
+    "date": "2025-10-22",
+    "activity_type": "stairmaster",
+    "duration_minutes": 32,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "347 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.547049"
+  },
+  {
+    "date": "2025-10-20",
+    "activity_type": "basketball",
+    "duration_minutes": 33,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "295 cal, 1.0 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.549250"
+  },
+  {
+    "date": "2025-10-15",
+    "activity_type": "stairmaster",
+    "duration_minutes": 33,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "395 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.551470"
+  },
+  {
+    "date": "2025-10-13",
+    "activity_type": "cycling",
+    "duration_minutes": 80,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "668 cal, 17.73 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.553617"
+  },
+  {
+    "date": "2025-10-11",
+    "activity_type": "walking",
+    "duration_minutes": 24,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "79 cal, 0.7 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.557820"
+  },
+  {
+    "date": "2025-10-11",
+    "activity_type": "walking",
+    "duration_minutes": 27,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "88 cal, 0.79 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.555702"
+  },
+  {
+    "date": "2025-10-10",
+    "activity_type": "basketball",
+    "duration_minutes": 54,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "519 cal, 1.6 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.559931"
+  },
+  {
+    "date": "2025-10-06",
+    "activity_type": "basketball",
+    "duration_minutes": 72,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "840 cal, 1.81 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.562120"
+  },
+  {
+    "date": "2025-10-02",
+    "activity_type": "run",
+    "duration_minutes": 13,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "134 cal, 1.12 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.564228"
+  },
+  {
+    "date": "2025-09-30",
+    "activity_type": "basketball",
+    "duration_minutes": 56,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "609 cal, 1.69 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.566488"
+  },
+  {
+    "date": "2025-09-28",
+    "activity_type": "basketball",
+    "duration_minutes": 46,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "388 cal, 1.69 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.568617"
+  },
+  {
+    "date": "2025-09-26",
+    "activity_type": "basketball",
+    "duration_minutes": 38,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "373 cal, 1.16 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.570813"
+  },
+  {
+    "date": "2025-09-25",
+    "activity_type": "basketball",
+    "duration_minutes": 45,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "434 cal, 1.41 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.573066"
+  },
+  {
+    "date": "2025-09-24",
+    "activity_type": "stairmaster",
+    "duration_minutes": 22,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "221 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.575268"
+  },
+  {
+    "date": "2025-09-23",
+    "activity_type": "basketball",
+    "duration_minutes": 46,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "477 cal, 1.32 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.577479"
+  },
+  {
+    "date": "2025-09-21",
+    "activity_type": "stairmaster",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "286 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.579722"
+  },
+  {
+    "date": "2025-09-20",
+    "activity_type": "walking",
+    "duration_minutes": 16,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "56 cal, 0.65 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.584429"
+  },
+  {
+    "date": "2025-09-20",
+    "activity_type": "walking",
+    "duration_minutes": 24,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "75 cal, 0.84 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.581996"
+  },
+  {
+    "date": "2025-09-18",
+    "activity_type": "stairmaster",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "308 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.586776"
+  },
+  {
+    "date": "2025-09-15",
+    "activity_type": "stairmaster",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "295 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.589138"
+  },
+  {
+    "date": "2025-09-13",
+    "activity_type": "stairmaster",
+    "duration_minutes": 15,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "114 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.591342"
+  },
+  {
+    "date": "2025-09-11",
+    "activity_type": "stairmaster",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "329 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.593454"
+  },
+  {
+    "date": "2025-09-10",
+    "activity_type": "basketball",
+    "duration_minutes": 29,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "339 cal, 0.89 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.595540"
+  },
+  {
+    "date": "2025-09-07",
+    "activity_type": "stairmaster",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "377 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.597741"
+  },
+  {
+    "date": "2025-09-06",
+    "activity_type": "walking",
+    "duration_minutes": 26,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "85 cal, 0.94 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.604304"
+  },
+  {
+    "date": "2025-09-06",
+    "activity_type": "walking",
+    "duration_minutes": 11,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "34 cal, 0.28 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.602100"
+  },
+  {
+    "date": "2025-09-06",
+    "activity_type": "walking",
+    "duration_minutes": 19,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "53 cal, 0.55 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.599844"
+  },
+  {
+    "date": "2025-09-04",
+    "activity_type": "stairmaster",
+    "duration_minutes": 28,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "338 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.606767"
+  },
+  {
+    "date": "2025-09-01",
+    "activity_type": "stairmaster",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "367 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.609293"
+  },
+  {
+    "date": "2025-08-28",
+    "activity_type": "stairmaster",
+    "duration_minutes": 11,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "122 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.611694"
+  },
+  {
+    "date": "2025-08-27",
+    "activity_type": "stairmaster",
+    "duration_minutes": 30,
+    "avg_heart_rate": null,
+    "intensity": 6,
+    "notes": "364 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.614077"
+  },
+  {
+    "date": "2025-08-26",
+    "activity_type": "basketball",
+    "duration_minutes": 60,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "689 cal, 1.62 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.616460"
+  },
+  {
+    "date": "2025-08-23",
+    "activity_type": "walking",
+    "duration_minutes": 37,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "128 cal, 1.04 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.621083"
+  },
+  {
+    "date": "2025-08-23",
+    "activity_type": "run",
+    "duration_minutes": 8,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "73 cal, 0.52 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.618797"
+  },
+  {
+    "date": "2025-08-22",
+    "activity_type": "basketball",
+    "duration_minutes": 50,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "566 cal, 1.2 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.623452"
+  },
+  {
+    "date": "2025-08-18",
+    "activity_type": "basketball",
+    "duration_minutes": 35,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "303 cal, 0.89 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.625810"
+  },
+  {
+    "date": "2025-08-17",
+    "activity_type": "walking",
+    "duration_minutes": 8,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "24 cal, 0.26 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.632847"
+  },
+  {
+    "date": "2025-08-17",
+    "activity_type": "run",
+    "duration_minutes": 6,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "39 cal, 0.35 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.630508"
+  },
+  {
+    "date": "2025-08-17",
+    "activity_type": "walking",
+    "duration_minutes": 7,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "29 cal, 0.25 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.628145"
+  },
+  {
+    "date": "2025-08-09",
+    "activity_type": "cycling",
+    "duration_minutes": 147,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "1108 cal, 29.76 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.635196"
+  },
+  {
+    "date": "2025-08-05",
+    "activity_type": "walking",
+    "duration_minutes": 4,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "12 cal, 0.18 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.637618"
+  },
+  {
+    "date": "2025-07-28",
+    "activity_type": "basketball",
+    "duration_minutes": 36,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "391 cal, 0.98 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.639977"
+  },
+  {
+    "date": "2025-07-24",
+    "activity_type": "walking",
+    "duration_minutes": 6,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "20 cal, 1.02 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.647092"
+  },
+  {
+    "date": "2025-07-24",
+    "activity_type": "basketball",
+    "duration_minutes": 38,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "421 cal, 0.84 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.644679"
+  },
+  {
+    "date": "2025-07-24",
+    "activity_type": "cycling",
+    "duration_minutes": 5,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "33 cal, 0.96 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.642321"
+  },
+  {
+    "date": "2025-07-20",
+    "activity_type": "walking",
+    "duration_minutes": 15,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "50 cal, 0.36 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.649542"
+  },
+  {
+    "date": "2025-07-19",
+    "activity_type": "cycling",
+    "duration_minutes": 68,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "452 cal, 12.22 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.654411"
+  },
+  {
+    "date": "2025-07-19",
+    "activity_type": "cycling",
+    "duration_minutes": 49,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "472 cal, 12.07 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.651989"
+  },
+  {
+    "date": "2025-07-18",
+    "activity_type": "basketball",
+    "duration_minutes": 53,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "558 cal, 1.32 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.656826"
+  },
+  {
+    "date": "2025-07-11",
+    "activity_type": "basketball",
+    "duration_minutes": 53,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "621 cal, 1.43 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.659270"
+  },
+  {
+    "date": "2025-07-10",
+    "activity_type": "walking",
+    "duration_minutes": 3,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "14 cal, 0.14 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.661778"
+  },
+  {
+    "date": "2025-07-07",
+    "activity_type": "run",
+    "duration_minutes": 12,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "135 cal, 1.1 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.666830"
+  },
+  {
+    "date": "2025-07-07",
+    "activity_type": "basketball",
+    "duration_minutes": 18,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "186 cal, 0.55 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.664365"
+  },
+  {
+    "date": "2025-07-06",
+    "activity_type": "walking",
+    "duration_minutes": 19,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "76 cal, 0.69 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.669365"
+  },
+  {
+    "date": "2025-07-05",
+    "activity_type": "run",
+    "duration_minutes": 37,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "293 cal, 2.48 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.671812"
+  },
+  {
+    "date": "2025-07-04",
+    "activity_type": "walking",
+    "duration_minutes": 45,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "285 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.674351"
+  },
+  {
+    "date": "2025-06-28",
+    "activity_type": "walking",
+    "duration_minutes": 25,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "35 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.676842"
+  },
+  {
+    "date": "2025-06-21",
+    "activity_type": "walking",
+    "duration_minutes": 162,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "347 cal, 2.34 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.679303"
+  },
+  {
+    "date": "2025-06-19",
+    "activity_type": "cycling",
+    "duration_minutes": 115,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "933 cal, 24.03 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.681791"
+  },
+  {
+    "date": "2025-06-17",
+    "activity_type": "basketball",
+    "duration_minutes": 17,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "190 cal, 0.56 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.684344"
+  },
+  {
+    "date": "2025-06-11",
+    "activity_type": "basketball",
+    "duration_minutes": 35,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "361 cal, 0.88 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.686895"
+  },
+  {
+    "date": "2025-06-10",
+    "activity_type": "walking",
+    "duration_minutes": 21,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "71 cal, 0.81 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.691954"
+  },
+  {
+    "date": "2025-06-10",
+    "activity_type": "run",
+    "duration_minutes": 27,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "226 cal, 1.91 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.689459"
+  },
+  {
+    "date": "2025-06-09",
+    "activity_type": "walking",
+    "duration_minutes": 6,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "18 cal, 0.21 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.697059"
+  },
+  {
+    "date": "2025-06-09",
+    "activity_type": "basketball",
+    "duration_minutes": 51,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "470 cal, 1.45 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.694493"
+  },
+  {
+    "date": "2025-06-03",
+    "activity_type": "basketball",
+    "duration_minutes": 56,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "583 cal, 1.47 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.699651"
+  },
+  {
+    "date": "2025-05-29",
+    "activity_type": "cycling",
+    "duration_minutes": 150,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "989 cal, 28.78 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.702205"
+  },
+  {
+    "date": "2025-05-28",
+    "activity_type": "basketball",
+    "duration_minutes": 53,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "509 cal, 1.52 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.704764"
+  },
+  {
+    "date": "2025-05-27",
+    "activity_type": "walking",
+    "duration_minutes": 15,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "15 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.707288"
+  },
+  {
+    "date": "2025-05-26",
+    "activity_type": "cycling",
+    "duration_minutes": 151,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "1176 cal, 31.08 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.709805"
+  },
+  {
+    "date": "2025-05-25",
+    "activity_type": "walking",
+    "duration_minutes": 25,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "60 cal, 0.41 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.715183"
+  },
+  {
+    "date": "2025-05-25",
+    "activity_type": "walking",
+    "duration_minutes": 16,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "47 cal, 0.33 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.712483"
+  },
+  {
+    "date": "2025-05-24",
+    "activity_type": "basketball",
+    "duration_minutes": 39,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "333 cal, 0.97 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.717805"
+  },
+  {
+    "date": "2025-05-23",
+    "activity_type": "basketball",
+    "duration_minutes": 48,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "369 cal, 1.31 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.720409"
+  },
+  {
+    "date": "2025-05-21",
+    "activity_type": "basketball",
+    "duration_minutes": 37,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "376 cal, 0.96 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.723015"
+  },
+  {
+    "date": "2025-05-20",
+    "activity_type": "walking",
+    "duration_minutes": 15,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "29 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.725687"
+  },
+  {
+    "date": "2025-05-19",
+    "activity_type": "cycling",
+    "duration_minutes": 7,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "38 cal, 1.23 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.733584"
+  },
+  {
+    "date": "2025-05-19",
+    "activity_type": "basketball",
+    "duration_minutes": 27,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "218 cal, 0.72 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.730932"
+  },
+  {
+    "date": "2025-05-19",
+    "activity_type": "cycling",
+    "duration_minutes": 10,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "52 cal, 1.6 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.728285"
+  },
+  {
+    "date": "2025-05-17",
+    "activity_type": "run",
+    "duration_minutes": 15,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "246 cal, 1.12 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.741649"
+  },
+  {
+    "date": "2025-05-17",
+    "activity_type": "walking",
+    "duration_minutes": 17,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "60 cal, 0.72 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.738996"
+  },
+  {
+    "date": "2025-05-17",
+    "activity_type": "walking",
+    "duration_minutes": 20,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "81 cal, 0.81 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.736241"
+  },
+  {
+    "date": "2025-05-16",
+    "activity_type": "run",
+    "duration_minutes": 15,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "214 cal, 1.12 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.744271"
+  },
+  {
+    "date": "2025-05-15",
+    "activity_type": "run",
+    "duration_minutes": 16,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "244 cal, 1.12 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.747013"
+  },
+  {
+    "date": "2025-05-13",
+    "activity_type": "basketball",
+    "duration_minutes": 34,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "299 cal, 0.97 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.749719"
+  },
+  {
+    "date": "2025-05-09",
+    "activity_type": "basketball",
+    "duration_minutes": 39,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "387 cal, 1.17 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.752497"
+  },
+  {
+    "date": "2025-05-08",
+    "activity_type": "basketball",
+    "duration_minutes": 23,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "221 cal, 0.83 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.755151"
+  },
+  {
+    "date": "2025-05-04",
+    "activity_type": "run",
+    "duration_minutes": 18,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "339 cal, 1.31 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.757829"
+  },
+  {
+    "date": "2025-05-03",
+    "activity_type": "walking",
+    "duration_minutes": 45,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "179 cal (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.760664"
+  },
+  {
+    "date": "2025-04-30",
+    "activity_type": "walking",
+    "duration_minutes": 13,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "83 cal, 0.57 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.763675"
+  },
+  {
+    "date": "2025-04-29",
+    "activity_type": "basketball",
+    "duration_minutes": 54,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "574 cal, 1.28 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.767323"
+  },
+  {
+    "date": "2025-04-24",
+    "activity_type": "run",
+    "duration_minutes": 16,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "148 cal, 1.2 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.772884"
+  },
+  {
+    "date": "2025-04-24",
+    "activity_type": "walking",
+    "duration_minutes": 7,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "20 cal, 0.15 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.770157"
+  },
+  {
+    "date": "2025-04-21",
+    "activity_type": "basketball",
+    "duration_minutes": 51,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "540 cal, 1.4 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.775633"
+  },
+  {
+    "date": "2025-04-16",
+    "activity_type": "basketball",
+    "duration_minutes": 32,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "343 cal, 0.9 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.778303"
+  },
+  {
+    "date": "2025-04-14",
+    "activity_type": "basketball",
+    "duration_minutes": 54,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "592 cal, 1.58 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.781078"
+  },
+  {
+    "date": "2025-04-13",
+    "activity_type": "basketball",
+    "duration_minutes": 25,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "285 cal, 0.75 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.783806"
+  },
+  {
+    "date": "2025-04-09",
+    "activity_type": "basketball",
+    "duration_minutes": 40,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "345 cal, 1.11 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.786679"
+  },
+  {
+    "date": "2025-04-07",
+    "activity_type": "basketball",
+    "duration_minutes": 39,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "448 cal, 1.26 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.789454"
+  },
+  {
+    "date": "2025-04-06",
+    "activity_type": "cycling",
+    "duration_minutes": 84,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "444 cal, 12.38 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.797855"
+  },
+  {
+    "date": "2025-04-06",
+    "activity_type": "walking",
+    "duration_minutes": 22,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "72 cal, 0.75 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.794955"
+  },
+  {
+    "date": "2025-04-06",
+    "activity_type": "cycling",
+    "duration_minutes": 48,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "506 cal, 11.71 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.792219"
+  },
+  {
+    "date": "2025-04-05",
+    "activity_type": "walking",
+    "duration_minutes": 17,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "38 cal, 0.28 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.800661"
+  },
+  {
+    "date": "2025-04-03",
+    "activity_type": "basketball",
+    "duration_minutes": 12,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "161 cal, 0.46 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.806217"
+  },
+  {
+    "date": "2025-04-03",
+    "activity_type": "basketball",
+    "duration_minutes": 21,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "266 cal, 0.47 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.803475"
+  },
+  {
+    "date": "2025-04-02",
+    "activity_type": "walking",
+    "duration_minutes": 22,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "77 cal, 0.83 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.809034"
+  },
+  {
+    "date": "2025-04-01",
+    "activity_type": "basketball",
+    "duration_minutes": 52,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "461 cal, 1.26 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.811846"
+  },
+  {
+    "date": "2025-03-29",
+    "activity_type": "walking",
+    "duration_minutes": 49,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "99 cal, 0.42 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.814725"
+  },
+  {
+    "date": "2025-03-28",
+    "activity_type": "basketball",
+    "duration_minutes": 59,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "738 cal, 1.55 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.817671"
+  },
+  {
+    "date": "2025-03-25",
+    "activity_type": "basketball",
+    "duration_minutes": 41,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "438 cal, 1.11 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.820581"
+  },
+  {
+    "date": "2025-03-23",
+    "activity_type": "basketball",
+    "duration_minutes": 42,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "560 cal, 1.24 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.826418"
+  },
+  {
+    "date": "2025-03-23",
+    "activity_type": "basketball",
+    "duration_minutes": 11,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "146 cal, 0.32 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.823537"
+  },
+  {
+    "date": "2025-03-22",
+    "activity_type": "walking",
+    "duration_minutes": 65,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "194 cal, 1.9 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.832351"
+  },
+  {
+    "date": "2025-03-22",
+    "activity_type": "walking",
+    "duration_minutes": 20,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "68 cal, 0.73 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.829296"
+  },
+  {
+    "date": "2025-03-20",
+    "activity_type": "basketball",
+    "duration_minutes": 52,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "592 cal, 1.55 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.835314"
+  },
+  {
+    "date": "2025-03-18",
+    "activity_type": "walking",
+    "duration_minutes": 13,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "48 cal, 0.47 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.841074"
+  },
+  {
+    "date": "2025-03-18",
+    "activity_type": "basketball",
+    "duration_minutes": 37,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "398 cal, 1.01 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.838169"
+  },
+  {
+    "date": "2025-03-16",
+    "activity_type": "basketball",
+    "duration_minutes": 35,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "304 cal, 0.85 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.843980"
+  },
+  {
+    "date": "2025-03-13",
+    "activity_type": "basketball",
+    "duration_minutes": 15,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "166 cal, 0.45 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.846993"
+  },
+  {
+    "date": "2025-03-11",
+    "activity_type": "basketball",
+    "duration_minutes": 31,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "310 cal, 0.79 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.849963"
+  },
+  {
+    "date": "2025-03-08",
+    "activity_type": "walking",
+    "duration_minutes": 10,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "27 cal, 0.19 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.855948"
+  },
+  {
+    "date": "2025-03-08",
+    "activity_type": "walking",
+    "duration_minutes": 56,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "184 cal, 1.11 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.852934"
+  },
+  {
+    "date": "2025-03-07",
+    "activity_type": "basketball",
+    "duration_minutes": 46,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "531 cal, 1.08 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.858938"
+  },
+  {
+    "date": "2025-03-03",
+    "activity_type": "basketball",
+    "duration_minutes": 43,
+    "avg_heart_rate": null,
+    "intensity": 8,
+    "notes": "359 cal, 1.24 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.861880"
+  },
+  {
+    "date": "2025-02-17",
+    "activity_type": "cycling",
+    "duration_minutes": 83,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "544 cal, 16.81 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.864978"
+  },
+  {
+    "date": "2025-02-16",
+    "activity_type": "walking",
+    "duration_minutes": 2,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "3 cal, 0.12 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.868097"
+  },
+  {
+    "date": "2025-02-07",
+    "activity_type": "walking",
+    "duration_minutes": 6,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "23 cal, 0.21 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.871095"
+  },
+  {
+    "date": "2025-02-06",
+    "activity_type": "walking",
+    "duration_minutes": 19,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "70 cal, 0.71 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.874051"
+  },
+  {
+    "date": "2025-02-01",
+    "activity_type": "walking",
+    "duration_minutes": 43,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "96 cal, 1.06 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.877036"
+  },
+  {
+    "date": "2025-01-13",
+    "activity_type": "walking",
+    "duration_minutes": 17,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "20 cal, 0.01 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.880112"
+  },
+  {
+    "date": "2025-01-04",
+    "activity_type": "walking",
+    "duration_minutes": 35,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "135 cal, 1.13 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.889225"
+  },
+  {
+    "date": "2025-01-04",
+    "activity_type": "walking",
+    "duration_minutes": 39,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "112 cal, 0.71 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.886199"
+  },
+  {
+    "date": "2025-01-04",
+    "activity_type": "walking",
+    "duration_minutes": 59,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "173 cal, 1.38 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.883128"
+  },
+  {
+    "date": "2025-01-02",
+    "activity_type": "walking",
+    "duration_minutes": 36,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "117 cal, 1.21 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.892267"
+  },
+  {
+    "date": "2024-12-30",
+    "activity_type": "walking",
+    "duration_minutes": 8,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "42 cal, 0.4 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.898607"
+  },
+  {
+    "date": "2024-12-30",
+    "activity_type": "run",
+    "duration_minutes": 29,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "165 cal, 1.5 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.895355"
+  },
+  {
+    "date": "2024-12-27",
+    "activity_type": "cycling",
+    "duration_minutes": 195,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "1424 cal, 36.73 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.901775"
+  },
+  {
+    "date": "2024-12-12",
+    "activity_type": "walking",
+    "duration_minutes": 7,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "17 cal, 0.91 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.905407"
+  },
+  {
+    "date": "2024-11-30",
+    "activity_type": "walking",
+    "duration_minutes": 51,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "158 cal, 1.6 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.908437"
+  },
+  {
+    "date": "2024-11-24",
+    "activity_type": "cycling",
+    "duration_minutes": 93,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "805 cal, 20.47 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.914585"
+  },
+  {
+    "date": "2024-11-24",
+    "activity_type": "walking",
+    "duration_minutes": 22,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "51 cal, 0.3 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.911468"
+  },
+  {
+    "date": "2024-11-16",
+    "activity_type": "walking",
+    "duration_minutes": 26,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "99 cal, 0.92 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.920886"
+  },
+  {
+    "date": "2024-11-16",
+    "activity_type": "walking",
+    "duration_minutes": 16,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "50 cal, 0.56 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.917792"
+  },
+  {
+    "date": "2024-11-11",
+    "activity_type": "cycling",
+    "duration_minutes": 112,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "838 cal, 24.03 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.924009"
+  },
+  {
+    "date": "2024-11-09",
+    "activity_type": "walking",
+    "duration_minutes": 74,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "255 cal, 2.73 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.930463"
+  },
+  {
+    "date": "2024-11-09",
+    "activity_type": "walking",
+    "duration_minutes": 63,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "183 cal, 1.44 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.927240"
+  },
+  {
+    "date": "2024-11-02",
+    "activity_type": "walking",
+    "duration_minutes": 143,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "321 cal, 2.08 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.933672"
+  },
+  {
+    "date": "2024-10-31",
+    "activity_type": "walking",
+    "duration_minutes": 71,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "235 cal, 1.97 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.936999"
+  },
+  {
+    "date": "2024-10-24",
+    "activity_type": "walking",
+    "duration_minutes": 6,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "17 cal, 0.21 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.940132"
+  },
+  {
+    "date": "2024-10-15",
+    "activity_type": "walking",
+    "duration_minutes": 20,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "86 cal, 0.73 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.943194"
+  },
+  {
+    "date": "2024-10-11",
+    "activity_type": "walking",
+    "duration_minutes": 20,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "46 cal, 0.28 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.946423"
+  },
+  {
+    "date": "2024-09-24",
+    "activity_type": "walking",
+    "duration_minutes": 21,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "75 cal, 0.77 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.949700"
+  },
+  {
+    "date": "2024-09-21",
+    "activity_type": "walking",
+    "duration_minutes": 11,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "29 cal, 0.26 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.952943"
+  },
+  {
+    "date": "2024-09-13",
+    "activity_type": "walking",
+    "duration_minutes": 23,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "88 cal, 0.83 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.956139"
+  },
+  {
+    "date": "2024-09-12",
+    "activity_type": "walking",
+    "duration_minutes": 22,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "76 cal, 0.67 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.959265"
+  },
+  {
+    "date": "2024-09-09",
+    "activity_type": "walking",
+    "duration_minutes": 23,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "81 cal, 1.0 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.962527"
+  },
+  {
+    "date": "2024-09-08",
+    "activity_type": "cycling",
+    "duration_minutes": 134,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "920 cal, 24.32 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.968993"
+  },
+  {
+    "date": "2024-09-08",
+    "activity_type": "walking",
+    "duration_minutes": 34,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "150 cal, 1.17 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.965781"
+  },
+  {
+    "date": "2024-09-01",
+    "activity_type": "walking",
+    "duration_minutes": 17,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "45 cal, 0.57 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.972159"
+  },
+  {
+    "date": "2024-08-27",
+    "activity_type": "walking",
+    "duration_minutes": 5,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "16 cal, 0.1 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.978580"
+  },
+  {
+    "date": "2024-08-27",
+    "activity_type": "run",
+    "duration_minutes": 18,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "227 cal, 1.57 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.975385"
+  },
+  {
+    "date": "2024-08-24",
+    "activity_type": "cycling",
+    "duration_minutes": 148,
+    "avg_heart_rate": null,
+    "intensity": 5,
+    "notes": "1159 cal, 29.82 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.981832"
+  },
+  {
+    "date": "2024-08-14",
+    "activity_type": "walking",
+    "duration_minutes": 5,
+    "avg_heart_rate": null,
+    "intensity": 3,
+    "notes": "21 cal, 0.16 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.992056"
+  },
+  {
+    "date": "2024-08-14",
+    "activity_type": "run",
+    "duration_minutes": 15,
+    "avg_heart_rate": null,
+    "intensity": 7,
+    "notes": "168 cal, 1.07 mi (Apple HealthKit import)",
+    "created_at": "2026-02-06T13:04:14.988810"
+  },
+  {
+    "date": "2026-02-08",
+    "activity_type": "stairmaster",
+    "duration_minutes": 20,
+    "avg_heart_rate": 149,
+    "intensity": 5,
+    "notes": "Post-workout Zone 2-3",
+    "created_at": "2026-02-08T13:37:40.925524"
+  },
+  {
+    "date": "2026-02-13",
+    "activity_type": "stairmaster",
+    "duration_minutes": 20,
+    "avg_heart_rate": 150,
+    "intensity": 5,
+    "notes": "Post-workout Zone 2-3",
+    "created_at": "2026-02-12T18:26:04.738375"
+  },
+  {
+    "date": "2026-02-14",
+    "activity_type": "treadmill",
+    "duration_minutes": 30,
+    "avg_heart_rate": 158,
+    "intensity": 6,
+    "notes": "",
+    "created_at": "2026-02-14T14:02:03.213365"
+  },
+  {
+    "date": "2026-02-22",
+    "activity_type": "stairmaster",
+    "duration_minutes": 20,
+    "avg_heart_rate": 154,
+    "intensity": 6,
+    "notes": "Post-workout Zone 2-3",
+    "created_at": "2026-02-22T13:08:57.922448"
+  },
+  {
+    "date": "2026-03-05",
+    "activity_type": "stair_stepper",
+    "duration_minutes": 22,
+    "avg_heart_rate": 140,
+    "intensity": 6,
+    "notes": "Matrix Stair Stepper. 544ft elevation, 51 flights. 5:29-5:51 PM.",
+    "created_at": "2026-03-05T18:09:26.124080"
   }
 ]

@@ -14,6 +14,8 @@ import socket
 import sqlite3
 import urllib.request
 import urllib.error
+import urllib.parse
+import base64
 import time
 
 # Load .env file if present (for OURA_API_TOKEN etc.)
@@ -48,6 +50,7 @@ RECOVERY_FILE = os.path.join(DATA_DIR, "data_recovery.json")
 BASELINES_FILE = os.path.join(DATA_DIR, "data_baselines.json")
 BODY_FILE = os.path.join(DATA_DIR, "data_body.json")
 SLEEP_FILE = os.path.join(DATA_DIR, "data_sleep.json")
+NUTRITION_FILE = os.path.join(DATA_DIR, "data_nutrition.json")
 OURA_DB_FILE = os.path.join(DATA_DIR, "oura_daily.sqlite3")
 
 # ==================== WEATHER (wttr.in) ====================
@@ -98,6 +101,25 @@ def save_json(filepath, data):
         os.replace(tmp, filepath)
     except IOError as e:
         print(f"Warning: Could not save {filepath}: {e}")
+
+
+def _notify_workout_logged(workout_entry):
+    """Fire-and-forget: run workout analysis and write to pending file for OpenClaw pickup."""
+    import threading, subprocess
+    def _do():
+        try:
+            result = subprocess.run(
+                ['python3', os.path.expanduser('~/.openclaw/workspace/scripts/workout-analysis.py')],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                analysis_path = os.path.expanduser('~/.openclaw/workspace/.pending-workout-analysis.txt')
+                with open(analysis_path, 'w') as f:
+                    f.write(result.stdout.strip())
+                print(f"[fitness] Analysis written to {analysis_path} — cron will pick it up")
+        except Exception as e:
+            print(f"[fitness] Workout notification failed (non-fatal): {e}")
+    threading.Thread(target=_do, daemon=True).start()
 
 
 # ==================== TRAINING GOAL CONFIGURATION ====================
@@ -206,12 +228,15 @@ GOAL_PARAMETERS = {
 
 # Default user settings
 DEFAULT_SETTINGS = {
-    "training_goal": TrainingGoal.HYPERTROPHY.value,
+    "training_goal": TrainingGoal.HYBRID_STRENGTH_HYPERTROPHY.value,
     "sessions_per_week_target": 3,
-    "available_time_minutes": 60,
-    "target_weight_lbs": 180,
-    "target_body_fat_pct": 15,
+    "available_time_minutes": 75,
+    "target_weight_lbs": 175,
+    "target_body_fat_pct": 18,
+    "daily_calorie_target": 2200,
+    "daily_protein_target_g": 148,
     "fatigue_threshold": 72,
+    "equipment_preference": "machines_only",
     "volume_landmarks": {
         "default": {"mv": 6, "mev": 9, "mav_min": 12, "mav_max": 18, "mrv": 22}
     }
@@ -219,6 +244,9 @@ DEFAULT_SETTINGS = {
 
 # Load user settings from file (or use defaults)
 USER_SETTINGS = load_json(SETTINGS_FILE, DEFAULT_SETTINGS.copy())
+for _k, _v in DEFAULT_SETTINGS.items():
+    if _k not in USER_SETTINGS:
+        USER_SETTINGS[_k] = _v
 
 # Time options for workouts (in minutes)
 TIME_OPTIONS = [
@@ -233,6 +261,7 @@ TIME_OPTIONS = [
 # Track recommended vs actual workouts
 WORKOUT_RECOMMENDATIONS = []  # Stores what was recommended
 COMPLETED_WORKOUTS = []  # Stores what was actually done
+LAST_WORKOUT_RECOMMENDATION = None  # Most recent recommendation for swap actions
 
 # ==================== CARDIO RECOMMENDATIONS ====================
 # Heart rate zones based on % of max HR (220 - age, assume age 30 for now = 190 max HR)
@@ -324,6 +353,57 @@ CARDIO_RECOMMENDATIONS = {
     }
 }
 
+# ==================== EXERCISE LIBRARY ====================
+
+EXERCISE_LIBRARY = [
+    # Chest
+    {"name": "Chest Press", "muscle": "chest", "compound": True, "baseline": 100, "equipment": "machine"},
+    {"name": "Incline Press", "muscle": "chest", "compound": True, "baseline": 95, "equipment": "machine"},
+    {"name": "Cable Crossover", "muscle": "chest", "compound": False, "baseline": 40, "equipment": "cable"},
+    {"name": "Pec Fly", "muscle": "chest", "compound": False, "baseline": 50, "equipment": "machine"},
+    {"name": "Dips", "muscle": "chest", "compound": True, "baseline": 50, "equipment": "bodyweight"},
+    # Back
+    {"name": "Lat Pulldown", "muscle": "back", "compound": True, "baseline": 100, "equipment": "machine"},
+    {"name": "Seated Row", "muscle": "back", "compound": True, "baseline": 90, "equipment": "machine"},
+    {"name": "Mid Row", "muscle": "back", "compound": True, "baseline": 80, "equipment": "machine"},
+    {"name": "Cable Row", "muscle": "back", "compound": False, "baseline": 70, "equipment": "cable"},
+    {"name": "Face Pulls", "muscle": "back", "compound": False, "baseline": 35, "equipment": "cable"},
+    {"name": "Pullups", "muscle": "back", "compound": True, "baseline": 50, "equipment": "bodyweight"},
+    # Shoulders
+    {"name": "Shoulder Press", "muscle": "shoulders", "compound": True, "baseline": 60, "equipment": "machine"},
+    {"name": "Arnold Press", "muscle": "shoulders", "compound": False, "baseline": 50, "equipment": "free_weight"},
+    {"name": "Lateral Raise", "muscle": "shoulders", "compound": False, "baseline": 20, "equipment": "cable"},
+    {"name": "Front Raise", "muscle": "shoulders", "compound": False, "baseline": 20, "equipment": "cable"},
+    {"name": "Deltoid Fly", "muscle": "shoulders", "compound": False, "baseline": 30, "equipment": "cable"},
+    {"name": "Rear Delt Fly", "muscle": "shoulders", "compound": False, "baseline": 25, "equipment": "cable"},
+    # Legs
+    {"name": "Leg Press", "muscle": "quads", "compound": True, "baseline": 180, "equipment": "machine"},
+    {"name": "Hack Squat", "muscle": "quads", "compound": True, "baseline": 135, "equipment": "machine"},
+    {"name": "Bulgarian Split Squat", "muscle": "quads", "compound": True, "baseline": 40, "equipment": "free_weight"},
+    {"name": "Leg Extension", "muscle": "quads", "compound": False, "baseline": 80, "equipment": "machine"},
+    {"name": "Romanian Deadlift", "muscle": "hamstrings", "compound": True, "baseline": 135, "equipment": "free_weight"},
+    {"name": "Leg Curl", "muscle": "hamstrings", "compound": False, "baseline": 80, "equipment": "machine"},
+    {"name": "Calf Raise", "muscle": "calves", "compound": False, "baseline": 120, "equipment": "machine"},
+    {"name": "Calf Raise (Seated)", "muscle": "calves", "compound": False, "baseline": 90, "equipment": "machine"},
+    {"name": "Hip Abductor", "muscle": "glutes", "compound": False, "baseline": 100, "equipment": "machine"},
+    {"name": "Hip Adductor", "muscle": "adductors", "compound": False, "baseline": 100, "equipment": "machine"},
+    # Arms
+    {"name": "Biceps Curl", "muscle": "biceps", "compound": False, "baseline": 50, "equipment": "cable"},
+    {"name": "Hammer Curl", "muscle": "biceps", "compound": False, "baseline": 40, "equipment": "free_weight"},
+    {"name": "Preacher Curl", "muscle": "biceps", "compound": False, "baseline": 45, "equipment": "machine"},
+    {"name": "Seated Dip", "muscle": "triceps", "compound": True, "baseline": 100, "equipment": "machine"},
+    {"name": "Tricep Pushdown", "muscle": "triceps", "compound": False, "baseline": 50, "equipment": "cable"},
+    {"name": "Cable Pushdown", "muscle": "triceps", "compound": False, "baseline": 55, "equipment": "cable"},
+    {"name": "Overhead Tricep Extension", "muscle": "triceps", "compound": False, "baseline": 45, "equipment": "cable"},
+    # Core
+    {"name": "Crunch Machine", "muscle": "core", "compound": False, "baseline": 60, "equipment": "machine"},
+    {"name": "Cable Crunch", "muscle": "core", "compound": False, "baseline": 55, "equipment": "cable"},
+    {"name": "Hanging Leg Raise", "muscle": "core", "compound": True, "baseline": 40, "equipment": "bodyweight"},
+    {"name": "Plank", "muscle": "core", "compound": False, "baseline": 0, "equipment": "bodyweight"},
+]
+
+EXERCISE_LOOKUP = {ex["name"]: ex for ex in EXERCISE_LIBRARY}
+
 
 class ProgressionStatus(Enum):
     ON_TRACK = "On Track"
@@ -374,6 +454,7 @@ RECOVERY_DATA = load_json(RECOVERY_FILE, [])
 BASELINES_DATA = load_json(BASELINES_FILE, {})
 BODY_DATA = load_json(BODY_FILE, [])
 SLEEP_DATA = load_json(SLEEP_FILE, [])
+NUTRITION_DATA = load_json(NUTRITION_FILE, [])
 
 # Initialize Oura SQLite storage (safe no-op if file exists)
 init_oura_db(OURA_DB_FILE)
@@ -446,6 +527,52 @@ def _coerce_float(v, field_name: str, min_v=None, max_v=None, allow_none: bool =
     if max_v is not None and fv > max_v:
         return None, api_error(f"{field_name} must be <= {max_v}", 400, code="invalid_field")
     return fv, None
+
+
+def _today_str():
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _get_latest_weight():
+    if not BODY_DATA:
+        return None
+    sorted_body = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
+    return sorted_body[0].get("weight_lbs")
+
+
+def _get_nutrition_targets():
+    calories_target = USER_SETTINGS.get("daily_calorie_target")
+    if calories_target is None or calories_target == "":
+        calories_target = 2200
+    try:
+        calories_target = int(calories_target)
+    except Exception:
+        calories_target = 2200
+
+    protein_target = USER_SETTINGS.get("daily_protein_target_g")
+    try:
+        protein_target = float(protein_target)
+    except Exception:
+        protein_target = None
+    if not protein_target or protein_target <= 0:
+        latest_weight = _get_latest_weight()
+        if latest_weight:
+            protein_target = round(float(latest_weight) * 0.8)
+        else:
+            protein_target = 148
+    return int(calories_target), float(protein_target)
+
+
+def _summarize_nutrition_for_date(date_s: str):
+    totals = {"calories": 0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
+    for entry in NUTRITION_DATA or []:
+        if entry.get("date") != date_s:
+            continue
+        totals["calories"] += int(entry.get("calories") or 0)
+        totals["protein_g"] += float(entry.get("protein_g") or 0)
+        totals["carbs_g"] += float(entry.get("carbs_g") or 0)
+        totals["fat_g"] += float(entry.get("fat_g") or 0)
+    return totals
 
 
 def calculate_e1rm(weight: float, reps: int) -> float:
@@ -801,6 +928,307 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None):
     }
 
 
+def _get_oura_readiness_today():
+    today_s = _today_str()
+    cached = get_oura_daily(OURA_DB_FILE, today_s)
+    readiness = None
+    if cached:
+        readiness = cached.get("readiness_score")
+        try:
+            readiness = int(readiness)
+        except Exception:
+            readiness = None
+
+    ow_sleep = None
+    try:
+        ow_data = fetch_open_wearables_data()
+        ow_sleep = _extract_open_wearables_sleep(ow_data.get("sleep"))
+    except Exception:
+        ow_sleep = None
+
+    if not ow_sleep or not ow_sleep.get("recent"):
+        return readiness
+
+    duration_min = ow_sleep.get("duration_min")
+    avg_hr = ow_sleep.get("avg_hr")
+
+    def _duration_adjust(d_min, base_scale):
+        if d_min is None:
+            return 0
+        if d_min < 360:
+            return -5 * base_scale
+        if d_min < 420:
+            return -3 * base_scale
+        if d_min >= 540:
+            return 3 * base_scale
+        return 0
+
+    def _hr_adjust(hr, base_scale):
+        if hr is None:
+            return 0
+        if hr >= 75:
+            return -4 * base_scale
+        if hr >= 70:
+            return -2 * base_scale
+        if hr <= 55:
+            return 2 * base_scale
+        return 0
+
+    if readiness is None:
+        base = 70
+        adj = _duration_adjust(duration_min, 1.5) + _hr_adjust(avg_hr, 1.5)
+        return int(max(0, min(100, round(base + adj))))
+
+    adj = _duration_adjust(duration_min, 1.0) + _hr_adjust(avg_hr, 1.0)
+    return int(max(0, min(100, round(readiness + adj))))
+
+
+def _equipment_allowed(exercise, preference: str):
+    equipment = exercise.get("equipment")
+    if preference == "all":
+        return True
+    if preference == "machines_and_cables":
+        return equipment in ("machine", "cable")
+    if preference == "machines_only":
+        return equipment in ("machine", "cable")
+    return True
+
+
+def _filtered_exercise_library(preference: str):
+    return [ex for ex in EXERCISE_LIBRARY if _equipment_allowed(ex, preference)]
+
+
+def _build_exercise_entry(
+    exercise_name,
+    muscle,
+    is_compound,
+    goal_params,
+    meso_week,
+    volume_multiplier,
+    oura_readiness,
+    volume_data,
+    soreness_data,
+    progression,
+    workouts,
+    time_per_set,
+):
+    min_reps, max_reps = goal_params["rep_range"]
+    target_sets = goal_params["sets_per_exercise"]
+    intensity_pct = goal_params["intensity_pct"] / 100
+    rest_time = goal_params["rest_minutes"]
+
+    ex_progression = progression.get(exercise_name, {})
+    status = ex_progression.get("status", "On Track")
+    readiness_index, days_since, soreness_level = _muscle_readiness_index(
+        muscle, soreness_data, volume_data, oura_readiness
+    )
+
+    if ex_progression.get("current_e1rm"):
+        current_e1rm = ex_progression["current_e1rm"]
+        status = status
+    elif BASELINES_DATA.get(exercise_name):
+        current_e1rm = BASELINES_DATA[exercise_name]
+        status = "Baseline"
+    else:
+        current_e1rm = EXERCISE_LOOKUP.get(exercise_name, {}).get("baseline", 100)
+        status = "Baseline"
+
+    if status == "Baseline":
+        target_weight = round(current_e1rm * intensity_pct * 0.9, 0)
+        rationale = f"{goal_params['name']}: Starting weight — log your first session to calibrate"
+        sets = target_sets
+    elif status == "On Track":
+        target_weight = round(current_e1rm * intensity_pct + 5, 0)
+        rationale = f"{goal_params['name']}: +5 lbs progression"
+        sets = target_sets
+    elif status == "Plateau":
+        target_weight = round(current_e1rm * intensity_pct, 0)
+        rationale = f"{goal_params['name']}: Adding volume to break plateau"
+        sets = target_sets + 1
+    else:
+        target_weight = round(current_e1rm * (intensity_pct * 0.85), 0)
+        rationale = f"{goal_params['name']}: Deload - focus on form"
+        sets = target_sets - 1
+
+    target_reps = (min_reps + max_reps) // 2
+    rpe_target = _calculate_rpe_target(is_compound, readiness_index, oura_readiness, soreness_level, days_since, meso_week)
+    volume_adjusted_sets = max(1, round(sets * volume_multiplier))
+
+    last_perf = _get_last_exercise_performance(workouts, exercise_name)
+    target_weight, target_reps, overload_note = _apply_progressive_overload(
+        target_weight, target_reps, rpe_target, is_compound, last_perf
+    )
+    rationale = f"{rationale} · {overload_note}"
+
+    if exercise_name == "Plank":
+        target_weight = 0
+        target_reps = 45
+        rationale = f"{goal_params['name']}: Timed core stability"
+
+    rest_label = "3-4 min" if is_compound else "60-90 sec"
+    return {
+        "exercise": exercise_name,
+        "muscle": muscle,
+        "is_compound": is_compound,
+        "target_weight": max(5, target_weight),
+        "target_reps": target_reps,
+        "target_sets": max(2, volume_adjusted_sets),
+        "rationale": rationale,
+        "rest_minutes": rest_time,
+        "rest_label": rest_label,
+        "rpe_target": rpe_target,
+        "estimated_time": round(max(2, volume_adjusted_sets) * time_per_set),
+        "days_since_trained": days_since,
+        "soreness": soreness_level,
+        "oura_readiness": oura_readiness if oura_readiness is not None else None
+    }
+
+
+def _get_latest_soreness_for_muscle(muscle, soreness_data, hours=72):
+    recent = filter_recent_soreness(soreness_data, hours=hours)
+    if not recent:
+        return 0
+    muscle_entries = [s for s in recent if s.get("muscle") == muscle]
+    if not muscle_entries:
+        return 0
+    # Prefer most recent by timestamp if present
+    muscle_entries.sort(key=_parse_soreness_timestamp, reverse=True)
+    return int(muscle_entries[0].get("soreness_level") or 0)
+
+
+def _get_days_since_trained(muscle, volume_data):
+    last_trained = volume_data.get(muscle, {}).get("last_trained")
+    if not last_trained:
+        return 7
+    try:
+        return max(0, (datetime.now() - datetime.strptime(last_trained, '%Y-%m-%d')).days)
+    except Exception:
+        return 7
+
+
+def _muscle_readiness_index(muscle, soreness_data, volume_data, oura_readiness):
+    days_since = _get_days_since_trained(muscle, volume_data)
+    soreness_level = _get_latest_soreness_for_muscle(muscle, soreness_data, hours=72)
+    days_score = min(days_since / 4, 1)
+    soreness_score = max(0, 1 - (soreness_level / 10))
+    if oura_readiness is None:
+        oura_score = 0.5
+    else:
+        oura_score = max(0, min(1, oura_readiness / 100))
+    readiness_index = (0.4 * oura_score) + (0.35 * days_score) + (0.25 * soreness_score)
+    return readiness_index, days_since, soreness_level
+
+
+def _get_mesocycle_week(workouts, sessions_per_week):
+    if sessions_per_week <= 0:
+        sessions_per_week = 3
+    week_index = (len(workouts) // sessions_per_week) % 4
+    return week_index + 1
+
+
+MESOCYCLE_PLAN = {
+    1: {"name": "Accumulation", "volume_multiplier": 1.0, "rpe_base": 7.0},
+    2: {"name": "Overreach", "volume_multiplier": 1.2, "rpe_base": 7.5},
+    3: {"name": "Intensification", "volume_multiplier": 0.8, "rpe_base": 8.5},
+    4: {"name": "Deload", "volume_multiplier": 0.5, "rpe_base": 5.5},
+}
+
+
+def _calculate_rpe_target(is_compound, readiness_index, oura_readiness, soreness_level, days_since, meso_week):
+    # Base ranges by exercise type
+    type_min, type_max = (7.0, 9.0) if is_compound else (6.0, 8.0)
+
+    # Mesocycle ranges
+    if meso_week == 4:
+        min_rpe, max_rpe = 5.0, 6.0
+        target = min_rpe + (max_rpe - min_rpe) * readiness_index
+        if oura_readiness is not None and oura_readiness < 60:
+            target = min(target, 7.0)
+        target = max(min_rpe, min(max_rpe, target))
+        return round(target * 2) / 2
+
+    if meso_week == 1:
+        meso_min, meso_max = 6.5, 7.5
+    elif meso_week == 2:
+        meso_min, meso_max = 7.0, 8.0
+    else:
+        meso_min, meso_max = 8.0, 9.0
+
+    min_rpe = max(type_min, meso_min)
+    max_rpe = min(type_max, meso_max)
+
+    target = min_rpe + (max_rpe - min_rpe) * readiness_index
+    # Small adjustments for soreness and time since trained
+    target -= max(0, soreness_level - 5) * 0.1
+    target += max(0, days_since - 3) * 0.05
+
+    if oura_readiness is not None:
+        if oura_readiness < 60:
+            target = min(target, 7.0)
+        elif oura_readiness > 80 and is_compound and meso_week in (2, 3):
+            max_rpe = max(max_rpe, 9.0)
+        elif oura_readiness <= 80 and is_compound and meso_week != 4:
+            target = min(target, 8.0)
+
+    target = max(min_rpe, min(max_rpe, target))
+    # Round to nearest 0.5
+    return round(target * 2) / 2
+
+
+def _get_last_exercise_performance(workouts, exercise_name):
+    if not workouts:
+        return None
+    sorted_workouts = sorted(
+        [w for w in workouts if w.get("date")],
+        key=lambda x: x.get("date", ""),
+        reverse=True
+    )
+    for w in sorted_workouts:
+        for ex in w.get("exercises", []) or []:
+            if ex.get("machine") != exercise_name:
+                continue
+            sets = ex.get("sets", []) or []
+            if not sets:
+                continue
+            rpes = [s.get("rpe") for s in sets if s.get("rpe") is not None]
+            avg_rpe = round(sum(rpes) / len(rpes), 2) if rpes else None
+            min_reps = min((s.get("reps") or 0) for s in sets)
+            max_weight = max((s.get("weight_lbs") or 0) for s in sets)
+            best_e1rm = max(calculate_e1rm(s.get("weight_lbs", 0), s.get("reps", 0)) for s in sets)
+            return {
+                "date": w.get("date"),
+                "avg_rpe": avg_rpe,
+                "min_reps": min_reps,
+                "max_weight": max_weight,
+                "best_e1rm": round(best_e1rm, 1),
+                "sets": sets
+            }
+    return None
+
+
+def _apply_progressive_overload(base_weight, base_reps, target_rpe, is_compound, last_perf):
+    if last_perf is None:
+        return base_weight, base_reps, "Baseline: no recent history"
+
+    weight_step = 5 if is_compound else 2.5
+    avg_rpe = last_perf.get("avg_rpe")
+    min_reps = last_perf.get("min_reps", 0)
+    completed_reps = min_reps >= base_reps
+
+    if avg_rpe is None:
+        return base_weight, base_reps, "Maintain load: RPE missing"
+
+    if avg_rpe < target_rpe and completed_reps:
+        return base_weight + weight_step, base_reps, f"Progression: +{weight_step} lbs"
+    if abs(avg_rpe - target_rpe) <= 0.25 and completed_reps:
+        return base_weight, base_reps + 1, "Progression: +1 rep"
+    if avg_rpe > target_rpe + 0.25 or not completed_reps:
+        adjusted = max(5, base_weight - weight_step)
+        return adjusted, base_reps, "Auto-regulated: reduce load"
+
+    return base_weight, base_reps, "Maintain load"
+
+
 def generate_next_workout(workouts, soreness_data, goal=None, available_time=None, persist=False):
     """Generate optimal workout prescription based on training goal and available time.
     
@@ -815,12 +1243,21 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
 
     goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
     time_per_set = goal_params.get("time_per_set_minutes", 3)
+    sessions_per_week = USER_SETTINGS.get("sessions_per_week_target", 3)
+    meso_week = _get_mesocycle_week(workouts, sessions_per_week)
+    meso_plan = MESOCYCLE_PLAN.get(meso_week, MESOCYCLE_PLAN[1])
+    oura_readiness = _get_oura_readiness_today()
+    equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
 
     # Calculate max exercises based on available time
     # Account for warmup (5 min) and cooldown (5 min)
     effective_time = available_time - 10
     sets_per_exercise = goal_params["sets_per_exercise"]
-    time_per_exercise = time_per_set * sets_per_exercise
+    volume_multiplier = meso_plan["volume_multiplier"]
+    if oura_readiness is not None and oura_readiness < 60:
+        volume_multiplier *= 0.8
+    adjusted_sets_for_timing = max(2, round(sets_per_exercise * volume_multiplier))
+    time_per_exercise = time_per_set * adjusted_sets_for_timing
     max_exercises = max(2, int(effective_time / time_per_exercise))
 
     volume_data = calculate_volume(workouts, weeks=4)
@@ -840,96 +1277,60 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
 
     progression = calculate_progression_status(workouts)
 
-    exercise_map = {
-        "chest": ("Chest Press", True),
-        "back": ("Lat Pulldown", True),
-        "quads": ("Leg Press", True),
-        "shoulders": ("Shoulder Press", False),
-        "hamstrings": ("Leg Curl", True),
-        "triceps": ("Seated Dip", True),
-        "biceps": ("Biceps Curl", False),
-        "core": ("Crunch Machine", False),
-        "calves": ("Calf Raise", False),
-        "glutes": ("Hip Abductor", True),
-        "adductors": ("Hip Adductor", True),
-    }
+    # Multiple exercises per muscle — rotates based on what was done most recently
+    exercise_pool = {}
+    for ex in _filtered_exercise_library(equipment_pref):
+        muscle = ex["muscle"]
+        exercise_pool.setdefault(muscle, []).append((ex["name"], ex["compound"]))
+
+    # Find last time each exercise was done to enable rotation
+    recent_exercises = {}
+    for w in workouts[:6]:  # Look back 6 sessions
+        for ex in w.get("exercises", []):
+            machine = ex.get("machine")
+            if machine and machine not in recent_exercises:
+                recent_exercises[machine] = w["date"]
+
+    def pick_exercise(muscle):
+        """Pick exercise for a muscle group, preferring least-recently-used."""
+        options = exercise_pool.get(muscle, [])
+        if not options:
+            return None
+        if len(options) == 1:
+            return options[0]
+        # Sort by last done date (ascending) — pick the one done longest ago
+        def last_done(ex_tuple):
+            return recent_exercises.get(ex_tuple[0], "0000-00-00")
+        return sorted(options, key=last_done)[0]
+
+    exercise_map = {muscle: pick_exercise(muscle) for muscle in exercise_pool if pick_exercise(muscle)}
 
     exercises = []
-    min_reps, max_reps = goal_params["rep_range"]
-    target_sets = goal_params["sets_per_exercise"]
-    intensity_pct = goal_params["intensity_pct"] / 100
-    rest_time = goal_params["rest_minutes"]
-
     # Prioritize compound exercises when time is limited
     sorted_muscles = sorted(available_muscles, key=lambda m: (
         0 if exercise_map.get(m, (None, False))[1] else 1,  # Compounds first
         readiness_scores.get(m, {}).get("score", 0) * -1     # Higher readiness
     ))
 
-    # Default baseline weights for exercises without history
-    DEFAULT_BASELINES = {
-        "Chest Press": 100, "Lat Pulldown": 100, "Mid Row": 80,
-        "Shoulder Press": 60, "Leg Press": 180, "Leg Curl": 80,
-        "Seated Dip": 100, "Biceps Curl": 50, "Calf Raise": 120, "Crunch Machine": 60,
-        "Hip Abductor": 100,
-        "Hip Adductor": 100
-    }
-
     for muscle in sorted_muscles[:max_exercises]:
         if muscle not in exercise_map:
             continue
 
         exercise_name, is_compound = exercise_map[muscle]
-        ex_progression = progression.get(exercise_name, {})
-        status = ex_progression.get("status", "On Track")
-
-        # Use progression e1rm, or baseline, or default
-        if ex_progression.get("current_e1rm"):
-            current_e1rm = ex_progression["current_e1rm"]
-            has_history = True
-        elif BASELINES_DATA.get(exercise_name):
-            current_e1rm = BASELINES_DATA[exercise_name]
-            has_history = False
-            status = "Baseline"
-        else:
-            current_e1rm = DEFAULT_BASELINES.get(exercise_name, 100)
-            has_history = False
-            status = "Baseline"
-
-        # Apply goal-specific intensity and adjust for progression status
-        if status == "Baseline":
-            # Start conservative for new exercises
-            target_weight = round(current_e1rm * intensity_pct * 0.9, 0)
-            rationale = f"{goal_params['name']}: Starting weight (configure in Settings)"
-            sets = target_sets
-        elif status == "On Track":
-            target_weight = round(current_e1rm * intensity_pct + 5, 0)
-            rationale = f"{goal_params['name']}: +5 lbs progression"
-            sets = target_sets
-        elif status == "Plateau":
-            target_weight = round(current_e1rm * intensity_pct, 0)
-            rationale = f"{goal_params['name']}: Adding volume to break plateau"
-            sets = target_sets + 1
-        else:
-            target_weight = round(current_e1rm * (intensity_pct * 0.85), 0)
-            rationale = f"{goal_params['name']}: Deload - focus on form"
-            sets = target_sets - 1
-
-        # Rep range based on goal
-        target_reps = (min_reps + max_reps) // 2
-
-        exercises.append({
-            "exercise": exercise_name,
-            "muscle": muscle,
-            "is_compound": is_compound,
-            "target_weight": max(5, target_weight),  # Minimum 5 lbs
-            "target_reps": target_reps,
-            "target_sets": max(2, sets),
-            "rationale": rationale,
-            "rest_minutes": rest_time,
-            "rpe_target": goal_params["rpe_target"],
-            "estimated_time": round(max(2, sets) * time_per_set)
-        })
+        exercises.append(_build_exercise_entry(
+            exercise_name=exercise_name,
+            muscle=muscle,
+            is_compound=is_compound,
+            goal_params=goal_params,
+            meso_week=meso_week,
+            volume_multiplier=volume_multiplier,
+            oura_readiness=oura_readiness,
+            volume_data=volume_data,
+            soreness_data=soreness_data,
+            progression=progression,
+            workouts=workouts,
+            time_per_set=time_per_set,
+        ))
 
     exercises.sort(key=lambda x: (not x["is_compound"], x["muscle"]))
 
@@ -1013,6 +1414,12 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
         "estimated_duration": duration_str,
         "estimated_minutes": total_time,
         "available_time": available_time,
+        "mesocycle": {
+            "week": meso_week,
+            "phase": meso_plan["name"],
+            "volume_multiplier": round(volume_multiplier, 2),
+            "rpe_base": meso_plan["rpe_base"]
+        },
         "exercises": exercises,
         "cardio": cardio_data,
         "muscles_to_avoid": avoid_muscles,
@@ -1027,10 +1434,24 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
 
 
 def generate_alerts(workouts, soreness_data):
+    # Suppress regression alerts if no recent workouts (>30 days)
+    from datetime import datetime, timedelta
+    cutoff = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    recent_workouts = [w for w in workouts if w.get('date', '') >= cutoff]
+    if not recent_workouts:
+        return [{
+            'type': 'info',
+            'title': 'Welcome Back',
+            'message': 'No workouts in 30+ days. Your first session back will recalibrate everything.',
+            'actions': ['Start light', 'Focus on form', 'RPE auto-adjusted']
+        }]
+    # If fewer than 6 recent workouts, suppress regression alerts (still ramping up)
+    suppress_regression = len(recent_workouts) < 6
     """Generate alerts based on current data."""
     alerts = []
     progression = calculate_progression_status(workouts)
     volume = calculate_volume(workouts, weeks=4)
+    cutoff_date = datetime.now().date() - timedelta(days=30)
 
     for exercise, data in progression.items():
         if data["status"] == "Plateau":
@@ -1041,14 +1462,31 @@ def generate_alerts(workouts, soreness_data):
                 "action": "Consider deload or exercise variation",
                 "color": "orange"
             })
-        elif data["status"] == "Regression":
-            alerts.append({
-                "priority": "HIGH",
-                "type": "Regression",
-                "message": f"{exercise}: e1RM down from peak",
-                "action": "Check form, sleep, nutrition",
-                "color": "red"
-            })
+        elif data["status"] == "Regression" and not suppress_regression:
+            history = data.get("history", [])
+            if history:
+                dated_history = []
+                for h in history:
+                    try:
+                        h_date = datetime.strptime(h.get("date", ""), "%Y-%m-%d").date()
+                    except Exception:
+                        continue
+                    dated_history.append((h_date, h.get("e1rm")))
+                if dated_history:
+                    last_date = max(d[0] for d in dated_history)
+                    if last_date >= cutoff_date:
+                        recent_e1rms = [e1rm for d, e1rm in dated_history if d >= cutoff_date and e1rm is not None]
+                        if recent_e1rms:
+                            peak_recent = max(recent_e1rms)
+                            current_e1rm = data.get("current_e1rm") or 0
+                            if peak_recent > 0 and current_e1rm < peak_recent * 0.95:
+                                alerts.append({
+                                    "priority": "HIGH",
+                                    "type": "Regression",
+                                    "message": f"{exercise}: e1RM down from 30-day peak",
+                                    "action": "Check form, sleep, nutrition",
+                                    "color": "red"
+                                })
 
     for muscle, data in volume.items():
         if data["status"] == "Above MRV":
@@ -1063,7 +1501,7 @@ def generate_alerts(workouts, soreness_data):
     for exercise, data in progression.items():
         if data["current_e1rm"] >= data["peak_e1rm"] and len(data.get("history", [])) > 1:
             alerts.append({
-                "priority": "LOW",
+                "priority": "🏆 PR",
                 "type": "PR Achieved",
                 "message": f"{exercise}: New e1RM of {data['current_e1rm']} lbs",
                 "action": "Great work!",
@@ -1218,6 +1656,20 @@ def detect_deload_need(workouts: list, soreness_data: list) -> dict:
         return {"needed": False, "reason": "No recent workouts", "recommendation": ""}
 
     weeks_training = (dates[-1] - dates[0]).days / 7 if len(dates) > 1 else 0
+    four_weeks_ago = datetime.now() - timedelta(days=28)
+    recent_4w_sessions = [
+        d for d in dates
+        if d >= four_weeks_ago
+    ]
+    avg_sessions_per_week = len(recent_4w_sessions) / 4
+    if avg_sessions_per_week < 2.0:
+        return {
+            "needed": False,
+            "reason": "Training frequency too low for deload to be warranted",
+            "indicators": [],
+            "weeks_since_deload": round(weeks_training, 1),
+            "recommendation": "Training frequency too low for deload to be warranted"
+        }
 
     # Check progression status for regression
     progression = calculate_progression_status(workouts)
@@ -1705,21 +2157,61 @@ def api_dashboard():
                 body_stats["weight_change_30d"] = round(body_stats["latest_weight"] - old_weight, 1)
         
         # Trend direction
-        recent_7 = sorted_body[:7]
-        if len(recent_7) >= 3:
-            weights = [e.get("weight_lbs") for e in recent_7 if e.get("weight_lbs")]
-            if len(weights) >= 3:
-                x = list(range(len(weights)))
-                n = len(weights)
-                x_mean = sum(x) / n
-                y_mean = sum(weights) / n
-                numerator = sum((x[i] - x_mean) * (weights[i] - y_mean) for i in range(n))
-                denominator = sum((x[i] - x_mean) ** 2 for i in range(n))
-                if denominator != 0:
-                    slope = numerator / denominator
-                    body_stats["trend"] = "increasing" if slope > 0.1 else "decreasing" if slope < -0.1 else "stable"
-                else:
-                    body_stats["trend"] = "unknown"
+        if body_stats.get("weight_change_30d") is not None:
+            weight_change = body_stats["weight_change_30d"]
+            if weight_change > 0.5:
+                body_stats["trend"] = "increasing"
+            elif weight_change < -0.5:
+                body_stats["trend"] = "decreasing"
+            else:
+                body_stats["trend"] = "stable"
+        else:
+            recent_7 = sorted_body[:7]
+            if len(recent_7) >= 3:
+                weights = [e.get("weight_lbs") for e in recent_7 if e.get("weight_lbs")]
+                if len(weights) >= 3:
+                    x = list(range(len(weights)))
+                    n = len(weights)
+                    x_mean = sum(x) / n
+                    y_mean = sum(weights) / n
+                    numerator = sum((x[i] - x_mean) * (weights[i] - y_mean) for i in range(n))
+                    denominator = sum((x[i] - x_mean) ** 2 for i in range(n))
+                    if denominator != 0:
+                        slope = numerator / denominator
+                        body_stats["trend"] = "increasing" if slope > 0.1 else "decreasing" if slope < -0.1 else "stable"
+                    else:
+                        body_stats["trend"] = "unknown"
+
+    # Recomp command center signal
+    today_s = _today_str()
+    cached_oura = get_oura_daily(OURA_DB_FILE, today_s)
+    readiness_val = cached_oura.get("readiness_score") if cached_oura else None
+    try:
+        readiness_val = int(readiness_val) if readiness_val is not None else None
+    except Exception:
+        readiness_val = None
+    recent_soreness = filter_recent_soreness(SORENESS_DATA, hours=24)
+    max_soreness = max((s.get("soreness_level") or 0) for s in recent_soreness) if recent_soreness else 0
+    signal = "TRAIN" if (readiness_val is not None and readiness_val >= 70 and max_soreness < 7) else "RECOVER"
+    reason_bits = []
+    if readiness_val is None:
+        reason_bits.append("Readiness unavailable")
+    else:
+        reason_bits.append(f"Readiness {readiness_val}")
+    if recent_soreness:
+        reason_bits.append(f"Max soreness {max_soreness}")
+    else:
+        reason_bits.append("No soreness logged in last 24h")
+
+    # Nutrition totals
+    nutrition_totals = _summarize_nutrition_for_date(today_s)
+    calories_target, protein_target = _get_nutrition_targets()
+    calories_pct = int(round((nutrition_totals["calories"] / calories_target) * 100)) if calories_target else 0
+    protein_pct = int(round((nutrition_totals["protein_g"] / protein_target) * 100)) if protein_target else 0
+
+    next_workout = generate_next_workout(WORKOUTS, SORENESS_DATA)
+    global LAST_WORKOUT_RECOMMENDATION
+    LAST_WORKOUT_RECOMMENDATION = next_workout
 
     return jsonify({
         "headline": {
@@ -1732,13 +2224,26 @@ def api_dashboard():
         "muscles": muscle_data,
         "exercises": exercise_data,
         "alerts": generate_alerts(WORKOUTS, SORENESS_DATA),
-        "next_workout": generate_next_workout(WORKOUTS, SORENESS_DATA),
+        "next_workout": next_workout,
         "readiness_factors": {
             "acwr": acwr,
             "sleep_debt": sleep_debt,
             "recovery_bonus": recovery_bonus,
         },
         "body_stats": body_stats,
+        "recomp_command": {
+            "signal": signal,
+            "readiness": readiness_val if readiness_val is not None else 0,
+            "reason": "; ".join(reason_bits)
+        },
+        "nutrition_today": {
+            "calories": nutrition_totals["calories"],
+            "protein_g": round(nutrition_totals["protein_g"], 1),
+            "calories_target": calories_target,
+            "protein_target_g": round(protein_target, 1),
+            "calories_pct": calories_pct,
+            "protein_pct": protein_pct,
+        },
         "advanced_kpis": {
             "personal_records": prs,
             "consistency": consistency,
@@ -1746,6 +2251,90 @@ def api_dashboard():
             "deload_check": deload,
             "injury_risk": injury_risk,
             "summary_stats": summary_stats
+        }
+    })
+
+
+@app.route('/api/vitals')
+def api_vitals():
+    """Vitals panel data: weight (local), HR/sleep/activity (Open Wearables)."""
+    current_weight = None
+    body_fat = None
+    if BODY_DATA:
+        sorted_body = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
+        latest = sorted_body[0]
+        try:
+            current_weight = float(latest.get("weight_lbs")) if latest.get("weight_lbs") is not None else None
+        except Exception:
+            current_weight = None
+        try:
+            body_fat = float(latest.get("body_fat_pct")) if latest.get("body_fat_pct") is not None else None
+        except Exception:
+            body_fat = None
+
+    trend_7d = _body_trend(7)
+    trend_30d = _body_trend(30)
+    change_7d = _trend_change(trend_7d)
+    change_30d = _trend_change(trend_30d)
+
+    ow_data = fetch_open_wearables_data()
+    activity_summaries = _extract_open_wearables_activity_summaries(ow_data.get("activity_summary"))
+    sleep_events = _extract_open_wearables_sleep_events(ow_data.get("sleep"))
+
+    today = datetime.now().date()
+    start = today - timedelta(days=6)
+
+    activity_7d = [a for a in activity_summaries if a.get("date") and start <= a["date"] <= today]
+    activity_7d.sort(key=lambda x: x["date"])
+
+    def _latest_activity():
+        if not activity_7d:
+            return None
+        today_entry = next((a for a in activity_7d if a["date"] == today), None)
+        return today_entry or activity_7d[-1]
+
+    latest_activity = _latest_activity()
+
+    steps_avg_7d = None
+    steps_vals = [a.get("steps") for a in activity_7d if a.get("steps") is not None]
+    if steps_vals:
+        steps_avg_7d = int(round(sum(steps_vals) / len(steps_vals)))
+
+    hr_trend = [
+        {
+            "date": a["date"].strftime("%Y-%m-%d"),
+            "resting": a.get("resting"),
+            "average": a.get("average"),
+        }
+        for a in activity_7d
+    ]
+
+    sleep_7d = [s for s in sleep_events if s.get("event_time") and start <= s["event_time"].date() <= today]
+    last_night, avg_7d_hours = _sleep_metrics_from_events(sleep_7d)
+
+    return jsonify({
+        "weight": {
+            "current_lbs": round(current_weight, 1) if current_weight is not None else None,
+            "trend_7d": trend_7d,
+            "trend_30d": trend_30d,
+            "change_7d": change_7d,
+            "change_30d": change_30d,
+            "body_fat_pct": round(body_fat, 1) if body_fat is not None else None,
+        },
+        "heart_rate": {
+            "resting_bpm": latest_activity.get("resting") if latest_activity else None,
+            "average_bpm": latest_activity.get("average") if latest_activity else None,
+            "trend_7d": hr_trend,
+        },
+        "sleep": {
+            "last_night": last_night,
+            "avg_7d_hours": avg_7d_hours,
+        },
+        "activity": {
+            "steps_today": latest_activity.get("steps") if latest_activity else None,
+            "steps_avg_7d": steps_avg_7d,
+            "active_calories_today": latest_activity.get("active_calories") if latest_activity else None,
+            "active_minutes_today": latest_activity.get("active_minutes") if latest_activity else None,
         }
     })
 
@@ -1797,6 +2386,7 @@ def add_workout():
 
     WORKOUTS.append(entry)
     save_json(WORKOUTS_FILE, WORKOUTS)
+    _notify_workout_logged(entry)
     return jsonify({"status": "success", "workout": entry})
 
 
@@ -1829,6 +2419,88 @@ def add_soreness():
     SORENESS_DATA.append(entry)
     save_json(SORENESS_FILE, SORENESS_DATA)  # Persist to file
     return jsonify({"status": "success", "soreness": entry})
+
+
+@app.route('/api/add-nutrition', methods=['POST'])
+def add_nutrition():
+    """Add a nutrition entry (calories/macros)."""
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    date_s = data.get("date") or _today_str()
+    date_s, err2 = _coerce_str(date_s, "date", required=True, max_len=32)
+    if err2:
+        return err2
+
+    calories, err2 = _coerce_int(data.get("calories"), "calories", min_v=0)
+    if err2:
+        return err2
+    protein_g, err2 = _coerce_float(data.get("protein_g"), "protein_g", min_v=0)
+    if err2:
+        return err2
+    carbs_g, err2 = _coerce_float(data.get("carbs_g"), "carbs_g", min_v=0, allow_none=True)
+    if err2:
+        return err2
+    fat_g, err2 = _coerce_float(data.get("fat_g"), "fat_g", min_v=0, allow_none=True)
+    if err2:
+        return err2
+    notes, err2 = _coerce_str(data.get("notes"), "notes", required=False, max_len=500)
+    if err2:
+        return err2
+
+    entry = {
+        "date": date_s,
+        "calories": calories,
+        "protein_g": round(float(protein_g), 1),
+        "carbs_g": round(float(carbs_g), 1) if carbs_g is not None else None,
+        "fat_g": round(float(fat_g), 1) if fat_g is not None else None,
+        "notes": notes,
+    }
+
+    NUTRITION_DATA.append(entry)
+    save_json(NUTRITION_FILE, NUTRITION_DATA)
+    return jsonify({"status": "success", "nutrition": entry})
+
+
+@app.route('/api/nutrition-today')
+def nutrition_today():
+    """Return today's nutrition totals and targets."""
+    date_s = _today_str()
+    totals = _summarize_nutrition_for_date(date_s)
+    calories_target, protein_target = _get_nutrition_targets()
+    calories_pct = int(round((totals["calories"] / calories_target) * 100)) if calories_target else 0
+    protein_pct = int(round((totals["protein_g"] / protein_target) * 100)) if protein_target else 0
+    return jsonify({
+        "date": date_s,
+        "calories": totals["calories"],
+        "protein_g": round(totals["protein_g"], 1),
+        "carbs_g": round(totals["carbs_g"], 1),
+        "fat_g": round(totals["fat_g"], 1),
+        "calories_target": calories_target,
+        "protein_target_g": round(protein_target, 1),
+        "calories_pct": calories_pct,
+        "protein_pct": protein_pct,
+    })
+
+
+@app.route('/api/nutrition-history')
+def nutrition_history():
+    """Return last 14 days of nutrition totals."""
+    today = datetime.now().date()
+    days = []
+    for i in range(13, -1, -1):
+        d = today - timedelta(days=i)
+        date_s = d.strftime("%Y-%m-%d")
+        totals = _summarize_nutrition_for_date(date_s)
+        days.append({
+            "date": date_s,
+            "calories": totals["calories"],
+            "protein_g": round(totals["protein_g"], 1),
+            "carbs_g": round(totals["carbs_g"], 1),
+            "fat_g": round(totals["fat_g"], 1),
+        })
+    return jsonify({"history": days})
 
 
 @app.route('/api/add-cardio', methods=['POST'])
@@ -2036,13 +2708,21 @@ def settings():
             "available_time_minutes": USER_SETTINGS.get("available_time_minutes", 60),
             "target_weight_lbs": USER_SETTINGS.get("target_weight_lbs", 180),
             "target_body_fat_pct": USER_SETTINGS.get("target_body_fat_pct", 15),
+            "daily_calorie_target": USER_SETTINGS.get("daily_calorie_target", 2200),
+            "daily_protein_target_g": USER_SETTINGS.get("daily_protein_target_g", 148),
             "fatigue_threshold": USER_SETTINGS.get("fatigue_threshold", 72),
+            "equipment_preference": USER_SETTINGS.get("equipment_preference", "machines_only"),
             "volume_landmarks": USER_SETTINGS.get("volume_landmarks", DEFAULT_SETTINGS["volume_landmarks"]),
             "available_goals": [
                 {"value": g, "name": p["name"], "description": p["description"]}
                 for g, p in GOAL_PARAMETERS.items()
             ],
-            "time_options": TIME_OPTIONS
+            "time_options": TIME_OPTIONS,
+            "equipment_options": [
+                {"value": "machines_only", "label": "Machines (includes cables)"},
+                {"value": "machines_and_cables", "label": "Machines + Cables"},
+                {"value": "all", "label": "All Equipment"},
+            ]
         })
     else:
         data, err = get_json_body(required=True)
@@ -2079,6 +2759,18 @@ def settings():
                 return err2
             USER_SETTINGS["target_body_fat_pct"] = tbf
 
+        if "daily_calorie_target" in data:
+            cal, err2 = _coerce_int(data.get("daily_calorie_target"), "daily_calorie_target", min_v=500, max_v=6000)
+            if err2:
+                return err2
+            USER_SETTINGS["daily_calorie_target"] = cal
+
+        if "daily_protein_target_g" in data:
+            prot, err2 = _coerce_float(data.get("daily_protein_target_g"), "daily_protein_target_g", min_v=50, max_v=400)
+            if err2:
+                return err2
+            USER_SETTINGS["daily_protein_target_g"] = round(prot, 1)
+
         if "fatigue_threshold" in data:
             ft, err2 = _coerce_int(data.get("fatigue_threshold"), "fatigue_threshold", min_v=40, max_v=95)
             if err2:
@@ -2087,9 +2779,131 @@ def settings():
 
         if "volume_landmarks" in data and isinstance(data.get("volume_landmarks"), dict):
             USER_SETTINGS["volume_landmarks"] = data.get("volume_landmarks")
+        if "equipment_preference" in data:
+            pref, err2 = _coerce_str(data.get("equipment_preference"), "equipment_preference", required=True, max_len=64)
+            if err2:
+                return err2
+            if pref not in ("machines_only", "machines_and_cables", "all"):
+                return api_error("Invalid equipment_preference", 400, code="invalid_field")
+            USER_SETTINGS["equipment_preference"] = pref
 
         save_json(SETTINGS_FILE, USER_SETTINGS)  # Persist to file
         return jsonify({"status": "success", "settings": USER_SETTINGS})
+
+
+@app.route('/api/settings/equipment', methods=['PUT'])
+def settings_equipment():
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    pref, err2 = _coerce_str(data.get("equipment_preference"), "equipment_preference", required=True, max_len=64)
+    if err2:
+        return err2
+    if pref not in ("machines_only", "machines_and_cables", "all"):
+        return api_error("Invalid equipment_preference", 400, code="invalid_field")
+
+    USER_SETTINGS["equipment_preference"] = pref
+    save_json(SETTINGS_FILE, USER_SETTINGS)
+    return jsonify({"status": "success", "equipment_preference": pref})
+
+
+@app.route('/api/exercises/alternatives/<muscle_group>')
+def exercise_alternatives(muscle_group):
+    muscle = (muscle_group or "").strip().lower()
+    if not muscle:
+        return api_error("Invalid muscle group", 400, code="invalid_field")
+    options = [
+        {
+            "name": ex["name"],
+            "muscle": ex["muscle"],
+            "equipment": ex.get("equipment"),
+            "compound": ex.get("compound"),
+        }
+        for ex in EXERCISE_LIBRARY
+        if ex.get("muscle") == muscle and ex.get("equipment") in ("machine", "cable")
+    ]
+    options.sort(key=lambda x: x["name"])
+    return jsonify({"muscle": muscle, "alternatives": options})
+
+
+@app.route('/api/workout/swap', methods=['POST'])
+def swap_workout_exercise():
+    global LAST_WORKOUT_RECOMMENDATION
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    workout_index, err2 = _coerce_int(data.get("workout_index", 0), "workout_index", min_v=0, max_v=10_000)
+    if err2:
+        return err2
+    exercise_index, err2 = _coerce_int(data.get("exercise_index"), "exercise_index", min_v=0, max_v=10_000)
+    if err2:
+        return err2
+    new_name, err2 = _coerce_str(data.get("new_exercise_name"), "new_exercise_name", required=True, max_len=128)
+    if err2:
+        return err2
+
+    recommendation = None
+    if WORKOUT_RECOMMENDATIONS and 0 <= workout_index < len(WORKOUT_RECOMMENDATIONS):
+        recommendation = WORKOUT_RECOMMENDATIONS[workout_index]
+    elif LAST_WORKOUT_RECOMMENDATION:
+        recommendation = LAST_WORKOUT_RECOMMENDATION
+    else:
+        return api_error("No recent workout recommendation available", 404, code="not_found")
+
+    exercises = recommendation.get("exercises") or []
+    if not (0 <= exercise_index < len(exercises)):
+        return api_error("exercise_index out of range", 404, code="not_found")
+
+    new_ex = EXERCISE_LOOKUP.get(new_name)
+    if not new_ex:
+        return api_error("Unknown exercise name", 404, code="not_found")
+
+    old_ex = exercises[exercise_index]
+    old_muscle = (old_ex.get("muscle") or "").lower()
+    if new_ex.get("muscle") != old_muscle:
+        return api_error("New exercise must match the same muscle group", 400, code="invalid_field")
+    if new_ex.get("equipment") not in ("machine", "cable"):
+        return api_error("New exercise must be a machine or cable movement", 400, code="invalid_field")
+
+    goal = recommendation.get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
+    goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
+    sessions_per_week = USER_SETTINGS.get("sessions_per_week_target", 3)
+    meso_week = recommendation.get("mesocycle", {}).get("week") or _get_mesocycle_week(WORKOUTS, sessions_per_week)
+    meso_plan = MESOCYCLE_PLAN.get(meso_week, MESOCYCLE_PLAN[1])
+    oura_readiness = _get_oura_readiness_today()
+    time_per_set = goal_params.get("time_per_set_minutes", 3)
+
+    volume_multiplier = meso_plan["volume_multiplier"]
+    if oura_readiness is not None and oura_readiness < 60:
+        volume_multiplier *= 0.8
+
+    volume_data = calculate_volume(WORKOUTS, weeks=4)
+    progression = calculate_progression_status(WORKOUTS)
+
+    updated_ex = _build_exercise_entry(
+        exercise_name=new_ex["name"],
+        muscle=new_ex["muscle"],
+        is_compound=new_ex["compound"],
+        goal_params=goal_params,
+        meso_week=meso_week,
+        volume_multiplier=volume_multiplier,
+        oura_readiness=oura_readiness,
+        volume_data=volume_data,
+        soreness_data=SORENESS_DATA,
+        progression=progression,
+        workouts=WORKOUTS,
+        time_per_set=time_per_set,
+    )
+    updated_ex["rationale"] = f"{updated_ex['rationale']} · Swapped from {old_ex.get('exercise')}"
+
+    exercises[exercise_index] = updated_ex
+    recommendation["exercises"] = exercises
+    if recommendation is LAST_WORKOUT_RECOMMENDATION:
+        LAST_WORKOUT_RECOMMENDATION = recommendation
+
+    return jsonify({"status": "success", "recommendation": recommendation})
 
 
 # ==================== WEATHER (wttr.in) ====================
@@ -2142,6 +2956,403 @@ def weather_api():
 
 # ==================== OURA INTEGRATION ====================
 
+OPEN_WEARABLES_USERNAME = os.environ.get("OW_USERNAME", "bobvillarreal97@gmail.com")
+OPEN_WEARABLES_PASSWORD = os.environ.get("OW_PASSWORD", "EbVPvtqkxVFoN6GRRZJJgA")
+OPEN_WEARABLES_USER_ID = os.environ.get("OW_USER_ID", "d18e9372-aecf-4992-a26b-f803c31fb71f")
+OPEN_WEARABLES_BASE = f"http://localhost:8000/api/v1/users/{OPEN_WEARABLES_USER_ID}"
+OPEN_WEARABLES_LOGIN_URL = "http://localhost:8000/api/v1/auth/login"
+
+_OW_TOKEN_CACHE = {"token": None, "expires_at": 0}
+
+
+def _decode_jwt_exp(token: str | None):
+    if not token or "." not in token:
+        return None
+    try:
+        payload_b64 = token.split(".")[1]
+        padding = "=" * (-len(payload_b64) % 4)
+        payload = base64.urlsafe_b64decode(payload_b64 + padding).decode("utf-8")
+        payload_json = json.loads(payload)
+        exp = payload_json.get("exp")
+        return int(exp) if exp else None
+    except Exception:
+        return None
+
+
+def _get_ow_token():
+    """Login once to Open Wearables and reuse token until expiry."""
+    now = int(time.time())
+    cached = _OW_TOKEN_CACHE.get("token")
+    expires_at = int(_OW_TOKEN_CACHE.get("expires_at") or 0)
+    if cached and now < (expires_at - 30):
+        return cached
+
+    data = urllib.parse.urlencode({
+        "username": OPEN_WEARABLES_USERNAME,
+        "password": OPEN_WEARABLES_PASSWORD,
+    }).encode("utf-8")
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    try:
+        req = urllib.request.Request(OPEN_WEARABLES_LOGIN_URL, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        _OW_TOKEN_CACHE.update({"token": None, "expires_at": 0, "error": str(e)})
+        return None
+
+    token = (
+        payload.get("access_token")
+        or payload.get("token")
+        or payload.get("jwt")
+        or (payload.get("data") or {}).get("access_token")
+    )
+    if not token:
+        _OW_TOKEN_CACHE.update({"token": None, "expires_at": 0, "error": "missing_token"})
+        return None
+
+    expires_at = None
+    if payload.get("expires_in"):
+        try:
+            expires_at = now + int(payload.get("expires_in"))
+        except Exception:
+            expires_at = None
+    if expires_at is None:
+        exp = _decode_jwt_exp(token)
+        if exp:
+            expires_at = exp
+    if expires_at is None:
+        expires_at = now + 3300  # default ~55m
+
+    _OW_TOKEN_CACHE.update({"token": token, "expires_at": int(expires_at), "error": None})
+    return token
+
+
+def _ow_request(url: str, headers: dict, timeout_s: int = 6, retry_auth: bool = True):
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            payload = resp.read().decode("utf-8")
+            return json.loads(payload) if payload else None
+    except urllib.error.HTTPError as e:
+        if retry_auth and e.code == 401:
+            _OW_TOKEN_CACHE.update({"token": None, "expires_at": 0})
+            token = _get_ow_token()
+            if not token:
+                raise
+            headers = {**headers, "Authorization": f"Bearer {token}"}
+            return _ow_request(url, headers, timeout_s=timeout_s, retry_auth=False)
+        raise
+
+
+def fetch_open_wearables_data():
+    """Fetch sleep, workouts, and activity summaries from local Open Wearables bridge (best-effort)."""
+    token = _get_ow_token()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    today = datetime.now().date()
+    start_date = (today - timedelta(days=6)).strftime("%Y-%m-%d")
+    end_date = today.strftime("%Y-%m-%d")
+
+    endpoints = {
+        "sleep": f"{OPEN_WEARABLES_BASE}/events/sleep?start_date={start_date}&end_date={end_date}",
+        "workouts": f"{OPEN_WEARABLES_BASE}/events/workouts?start_date={start_date}&end_date={end_date}",
+        "activity_summary": f"{OPEN_WEARABLES_BASE}/summaries/activity?start_date={start_date}&end_date={end_date}",
+    }
+
+    result = {
+        "sleep": None,
+        "workouts": None,
+        "activity_summary": None,
+        "fetched_at": datetime.now().isoformat(),
+        "errors": {},
+    }
+
+    if not token:
+        result["errors"]["auth"] = "missing_token"
+        return result
+
+    for key, url in endpoints.items():
+        try:
+            result[key] = _ow_request(url, headers=headers)
+        except Exception as e:
+            result["errors"][key] = str(e)
+            result[key] = None
+    return result
+
+
+def _extract_open_wearables_sleep(payload):
+    """Extract most recent sleep metrics from Open Wearables payload."""
+    events = _extract_open_wearables_sleep_events(payload)
+    if not events:
+        return None
+
+    best = max(events, key=lambda e: e.get("event_time") or datetime.min)
+    best_time = best.get("event_time")
+    duration = best.get("duration_min")
+    avg_hr = best.get("avg_hr")
+
+    recent = False
+    if best_time:
+        recent = (datetime.now() - best_time) <= timedelta(hours=36)
+
+    return {
+        "duration_min": int(round(duration)) if duration is not None else None,
+        "avg_hr": int(round(avg_hr)) if avg_hr is not None else None,
+        "event_time": best_time.isoformat() if best_time else None,
+        "recent": recent,
+        "raw": best.get("raw"),
+    }
+
+
+def _extract_open_wearables_sleep_events(payload):
+    if payload is None:
+        return []
+    events = None
+    if isinstance(payload, list):
+        events = payload
+    elif isinstance(payload, dict):
+        events = payload.get("events") or payload.get("data") or payload.get("items")
+        if events is None and payload.get("event"):
+            events = [payload.get("event")]
+    if not events or not isinstance(events, list):
+        return []
+
+    def _event_time(ev):
+        for k in ("end_time", "endTime", "end", "timestamp", "created_at", "start_time", "startTime", "start", "date"):
+            dt = _parse_iso_date_or_datetime(ev.get(k))
+            if dt:
+                return dt
+        return None
+
+    parsed = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        dt = _event_time(ev)
+        if dt is None:
+            continue
+        duration = (
+            ev.get("duration_min")
+            or ev.get("duration_minutes")
+            or ev.get("sleep_duration_min")
+            or ev.get("total_sleep_min")
+            or ev.get("duration")
+            or ev.get("sleep_duration")
+            or ev.get("duration_seconds")
+        )
+        try:
+            duration = float(duration) if duration is not None else None
+        except Exception:
+            duration = None
+        if duration is not None and duration > 1000:
+            duration = duration / 60.0
+
+        stages = ev.get("stages") or {}
+        stage_minutes = {}
+        if isinstance(stages, dict):
+            for key in ("deep", "rem", "light", "awake"):
+                val = stages.get(key)
+                try:
+                    val = float(val) if val is not None else None
+                except Exception:
+                    val = None
+                if val is not None and val > 1000:
+                    val = val / 60.0
+                stage_minutes[key] = val
+
+        avg_hr = (
+            ev.get("avg_hr")
+            or ev.get("average_hr")
+            or ev.get("avg_heart_rate")
+            or ev.get("heart_rate")
+            or ev.get("resting_hr")
+        )
+        try:
+            avg_hr = float(avg_hr) if avg_hr is not None else None
+        except Exception:
+            avg_hr = None
+
+        parsed.append({
+            "event_time": dt,
+            "duration_min": duration,
+            "stages_min": stage_minutes,
+            "avg_hr": avg_hr,
+            "raw": ev,
+        })
+
+    return parsed
+
+
+def _extract_open_wearables_activity_summaries(payload):
+    if payload is None:
+        return []
+    items = None
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict):
+        items = payload.get("summaries") or payload.get("data") or payload.get("items") or payload.get("days")
+        if items is None and payload.get("summary"):
+            items = [payload.get("summary")]
+    if not items or not isinstance(items, list):
+        return []
+
+    summaries = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        dt = _parse_iso_date_or_datetime(item.get("date") or item.get("day") or item.get("summary_date"))
+        if not dt:
+            continue
+        hr = item.get("heart_rate") or {}
+        resting = hr.get("resting") if isinstance(hr, dict) else item.get("resting_hr")
+        average = hr.get("average") if isinstance(hr, dict) else item.get("average_hr")
+        try:
+            resting = int(round(float(resting))) if resting is not None else None
+        except Exception:
+            resting = None
+        try:
+            average = int(round(float(average))) if average is not None else None
+        except Exception:
+            average = None
+
+        steps = item.get("steps")
+        active_calories = item.get("active_calories") or item.get("calories_active")
+        active_minutes = item.get("active_minutes") or item.get("active_min") or item.get("active_duration_min")
+        try:
+            steps = int(float(steps)) if steps is not None else None
+        except Exception:
+            steps = None
+        try:
+            active_calories = int(float(active_calories)) if active_calories is not None else None
+        except Exception:
+            active_calories = None
+        try:
+            active_minutes = int(float(active_minutes)) if active_minutes is not None else None
+        except Exception:
+            active_minutes = None
+
+        summaries.append({
+            "date": dt.date(),
+            "resting": resting,
+            "average": average,
+            "steps": steps,
+            "active_calories": active_calories,
+            "active_minutes": active_minutes,
+            "raw": item,
+        })
+    return summaries
+
+
+def _body_trend(days: int):
+    if not BODY_DATA:
+        return []
+    today = datetime.now().date()
+    start = today - timedelta(days=days - 1)
+    entries = []
+    for e in BODY_DATA:
+        date_s = e.get("date")
+        if not date_s:
+            continue
+        dt = _parse_iso_date_or_datetime(date_s)
+        if not dt:
+            continue
+        d = dt.date()
+        if d < start or d > today:
+            continue
+        weight = e.get("weight_lbs")
+        try:
+            weight = float(weight) if weight is not None else None
+        except Exception:
+            weight = None
+        if weight is None:
+            continue
+        entries.append({"date": d, "weight_lbs": weight})
+    entries.sort(key=lambda x: x["date"])
+    return [{"date": e["date"].strftime("%Y-%m-%d"), "weight_lbs": round(e["weight_lbs"], 1)} for e in entries]
+
+
+def _trend_change(trend: list):
+    if not trend or len(trend) < 2:
+        return None
+    try:
+        return round(float(trend[-1]["weight_lbs"]) - float(trend[0]["weight_lbs"]), 1)
+    except Exception:
+        return None
+
+
+def _sleep_metrics_from_events(events: list):
+    if not events:
+        return None, None
+    events_sorted = sorted(events, key=lambda e: e.get("event_time") or datetime.min)
+    most_recent = events_sorted[-1]
+
+    stages = most_recent.get("stages_min") or {}
+    deep = stages.get("deep")
+    rem = stages.get("rem")
+    light = stages.get("light")
+    awake = stages.get("awake")
+
+    def _coerce_min(v):
+        try:
+            return int(round(float(v))) if v is not None else None
+        except Exception:
+            return None
+
+    deep = _coerce_min(deep)
+    rem = _coerce_min(rem)
+    light = _coerce_min(light)
+    awake = _coerce_min(awake)
+
+    duration_min = most_recent.get("duration_min")
+    try:
+        duration_min = float(duration_min) if duration_min is not None else None
+    except Exception:
+        duration_min = None
+
+    total_stage = sum(v for v in (deep, rem, light, awake) if v is not None)
+    total = total_stage if total_stage > 0 else duration_min
+    sleep_minutes = sum(v for v in (deep, rem, light) if v is not None)
+
+    efficiency = None
+    if total and sleep_minutes is not None:
+        try:
+            efficiency = int(round((sleep_minutes / total) * 100))
+        except Exception:
+            efficiency = None
+
+    last_night = {
+        "duration_hours": round((sleep_minutes or duration_min or 0) / 60.0, 1) if (sleep_minutes or duration_min) else None,
+        "deep_min": deep,
+        "rem_min": rem,
+        "light_min": light,
+        "awake_min": awake,
+        "efficiency_pct": efficiency,
+    }
+
+    avg_hours = None
+    if events_sorted:
+        total_hours = []
+        for ev in events_sorted:
+            stages_ev = ev.get("stages_min") or {}
+            deep_ev = stages_ev.get("deep")
+            rem_ev = stages_ev.get("rem")
+            light_ev = stages_ev.get("light")
+            total_sleep = None
+            if deep_ev is not None or rem_ev is not None or light_ev is not None:
+                total_sleep = sum(v for v in (deep_ev, rem_ev, light_ev) if v is not None)
+            if total_sleep is None:
+                total_sleep = ev.get("duration_min")
+            if total_sleep is None:
+                continue
+            try:
+                total_hours.append(float(total_sleep) / 60.0)
+            except Exception:
+                continue
+        if total_hours:
+            avg_hours = round(sum(total_hours) / len(total_hours), 1)
+
+    return last_night, avg_hours
+
 @app.after_request
 def add_cors_headers(response):
     """Allow remote access (ngrok, etc) without compromising data safety."""
@@ -2149,6 +3360,16 @@ def add_cors_headers(response):
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     return response
+
+
+@app.route('/api/health/sync', methods=['POST'])
+def health_sync():
+    """Manually pull Open Wearables sleep/workout data."""
+    try:
+        data = fetch_open_wearables_data()
+        return jsonify({"status": "success", "data": data})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/oura/status')
 def oura_status():
@@ -2719,6 +3940,77 @@ def smart_recommendation_api():
     })
 
 
+def _calculate_progressive_overload(workouts):
+    exercises = [
+        "Chest Press",
+        "Lat Pulldown",
+        "Mid Row",
+        "Leg Press",
+        "Leg Curl",
+        "Seated Dip",
+        "Shoulder Press",
+        "Biceps Curl",
+    ]
+    history_by_ex = {ex: {} for ex in exercises}
+
+    for w in workouts or []:
+        date_s = w.get("date")
+        if not date_s:
+            continue
+        for ex in w.get("exercises", []) or []:
+            name = ex.get("machine") or ex.get("exercise")
+            if name not in history_by_ex:
+                continue
+            top_set = None
+            for s in ex.get("sets", []) or []:
+                weight = s.get("weight_lbs")
+                if weight is None:
+                    continue
+                if top_set is None or weight > top_set:
+                    top_set = weight
+            if top_set is None:
+                continue
+            prev = history_by_ex[name].get(date_s)
+            if prev is None or top_set > prev:
+                history_by_ex[name][date_s] = top_set
+
+    results = []
+    for ex in exercises:
+        items = [
+            {"date": d, "weight": w}
+            for d, w in sorted(history_by_ex[ex].items(), key=lambda x: x[0])
+        ]
+        last_weight = items[-1]["weight"] if items else None
+        prev_weight = items[-2]["weight"] if len(items) > 1 else None
+        change = None
+        change_dir = "flat"
+        if last_weight is not None and prev_weight is not None:
+            change = round(float(last_weight) - float(prev_weight), 1)
+            if change > 0:
+                change_dir = "up"
+            elif change < 0:
+                change_dir = "down"
+            else:
+                change_dir = "flat"
+        trend_weights = [str(int(round(i["weight"]))) for i in items[-4:]]
+        results.append({
+            "exercise": ex,
+            "last_weight": last_weight,
+            "previous_weight": prev_weight,
+            "change_lbs": change,
+            "change_dir": change_dir,
+            "trend": "→".join(trend_weights) if trend_weights else "",
+            "history": items,
+        })
+    return results
+
+
+@app.route('/api/progressive-overload')
+def progressive_overload():
+    """Return progressive overload data per major exercise."""
+    return jsonify({"exercises": _calculate_progressive_overload(WORKOUTS)})
+
+
 @app.route('/api/history')
 def workout_history():
     """Get past workouts with full details."""
@@ -2770,10 +4062,13 @@ def all_history():
     # Process recovery (sorted by date descending)
     recovery_list = sorted(RECOVERY_DATA, key=lambda x: x.get("date", ""), reverse=True)
 
+    prs = calculate_personal_records(WORKOUTS)
+
     return jsonify({
         "workouts": workouts_list,
         "cardio": cardio_list,
-        "recovery": recovery_list
+        "recovery": recovery_list,
+        "personal_records": prs
     })
 
 
@@ -2903,6 +4198,23 @@ def complete_workout():
         overall_fatigue = 5
     overall_fatigue = max(1, min(overall_fatigue, 10))
 
+    # Auto-fill muscle_group from machine name if missing
+    _MACHINE_TO_MUSCLE = {
+        "Chest Press": "chest", "Lat Pulldown": "back", "Mid Row": "back",
+        "Shoulder Press": "shoulders", "Deltoid Fly": "shoulders", "Rear Delt Fly": "shoulders",
+        "Leg Press": "quads", "Seated Leg Press": "quads", "Leg Extension": "quads",
+        "Leg Curl": "hamstrings", "Seated Leg Curl": "hamstrings",
+        "Seated Dip": "triceps", "Tricep Pushdown": "triceps",
+        "Biceps Curl": "biceps", "Calf Raise": "calves",
+        "Pec Fly": "chest", "Chest Fly": "chest",
+        "Crunch Machine": "core", "Hip Abductor": "glutes", "Hip Adductor": "adductors",
+        "Back Extension": "back", "Low Back": "back",
+        "Cable Row": "back", "Seated Cable Row": "back",
+    }
+    for ex in actual_exercises:
+        if not ex.get("muscle_group") or ex["muscle_group"] == "unknown":
+            ex["muscle_group"] = _MACHINE_TO_MUSCLE.get(ex.get("machine", ""), "unknown")
+
     workout_entry = {
         "date": datetime.now().strftime("%Y-%m-%d"),
         "session_type": session_type,
@@ -2917,6 +4229,7 @@ def complete_workout():
     WORKOUTS.append(workout_entry)
     COMPLETED_WORKOUTS.append(workout_entry)
     save_json(WORKOUTS_FILE, WORKOUTS)  # Persist to file
+    _notify_workout_logged(workout_entry)
 
     return jsonify({
         "status": "success",
@@ -2939,7 +4252,8 @@ def export_backup():
             "settings": USER_SETTINGS,
             "baselines": BASELINES_DATA,
             "body": BODY_DATA,
-            "sleep": SLEEP_DATA
+            "sleep": SLEEP_DATA,
+            "nutrition": NUTRITION_DATA
         }
     }
 
@@ -2955,7 +4269,7 @@ def export_backup():
 @app.route('/api/import-backup', methods=['POST'])
 def import_backup():
     """Import data from a backup JSON file."""
-    global WORKOUTS, SORENESS_DATA, CARDIO_DATA, RECOVERY_DATA, USER_SETTINGS, BASELINES_DATA, BODY_DATA, SLEEP_DATA
+    global WORKOUTS, SORENESS_DATA, CARDIO_DATA, RECOVERY_DATA, USER_SETTINGS, BASELINES_DATA, BODY_DATA, SLEEP_DATA, NUTRITION_DATA
 
     try:
         backup_data, err = get_json_body(required=True)
@@ -3009,6 +4323,11 @@ def import_backup():
             SLEEP_DATA.extend(data["sleep"])
             save_json(SLEEP_FILE, SLEEP_DATA)
 
+        if "nutrition" in data:
+            NUTRITION_DATA.clear()
+            NUTRITION_DATA.extend(data["nutrition"])
+            save_json(NUTRITION_FILE, NUTRITION_DATA)
+
         return jsonify({
             "status": "success",
             "message": "Backup restored successfully",
@@ -3020,7 +4339,8 @@ def import_backup():
                 "settings": bool(data.get("settings")),
                 "baselines": len(data.get("baselines", {})),
                 "body": len(data.get("body", [])),
-                "sleep": len(data.get("sleep", []))
+                "sleep": len(data.get("sleep", [])),
+                "nutrition": len(data.get("nutrition", []))
             }
         })
     except Exception as e:
@@ -3102,12 +4422,23 @@ def key_insights():
             "detail": "Consider varying rep ranges or adding volume"
         })
 
-    if regressions:
+    # Only show regression insight if enough recent data (>6 sessions in 30 days)
+    from datetime import timedelta as _td
+    _cutoff = (datetime.now() - _td(days=30)).strftime('%Y-%m-%d')
+    _recent_count = len([w for w in WORKOUTS if w.get('date', '') >= _cutoff])
+    if regressions and _recent_count >= 6:
         insights.append({
             "type": "negative",
             "icon": "trending_down",
             "title": f"{len(regressions)} exercises regressing",
             "detail": "Check recovery, sleep, and nutrition"
+        })
+    elif regressions and _recent_count < 6:
+        insights.append({
+            "type": "info",
+            "icon": "fitness_center",
+            "title": "Ramping back up",
+            "detail": f"{_recent_count} sessions this month — regression data suppressed until 6+"
         })
 
     # Consistency insight
@@ -3208,17 +4539,8 @@ def baselines():
     """Get or set baseline weights for exercises without history."""
     # All exercises with their muscle groups and suggested starting weights
     ALL_EXERCISES = [
-        {"name": "Chest Press", "muscle": "chest", "suggested": 100},
-        {"name": "Lat Pulldown", "muscle": "back", "suggested": 100},
-        {"name": "Mid Row", "muscle": "back", "suggested": 80},
-        {"name": "Shoulder Press", "muscle": "shoulders", "suggested": 60},
-        {"name": "Leg Press", "muscle": "quads", "suggested": 180},
-        {"name": "Leg Curl", "muscle": "hamstrings", "suggested": 80},
-        {"name": "Hip Abductor", "muscle": "glutes", "suggested": 100},
-        {"name": "Seated Dip", "muscle": "triceps", "suggested": 100},
-        {"name": "Biceps Curl", "muscle": "biceps", "suggested": 50},
-        {"name": "Calf Raise", "muscle": "calves", "suggested": 120},
-        {"name": "Crunch Machine", "muscle": "core", "suggested": 60},
+        {"name": ex["name"], "muscle": ex["muscle"], "suggested": ex["baseline"]}
+        for ex in EXERCISE_LIBRARY
     ]
 
     if request.method == 'GET':
@@ -3443,7 +4765,35 @@ def sleep_import():
 
 @app.route('/api/sleep/analytics')
 def sleep_analytics():
-    rows=sorted(SLEEP_DATA, key=lambda x:x.get('date'))
+    # Pull from Oura sleep SQLite first, fall back to SLEEP_DATA JSON
+    rows = []
+    try:
+        import sqlite3 as _sq
+        _db = _sq.connect(os.path.join(DATA_DIR, 'oura_daily.sqlite3'))
+        _db.row_factory = _sq.Row
+        _cur = _db.execute("SELECT * FROM oura_sleep WHERE type='long_sleep' ORDER BY day")
+        for r in _cur.fetchall():
+            rows.append({
+                'date': r['day'],
+                'sleep_start': r['bedtime_start'],
+                'sleep_end': r['bedtime_end'],
+                'sleep_duration_min': r['total_sleep_min'],
+                'deep_sleep_min': r['deep_sleep_min'],
+                'rem_sleep_min': r['rem_sleep_min'],
+                'light_sleep_min': r['light_sleep_min'],
+                'awake_min': r['awake_time_min'],
+                'sleep_score': r['sleep_score'],
+                'efficiency': r['efficiency'],
+                'avg_heart_rate': r['avg_heart_rate'],
+                'avg_hrv': r['avg_hrv'],
+                'source': 'oura',
+            })
+        _db.close()
+    except Exception:
+        pass
+    # Fall back to manual SLEEP_DATA if no Oura data
+    if not rows:
+        rows = sorted(SLEEP_DATA, key=lambda x: x.get('date'))
     if not rows: return jsonify({'history':[],'consistency_score':None,'sleep_perf_correlation':None})
     # prefer apple watch source if duplicates
     dedup={}

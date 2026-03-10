@@ -72,6 +72,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initBaselineConfig();
     initBackupButtons();
     initOfflineBanner();
+    initAccordions();
     loadDashboard();
     loadSettings();
     loadHistory();
@@ -101,6 +102,9 @@ function initTabs() {
                 loadInsights();
                 loadWeightChart();
                 loadAdvancedAnalytics();
+                loadRecompTrendChart();
+            } else if (tabId === 'vitals') {
+                loadVitals();
             } else if (tabId === 'body') {
                 loadBodyRecomp();
                 loadSleepAnalytics();
@@ -114,6 +118,18 @@ function initTabs() {
             if (navigator.vibrate) {
                 navigator.vibrate(10);
             }
+        });
+    });
+}
+
+function initAccordions() {
+    const headers = document.querySelectorAll('.accordion-header');
+    headers.forEach(header => {
+        header.addEventListener('click', () => {
+            const accordion = header.closest('.accordion');
+            if (!accordion) return;
+            const isOpen = accordion.classList.toggle('open');
+            header.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
         });
     });
 }
@@ -133,10 +149,15 @@ async function loadDashboard() {
         const data = await response.json();
 
         updateHeadlineKPIs(data.headline, data.body_stats);
+        updateGoalBanner(data.body_stats);
         updateAlerts(data.alerts);
         updateMuscleGroups(data.muscles);
         updateExercises(data.exercises);
         updateNextWorkout(data.next_workout);
+        updateRecompCommandCenter(data.recomp_command, data.nutrition_today);
+        updateReadinessGauge(data.recomp_command);
+        updateDashboardRecommendation(data.next_workout);
+        loadVitals();
 
         // Oura recovery widget + smart recommendation + sleep insights (best-effort)
         loadOuraWidget();
@@ -156,6 +177,51 @@ async function loadDashboard() {
     }
 }
 
+function updateReadinessGauge(recomp) {
+    const gauge = document.getElementById('readiness-gauge');
+    const scoreEl = document.getElementById('readiness-gauge-score');
+    const statusEl = document.getElementById('readiness-gauge-status');
+    const noteEl = document.getElementById('readiness-gauge-note');
+    if (!gauge || !scoreEl || !statusEl || !noteEl) return;
+
+    const readiness = recomp?.readiness ?? 0;
+    scoreEl.textContent = readiness || '--';
+
+    let color = 'var(--success)';
+    let status = 'Green Light';
+    if (readiness < 60) {
+        color = 'var(--danger)';
+        status = 'Recovery Priority';
+    } else if (readiness < 75) {
+        color = 'var(--warning)';
+        status = 'Caution / Technique Focus';
+    }
+
+    gauge.style.background = `conic-gradient(${color} ${Math.min(readiness, 100) * 3.6}deg, rgba(255,255,255,0.08) 0deg)`;
+    statusEl.textContent = status;
+    noteEl.textContent = recomp?.reason || 'Oura readiness signal';
+}
+
+function updateDashboardRecommendation(workout) {
+    const titleEl = document.getElementById('today-workout-title');
+    const focusEl = document.getElementById('today-workout-focus');
+    const durationEl = document.getElementById('today-workout-duration');
+    const rpeEl = document.getElementById('today-workout-rpe');
+    const notesEl = document.getElementById('today-workout-notes');
+    if (!titleEl || !focusEl || !durationEl || !rpeEl || !notesEl) return;
+
+    titleEl.textContent = workout?.focus ? `${workout.focus} Session` : '--';
+    focusEl.textContent = workout?.goal_name ? `Goal: ${workout.goal_name}` : '--';
+    durationEl.textContent = workout?.estimated_duration ? `${workout.estimated_duration}` : '--';
+    const firstRpe = workout?.exercises?.[0]?.rpe_target;
+    rpeEl.textContent = firstRpe ? `Target RPE ${firstRpe}` : 'RPE auto-regulated';
+    if (workout?.mesocycle) {
+        notesEl.textContent = `Week ${workout.mesocycle.week} (${workout.mesocycle.phase}) · Volume x${workout.mesocycle.volume_multiplier}`;
+    } else {
+        notesEl.textContent = 'Auto-adjusted by readiness and soreness.';
+    }
+}
+
 // Update Headline KPIs
 function updateHeadlineKPIs(headline, bodyStats) {
     document.getElementById('total-sets').textContent = headline.total_sets;
@@ -169,6 +235,295 @@ function updateHeadlineKPIs(headline, bodyStats) {
         bodyWeightEl.textContent = Math.round(bodyStats.latest_weight * 10) / 10;
     } else if (bodyWeightEl) {
         bodyWeightEl.textContent = '--';
+    }
+}
+
+function updateGoalBanner(bodyStats) {
+    const weightCurrent = document.getElementById('goal-weight-current');
+    const weightRemaining = document.getElementById('goal-weight-remaining');
+    const bfCurrent = document.getElementById('goal-bf-current');
+    const bfRemaining = document.getElementById('goal-bf-remaining');
+    const bfRemainingLabel = document.getElementById('goal-bf-remaining-label');
+    const bfRemainingWrap = document.getElementById('goal-bf-remaining-wrap');
+    const targetWeight = 175;
+    const targetBf = 18;
+
+    if (!weightCurrent || !weightRemaining || !bfCurrent || !bfRemaining) return;
+
+    const currentWeight = bodyStats?.latest_weight;
+    const currentBf = bodyStats?.latest_body_fat;
+
+    if (currentWeight != null && !Number.isNaN(currentWeight)) {
+        const remaining = Math.max(0, currentWeight - targetWeight);
+        weightCurrent.textContent = `${(Math.round(currentWeight * 10) / 10).toFixed(1)} lbs`;
+        weightRemaining.textContent = `${remaining.toFixed(1)} lbs`;
+    } else {
+        weightCurrent.textContent = '--';
+        weightRemaining.textContent = '--';
+    }
+
+    if (currentBf != null && !Number.isNaN(currentBf)) {
+        const remaining = Math.max(0, currentBf - targetBf);
+        bfCurrent.textContent = `${(Math.round(currentBf * 10) / 10).toFixed(1)}% BF`;
+        bfRemaining.textContent = `${remaining.toFixed(1)}%`;
+        if (bfRemainingWrap) bfRemainingWrap.style.display = 'inline';
+        if (bfRemainingLabel) bfRemainingLabel.style.display = 'inline';
+    } else {
+        bfCurrent.innerHTML = '<button type="button" class="goal-inline-btn" onclick="navigateToTab(\'body\')">Log BF%</button>';
+        bfRemaining.textContent = '';
+        if (bfRemainingWrap) bfRemainingWrap.style.display = 'none';
+        if (bfRemainingLabel) bfRemainingLabel.style.display = 'none';
+    }
+}
+
+async function loadVitals() {
+    try {
+        const response = await fetch('/api/vitals');
+        const data = await response.json();
+        updateVitalsMini(data);
+        updateVitalsTab(data);
+    } catch (error) {
+        console.error('Failed to load vitals:', error);
+        updateVitalsMini(null);
+        updateVitalsTab(null);
+    }
+}
+
+function updateVitalsMini(data) {
+    const weightEl = document.getElementById('vitals-mini-weight');
+    const rhrEl = document.getElementById('vitals-mini-rhr');
+    const sleepEl = document.getElementById('vitals-mini-sleep');
+    const stepsEl = document.getElementById('vitals-mini-steps');
+
+    if (!weightEl || !rhrEl || !sleepEl || !stepsEl) return;
+
+    const weight = data?.weight?.current_lbs;
+    const rhr = data?.heart_rate?.resting_bpm;
+    const sleepHours = data?.sleep?.last_night?.duration_hours;
+    const steps = data?.activity?.steps_today;
+
+    weightEl.textContent = (weight != null) ? `${weight}` : '--';
+    rhrEl.textContent = (rhr != null) ? `${rhr}` : '--';
+    sleepEl.textContent = (sleepHours != null) ? `${sleepHours}h` : '--';
+    stepsEl.textContent = (steps != null) ? `${steps}` : '--';
+}
+
+function updateVitalsTab(data) {
+    const weightCurrentEl = document.getElementById('vitals-weight-current');
+    const weightChangeEl = document.getElementById('vitals-weight-change');
+    const weightBfEl = document.getElementById('vitals-weight-bodyfat');
+    const hrRestingEl = document.getElementById('vitals-hr-resting');
+    const hrAverageEl = document.getElementById('vitals-hr-average');
+    const sleepDurationEl = document.getElementById('vitals-sleep-duration');
+    const sleepAvgEl = document.getElementById('vitals-sleep-avg');
+    const sleepBreakdownEl = document.getElementById('vitals-sleep-breakdown');
+    const stepsRingEl = document.getElementById('vitals-steps-ring');
+    const stepsTodayEl = document.getElementById('vitals-steps-today');
+    const stepsAvgEl = document.getElementById('vitals-steps-avg');
+    const activeCaloriesEl = document.getElementById('vitals-active-calories');
+    const activeMinutesEl = document.getElementById('vitals-active-minutes');
+
+    if (!weightCurrentEl || !weightChangeEl || !weightBfEl || !hrRestingEl || !hrAverageEl ||
+        !sleepDurationEl || !sleepAvgEl || !sleepBreakdownEl || !stepsRingEl || !stepsTodayEl ||
+        !stepsAvgEl || !activeCaloriesEl || !activeMinutesEl) {
+        return;
+    }
+
+    const weight = data?.weight?.current_lbs;
+    weightCurrentEl.textContent = (weight != null) ? `${weight} lbs` : '--';
+
+    const weightChange = data?.weight?.change_7d;
+    weightChangeEl.className = '';
+    if (weightChange == null) {
+        weightChangeEl.textContent = '--';
+        weightChangeEl.classList.add('vitals-change-flat');
+    } else if (weightChange > 0) {
+        weightChangeEl.textContent = `▲ +${weightChange} lbs (7d)`;
+        weightChangeEl.classList.add('vitals-change-up');
+    } else if (weightChange < 0) {
+        weightChangeEl.textContent = `▼ ${weightChange} lbs (7d)`;
+        weightChangeEl.classList.add('vitals-change-down');
+    } else {
+        weightChangeEl.textContent = '— 0.0 lbs (7d)';
+        weightChangeEl.classList.add('vitals-change-flat');
+    }
+
+    const bf = data?.weight?.body_fat_pct;
+    weightBfEl.textContent = (bf != null) ? `BF ${bf}%` : '--';
+
+    const rhr = data?.heart_rate?.resting_bpm;
+    const avgHr = data?.heart_rate?.average_bpm;
+    hrRestingEl.textContent = (rhr != null) ? `${rhr} bpm` : '--';
+    hrAverageEl.textContent = (avgHr != null) ? `${avgHr} bpm` : '--';
+
+    hrRestingEl.classList.remove('hr-low', 'hr-mid', 'hr-high');
+    if (rhr != null) {
+        if (rhr < 60) hrRestingEl.classList.add('hr-low');
+        else if (rhr < 70) hrRestingEl.classList.add('hr-mid');
+        else hrRestingEl.classList.add('hr-high');
+    }
+
+    const lastNight = data?.sleep?.last_night;
+    const sleepHours = lastNight?.duration_hours;
+    sleepDurationEl.textContent = (sleepHours != null) ? `${sleepHours}h` : '--';
+    sleepAvgEl.textContent = (data?.sleep?.avg_7d_hours != null) ? `${data.sleep.avg_7d_hours}h` : '--';
+
+    const deep = lastNight?.deep_min;
+    const rem = lastNight?.rem_min;
+    const light = lastNight?.light_min;
+    const awake = lastNight?.awake_min;
+    const total = [deep, rem, light, awake].reduce((sum, v) => sum + (v || 0), 0);
+
+    const deepEl = document.getElementById('sleep-seg-deep');
+    const remEl = document.getElementById('sleep-seg-rem');
+    const lightEl = document.getElementById('sleep-seg-light');
+    const awakeEl = document.getElementById('sleep-seg-awake');
+
+    if (deepEl && remEl && lightEl && awakeEl) {
+        deepEl.style.width = total ? `${(deep || 0) / total * 100}%` : '0%';
+        remEl.style.width = total ? `${(rem || 0) / total * 100}%` : '0%';
+        lightEl.style.width = total ? `${(light || 0) / total * 100}%` : '0%';
+        awakeEl.style.width = total ? `${(awake || 0) / total * 100}%` : '0%';
+    }
+
+    if (deep != null || rem != null || light != null || awake != null) {
+        sleepBreakdownEl.textContent = `Deep ${deep ?? '--'}m · REM ${rem ?? '--'}m · Light ${light ?? '--'}m · Awake ${awake ?? '--'}m`;
+    } else {
+        sleepBreakdownEl.textContent = '--';
+    }
+
+    const stepsToday = data?.activity?.steps_today;
+    const stepsAvg = data?.activity?.steps_avg_7d;
+    const activeCalories = data?.activity?.active_calories_today;
+    const activeMinutes = data?.activity?.active_minutes_today;
+
+    stepsTodayEl.textContent = (stepsToday != null) ? `${stepsToday}` : '--';
+    stepsAvgEl.textContent = (stepsAvg != null) ? `${stepsAvg}` : '--';
+    activeCaloriesEl.textContent = (activeCalories != null) ? `${activeCalories}` : '--';
+    activeMinutesEl.textContent = (activeMinutes != null) ? `${activeMinutes}` : '--';
+
+    const target = 8000;
+    const pct = (stepsToday != null && target) ? Math.min(stepsToday / target, 1) : 0;
+    const ringDeg = Math.round(pct * 360);
+    stepsRingEl.style.background = `conic-gradient(var(--success) ${ringDeg}deg, rgba(255, 255, 255, 0.08) 0deg)`;
+
+    renderVitalsWeightChart(data?.weight?.trend_30d || []);
+    renderVitalsHrChart(data?.heart_rate?.trend_7d || []);
+}
+
+function renderVitalsWeightChart(trend) {
+    const canvas = document.getElementById('vitals-weight-chart');
+    if (!canvas) return;
+    const labels = trend.map(p => p.date);
+    const values = trend.map(p => p.weight_lbs);
+
+    if (charts.vitalsWeight) {
+        charts.vitalsWeight.destroy();
+    }
+
+    charts.vitalsWeight = new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [{
+                data: values,
+                borderColor: '#22d3ee',
+                backgroundColor: 'rgba(34, 211, 238, 0.15)',
+                fill: true,
+                tension: 0.35,
+                pointRadius: 0,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { enabled: false } },
+            scales: { x: { display: false }, y: { display: false } }
+        }
+    });
+}
+
+function renderVitalsHrChart(trend) {
+    const canvas = document.getElementById('vitals-hr-chart');
+    if (!canvas) return;
+    const labels = trend.map(p => p.date);
+    const resting = trend.map(p => p.resting);
+    const average = trend.map(p => p.average);
+
+    if (charts.vitalsHr) {
+        charts.vitalsHr.destroy();
+    }
+
+    charts.vitalsHr = new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                {
+                    data: resting,
+                    borderColor: '#22c55e',
+                    tension: 0.35,
+                    pointRadius: 0,
+                },
+                {
+                    data: average,
+                    borderColor: '#f59e0b',
+                    tension: 0.35,
+                    pointRadius: 0,
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { enabled: false } },
+            scales: { x: { display: false }, y: { display: false } }
+        }
+    });
+}
+
+function updateRecompCommandCenter(recomp, nutrition) {
+    const badge = document.getElementById('recomp-signal');
+    const reason = document.getElementById('recomp-reason');
+    if (badge && recomp) {
+        badge.textContent = recomp.signal || '--';
+        badge.classList.remove('train', 'recover');
+        if (recomp.signal === 'TRAIN') {
+            badge.classList.add('train');
+        } else if (recomp.signal === 'RECOVER') {
+            badge.classList.add('recover');
+        }
+    }
+    if (reason) {
+        reason.textContent = recomp?.reason || '--';
+    }
+
+    const proteinText = document.getElementById('protein-today');
+    const caloriesText = document.getElementById('calories-today');
+    const proteinFill = document.getElementById('protein-progress');
+    const caloriesFill = document.getElementById('calories-progress');
+    if (nutrition) {
+        if (proteinText) {
+            proteinText.textContent = `${Math.round(nutrition.protein_g)}g / ${Math.round(nutrition.protein_target_g)}g`;
+        }
+        if (caloriesText) {
+            caloriesText.textContent = `${nutrition.calories} / ${nutrition.calories_target}`;
+        }
+        if (proteinFill) {
+            const pct = Math.max(0, nutrition.protein_pct || 0);
+            proteinFill.style.width = `${Math.min(pct, 100)}%`;
+            proteinFill.classList.toggle('over', pct > 110);
+        }
+        if (caloriesFill) {
+            const pct = Math.max(0, nutrition.calories_pct || 0);
+            caloriesFill.style.width = `${Math.min(pct, 100)}%`;
+            caloriesFill.classList.toggle('over', pct > 110);
+        }
+    } else {
+        if (proteinText) proteinText.textContent = '--';
+        if (caloriesText) caloriesText.textContent = '--';
+        if (proteinFill) proteinFill.style.width = '0%';
+        if (caloriesFill) caloriesFill.style.width = '0%';
     }
 }
 
@@ -229,8 +584,7 @@ async function loadOuraWidget(forceRefresh = false) {
 
             const noteEl = document.getElementById('oura-recovery-note');
             if (noteEl) {
-                const source = status.source ? `Source: ${status.source}` : '';
-                noteEl.textContent = source;
+                noteEl.textContent = '';
             }
         }
 
@@ -272,7 +626,14 @@ async function loadSleepInsights() {
         const minToHrs = (min) => min ? (min / 60).toFixed(1) : null;
 
         setVal('sleep-last-night-duration', minToHrs(lastNight.total_sleep_min), ' h');
-        setVal('sleep-last-night-score', lastNight.sleep_score);
+        const sleepScoreEl = document.getElementById('sleep-last-night-score');
+        if (sleepScoreEl) {
+            if (lastNight.sleep_score && lastNight.sleep_score > 0) {
+                sleepScoreEl.textContent = lastNight.sleep_score;
+            } else {
+                sleepScoreEl.innerHTML = 'N/A <span class="kpi-note">(not tracked by Oura)</span>';
+            }
+        }
         setVal('sleep-week-avg', minToHrs(weekAvg.duration_min), ' h');
         
         // Consistency status
@@ -300,10 +661,7 @@ async function loadSleepInsights() {
 
         setVal('sleep-hr', lastNight.avg_heart_rate ? Math.round(lastNight.avg_heart_rate) : null, ' bpm');
 
-        // Render 7-day trend chart
-        if (data.trend_data && data.trend_data.length > 0) {
-            renderSleepTrendChart(data.trend_data);
-        }
+        // Chart is now rendered inline in index.html (bypasses app.js caching issues)
 
     } catch (error) {
         console.error('Failed to load sleep insights:', error);
@@ -413,6 +771,19 @@ async function loadSmartRecommendation() {
             return;
         }
 
+        const summaryEl = document.getElementById('readiness-summary');
+        if (summaryEl) {
+            if (data.readiness == null) {
+                summaryEl.textContent = '';
+            } else if (data.readiness >= 80) {
+                summaryEl.textContent = '✅ High readiness — train hard';
+            } else if (data.readiness >= 60) {
+                summaryEl.textContent = '⚠️ Moderate readiness — train smart';
+            } else {
+                summaryEl.textContent = '🔴 Low readiness — consider recovery';
+            }
+        }
+
         const rec = data.recommendation ? data.recommendation.toUpperCase() : '';
         const avoid = (data.avoid_muscles && data.avoid_muscles.length) ? ` | Avoid: ${data.avoid_muscles.join(', ')}` : '';
         const readiness = data.readiness != null ? `Readiness ${data.readiness}` : 'Readiness --';
@@ -426,26 +797,28 @@ async function loadSmartRecommendation() {
         const reasoningContainer = document.getElementById('recommendation-reasoning');
         const factorsContainer = document.getElementById('reasoning-factors');
         if (reasoningContainer && factorsContainer && data.readiness_factors) {
+            const reasoningToggle = document.getElementById('reasoning-toggle');
             const factors = [];
             const rf = data.readiness_factors;
             
-            // ACWR
-            if (rf.acwr) {
+            // ACWR - hide if 0 (no meaningful data yet)
+            if (rf.acwr && rf.acwr.acwr > 0) {
                 const acwrClass = rf.acwr.risk === 'optimal' ? 'positive' : 
                                   rf.acwr.risk === 'high' ? 'negative' : 'neutral';
                 factors.push(`<div class="reasoning-factor ${acwrClass}">
                     <span class="icon">📈</span>
-                    <span>ACWR: ${rf.acwr.acwr.toFixed(2)} (${rf.acwr.risk})</span>
+                    <span>Training load ratio: ${rf.acwr.acwr.toFixed(2)}</span>
                 </div>`);
             }
             
-            // Sleep Debt
-            if (rf.sleep_debt) {
-                const sleepClass = rf.sleep_debt.status === 'good' ? 'positive' : 
-                                   rf.sleep_debt.status === 'severe' ? 'negative' : 'neutral';
+            // Sleep Debt - show friendly label, hide "severe" when data is sparse
+            if (rf.sleep_debt && rf.sleep_debt.debt_hours != null) {
+                const debtH = rf.sleep_debt.debt_hours;
+                const sleepClass = debtH < 2 ? 'positive' : debtH < 5 ? 'neutral' : 'negative';
+                const sleepLabel = debtH < 2 ? 'Well rested' : debtH < 5 ? 'Mild sleep debt' : 'Sleep debt: recover tonight';
                 factors.push(`<div class="reasoning-factor ${sleepClass}">
                     <span class="icon">😴</span>
-                    <span>Sleep debt: ${rf.sleep_debt.debt_hours.toFixed(1)}h (${rf.sleep_debt.status})</span>
+                    <span>${sleepLabel}</span>
                 </div>`);
             }
             
@@ -468,6 +841,15 @@ async function loadSmartRecommendation() {
             if (factors.length > 0) {
                 factorsContainer.innerHTML = factors.join('');
                 reasoningContainer.style.display = 'block';
+                factorsContainer.style.display = 'flex';
+                if (reasoningToggle) {
+                    reasoningToggle.setAttribute('aria-expanded', 'true');
+                    reasoningToggle.onclick = () => {
+                        const isOpen = factorsContainer.style.display !== 'none';
+                        factorsContainer.style.display = isOpen ? 'none' : 'flex';
+                        reasoningToggle.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+                    };
+                }
             } else {
                 reasoningContainer.style.display = 'none';
             }
@@ -521,24 +903,113 @@ function updateAlerts(alerts) {
 // Update Muscle Groups
 function updateMuscleGroups(muscles) {
     const container = document.getElementById('muscle-container');
+    const title = document.getElementById('muscle-accordion-title');
+    if (title) {
+        const count = Array.isArray(muscles) ? muscles.length : 0;
+        title.textContent = `Muscle Groups (${count})`;
+    }
 
-    container.innerHTML = muscles.map(muscle => `
-        <div class="muscle-card">
-            <div class="muscle-info">
-                <span class="muscle-name">${muscle.muscle}</span>
-                <span class="muscle-stats">${muscle.sets} sets | ${muscle.status} | Last: ${formatDate(muscle.last_trained)}</span>
+    if (container) {
+        container.innerHTML = muscles.map(muscle => `
+            <div class="muscle-card">
+                <div class="muscle-info">
+                    <span class="muscle-name">${muscle.muscle}</span>
+                    <span class="muscle-stats">${muscle.sets} sets | ${muscle.status} | Last: ${formatDate(muscle.last_trained)}</span>
+                </div>
+                <div class="muscle-readiness">
+                    <span class="readiness-score text-${muscle.readiness_color}">${muscle.readiness}/10</span>
+                    <span class="readiness-label">Readiness</span>
+                </div>
             </div>
-            <div class="muscle-readiness">
-                <span class="readiness-score text-${muscle.readiness_color}">${muscle.readiness}/10</span>
-                <span class="readiness-label">Readiness</span>
+        `).join('');
+    }
+
+    const heatmap = document.getElementById('muscle-heatmap');
+    if (heatmap) {
+        const muscleMap = {};
+        muscles.forEach(m => { muscleMap[m.muscle.toLowerCase()] = m; });
+
+        const getColor = (name) => {
+            const m = muscleMap[name];
+            if (!m) return 'rgba(255,255,255,0.06)';
+            const r = m.readiness || 0;
+            if (r >= 8) return 'rgba(16, 185, 129, 0.7)';
+            if (r >= 5) return 'rgba(245, 158, 11, 0.6)';
+            return 'rgba(239, 68, 68, 0.6)';
+        };
+        const getLabel = (name) => {
+            const m = muscleMap[name];
+            return m ? `${m.readiness}/10` : '--';
+        };
+
+        heatmap.innerHTML = `
+        <div class="body-heatmap-container">
+            <svg viewBox="0 0 200 380" class="body-svg" xmlns="http://www.w3.org/2000/svg">
+                <!-- Head -->
+                <circle cx="100" cy="28" r="18" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+                <!-- Neck -->
+                <rect x="93" y="46" width="14" height="12" rx="4" fill="rgba(255,255,255,0.06)"/>
+                <!-- Shoulders -->
+                <ellipse cx="60" cy="72" rx="22" ry="12" fill="${getColor('shoulders')}" class="muscle-zone" data-muscle="shoulders"/>
+                <ellipse cx="140" cy="72" rx="22" ry="12" fill="${getColor('shoulders')}" class="muscle-zone" data-muscle="shoulders"/>
+                <!-- Chest -->
+                <ellipse cx="80" cy="95" rx="20" ry="18" fill="${getColor('chest')}" class="muscle-zone" data-muscle="chest"/>
+                <ellipse cx="120" cy="95" rx="20" ry="18" fill="${getColor('chest')}" class="muscle-zone" data-muscle="chest"/>
+                <!-- Back (shown as outline behind chest) -->
+                <rect x="68" y="80" width="64" height="50" rx="8" fill="${getColor('back')}" opacity="0.3" class="muscle-zone" data-muscle="back"/>
+                <!-- Biceps -->
+                <ellipse cx="42" cy="110" rx="10" ry="22" fill="${getColor('biceps')}" class="muscle-zone" data-muscle="biceps"/>
+                <ellipse cx="158" cy="110" rx="10" ry="22" fill="${getColor('biceps')}" class="muscle-zone" data-muscle="biceps"/>
+                <!-- Triceps -->
+                <ellipse cx="38" cy="115" rx="7" ry="18" fill="${getColor('triceps')}" opacity="0.5" class="muscle-zone" data-muscle="triceps"/>
+                <ellipse cx="162" cy="115" rx="7" ry="18" fill="${getColor('triceps')}" opacity="0.5" class="muscle-zone" data-muscle="triceps"/>
+                <!-- Core -->
+                <rect x="78" y="118" width="44" height="40" rx="6" fill="${getColor('core')}" class="muscle-zone" data-muscle="core"/>
+                <!-- Forearms -->
+                <ellipse cx="36" cy="145" rx="6" ry="16" fill="rgba(255,255,255,0.08)"/>
+                <ellipse cx="164" cy="145" rx="6" ry="16" fill="rgba(255,255,255,0.08)"/>
+                <!-- Glutes -->
+                <ellipse cx="85" cy="170" rx="18" ry="14" fill="${getColor('glutes')}" class="muscle-zone" data-muscle="glutes"/>
+                <ellipse cx="115" cy="170" rx="18" ry="14" fill="${getColor('glutes')}" class="muscle-zone" data-muscle="glutes"/>
+                <!-- Quads -->
+                <ellipse cx="80" cy="220" rx="16" ry="40" fill="${getColor('quads')}" class="muscle-zone" data-muscle="quads"/>
+                <ellipse cx="120" cy="220" rx="16" ry="40" fill="${getColor('quads')}" class="muscle-zone" data-muscle="quads"/>
+                <!-- Hamstrings (behind quads, subtle) -->
+                <ellipse cx="80" cy="225" rx="13" ry="35" fill="${getColor('hamstrings')}" opacity="0.4" class="muscle-zone" data-muscle="hamstrings"/>
+                <ellipse cx="120" cy="225" rx="13" ry="35" fill="${getColor('hamstrings')}" opacity="0.4" class="muscle-zone" data-muscle="hamstrings"/>
+                <!-- Adductors -->
+                <ellipse cx="95" cy="210" rx="6" ry="25" fill="${getColor('adductors')}" class="muscle-zone" data-muscle="adductors"/>
+                <ellipse cx="105" cy="210" rx="6" ry="25" fill="${getColor('adductors')}" class="muscle-zone" data-muscle="adductors"/>
+                <!-- Calves -->
+                <ellipse cx="78" cy="300" rx="10" ry="28" fill="${getColor('calves')}" class="muscle-zone" data-muscle="calves"/>
+                <ellipse cx="122" cy="300" rx="10" ry="28" fill="${getColor('calves')}" class="muscle-zone" data-muscle="calves"/>
+                <!-- Feet -->
+                <ellipse cx="78" cy="340" rx="12" ry="6" fill="rgba(255,255,255,0.06)"/>
+                <ellipse cx="122" cy="340" rx="12" ry="6" fill="rgba(255,255,255,0.06)"/>
+            </svg>
+            <div class="body-heatmap-legend">
+                ${muscles.map(m => `<div class="legend-row"><span class="legend-dot" style="background:${getColor(m.muscle.toLowerCase())}"></span><span class="legend-name">${m.muscle}</span><strong class="legend-score">${m.readiness}/10</strong></div>`).join('')}
             </div>
-        </div>
-    `).join('');
+        </div>`;
+
+        const allMax = muscles.length > 0 && muscles.every(m => Number(m.readiness) >= 10);
+        if (allMax) {
+            const note = document.createElement('div');
+            note.className = 'muscle-readiness-note';
+            note.textContent = 'All muscles fully recovered — time to train! 💪';
+            heatmap.appendChild(note);
+        }
+    }
 }
 
 // Update Exercises
 function updateExercises(exercises) {
     const container = document.getElementById('exercise-container');
+    const title = document.getElementById('exercise-accordion-title');
+    if (title) {
+        const count = Array.isArray(exercises) ? exercises.length : 0;
+        title.textContent = `Exercise Progress (${count})`;
+    }
 
     container.innerHTML = exercises.map(ex => `
         <div class="exercise-card">
@@ -577,7 +1048,9 @@ function updateNextWorkout(workout) {
     }
 
     const container = document.getElementById('workout-exercises');
-    container.innerHTML = workout.exercises.map((ex, i) => `
+    container.innerHTML = workout.exercises.map((ex, i) => {
+        const restLabel = ex.rest_label ? ex.rest_label : (ex.rest_minutes != null ? `${ex.rest_minutes} min` : '--');
+        return `
         <div class="workout-card">
             <div class="workout-exercise-header">
                 <span class="workout-exercise-name">${i + 1}. ${ex.exercise}</span>
@@ -585,9 +1058,9 @@ function updateNextWorkout(workout) {
             </div>
             <div class="workout-target">${ex.target_weight} lbs x ${ex.target_reps} reps x ${ex.target_sets} sets</div>
             <div class="workout-rationale">${ex.rationale}</div>
-            <div class="workout-rest">Rest: ${ex.rest_minutes} min${ex.rpe_target ? ` | Target RPE: ${ex.rpe_target}` : ''}${ex.estimated_time ? ` | ~${ex.estimated_time} min` : ''}</div>
+            <div class="workout-rest">Rest: ${restLabel}${ex.rpe_target ? ` | Target RPE: ${ex.rpe_target}` : ''}${ex.estimated_time ? ` | ~${ex.estimated_time} min` : ''}</div>
         </div>
-    `).join('');
+    `}).join('');
 
     // Cardio recommendation
     const cardioSection = document.getElementById('cardio-section');
@@ -648,6 +1121,24 @@ function updateNextWorkout(workout) {
 
     // Store for completion tracking
     currentRecommendation = workout;
+
+    const dashMeta = document.getElementById('dashboard-workout-meta');
+    const dashList = document.getElementById('dashboard-workout-exercises');
+    if (dashMeta && dashList) {
+        const meso = workout.mesocycle ? `Week ${workout.mesocycle.week} (${workout.mesocycle.phase})` : '';
+        dashMeta.textContent = `${workout.focus} · ${workout.estimated_duration}${meso ? ` · ${meso}` : ''}`;
+        dashList.innerHTML = workout.exercises.map(ex => `
+            <div class="workout-card">
+                <div class="workout-exercise-header">
+                    <span class="workout-exercise-name">${ex.exercise}</span>
+                    <span class="workout-muscle">${ex.muscle}</span>
+                </div>
+                <div class="workout-target">${ex.target_weight} lbs · ${ex.target_reps} reps · ${ex.target_sets} sets</div>
+                <div class="workout-rationale">${ex.rationale}</div>
+                <div class="workout-rest workout-rpe">RPE ${ex.rpe_target}</div>
+            </div>
+        `).join('');
+    }
 }
 
 // ==================== Advanced KPIs ====================
@@ -664,11 +1155,15 @@ function updateConsistency(consistency) {
     const longestStreak = document.getElementById('longest-streak');
     const weeklyAvg = document.getElementById('weekly-avg');
     const consistencyPct = document.getElementById('consistency-pct');
+    const streakCount = document.getElementById('streak-count');
+    const streakMeta = document.getElementById('streak-meta');
 
     if (currentStreak) currentStreak.textContent = consistency.current_streak;
     if (longestStreak) longestStreak.textContent = consistency.longest_streak;
     if (weeklyAvg) weeklyAvg.textContent = consistency.weekly_avg;
     if (consistencyPct) consistencyPct.textContent = consistency.consistency_pct + '%';
+    if (streakCount) streakCount.textContent = consistency.current_streak;
+    if (streakMeta) streakMeta.textContent = `${consistency.weekly_avg} sessions/week · Longest ${consistency.longest_streak}`;
 }
 
 function updateDeloadStatus(deload) {
@@ -840,25 +1335,42 @@ function renderCharts(chartData) {
 
     // Push/Pull Chart
     const pushPullCtx = document.getElementById('pushPullChart');
+    const pushPullEmpty = document.getElementById('pushpull-empty');
     if (pushPullCtx && chartData.push_pull) {
-        charts.pushPull = new Chart(pushPullCtx, {
-            type: 'doughnut',
-            data: {
-                labels: ['Push', 'Pull'],
-                datasets: [{
-                    data: [chartData.push_pull.push, chartData.push_pull.pull],
-                    backgroundColor: ['#ef4444', '#3b82f6'],
-                    borderWidth: 0
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { position: 'bottom', labels: { color: '#a0a0b0' } }
-                }
+        const pushSets = chartData.push_pull.push || 0;
+        const pullSets = chartData.push_pull.pull || 0;
+        const totalSets = pushSets + pullSets;
+        if (totalSets < 10) {
+            if (charts.pushPull) {
+                charts.pushPull.destroy();
             }
-        });
+            pushPullCtx.style.display = 'none';
+            if (pushPullEmpty) pushPullEmpty.style.display = 'block';
+        } else {
+            pushPullCtx.style.display = 'block';
+            if (pushPullEmpty) pushPullEmpty.style.display = 'none';
+            if (charts.pushPull) {
+                charts.pushPull.destroy();
+            }
+            charts.pushPull = new Chart(pushPullCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Push', 'Pull'],
+                    datasets: [{
+                        data: [pushSets, pullSets],
+                        backgroundColor: ['#ef4444', '#3b82f6'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom', labels: { color: '#a0a0b0' } }
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -939,6 +1451,97 @@ async function loadWeightChart() {
         });
     } catch (error) {
         console.error('Failed to load weight chart:', error);
+    }
+}
+
+async function loadRecompTrendChart() {
+    const emptyEl = document.getElementById('recomp-empty');
+    try {
+        const response = await fetch('/api/body-history');
+        const data = await response.json();
+        const history = data.history || [];
+        if (!history || history.length < 2) {
+            if (emptyEl) emptyEl.style.display = 'block';
+            if (charts.recomp) {
+                charts.recomp.destroy();
+                charts.recomp = null;
+            }
+            return;
+        }
+
+        if (emptyEl) emptyEl.style.display = 'none';
+
+        const recompCtx = document.getElementById('recompChart');
+        if (!recompCtx) return;
+
+        if (charts.recomp) {
+            charts.recomp.destroy();
+        }
+
+        const sortedHistory = [...history].reverse();
+        const dates = sortedHistory.map(entry => entry.date);
+        const weights = sortedHistory.map(entry => entry.weight_lbs);
+        const bodyFat = sortedHistory.map(entry => entry.body_fat_pct);
+
+        charts.recomp = new Chart(recompCtx, {
+            type: 'line',
+            data: {
+                labels: dates.map(d => formatDate(d)),
+                datasets: [
+                    {
+                        label: 'Weight (lbs)',
+                        data: weights,
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                        yAxisID: 'y',
+                        tension: 0.3,
+                        fill: true,
+                        pointRadius: 3
+                    },
+                    {
+                        label: 'Body Fat %',
+                        data: bodyFat,
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                        yAxisID: 'y1',
+                        tension: 0.3,
+                        fill: false,
+                        pointRadius: 3
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: { color: '#a0a0b0', font: { size: 12 } }
+                    }
+                },
+                scales: {
+                    x: { ticks: { color: '#a0a0b0' }, grid: { color: '#2a2a4a' } },
+                    y: {
+                        type: 'linear',
+                        position: 'left',
+                        ticks: { color: '#a0a0b0' },
+                        grid: { color: '#2a2a4a' },
+                        title: { display: true, text: 'Weight (lbs)', color: '#a0a0b0', font: { size: 12 } }
+                    },
+                    y1: {
+                        type: 'linear',
+                        position: 'right',
+                        ticks: { color: '#a0a0b0' },
+                        grid: { drawOnChartArea: false },
+                        title: { display: true, text: 'Body Fat %', color: '#a0a0b0', font: { size: 12 } }
+                    }
+                }
+            }
+        });
+    } catch (error) {
+        if (emptyEl) emptyEl.style.display = 'block';
+        console.error('Failed to load recomp chart:', error);
     }
 }
 
@@ -1047,8 +1650,10 @@ function renderHistoryByFilter() {
     const volumeEl = document.getElementById('history-volume');
     const totalLabel = document.getElementById('history-total-label');
     const volumeLabel = document.getElementById('history-volume-label');
+    const overloadSection = document.getElementById('progressive-overload-section');
 
     if (!container) return;
+    if (overloadSection) overloadSection.style.display = 'none';
 
     if (currentHistoryFilter === 'workouts') {
         const allWorkouts = historyData.workouts || [];
@@ -1058,7 +1663,9 @@ function renderHistoryByFilter() {
         const totalVolume = workouts.reduce((sum, w) => sum + (w.total_volume || 0), 0);
         volumeEl.textContent = (totalVolume / 1000).toFixed(0) + 'K';
         volumeLabel.textContent = 'Total Volume';
+        renderWorkoutHeatmap(allWorkouts);
         renderWorkoutHistory(workouts);
+        loadProgressiveOverload();
     } else if (currentHistoryFilter === 'cardio') {
         const allCardio = historyData.cardio || [];
         const cardio = filterByDateRange(allCardio);
@@ -1080,8 +1687,51 @@ function renderHistoryByFilter() {
     }
 }
 
+async function loadProgressiveOverload() {
+    const section = document.getElementById('progressive-overload-section');
+    const container = document.getElementById('progressive-overload-container');
+    if (!section || !container) return;
+    try {
+        const response = await fetch('/api/progressive-overload');
+        const data = await response.json();
+        const exercises = data.exercises || [];
+        if (!exercises.length) {
+            section.style.display = 'none';
+            return;
+        }
+        section.style.display = 'block';
+        container.innerHTML = exercises.map(ex => {
+            const last = ex.last_weight != null ? `${ex.last_weight} lbs` : '--';
+            const prev = ex.previous_weight != null ? `${ex.previous_weight} lbs` : '--';
+            let changeText = '—';
+            if (ex.change_lbs != null) {
+                const arrow = ex.change_dir === 'up' ? '▲' : ex.change_dir === 'down' ? '▼' : '•';
+                changeText = `${arrow} ${Math.abs(ex.change_lbs)} lbs`;
+            }
+            const trend = ex.trend || '--';
+            return `
+                <div class="overload-card">
+                    <div class="overload-header">
+                        <span class="overload-name">${escapeHtml(ex.exercise)}</span>
+                        <span class="overload-change ${ex.change_dir}">${changeText}</span>
+                    </div>
+                    <div class="overload-row">
+                        <span>Last: ${last}</span>
+                        <span>Prev: ${prev}</span>
+                    </div>
+                    <div class="overload-trend">Trend: ${trend}</div>
+                </div>
+            `;
+        }).join('');
+    } catch (error) {
+        section.style.display = 'none';
+        console.error('Failed to load progressive overload:', error);
+    }
+}
+
 function renderWorkoutHistory(workouts) {
     const container = document.getElementById('history-container');
+    const prs = historyData.personal_records || {};
 
     if (workouts.length === 0) {
         container.innerHTML = '<p class="empty-state">No workouts logged yet</p>';
@@ -1089,10 +1739,10 @@ function renderWorkoutHistory(workouts) {
     }
 
     container.innerHTML = workouts.map((w) => `
-        <div class="history-card" onclick="toggleHistoryDetail(this)">
+        <div class="history-card" id="history-${w.date}" onclick="toggleHistoryDetail(this)">
             <div class="history-header">
                 <div class="history-date">${formatDate(w.date)}</div>
-                <div class="history-type">${w.session_type}</div>
+                <div class="history-type">${(w.session_type || 'general').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</div>
             </div>
             <div class="history-summary">
                 <span>${w.total_sets} sets</span>
@@ -1104,6 +1754,7 @@ function renderWorkoutHistory(workouts) {
                 ${(w.exercises || []).map(e => `
                     <div class="history-exercise">
                         <strong>${escapeHtml(e.machine)}</strong>
+                        ${prs[e.machine] && prs[e.machine].all_time_date === w.date ? `<span class="pr-badge">PR</span>` : ''}
                         ${(e.sets || []).map(s => `<div class="history-set">${s.weight_lbs}lbs x ${s.reps} @ RPE ${s.rpe || '?'}</div>`).join('')}
                     </div>
                 `).join('')}
@@ -1114,6 +1765,60 @@ function renderWorkoutHistory(workouts) {
             </div>
         </div>
     `).join('');
+}
+
+function renderWorkoutHeatmap(workouts) {
+    const heatmap = document.getElementById('history-heatmap');
+    if (!heatmap) return;
+
+    const byDate = {};
+    (workouts || []).forEach(w => {
+        if (!w.date) return;
+        byDate[w.date] = (byDate[w.date] || 0) + 1;
+    });
+
+    const totalDays = 84;
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - totalDays + 1);
+
+    const cells = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().slice(0, 10);
+        const count = byDate[dateStr] || 0;
+        const level = count >= 3 ? 3 : count === 2 ? 2 : count === 1 ? 1 : 0;
+        cells.push(`<div class="heatmap-cell level-${level}" data-date="${dateStr}" title="${dateStr} • ${count} workout${count === 1 ? '' : 's'}"></div>`);
+    }
+
+    // Add day-of-week labels
+    const dayLabels = ['M', '', 'W', '', 'F', '', 'S'];
+    const dayLabelHtml = dayLabels.map(d => `<div class="heatmap-day-label">${d}</div>`).join('');
+    
+    // Add month labels
+    const months = [];
+    let lastMonth = -1;
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const m = d.getMonth();
+        if (m !== lastMonth) {
+            const weekOffset = Math.floor((d - start) / (7 * 86400000));
+            months.push({ name: d.toLocaleString('en', { month: 'short' }), offset: weekOffset });
+            lastMonth = m;
+        }
+    }
+    const monthLabelHtml = `<div class="heatmap-month-labels">${months.map(m => `<span style="grid-column:${m.offset + 2}">${m.name}</span>`).join('')}</div>`;
+    
+    heatmap.innerHTML = monthLabelHtml + `<div class="heatmap-grid"><div class="heatmap-day-labels">${dayLabelHtml}</div><div class="heatmap-cells">${cells.join('')}</div></div>`;
+    heatmap.querySelectorAll('.heatmap-cell').forEach(cell => {
+        cell.addEventListener('click', () => {
+            const date = cell.getAttribute('data-date');
+            const card = document.getElementById(`history-${date}`);
+            if (card) {
+                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                card.classList.add('flash');
+                setTimeout(() => card.classList.remove('flash'), 1200);
+            }
+        });
+    });
 }
 
 function renderCardioHistory(cardio) {
@@ -1218,6 +1923,10 @@ async function loadSettings() {
         renderTimeOptions(currentSettings.time_options, currentSettings.available_time_minutes);
         document.getElementById('sessions-target').value = currentSettings.sessions_per_week_target;
         document.getElementById('target-value').textContent = currentSettings.sessions_per_week_target;
+        const calTarget = document.getElementById('settings-calories-target');
+        const proteinTarget = document.getElementById('settings-protein-target');
+        if (calTarget) calTarget.value = currentSettings.daily_calorie_target || '';
+        if (proteinTarget) proteinTarget.value = currentSettings.daily_protein_target_g || '';
 
         // Update subtitle with current goal
         const goalName = currentSettings.goal_details?.name || 'Training';
@@ -1418,6 +2127,34 @@ function initSettings() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sessions_per_week_target: parseInt(targetSlider.value) })
             });
+        });
+    }
+
+    const saveNutritionBtn = document.getElementById('save-nutrition-targets');
+    if (saveNutritionBtn) {
+        saveNutritionBtn.addEventListener('click', async () => {
+            const calTarget = document.getElementById('settings-calories-target');
+            const proteinTarget = document.getElementById('settings-protein-target');
+            const calValue = parseInt(calTarget?.value || 0);
+            const proteinValue = parseFloat(proteinTarget?.value || 0);
+            if (!calValue || !proteinValue) {
+                alert('Please enter calorie and protein targets.');
+                return;
+            }
+            try {
+                await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        daily_calorie_target: calValue,
+                        daily_protein_target_g: proteinValue
+                    })
+                });
+                loadDashboard();
+                if (navigator.vibrate) navigator.vibrate(20);
+            } catch (error) {
+                console.error('Failed to update nutrition targets:', error);
+            }
         });
     }
 
@@ -1706,6 +2443,48 @@ function closeWorkoutModal() {
     document.getElementById('workout-step-cardio').style.display = 'none';
 }
 
+function createSetRow(setNum, weight, reps, rpe) {
+    const weightValue = Number.isFinite(weight) ? weight : (weight ?? '');
+    const repsValue = Number.isFinite(reps) ? reps : (reps ?? '');
+    const rpeValue = Number.isFinite(rpe) ? rpe : (rpe ?? '');
+    return `<div class="set-row" data-set="${setNum}">
+        <span class="set-label">Set ${setNum}</span>
+        <input type="number" class="set-weight" value="${weightValue}" min="0" step="5" placeholder="lbs">
+        <span class="set-x">×</span>
+        <input type="number" class="set-reps" value="${repsValue}" min="1" max="50" placeholder="reps">
+        <input type="number" class="set-rpe" value="${rpeValue}" min="1" max="10" step="0.5" placeholder="RPE">
+        <button type="button" class="set-complete" title="Tap to log set">✓</button>
+        <button class="btn-remove-set" onclick="removeSetRow(this)">✕</button>
+    </div>`;
+}
+
+function addSetRow(btn) {
+    const container = btn.previousElementSibling;
+    const rows = container.querySelectorAll('.set-row');
+    const lastRow = rows[rows.length - 1];
+    const lastWeight = lastRow ? lastRow.querySelector('.set-weight').value : '';
+    const lastReps = lastRow ? lastRow.querySelector('.set-reps').value : '';
+    const lastRpe = lastRow ? (parseFloat(lastRow.querySelector('.set-rpe').value) || 7) : 7;
+    const newSetNum = rows.length + 1;
+    const div = document.createElement('div');
+    div.innerHTML = createSetRow(newSetNum, lastWeight === '' ? '' : parseFloat(lastWeight), lastReps === '' ? '' : parseInt(lastReps, 10), lastRpe);
+    container.appendChild(div.firstElementChild);
+    bindSetRow(container.lastElementChild);
+}
+
+function removeSetRow(btn) {
+    const container = btn.closest('.exercise-sets-container');
+    const rows = container.querySelectorAll('.set-row');
+    if (rows.length <= 1) return; // keep at least 1 set
+    btn.closest('.set-row').remove();
+    // Re-number remaining rows
+    container.querySelectorAll('.set-row').forEach((row, i) => {
+        row.dataset.set = i + 1;
+        row.querySelector('.set-label').textContent = `Set ${i + 1}`;
+    });
+    updateWorkoutVolume();
+}
+
 function startWorkout() {
     if (!currentRecommendation) return;
 
@@ -1746,7 +2525,15 @@ function startWorkout() {
     document.getElementById('workout-step-exercises').style.display = 'block';
     document.getElementById('workout-step-cardio').style.display = 'none';
 
-    container.innerHTML = currentRecommendation.exercises.map((ex, i) => `
+    container.innerHTML = currentRecommendation.exercises.map((ex, i) => {
+        const numSets = Math.max(1, ex.target_sets || 3);
+        let setRowsHtml = '';
+        const defaultWeight = ex.target_weight ?? '';
+        const defaultReps = ex.target_reps ?? '';
+        for (let s = 1; s <= numSets; s++) {
+            setRowsHtml += createSetRow(s, defaultWeight, defaultReps, 7);
+        }
+        return `
         <div class="active-exercise" data-exercise="${ex.exercise}">
             <div class="active-exercise-header">
                 <label>
@@ -1754,24 +2541,112 @@ function startWorkout() {
                     ${ex.exercise}
                 </label>
             </div>
-            <div class="active-exercise-inputs">
-                <div class="active-exercise-input-group">
-                    <label>Weight (lbs)</label>
-                    <input type="number" class="weight-input" value="${ex.target_weight}" placeholder="Weight">
-                </div>
-                <div class="active-exercise-input-group">
-                    <label>Reps</label>
-                    <input type="number" class="reps-input" value="${ex.target_reps}" placeholder="Reps">
-                </div>
-                <div class="active-exercise-input-group">
-                    <label>Sets</label>
-                    <input type="number" class="sets-input" value="${ex.target_sets}" placeholder="Sets">
-                </div>
+            <div class="exercise-sets-header">
+                <span class="set-col-label">Set</span>
+                <span class="set-col-label">lbs</span>
+                <span class="set-col-spacer"></span>
+                <span class="set-col-label">Reps</span>
+                <span class="set-col-label">RPE</span>
+                <span class="set-col-remove"></span>
             </div>
+            <div class="exercise-sets-container">
+                ${setRowsHtml}
+            </div>
+            <button class="btn-add-set btn-secondary btn-small" onclick="addSetRow(this)">+ Add Set</button>
         </div>
-    `).join('');
+        `;
+    }).join('');
 
+    bindWorkoutInteractions(container);
+    updateWorkoutVolume();
     modal.style.display = 'flex';
+}
+
+function bindWorkoutInteractions(container) {
+    container.querySelectorAll('.set-row').forEach(row => bindSetRow(row));
+}
+
+function bindSetRow(row) {
+    if (row.dataset.bound === 'true') return;
+    row.dataset.bound = 'true';
+
+    const completeBtn = row.querySelector('.set-complete');
+    if (completeBtn) {
+        completeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleSetRow(row);
+        });
+    }
+
+    row.addEventListener('click', (e) => {
+        const tag = e.target.tagName.toLowerCase();
+        if (tag === 'input' || e.target.classList.contains('btn-remove-set')) return;
+        toggleSetRow(row);
+    });
+
+    let touchStartX = null;
+    row.addEventListener('touchstart', (e) => {
+        touchStartX = e.touches[0].clientX;
+    }, { passive: true });
+
+    row.addEventListener('touchend', (e) => {
+        if (touchStartX == null) return;
+        const touchEndX = e.changedTouches[0].clientX;
+        const delta = touchEndX - touchStartX;
+        if (delta > 50) {
+            copyPreviousSet(row);
+        }
+        touchStartX = null;
+    });
+
+    row.querySelectorAll('input').forEach(input => {
+        input.addEventListener('input', updateWorkoutVolume);
+    });
+}
+
+function toggleSetRow(row) {
+    row.classList.toggle('completed');
+    updateWorkoutVolume();
+}
+
+function copyPreviousSet(row) {
+    const container = row.closest('.exercise-sets-container');
+    if (!container) return;
+    const rows = Array.from(container.querySelectorAll('.set-row'));
+    const index = rows.indexOf(row);
+    if (index <= 0) return;
+    const prev = rows[index - 1];
+    const prevWeight = prev.querySelector('.set-weight')?.value;
+    const prevReps = prev.querySelector('.set-reps')?.value;
+    const prevRpe = prev.querySelector('.set-rpe')?.value;
+    if (prevWeight != null) row.querySelector('.set-weight').value = prevWeight;
+    if (prevReps != null) row.querySelector('.set-reps').value = prevReps;
+    if (prevRpe != null) row.querySelector('.set-rpe').value = prevRpe;
+    updateWorkoutVolume();
+}
+
+function updateWorkoutVolume() {
+    const volumeEl = document.getElementById('workout-volume-total');
+    const setCountEl = document.getElementById('workout-set-count');
+    if (!volumeEl || !setCountEl) return;
+
+    const rows = Array.from(document.querySelectorAll('.set-row'));
+    const completed = rows.filter(r => r.classList.contains('completed'));
+    const activeRows = completed.length ? completed : rows;
+    let totalVolume = 0;
+    let setCount = 0;
+
+    activeRows.forEach(row => {
+        const weight = parseFloat(row.querySelector('.set-weight')?.value || 0);
+        const reps = parseInt(row.querySelector('.set-reps')?.value || 0, 10);
+        if (weight > 0 && reps > 0) {
+            totalVolume += weight * reps;
+            setCount += 1;
+        }
+    });
+
+    volumeEl.textContent = Math.round(totalVolume);
+    setCountEl.textContent = setCount;
 }
 
 function handleNextStep() {
@@ -1793,16 +2668,26 @@ async function completeWorkout() {
         const done = el.querySelector('.exercise-done').checked;
         if (done) {
             const machine = el.dataset.exercise;
-            const weight = parseFloat(el.querySelector('.weight-input').value) || 0;
-            const reps = parseInt(el.querySelector('.reps-input').value) || 0;
-            const numSets = parseInt(el.querySelector('.sets-input').value) || 0;
-
             const sets = [];
-            for (let i = 1; i <= numSets; i++) {
-                sets.push({ set_number: i, weight_lbs: weight, reps: reps, rpe: 7 });
+            el.querySelectorAll('.set-row').forEach((row, i) => {
+                const weightValue = row.querySelector('.set-weight').value;
+                const repsValue = row.querySelector('.set-reps').value;
+                const rpeValue = row.querySelector('.set-rpe').value;
+                const weight = weightValue === '' ? null : parseFloat(weightValue);
+                const reps = repsValue === '' ? null : parseInt(repsValue, 10);
+                const rpe = rpeValue === '' ? null : parseFloat(rpeValue);
+                if (weight !== null || reps !== null || rpe !== null) {
+                    sets.push({
+                        set_number: i + 1,
+                        weight_lbs: weight ?? 0,
+                        reps: reps ?? 0,
+                        rpe: rpe ?? 7
+                    });
+                }
+            });
+            if (sets.length > 0) {
+                exercises.push({ machine, muscle_group: 'unknown', sets });
             }
-
-            exercises.push({ machine, muscle_group: 'unknown', sets });
         }
     });
 
@@ -1908,6 +2793,37 @@ function initForms() {
     if (cardioIntensitySlider && cardioIntensityValue) {
         cardioIntensitySlider.addEventListener('input', () => {
             cardioIntensityValue.textContent = cardioIntensitySlider.value;
+        });
+    }
+
+    // Nutrition form submission
+    const nutritionForm = document.getElementById('nutrition-form');
+    if (nutritionForm) {
+        nutritionForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const data = {
+                date: new Date().toISOString().split('T')[0],
+                calories: parseInt(document.getElementById('nutrition-calories').value),
+                protein_g: parseFloat(document.getElementById('nutrition-protein').value),
+                carbs_g: parseFloat(document.getElementById('nutrition-carbs').value) || null,
+                fat_g: parseFloat(document.getElementById('nutrition-fat').value) || null,
+                notes: document.getElementById('nutrition-notes').value
+            };
+
+            try {
+                await fetch('/api/add-nutrition', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                alert('Nutrition logged!');
+                e.target.reset();
+                loadDashboard();
+            } catch (error) {
+                alert('Failed to log nutrition');
+            }
         });
     }
 
@@ -2215,3 +3131,10 @@ async function loadAdvancedAnalytics() {
         }
     } catch (e) { console.error(e); }
 }
+
+// Global Chart.js defaults for better label display
+Chart.defaults.scales.category.ticks.maxRotation = 45;
+Chart.defaults.scales.category.ticks.autoSkip = true;
+Chart.defaults.scales.category.ticks.maxTicksLimit = 10;
+Chart.defaults.color = '#9ca3af';
+Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';

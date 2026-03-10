@@ -25,5 +25,26 @@
     "soreness_level": 3,
     "notes": "",
     "created_at": "2026-02-04T16:42:45.749074"
+  },
+  {
+    "date": "2026-02-23",
+    "muscle": "core",
+    "soreness_level": 5,
+    "notes": "",
+    "created_at": "2026-02-23T07:54:02.160210"
+  },
+  {
+    "date": "2026-02-23",
+    "muscle": "biceps",
+    "soreness_level": 5,
+    "notes": "",
+    "created_at": "2026-02-23T07:54:07.687466"
+  },
+  {
+    "date": "2026-02-23",
+    "muscle": "shoulders",
+    "soreness_level": 3,
+    "notes": "",
+    "created_at": "2026-02-23T07:54:17.109921"
   }
 ]

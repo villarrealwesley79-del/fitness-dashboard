@@ -20,5 +20,13 @@
     "temperature": 180,
     "notes": "",
     "created_at": "2026-02-03T22:36:50.368601"
+  },
+  {
+    "date": "2026-02-08",
+    "recovery_type": "sauna",
+    "duration_minutes": 20,
+    "temperature": 160,
+    "notes": "Post workout",
+    "created_at": "2026-02-08T14:03:21.203017"
   }
 ]

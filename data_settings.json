@@ -1,5 +1,20 @@
 {
   "training_goal": "weight_loss_toning",
-  "sessions_per_week_target": 2,
-  "available_time_minutes": 45
+  "sessions_per_week_target": 3,
+  "available_time_minutes": 60,
+  "target_weight_lbs": 175.0,
+  "target_body_fat_pct": 18.0,
+  "daily_calorie_target": 2200,
+  "daily_protein_target_g": 148,
+  "fatigue_threshold": 72,
+  "equipment_preference": "machines_only",
+  "volume_landmarks": {
+    "default": {
+      "mv": 6,
+      "mev": 9,
+      "mav_min": 12,
+      "mav_max": 18,
+      "mrv": 22
+    }
+  }
 }
