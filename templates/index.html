@@ -19,12 +19,12 @@
     <meta name="apple-mobile-web-app-title" content="FitDash">
     <meta name="theme-color" content="#0a0a0f">
 
-    <title>Fitness Intelligence</title>
+    <title>FitOS — Training Intelligence</title>
 
     <link rel="manifest" href="/manifest.json">
     <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
 
-    <link rel="stylesheet" href="/static/css/style.css?v=20260205d">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260311e">
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -145,6 +145,10 @@
 </head>
 <body>
     <div class="app-container">
+        <div id="pull-refresh-indicator" class="pull-refresh-indicator" aria-hidden="true">
+            <span class="pull-refresh-spinner"></span>
+            <span id="pull-refresh-label">Pull to refresh</span>
+        </div>
         <!-- Header -->
         <header class="app-header">
             <h1>Fitness Intelligence</h1>
@@ -185,6 +189,10 @@
                 <span class="tab-icon" aria-hidden="true">📈</span>
                 <span class="tab-label">Stats</span>
             </button>
+            <button class="tab-btn" data-tab="apple-health" aria-label="Apple Health">
+                <span class="tab-icon" aria-hidden="true">🍎</span>
+                <span class="tab-label">Health</span>
+            </button>
             <button class="tab-btn" data-tab="settings" aria-label="Settings">
                 <span class="tab-icon" aria-hidden="true">⚙️</span>
                 <span class="tab-label">Settings</span>
@@ -193,20 +201,23 @@
 
         <!-- Dashboard Tab -->
         <section id="dashboard" class="tab-content active">
-            <div class="dashboard-hero">
-                <div class="glass-card readiness-gauge-card">
+            <div class="glass-card readiness-gauge-card readiness-hero-card">
+                <div class="readiness-gauge-shell">
                     <div class="readiness-gauge" id="readiness-gauge">
                         <div class="readiness-score" id="readiness-gauge-score">--</div>
                         <div class="readiness-label">Oura Readiness</div>
                     </div>
-                    <div class="recommendation-card">
-                        <h3>Readiness Status</h3>
-                        <div class="recommendation-title" id="readiness-gauge-status">--</div>
-                        <div class="recommendation-meta">
-                            <span id="readiness-gauge-note">--</span>
-                        </div>
+                </div>
+                <div class="recommendation-card">
+                    <h3>Readiness Status</h3>
+                    <div class="recommendation-title" id="readiness-gauge-status">--</div>
+                    <div class="recommendation-meta">
+                        <span id="readiness-gauge-note">--</span>
                     </div>
                 </div>
+            </div>
+
+            <div class="dashboard-hero">
                 <div class="glass-card recommendation-card" id="today-recommendation">
                     <h3>Today Is Workout</h3>
                     <div class="recommendation-title" id="today-workout-title">--</div>
@@ -248,7 +259,7 @@
                 </div>
                 <div class="glass-card">
                     <h2 class="section-title">Muscle Readiness</h2>
-                    <div id="muscle-heatmap" class="muscle-heatmap"></div>
+                    <div id="muscle-heatmap" class="muscle-heatmap body-heatmap-container"></div>
                 </div>
             </div>
 
@@ -288,9 +299,13 @@
                     <span class="kpi-value" id="readiness">--</span>
                     <span class="kpi-label">Readiness</span>
                 </div>
-                <div class="kpi-card">
+                <div class="kpi-card" title="Workouts in the last 7 days">
                     <span class="kpi-value" id="sessions">--</span>
-                    <span class="kpi-label">Sessions</span>
+                    <span class="kpi-label">This Week</span>
+                </div>
+                <div class="kpi-card" title="Current training streak (sessions within 7 days)">
+                    <span class="kpi-value" id="current-streak-headline">--</span>
+                    <span class="kpi-label">🔥 Streak</span>
                 </div>
                 <div class="kpi-card">
                     <span class="kpi-value" id="oura-readiness">--</span>
@@ -495,75 +510,135 @@
             <div class="section">
                 <h2 class="section-title">Vitals Panel</h2>
                 <div class="vitals-grid">
-                    <div class="glass-card vitals-card">
-                        <div class="vitals-card-header">
-                            <div>
-                                <div class="vitals-title">Weight</div>
-                                <div class="vitals-value" id="vitals-weight-current">--</div>
-                                <div class="vitals-meta">
-                                    <span id="vitals-weight-change">--</span>
-                                    <span id="vitals-weight-bodyfat">--</span>
+                    <article class="glass-card vitals-card vitals-expandable" data-vital-card="weight">
+                        <button class="vitals-card-toggle" type="button" aria-expanded="false" aria-controls="vitals-weight-panel">
+                            <div class="vitals-card-header">
+                                <div>
+                                    <div class="vitals-title">Weight</div>
+                                    <div class="vitals-value" id="vitals-weight-current">--</div>
+                                    <div class="vitals-meta">
+                                        <span id="vitals-weight-change">--</span>
+                                        <span id="vitals-weight-bodyfat">--</span>
+                                    </div>
+                                    <div class="vitals-caption">Last 7 logged points</div>
+                                </div>
+                                <div class="vitals-card-trailing">
+                                    <div class="sparkline-wrap">
+                                        <canvas id="vitals-weight-chart"></canvas>
+                                    </div>
+                                    <span class="vitals-chevron" aria-hidden="true"></span>
                                 </div>
                             </div>
-                            <div class="sparkline-wrap">
-                                <canvas id="vitals-weight-chart"></canvas>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="glass-card vitals-card">
-                        <div class="vitals-card-header">
-                            <div>
-                                <div class="vitals-title">Heart Rate</div>
-                                <div class="vitals-value-group">
-                                    <div class="vitals-subvalue" id="vitals-hr-resting">--</div>
-                                    <div class="vitals-subvalue" id="vitals-hr-average">--</div>
-                                </div>
-                                <div class="vitals-meta" id="vitals-hr-meta">Resting · Avg</div>
-                            </div>
-                            <div class="sparkline-wrap">
-                                <canvas id="vitals-hr-chart"></canvas>
+                        </button>
+                        <div class="vitals-detail-panel" id="vitals-weight-panel">
+                            <div class="vitals-detail-inner">
+                                <div class="vitals-detail-chart"><canvas id="vitals-weight-detail-chart"></canvas></div>
+                                <div class="vitals-stats-row" id="vitals-weight-stats"></div>
                             </div>
                         </div>
-                    </div>
-                    <div class="glass-card vitals-card">
-                        <div class="vitals-title">Sleep</div>
-                        <div class="sleep-main">
-                            <div class="vitals-value" id="vitals-sleep-duration">--</div>
-                            <div class="vitals-meta">Last night · Avg 7d <span id="vitals-sleep-avg">--</span></div>
-                        </div>
-                        <div class="sleep-bar" aria-hidden="true">
-                            <div class="sleep-segment deep" id="sleep-seg-deep"></div>
-                            <div class="sleep-segment rem" id="sleep-seg-rem"></div>
-                            <div class="sleep-segment light" id="sleep-seg-light"></div>
-                            <div class="sleep-segment awake" id="sleep-seg-awake"></div>
-                        </div>
-                        <div class="sleep-breakdown" id="vitals-sleep-breakdown">--</div>
-                    </div>
-                    <div class="glass-card vitals-card">
-                        <div class="vitals-title">Activity</div>
-                        <div class="activity-row">
-                            <div class="progress-ring" id="vitals-steps-ring">
-                                <div class="progress-ring-inner">
-                                    <div class="ring-value" id="vitals-steps-today">--</div>
-                                    <div class="ring-label">Steps</div>
+                    </article>
+                    <article class="glass-card vitals-card vitals-expandable" data-vital-card="heart-rate">
+                        <button class="vitals-card-toggle" type="button" aria-expanded="false" aria-controls="vitals-hr-panel">
+                            <div class="vitals-card-header">
+                                <div>
+                                    <div class="vitals-title">Heart Rate</div>
+                                    <div class="vitals-value-group">
+                                        <div class="vitals-subvalue" id="vitals-hr-resting">--</div>
+                                        <div class="vitals-subvalue" id="vitals-hr-average">--</div>
+                                    </div>
+                                    <div class="vitals-meta" id="vitals-hr-meta">Resting · Avg</div>
+                                    <div class="vitals-chip hr-zone-chip" id="vitals-hr-zone">--</div>
+                                </div>
+                                <div class="vitals-card-trailing">
+                                    <div class="sparkline-wrap">
+                                        <canvas id="vitals-hr-chart"></canvas>
+                                    </div>
+                                    <span class="vitals-chevron" aria-hidden="true"></span>
                                 </div>
                             </div>
-                            <div class="activity-metrics">
-                                <div class="activity-metric">
-                                    <span class="metric-label">Active Cals</span>
-                                    <span class="metric-value" id="vitals-active-calories">--</span>
-                                </div>
-                                <div class="activity-metric">
-                                    <span class="metric-label">Active Min</span>
-                                    <span class="metric-value" id="vitals-active-minutes">--</span>
-                                </div>
-                                <div class="activity-metric">
-                                    <span class="metric-label">7d Avg</span>
-                                    <span class="metric-value" id="vitals-steps-avg">--</span>
-                                </div>
+                        </button>
+                        <div class="vitals-detail-panel" id="vitals-hr-panel">
+                            <div class="vitals-detail-inner">
+                                <div class="vitals-detail-chart"><canvas id="vitals-hr-detail-chart"></canvas></div>
+                                <div class="vitals-stats-row" id="vitals-hr-stats"></div>
                             </div>
                         </div>
-                    </div>
+                    </article>
+                    <article class="glass-card vitals-card vitals-expandable" data-vital-card="sleep">
+                        <button class="vitals-card-toggle" type="button" aria-expanded="false" aria-controls="vitals-sleep-panel">
+                            <div class="sleep-header-row">
+                                <div>
+                                    <div class="vitals-title">Sleep</div>
+                                    <div class="sleep-main">
+                                        <div class="vitals-value" id="vitals-sleep-duration">--</div>
+                                        <div class="vitals-meta">Last night · Avg 7d <span id="vitals-sleep-avg">--</span></div>
+                                    </div>
+                                </div>
+                                <div class="vitals-card-trailing">
+                                    <div class="vitals-chip sleep-quality-chip" id="vitals-sleep-quality">--</div>
+                                    <span class="vitals-chevron" aria-hidden="true"></span>
+                                </div>
+                            </div>
+                            <div class="sleep-bar" aria-hidden="true">
+                                <div class="sleep-segment deep" id="sleep-seg-deep"></div>
+                                <div class="sleep-segment rem" id="sleep-seg-rem"></div>
+                                <div class="sleep-segment light" id="sleep-seg-light"></div>
+                                <div class="sleep-segment awake" id="sleep-seg-awake"></div>
+                            </div>
+                            <div class="sleep-breakdown" id="vitals-sleep-breakdown">--</div>
+                        </button>
+                        <div class="vitals-detail-panel" id="vitals-sleep-panel">
+                            <div class="vitals-detail-inner">
+                                <div class="vitals-detail-chart"><canvas id="vitals-sleep-detail-chart"></canvas></div>
+                                <div class="vitals-detail-chart vitals-detail-chart-donut"><canvas id="vitals-sleep-stage-chart"></canvas></div>
+                                <div class="vitals-stats-row" id="vitals-sleep-stats"></div>
+                            </div>
+                        </div>
+                    </article>
+                    <article class="glass-card vitals-card vitals-expandable" data-vital-card="activity">
+                        <button class="vitals-card-toggle" type="button" aria-expanded="false" aria-controls="vitals-activity-panel">
+                            <div class="vitals-card-header">
+                                <div>
+                                    <div class="vitals-title">Activity</div>
+                                    <div class="activity-row">
+                                        <div class="progress-ring" id="vitals-steps-ring">
+                                            <div class="progress-ring-inner">
+                                                <div class="ring-value" id="vitals-steps-today">--</div>
+                                                <div class="ring-label">Steps</div>
+                                                <div class="ring-target" id="vitals-steps-target">of 8000</div>
+                                            </div>
+                                        </div>
+                                        <div class="activity-metrics">
+                                            <div class="activity-metric">
+                                                <span class="metric-label">Active Cals</span>
+                                                <span class="metric-value" id="vitals-active-calories">--</span>
+                                            </div>
+                                            <div class="activity-metric">
+                                                <span class="metric-label">Active Min</span>
+                                                <span class="metric-value" id="vitals-active-minutes">--</span>
+                                            </div>
+                                            <div class="activity-metric">
+                                                <span class="metric-label">7d Avg</span>
+                                                <span class="metric-value" id="vitals-steps-avg">--</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="vitals-card-trailing">
+                                    <div class="sparkline-wrap">
+                                        <canvas id="vitals-activity-chart"></canvas>
+                                    </div>
+                                    <span class="vitals-chevron" aria-hidden="true"></span>
+                                </div>
+                            </div>
+                        </button>
+                        <div class="vitals-detail-panel" id="vitals-activity-panel">
+                            <div class="vitals-detail-inner">
+                                <div class="vitals-detail-chart"><canvas id="vitals-activity-detail-chart"></canvas></div>
+                                <div class="vitals-stats-row" id="vitals-activity-stats"></div>
+                            </div>
+                        </div>
+                    </article>
                 </div>
             </div>
         </section>
@@ -600,31 +675,38 @@
             <!-- e1RM Trends Chart -->
             <div class="section">
                 <h2 class="section-title">Strength Progression</h2>
-                <div class="chart-container">
+                <div class="chart-container analytics-panel" data-analytics-panel="progress">
+                    <div class="chart-loading-state">Loading strength trends...</div>
                     <canvas id="progressChart"></canvas>
                 </div>
+                <p id="progress-empty" class="empty-state" style="display:none;">Log at least two sessions for the same lift to see e1RM trends.</p>
             </div>
 
             <!-- Volume by Muscle Chart -->
             <div class="section">
                 <h2 class="section-title">Volume Distribution</h2>
-                <div class="chart-container">
+                <div class="chart-container analytics-panel" data-analytics-panel="volume">
+                    <div class="chart-loading-state">Loading volume distribution...</div>
                     <canvas id="volumeChart"></canvas>
                 </div>
+                <p id="volume-empty" class="empty-state" style="display:none;">Log workouts with muscle groups to see where your weekly volume is going.</p>
             </div>
 
             <!-- Body Weight Trend Chart -->
             <div class="section">
                 <h2 class="section-title">Body Weight Trend</h2>
-                <div class="chart-container">
+                <div class="chart-container analytics-panel" data-analytics-panel="weight">
+                    <div class="chart-loading-state">Loading body weight history...</div>
                     <canvas id="weightChart"></canvas>
                 </div>
+                <p id="weight-empty" class="empty-state" style="display:none;">Log body weight entries to unlock the body-weight trend chart.</p>
             </div>
 
             <!-- Body Recomp Trendline -->
             <div class="section">
                 <h2 class="section-title">Body Recomp Trendline</h2>
-                <div class="chart-container">
+                <div class="chart-container analytics-panel" data-analytics-panel="recomp">
+                    <div class="chart-loading-state">Loading body recomposition trends...</div>
                     <canvas id="recompChart"></canvas>
                 </div>
                 <p id="recomp-empty" class="empty-state" style="display:none;">Log weight in the Log tab to see your recomp trend</p>
@@ -633,7 +715,8 @@
             <!-- Push/Pull Balance Chart -->
             <div class="section">
                 <h2 class="section-title">Push/Pull Balance</h2>
-                <div class="chart-container small">
+                <div class="chart-container small analytics-panel" data-analytics-panel="pushpull">
+                    <div class="chart-loading-state">Loading push/pull balance...</div>
                     <canvas id="pushPullChart"></canvas>
                 </div>
                 <p id="pushpull-empty" class="empty-state" style="display:none;">Log 10+ sets to see push/pull balance</p>
@@ -988,6 +1071,102 @@
             </div>
         </section>
 
+        <!-- Apple Health Tab -->
+        <section id="apple-health" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">🍎 Apple Health</h2>
+                <p class="section-desc" style="color:var(--text-secondary);font-size:14px;margin-bottom:16px;">
+                    Data from Apple Health Kit JSON exports at <code>~/Documents/Health/</code>. Export from iPhone Health app → Share → Export All Health Data.
+                </p>
+
+                <!-- Status Card -->
+                <div id="ah-status-card" class="card" style="margin-bottom:16px;padding:16px;background:var(--card-bg,#1e293b);border-radius:12px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <div style="font-weight:600;font-size:16px;">Data Source</div>
+                            <div id="ah-status-text" style="color:var(--text-secondary,#94a3b8);font-size:13px;margin-top:4px;">Checking...</div>
+                        </div>
+                        <div id="ah-status-badge" style="padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600;">⏳</div>
+                    </div>
+                </div>
+
+                <!-- Summary Cards -->
+                <div id="ah-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px;">
+                    <div class="card" style="padding:14px;background:var(--card-bg,#1e293b);border-radius:12px;text-align:center;">
+                        <div style="font-size:12px;color:var(--text-secondary,#94a3b8);text-transform:uppercase;letter-spacing:0.05em;">Workouts</div>
+                        <div id="ah-workouts-total" style="font-size:28px;font-weight:700;margin:4px 0;">—</div>
+                        <div id="ah-workouts-7d" style="font-size:11px;color:var(--text-secondary,#94a3b8);">last 7d: —</div>
+                    </div>
+                    <div class="card" style="padding:14px;background:var(--card-bg,#1e293b);border-radius:12px;text-align:center;">
+                        <div style="font-size:12px;color:var(--text-secondary,#94a3b8);text-transform:uppercase;letter-spacing:0.05em;">Avg Sleep</div>
+                        <div id="ah-avg-sleep" style="font-size:28px;font-weight:700;margin:4px 0;">—</div>
+                        <div id="ah-sleep-days" style="font-size:11px;color:var(--text-secondary,#94a3b8);">days: —</div>
+                    </div>
+                    <div class="card" style="padding:14px;background:var(--card-bg,#1e293b);border-radius:12px;text-align:center;">
+                        <div style="font-size:12px;color:var(--text-secondary,#94a3b8);text-transform:uppercase;letter-spacing:0.05em;">Avg Steps</div>
+                        <div id="ah-avg-steps" style="font-size:28px;font-weight:700;margin:4px 0;">—</div>
+                        <div id="ah-steps-days" style="font-size:11px;color:var(--text-secondary,#94a3b8);">days: —</div>
+                    </div>
+                    <div class="card" style="padding:14px;background:var(--card-bg,#1e293b);border-radius:12px;text-align:center;">
+                        <div style="font-size:12px;color:var(--text-secondary,#94a3b8);text-transform:uppercase;letter-spacing:0.05em;">RHR / HRV</div>
+                        <div id="ah-vitals" style="font-size:28px;font-weight:700;margin:4px 0;">—</div>
+                        <div style="font-size:11px;color:var(--text-secondary,#94a3b8);">latest</div>
+                    </div>
+                </div>
+
+                <!-- Workouts Table -->
+                <div class="card" style="margin-bottom:16px;padding:16px;background:var(--card-bg,#1e293b);border-radius:12px;">
+                    <h3 style="margin:0 0 12px 0;font-size:15px;">Recent Workouts</h3>
+                    <div style="overflow-x:auto;">
+                        <table id="ah-workouts-table" style="width:100%;font-size:13px;border-collapse:collapse;">
+                            <thead>
+                                <tr style="border-bottom:1px solid var(--border,#334155);">
+                                    <th style="text-align:left;padding:6px 8px;">Date</th>
+                                    <th style="text-align:left;padding:6px 8px;">Activity</th>
+                                    <th style="text-align:right;padding:6px 8px;">Duration</th>
+                                    <th style="text-align:right;padding:6px 8px;">kcal</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ah-workouts-body">
+                                <tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text-secondary,#94a3b8);">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Sleep Chart -->
+                <div class="card" style="margin-bottom:16px;padding:16px;background:var(--card-bg,#1e293b);border-radius:12px;">
+                    <h3 style="margin:0 0 12px 0;font-size:15px;">Sleep (Last 30 Days)</h3>
+                    <div id="ah-sleep-chart" style="display:flex;align-items:flex-end;gap:2px;height:120px;overflow:hidden;"></div>
+                </div>
+
+                <!-- Steps Chart -->
+                <div class="card" style="margin-bottom:16px;padding:16px;background:var(--card-bg,#1e293b);border-radius:12px;">
+                    <h3 style="margin:0 0 12px 0;font-size:15px;">Daily Steps (Last 30 Days)</h3>
+                    <div id="ah-steps-chart" style="display:flex;align-items:flex-end;gap:2px;height:120px;overflow:hidden;"></div>
+                </div>
+
+                <!-- Vitals Table -->
+                <div class="card" style="padding:16px;background:var(--card-bg,#1e293b);border-radius:12px;">
+                    <h3 style="margin:0 0 12px 0;font-size:15px;">Resting Heart Rate & HRV</h3>
+                    <div style="overflow-x:auto;">
+                        <table id="ah-vitals-table" style="width:100%;font-size:13px;border-collapse:collapse;">
+                            <thead>
+                                <tr style="border-bottom:1px solid var(--border,#334155);">
+                                    <th style="text-align:left;padding:6px 8px;">Date</th>
+                                    <th style="text-align:right;padding:6px 8px;">RHR (bpm)</th>
+                                    <th style="text-align:right;padding:6px 8px;">HRV (ms)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ah-vitals-body">
+                                <tr><td colspan="3" style="text-align:center;padding:20px;color:var(--text-secondary,#94a3b8);">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- Settings Tab -->
         <section id="settings" class="tab-content">
             <div class="section">
@@ -1120,7 +1299,7 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20260205d"></script>
+    <script src="/static/js/app.js?v=20260312a"></script>
     <script>
         (function() {
             const overlay = document.getElementById('swap-overlay');
@@ -1241,6 +1420,134 @@
                 };
             }
         })();
+    </script>
+    // Tab click delegation + Apple Health data loader
+    (function() {
+      function switchTab(tabName) {
+        if (!tabName) return;
+        document.querySelectorAll('.tab-content').forEach(function(section) {
+          section.classList.toggle('active', section.id === tabName);
+        });
+        document.querySelectorAll('.tab-btn').forEach(function(btn) {
+          btn.classList.toggle('active', btn.getAttribute('data-tab') === tabName);
+        });
+        try {
+          var url = new URL(window.location.href);
+          url.hash = tabName;
+          history.replaceState(null, '', url.toString());
+        } catch (e) {}
+      }
+      window.switchTab = switchTab;
+
+      // Bind all tab buttons to switchTab
+      document.querySelectorAll('.tab-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var tabName = this.getAttribute('data-tab');
+          if (tabName) switchTab(tabName);
+        });
+      });
+
+      // Apple Health data loading
+      var ahLoaded = false;
+      function loadAppleHealth() {
+        if (ahLoaded) return;
+        ahLoaded = true;
+        fetch('/api/apple-health/summary').then(function(r) { return r.json(); }).then(function(data) {
+          var badge = document.getElementById('ah-status-badge');
+          var text = document.getElementById('ah-status-text');
+          if (data.error) {
+            if (badge) { badge.textContent = '✗'; badge.style.background = '#ef4444'; }
+            if (text) text.textContent = data.error;
+            return;
+          }
+          if (badge) { badge.textContent = '✓'; badge.style.background = '#22c55e'; badge.style.color = '#fff'; }
+          if (text) text.textContent = data.data_source + ' — ' + (data.last_export || 'loaded');
+          var el;
+          el = document.getElementById('ah-workouts-total'); if (el) el.textContent = data.workouts_total || 0;
+          el = document.getElementById('ah-workouts-7d'); if (el) el.textContent = 'last 7d: ' + (data.workouts_7d || 0);
+          el = document.getElementById('ah-avg-sleep'); if (el) el.textContent = data.avg_sleep_7d ? data.avg_sleep_7d + 'h' : '—';
+          el = document.getElementById('ah-sleep-days'); if (el) el.textContent = 'days: ' + (data.sleep_total_days || 0);
+          el = document.getElementById('ah-avg-steps'); if (el) el.textContent = data.avg_steps_7d ? Math.round(data.avg_steps_7d).toLocaleString() : '—';
+          el = document.getElementById('ah-steps-days'); if (el) el.textContent = 'days: ' + (data.steps_total_days || 0);
+          el = document.getElementById('ah-vitals'); if (el) {
+            var parts = [];
+            if (data.latest_rhr) parts.push('RHR ' + data.latest_rhr);
+            if (data.latest_hrv) parts.push('HRV ' + data.latest_hrv + 'ms');
+            el.textContent = parts.length ? parts.join(' / ') : '—';
+          }
+        }).catch(function() {
+          var badge = document.getElementById('ah-status-badge');
+          var text = document.getElementById('ah-status-text');
+          if (badge) { badge.textContent = '!'; badge.style.background = '#f59e0b'; }
+          if (text) text.textContent = 'Could not load Apple Health data';
+        });
+
+        fetch('/api/apple-health/workouts?days=30').then(function(r) { return r.json(); }).then(function(data) {
+          var tbody = document.getElementById('ah-workouts-body');
+          if (!tbody) return;
+          if (!data.workouts || !data.workouts.length) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text-secondary,#94a3b8);">No workouts found</td></tr>'; return; }
+          tbody.innerHTML = data.workouts.slice(0,15).map(function(w) {
+            return '<tr style="border-bottom:1px solid var(--border,#334155);"><td style="padding:6px 8px;">' + (w.date||'') + '</td><td style="padding:6px 8px;">' + (w.activity||'') + '</td><td style="text-align:right;padding:6px 8px;">' + (w.duration_min||0) + ' min</td><td style="text-align:right;padding:6px 8px;">' + (w.energy_kcal||0) + '</td></tr>';
+          }).join('');
+        }).catch(function() {});
+
+        fetch('/api/apple-health/sleep?days=30').then(function(r) { return r.json(); }).then(function(data) {
+          var c = document.getElementById('ah-sleep-chart');
+          if (!c || !data.sleep || !data.sleep.length) return;
+          var mx = Math.max.apply(null, data.sleep.map(function(s) { return s.hours; }));
+          c.innerHTML = data.sleep.map(function(s) {
+            var pct = Math.round((s.hours/mx)*100);
+            var clr = s.hours >= 7 ? '#22c55e' : s.hours >= 5 ? '#f59e0b' : '#ef4444';
+            return '<div title="' + s.date + ': ' + s.hours + 'h" style="flex:1;min-width:4px;height:' + pct + '%;background:' + clr + ';border-radius:2px 2px 0 0;"></div>';
+          }).join('');
+        }).catch(function() {});
+
+        fetch('/api/apple-health/steps?days=30').then(function(r) { return r.json(); }).then(function(data) {
+          var c = document.getElementById('ah-steps-chart');
+          if (!c || !data.steps || !data.steps.length) return;
+          var mx = Math.max.apply(null, data.steps.map(function(s) { return s.avg; }));
+          c.innerHTML = data.steps.map(function(s) {
+            var pct = Math.round((s.avg/mx)*100);
+            var clr = s.avg >= 8000 ? '#22c55e' : s.avg >= 4000 ? '#f59e0b' : '#ef4444';
+            return '<div title="' + s.date + ': ' + Math.round(s.avg).toLocaleString() + ' steps" style="flex:1;min-width:4px;height:' + pct + '%;background:' + clr + ';border-radius:2px 2px 0 0;"></div>';
+          }).join('');
+        }).catch(function() {});
+
+        fetch('/api/apple-health/vitals?days=14').then(function(r) { return r.json(); }).then(function(data) {
+          var tbody = document.getElementById('ah-vitals-body');
+          if (!tbody) return;
+          var rows = [];
+          var rhrMap = {}, hrvMap = {};
+          if (data.rhr) data.rhr.forEach(function(r) { rhrMap[r.date] = r.avg; });
+          if (data.hrv) data.hrv.forEach(function(h) { hrvMap[h.date] = h.avg; });
+          var dates = Object.keys(Object.assign({}, rhrMap, hrvMap)).sort().reverse().slice(0,14);
+          if (!dates.length) { tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--text-secondary,#94a3b8);">No vitals data</td></tr>'; return; }
+          dates.forEach(function(d) {
+            rows.push('<tr style="border-bottom:1px solid var(--border,#334155);"><td style="padding:6px 8px;">' + d + '</td><td style="text-align:right;padding:6px 8px;">' + (rhrMap[d] ? rhrMap[d]+' bpm' : '—') + '</td><td style="text-align:right;padding:6px 8px;">' + (hrvMap[d] ? hrvMap[d]+' ms' : '—') + '</td></tr>');
+          });
+          tbody.innerHTML = rows.join('');
+        }).catch(function() {});
+      }
+
+      document.querySelectorAll('.tab-btn[data-tab="apple-health"]').forEach(function(btn) {
+        btn.addEventListener('click', loadAppleHealth);
+      });
+      var params = new URLSearchParams(window.location.search);
+      var tabParam = params.get('tab') || window.location.hash.replace('#', '');
+      if (tabParam) switchTab(tabParam);
+      if (tabParam === 'apple-health') setTimeout(loadAppleHealth, 300);
+    })();
+    </script>
+    <script>
+    // URL hash support for tab switching (e.g., ?tab=workout or #workout)
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const tabParam = params.get('tab') || window.location.hash.replace('#', '');
+      if (tabParam) {
+        const tabBtn = document.querySelector('[data-tab="' + tabParam + '"]');
+        if (tabBtn) setTimeout(() => tabBtn.click(), 500);
+      }
+    })();
     </script>
 </body>
 </html>
