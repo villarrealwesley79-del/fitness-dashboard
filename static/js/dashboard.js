@@ -151,7 +151,7 @@
         setText("vitals-mini-weight", fmtNum(data.weight.current_lbs, 1));
       }
       if (data.heart_rate) {
-        setText("vitals-mini-rhr", fmtNum(data.heart_rate.resting_bpm, 0) + " bpm");
+        setText("vitals-mini-rhr", data.heart_rate.resting_bpm != null ? fmtNum(data.heart_rate.resting_bpm, 0) + " bpm" : "--");
       }
       if (data.sleep) {
         var hrs = data.sleep.avg_7d_hours;
@@ -170,7 +170,7 @@
         setText("vitals-active-cal", data.activity.active_calories_today != null ? fmtNum(data.activity.active_calories_today, 0) : "--");
       }
       if (data.heart_rate) {
-        setText("oura-rhr", fmtNum(data.heart_rate.resting_bpm, 0) + " bpm");
+        setText("oura-rhr", data.heart_rate.resting_bpm != null ? fmtNum(data.heart_rate.resting_bpm, 0) + " bpm" : "--");
         setText("vitals-rhr", data.heart_rate.resting_bpm != null ? fmtNum(data.heart_rate.resting_bpm, 0) + " bpm" : "--");
       }
       function applySleep(ln) {
@@ -236,9 +236,9 @@
 
       // Heart rate card
       if (data.heart_rate) {
-        setText("vitals-hr-resting", fmtNum(data.heart_rate.resting_bpm, 0) + " bpm");
-        setText("vitals-hr-average", fmtNum(data.heart_rate.average_bpm, 0) + " bpm avg");
-        var hrZone = data.heart_rate.resting_bpm < 60 ? "Athlete" : data.heart_rate.resting_bpm < 70 ? "Good" : "Elevated";
+        setText("vitals-hr-resting", data.heart_rate.resting_bpm != null ? fmtNum(data.heart_rate.resting_bpm, 0) + " bpm" : "--");
+        setText("vitals-hr-average", data.heart_rate.average_bpm != null ? fmtNum(data.heart_rate.average_bpm, 0) + " bpm avg" : "--");
+        var hrZone = data.heart_rate.resting_bpm == null ? "--" : data.heart_rate.resting_bpm < 60 ? "Athlete" : data.heart_rate.resting_bpm < 70 ? "Good" : "Elevated";
         setText("vitals-hr-zone", hrZone);
         drawSparkline("vitals-hr-chart", (data.heart_rate.trend_7d || []).map(p => p.resting), "#e040fb");
         drawDetailChart("vitals-hr-detail-chart", (data.heart_rate.trend_7d || []).map(p => ({ x: p.date, y: p.resting })), "RHR (bpm)");

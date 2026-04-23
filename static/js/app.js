@@ -224,10 +224,15 @@ function updateDashboardRecommendation(workout) {
 
 // Update Headline KPIs
 function updateHeadlineKPIs(headline, bodyStats) {
-    document.getElementById('total-sets').textContent = headline.total_sets;
-    document.getElementById('progression').textContent = `${headline.improving}/${headline.total_exercises}`;
-    document.getElementById('readiness').textContent = `${headline.avg_readiness}/10`;
-    document.getElementById('sessions').textContent = headline.sessions;
+    const setText = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    };
+    if (!headline) headline = {};
+    setText('total-sets', headline.total_sets ?? '--');
+    setText('progression', `${headline.improving ?? '--'}/${headline.total_exercises ?? '--'}`);
+    setText('readiness', headline.avg_readiness != null ? `${headline.avg_readiness}/10` : '--');
+    setText('sessions', headline.sessions ?? '--');
     
     // Update body weight
     const bodyWeightEl = document.getElementById('body-weight');
@@ -881,6 +886,7 @@ async function loadSmartRecommendation() {
 function updateAlerts(alerts) {
     const container = document.getElementById('alerts-container');
     const section = document.getElementById('alerts-section');
+    if (!container || !section) return;
 
     if (!alerts || alerts.length === 0) {
         section.style.display = 'none';
@@ -1010,6 +1016,7 @@ function updateExercises(exercises) {
         const count = Array.isArray(exercises) ? exercises.length : 0;
         title.textContent = `Exercise Progress (${count})`;
     }
+    if (!container || !Array.isArray(exercises)) return;
 
     container.innerHTML = exercises.map(ex => `
         <div class="exercise-card">
@@ -1108,16 +1115,18 @@ function updateNextWorkout(workout) {
     const avoidSection = document.getElementById('avoid-section');
     const avoidContainer = document.getElementById('avoid-container');
 
-    if (workout.muscles_to_avoid && workout.muscles_to_avoid.length > 0) {
-        avoidSection.style.display = 'block';
-        avoidContainer.innerHTML = workout.muscles_to_avoid.map(m => `
-            <div class="avoid-item">
-                <span class="avoid-muscle">${m.muscle}</span>
-                <span class="avoid-reason">${m.reason}</span>
-            </div>
-        `).join('');
-    } else {
-        avoidSection.style.display = 'none';
+    if (avoidSection && avoidContainer) {
+        if (workout.muscles_to_avoid && workout.muscles_to_avoid.length > 0) {
+            avoidSection.style.display = 'block';
+            avoidContainer.innerHTML = workout.muscles_to_avoid.map(m => `
+                <div class="avoid-item">
+                    <span class="avoid-muscle">${m.muscle || m}</span>
+                    <span class="avoid-reason">${m.reason || ''}</span>
+                </div>
+            `).join('');
+        } else {
+            avoidSection.style.display = 'none';
+        }
     }
 
     // Store for completion tracking
@@ -1931,7 +1940,8 @@ async function loadSettings() {
 
         // Update subtitle with current goal
         const goalName = currentSettings.goal_details?.name || 'Training';
-        document.getElementById('goal-subtitle').textContent = goalName + ' Mode';
+        const subtitle = document.getElementById('goal-subtitle') || document.getElementById('app-subtitle');
+        if (subtitle) subtitle.textContent = goalName + ' Mode';
 
         // Load baseline configuration
         loadBaselines();
@@ -3134,8 +3144,10 @@ async function loadAdvancedAnalytics() {
 }
 
 // Global Chart.js defaults for better label display
-Chart.defaults.scales.category.ticks.maxRotation = 45;
-Chart.defaults.scales.category.ticks.autoSkip = true;
-Chart.defaults.scales.category.ticks.maxTicksLimit = 10;
-Chart.defaults.color = '#9ca3af';
-Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
+if (typeof Chart !== 'undefined') {
+    Chart.defaults.scales.category.ticks.maxRotation = 45;
+    Chart.defaults.scales.category.ticks.autoSkip = true;
+    Chart.defaults.scales.category.ticks.maxTicksLimit = 10;
+    Chart.defaults.color = '#9ca3af';
+    Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
+}
