@@ -1047,7 +1047,8 @@ function updateNextWorkout(workout) {
         goalEl.innerHTML = goalHtml;
     }
 
-    const container = document.getElementById('workout-exercises');
+    const container = document.getElementById('next-workout-exercises');
+    if (!container || !workout?.exercises?.length) return;
     container.innerHTML = workout.exercises.map((ex, i) => {
         const restLabel = ex.rest_label ? ex.rest_label : (ex.rest_minutes != null ? `${ex.rest_minutes} min` : '--');
         return `
