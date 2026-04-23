@@ -2369,6 +2369,31 @@ def api_vitals():
                 steps_today = row.get("steps")
                 sources["activity"] = "oura"
 
+        if active_calories_today is None:
+            row = (oura_today if oura_today and oura_today.get("active_calories") is not None
+                   else _latest_with("active_calories"))
+            if row:
+                active_calories_today = row.get("active_calories")
+                sources["activity"] = "oura"
+
+        # Backfill active calories from raw Oura daily_activity payloads saved before
+        # we promoted active_calories to a first-class SQLite column.
+        if active_calories_today is None:
+            for row in ([oura_today] if oura_today else []) + list(reversed(oura_week)):
+                try:
+                    raw = row.get("raw_json") if row else None
+                    if isinstance(raw, str):
+                        raw = json.loads(raw)
+                    acts = (raw or {}).get("daily_activity") or []
+                    if acts:
+                        val = acts[-1].get("active_calories")
+                        if val is not None:
+                            active_calories_today = int(round(float(val)))
+                            sources["activity"] = "oura_raw"
+                            break
+                except Exception:
+                    continue
+
         if steps_avg_7d is None:
             step_vals = [r.get("steps") for r in oura_week if r.get("steps") is not None]
             if step_vals:
@@ -3578,6 +3603,7 @@ def oura_status():
             sleep_rem_min=metrics.get("sleep_rem_min"),
             sleep_light_min=metrics.get("sleep_light_min"),
             sleep_awake_min=metrics.get("sleep_awake_min"),
+            active_calories=metrics.get("active_calories") if activity_day == today else None,
         )
 
         if activity_day and activity_day != today:
@@ -3590,6 +3616,7 @@ def oura_status():
                 raw_json=None,
                 steps=metrics.get("steps"),
                 activity_score=metrics.get("activity_score"),
+                active_calories=metrics.get("active_calories"),
             )
         steps = metrics.get("steps")
         activity_score = metrics.get("activity_score")
@@ -3603,6 +3630,7 @@ def oura_status():
             "hrv": hrv,
             "steps": steps,
             "activity_score": activity_score,
+            "active_calories": metrics.get("active_calories"),
             "activity_day": activity_day,
             "resting_hr": metrics.get("resting_hr"),
             "temperature_deviation": metrics.get("temperature_deviation"),
@@ -3625,6 +3653,7 @@ def oura_status():
                 "hrv": cached.get("hrv"),
                 "steps": cached.get("steps"),
                 "activity_score": cached.get("activity_score"),
+                "active_calories": cached.get("active_calories"),
                 "resting_hr": cached.get("resting_hr"),
                 "temperature_deviation": cached.get("temperature_deviation"),
                 "sleep_duration_min": cached.get("sleep_duration_min"),
@@ -3665,6 +3694,7 @@ def oura_trends():
                     raw_json=d.get("raw_json"),
                     steps=d.get("steps"),
                     activity_score=d.get("activity_score"),
+                    active_calories=d.get("active_calories"),
                     resting_hr=d.get("resting_hr"),
                     temperature_deviation=d.get("temperature_deviation"),
                     sleep_duration_min=d.get("sleep_duration_min"),
@@ -3891,6 +3921,7 @@ def smart_recommendation_api():
                 raw_json=raw,
                 steps=metrics.get("steps"),
                 activity_score=metrics.get("activity_score"),
+                active_calories=metrics.get("active_calories"),
                 resting_hr=metrics.get("resting_hr"),
                 temperature_deviation=metrics.get("temperature_deviation"),
                 sleep_duration_min=metrics.get("sleep_duration_min"),
