@@ -91,37 +91,8 @@
       // Next workout
       if (data.next_workout) {
         var nw = data.next_workout;
-        // Bug 1 fix: estimated_duration is "71 min" (string with unit), estimated_minutes is 71 (number)
-        var durMin = nw.estimated_minutes || nw.duration_min || parseInt(nw.estimated_duration, 10) || "--";
-        var durLabel = durMin + " min";
-        // Bug 2 fix: RPE is per-exercise (rpe_target), not workout-level
-        var rpeVal = nw.rpe || nw.rpe_target || (nw.exercises && nw.exercises.length ? nw.exercises[0].rpe_target : null) || "--";
-
-        setText("today-workout-title", nw.focus || nw.name || "Workout");
-        setText("today-workout-focus", nw.focus || "");
-        setText("today-workout-duration", durLabel);
-        setText("today-workout-rpe", rpeVal === "--" ? "" : "RPE " + rpeVal);
-        setText("today-workout-notes", nw.notes || "");
-        setText("dashboard-workout-meta", (nw.focus || "") + " · " + durLabel);
-
-        var exList = $("dashboard-workout-exercises");
-        if (exList && nw.exercises && nw.exercises.length) {
-          exList.innerHTML = nw.exercises.map(function (ex) {
-            var s = ex.target_sets || ex.sets || "--";
-            var r = ex.target_reps || ex.reps || "--";
-            var w = ex.target_weight || ex.weight;
-            var m = ex.muscle || ex.muscle_group || "";
-            return '<div class="workout-exercise-card">' +
-              '<div class="workout-exercise-header">' +
-              '<span class="workout-exercise-name">' + esc(ex.exercise || ex.name) + '</span>' +
-              '<span class="workout-exercise-meta">' + esc(m) + '</span>' +
-              '</div>' +
-              '<div class="workout-exercise-details">' +
-              '<span>' + s + '×' + r + '</span>' +
-              (w != null ? '<span>' + fmt(w) + ' lbs</span>' : '') +
-              '</div></div>';
-          }).join("");
-        }
+        window.currentRecommendation = nw;
+        renderDashboardWorkout(nw);
       }
 
       // Recovery card (Oura data on dashboard)
@@ -551,6 +522,51 @@
     return '<div class="kpi-card" style="display:flex;flex-direction:column;gap:4px;padding:12px;border:1px solid #334155;border-radius:8px;"><span class="kpi-value" style="font-size:20px;font-weight:700;color:#e2e8f0;">' + esc(value) + '</span><span class="kpi-label" style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#94a3b8;">' + esc(label) + '</span></div>';
   }
 
+  function exerciseName(ex) {
+    return ex.exercise || ex.name || ex.machine || "Exercise";
+  }
+
+  function exerciseMuscle(ex) {
+    return ex.muscle || ex.muscle_group || "";
+  }
+
+  function exerciseSets(ex) {
+    return ex.target_sets || ex.sets || 3;
+  }
+
+  function exerciseReps(ex) {
+    return ex.target_reps || ex.reps || 10;
+  }
+
+  function exerciseWeight(ex) {
+    var w = ex.target_weight;
+    if (w == null) w = ex.weight;
+    if (w == null) w = ex.weight_lbs;
+    return w == null ? 0 : w;
+  }
+
+  function renderSetRows(ex, idx) {
+    var sets = parseInt(exerciseSets(ex), 10) || 3;
+    var reps = parseInt(exerciseReps(ex), 10) || 10;
+    var weight = exerciseWeight(ex);
+    var html = "";
+    for (var i = 0; i < sets; i++) {
+      html += '<div class="set-row" data-set-index="' + i + '">' +
+        '<label>Set ' + (i + 1) + '</label>' +
+        '<input type="number" inputmode="decimal" class="set-weight" value="' + esc(weight) + '" placeholder="lbs" aria-label="Weight for set ' + (i + 1) + '">' +
+        '<input type="number" inputmode="numeric" class="set-reps" value="' + esc(reps) + '" placeholder="reps" aria-label="Reps for set ' + (i + 1) + '">' +
+        '<label class="set-done"><input type="checkbox" class="set-complete"> Done</label>' +
+        '</div>';
+    }
+    return html;
+  }
+
+  function renderWorkoutActions(targetId) {
+    var el = $(targetId);
+    if (!el) return;
+    el.innerHTML = '<button id="start-workout-btn" type="button" class="start-workout-btn" onclick="startWorkoutFromRecommendation()">▶ Start Workout</button>';
+  }
+
   // ── Exercise swap ─────────────────────────────────────────────────
   window.openSwap = function(exerciseName, muscle, idx) {
     var modal = document.getElementById('swap-modal');
@@ -564,7 +580,7 @@
     fetch('/api/exercises/alternatives/' + encodeURIComponent(mg), { credentials: 'include' })
       .then(function(r){ return r.json(); })
       .then(function(d){
-        var alts = d.alternatives || [];
+        var alts = (d.alternatives || []).map(function(alt) { return typeof alt === "string" ? alt : alt.name; }).filter(Boolean);
         if (!alts.length) { listEl.innerHTML = '<p style="color:#94a3b8;">No alternatives found for ' + esc(muscle) + '.</p>'; return; }
         listEl.innerHTML = alts.map(function(alt){
           return '<button class="swap-option" onclick="performSwap(' + idx + ',\'' + esc(alt) + '\')">' + esc(alt) + '</button>';
@@ -578,17 +594,127 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ index: idx, new_exercise: newExercise })
+      body: JSON.stringify({ workout_index: 0, exercise_index: idx, new_exercise_name: newExercise })
     }).then(function(r){ return r.json(); }).then(function(d){
-      if (d.success || d.status === 'ok') {
+      if (d.success || d.status === 'ok' || d.status === 'success') {
         closeModal();
-        if (typeof loadWorkout === 'function') loadWorkout();
+        _loadedTabs.workout = false;
+        if (d.recommendation) {
+          window.currentRecommendation = d.recommendation;
+          renderDashboardWorkout(d.recommendation);
+          loadWorkout_renderExercises(d.recommendation);
+        } else if (typeof loadWorkout === 'function') loadWorkout();
         if (typeof showToast === 'function') showToast('Swapped to ' + newExercise);
       } else {
-        if (typeof showToast === 'function') showToast(d.error || 'Swap failed', true);
+        var msg = (d.error && (d.error.message || d.error)) || d.message || 'Swap failed';
+        if (typeof showToast === 'function') showToast(msg, true);
       }
     }).catch(function(){ if (typeof showToast === 'function') showToast('Network error', true); });
   };
+
+  function renderDashboardWorkout(nw) {
+    setText("today-workout-title", nw.focus || nw.name || "Workout");
+    var durMin = nw.estimated_minutes || nw.duration_min || parseInt(nw.estimated_duration, 10) || "--";
+    var durLabel = durMin + " min";
+    var rpeVal = nw.rpe || nw.rpe_target || (nw.exercises && nw.exercises.length ? nw.exercises[0].rpe_target : null) || "--";
+    setText("today-workout-focus", nw.focus || "");
+    setText("today-workout-duration", durLabel);
+    setText("today-workout-rpe", rpeVal === "--" ? "" : "RPE " + rpeVal);
+    setText("today-workout-notes", nw.notes || "");
+    var exList = $("dashboard-workout-exercises");
+    if (exList && nw.exercises && nw.exercises.length) {
+      exList.innerHTML = nw.exercises.map(function (ex, idx) {
+        var s = exerciseSets(ex);
+        var r = exerciseReps(ex);
+        var w = exerciseWeight(ex);
+        var m = exerciseMuscle(ex);
+        var n = exerciseName(ex);
+        return '<div class="workout-exercise-card" data-index="' + idx + '">' +
+          '<div class="workout-exercise-header">' +
+          '<span class="workout-exercise-name">' + esc(n) + '</span>' +
+          '<span class="workout-exercise-meta">' + esc(m) + '</span>' +
+          '<button class="workout-swap-btn" onclick="openSwap(\'' + esc(n) + '\',\'' + esc(m) + '\',' + idx + ')" title="Swap exercise">🔄 Swap</button>' +
+          '</div>' +
+          '<div class="workout-exercise-details">' +
+          '<span>' + s + '×' + r + '</span>' +
+          (w != null ? '<span>' + fmt(w) + ' lbs</span>' : '') +
+          '</div></div>';
+      }).join("");
+    }
+    renderWorkoutActions("dashboard-workout-actions");
+  }
+
+  window.startWorkoutFromRecommendation = function() {
+    var rec = window.currentRecommendation;
+    if (!rec || !rec.exercises || !rec.exercises.length) {
+      if (typeof showToast === 'function') showToast('Workout is still loading', true);
+      return;
+    }
+    var modal = document.getElementById('workout-modal');
+    var title = document.getElementById('modal-workout-name');
+    var exercisesContainer = document.getElementById('active-workout-exercises');
+    if (!modal || !exercisesContainer) return;
+    if (title) title.textContent = rec.focus || rec.name || 'Active Workout';
+    exercisesContainer.innerHTML = rec.exercises.map(function(ex, idx) {
+      var n = exerciseName(ex);
+      var m = exerciseMuscle(ex);
+      return '<div class="active-exercise" data-index="' + idx + '">' +
+        '<div class="active-exercise-header">' +
+        '<div><h4>' + esc(n) + '</h4><div class="exercise-target">' + esc(m) + ' · ' + exerciseSets(ex) + '×' + exerciseReps(ex) + ' · ' + fmt(exerciseWeight(ex)) + ' lbs</div></div>' +
+        '<button class="workout-swap-btn" onclick="openSwap(\'' + esc(n) + '\',\'' + esc(m) + '\',' + idx + ')" title="Swap exercise">🔄 Swap</button>' +
+        '</div>' +
+        '<div class="sets-container">' + renderSetRows(ex, idx) + '</div>' +
+        '</div>';
+    }).join('');
+    modal.style.display = 'flex';
+  };
+
+  window.completeWorkoutFromRecommendation = function() {
+    var rec = window.currentRecommendation || {};
+    var rows = Array.prototype.slice.call(document.querySelectorAll('#active-workout-exercises .active-exercise'));
+    var exercises = rows.map(function(row, idx) {
+      var ex = (rec.exercises || [])[idx] || {};
+      var sets = Array.prototype.slice.call(row.querySelectorAll('.set-row')).map(function(setRow) {
+        return {
+          weight_lbs: parseFloat((setRow.querySelector('.set-weight') || {}).value) || 0,
+          reps: parseInt((setRow.querySelector('.set-reps') || {}).value, 10) || 0,
+          completed: !!(setRow.querySelector('.set-complete') || {}).checked
+        };
+      }).filter(function(s) { return s.completed || s.reps > 0; });
+      return {
+        machine: exerciseName(ex),
+        muscle_group: exerciseMuscle(ex) || 'unknown',
+        sets: sets,
+        notes: ''
+      };
+    }).filter(function(ex) { return ex.sets.length; });
+    if (!exercises.length) {
+      if (typeof showToast === 'function') showToast('Log at least one set first', true);
+      return;
+    }
+    fetch('/api/complete-workout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        recommendation_id: rec.id,
+        session_type: rec.focus || rec.name || 'recommended',
+        duration_minutes: rec.estimated_minutes || parseInt(rec.estimated_duration, 10) || 45,
+        exercises: exercises
+      })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.status === 'success') {
+        document.querySelectorAll('.modal').forEach(function(m) { m.style.display = 'none'; });
+        if (typeof showToast === 'function') showToast('Workout logged');
+        _loadedTabs.history = false;
+        if (window.switchTab) window.switchTab('history');
+      } else {
+        var msg = (d.error && (d.error.message || d.error)) || d.message || 'Workout log failed';
+        if (typeof showToast === 'function') showToast(msg, true);
+      }
+    }).catch(function() { if (typeof showToast === 'function') showToast('Network error', true); });
+  };
+  window.completeWorkout = window.completeWorkoutFromRecommendation;
 
   window.syncOura = function() {
     var btn = document.getElementById('oura-sync-btn');
@@ -1137,6 +1263,8 @@
         }
       }).catch(function() {});
 
+      renderWorkoutActions("next-workout-actions");
+
       // Exercises list - template uses "today-workout-exercises"
       var exContainer = $("next-workout-exercises") || $("workout-exercises");
       if (exContainer && nw.exercises && nw.exercises.length) {
@@ -1187,12 +1315,6 @@
         }
       }
 
-      // Wire Start Workout button
-      var startBtn = $("start-workout-btn");
-      if (startBtn && typeof window.startWorkout === "function") {
-        startBtn.onclick = function() { window.startWorkout(0); };
-      }
-
       // Wire reasoning toggle
       var reasoningToggle = $("reasoning-toggle");
       if (reasoningToggle) {
@@ -1215,17 +1337,20 @@
   }
 
   function loadWorkout_renderExercises(nw) {
-    var exContainer = $("workout-exercises");
+    var exContainer = $("next-workout-exercises") || $("workout-exercises");
     if (exContainer && nw.exercises && nw.exercises.length) {
       exContainer.innerHTML = nw.exercises.map(function(ex, idx) {
+        var n = exerciseName(ex);
+        var m = exerciseMuscle(ex);
         return '<div class="workout-exercise-card" data-index="' + idx + '">' +
           '<div class="workout-exercise-header">' +
-          '<span class="workout-exercise-name">' + esc(ex.exercise || ex.name) + '</span>' +
-          '<span class="workout-exercise-meta">' + esc(ex.muscle || ex.muscle_group || "") + '</span>' +
+          '<span class="workout-exercise-name">' + esc(n) + '</span>' +
+          '<span class="workout-exercise-meta">' + esc(m) + '</span>' +
+          '<button class="workout-swap-btn" onclick="openSwap(\'' + esc(n) + '\',\'' + esc(m) + '\',' + idx + ')" title="Swap exercise">🔄 Swap</button>' +
           '</div>' +
           '<div class="workout-exercise-details">' +
-          '<span>' + (ex.target_sets || ex.sets || "--") + ' × ' + (ex.target_reps || ex.reps || "--") + '</span>' +
-          '<span>' + fmt(ex.target_weight || ex.weight) + ' lbs</span>' +
+          '<span>' + exerciseSets(ex) + ' × ' + exerciseReps(ex) + '</span>' +
+          '<span>' + fmt(exerciseWeight(ex)) + ' lbs</span>' +
           '</div></div>';
       }).join("");
     }
