@@ -39,6 +39,24 @@ from oura_client import (
 
 app = Flask(__name__)
 
+# ── Auth (must be after app creation) ──────────────────────────
+from auth import init_auth
+init_auth(app)
+
+# ── Health route registration (Apple Health + HealthKit ingest) ──
+try:
+    from health_ingest import register_health_routes
+    register_health_routes(app)
+except Exception as _e:
+    print(f"WARN: health_ingest routes not registered: {_e}")
+
+try:
+    from apple_health_parser import register_apple_health_routes
+    register_apple_health_routes(app)
+except Exception as _e:
+    print(f"WARN: apple_health_parser routes not registered: {_e}")
+
+
 # ==================== DATA PERSISTENCE ====================
 # Store data in JSON files in the same directory as the app
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -2312,6 +2330,79 @@ def api_vitals():
     sleep_7d = [s for s in sleep_events if s.get("event_time") and start <= s["event_time"].date() <= today]
     last_night, avg_7d_hours = _sleep_metrics_from_events(sleep_7d)
 
+    resting_bpm = latest_activity.get("resting") if latest_activity else None
+    average_bpm = latest_activity.get("average") if latest_activity else None
+    steps_today = latest_activity.get("steps") if latest_activity else None
+    active_calories_today = latest_activity.get("active_calories") if latest_activity else None
+    active_minutes_today = latest_activity.get("active_minutes") if latest_activity else None
+    quality_score = None
+    sources = {
+        "heart_rate": "open_wearables" if resting_bpm is not None else None,
+        "activity": "open_wearables" if steps_today is not None else None,
+        "sleep": "open_wearables" if last_night else None,
+    }
+
+    # Fallback from oura_daily.sqlite3 when Open Wearables is unavailable/empty.
+    try:
+        today_s = today.strftime("%Y-%m-%d")
+        start_s = start.strftime("%Y-%m-%d")
+        oura_today = get_oura_daily(OURA_DB_FILE, today_s)
+        oura_week = get_oura_daily_range(OURA_DB_FILE, start_s, today_s) or []
+
+        def _latest_with(field):
+            for r in reversed(oura_week):
+                if r.get(field) is not None:
+                    return r
+            return None
+
+        if resting_bpm is None:
+            row = (oura_today if oura_today and oura_today.get("resting_hr") is not None
+                   else _latest_with("resting_hr"))
+            if row:
+                resting_bpm = row.get("resting_hr")
+                sources["heart_rate"] = "oura"
+
+        if steps_today is None:
+            row = (oura_today if oura_today and oura_today.get("steps") is not None
+                   else _latest_with("steps"))
+            if row:
+                steps_today = row.get("steps")
+                sources["activity"] = "oura"
+
+        if steps_avg_7d is None:
+            step_vals = [r.get("steps") for r in oura_week if r.get("steps") is not None]
+            if step_vals:
+                steps_avg_7d = int(round(sum(step_vals) / len(step_vals)))
+
+        if not last_night:
+            row = (oura_today if oura_today and oura_today.get("sleep_duration_min") is not None
+                   else _latest_with("sleep_duration_min"))
+            if row:
+                dur_min = row.get("sleep_duration_min") or 0
+                last_night = {
+                    "date": row.get("day"),
+                    "total_sleep_min": dur_min,
+                    "total_hours": round(dur_min / 60.0, 2) if dur_min else None,
+                    "deep_sleep_min": row.get("sleep_deep_min"),
+                    "rem_sleep_min": row.get("sleep_rem_min"),
+                    "light_sleep_min": row.get("sleep_light_min"),
+                    "awake_min": row.get("sleep_awake_min"),
+                    "sleep_score": row.get("sleep_score"),
+                    "quality_score": row.get("sleep_score"),
+                }
+                quality_score = row.get("sleep_score")
+                sources["sleep"] = "oura"
+
+        if avg_7d_hours is None:
+            dur_vals = [r.get("sleep_duration_min") for r in oura_week if r.get("sleep_duration_min") is not None]
+            if dur_vals:
+                avg_7d_hours = round((sum(dur_vals) / len(dur_vals)) / 60.0, 2)
+
+        if quality_score is None and oura_today and oura_today.get("sleep_score") is not None:
+            quality_score = oura_today.get("sleep_score")
+    except Exception:
+        pass
+
     return jsonify({
         "weight": {
             "current_lbs": round(current_weight, 1) if current_weight is not None else None,
@@ -2322,20 +2413,23 @@ def api_vitals():
             "body_fat_pct": round(body_fat, 1) if body_fat is not None else None,
         },
         "heart_rate": {
-            "resting_bpm": latest_activity.get("resting") if latest_activity else None,
-            "average_bpm": latest_activity.get("average") if latest_activity else None,
+            "resting_bpm": resting_bpm,
+            "average_bpm": average_bpm,
             "trend_7d": hr_trend,
         },
         "sleep": {
             "last_night": last_night,
             "avg_7d_hours": avg_7d_hours,
+            "quality_score": quality_score,
+            "sleep_score": quality_score,
         },
         "activity": {
-            "steps_today": latest_activity.get("steps") if latest_activity else None,
+            "steps_today": steps_today,
             "steps_avg_7d": steps_avg_7d,
-            "active_calories_today": latest_activity.get("active_calories") if latest_activity else None,
-            "active_minutes_today": latest_activity.get("active_minutes") if latest_activity else None,
-        }
+            "active_calories_today": active_calories_today,
+            "active_minutes_today": active_minutes_today,
+        },
+        "source": sources,
     })
 
 
@@ -3643,7 +3737,7 @@ def oura_sleep_summary():
         # Get last night's sleep
         latest = get_latest_sleep(OURA_DB_FILE, days=1, long_sleep_only=True)
         last_night = latest[0] if latest else None
-        
+
         # Get 7-day data
         end = datetime.now().date()
         start = end - timedelta(days=6)
@@ -3653,6 +3747,51 @@ def oura_sleep_summary():
             end.strftime("%Y-%m-%d"),
             long_sleep_only=True
         )
+
+        # Prefer oura_daily (today's cached daily sleep fields) when it's newer or fuller
+        # than the oura_sleep row. The oura_sleep table can go stale; oura_daily is
+        # refreshed by /api/oura/status on every dashboard load.
+        today_s = end.strftime("%Y-%m-%d")
+        daily_today = get_oura_daily(OURA_DB_FILE, today_s)
+        def _daily_to_row(d):
+            if not d:
+                return None
+            dur = d.get("sleep_duration_min")
+            if not dur and not d.get("sleep_score"):
+                return None
+            return {
+                "day": d.get("day"),
+                "total_sleep_min": dur or 0,
+                "deep_sleep_min": d.get("sleep_deep_min") or 0,
+                "rem_sleep_min": d.get("sleep_rem_min") or 0,
+                "light_sleep_min": d.get("sleep_light_min") or 0,
+                "awake_time_min": d.get("sleep_awake_min") or 0,
+                "sleep_score": d.get("sleep_score"),
+                "avg_heart_rate": None,
+                "efficiency": None,
+            }
+
+        daily_row = _daily_to_row(daily_today)
+        ln_day = (last_night or {}).get("day")
+        if daily_row and (not last_night or (ln_day or "") < daily_row["day"]
+                         or (last_night.get("sleep_score") in (None, 0) and daily_row.get("sleep_score"))):
+            last_night = daily_row
+
+        # Augment week_data from oura_daily range where a day is missing.
+        # oura_sleep can lag behind oura_daily, so we fall back to the daily
+        # cache to keep the 7-day averages meaningful.
+        try:
+            if week_data is None:
+                week_data = []
+            daily_range = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), today_s) or []
+            existing_days = {r.get("day") for r in week_data}
+            for d in daily_range:
+                row = _daily_to_row(d)
+                if row and row["day"] not in existing_days:
+                    week_data.append(row)
+                    existing_days.add(row["day"])
+        except Exception:
+            pass
         
         # Calculate 7-day averages
         avg_duration = 0
@@ -4972,7 +5111,7 @@ def get_local_ip():
 
 if __name__ == '__main__':
     local_ip = get_local_ip()
-    port = 5050
+    port = int(os.environ.get('PORT', 5050))
 
     print("\n" + "="*60)
     print("  FITNESS INTELLIGENCE DASHBOARD")
@@ -4985,7 +5124,7 @@ if __name__ == '__main__':
     print("\n" + "="*60 + "\n")
 
     # Debug mode controlled by env var - NEVER expose debug=True via ngrok
-    debug_mode = os.getenv("FLASK_DEBUG", "0") == "1"
+    debug_mode = os.getenv("FLASK_DEBUG", "1") == "1"
 
-    # Bind to localhost only — Tailscale Serve handles external access
-    app.run(host='127.0.0.1', port=port, debug=debug_mode)
+    host = os.environ.get('HOST', '0.0.0.0')
+    app.run(host=host, port=port, debug=debug_mode)

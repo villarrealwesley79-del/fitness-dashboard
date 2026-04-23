@@ -1,1553 +1,400 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <script>
-    // Force-clear stale service workers
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations().then(function(regs) {
-            regs.forEach(function(r) { r.unregister(); });
-        });
-        caches.keys().then(function(names) {
-            names.forEach(function(n) { caches.delete(n); });
-        });
-    }
-    </script>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="FitDash">
-    <meta name="theme-color" content="#0a0a0f">
-
-    <title>FitOS — Training Intelligence</title>
-
-    <link rel="manifest" href="/manifest.json">
-    <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
-
-    <link rel="stylesheet" href="/static/css/style.css?v=20260311e">
-    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fitness Dashboard</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=20260416l-hero-fix">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+    <style>.material-icons{font-family:'Material Icons';font-weight:normal;font-style:normal;font-size:20px;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;word-wrap:normal;direction:ltr;-webkit-font-feature-settings:'liga';-webkit-font-smoothing:antialiased;vertical-align:middle;}</style>
     <style>
-        .swap-btn {
-            border: none;
-            background: rgba(255, 255, 255, 0.12);
-            color: inherit;
-            padding: 4px 8px;
-            border-radius: 10px;
-            font-size: 16px;
-            line-height: 1;
-        }
-        .swap-btn:active { transform: scale(0.96); }
-        .swap-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.45);
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.25s ease;
-            z-index: 1000;
-        }
-        .swap-overlay.show {
-            opacity: 1;
-            pointer-events: auto;
-        }
-        .swap-sheet {
-            position: fixed;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            transform: translateY(100%);
-            transition: transform 0.28s ease;
-            background: var(--bg-card);
-            border-top-left-radius: 18px;
-            border-top-right-radius: 18px;
-            box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.35);
-            z-index: 1001;
-            max-height: 70vh;
-            display: flex;
-            flex-direction: column;
-            padding: 10px 16px 16px;
-        }
-        .swap-sheet.open { transform: translateY(0); }
-        .swap-sheet-handle {
-            width: 40px;
-            height: 4px;
-            background: rgba(255, 255, 255, 0.25);
-            border-radius: 999px;
-            margin: 6px auto 10px;
-        }
-        .swap-sheet-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 6px;
-        }
-        .swap-sheet-title {
-            font-weight: 600;
-            font-size: 16px;
-        }
-        .swap-close {
-            border: none;
-            background: rgba(255, 255, 255, 0.12);
-            color: inherit;
-            padding: 6px 10px;
-            border-radius: 10px;
-            font-size: 13px;
-        }
-        .swap-sheet-subtitle {
-            font-size: 12px;
-            opacity: 0.7;
-            margin-bottom: 10px;
-        }
-        .swap-options {
-            overflow-y: auto;
-            display: grid;
-            gap: 10px;
-            padding-bottom: 6px;
-        }
-        .swap-option {
-            border: 1px solid var(--border);
-            background: var(--bg);
-            color: inherit;
-            padding: 12px 14px;
-            border-radius: 12px;
-            text-align: left;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            font-size: 15px;
-        }
-        .swap-meta {
-            font-size: 12px;
-            opacity: 0.7;
-            text-transform: capitalize;
-        }
-        .swap-loading,
-        .swap-empty,
-        .swap-error {
-            padding: 14px;
-            text-align: center;
-            font-size: 14px;
-            opacity: 0.8;
-        }
-        @media (min-width: 900px) {
-            .swap-sheet {
-                left: 50%;
-                right: auto;
-                width: 420px;
-                transform: translate(-50%, 100%);
-            }
-            .swap-sheet.open { transform: translate(-50%, 0); }
-        }
+        /* Tab visibility */
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+
+        /* Workout exercise cards (Next Workout tab) */
+        .workout-exercise-card{padding:12px;border:1px solid #334155;border-radius:8px;margin-bottom:10px;background:rgba(15,23,42,0.3);}
+        .workout-exercise-header{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:6px;}
+        .workout-exercise-name{font-weight:600;color:#e2e8f0;}
+        .workout-exercise-meta{font-size:12px;color:#94a3b8;text-transform:capitalize;}
+        .workout-exercise-details{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:#94a3b8;margin-bottom:4px;}
+        .workout-exercise-details span{white-space:nowrap;}
+        .workout-exercise-rationale{font-size:12px;color:#64748b;font-style:italic;margin-top:4px;}
+
+
+        /* Bottom navigation bar */
+        .bottom-nav{position:fixed;bottom:0;left:0;right:0;background:rgba(15,23,42,0.95);backdrop-filter:blur(10px);border-top:1px solid #334155;display:flex;justify-content:space-around;padding:6px 4px calc(env(safe-area-inset-bottom, 0px) + 10px);z-index:50;gap:2px;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+        .bottom-nav::-webkit-scrollbar{display:none;}
+        /* Reserve space for the fixed bottom nav (incl. safe-area) so the last
+           exercise / workout list row is never overlapped. */
+        .container{padding-bottom:calc(env(safe-area-inset-bottom, 0px) + 240px)!important;}
+        .dashboard-exercise-list{padding-bottom:calc(env(safe-area-inset-bottom, 0px) + 96px);}
+        .bottom-tab{background:transparent;border:none;color:#64748b;cursor:pointer;padding:6px 8px;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:52px;border-radius:8px;transition:all 0.15s;flex-shrink:0;}
+        .bottom-tab:hover{color:#94a3b8;}
+        .bottom-tab.active{color:#60a5fa;background:rgba(96,165,250,0.1);}
+        .bt-icon{font-size:18px;line-height:1;}
+        .bt-label{font-size:11px;font-weight:500;}
+        /* Hide original top tabs if they still exist */
+        .tabs{display:none!important;}
+        /* Exercise card polish (match original design) */
+        .workout-exercise-card{padding:14px;border:1px solid #334155;border-radius:10px;margin-bottom:10px;background:rgba(15,23,42,0.3);}
+        .workout-exercise-header{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;}
+        .workout-exercise-num{color:#94a3b8;font-weight:600;}
+        .workout-exercise-name{font-weight:700;color:#e2e8f0;font-size:16px;flex:1;}
+        .workout-exercise-meta-badge{display:inline-block;padding:2px 10px;background:rgba(96,165,250,0.15);border:1px solid rgba(96,165,250,0.3);border-radius:12px;font-size:11px;text-transform:capitalize;color:#93c5fd;}
+        .workout-swap-btn{background:rgba(51,65,85,0.7);border:1px solid #475569;border-radius:8px;color:#e2e8f0;padding:6px 10px;cursor:pointer;font-size:14px;}
+        .workout-swap-btn:hover{background:#475569;}
+        .workout-exercise-details{display:flex;gap:12px;flex-wrap:wrap;font-size:15px;font-weight:600;color:#60a5fa;margin-bottom:6px;}
+        .workout-exercise-rationale{font-size:12px;color:#94a3b8;line-height:1.4;}
+        .swap-option{display:block;width:100%;margin-bottom:8px;padding:12px;background:rgba(30,41,59,0.6);border:1px solid #334155;border-radius:8px;color:#e2e8f0;cursor:pointer;text-align:left;font-size:14px;}
+        .swap-option:hover{background:rgba(51,65,85,0.8);border-color:#60a5fa;}
+        /* Hero card gradient (Next Workout) */
+        #workout > .health-section:first-of-type, #dashboard > .health-section:first-of-type{background:linear-gradient(135deg, #1e40af 0%, #6d28d9 100%)!important;border:1px solid rgba(96,165,250,0.3)!important;}
+        /* App title restored */
+        .app-title{font-size:24px;font-weight:800;background:linear-gradient(135deg,#60a5fa,#c084fc);-webkit-background-clip:text;background-clip:text;color:transparent;}
+        .app-subtitle{font-size:13px;color:#94a3b8;margin-top:-4px;}
+        /* Modal */
+        .modal{position:fixed;inset:0;background:rgba(0,0,0,0.8);display:none;align-items:center;justify-content:center;z-index:100;padding:20px;}
+        .modal .modal-content{max-width:500px;width:100%;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:20px;max-height:80vh;overflow-y:auto;}
+        .close-btn{background:transparent;border:1px solid #475569;border-radius:8px;color:#94a3b8;padding:8px 16px;cursor:pointer;margin-top:12px;}
+        /* Insight cards (Stats tab) */
+        .insight-card{display:flex;gap:12px;padding:14px;border:1px solid #334155;border-radius:10px;margin-bottom:10px;background:rgba(15,23,42,0.3);}
+        .insight-icon{flex-shrink:0;font-size:22px!important;color:#60a5fa;}
+        .insight-icon.success{color:#34d399;} .insight-icon.warning{color:#fbbf24;} .insight-icon.danger{color:#f87171;}
+        .insight-content{flex:1;}
+        .insight-title{font-weight:600;margin-bottom:4px;color:#e2e8f0;}
+        .insight-detail{font-size:13px;color:#94a3b8;}
+        /* Settings grids */
+        .goals-grid, .time-options-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:10px;}
+        .goal-card, .time-opt{padding:12px;border:1px solid #334155;border-radius:8px;cursor:pointer;transition:border-color 0.15s;}
+        .goal-card:hover, .time-opt:hover{border-color:#60a5fa;}
+        .goal-card.active, .time-opt.active{border-color:#60a5fa;background:rgba(96,165,250,0.1);}
+        .goal-name, .time-opt-label{font-weight:600;color:#e2e8f0;margin-bottom:4px;}
+        .goal-desc, .time-opt-desc{font-size:12px;color:#94a3b8;}
+        .settings-group{margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid #1e293b;}
+        .settings-group h3{margin-top:0;margin-bottom:12px;color:#e2e8f0;}
+        /* Apple Health */
+        .health-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
+        .health-stat-card { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 1px solid #334155; border-radius: 12px; padding: 16px; text-align: center; }
+        .health-stat-card .label { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .health-stat-card .value { font-size: 24px; font-weight: 700; color: #f1f5f9; }
+        .health-stat-card .sub { font-size: 11px; color: #64748b; margin-top: 2px; }
+        .health-section { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+        .health-section h3 { font-size: 16px; color: #e2e8f0; margin-bottom: 12px; }
+        .health-bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 120px; padding-top: 8px; }
+        .health-bar { flex: 1; min-width: 8px; background: #3b82f6; border-radius: 4px 4px 0 0; transition: height 0.3s; position: relative; }
+        .health-bar:hover { background: #60a5fa; }
+        .health-bar.sleep { background: #8b5cf6; }
+        .health-bar.sleep:hover { background: #a78bfa; }
+        .health-bar.steps { background: #10b981; }
+        .health-bar.steps:hover { background: #34d399; }
+        .workout-list { max-height: 300px; overflow-y: auto; }
+        .workout-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #1e293b; font-size: 13px; }
+        .workout-row:last-child { border-bottom: none; }
+        .workout-row .date { color: #64748b; min-width: 80px; }
+        .workout-row .activity { color: #e2e8f0; flex: 1; }
+        .workout-row .duration { color: #94a3b8; min-width: 60px; text-align: right; }
+        .workout-row .energy { color: #f59e0b; min-width: 70px; text-align: right; }
+        .health-range-btns { display: flex; gap: 8px; margin-bottom: 16px; }
+        .health-range-btns button { padding: 6px 14px; border: 1px solid #334155; border-radius: 6px; background: transparent; color: #94a3b8; font-size: 12px; cursor: pointer; }
+        .health-range-btns button.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+        .health-empty { color: #64748b; text-align: center; padding: 40px; font-size: 14px; }
+        .health-source-badge { display: inline-block; background: #3b82f6; color: #fff; font-size: 11px; padding: 3px 10px; border-radius: 10px; margin-left: 8px; font-weight: 600; vertical-align: middle; }
+        .skeleton-loading { display: flex; flex-direction: column; gap: 12px; padding: 20px; }
+        .skeleton-line { height: 14px; background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%); background-size: 200% 100%; border-radius: 4px; animation: skeleton-pulse 1.5s ease-in-out infinite; }
+        .skeleton-line.w-75 { width: 75%; }
+        .skeleton-line.w-50 { width: 50%; }
+        .skeleton-line.w-100 { width: 100%; }
+        @keyframes skeleton-pulse { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .empty-state { text-align: center; padding: 40px 20px; color: #94a3b8; }
+        .empty-state .empty-icon { font-size: 32px; margin-bottom: 8px; }
+        .empty-state .empty-text { font-size: 15px; color: #94a3b8; }
+        .empty-state .empty-hint { font-size: 12px; color: #64748b; margin-top: 4px; }
+        .readiness-gauge { text-align: center; padding: 16px 0; }
+        .readiness-gauge.readiness-high { color: #22c55e; }
+        .readiness-gauge.readiness-moderate { color: #f59e0b; }
+        .readiness-gauge.readiness-low { color: #ef4444; }
+        .log-form { display: grid; gap: 12px; }
+        .log-form label { font-size: 13px; color: #94a3b8; display: block; margin-bottom: 4px; }
+        .log-form input, .log-form select, .log-form textarea { width: 100%; padding: 8px 12px; border: 1px solid #334155; border-radius: 6px; background: #1e293b; color: #e2e8f0; font-size: 14px; }
+        .log-form textarea { min-height: 80px; resize: vertical; }
+        .log-form button { padding: 10px 20px; border: none; border-radius: 6px; background: #3b82f6; color: #fff; font-size: 14px; cursor: pointer; }
+        .log-form button:hover { background: #2563eb; }
+        .settings-group { margin-bottom: 24px; }
+        .settings-group h3 { color: #e2e8f0; margin-bottom: 12px; font-size: 16px; }
+        .settings-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+        .settings-row label { min-width: 140px; font-size: 13px; color: #94a3b8; }
+        .settings-row input, .settings-row select { flex: 1; padding: 8px 12px; border: 1px solid #334155; border-radius: 6px; background: #1e293b; color: #e2e8f0; font-size: 14px; }
     </style>
 </head>
 <body>
-    <div class="app-container">
-        <div id="pull-refresh-indicator" class="pull-refresh-indicator" aria-hidden="true">
-            <span class="pull-refresh-spinner"></span>
-            <span id="pull-refresh-label">Pull to refresh</span>
-        </div>
-        <!-- Header -->
-        <header class="app-header">
-            <h1>Fitness Intelligence</h1>
-            <p class="subtitle" id="goal-subtitle">Evidence-based training</p>
-        </header>
-
-        <div id="offline-banner" class="offline-banner" style="display:none;">
-            You're offline — showing cached data where available.
+    <div class="container">
+        <div class="app-header" style="text-align:center;padding:16px 0 8px;">
+            <div class="app-title">Fitness Intelligence</div>
+            <div class="app-subtitle" id="app-subtitle">Weight Loss + Toning Mode</div>
         </div>
 
-        <!-- Bottom Navigation -->
-        <nav class="tab-nav bottom-nav">
-            <button class="tab-btn active" data-tab="dashboard" aria-label="Dashboard">
-                <span class="tab-icon" aria-hidden="true">📊</span>
-                <span class="tab-label">Dash</span>
-            </button>
-            <button class="tab-btn" data-tab="vitals" aria-label="Vitals">
-                <span class="tab-icon" aria-hidden="true">❤️</span>
-                <span class="tab-label">Vitals</span>
-            </button>
-            <button class="tab-btn" data-tab="workout" aria-label="Next Workout">
-                <span class="tab-icon" aria-hidden="true">💪</span>
-                <span class="tab-label">Next</span>
-            </button>
-            <button class="tab-btn" data-tab="log" aria-label="Log">
-                <span class="tab-icon" aria-hidden="true">✏️</span>
-                <span class="tab-label">Log</span>
-            </button>
-            <button class="tab-btn" data-tab="history" aria-label="History">
-                <span class="tab-icon" aria-hidden="true">📅</span>
-                <span class="tab-label">History</span>
-            </button>
-            <button class="tab-btn" data-tab="body" aria-label="Body">
-                <span class="tab-icon" aria-hidden="true">🏋️</span>
-                <span class="tab-label">Body</span>
-            </button>
-            <button class="tab-btn" data-tab="analytics" aria-label="Analytics">
-                <span class="tab-icon" aria-hidden="true">📈</span>
-                <span class="tab-label">Stats</span>
-            </button>
-            <button class="tab-btn" data-tab="apple-health" aria-label="Apple Health">
-                <span class="tab-icon" aria-hidden="true">🍎</span>
-                <span class="tab-label">Health</span>
-            </button>
-            <button class="tab-btn" data-tab="settings" aria-label="Settings">
-                <span class="tab-icon" aria-hidden="true">⚙️</span>
-                <span class="tab-label">Settings</span>
-            </button>
-        </nav>
-
-        <!-- Dashboard Tab -->
-        <section id="dashboard" class="tab-content active">
-            <div class="glass-card readiness-gauge-card readiness-hero-card">
-                <div class="readiness-gauge-shell">
+        <!-- Dashboard -->
+        <div id="dashboard" class="tab-content active">
+            <div class="dashboard-hero">
+                <div class="glass-card readiness-gauge-card">
                     <div class="readiness-gauge" id="readiness-gauge">
                         <div class="readiness-score" id="readiness-gauge-score">--</div>
                         <div class="readiness-label">Oura Readiness</div>
                     </div>
-                </div>
-                <div class="recommendation-card">
-                    <h3>Readiness Status</h3>
-                    <div class="recommendation-title" id="readiness-gauge-status">--</div>
-                    <div class="recommendation-meta">
-                        <span id="readiness-gauge-note">--</span>
+                    <div class="recommendation-card">
+                        <h3>Readiness Status</h3>
+                        <div class="recommendation-title" id="readiness-gauge-status">--</div>
+                        <div class="recommendation-meta">
+                            <span id="readiness-gauge-note">--</span>
+                        </div>
                     </div>
                 </div>
-            </div>
-
-            <div class="dashboard-hero">
                 <div class="glass-card recommendation-card" id="today-recommendation">
-                    <h3>Today Is Workout</h3>
+                    <h3>Next Workout</h3>
                     <div class="recommendation-title" id="today-workout-title">--</div>
                     <div class="recommendation-meta">
                         <span id="today-workout-focus">--</span>
                         <span id="today-workout-duration">--</span>
                         <span id="today-workout-rpe">--</span>
                     </div>
-                    <div id="today-workout-notes" class="section-desc">--</div>
+                    <div id="today-workout-notes" class="section-desc"></div>
+                    <div id="dashboard-workout-exercises" class="dashboard-exercise-list"></div>
                 </div>
             </div>
 
-            <div class="kpi-grid small vitals-mini-grid" id="vitals-mini-grid">
-                <div class="kpi-card">
-                    <span class="kpi-value" id="vitals-mini-weight">--</span>
-                    <span class="kpi-label">Weight</span>
-                </div>
-                <div class="kpi-card">
-                    <span class="kpi-value" id="vitals-mini-rhr">--</span>
-                    <span class="kpi-label">RHR</span>
-                </div>
-                <div class="kpi-card">
-                    <span class="kpi-value" id="vitals-mini-sleep">--</span>
-                    <span class="kpi-label">Sleep</span>
-                </div>
-                <div class="kpi-card">
-                    <span class="kpi-value" id="vitals-mini-steps">--</span>
-                    <span class="kpi-label">Steps</span>
-                </div>
+            <div class="kpi-grid small vitals-mini-grid">
+                <div class="kpi-card"><span class="kpi-value" id="vitals-mini-weight">--</span><span class="kpi-label">Weight</span></div>
+                <div class="kpi-card"><span class="kpi-value" id="vitals-mini-rhr">--</span><span class="kpi-label">RHR</span></div>
+                <div class="kpi-card"><span class="kpi-value" id="vitals-mini-sleep">--</span><span class="kpi-label">Sleep</span></div>
+                <div class="kpi-card"><span class="kpi-value" id="vitals-mini-steps">--</span><span class="kpi-label">Steps</span></div>
             </div>
 
-            <div class="dashboard-grid">
-                <div class="glass-card streak-card">
-                    <div>
-                        <div class="section-title">Workout Streak</div>
-                        <div class="streak-meta" id="streak-meta">--</div>
-                    </div>
-                    <div class="streak-value" id="streak-count">--</div>
-                </div>
-                <div class="glass-card">
-                    <h2 class="section-title">Muscle Readiness</h2>
-                    <div id="muscle-heatmap" class="muscle-heatmap body-heatmap-container"></div>
-                </div>
-            </div>
-
-            <div class="goal-banner" id="goal-banner">
-                <div class="goal-banner-title">Recomp Progress</div>
-                <div class="goal-banner-stats">
-                    <span id="goal-weight-current">--</span> → <strong>175 lbs</strong> &nbsp;|&nbsp; <span id="goal-weight-remaining">--</span> to go
-                </div>
-                <div class="goal-banner-stats">
-                    <span id="goal-bf-current">--</span> → <strong>18% BF</strong>
-                    <span id="goal-bf-remaining-wrap">&nbsp;|&nbsp; <span id="goal-bf-remaining">--</span> <span id="goal-bf-remaining-label">to go</span></span>
-                </div>
-            </div>
-            <div class="section">
-                <h2 class="section-title">Recomp Command Center</h2>
-                <div class="recomp-center">
-                    <div class="recomp-flag-card">
-                        <div class="recomp-flag-label">Execute / Recover</div>
-                        <div id="recomp-signal" class="recomp-badge">--</div>
-                        <div id="recomp-reason" class="recomp-reason">--</div>
-                    </div>
-
-                </div>
-            </div>
-
-            <!-- KPI Cards -->
-            <div class="kpi-grid">
-                <div class="kpi-card">
-                    <span class="kpi-value" id="total-sets">--</span>
-                    <span class="kpi-label">Weekly Sets</span>
-                </div>
-                <div class="kpi-card">
-                    <span class="kpi-value" id="progression">--</span>
-                    <span class="kpi-label">Progressing</span>
-                </div>
-                <div class="kpi-card">
-                    <span class="kpi-value" id="readiness">--</span>
-                    <span class="kpi-label">Readiness</span>
-                </div>
-                <div class="kpi-card" title="Workouts in the last 7 days">
-                    <span class="kpi-value" id="sessions">--</span>
-                    <span class="kpi-label">This Week</span>
-                </div>
-                <div class="kpi-card" title="Current training streak (sessions within 7 days)">
-                    <span class="kpi-value" id="current-streak-headline">--</span>
-                    <span class="kpi-label">🔥 Streak</span>
-                </div>
-                <div class="kpi-card">
-                    <span class="kpi-value" id="oura-readiness">--</span>
-                    <span class="kpi-label">Oura Readiness</span>
-                </div>
-                <div class="kpi-card">
-                    <span class="kpi-value" id="oura-hrv">--</span>
-                    <span class="kpi-label">HRV Trend</span>
-                </div>
-                <div class="kpi-card">
-                    <span class="kpi-value" id="body-weight">--</span>
-                    <span class="kpi-label">Weight (lbs)</span>
-                </div>
-                <div class="kpi-card" style="cursor: pointer;" onclick="location.href='/?refresh=1'" title="Refresh Oura data">
-                    <span class="kpi-value">🔄</span>
-                    <span class="kpi-label">Refresh</span>
-                </div>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Next Workout</h2>
-                <div class="glass-card">
-                    <div class="recommendation-meta" id="dashboard-workout-meta">--</div>
-                    <div id="dashboard-workout-exercises" class="next-workout-list"></div>
-                    <button class="btn-secondary btn-small" onclick="navigateToTab('workout')">Open Full Plan</button>
-                </div>
-            </div>
-
-            <!-- Recovery Dashboard Card (Oura) -->
-            <div class="section">
-                <h2 class="section-title">Recovery</h2>
-                <div class="recovery-card" id="recovery-card">
-                    <div class="recovery-row">
-                        <div class="recovery-metric">
-                            <div class="label">Steps</div>
-                            <div class="value" id="oura-steps">--</div>
-                        </div>
-                        <div class="recovery-metric">
-                            <div class="label">Activity</div>
-                            <div class="value" id="oura-activity-score">--</div>
-                        </div>
-                        <div class="recovery-metric">
-                            <div class="label">RHR</div>
-                            <div class="value" id="oura-rhr">--</div>
-                        </div>
-                        <div class="recovery-metric">
-                            <div class="label">Temp Δ</div>
-                            <div class="value" id="oura-temp">--</div>
-                        </div>
-                    </div>
-                    <div class="recovery-row">
-                        <div class="recovery-metric wide">
-                            <div class="label">Sleep (total)</div>
-                            <div class="value" id="oura-sleep-duration">--</div>
-                        </div>
-                        <div class="recovery-metric">
-                            <div class="label">Deep</div>
-                            <div class="value" id="oura-sleep-deep">--</div>
-                        </div>
-                        <div class="recovery-metric">
-                            <div class="label">REM</div>
-                            <div class="value" id="oura-sleep-rem">--</div>
-                        </div>
-                        <div class="recovery-metric">
-                            <div class="label">Light</div>
-                            <div class="value" id="oura-sleep-light">--</div>
-                        </div>
-                        <div class="recovery-metric">
-                            <div class="label">Awake</div>
-                            <div class="value" id="oura-sleep-awake">--</div>
-                        </div>
-                    </div>
-                    <div class="recovery-footer" id="oura-recovery-note"></div>
-                </div>
-            </div>
-
-            <!-- Sleep Insights Section -->
-            <div class="section">
-                <h2 class="section-title">Sleep Insights</h2>
+            <div class="glass-card oura-card">
+                <h3>😴 Sleep</h3>
                 <div class="kpi-grid">
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="sleep-last-night-duration">--</span>
-                        <span class="kpi-label">Last Night (hrs)</span>
-                    </div>
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="sleep-last-night-score">--</span>
-                        <span class="kpi-label">Sleep Score</span>
-                    </div>
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="sleep-week-avg">--</span>
-                        <span class="kpi-label">7-Day Avg (hrs)</span>
-                    </div>
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="sleep-consistency">--</span>
-                        <span class="kpi-label">Consistency</span>
-                    </div>
-                </div>
-                <div id="sleepChartWrap" style="background:var(--bg-card);border-radius:12px;padding:16px;border:1px solid var(--border);position:relative;height:220px;width:100%;box-sizing:border-box;">
-                    <canvas id="sleepTrendChart"></canvas>
-                </div>
-                <script>
-                (function(){
-                    function drawSleepChart(){
-                        fetch('/api/oura/sleep-summary')
-                            .then(function(r){return r.json()})
-                            .then(function(data){
-                                if(!data.trend_data||!data.trend_data.length)return;
-                                var canvas=document.getElementById('sleepTrendChart');
-                                if(!canvas)return;
-                                var ctx=canvas.getContext('2d');
-                                new Chart(ctx,{
-                                    type:'line',
-                                    data:{
-                                        labels:data.trend_data.map(function(d){return d.date.slice(5)}),
-                                        datasets:[{
-                                            label:'Duration (hrs)',
-                                            data:data.trend_data.map(function(d){return +(d.duration_min/60).toFixed(1)}),
-                                            borderColor:'#4361ee',
-                                            backgroundColor:'rgba(67,97,238,0.1)',
-                                            yAxisID:'y',
-                                            tension:0.3,
-                                            fill:true
-                                        },{
-                                            label:'Score',
-                                            data:data.trend_data.map(function(d){return d.score||0}),
-                                            borderColor:'#e040fb',
-                                            yAxisID:'y1',
-                                            tension:0.3
-                                        }]
-                                    },
-                                    options:{
-                                        responsive:true,
-                                        maintainAspectRatio:false,
-                                        plugins:{
-                                            title:{display:true,text:'7-Day Sleep',color:'#fff'},
-                                            legend:{labels:{color:'#ccc'}}
-                                        },
-                                        scales:{
-                                            x:{ticks:{color:'#999'}},
-                                            y:{type:'linear',position:'left',min:0,max:12,ticks:{color:'#999'},title:{display:true,text:'Hours',color:'#999'}},
-                                            y1:{type:'linear',position:'right',min:0,max:100,ticks:{color:'#999'},title:{display:true,text:'Score',color:'#999'},grid:{drawOnChartArea:false}}
-                                        }
-                                    }
-                                });
-                            });
-                    }
-                    if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',drawSleepChart)}
-                    else{setTimeout(drawSleepChart,500)}
-                })();
-                </script>
-                <div class="kpi-grid small" id="sleep-breakdown">
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="sleep-deep-pct">--</span>
-                        <span class="kpi-label">Deep %</span>
-                    </div>
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="sleep-rem-pct">--</span>
-                        <span class="kpi-label">REM %</span>
-                    </div>
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="sleep-light-pct">--</span>
-                        <span class="kpi-label">Light %</span>
-                    </div>
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="sleep-hr">--</span>
-                        <span class="kpi-label">Avg HR</span>
-                    </div>
+                    <div class="kpi-card"><span class="kpi-value" id="oura-sleep-total">--</span><span class="kpi-label">Total</span></div>
+                    <div class="kpi-card"><span class="kpi-value" id="oura-sleep-deep">--</span><span class="kpi-label">Deep</span></div>
+                    <div class="kpi-card"><span class="kpi-value" id="oura-sleep-rem">--</span><span class="kpi-label">REM</span></div>
+                    <div class="kpi-card"><span class="kpi-value" id="oura-sleep-light">--</span><span class="kpi-label">Light</span></div>
+                    <div class="kpi-card"><span class="kpi-value" id="oura-sleep-score">--</span><span class="kpi-label">Score</span></div>
                 </div>
             </div>
 
-            <!-- Alerts Section -->
-            <div class="section" id="alerts-section">
-                <h2 class="section-title">Alerts</h2>
-                <div id="alerts-container"></div>
-            </div>
-
-            <!-- Muscle Groups -->
-            <div class="section accordion" id="muscle-accordion">
-                <button class="section-title accordion-header" type="button" aria-expanded="false" aria-controls="muscle-accordion-content" id="muscle-accordion-header">
-                    <span id="muscle-accordion-title">Muscle Groups (0)</span>
-                    <span class="accordion-icon">+</span>
-                </button>
-                <div class="accordion-content" id="muscle-accordion-content">
-                    <div id="muscle-container" class="card-list"></div>
-                </div>
-            </div>
-
-            <!-- Exercise Tracking -->
-            <div class="section accordion" id="exercise-accordion">
-                <button class="section-title accordion-header" type="button" aria-expanded="false" aria-controls="exercise-accordion-content" id="exercise-accordion-header">
-                    <span id="exercise-accordion-title">Exercise Progress (0)</span>
-                    <span class="accordion-icon">+</span>
-                </button>
-                <div class="accordion-content" id="exercise-accordion-content">
-                    <div id="exercise-container" class="card-list"></div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Vitals Tab -->
-        <section id="vitals" class="tab-content">
-            <div class="section">
-                <h2 class="section-title">Vitals Panel</h2>
-                <div class="vitals-grid">
-                    <article class="glass-card vitals-card vitals-expandable" data-vital-card="weight">
-                        <button class="vitals-card-toggle" type="button" aria-expanded="false" aria-controls="vitals-weight-panel">
-                            <div class="vitals-card-header">
-                                <div>
-                                    <div class="vitals-title">Weight</div>
-                                    <div class="vitals-value" id="vitals-weight-current">--</div>
-                                    <div class="vitals-meta">
-                                        <span id="vitals-weight-change">--</span>
-                                        <span id="vitals-weight-bodyfat">--</span>
-                                    </div>
-                                    <div class="vitals-caption">Last 7 logged points</div>
-                                </div>
-                                <div class="vitals-card-trailing">
-                                    <div class="sparkline-wrap">
-                                        <canvas id="vitals-weight-chart"></canvas>
-                                    </div>
-                                    <span class="vitals-chevron" aria-hidden="true"></span>
-                                </div>
-                            </div>
-                        </button>
-                        <div class="vitals-detail-panel" id="vitals-weight-panel">
-                            <div class="vitals-detail-inner">
-                                <div class="vitals-detail-chart"><canvas id="vitals-weight-detail-chart"></canvas></div>
-                                <div class="vitals-stats-row" id="vitals-weight-stats"></div>
-                            </div>
-                        </div>
-                    </article>
-                    <article class="glass-card vitals-card vitals-expandable" data-vital-card="heart-rate">
-                        <button class="vitals-card-toggle" type="button" aria-expanded="false" aria-controls="vitals-hr-panel">
-                            <div class="vitals-card-header">
-                                <div>
-                                    <div class="vitals-title">Heart Rate</div>
-                                    <div class="vitals-value-group">
-                                        <div class="vitals-subvalue" id="vitals-hr-resting">--</div>
-                                        <div class="vitals-subvalue" id="vitals-hr-average">--</div>
-                                    </div>
-                                    <div class="vitals-meta" id="vitals-hr-meta">Resting · Avg</div>
-                                    <div class="vitals-chip hr-zone-chip" id="vitals-hr-zone">--</div>
-                                </div>
-                                <div class="vitals-card-trailing">
-                                    <div class="sparkline-wrap">
-                                        <canvas id="vitals-hr-chart"></canvas>
-                                    </div>
-                                    <span class="vitals-chevron" aria-hidden="true"></span>
-                                </div>
-                            </div>
-                        </button>
-                        <div class="vitals-detail-panel" id="vitals-hr-panel">
-                            <div class="vitals-detail-inner">
-                                <div class="vitals-detail-chart"><canvas id="vitals-hr-detail-chart"></canvas></div>
-                                <div class="vitals-stats-row" id="vitals-hr-stats"></div>
-                            </div>
-                        </div>
-                    </article>
-                    <article class="glass-card vitals-card vitals-expandable" data-vital-card="sleep">
-                        <button class="vitals-card-toggle" type="button" aria-expanded="false" aria-controls="vitals-sleep-panel">
-                            <div class="sleep-header-row">
-                                <div>
-                                    <div class="vitals-title">Sleep</div>
-                                    <div class="sleep-main">
-                                        <div class="vitals-value" id="vitals-sleep-duration">--</div>
-                                        <div class="vitals-meta">Last night · Avg 7d <span id="vitals-sleep-avg">--</span></div>
-                                    </div>
-                                </div>
-                                <div class="vitals-card-trailing">
-                                    <div class="vitals-chip sleep-quality-chip" id="vitals-sleep-quality">--</div>
-                                    <span class="vitals-chevron" aria-hidden="true"></span>
-                                </div>
-                            </div>
-                            <div class="sleep-bar" aria-hidden="true">
-                                <div class="sleep-segment deep" id="sleep-seg-deep"></div>
-                                <div class="sleep-segment rem" id="sleep-seg-rem"></div>
-                                <div class="sleep-segment light" id="sleep-seg-light"></div>
-                                <div class="sleep-segment awake" id="sleep-seg-awake"></div>
-                            </div>
-                            <div class="sleep-breakdown" id="vitals-sleep-breakdown">--</div>
-                        </button>
-                        <div class="vitals-detail-panel" id="vitals-sleep-panel">
-                            <div class="vitals-detail-inner">
-                                <div class="vitals-detail-chart"><canvas id="vitals-sleep-detail-chart"></canvas></div>
-                                <div class="vitals-detail-chart vitals-detail-chart-donut"><canvas id="vitals-sleep-stage-chart"></canvas></div>
-                                <div class="vitals-stats-row" id="vitals-sleep-stats"></div>
-                            </div>
-                        </div>
-                    </article>
-                    <article class="glass-card vitals-card vitals-expandable" data-vital-card="activity">
-                        <button class="vitals-card-toggle" type="button" aria-expanded="false" aria-controls="vitals-activity-panel">
-                            <div class="vitals-card-header">
-                                <div>
-                                    <div class="vitals-title">Activity</div>
-                                    <div class="activity-row">
-                                        <div class="progress-ring" id="vitals-steps-ring">
-                                            <div class="progress-ring-inner">
-                                                <div class="ring-value" id="vitals-steps-today">--</div>
-                                                <div class="ring-label">Steps</div>
-                                                <div class="ring-target" id="vitals-steps-target">of 8000</div>
-                                            </div>
-                                        </div>
-                                        <div class="activity-metrics">
-                                            <div class="activity-metric">
-                                                <span class="metric-label">Active Cals</span>
-                                                <span class="metric-value" id="vitals-active-calories">--</span>
-                                            </div>
-                                            <div class="activity-metric">
-                                                <span class="metric-label">Active Min</span>
-                                                <span class="metric-value" id="vitals-active-minutes">--</span>
-                                            </div>
-                                            <div class="activity-metric">
-                                                <span class="metric-label">7d Avg</span>
-                                                <span class="metric-value" id="vitals-steps-avg">--</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="vitals-card-trailing">
-                                    <div class="sparkline-wrap">
-                                        <canvas id="vitals-activity-chart"></canvas>
-                                    </div>
-                                    <span class="vitals-chevron" aria-hidden="true"></span>
-                                </div>
-                            </div>
-                        </button>
-                        <div class="vitals-detail-panel" id="vitals-activity-panel">
-                            <div class="vitals-detail-inner">
-                                <div class="vitals-detail-chart"><canvas id="vitals-activity-detail-chart"></canvas></div>
-                                <div class="vitals-stats-row" id="vitals-activity-stats"></div>
-                            </div>
-                        </div>
-                    </article>
-                </div>
-            </div>
-        </section>
-
-
-        <!-- Body Tab -->
-        <section id="body" class="tab-content">
-            <div class="section">
-                <h2 class="section-title">Body Recomp Summary</h2>
-                <div id="body-summary" class="kpi-grid"></div>
-            </div>
-            <div class="section">
-                <h2 class="section-title">Weight & 7-Day Average</h2>
-                <div class="chart-container"><canvas id="bodyWeightTrendChart"></canvas></div>
-            </div>
-            <div class="section">
-                <h2 class="section-title">Lean vs Fat Mass</h2>
-                <div class="chart-container"><canvas id="bodyCompositionChart"></canvas></div>
-            </div>
-            <div class="section">
-                <h2 class="section-title">Sleep Consistency + Performance Correlation</h2>
-                <div id="sleep-summary" class="status-card"></div>
-            </div>
-        </section>
-
-        <!-- Graphs Tab (Key Insights) -->
-        <section id="analytics" class="tab-content">
-            <!-- Key Insights -->
-            <div class="section">
-                <h2 class="section-title">Key Insights</h2>
-                <div id="insights-container" class="insights-grid"></div>
-            </div>
-
-            <!-- e1RM Trends Chart -->
-            <div class="section">
-                <h2 class="section-title">Strength Progression</h2>
-                <div class="chart-container analytics-panel" data-analytics-panel="progress">
-                    <div class="chart-loading-state">Loading strength trends...</div>
-                    <canvas id="progressChart"></canvas>
-                </div>
-                <p id="progress-empty" class="empty-state" style="display:none;">Log at least two sessions for the same lift to see e1RM trends.</p>
-            </div>
-
-            <!-- Volume by Muscle Chart -->
-            <div class="section">
-                <h2 class="section-title">Volume Distribution</h2>
-                <div class="chart-container analytics-panel" data-analytics-panel="volume">
-                    <div class="chart-loading-state">Loading volume distribution...</div>
-                    <canvas id="volumeChart"></canvas>
-                </div>
-                <p id="volume-empty" class="empty-state" style="display:none;">Log workouts with muscle groups to see where your weekly volume is going.</p>
-            </div>
-
-            <!-- Body Weight Trend Chart -->
-            <div class="section">
-                <h2 class="section-title">Body Weight Trend</h2>
-                <div class="chart-container analytics-panel" data-analytics-panel="weight">
-                    <div class="chart-loading-state">Loading body weight history...</div>
-                    <canvas id="weightChart"></canvas>
-                </div>
-                <p id="weight-empty" class="empty-state" style="display:none;">Log body weight entries to unlock the body-weight trend chart.</p>
-            </div>
-
-            <!-- Body Recomp Trendline -->
-            <div class="section">
-                <h2 class="section-title">Body Recomp Trendline</h2>
-                <div class="chart-container analytics-panel" data-analytics-panel="recomp">
-                    <div class="chart-loading-state">Loading body recomposition trends...</div>
-                    <canvas id="recompChart"></canvas>
-                </div>
-                <p id="recomp-empty" class="empty-state" style="display:none;">Log weight in the Log tab to see your recomp trend</p>
-            </div>
-
-            <!-- Push/Pull Balance Chart -->
-            <div class="section">
-                <h2 class="section-title">Push/Pull Balance</h2>
-                <div class="chart-container small analytics-panel" data-analytics-panel="pushpull">
-                    <div class="chart-loading-state">Loading push/pull balance...</div>
-                    <canvas id="pushPullChart"></canvas>
-                </div>
-                <p id="pushpull-empty" class="empty-state" style="display:none;">Log 10+ sets to see push/pull balance</p>
-            </div>
-
-            <!-- Advanced Stats Summary -->
-            <div class="section">
-                <h2 class="section-title">Training Consistency</h2>
+            <div class="glass-card oura-card">
+                <h3>❤️ Vitals Quick</h3>
                 <div class="kpi-grid">
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="current-streak">--</span>
-                        <span class="kpi-label">Current Streak</span>
-                    </div>
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="longest-streak">--</span>
-                        <span class="kpi-label">Best Streak</span>
-                    </div>
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="weekly-avg">--</span>
-                        <span class="kpi-label">Weekly Avg</span>
-                    </div>
-                    <div class="kpi-card">
-                        <span class="kpi-value" id="consistency-pct">--</span>
-                        <span class="kpi-label">Consistency</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Personal Records -->
-            <div class="section">
-                <h2 class="section-title">Personal Records</h2>
-                <div id="prs-container" class="card-list"></div>
-            </div>
-        </section>
-
-        <!-- Next Workout Tab -->
-        <section id="workout" class="tab-content">
-            <div class="workout-header" id="workout-header">
-                <h2>Next Workout</h2>
-                <p class="workout-focus" id="workout-focus">Loading...</p>
-                <p class="workout-duration" id="workout-duration"></p>
-                <p class="workout-goal" id="workout-goal"></p>
-                <p class="readiness-summary" id="readiness-summary"></p>
-                <p class="workout-goal" id="smart-reco" style="margin-top:6px;"></p>
-                <div id="recommendation-reasoning" class="recommendation-reasoning" style="display:none;">
-                    <button id="reasoning-toggle" class="reasoning-toggle" type="button" aria-expanded="true">📊 Why this recommendation?</button>
-                    <div id="reasoning-factors" class="reasoning-factors"></div>
-                </div>
-            </div>
-
-            <div id="workout-exercises" class="card-list"></div>
-
-            <!-- Cardio Recommendation Section -->
-            <div class="section" id="cardio-section" style="display:none;">
-                <h3 class="section-title">
-                    <span class="material-icons">directions_run</span>
-                    Cardio Recommendation
-                </h3>
-                <div id="cardio-container" class="cardio-card"></div>
-            </div>
-
-            <div class="section" id="avoid-section" style="display:none;">
-                <h3 class="section-title warning">Muscles to Avoid</h3>
-                <div id="avoid-container"></div>
-            </div>
-
-            <!-- Complete Workout Button -->
-            <div class="section">
-                <button id="start-workout-btn" class="btn-primary btn-large">Start This Workout</button>
-            </div>
-        </section>
-
-        <!-- History Tab (Past Workouts) -->
-        <section id="history" class="tab-content">
-            <div class="section">
-                <div class="history-header">
-                    <h2 class="section-title">Activity History</h2>
-                    <button id="export-btn" class="btn-secondary btn-small">Export MD</button>
-                </div>
-            </div>
-
-            <!-- Date Range Filter -->
-            <div class="date-range-filter">
-                <button class="date-range-btn active" data-range="all">All Time</button>
-                <button class="date-range-btn" data-range="7">7 Days</button>
-                <button class="date-range-btn" data-range="30">30 Days</button>
-                <button class="date-range-btn" data-range="90">90 Days</button>
-                <button class="date-range-btn" data-range="custom">Custom</button>
-            </div>
-
-            <!-- Custom Date Range Inputs (hidden by default) -->
-            <div id="custom-date-range" class="custom-date-range" style="display: none;">
-                <div class="date-input-group">
-                    <label for="date-from">From</label>
-                    <input type="date" id="date-from">
-                </div>
-                <div class="date-input-group">
-                    <label for="date-to">To</label>
-                    <input type="date" id="date-to">
-                </div>
-                <button id="apply-date-range" class="btn-secondary btn-small">Apply</button>
-            </div>
-
-            <!-- History Filter Tabs -->
-            <div class="history-filter-tabs">
-                <button class="history-filter-btn active" data-filter="workouts">
-                    <span class="material-icons">fitness_center</span>
-                    Workouts
-                </button>
-                <button class="history-filter-btn" data-filter="cardio">
-                    <span class="material-icons">directions_run</span>
-                    Cardio
-                </button>
-                <button class="history-filter-btn" data-filter="recovery">
-                    <span class="material-icons">spa</span>
-                    Recovery
-                </button>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Workout Calendar</h2>
-                <div id="history-heatmap" class="calendar-heatmap"></div>
-                <div class="section-desc">Tap a day to view that session.</div>
-            </div>
-
-            <div id="history-stats" class="kpi-grid small">
-                <div class="kpi-card">
-                    <span class="kpi-value" id="history-total">--</span>
-                    <span class="kpi-label" id="history-total-label">Total Workouts</span>
-                </div>
-                <div class="kpi-card">
-                    <span class="kpi-value" id="history-volume">--</span>
-                    <span class="kpi-label" id="history-volume-label">Total Volume</span>
-                </div>
-            </div>
-
-            <div id="history-container" class="card-list"></div>
-
-            <div class="section" id="progressive-overload-section" style="display:none;">
-                <h2 class="section-title">Progressive Overload Ledger</h2>
-                <div id="progressive-overload-container" class="card-list"></div>
-            </div>
-        </section>
-
-        <!-- Log Tab -->
-        <section id="log" class="tab-content">
-            <div class="section">
-                <h2 class="section-title">Quick Log Set</h2>
-                <form id="workout-form" class="form">
-                    <div class="form-group">
-                        <label>Exercise</label>
-                        <select id="workout-exercise" required>
-                            <option value="">Select exercise...</option>
-                            <option value="Chest Press">Chest Press</option>
-                            <option value="Incline Press">Incline Press</option>
-                            <option value="Cable Crossover">Cable Crossover</option>
-                            <option value="Pec Fly">Pec Fly</option>
-                            <option value="Dips">Dips</option>
-                            <option value="Lat Pulldown">Lat Pulldown</option>
-                            <option value="Seated Row">Seated Row</option>
-                            <option value="Mid Row">Mid Row</option>
-                            <option value="Cable Row">Cable Row</option>
-                            <option value="Face Pulls">Face Pulls</option>
-                            <option value="Pullups">Pullups</option>
-                            <option value="Shoulder Press">Shoulder Press</option>
-                            <option value="Arnold Press">Arnold Press</option>
-                            <option value="Lateral Raise">Lateral Raise</option>
-                            <option value="Front Raise">Front Raise</option>
-                            <option value="Deltoid Fly">Deltoid Fly</option>
-                            <option value="Rear Delt Fly">Rear Delt Fly</option>
-                            <option value="Leg Press">Leg Press</option>
-                            <option value="Hack Squat">Hack Squat</option>
-                            <option value="Bulgarian Split Squat">Bulgarian Split Squat</option>
-                            <option value="Leg Extension">Leg Extension</option>
-                            <option value="Romanian Deadlift">Romanian Deadlift</option>
-                            <option value="Leg Curl">Leg Curl</option>
-                            <option value="Calf Raise">Calf Raise</option>
-                            <option value="Calf Raise (Seated)">Calf Raise (Seated)</option>
-                            <option value="Hip Abductor">Hip Abductor</option>
-                            <option value="Hip Adductor">Hip Adductor</option>
-                            <option value="Biceps Curl">Biceps Curl</option>
-                            <option value="Hammer Curl">Hammer Curl</option>
-                            <option value="Preacher Curl">Preacher Curl</option>
-                            <option value="Seated Dip">Seated Dip</option>
-                            <option value="Tricep Pushdown">Tricep Pushdown</option>
-                            <option value="Cable Pushdown">Cable Pushdown</option>
-                            <option value="Overhead Tricep Extension">Overhead Tricep Extension</option>
-                            <option value="Crunch Machine">Crunch Machine</option>
-                            <option value="Cable Crunch">Cable Crunch</option>
-                            <option value="Hanging Leg Raise">Hanging Leg Raise</option>
-                            <option value="Plank">Plank</option>
-                        </select>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Weight (lbs)</label>
-                            <input type="number" id="workout-weight" required min="0" step="2.5">
-                        </div>
-                        <div class="form-group">
-                            <label>Reps</label>
-                            <input type="number" id="workout-reps" required min="1" max="50">
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>RPE: <span id="rpe-value">7</span>/10</label>
-                        <input type="range" id="workout-rpe" min="1" max="10" value="7" step="0.5">
-                        <div class="rpe-scale" aria-hidden="true">
-                            <span></span><span></span><span></span><span></span><span></span>
-                            <span></span><span></span><span></span><span></span><span></span>
-                        </div>
-                    </div>
-                    <button type="submit" class="btn-primary">Log Set</button>
-                </form>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Log Cardio</h2>
-                <form id="cardio-form" class="form">
-                    <div class="form-group">
-                        <label>Activity Type</label>
-                        <select id="cardio-type" required>
-                            <option value="">Select activity...</option>
-                            <option value="stairmaster">Stairmaster</option>
-                            <option value="treadmill">Treadmill</option>
-                            <option value="basketball">Basketball</option>
-                            <option value="running">Running (Outdoor)</option>
-                            <option value="cycling">Cycling</option>
-                            <option value="elliptical">Elliptical</option>
-                            <option value="rowing">Rowing</option>
-                            <option value="swimming">Swimming</option>
-                        </select>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Duration (min)</label>
-                            <input type="number" id="cardio-duration" required min="1" max="180" placeholder="30">
-                        </div>
-                        <div class="form-group">
-                            <label>Avg Heart Rate</label>
-                            <input type="number" id="cardio-hr" min="60" max="220" placeholder="135">
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Intensity: <span id="cardio-intensity-value">5</span>/10</label>
-                        <input type="range" id="cardio-intensity" min="1" max="10" value="5">
-                    </div>
-                    <div class="form-group">
-                        <label>Notes (optional)</label>
-                        <input type="text" id="cardio-notes" placeholder="e.g., Zone 2 steady state">
-                    </div>
-                    <button type="submit" class="btn-primary">Log Cardio</button>
-                </form>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Log Recovery (Sauna)</h2>
-                <form id="sauna-form" class="form">
-                    <div class="form-group">
-                        <label>Recovery Type</label>
-                        <select id="recovery-type" required>
-                            <option value="">Select type...</option>
-                            <option value="sauna">Sauna (Dry)</option>
-                            <option value="steam">Steam Room</option>
-                            <option value="cold_plunge">Cold Plunge</option>
-                            <option value="contrast">Contrast Therapy</option>
-                        </select>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Duration (min)</label>
-                            <input type="number" id="recovery-duration" required min="1" max="60" placeholder="15">
-                        </div>
-                        <div class="form-group">
-                            <label>Temperature (°F)</label>
-                            <input type="number" id="recovery-temp" min="40" max="220" placeholder="180">
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Notes (optional)</label>
-                        <input type="text" id="recovery-notes" placeholder="e.g., Post-workout recovery">
-                    </div>
-                    <button type="submit" class="btn-primary">Log Recovery</button>
-                </form>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Log Soreness</h2>
-                <form id="soreness-form" class="form">
-                    <div class="form-group">
-                        <label>Muscle Group</label>
-                        <select id="soreness-muscle" required>
-                            <option value="">Select muscle...</option>
-                            <option value="chest">Chest</option>
-                            <option value="back">Back</option>
-                            <option value="shoulders">Shoulders</option>
-                            <option value="biceps">Biceps</option>
-                            <option value="triceps">Triceps</option>
-                            <option value="quads">Quads</option>
-                            <option value="hamstrings">Hamstrings</option>
-                            <option value="glutes">Glutes</option>
-                            <option value="adductors">Hip Adductors</option>
-                            <option value="calves">Calves</option>
-                            <option value="core">Core</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Soreness Level: <span id="soreness-value">5</span>/10</label>
-                        <input type="range" id="soreness-level" min="0" max="10" value="5">
-                    </div>
-                    <div class="form-group">
-                        <label>Notes (optional)</label>
-                        <input type="text" id="soreness-notes" placeholder="e.g., Mild DOMS">
-                    </div>
-                    <button type="submit" class="btn-primary">Log Soreness</button>
-                </form>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Body Measurement</h2>
-                <form id="body-form" class="form">
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Weight (lbs)</label>
-                            <input type="number" id="body-weight-input" required min="50" max="1000" step="0.1" placeholder="180">
-                        </div>
-                        <div class="form-group">
-                            <label>Body Fat % (optional)</label>
-                            <input type="number" id="body-fat" min="1" max="60" step="0.1" placeholder="15">
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group"><label>Neck (in)</label><input type="number" id="body-neck" step="0.1" placeholder="15"></div>
-                        <div class="form-group"><label>Waist (in)</label><input type="number" id="body-waist" step="0.1" placeholder="32"></div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group"><label>Chest (in)</label><input type="number" id="body-chest" step="0.1"></div>
-                        <div class="form-group"><label>Hips (in)</label><input type="number" id="body-hips" step="0.1"></div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group"><label>Arm L/R (in)</label><input type="text" id="body-arms" placeholder="14.2/14.0"></div>
-                        <div class="form-group"><label>Leg L/R (in)</label><input type="text" id="body-legs" placeholder="23.5/23.3"></div>
-                    </div>
-                    <div class="form-group">
-                        <button type="button" id="navy-calc-btn" class="btn-secondary btn-small">Estimate BF% (Navy)</button>
-                    </div>
-                    <div class="form-group">
-                        <label>Notes (optional)</label>
-                        <input type="text" id="body-notes" placeholder="e.g., Measured after morning workout">
-                    </div>
-                    <button type="submit" class="btn-primary">Log Measurement</button>
-                </form>
-            </div>
-        </section>
-
-        <!-- Apple Health Tab -->
-        <section id="apple-health" class="tab-content">
-            <div class="section">
-                <h2 class="section-title">🍎 Apple Health</h2>
-                <p class="section-desc" style="color:var(--text-secondary);font-size:14px;margin-bottom:16px;">
-                    Data from Apple Health Kit JSON exports at <code>~/Documents/Health/</code>. Export from iPhone Health app → Share → Export All Health Data.
-                </p>
-
-                <!-- Status Card -->
-                <div id="ah-status-card" class="card" style="margin-bottom:16px;padding:16px;background:var(--card-bg,#1e293b);border-radius:12px;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <div>
-                            <div style="font-weight:600;font-size:16px;">Data Source</div>
-                            <div id="ah-status-text" style="color:var(--text-secondary,#94a3b8);font-size:13px;margin-top:4px;">Checking...</div>
-                        </div>
-                        <div id="ah-status-badge" style="padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600;">⏳</div>
-                    </div>
-                </div>
-
-                <!-- Summary Cards -->
-                <div id="ah-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px;">
-                    <div class="card" style="padding:14px;background:var(--card-bg,#1e293b);border-radius:12px;text-align:center;">
-                        <div style="font-size:12px;color:var(--text-secondary,#94a3b8);text-transform:uppercase;letter-spacing:0.05em;">Workouts</div>
-                        <div id="ah-workouts-total" style="font-size:28px;font-weight:700;margin:4px 0;">—</div>
-                        <div id="ah-workouts-7d" style="font-size:11px;color:var(--text-secondary,#94a3b8);">last 7d: —</div>
-                    </div>
-                    <div class="card" style="padding:14px;background:var(--card-bg,#1e293b);border-radius:12px;text-align:center;">
-                        <div style="font-size:12px;color:var(--text-secondary,#94a3b8);text-transform:uppercase;letter-spacing:0.05em;">Avg Sleep</div>
-                        <div id="ah-avg-sleep" style="font-size:28px;font-weight:700;margin:4px 0;">—</div>
-                        <div id="ah-sleep-days" style="font-size:11px;color:var(--text-secondary,#94a3b8);">days: —</div>
-                    </div>
-                    <div class="card" style="padding:14px;background:var(--card-bg,#1e293b);border-radius:12px;text-align:center;">
-                        <div style="font-size:12px;color:var(--text-secondary,#94a3b8);text-transform:uppercase;letter-spacing:0.05em;">Avg Steps</div>
-                        <div id="ah-avg-steps" style="font-size:28px;font-weight:700;margin:4px 0;">—</div>
-                        <div id="ah-steps-days" style="font-size:11px;color:var(--text-secondary,#94a3b8);">days: —</div>
-                    </div>
-                    <div class="card" style="padding:14px;background:var(--card-bg,#1e293b);border-radius:12px;text-align:center;">
-                        <div style="font-size:12px;color:var(--text-secondary,#94a3b8);text-transform:uppercase;letter-spacing:0.05em;">RHR / HRV</div>
-                        <div id="ah-vitals" style="font-size:28px;font-weight:700;margin:4px 0;">—</div>
-                        <div style="font-size:11px;color:var(--text-secondary,#94a3b8);">latest</div>
-                    </div>
-                </div>
-
-                <!-- Workouts Table -->
-                <div class="card" style="margin-bottom:16px;padding:16px;background:var(--card-bg,#1e293b);border-radius:12px;">
-                    <h3 style="margin:0 0 12px 0;font-size:15px;">Recent Workouts</h3>
-                    <div style="overflow-x:auto;">
-                        <table id="ah-workouts-table" style="width:100%;font-size:13px;border-collapse:collapse;">
-                            <thead>
-                                <tr style="border-bottom:1px solid var(--border,#334155);">
-                                    <th style="text-align:left;padding:6px 8px;">Date</th>
-                                    <th style="text-align:left;padding:6px 8px;">Activity</th>
-                                    <th style="text-align:right;padding:6px 8px;">Duration</th>
-                                    <th style="text-align:right;padding:6px 8px;">kcal</th>
-                                </tr>
-                            </thead>
-                            <tbody id="ah-workouts-body">
-                                <tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text-secondary,#94a3b8);">Loading...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- Sleep Chart -->
-                <div class="card" style="margin-bottom:16px;padding:16px;background:var(--card-bg,#1e293b);border-radius:12px;">
-                    <h3 style="margin:0 0 12px 0;font-size:15px;">Sleep (Last 30 Days)</h3>
-                    <div id="ah-sleep-chart" style="display:flex;align-items:flex-end;gap:2px;height:120px;overflow:hidden;"></div>
-                </div>
-
-                <!-- Steps Chart -->
-                <div class="card" style="margin-bottom:16px;padding:16px;background:var(--card-bg,#1e293b);border-radius:12px;">
-                    <h3 style="margin:0 0 12px 0;font-size:15px;">Daily Steps (Last 30 Days)</h3>
-                    <div id="ah-steps-chart" style="display:flex;align-items:flex-end;gap:2px;height:120px;overflow:hidden;"></div>
-                </div>
-
-                <!-- Vitals Table -->
-                <div class="card" style="padding:16px;background:var(--card-bg,#1e293b);border-radius:12px;">
-                    <h3 style="margin:0 0 12px 0;font-size:15px;">Resting Heart Rate & HRV</h3>
-                    <div style="overflow-x:auto;">
-                        <table id="ah-vitals-table" style="width:100%;font-size:13px;border-collapse:collapse;">
-                            <thead>
-                                <tr style="border-bottom:1px solid var(--border,#334155);">
-                                    <th style="text-align:left;padding:6px 8px;">Date</th>
-                                    <th style="text-align:right;padding:6px 8px;">RHR (bpm)</th>
-                                    <th style="text-align:right;padding:6px 8px;">HRV (ms)</th>
-                                </tr>
-                            </thead>
-                            <tbody id="ah-vitals-body">
-                                <tr><td colspan="3" style="text-align:center;padding:20px;color:var(--text-secondary,#94a3b8);">Loading...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Settings Tab -->
-        <section id="settings" class="tab-content">
-            <div class="section">
-                <h2 class="section-title">Training Goal</h2>
-                <p class="section-desc">Your goal determines rep ranges, rest times, and intensity recommendations.</p>
-
-                <div id="goals-container" class="goals-grid"></div>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Evidence-Based Protocols</h2>
-                <p class="section-desc">Science-backed guidelines for lean muscle gain and optimal body composition.</p>
-                <div id="protocols-container" style="display: grid; gap: 12px; margin-top: 12px;">
-                    <!-- Populated by JavaScript -->
-                </div>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Weekly Target</h2>
-                <div class="form-group">
-                    <label>Sessions per week: <span id="target-value">3</span></label>
-                    <input type="range" id="sessions-target" min="1" max="6" value="3">
-                </div>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Workout Duration</h2>
-                <p class="section-desc">How much time do you have? Workouts will adjust accordingly.</p>
-                <div id="time-options-container" class="time-options-grid"></div>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Recovery Status</h2>
-                <div id="deload-container" class="status-card"></div>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Injury Risk</h2>
-                <div id="injury-risk-container" class="status-card"></div>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Exercise Baseline Weights</h2>
-                <p class="section-desc">Set starting weights for exercises without history. These will be used as your baseline.</p>
-                <div id="baseline-container" class="baseline-grid"></div>
-                <button id="save-baseline-btn" class="btn-primary" style="margin-top:12px;">Save Baselines</button>
-            </div>
-
-            <div class="section">
-                <h2 class="section-title">Data</h2>
-                <p class="section-desc">Backup and restore your fitness data.</p>
-                <div class="btn-group" style="flex-direction: column; gap: 12px;">
-                    <button id="export-backup-btn" class="btn-primary">Export Backup (JSON)</button>
-                    <div class="import-backup-container">
-                        <input type="file" id="import-backup-input" accept=".json" style="display: none;">
-                        <button id="import-backup-btn" class="btn-secondary" style="width: 100%;">Import Backup</button>
-                    </div>
-                    <button id="export-all-btn" class="btn-secondary" style="width: 100%;">Export to Markdown</button>
-                </div>
-            </div>
-        </section>
-
-        <!-- iOS Install Banner -->
-        <div id="install-banner" class="install-banner" style="display:none;">
-            <p>Install this app: tap <strong>Share</strong> then <strong>Add to Home Screen</strong></p>
-            <button id="close-banner">Got it</button>
-        </div>
-
-        <!-- Active Workout Modal -->
-        <div id="workout-modal" class="modal" style="display:none;">
-            <div class="modal-content">
-                <!-- Step 1: Exercises -->
-                <div id="workout-step-exercises" class="workout-step">
-                    <h2>Logging Workout</h2>
-                    <div class="volume-tracker">
-                        <div>Total Volume: <strong id="workout-volume-total">0</strong> lbs</div>
-                        <div>Sets Logged: <strong id="workout-set-count">0</strong></div>
-                    </div>
-                    <div class="section-desc">Tap a set to mark complete. Swipe right to copy the previous set.</div>
-                    <div id="active-workout-exercises"></div>
-                    <div class="form-group modal-notes">
-                        <label>Workout Notes (optional)</label>
-                        <textarea id="workout-notes" rows="3" placeholder="How did the workout feel? Any adjustments made? Energy levels?"></textarea>
-                    </div>
-                    <div class="modal-actions">
-                        <button id="cancel-workout" class="btn-secondary">Cancel</button>
-                        <button id="next-step-btn" class="btn-primary">Complete Workout</button>
-                    </div>
-                </div>
-
-                <!-- Step 2: Cardio (shown only if cardio was recommended) -->
-                <div id="workout-step-cardio" class="workout-step" style="display:none;">
-                    <h2>Log Cardio</h2>
-                    <div id="cardio-recommendation-info" class="cardio-step-info"></div>
-                    <div class="form-group">
-                        <label>Actual Duration (min)</label>
-                        <input type="number" id="cardio-actual-duration" min="0" max="120" placeholder="15">
-                    </div>
-                    <div class="form-group">
-                        <label>Average Heart Rate (BPM)</label>
-                        <input type="number" id="cardio-actual-hr" min="60" max="220" placeholder="130">
-                    </div>
-                    <div class="form-group">
-                        <label>Intensity: <span id="cardio-actual-intensity-value">5</span>/10</label>
-                        <input type="range" id="cardio-actual-intensity" min="1" max="10" value="5">
-                    </div>
-                    <div class="form-group">
-                        <label>
-                            <input type="checkbox" id="cardio-skipped"> I skipped cardio today
-                        </label>
-                    </div>
-                    <div class="modal-actions">
-                        <button id="back-to-exercises" class="btn-secondary">Back</button>
-                        <button id="complete-workout" class="btn-primary">Complete Workout</button>
-                    </div>
+                    <div class="kpi-card"><span class="kpi-value" id="vitals-rhr">-- bpm</span><span class="kpi-label">RHR</span></div>
+                    <div class="kpi-card"><span class="kpi-value" id="vitals-steps">--</span><span class="kpi-label">Steps</span></div>
+                    <div class="kpi-card"><span class="kpi-value" id="vitals-active-cal">--</span><span class="kpi-label">Active Cal</span></div>
+                    <div class="kpi-card"><span class="kpi-value" id="vitals-sleep-quality">--</span><span class="kpi-label">Sleep</span></div>
                 </div>
             </div>
         </div>
 
-        <!-- Swap Exercise Bottom Sheet -->
-        <div id="swap-overlay" class="swap-overlay" aria-hidden="true"></div>
-        <div id="swap-sheet" class="swap-sheet" aria-hidden="true" role="dialog" aria-label="Swap exercise">
-            <div class="swap-sheet-handle"></div>
-            <div class="swap-sheet-header">
-                <div class="swap-sheet-title" id="swap-title">Swap Exercise</div>
-                <button id="swap-close" class="swap-close" type="button">Close</button>
+        <!-- Vitals -->
+        <div id="vitals" class="tab-content">
+            <h2>❤️ Vitals</h2>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px;">
+                <div class="health-stat-card"><div class="label">Resting HR</div><div class="value" id="vitals-hr-resting">--</div></div>
+                <div class="health-stat-card"><div class="label">Avg HR</div><div class="value" id="vitals-hr-average">--</div></div>
+                <div class="health-stat-card"><div class="label">HR Zone</div><div class="value" id="vitals-hr-zone">--</div></div>
+                <div class="health-stat-card"><div class="label">Steps Today</div><div class="value" id="vitals-steps-today">--</div></div>
+                <div class="health-stat-card"><div class="label">Avg Steps (7d)</div><div class="value" id="vitals-steps-avg">--</div></div>
+                <div class="health-stat-card"><div class="label">Active Min</div><div class="value" id="vitals-active-minutes">--</div></div>
+                <div class="health-stat-card"><div class="label">Active Cal</div><div class="value" id="vitals-active-calories">--</div></div>
+                <div class="health-stat-card"><div class="label">Sleep</div><div class="value" id="vitals-sleep-duration">--</div></div>
+                <div class="health-stat-card"><div class="label">Sleep Avg</div><div class="value" id="vitals-sleep-avg">--</div></div>
+                <div class="health-stat-card"><div class="label">Weight</div><div class="value" id="vitals-weight-current">--</div></div>
+                <div class="health-stat-card"><div class="label">Body Fat</div><div class="value" id="vitals-weight-bodyfat">--</div></div>
+                <div class="health-stat-card"><div class="label">Weight Δ</div><div class="value" id="vitals-weight-change">--</div></div>
             </div>
-            <div class="swap-sheet-subtitle" id="swap-subtitle">Alternatives</div>
-            <div id="swap-options" class="swap-options"></div>
+            <div id="vitals-cards-container" class="health-section"></div>
+        </div>
+
+        <!-- Next Workout -->
+        <div id="workout" class="tab-content">
+            <div class="glass-card workout-hero" style="padding:20px;background:linear-gradient(135deg, #1e40af 0%, #6d28d9 100%);border:1px solid rgba(96,165,250,0.3);border-radius:14px;margin-bottom:16px;">
+                <div style="text-align:center;color:#e0e7ff;font-size:13px;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;">Next Workout</div>
+                <div id="next-workout-title" style="text-align:center;color:#fff;font-size:28px;font-weight:800;margin-bottom:12px;">--</div>
+                <div style="text-align:center;color:#c7d2fe;font-size:14px;margin-bottom:6px;">
+                    <span id="workout-focus"></span>
+                    <span id="workout-duration" style="margin-left:8px;"></span>
+                </div>
+                <div style="text-align:center;color:#fbbf24;font-size:15px;font-weight:600;margin-bottom:6px;" id="rpe-value"></div>
+                <div style="text-align:center;color:#a5b4fc;font-size:13px;" id="workout-goal"></div>
+                <div id="smart-reco" style="text-align:center;color:#e0e7ff;font-size:12px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.15);"></div>
+                <div id="reasoning-factors" style="color:#c7d2fe;font-size:12px;margin-top:8px;"></div>
+            </div>
+            <div id="next-workout-exercises"></div>
+            <div id="cardio-section" style="display:none;" class="glass-card" style="padding:16px;margin-top:16px;">
+                <h3>🏃 Cardio</h3>
+                <div id="cardio-container"></div>
+            </div>
+        </div>
+
+        <!-- Log Workout -->
+        <div id="log-workout" class="tab-content">
+            <h2>📝 Log Workout</h2>
+            <div class="health-section">
+                <form id="workout-log-form" class="log-form" onsubmit="submitWorkout(event)">
+                    <div><label for="log-date">Date</label><input type="date" id="log-date" name="date" required></div>
+                    <div><label for="log-exercise">Exercise</label><input type="text" id="log-exercise" name="exercise" placeholder="e.g. Bench Press" required></div>
+                    <div><label for="log-sets">Sets</label><input type="number" id="log-sets" name="sets" min="1" value="3"></div>
+                    <div><label for="log-reps">Reps</label><input type="number" id="log-reps" name="reps" min="1" value="10"></div>
+                    <div><label for="log-weight">Weight (lbs)</label><input type="number" id="log-weight" name="weight" min="0" step="0.5"></div>
+                    <div><label for="log-rpe">RPE (1-10)</label><input type="number" id="log-rpe" name="rpe" min="1" max="10" step="0.5"></div>
+                    <div><label for="log-notes">Notes</label><textarea id="log-notes" name="notes" placeholder="Optional notes..."></textarea></div>
+                    <button type="submit">Log Workout</button>
+                </form>
+                <div id="log-workout-result" style="margin-top:12px;"></div>
+            </div>
+        </div>
+
+        <!-- History -->
+        <div id="history" class="tab-content">
+            <h2>📊 Workout History</h2>
+            <div class="history-filters">
+                <div class="filter-row">
+                    <button class="date-filter-btn active" data-range="all" onclick="setDateRange('all')">All Time</button>
+                    <button class="date-filter-btn" data-range="90d" onclick="setDateRange('90d')">Last 90 Days</button>
+                    <button class="date-filter-btn" data-range="30d" onclick="setDateRange('30d')">Last 30 Days</button>
+                    <button class="date-filter-btn" data-range="7d" onclick="setDateRange('7d')">Last 7 Days</button>
+                </div>
+                <div class="filter-row" id="machine-filter-container"></div>
+            </div>
+            <div id="history-results">
+                <div class="skeleton-loading"><div class="skeleton-line w-100"></div><div class="skeleton-line w-75"></div><div class="skeleton-line w-50"></div></div>
+            </div>
+        </div>
+
+        <!-- Body -->
+        <div id="body" class="tab-content">
+            <h2>🧍 Body Composition</h2>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px;">
+                <div class="health-stat-card"><div class="label">Weight</div><div class="value" id="body-weight">--</div></div>
+                <div class="health-stat-card"><div class="label">Goal Weight</div><div class="value" id="goal-weight-current">--</div></div>
+                <div class="health-stat-card"><div class="label">Remaining</div><div class="value" id="goal-weight-remaining">--</div></div>
+                <div class="health-stat-card"><div class="label">Body Fat</div><div class="value" id="goal-bf-current">--</div></div>
+                <div class="health-stat-card"><div class="label">BF Remaining</div><div class="value" id="goal-bf-remaining">--</div></div>
+            </div>
+            <div id="body-goals-container" class="health-section"></div>
+            <div id="baseline-container" class="health-section"></div>
+            <div id="body-summary" class="health-section"></div>
+            <div class="health-section">
+                <h3>Log Body Measurement</h3>
+                <form class="log-form" onsubmit="submitBodyMeasurement(event)">
+                    <div><label>Weight (lbs)</label><input type="number" name="weight_lbs" step="0.1" placeholder="e.g. 183.5"></div>
+                    <div><label>Body Fat %</label><input type="number" name="body_fat_pct" step="0.1" placeholder="e.g. 18.5"></div>
+                    <button type="submit">Save Measurement</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Stats / Analytics -->
+        <div id="analytics" class="tab-content">
+            <h2>📈 Stats & Analytics</h2>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;">
+                <div class="health-stat-card"><div class="label">Sessions</div><div class="value" id="sessions">--</div></div>
+                <div class="health-stat-card"><div class="label">Total Sets</div><div class="value" id="total-sets">--</div></div>
+                <div class="health-stat-card"><div class="label">Weekly Avg</div><div class="value" id="weekly-avg">--</div></div>
+                <div class="health-stat-card"><div class="label">Consistency</div><div class="value" id="consistency-pct">--</div></div>
+                <div class="health-stat-card"><div class="label">Current Streak</div><div class="value" id="current-streak">--</div></div>
+                <div class="health-stat-card"><div class="label">Longest Streak</div><div class="value" id="longest-streak">--</div></div>
+                <div class="health-stat-card"><div class="label">Adherence</div><div class="value" id="progression">--</div></div>
+                <div class="health-stat-card"><div class="label">Volume</div><div class="value" id="history-volume">--</div></div>
+                <div class="health-stat-card"><div class="label">Streak Count</div><div class="value" id="streak-count">--</div></div>
+            </div>
+            <div id="insights-container" class="health-section"></div>
+            <div id="prs-container" class="health-section"></div>
+            <div id="insight-content" class="health-section"></div>
+        </div>
+
+        <!-- Apple Health (hidden per user request) --><div id="apple-health" class="tab-content" style="display:none!important;">
+            <h2>🍎 Apple Health <span class="health-source-badge">Auto Sync</span></h2>
+            <div id="health-loading" class="skeleton-loading"><div class="skeleton-line w-100"></div><div class="skeleton-line w-75"></div><div class="skeleton-line w-50"></div></div>
+            <div id="health-content" style="display:none;">
+                <div class="health-summary-grid" id="health-summary"></div>
+                <div class="health-section"><h3>👟 Steps</h3><div class="health-range-btns" id="steps-range"><button class="active" onclick="loadHealthChart('steps',7)">7d</button><button onclick="loadHealthChart('steps',30)">30d</button><button onclick="loadHealthChart('steps',90)">90d</button></div><div class="health-bar-chart" id="steps-chart"></div></div>
+                <div class="health-section"><h3>😴 Sleep</h3><div class="health-range-btns" id="sleep-range"><button class="active" onclick="loadHealthChart('sleep',7)">7d</button><button onclick="loadHealthChart('sleep',30)">30d</button><button onclick="loadHealthChart('sleep',90)">90d</button></div><div class="health-bar-chart" id="sleep-chart"></div></div>
+                <div class="health-section"><h3>❤️ Vitals</h3><div class="health-range-btns" id="vitals-range"><button class="active" onclick="loadVitals(7)">7d</button><button onclick="loadVitals(30)">30d</button><button onclick="loadVitals(90)">90d</button></div><div id="vitals-table"></div></div>
+                <div class="health-section"><h3>🏋️ Recent Apple Health Workouts</h3><div class="health-range-btns" id="workouts-range"><button class="active" onclick="loadHealthWorkouts(7)">7d</button><button onclick="loadHealthWorkouts(30)">30d</button><button onclick="loadHealthWorkouts(90)">90d</button></div><div class="workout-list" id="health-workouts-list"></div></div>
+            </div>
+        </div>
+
+        <!-- Settings -->
+        <div id="settings" class="tab-content">
+            <h2>⚙️ Settings</h2>
+            <div id="settings-container" class="health-section">
+                <div class="settings-group" id="settings-goal">
+                    <h3>Training Goal</h3>
+                    <div id="goals-container" class="goals-grid"></div>
+                </div>
+                <div class="settings-group" id="settings-time">
+                    <h3>Workout Duration</h3>
+                    <div id="time-options-container" class="time-options-grid"></div>
+                </div>
+                <div class="settings-group" id="settings-sessions">
+                    <h3>Sessions Per Week</h3>
+                    <label style="display:flex;align-items:center;gap:12px;">
+                        <input type="range" id="sessions-target" min="1" max="7" step="1" style="flex:1;">
+                        <span id="target-value" style="min-width:2ch;text-align:right;">3</span>
+                    </label>
+                </div>
+                <div class="settings-group" id="settings-prefs">
+                    <h3>Protocols</h3>
+                    <div id="protocols-container"></div>
+                </div>
+                <div class="settings-group" id="settings-recomp">
+                    <h3>Recomp Targets</h3>
+                    <div id="deload-container"></div>
+                    <div id="injury-risk-container"></div>
+                </div>
+                <div class="settings-group" id="settings-oura">
+                    <h3>Oura Ring Sync</h3>
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+                        <button id="oura-sync-btn" type="button" onclick="syncOura()" style="padding:10px 18px;border:1px solid #60a5fa;border-radius:8px;background:rgba(96,165,250,0.15);color:#60a5fa;cursor:pointer;font-weight:600;">🔄 Sync Oura Now</button>
+                        <span id="oura-sync-status" style="font-size:13px;color:#94a3b8;"></span>
+                    </div>
+                    <div style="font-size:12px;color:#64748b;margin-top:8px;">Pulls the last 30 days of sleep/readiness data from Oura's API into the dashboard. Status + HRV + temperature are already live on the Dashboard tab.</div>
+                </div>
+                <div class="settings-group" id="settings-baselines">
+                    <h3>Baseline Weights</h3>
+                    <div id="baseline-container"></div>
+                    <button id="save-baseline-btn" type="button" style="margin-top:12px;padding:8px 16px;border:1px solid #334155;border-radius:6px;background:transparent;color:#94a3b8;cursor:pointer;">Save Baselines</button>
+                </div>
+            </div>
+            <div class="health-section">
+                <h3>Data Management</h3>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                    <button onclick="exportBackup()" style="padding:8px 16px;border:1px solid #334155;border-radius:6px;background:transparent;color:#94a3b8;cursor:pointer;">📦 Export Backup</button>
+                    <button onclick="document.getElementById('import-file').click()" style="padding:8px 16px;border:1px solid #334155;border-radius:6px;background:transparent;color:#94a3b8;cursor:pointer;">📥 Import Backup</button>
+                    <input type="file" id="import-file" accept=".json" style="display:none" onchange="importBackup(event)">
+                </div>
+            </div>
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20260312a"></script>
-    <script>
-        (function() {
-            const overlay = document.getElementById('swap-overlay');
-            const sheet = document.getElementById('swap-sheet');
-            const list = document.getElementById('swap-options');
-            const title = document.getElementById('swap-title');
-            const subtitle = document.getElementById('swap-subtitle');
-            const closeBtn = document.getElementById('swap-close');
+    <div id="workout-modal" class="modal">
+        <div class="modal-content"><h2 id="modal-workout-name">Active Workout</h2><div id="active-workout-exercises"></div><button class="complete-btn" onclick="completeWorkout()">Complete Workout</button></div>
+    </div>
+    <div id="swap-modal" class="modal">
+        <div class="modal-content swap-modal-content"><h3>Swap Exercise</h3><p id="swap-exercise-name"></p><div id="alternatives-list"></div><button class="close-btn" onclick="closeModal()">Cancel</button></div>
+    </div>
 
-            function safeText(value) {
-                if (window.escapeHtml) return window.escapeHtml(value);
-                return String(value || '');
-            }
-
-            function openSheet() {
-                overlay.classList.add('show');
-                sheet.classList.add('open');
-                overlay.setAttribute('aria-hidden', 'false');
-                sheet.setAttribute('aria-hidden', 'false');
-            }
-
-            function closeSheet() {
-                overlay.classList.remove('show');
-                sheet.classList.remove('open');
-                overlay.setAttribute('aria-hidden', 'true');
-                sheet.setAttribute('aria-hidden', 'true');
-            }
-
-            if (overlay) overlay.addEventListener('click', closeSheet);
-            if (closeBtn) closeBtn.addEventListener('click', closeSheet);
-
-            async function loadAlternatives(exerciseIndex) {
-                if (!window.currentRecommendation) return;
-                const ex = window.currentRecommendation.exercises?.[exerciseIndex];
-                if (!ex) return;
-                title.textContent = `Swap ${ex.exercise}`;
-                subtitle.textContent = `${ex.muscle} alternatives`;
-                list.innerHTML = '<div class="swap-loading">Loading alternatives...</div>';
-                openSheet();
-
-                try {
-                    const resp = await fetch(`/api/exercises/alternatives/${encodeURIComponent(ex.muscle)}`);
-                    const data = await resp.json();
-                    const alternatives = (data.alternatives || []).filter(a => a.name !== ex.exercise);
-                    if (!alternatives.length) {
-                        list.innerHTML = '<div class="swap-empty">No alternatives found.</div>';
-                        return;
-                    }
-                    list.innerHTML = alternatives.map(a => `
-                        <button type="button" class="swap-option" data-name="${safeText(a.name)}">
-                            <span>${safeText(a.name)}</span>
-                            <span class="swap-meta">${safeText(a.equipment || '')}</span>
-                        </button>
-                    `).join('');
-
-                    list.querySelectorAll('.swap-option').forEach(btn => {
-                        btn.addEventListener('click', async () => {
-                            const newName = btn.getAttribute('data-name');
-                            await performSwap(exerciseIndex, newName);
-                        });
-                    });
-                } catch (e) {
-                    list.innerHTML = '<div class="swap-error">Failed to load alternatives.</div>';
-                }
-            }
-
-            async function performSwap(exerciseIndex, newName) {
-                list.innerHTML = '<div class="swap-loading">Swapping...</div>';
-                try {
-                    const resp = await fetch('/api/workout/swap', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            workout_index: 0,
-                            exercise_index: exerciseIndex,
-                            new_exercise_name: newName
-                        })
-                    });
-                    const data = await resp.json();
-                    if (!resp.ok || data.status === 'error') {
-                        list.innerHTML = `<div class="swap-error">${safeText(data?.error?.message || 'Swap failed.')}</div>`;
-                        return;
-                    }
-                    if (data.recommendation) {
-                        window.currentRecommendation = data.recommendation;
-                        if (typeof window.updateNextWorkout === 'function') {
-                            window.updateNextWorkout(window.currentRecommendation);
-                        }
-                    }
-                    closeSheet();
-                } catch (e) {
-                    list.innerHTML = '<div class="swap-error">Swap failed.</div>';
-                }
-            }
-
-            function addSwapButtonsTo(container) {
-                if (!container || !window.currentRecommendation) return;
-                const cards = container.querySelectorAll('.workout-card');
-                cards.forEach((card, index) => {
-                    const header = card.querySelector('.workout-exercise-header');
-                    if (!header || header.querySelector('.swap-btn')) return;
-                    const btn = document.createElement('button');
-                    btn.type = 'button';
-                    btn.className = 'swap-btn';
-                    btn.setAttribute('aria-label', 'Swap exercise');
-                    btn.textContent = '🔄';
-                    btn.addEventListener('click', () => loadAlternatives(index));
-                    header.appendChild(btn);
-                });
-            }
-
-            const originalUpdate = window.updateNextWorkout;
-            if (typeof originalUpdate === 'function') {
-                window.updateNextWorkout = function(workout) {
-                    originalUpdate(workout);
-                    addSwapButtonsTo(document.getElementById('workout-exercises'));
-                    addSwapButtonsTo(document.getElementById('dashboard-workout-exercises'));
-                };
-            }
-        })();
-    </script>
-    // Tab click delegation + Apple Health data loader
-    (function() {
-      function switchTab(tabName) {
-        if (!tabName) return;
-        document.querySelectorAll('.tab-content').forEach(function(section) {
-          section.classList.toggle('active', section.id === tabName);
-        });
-        document.querySelectorAll('.tab-btn').forEach(function(btn) {
-          btn.classList.toggle('active', btn.getAttribute('data-tab') === tabName);
-        });
-        try {
-          var url = new URL(window.location.href);
-          url.hash = tabName;
-          history.replaceState(null, '', url.toString());
-        } catch (e) {}
-      }
-      window.switchTab = switchTab;
-
-      // Bind all tab buttons to switchTab
-      document.querySelectorAll('.tab-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var tabName = this.getAttribute('data-tab');
-          if (tabName) switchTab(tabName);
-        });
-      });
-
-      // Apple Health data loading
-      var ahLoaded = false;
-      function loadAppleHealth() {
-        if (ahLoaded) return;
-        ahLoaded = true;
-        fetch('/api/apple-health/summary').then(function(r) { return r.json(); }).then(function(data) {
-          var badge = document.getElementById('ah-status-badge');
-          var text = document.getElementById('ah-status-text');
-          if (data.error) {
-            if (badge) { badge.textContent = '✗'; badge.style.background = '#ef4444'; }
-            if (text) text.textContent = data.error;
-            return;
-          }
-          if (badge) { badge.textContent = '✓'; badge.style.background = '#22c55e'; badge.style.color = '#fff'; }
-          if (text) text.textContent = data.data_source + ' — ' + (data.last_export || 'loaded');
-          var el;
-          el = document.getElementById('ah-workouts-total'); if (el) el.textContent = data.workouts_total || 0;
-          el = document.getElementById('ah-workouts-7d'); if (el) el.textContent = 'last 7d: ' + (data.workouts_7d || 0);
-          el = document.getElementById('ah-avg-sleep'); if (el) el.textContent = data.avg_sleep_7d ? data.avg_sleep_7d + 'h' : '—';
-          el = document.getElementById('ah-sleep-days'); if (el) el.textContent = 'days: ' + (data.sleep_total_days || 0);
-          el = document.getElementById('ah-avg-steps'); if (el) el.textContent = data.avg_steps_7d ? Math.round(data.avg_steps_7d).toLocaleString() : '—';
-          el = document.getElementById('ah-steps-days'); if (el) el.textContent = 'days: ' + (data.steps_total_days || 0);
-          el = document.getElementById('ah-vitals'); if (el) {
-            var parts = [];
-            if (data.latest_rhr) parts.push('RHR ' + data.latest_rhr);
-            if (data.latest_hrv) parts.push('HRV ' + data.latest_hrv + 'ms');
-            el.textContent = parts.length ? parts.join(' / ') : '—';
-          }
-        }).catch(function() {
-          var badge = document.getElementById('ah-status-badge');
-          var text = document.getElementById('ah-status-text');
-          if (badge) { badge.textContent = '!'; badge.style.background = '#f59e0b'; }
-          if (text) text.textContent = 'Could not load Apple Health data';
-        });
-
-        fetch('/api/apple-health/workouts?days=30').then(function(r) { return r.json(); }).then(function(data) {
-          var tbody = document.getElementById('ah-workouts-body');
-          if (!tbody) return;
-          if (!data.workouts || !data.workouts.length) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text-secondary,#94a3b8);">No workouts found</td></tr>'; return; }
-          tbody.innerHTML = data.workouts.slice(0,15).map(function(w) {
-            return '<tr style="border-bottom:1px solid var(--border,#334155);"><td style="padding:6px 8px;">' + (w.date||'') + '</td><td style="padding:6px 8px;">' + (w.activity||'') + '</td><td style="text-align:right;padding:6px 8px;">' + (w.duration_min||0) + ' min</td><td style="text-align:right;padding:6px 8px;">' + (w.energy_kcal||0) + '</td></tr>';
-          }).join('');
-        }).catch(function() {});
-
-        fetch('/api/apple-health/sleep?days=30').then(function(r) { return r.json(); }).then(function(data) {
-          var c = document.getElementById('ah-sleep-chart');
-          if (!c || !data.sleep || !data.sleep.length) return;
-          var mx = Math.max.apply(null, data.sleep.map(function(s) { return s.hours; }));
-          c.innerHTML = data.sleep.map(function(s) {
-            var pct = Math.round((s.hours/mx)*100);
-            var clr = s.hours >= 7 ? '#22c55e' : s.hours >= 5 ? '#f59e0b' : '#ef4444';
-            return '<div title="' + s.date + ': ' + s.hours + 'h" style="flex:1;min-width:4px;height:' + pct + '%;background:' + clr + ';border-radius:2px 2px 0 0;"></div>';
-          }).join('');
-        }).catch(function() {});
-
-        fetch('/api/apple-health/steps?days=30').then(function(r) { return r.json(); }).then(function(data) {
-          var c = document.getElementById('ah-steps-chart');
-          if (!c || !data.steps || !data.steps.length) return;
-          var mx = Math.max.apply(null, data.steps.map(function(s) { return s.avg; }));
-          c.innerHTML = data.steps.map(function(s) {
-            var pct = Math.round((s.avg/mx)*100);
-            var clr = s.avg >= 8000 ? '#22c55e' : s.avg >= 4000 ? '#f59e0b' : '#ef4444';
-            return '<div title="' + s.date + ': ' + Math.round(s.avg).toLocaleString() + ' steps" style="flex:1;min-width:4px;height:' + pct + '%;background:' + clr + ';border-radius:2px 2px 0 0;"></div>';
-          }).join('');
-        }).catch(function() {});
-
-        fetch('/api/apple-health/vitals?days=14').then(function(r) { return r.json(); }).then(function(data) {
-          var tbody = document.getElementById('ah-vitals-body');
-          if (!tbody) return;
-          var rows = [];
-          var rhrMap = {}, hrvMap = {};
-          if (data.rhr) data.rhr.forEach(function(r) { rhrMap[r.date] = r.avg; });
-          if (data.hrv) data.hrv.forEach(function(h) { hrvMap[h.date] = h.avg; });
-          var dates = Object.keys(Object.assign({}, rhrMap, hrvMap)).sort().reverse().slice(0,14);
-          if (!dates.length) { tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--text-secondary,#94a3b8);">No vitals data</td></tr>'; return; }
-          dates.forEach(function(d) {
-            rows.push('<tr style="border-bottom:1px solid var(--border,#334155);"><td style="padding:6px 8px;">' + d + '</td><td style="text-align:right;padding:6px 8px;">' + (rhrMap[d] ? rhrMap[d]+' bpm' : '—') + '</td><td style="text-align:right;padding:6px 8px;">' + (hrvMap[d] ? hrvMap[d]+' ms' : '—') + '</td></tr>');
-          });
-          tbody.innerHTML = rows.join('');
-        }).catch(function() {});
-      }
-
-      document.querySelectorAll('.tab-btn[data-tab="apple-health"]').forEach(function(btn) {
-        btn.addEventListener('click', loadAppleHealth);
-      });
-      var params = new URLSearchParams(window.location.search);
-      var tabParam = params.get('tab') || window.location.hash.replace('#', '');
-      if (tabParam) switchTab(tabParam);
-      if (tabParam === 'apple-health') setTimeout(loadAppleHealth, 300);
-    })();
-    </script>
-    <script>
-    // URL hash support for tab switching (e.g., ?tab=workout or #workout)
-    (function() {
-      const params = new URLSearchParams(window.location.search);
-      const tabParam = params.get('tab') || window.location.hash.replace('#', '');
-      if (tabParam) {
-        const tabBtn = document.querySelector('[data-tab="' + tabParam + '"]');
-        if (tabBtn) setTimeout(() => tabBtn.click(), 500);
-      }
-    })();
-    </script>
+    <script src="/static/js/dashboard.js?v=20260416l-hero-fix"></script>
+    <script src="/static/js/app.js?v=20260416l-hero-fix"></script>
+    <script src="/static/js/health.js?v=20260416l-hero-fix"></script>
+    <nav class="bottom-nav">
+        <button class="bottom-tab active" onclick="switchTab('dashboard')" data-tab="dashboard"><span class="bt-icon">📊</span><span class="bt-label">Dash</span></button>
+        <button class="bottom-tab" onclick="switchTab('vitals')" data-tab="vitals"><span class="bt-icon">❤️</span><span class="bt-label">Vitals</span></button>
+        <button class="bottom-tab" onclick="switchTab('workout')" data-tab="workout"><span class="bt-icon">💪</span><span class="bt-label">Next</span></button>
+        <button class="bottom-tab" onclick="switchTab('log-workout')" data-tab="log-workout"><span class="bt-icon">📝</span><span class="bt-label">Log</span></button>
+        <button class="bottom-tab" onclick="switchTab('history')" data-tab="history"><span class="bt-icon">📅</span><span class="bt-label">History</span></button>
+        <button class="bottom-tab" onclick="switchTab('body')" data-tab="body"><span class="bt-icon">🧍</span><span class="bt-label">Body</span></button>
+        <button class="bottom-tab" onclick="switchTab('analytics')" data-tab="analytics"><span class="bt-icon">📈</span><span class="bt-label">Stats</span></button>
+        <button class="bottom-tab" onclick="switchTab('settings')" data-tab="settings"><span class="bt-icon">⚙️</span><span class="bt-label">Settings</span></button>
+    </nav>
 </body>
 </html>

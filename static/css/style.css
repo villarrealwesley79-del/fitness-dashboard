@@ -495,8 +495,17 @@ body {
 }
 
 @media (min-width: 768px) {
+    /* Keep hero stacked on desktop; the app-container is capped at 600px,
+       so a 2-column hero produced a large blank left panel beside the
+       readiness gauge text. */
     .dashboard-hero {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr;
+    }
+
+    .readiness-gauge-card {
+        grid-template-columns: 1fr;
+        justify-items: center;
+        text-align: center;
     }
 
     .dashboard-grid {
