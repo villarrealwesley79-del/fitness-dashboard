@@ -304,13 +304,17 @@ function updateVitalsMini(data) {
 
     const weight = data?.weight?.current_lbs;
     const rhr = data?.heart_rate?.resting_bpm;
-    const sleepHours = data?.sleep?.last_night?.duration_hours;
+    const lastNight = data?.sleep?.last_night;
+    const sleepHours = lastNight?.total_hours
+        ?? lastNight?.duration_hours
+        ?? (lastNight?.total_sleep_min != null ? lastNight.total_sleep_min / 60 : null)
+        ?? data?.sleep?.avg_7d_hours;
     const steps = data?.activity?.steps_today;
 
-    weightEl.textContent = (weight != null) ? `${weight}` : '--';
-    rhrEl.textContent = (rhr != null) ? `${rhr}` : '--';
-    sleepEl.textContent = (sleepHours != null) ? `${sleepHours}h` : '--';
-    stepsEl.textContent = (steps != null) ? `${steps}` : '--';
+    if (weight != null) weightEl.textContent = `${weight}`;
+    if (rhr != null) rhrEl.textContent = `${Math.round(rhr)} bpm`;
+    if (sleepHours != null) sleepEl.textContent = `${Number(sleepHours).toFixed(1)}h`;
+    if (steps != null) stepsEl.textContent = Number(steps).toLocaleString();
 }
 
 function updateVitalsTab(data) {
@@ -369,9 +373,11 @@ function updateVitalsTab(data) {
     }
 
     const lastNight = data?.sleep?.last_night;
-    const sleepHours = lastNight?.duration_hours;
-    sleepDurationEl.textContent = (sleepHours != null) ? `${sleepHours}h` : '--';
-    sleepAvgEl.textContent = (data?.sleep?.avg_7d_hours != null) ? `${data.sleep.avg_7d_hours}h` : '--';
+    const sleepHours = lastNight?.total_hours
+        ?? lastNight?.duration_hours
+        ?? (lastNight?.total_sleep_min != null ? lastNight.total_sleep_min / 60 : null);
+    sleepDurationEl.textContent = (sleepHours != null) ? `${Number(sleepHours).toFixed(1)}h` : '--';
+    sleepAvgEl.textContent = (data?.sleep?.avg_7d_hours != null) ? `${Number(data.sleep.avg_7d_hours).toFixed(1)}h` : '--';
 
     const deep = lastNight?.deep_min;
     const rem = lastNight?.rem_min;
@@ -3033,17 +3039,19 @@ function formatDate(dateStr) {
 
 // iOS Install Banner
 function checkInstallBanner() {
+    const banner = document.getElementById('install-banner');
+    if (!banner) return;
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
     const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
 
     if (isIOS && !isStandalone && !localStorage.getItem('installBannerDismissed')) {
-        document.getElementById('install-banner').style.display = 'flex';
+        banner.style.display = 'flex';
     }
 
     const closeBanner = document.getElementById('close-banner');
     if (closeBanner) {
         closeBanner.addEventListener('click', () => {
-            document.getElementById('install-banner').style.display = 'none';
+            banner.style.display = 'none';
             localStorage.setItem('installBannerDismissed', 'true');
         });
     }

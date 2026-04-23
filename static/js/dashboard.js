@@ -112,6 +112,11 @@
       // Wire temperature deviation and HRV trend from Oura status
       if (data.temperature_deviation != null) setText("oura-temp", (data.temperature_deviation > 0 ? "+" : "") + data.temperature_deviation.toFixed(1) + "°");
       if (data.hrv_trend && data.hrv_trend !== "unknown") setText("oura-hrv", data.hrv_trend);
+      // /api/oura/status upserts today's metrics into the DB on first call
+      // of the day. Re-fetch vitals so the mini and full panels pick up the
+      // freshly-synced values instead of staying on "--".
+      loadVitalsMini();
+      if (typeof loadVitals === "function") loadVitals();
     }).catch(function () {});
   }
 
