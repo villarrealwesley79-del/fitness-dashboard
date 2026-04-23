@@ -55,6 +55,12 @@
         .set-row label{font-size:12px;color:#94a3b8;}
         .set-row input[type="number"]{min-width:0;background:#020617;border:1px solid #334155;border-radius:8px;color:#e2e8f0;padding:10px;}
         .set-done{display:flex;align-items:center;gap:4px;white-space:nowrap;}
+        .log-type-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 16px;}
+        .log-type-btn{border:1px solid #334155;border-radius:10px;background:rgba(15,23,42,.55);color:#94a3b8;padding:10px 8px;font-weight:700;cursor:pointer;}
+        .log-type-btn.active{border-color:#60a5fa;background:rgba(96,165,250,.14);color:#e2e8f0;}
+        .log-panel{display:none;}
+        .log-panel.active{display:block;}
+        .log-form select{width:100%;background:#020617;border:1px solid #334155;border-radius:8px;color:#e2e8f0;padding:10px;}
         .workout-exercise-details{display:flex;gap:12px;flex-wrap:wrap;font-size:15px;font-weight:600;color:#60a5fa;margin-bottom:6px;}
         .workout-exercise-rationale{font-size:12px;color:#94a3b8;line-height:1.4;}
         .swap-option{display:block;width:100%;margin-bottom:8px;padding:12px;background:rgba(30,41,59,0.6);border:1px solid #334155;border-radius:8px;color:#e2e8f0;cursor:pointer;text-align:left;font-size:14px;}
@@ -246,22 +252,51 @@
             </div>
         </div>
 
-        <!-- Log Workout -->
+        <!-- Log -->
         <div id="log-workout" class="tab-content">
-            <h2>📝 Log Workout</h2>
-            <div class="health-section">
+            <h2>📝 Log</h2>
+            <div class="log-type-tabs">
+                <button type="button" class="log-type-btn active" data-log-type="strength" onclick="switchLogType('strength')">🏋️ Strength</button>
+                <button type="button" class="log-type-btn" data-log-type="cardio" onclick="switchLogType('cardio')">🏃 Cardio</button>
+                <button type="button" class="log-type-btn" data-log-type="recovery" onclick="switchLogType('recovery')">🧊 Recovery</button>
+            </div>
+
+            <div id="log-strength-panel" class="health-section log-panel active">
                 <form id="workout-log-form" class="log-form" onsubmit="submitWorkout(event)">
                     <div><label for="log-date">Date</label><input type="date" id="log-date" name="date" required></div>
-                    <div><label for="log-exercise">Exercise</label><input type="text" id="log-exercise" name="exercise" placeholder="e.g. Bench Press" required></div>
+                    <div><label for="log-exercise">Exercise</label><select id="log-exercise" name="exercise" required><option value="">Select exercise…</option></select></div>
                     <div><label for="log-sets">Sets</label><input type="number" id="log-sets" name="sets" min="1" value="3"></div>
                     <div><label for="log-reps">Reps</label><input type="number" id="log-reps" name="reps" min="1" value="10"></div>
                     <div><label for="log-weight">Weight (lbs)</label><input type="number" id="log-weight" name="weight" min="0" step="0.5"></div>
                     <div><label for="log-rpe">RPE (1-10)</label><input type="number" id="log-rpe" name="rpe" min="1" max="10" step="0.5"></div>
                     <div><label for="log-notes">Notes</label><textarea id="log-notes" name="notes" placeholder="Optional notes..."></textarea></div>
-                    <button type="submit">Log Workout</button>
+                    <button type="submit">Log Strength</button>
                 </form>
-                <div id="log-workout-result" style="margin-top:12px;"></div>
             </div>
+
+            <div id="log-cardio-panel" class="health-section log-panel">
+                <form id="cardio-log-form" class="log-form" onsubmit="submitCardio(event)">
+                    <div><label for="cardio-date">Date</label><input type="date" id="cardio-date" name="date" required></div>
+                    <div><label for="cardio-type">Cardio Type</label><select id="cardio-type" name="activity_type" required><option value="treadmill">Treadmill</option><option value="bike">Bike</option><option value="stairmaster">Stairmaster</option><option value="walk">Walk</option><option value="run">Run</option><option value="other">Other</option></select></div>
+                    <div><label for="cardio-duration">Duration (min)</label><input type="number" id="cardio-duration" name="duration_minutes" min="1" value="20" required></div>
+                    <div><label for="cardio-hr">Avg HR</label><input type="number" id="cardio-hr" name="avg_heart_rate" min="30" max="250" placeholder="optional"></div>
+                    <div><label for="cardio-intensity">Intensity (1-10)</label><input type="number" id="cardio-intensity" name="intensity" min="1" max="10" value="5" required></div>
+                    <div><label for="cardio-notes">Notes</label><textarea id="cardio-notes" name="notes" placeholder="Zone, machine, etc."></textarea></div>
+                    <button type="submit">Log Cardio</button>
+                </form>
+            </div>
+
+            <div id="log-recovery-panel" class="health-section log-panel">
+                <form id="recovery-log-form" class="log-form" onsubmit="submitRecovery(event)">
+                    <div><label for="recovery-date">Date</label><input type="date" id="recovery-date" name="date" required></div>
+                    <div><label for="recovery-type">Recovery Type</label><select id="recovery-type" name="recovery_type" required><option value="sauna">Sauna</option><option value="cold plunge">Cold Plunge</option><option value="stretching">Stretching</option><option value="mobility">Mobility</option><option value="massage">Massage</option><option value="walk">Recovery Walk</option><option value="other">Other</option></select></div>
+                    <div><label for="recovery-duration">Duration (min)</label><input type="number" id="recovery-duration" name="duration_minutes" min="1" value="10" required></div>
+                    <div><label for="recovery-temp">Temp °F</label><input type="number" id="recovery-temp" name="temperature" min="-40" max="250" placeholder="optional"></div>
+                    <div><label for="recovery-notes">Notes</label><textarea id="recovery-notes" name="notes" placeholder="How it felt, protocol, etc."></textarea></div>
+                    <button type="submit">Log Recovery</button>
+                </form>
+            </div>
+            <div id="log-workout-result" style="margin-top:12px;"></div>
         </div>
 
         <!-- History -->
@@ -398,6 +433,18 @@
     <script src="/static/js/dashboard.js?v=20260416l-hero-fix"></script>
     <script src="/static/js/app.js?v=20260416l-hero-fix"></script>
     <script src="/static/js/health.js?v=20260416l-hero-fix"></script>
+    <script>
+        window.switchTab = function(tabId) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            const tab = document.getElementById(tabId);
+            if (tab) tab.classList.add('active');
+            document.querySelectorAll('.bottom-tab,.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll(`.bottom-tab[data-tab="${tabId}"]`).forEach(btn => btn.classList.add('active'));
+            if (window.loadTabData) window.loadTabData(tabId);
+            if (tabId === 'log-workout' && window.populateExerciseDropdown) window.populateExerciseDropdown();
+            if (tabId === 'apple-health' && window.initAppleHealth) window.initAppleHealth();
+        };
+    </script>
     <nav class="bottom-nav">
         <button class="bottom-tab active" onclick="switchTab('dashboard')" data-tab="dashboard"><span class="bt-icon">📊</span><span class="bt-label">Dash</span></button>
         <button class="bottom-tab" onclick="switchTab('vitals')" data-tab="vitals"><span class="bt-icon">❤️</span><span class="bt-label">Vitals</span></button>

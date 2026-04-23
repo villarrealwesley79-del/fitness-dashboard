@@ -1679,3 +1679,143 @@
   // Also expose as navigateToTab alias
   window.navigateToTab = window.switchTab;
 })();
+
+// ── Manual log tab glue (strength/cardio/recovery) ─────────────────────
+(function () {
+  function $(id) { return document.getElementById(id); }
+  function today() { return new Date().toISOString().slice(0, 10); }
+  function result(html, ok) {
+    var el = $('log-workout-result');
+    if (el) el.innerHTML = '<div style="color:' + (ok ? '#22c55e' : '#ef4444') + ';padding:8px;">' + html + '</div>';
+  }
+  function toNum(v, fallback) {
+    if (v === '' || v == null) return fallback;
+    var n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  function currentExerciseMeta(name) {
+    var opt = document.querySelector('#log-exercise option[value="' + CSS.escape(name || '') + '"]');
+    return opt ? { muscle: opt.dataset.muscle || 'unknown' } : { muscle: 'unknown' };
+  }
+
+  window.switchLogType = function (type) {
+    document.querySelectorAll('.log-type-btn').forEach(function (btn) {
+      btn.classList.toggle('active', btn.dataset.logType === type);
+    });
+    document.querySelectorAll('.log-panel').forEach(function (panel) {
+      panel.classList.toggle('active', panel.id === 'log-' + type + '-panel');
+    });
+  };
+
+  window.populateExerciseDropdown = function () {
+    var select = $('log-exercise');
+    if (!select || select.dataset.loaded === 'true') return;
+    fetch('/api/exercises', { credentials: 'include' })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        var groups = {};
+        (data.exercises || []).forEach(function (ex) {
+          var muscle = ex.muscle || 'other';
+          (groups[muscle] = groups[muscle] || []).push(ex);
+        });
+        var html = '<option value="">Select exercise…</option>';
+        Object.keys(groups).sort().forEach(function (muscle) {
+          html += '<optgroup label="' + muscle.replace(/_/g, ' ') + '">';
+          groups[muscle].forEach(function (ex) {
+            html += '<option value="' + ex.name.replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '" data-muscle="' + muscle + '">' + ex.name + '</option>';
+          });
+          html += '</optgroup>';
+        });
+        select.innerHTML = html;
+        select.dataset.loaded = 'true';
+      })
+      .catch(function () { result('Could not load exercise dropdown.', false); });
+  };
+
+  window.submitWorkout = function (e) {
+    e.preventDefault();
+    var f = e.target;
+    var name = f.exercise.value;
+    var meta = currentExerciseMeta(name);
+    var sets = Math.max(1, parseInt(f.sets.value || '1', 10));
+    var reps = Math.max(1, parseInt(f.reps.value || '1', 10));
+    var weight = toNum(f.weight.value, 0);
+    var rpe = toNum(f.rpe.value, 7);
+    var payload = {
+      session_type: 'manual strength',
+      duration_minutes: Math.max(1, sets * 4),
+      notes: f.notes.value || '',
+      exercises: [{
+        machine: name,
+        muscle_group: meta.muscle,
+        sets: Array.from({ length: sets }, function (_, i) {
+          return { set_number: i + 1, weight_lbs: weight, reps: reps, rpe: rpe };
+        })
+      }]
+    };
+    fetch('/api/complete-workout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload)
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res.status === 'success') {
+        result('✅ Strength logged.', true);
+        f.reset();
+        seedLogDates();
+        if (window.loadTabData) window.loadTabData('history');
+      } else {
+        result('❌ ' + ((res.error && (res.error.message || res.error)) || res.message || 'Error logging strength'), false);
+      }
+    }).catch(function () { result('❌ Error logging strength.', false); });
+  };
+
+  window.submitCardio = function (e) {
+    e.preventDefault();
+    var f = e.target;
+    var payload = {
+      date: f.date.value || today(),
+      activity_type: f.activity_type.value,
+      duration_minutes: parseInt(f.duration_minutes.value, 10),
+      avg_heart_rate: f.avg_heart_rate.value ? parseInt(f.avg_heart_rate.value, 10) : null,
+      intensity: parseInt(f.intensity.value || '5', 10),
+      notes: f.notes.value || ''
+    };
+    fetch('/api/add-cardio', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(payload) })
+      .then(function (r) { return r.json(); }).then(function (res) {
+        if (res.status === 'success') { result('✅ Cardio logged.', true); f.reset(); seedLogDates(); }
+        else result('❌ ' + ((res.error && (res.error.message || res.error)) || res.message || 'Error logging cardio'), false);
+      }).catch(function () { result('❌ Error logging cardio.', false); });
+  };
+
+  window.submitRecovery = function (e) {
+    e.preventDefault();
+    var f = e.target;
+    var payload = {
+      date: f.date.value || today(),
+      recovery_type: f.recovery_type.value,
+      duration_minutes: parseInt(f.duration_minutes.value, 10),
+      temperature: f.temperature.value ? parseInt(f.temperature.value, 10) : null,
+      notes: f.notes.value || ''
+    };
+    fetch('/api/add-recovery', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(payload) })
+      .then(function (r) { return r.json(); }).then(function (res) {
+        if (res.status === 'success') { result('✅ Recovery logged.', true); f.reset(); seedLogDates(); }
+        else result('❌ ' + ((res.error && (res.error.message || res.error)) || res.message || 'Error logging recovery'), false);
+      }).catch(function () { result('❌ Error logging recovery.', false); });
+  };
+
+  function seedLogDates() {
+    ['log-date', 'cardio-date', 'recovery-date'].forEach(function (id) {
+      var input = $(id);
+      if (input && !input.value) input.value = today();
+    });
+  }
+
+  function bootLogTab() {
+    seedLogDates();
+    window.populateExerciseDropdown();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootLogTab);
+  else bootLogTab();
+})();

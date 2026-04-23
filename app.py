@@ -2694,6 +2694,22 @@ def add_recovery():
     return jsonify({"status": "success", "recovery": entry})
 
 
+@app.route('/api/exercises')
+def api_exercises():
+    """Exercise dropdown options for manual logging."""
+    options = []
+    for ex in EXERCISE_LIBRARY:
+        options.append({
+            "name": ex.get("name"),
+            "muscle": ex.get("muscle"),
+            "equipment": ex.get("equipment"),
+            "compound": ex.get("compound"),
+            "baseline": ex.get("baseline"),
+        })
+    options.sort(key=lambda x: ((x.get("muscle") or ""), (x.get("name") or "")))
+    return jsonify({"exercises": options})
+
+
 @app.route('/api/add-body-measurement', methods=['POST'])
 def add_body_measurement():
     """Add body composition measurement (weight, body fat %)."""
