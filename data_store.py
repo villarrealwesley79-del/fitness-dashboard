@@ -82,6 +82,7 @@ def init_data_db():
                 fat_g      REAL,
                 fiber_g    REAL,
                 water_oz   REAL,
+                sodium_mg  INTEGER,
                 notes      TEXT,
                 UNIQUE(user_id, date)
             );
@@ -106,6 +107,11 @@ def init_data_db():
                 updated                   TEXT DEFAULT (datetime('now'))
             );
         """)
+        # Idempotent column adds for pre-existing DBs created before this column existed.
+        # SQLite has no native ADD COLUMN IF NOT EXISTS, so probe table_info first.
+        existing_nutrition_cols = {r["name"] for r in conn.execute("PRAGMA table_info(nutrition_data)").fetchall()}
+        if "sodium_mg" not in existing_nutrition_cols:
+            conn.execute("ALTER TABLE nutrition_data ADD COLUMN sodium_mg INTEGER")
         conn.commit()
 
 
@@ -192,7 +198,7 @@ def get_nutrition_data(user_id: int, limit: Optional[int] = None, since: Optiona
 
 def add_nutrition_record(user_id: int, record: dict) -> None:
     """Insert or replace a nutrition record."""
-    cols = ["user_id", "date", "calories", "protein_g", "carbs_g", "fat_g", "fiber_g", "water_oz", "notes"]
+    cols = ["user_id", "date", "calories", "protein_g", "carbs_g", "fat_g", "fiber_g", "water_oz", "sodium_mg", "notes"]
     vals = [user_id] + [record.get(c) for c in cols[1:]]
     placeholders = ", ".join(["?"] * len(cols))
     sql = f"INSERT OR REPLACE INTO nutrition_data ({', '.join(cols)}) VALUES ({placeholders})"
