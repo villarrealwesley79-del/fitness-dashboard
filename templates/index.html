@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260518-fit25-merge-fit28-1">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260518-fit24-persist-adjust-1">
 </head>
 <body>
     <div class="app-shell">
@@ -716,6 +716,10 @@
                     <button id="btn-adjust-submit" class="btn btn-primary btn-block" type="button">Apply Adjustment</button>
                 </div>
                 <div id="adjust-result" class="adjust-result" hidden>
+                    <div id="adjust-restored-banner" class="adjust-restored-banner" hidden>
+                        <span class="adjust-restored-text">Restored from previous session<span class="adjust-restored-at" id="adjust-restored-at"></span></span>
+                        <button id="btn-adjust-discard" class="adjust-restored-discard" type="button">Discard</button>
+                    </div>
                     <div class="adjust-summary" id="adjust-summary"></div>
                     <div class="adjust-notes" id="adjust-notes"></div>
                     <div class="adjust-meta" id="adjust-meta"></div>
@@ -863,6 +867,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260518-fit42-retry-label-1"></script>
+    <script src="/static/js/app.js?v=20260518-fit24-persist-adjust-1"></script>
 </body>
 </html>

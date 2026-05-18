@@ -2382,6 +2382,7 @@
             };
             $('modal-active').hidden = true;
             state.activeWorkout = null;
+            clearAdjustIntent();
             invalidateCaches();
             loadTab(state.currentTab);
             openWorkoutSavedConfirm(summary);
@@ -2557,13 +2558,41 @@
         const result = $('adjust-result');
         const stateEl = $('adjust-state');
         const preview = $('adjust-plan-preview');
-        if (textarea) textarea.value = '';
+        const banner = $('adjust-restored-banner');
         if (result) result.hidden = true;
         if (preview) { preview.hidden = true; preview.innerHTML = ''; }
-        state.adjustedWorkout = null;
         if (stateEl) { stateEl.textContent = ''; stateEl.className = 'adjust-state'; }
+        if (banner) banner.hidden = true;
+
+        const saved = loadAdjustIntent();
+        if (saved) {
+            if (textarea) textarea.value = saved.constraint || '';
+            renderAdjustResult(saved, { restored: true, savedAt: saved.saved_at });
+        } else {
+            if (textarea) textarea.value = '';
+            state.adjustedWorkout = null;
+        }
         modal.hidden = false;
         setTimeout(() => textarea && textarea.focus(), 60);
+    }
+
+    function discardSavedAdjust() {
+        clearAdjustIntent();
+        state.adjustedWorkout = null;
+        const result = $('adjust-result');
+        const banner = $('adjust-restored-banner');
+        const stateEl = $('adjust-state');
+        const textarea = $('adjust-constraint');
+        const preview = $('adjust-plan-preview');
+        if (result) result.hidden = true;
+        if (banner) banner.hidden = true;
+        if (stateEl) { stateEl.textContent = 'Adjustment discarded.'; stateEl.className = 'adjust-state'; }
+        if (textarea) textarea.value = '';
+        if (preview) { preview.hidden = true; preview.innerHTML = ''; }
+        if (state.dashboard && state.dashboard.next_workout) {
+            // Trigger a re-render so the user sees the current server-canonical plan.
+            if (state.currentTab === 'tab-workout') renderNextWorkout();
+        }
     }
 
     async function openAnalyzeModal(request, titleOverride) {
@@ -2697,6 +2726,106 @@
         $('modal-apple').hidden = false;
     }
 
+    const ADJUST_INTENT_KEY = 'fit24:adjust-intent:v1';
+    const ADJUST_INTENT_TTL_MS = 24 * 60 * 60 * 1000;
+    const ADJUST_KIND_TABLE = {
+        changed:   { label: 'Plan updated',     cls: 'adjust-kind-changed',   stateMsg: 'Updated. Review the new plan below or start it now.', stateCls: 'adjust-state ok' },
+        unchanged: { label: 'No net change',    cls: 'adjust-kind-unchanged', stateMsg: 'Coach considered the change but kept the plan.',       stateCls: 'adjust-state' },
+        refused:   { label: 'Coach left as is', cls: 'adjust-kind-refused',   stateMsg: 'Coach declined to change the plan.',                   stateCls: 'adjust-state' },
+    };
+
+    function saveAdjustIntent(constraint, payload) {
+        try {
+            const entry = {
+                saved_at: new Date().toISOString(),
+                constraint: typeof constraint === 'string' ? constraint : '',
+                result_kind: payload && payload.result_kind ? payload.result_kind : null,
+                summary: payload && payload.summary ? payload.summary : '',
+                applied_notes: Array.isArray(payload && payload.applied_notes) ? payload.applied_notes : [],
+                recommendation: payload && payload.recommendation ? payload.recommendation : null,
+                meta: payload && payload.meta ? payload.meta : {},
+                cache_hit: !!(payload && payload.cache_hit),
+            };
+            sessionStorage.setItem(ADJUST_INTENT_KEY, JSON.stringify(entry));
+        } catch (e) {
+            console.warn('saveAdjustIntent failed', e);
+        }
+    }
+
+    function loadAdjustIntent() {
+        try {
+            const raw = sessionStorage.getItem(ADJUST_INTENT_KEY);
+            if (!raw) return null;
+            const entry = JSON.parse(raw);
+            const savedAt = entry && entry.saved_at ? Date.parse(entry.saved_at) : 0;
+            if (!savedAt || Date.now() - savedAt > ADJUST_INTENT_TTL_MS) {
+                clearAdjustIntent();
+                return null;
+            }
+            return entry;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function clearAdjustIntent() {
+        try { sessionStorage.removeItem(ADJUST_INTENT_KEY); } catch (e) {}
+    }
+
+    function renderAdjustResult(payload, opts = {}) {
+        const stateEl = $('adjust-state');
+        const result = $('adjust-result');
+        const summaryEl = $('adjust-summary');
+        const notesEl = $('adjust-notes');
+        const metaEl = $('adjust-meta');
+        const restoredBanner = $('adjust-restored-banner');
+        if (!stateEl || !result || !summaryEl || !notesEl || !metaEl) return;
+        const notes = Array.isArray(payload && payload.applied_notes) ? payload.applied_notes : [];
+        const rawKind = (payload && payload.result_kind) || (notes.length ? 'changed' : 'unchanged');
+        const kind = ADJUST_KIND_TABLE[rawKind] ? rawKind : 'changed';
+        const kindMeta = ADJUST_KIND_TABLE[kind];
+        const modelSummary = (payload && payload.summary || '').trim();
+        const fallbackSummary = kind === 'changed'
+            ? 'Adjustment applied.'
+            : kind === 'refused'
+                ? 'The coach decided no structural change was warranted.'
+                : 'The constraint was within the algorithm\'s envelope; no net change applied.';
+        const summaryText = modelSummary || fallbackSummary;
+        summaryEl.innerHTML = `<span class="adjust-kind ${kindMeta.cls}">${escapeHtml(kindMeta.label)}</span><span class="adjust-summary-text">${escapeHtml(summaryText)}</span>`;
+        if (kind === 'changed' && notes.length) {
+            notesEl.innerHTML = '<ul>' + notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul>';
+        } else if (kind === 'unchanged') {
+            notesEl.innerHTML = '<div class="dim">Safety rails clamped the requested change to zero net effect. The original plan stands.</div>';
+        } else if (kind === 'refused') {
+            notesEl.innerHTML = '<div class="dim">No edits applied — the model returned an empty intent. See the explanation above.</div>';
+        } else {
+            notesEl.innerHTML = '';
+        }
+        const meta = (payload && payload.meta) || {};
+        const cacheHit = !!(payload && payload.cache_hit);
+        metaEl.textContent = `${meta.model_version || meta.model || 'local model'} · ${meta.elapsed_ms || '?'} ms${cacheHit ? ' · cached' : ''}`;
+        result.hidden = false;
+        if (restoredBanner) restoredBanner.hidden = !opts.restored;
+        if (opts.restored && opts.savedAt) {
+            const restoredAtEl = $('adjust-restored-at');
+            if (restoredAtEl) {
+                const t = new Date(opts.savedAt);
+                restoredAtEl.textContent = isNaN(t.getTime()) ? '' : fmtDateTime(t.toISOString());
+            }
+        }
+        stateEl.textContent = kindMeta.stateMsg;
+        stateEl.className = kindMeta.stateCls;
+        if (payload && payload.recommendation) {
+            if (!state.dashboard) state.dashboard = {};
+            state.dashboard.next_workout = payload.recommendation;
+            state.adjustedWorkout = payload.recommendation;
+            renderAdjustedPlanPreview(payload.recommendation);
+        }
+        if (state.currentTab === 'tab-workout') {
+            renderNextWorkout();
+        }
+    }
+
     async function submitAdjust() {
         const textarea = $('adjust-constraint');
         const btn = $('btn-adjust-submit');
@@ -2732,49 +2861,8 @@
                 return;
             }
 
-            const notes = Array.isArray(payload.applied_notes) ? payload.applied_notes : [];
-            const rawKind = payload.result_kind || (notes.length ? 'changed' : 'unchanged');
-            const kindTable = {
-                changed:   { label: 'Plan updated',     cls: 'adjust-kind-changed',   stateMsg: 'Updated. Review the new plan below or start it now.', stateCls: 'adjust-state ok' },
-                unchanged: { label: 'No net change',    cls: 'adjust-kind-unchanged', stateMsg: 'Coach considered the change but kept the plan.',       stateCls: 'adjust-state' },
-                refused:   { label: 'Coach left as is', cls: 'adjust-kind-refused',   stateMsg: 'Coach declined to change the plan.',                   stateCls: 'adjust-state' },
-            };
-            const kind = kindTable[rawKind] ? rawKind : 'changed';
-            const kindMeta = kindTable[kind];
-            const modelSummary = (payload.summary || '').trim();
-            const fallbackSummary = kind === 'changed'
-                ? 'Adjustment applied.'
-                : kind === 'refused'
-                    ? 'The coach decided no structural change was warranted.'
-                    : 'The constraint was within the algorithm\'s envelope; no net change applied.';
-            const summaryText = modelSummary || fallbackSummary;
-            summaryEl.innerHTML = `<span class="adjust-kind ${kindMeta.cls}">${escapeHtml(kindMeta.label)}</span><span class="adjust-summary-text">${escapeHtml(summaryText)}</span>`;
-            if (kind === 'changed' && notes.length) {
-                notesEl.innerHTML = '<ul>' + notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul>';
-            } else if (kind === 'unchanged') {
-                notesEl.innerHTML = '<div class="dim">Safety rails clamped the requested change to zero net effect. The original plan stands.</div>';
-            } else if (kind === 'refused') {
-                notesEl.innerHTML = '<div class="dim">No edits applied — the model returned an empty intent. See the explanation above.</div>';
-            } else {
-                notesEl.innerHTML = '';
-            }
-            const meta = payload.meta || {};
-            metaEl.textContent = `${meta.model_version || meta.model || 'local model'} · ${meta.elapsed_ms || '?'} ms${payload.cache_hit ? ' · cached' : ''}`;
-            result.hidden = false;
-            stateEl.textContent = kindMeta.stateMsg;
-            stateEl.className = kindMeta.stateCls;
-
-            if (payload.recommendation && !state.dashboard) state.dashboard = {};
-            if (state.dashboard && payload.recommendation) {
-                state.dashboard.next_workout = payload.recommendation;
-            }
-            if (payload.recommendation) {
-                state.adjustedWorkout = payload.recommendation;
-                renderAdjustedPlanPreview(payload.recommendation);
-            }
-            if (state.currentTab === 'tab-workout') {
-                renderNextWorkout();
-            }
+            renderAdjustResult(payload, { restored: false });
+            saveAdjustIntent(constraint, payload);
         } catch (e) {
             console.error(e);
             stateEl.textContent = 'Request failed — keeping the original plan.';
@@ -2838,6 +2926,7 @@
         $('btn-adjust-plan') && $('btn-adjust-plan').addEventListener('click', openAdjust);
         $('btn-adjust-plan-2') && $('btn-adjust-plan-2').addEventListener('click', openAdjust);
         $('btn-adjust-submit') && $('btn-adjust-submit').addEventListener('click', submitAdjust);
+        $('btn-adjust-discard') && $('btn-adjust-discard').addEventListener('click', discardSavedAdjust);
         qsa('.chip-preset').forEach((b) => b.addEventListener('click', () => {
             const ta = $('adjust-constraint');
             if (ta) { ta.value = b.dataset.preset || ''; ta.focus(); }
