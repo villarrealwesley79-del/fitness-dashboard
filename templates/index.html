@@ -756,6 +756,26 @@
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body" id="workout-detail-body"></div>
+            <div class="modal-foot" id="workout-detail-foot" hidden>
+                <button id="btn-delete-workout" class="btn btn-danger btn-block" type="button">Delete Workout</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-delete-confirm" class="modal" hidden>
+        <div class="modal-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title">Delete Workout?</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="dim" id="delete-confirm-text">Are you sure you want to delete this workout?</p>
+                <p class="dim delete-confirm-undo-hint">You can undo this for 10 seconds after deleting.</p>
+            </div>
+            <div class="modal-foot modal-foot-row">
+                <button class="btn btn-ghost" data-close-modal type="button">Cancel</button>
+                <button id="btn-confirm-delete" class="btn btn-danger" type="button">Delete</button>
+            </div>
         </div>
     </div>
 
@@ -805,6 +825,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260427-bodycomposition-1"></script>
+    <script src="/static/js/app.js?v=20260518-fit26-delete-undo-1"></script>
 </body>
 </html>

@@ -5502,6 +5502,45 @@ def delete_history():
         return api_error("Failed to delete history entry", 500, code="server_error", details=str(e))
 
 
+@app.route('/api/restore-history', methods=['POST'])
+def restore_history():
+    """Restore a previously deleted history entry by appending the original payload back.
+
+    The client passes the same `deleted` object returned by /api/delete-history.
+    Trusts the payload because it just round-tripped from our own store; minimal
+    sanity checks guard against malformed input.
+    """
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    entry_type, err2 = _coerce_str(data.get("type"), "type", required=True, max_len=16)
+    if err2:
+        return err2
+    entry = data.get("entry")
+    if not isinstance(entry, dict):
+        return api_error("entry must be an object", 400, code="invalid_field")
+    if not isinstance(entry.get("date"), str) or not entry["date"]:
+        return api_error("entry.date is required", 400, code="invalid_field")
+
+    try:
+        if entry_type == "workout":
+            WORKOUTS.append(entry)
+            save_json(WORKOUTS_FILE, WORKOUTS)
+            return jsonify({"status": "success", "restored": entry})
+        if entry_type == "cardio":
+            CARDIO_DATA.append(entry)
+            save_json(CARDIO_FILE, CARDIO_DATA)
+            return jsonify({"status": "success", "restored": entry})
+        if entry_type == "recovery":
+            RECOVERY_DATA.append(entry)
+            save_json(RECOVERY_FILE, RECOVERY_DATA)
+            return jsonify({"status": "success", "restored": entry})
+        return api_error("Invalid type (expected workout|cardio|recovery)", 400, code="invalid_field")
+    except Exception as e:
+        return api_error("Failed to restore history entry", 500, code="server_error", details=str(e))
+
+
 @app.route('/api/complete-workout', methods=['POST'])
 def complete_workout():
     """Complete a workout and track adherence to recommendations."""

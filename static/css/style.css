@@ -801,6 +801,13 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
     border: 1px solid var(--border-2);
 }
 .btn-ghost:hover { background: rgba(51,65,85,0.8); }
+.btn-danger {
+    background: rgba(239,68,68,0.14);
+    color: #fecaca;
+    border: 1px solid rgba(248,113,113,0.45);
+}
+.btn-danger:hover { background: rgba(239,68,68,0.22); border-color: var(--accent-red); color: #fee2e2; }
+.btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
 .btn-block { width: 100%; }
 .btn-sm { padding: 8px 14px; font-size: 13px; border-radius: 10px; }
 .btn-lg { padding: 14px 20px; font-size: 16px; border-radius: 14px; }
@@ -1273,6 +1280,7 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     padding: calc(var(--safe-top) + 20px) 20px 20px;
 }
 #modal-swap { z-index: 120; }
+#modal-delete-confirm { z-index: 130; }
 .modal[hidden] { display: none; }
 .modal-sheet {
     background: linear-gradient(180deg, #131f3a 0%, #0f172a 100%);
@@ -1324,6 +1332,12 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     border-top: 1px solid var(--border-2);
     flex-shrink: 0;
 }
+.modal-foot-row {
+    display: flex;
+    gap: 10px;
+}
+.modal-foot-row .btn { flex: 1; }
+.delete-confirm-undo-hint { margin-top: 8px; font-size: 12px; }
 .adjust-options { display: flex; flex-direction: column; gap: 8px; }
 .adjust-presets {
     display: flex;
@@ -1743,6 +1757,27 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 }
 .toast.ok { border-color: rgba(34,197,94,0.4); color: #a7f3d0; }
 .toast.err { border-color: rgba(239,68,68,0.45); color: #fecaca; }
+.toast-undo {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 8px 8px 16px;
+    border-color: rgba(248,113,113,0.45);
+}
+.toast-undo-text { color: var(--fg-0); }
+.toast-undo-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    background: rgba(248,113,113,0.18);
+    color: #fee2e2;
+    border: 1px solid rgba(248,113,113,0.45);
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+}
+.toast-undo-btn:hover { background: rgba(248,113,113,0.28); border-color: var(--accent-red); }
 @keyframes toast-in {
     from { transform: translateY(8px); opacity: 0; }
     to   { transform: translateY(0);   opacity: 1; }

@@ -108,6 +108,36 @@
         setTimeout(() => el.remove(), 2400);
     }
 
+    function toastUndo(msg, onUndo, durationMs = 10000) {
+        const host = $('toast-host');
+        if (!host) return null;
+        const el = document.createElement('div');
+        el.className = 'toast toast-undo';
+        const text = document.createElement('span');
+        text.className = 'toast-undo-text';
+        text.textContent = msg;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'toast-undo-btn';
+        btn.textContent = 'Undo';
+        el.appendChild(text);
+        el.appendChild(btn);
+        host.appendChild(el);
+        let dismissed = false;
+        const dismiss = () => {
+            if (dismissed) return;
+            dismissed = true;
+            el.remove();
+            clearTimeout(timer);
+        };
+        const timer = setTimeout(dismiss, durationMs);
+        btn.addEventListener('click', () => {
+            dismiss();
+            try { onUndo && onUndo(); } catch (e) { console.error(e); }
+        });
+        return dismiss;
+    }
+
     function newWorkoutId(recommendationId) {
         const suffix = Math.random().toString(36).slice(2, 8);
         return `w-${recommendationId || Date.now()}-${suffix}`;
@@ -1132,8 +1162,8 @@
         cutoff.setDate(cutoff.getDate() - days);
 
         const lifts = allLifts
-            .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
-            .map((w) => ({ ...w, source: 'lifted' }));
+            .map((w, i) => ({ ...w, source: 'lifted', _origIndex: i }))
+            .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff);
         const watch = (aw || [])
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
             .map((w) => ({ ...w, source: 'watch' }));
@@ -1337,7 +1367,19 @@
         const modal = $('modal-workout-detail');
         const body = $('workout-detail-body');
         const title = $('workout-detail-title');
+        const foot = $('workout-detail-foot');
+        const deleteBtn = $('btn-delete-workout');
         if (!modal || !body || !title || !item) return;
+
+        if (foot && deleteBtn) {
+            const deletable = item.source === 'lifted' && Number.isInteger(item._origIndex);
+            foot.hidden = !deletable;
+            const fresh = deleteBtn.cloneNode(true);
+            deleteBtn.parentNode.replaceChild(fresh, deleteBtn);
+            if (deletable) {
+                fresh.addEventListener('click', () => openDeleteConfirm(item));
+            }
+        }
 
         if (item.source === 'watch') {
             const activity = item.activity_type || item.activity || 'Workout';
@@ -1410,6 +1452,82 @@
             ${cardioHtml}
         `;
         modal.hidden = false;
+    }
+
+    function workoutSummaryLabel(w) {
+        const exNames = (w.exercises || [])
+            .map((e) => e.machine || e.exercise)
+            .filter(Boolean)
+            .slice(0, 3)
+            .join(', ');
+        const parts = [];
+        if (exNames) parts.push(exNames);
+        if (w.total_volume) parts.push(`${fmtKilo(w.total_volume)} lbs`);
+        const suffix = parts.length ? ` (${parts.join(' · ')})` : '';
+        return `Workout from ${fmtDate(w.date)}${suffix}`;
+    }
+
+    function openDeleteConfirm(workout) {
+        const modal = $('modal-delete-confirm');
+        const text = $('delete-confirm-text');
+        const btn = $('btn-confirm-delete');
+        if (!modal || !text || !btn) return;
+        text.textContent = `Delete ${workoutSummaryLabel(workout)}? This will recompute history.`;
+        const fresh = btn.cloneNode(true);
+        btn.parentNode.replaceChild(fresh, btn);
+        fresh.addEventListener('click', () => performDeleteWorkout(workout, fresh));
+        modal.hidden = false;
+    }
+
+    async function performDeleteWorkout(workout, button) {
+        if (!workout || !Number.isInteger(workout._origIndex)) return;
+        const confirmModal = $('modal-delete-confirm');
+        if (button) {
+            button.disabled = true;
+            button.textContent = 'Deleting…';
+        }
+        try {
+            const res = await api('/api/delete-history', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: 'workout', index: workout._origIndex }),
+            });
+            const deletedEntry = res && res.deleted;
+            const detailModal = $('modal-workout-detail');
+            if (detailModal) detailModal.hidden = true;
+            if (confirmModal) confirmModal.hidden = true;
+            state.history = null;
+            await renderHistory();
+            if (deletedEntry) {
+                toastUndo('Workout deleted', () => restoreDeletedWorkout(deletedEntry));
+            } else {
+                toast('Workout deleted', 'ok');
+            }
+        } catch (err) {
+            toast('Delete failed', 'err');
+            console.error(err);
+        } finally {
+            if (button) {
+                button.disabled = false;
+                button.textContent = 'Delete';
+            }
+        }
+    }
+
+    async function restoreDeletedWorkout(entry) {
+        try {
+            await api('/api/restore-history', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: 'workout', entry }),
+            });
+            state.history = null;
+            await renderHistory();
+            toast('Workout restored', 'ok');
+        } catch (err) {
+            toast('Restore failed', 'err');
+            console.error(err);
+        }
     }
 
     function buildDailyBuckets(days) {
