@@ -5633,10 +5633,11 @@ def smart_recommendation_api():
     except Exception:
         history_context = []
 
+    next_workout = generate_next_workout(WORKOUTS, SORENESS_DATA)
     freshness = _compute_data_freshness()
     nutrition_context = _nutrition_context_for_date(
         today,
-        hard_training_planned=(recommendation == "intensity"),
+        hard_training_planned=_workout_looks_hard(next_workout),
         food_log_entries=_food_log_entries_for_context(since=today),
     )
     confidence_level = _confidence_level_from(effective_readiness, freshness)
