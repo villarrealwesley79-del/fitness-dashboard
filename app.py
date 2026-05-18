@@ -4788,6 +4788,11 @@ def _latest_apple_health_freshness(now=None):
 
 
 def _latest_food_freshness(now=None):
+    """Return (status, last_data_point, last_sync_attempt) plus None placeholders.
+
+    Note: callers should also use `_food_target_state()` for the macro-target view
+    used by the brief — that bit doesn't fit the (status, dp, sync) triple cleanly.
+    """
     entries = NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else []
     if not entries:
         return ("missing", None, None)
@@ -4803,25 +4808,91 @@ def _latest_food_freshness(now=None):
     return (_classify_freshness(_parse_iso_date_or_datetime(latest_iso), now=now), latest_iso, None)
 
 
+def _food_target_state(now=None):
+    """Return a dict describing today's food vs targets:
+        {"target_state": "none|under|on_track|over",
+         "calories": int, "protein_g": float,
+         "calories_target": int, "protein_target_g": float,
+         "calories_pct": int, "protein_pct": int}
+
+    `target_state` thresholds (calories-driven):
+        none       -> nothing logged today
+        under      -> < 80% of daily calorie target
+        on_track   -> 80–110%
+        over       -> > 110%
+    """
+    today_s = (now or datetime.now()).strftime("%Y-%m-%d")
+    try:
+        totals = _summarize_nutrition_for_date(today_s)
+    except Exception:
+        totals = {"calories": 0, "protein_g": 0.0}
+    try:
+        calories_target, protein_target = _get_nutrition_targets()
+    except Exception:
+        calories_target, protein_target = 2200, 148.0
+    calories = int(totals.get("calories") or 0)
+    protein_g = float(totals.get("protein_g") or 0.0)
+    cal_pct = int(round((calories / calories_target) * 100)) if calories_target else 0
+    pro_pct = int(round((protein_g / protein_target) * 100)) if protein_target else 0
+    if calories <= 0 and protein_g <= 0:
+        target_state = "none"
+    elif cal_pct > 110:
+        target_state = "over"
+    elif cal_pct >= 80:
+        target_state = "on_track"
+    else:
+        target_state = "under"
+    return {
+        "target_state": target_state,
+        "calories": calories,
+        "protein_g": round(protein_g, 1),
+        "calories_target": int(calories_target),
+        "protein_target_g": round(float(protein_target), 1),
+        "calories_pct": cal_pct,
+        "protein_pct": pro_pct,
+    }
+
+
+def _oura_source_label(last_sync_attempt_iso, now=None):
+    """Map last_sync_attempt to a cached/live label.
+
+    The freshness chip is always rendering locally-cached data; "live" here means
+    the last upsert happened recently enough that the cache is effectively current.
+    """
+    if not last_sync_attempt_iso:
+        return "cached"
+    dt = _parse_iso_date_or_datetime(last_sync_attempt_iso)
+    if dt is None:
+        return "cached"
+    now = now or datetime.now()
+    age_h = (now - dt).total_seconds() / 3600.0
+    return "live" if age_h < 1.0 else "cached"
+
+
 def _compute_data_freshness(now=None):
     """Per-source freshness for Oura, Apple Health, and food.
 
     Returns:
         {
-          "oura":         {"status": ..., "last_data_point": ..., "last_sync_attempt": ...},
-          "apple_health": {"status": ..., "last_data_point": ..., "last_sync_attempt": ...},
-          "food":         {"status": ..., "last_data_point": ..., "last_sync_attempt": ...},
+          "oura":         {status, last_data_point, last_sync_attempt, source: "live|cached"},
+          "apple_health": {status, last_data_point, last_sync_attempt},
+          "food":         {status, last_data_point, last_sync_attempt,
+                           pending_review: bool, target_state: "none|under|on_track|over",
+                           calories, protein_g, calories_target, protein_target_g,
+                           calories_pct, protein_pct},
         }
     """
     now = now or datetime.now()
     oura_status, oura_last_data, oura_last_sync = _latest_oura_freshness(now)
     apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness(now)
     food_status, food_last_data, food_last_sync = _latest_food_freshness(now)
+    food_targets = _food_target_state(now)
     return {
         "oura": {
             "status": oura_status,
             "last_data_point": oura_last_data,
             "last_sync_attempt": oura_last_sync,
+            "source": _oura_source_label(oura_last_sync, now=now),
         },
         "apple_health": {
             "status": apple_status,
@@ -4832,6 +4903,10 @@ def _compute_data_freshness(now=None):
             "status": food_status,
             "last_data_point": food_last_data,
             "last_sync_attempt": food_last_sync,
+            # pending_review is a stub today (FIT-6 will flip when the photo →
+            # AI estimate flow exists). Surfaced now so the UI contract is stable.
+            "pending_review": False,
+            **food_targets,
         },
     }
 

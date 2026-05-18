@@ -468,53 +468,112 @@
         return String(s || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).trim();
     }
 
+    function formatFoodChip(food, ago) {
+        // Four states per FIT-2 spec: no food logged, pending estimate review,
+        // accepted food, over/under target. (pending_review is a backend stub
+        // that FIT-6 will flip once the photo → AI estimate flow exists.)
+        if (food && food.pending_review) {
+            return { cls: 'warn', label: 'Food · pending review' };
+        }
+        if (!food || food.status === 'missing' || (food.target_state === 'none')) {
+            return { cls: 'warn', label: 'No food logged today' };
+        }
+        if (food.target_state === 'over') {
+            return { cls: 'stale', label: 'Food · over target' };
+        }
+        if (food.target_state === 'under') {
+            return { cls: 'warn', label: 'Food · under target' };
+        }
+        // on_track / fresh accepted log
+        return { cls: 'ok', label: 'Food · on track' };
+    }
+
+    function formatOuraChip(oura, ago) {
+        if (!oura || oura.status === 'unknown' || oura.status == null) {
+            return { cls: 'unknown', label: 'Oura · —' };
+        }
+        if (oura.status === 'missing') {
+            return { cls: 'stale', label: 'Oura · no data' };
+        }
+        // Real Oura state: combine source (cached/live) + relative last-data-point age
+        const sourceLabel = oura.source === 'live' ? 'live' : 'cached';
+        const ageLabel = ago(oura.last_data_point) || 'today';
+        const label = 'Oura · ' + sourceLabel + ' · ' + ageLabel;
+        if (oura.status === 'fresh')  return { cls: 'ok',    label };
+        if (oura.status === 'aging')  return { cls: 'warn',  label };
+        if (oura.status === 'stale')  return { cls: 'stale', label };
+        return { cls: 'unknown', label };
+    }
+
+    function formatAppleChip(apple, ago) {
+        if (!apple || apple.status === 'unknown' || apple.status == null) {
+            return { cls: 'unknown', label: 'Apple · —' };
+        }
+        if (apple.status === 'missing') {
+            return { cls: 'stale', label: 'Apple · no data' };
+        }
+        // Render both signals when distinct: backend last_sync_attempt vs latest data point.
+        const syncedAgo = ago(apple.last_sync_attempt);
+        const dataAgo = ago(apple.last_data_point);
+        let label;
+        if (syncedAgo && dataAgo && syncedAgo !== dataAgo) {
+            label = 'Apple · synced ' + syncedAgo + ' · data ' + dataAgo;
+        } else if (dataAgo) {
+            label = 'Apple · ' + dataAgo;
+        } else {
+            label = 'Apple · —';
+        }
+        if (apple.status === 'fresh')  return { cls: 'ok',    label };
+        if (apple.status === 'aging')  return { cls: 'warn',  label };
+        if (apple.status === 'stale')  return { cls: 'stale', label };
+        return { cls: 'unknown', label };
+    }
+
     function renderFreshnessChips(freshness) {
         const ago = (window.__dashHelpers && window.__dashHelpers.ago) || function (s) { return s || ''; };
         const slots = [
-            { id: 'reco-fresh-oura',  key: 'oura',         name: 'Oura' },
-            { id: 'reco-fresh-apple', key: 'apple_health', name: 'Apple' },
-            { id: 'reco-fresh-food',  key: 'food',         name: 'Food' },
+            { id: 'reco-fresh-oura',  key: 'oura',         render: formatOuraChip  },
+            { id: 'reco-fresh-apple', key: 'apple_health', render: formatAppleChip },
+            { id: 'reco-fresh-food',  key: 'food',         render: formatFoodChip  },
         ];
         slots.forEach(function (slot) {
             const el = $(slot.id);
             if (!el) return;
             const node = freshness ? freshness[slot.key] : null;
-            const status = node ? node.status : 'unknown';
-            const lastPoint = node ? node.last_data_point : null;
+            const { cls, label } = slot.render(node, ago);
             el.classList.remove('ok', 'warn', 'stale', 'unknown');
-            let label;
-            if (slot.key === 'food') {
-                if (status === 'fresh' || status === 'aging') {
-                    el.classList.add('ok');
-                    label = 'Food · logged ' + (ago(lastPoint) || 'today');
-                } else if (status === 'stale') {
-                    el.classList.add('warn');
-                    label = 'Food · last log ' + (ago(lastPoint) || '—');
-                } else if (status === 'missing') {
-                    el.classList.add('warn');
-                    label = 'No food logged today';
-                } else {
-                    el.classList.add('unknown');
-                    label = 'Food · —';
-                }
-            } else if (status === 'fresh') {
-                el.classList.add('ok');
-                label = slot.name + ' · ' + (ago(lastPoint) || 'today');
-            } else if (status === 'aging') {
-                el.classList.add('warn');
-                label = slot.name + ' · ' + (ago(lastPoint) || 'yesterday');
-            } else if (status === 'stale') {
-                el.classList.add('stale');
-                label = slot.name + ' · ' + (ago(lastPoint) || 'stale');
-            } else if (status === 'missing') {
-                el.classList.add('stale');
-                label = slot.name + ' · no data';
-            } else {
-                el.classList.add('unknown');
-                label = slot.name + ' · —';
-            }
+            el.classList.add(cls);
             el.textContent = label;
         });
+    }
+
+    function buildFoodGuidanceLine(food) {
+        // Returns a sentence explaining whether today's food changed/should change
+        // the remaining-day guidance. Always render something (per FIT-1 acceptance
+        // criterion: the UI must explain whether food logged today changed guidance).
+        if (!food) {
+            return 'Log food to see remaining macros for today.';
+        }
+        if (food.pending_review) {
+            return 'Food estimates pending review — accept or correct to update macro guidance.';
+        }
+        const cal = food.calories || 0;
+        const calT = food.calories_target || 0;
+        const pro = food.protein_g || 0;
+        const proT = food.protein_target_g || 0;
+        if (food.target_state === 'none' || cal === 0) {
+            return 'No food logged yet. Log meals for personalized macro guidance.';
+        }
+        if (food.target_state === 'over') {
+            return `Over calorie target (${cal}/${calT} cal) — ease intensity if you trained heavy.`;
+        }
+        if (food.target_state === 'under') {
+            const remCal = Math.max(0, calT - cal);
+            const remPro = Math.max(0, Math.round(proT - pro));
+            return `${cal}/${calT} cal · ${pro}/${proT}g protein logged · ${remCal} cal and ${remPro}g protein remaining.`;
+        }
+        // on_track
+        return `${cal}/${calT} cal · ${pro}/${proT}g protein logged — on track.`;
     }
 
     // --- Dashboard render ----------------------------------------
@@ -597,7 +656,7 @@
             }
         }
 
-        // Reason / "why"
+        // Reason / "why" — wearable reasoning + explicit food guidance (FIT-1 AC)
         const whyEl = $('reco-why');
         if (whyEl) {
             let whyText;
@@ -608,6 +667,10 @@
             } else {
                 whyText = (reco && reco.reasoning) || 'Based on your readiness, sleep, and training load.';
             }
+            // Append food guidance line so the brief always explains how today's
+            // food changed (or could change) remaining-day guidance.
+            const foodLine = buildFoodGuidanceLine(freshness && freshness.food);
+            if (foodLine) whyText = whyText.replace(/\.\s*$/, '') + '. ' + foodLine;
             whyEl.textContent = whyText;
             whyEl.classList.toggle('lower-confidence', wearableDegraded);
         }
