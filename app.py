@@ -5628,6 +5628,90 @@ def restore_history():
         return api_error("Failed to restore history entry", 500, code="server_error", details=str(e))
 
 
+def _workout_sync_error(message: str, status: int = 400, code: str = "bad_request", details=None):
+    payload_details = {"sync_status": "rejected"}
+    if isinstance(details, dict):
+        payload_details.update(details)
+    elif details is not None:
+        payload_details["detail"] = details
+    return api_error(message, status, code=code, details=payload_details)
+
+
+def _workout_sync_error_from_api_error(error_response):
+    try:
+        response, status = error_response
+        payload = response.get_json(silent=True) or {}
+        error = payload.get("error") or {}
+        return _workout_sync_error(
+            error.get("message") or "Invalid workout sync payload",
+            status=status,
+            code=error.get("code") or "invalid_field",
+            details=error.get("details"),
+        )
+    except Exception:
+        return error_response
+
+
+def _workout_sync_fingerprint(workout_entry: dict) -> str:
+    comparable = {
+        "id": workout_entry.get("id"),
+        "date": workout_entry.get("date"),
+        "session_type": workout_entry.get("session_type"),
+        "duration_minutes": workout_entry.get("duration_minutes"),
+        "exercises": workout_entry.get("exercises") or [],
+        "total_sets": workout_entry.get("total_sets"),
+        "total_volume": workout_entry.get("total_volume"),
+        "overall_fatigue": workout_entry.get("overall_fatigue"),
+        "notes": workout_entry.get("notes") or "",
+        "cardio": workout_entry.get("cardio"),
+        "recommendation_id": workout_entry.get("recommendation_id"),
+    }
+    body = json.dumps(comparable, sort_keys=True, separators=(",", ":"), default=str)
+    import hashlib
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _workout_sync_metadata(data: dict, workout_id: str, fingerprint: str, received_at: str) -> dict:
+    source = data.get("sync_source") or data.get("source")
+    if not isinstance(source, str) or not source.strip():
+        source = "offline_queue" if data.get("offline") or data.get("client_workout_id") or data.get("client_id") else "online"
+    metadata = {
+        "version": 1,
+        "client_workout_id": workout_id,
+        "sync_status": "inserted",
+        "last_result": "inserted",
+        "source": source.strip()[:64],
+        "received_at": received_at,
+        "last_attempt_at": received_at,
+        "sync_attempts": 1,
+        "fingerprint": fingerprint,
+    }
+    for field in ("client_created_at", "client_updated_at", "attempt_id"):
+        value = data.get(field)
+        if isinstance(value, str) and value.strip():
+            metadata[field] = value.strip()[:128]
+    return metadata
+
+
+def _workout_already_synced_response(existing: dict, client_workout_id: str, received_at: str | None = None, fingerprint: str | None = None):
+    if received_at:
+        meta = existing.setdefault("offline_sync", {})
+        meta["last_result"] = "already_synced"
+        meta["last_attempt_at"] = received_at
+        meta["sync_attempts"] = int(meta.get("sync_attempts") or 1) + 1
+        if fingerprint:
+            meta["fingerprint"] = fingerprint
+        save_json(WORKOUTS_FILE, WORKOUTS)
+    return jsonify({
+        "status": "success",
+        "sync_status": "already_synced",
+        "adherence": existing.get("adherence", {"followed": True, "skipped": [], "modified": [], "added": []}),
+        "workout_id": client_workout_id,
+        "duplicate": True,
+        "message": "Workout already logged. Using existing workout ID."
+    })
+
+
 @app.route('/api/complete-workout', methods=['POST'])
 def complete_workout():
     """Complete a workout and track adherence to recommendations."""
@@ -5635,43 +5719,43 @@ def complete_workout():
     if err:
         return err
 
-    client_workout_id, err2 = _coerce_str(data.get("id"), "id", required=False, max_len=80)
+    client_workout_id, err2 = _coerce_str(
+        data.get("client_workout_id") or data.get("client_id") or data.get("id"),
+        "id",
+        required=False,
+        max_len=80,
+    )
     if err2:
-        return err2
+        return _workout_sync_error_from_api_error(err2)
+    existing_by_client_id = None
     if client_workout_id:
         allowed_id_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_:.")
         if any(ch not in allowed_id_chars for ch in client_workout_id):
-            return api_error("id contains unsupported characters", 400, code="invalid_field")
-        existing = next((w for w in WORKOUTS if w.get("id") == client_workout_id), None)
-        if existing:
-            return jsonify({
-                "status": "success",
-                "adherence": existing.get("adherence", {"followed": True, "skipped": [], "modified": [], "added": []}),
-                "workout_id": client_workout_id,
-                "duplicate": True,
-                "message": "Workout already logged. Using existing workout ID."
-            })
+            return _workout_sync_error("id contains unsupported characters", 400, code="invalid_field")
+        existing_by_client_id = next((w for w in WORKOUTS if w.get("id") == client_workout_id), None)
+        if existing_by_client_id and "exercises" not in data:
+            return _workout_already_synced_response(existing_by_client_id, client_workout_id)
 
     recommendation_id = data.get("recommendation_id")
     actual_exercises = data.get("exercises", [])
     if not isinstance(actual_exercises, list):
-        return api_error("exercises must be a list", 400, code="invalid_field")
+        return _workout_sync_error("exercises must be a list", 400, code="invalid_field")
 
     # Validate we have at least one completed exercise with at least 1 set
     if len(actual_exercises) == 0:
-        return api_error("Workout must include at least one exercise", 400, code="invalid_field")
+        return _workout_sync_error("Workout must include at least one exercise", 400, code="invalid_field")
 
     for ex_idx, ex in enumerate(actual_exercises):
         if not isinstance(ex, dict):
-            return api_error("Each exercise must be an object", 400, code="invalid_field")
+            return _workout_sync_error("Each exercise must be an object", 400, code="invalid_field")
         if not ex.get("machine"):
-            return api_error("Each exercise must include machine", 400, code="invalid_field")
+            return _workout_sync_error("Each exercise must include machine", 400, code="invalid_field")
         sets = ex.get("sets") or []
         if not isinstance(sets, list) or len(sets) == 0:
-            return api_error("Each exercise must include at least one set", 400, code="invalid_field")
+            return _workout_sync_error("Each exercise must include at least one set", 400, code="invalid_field")
         for set_idx, set_row in enumerate(sets):
             if not isinstance(set_row, dict):
-                return api_error("Each set must be an object", 400, code="invalid_field")
+                return _workout_sync_error("Each set must be an object", 400, code="invalid_field")
             set_notes, err2 = _coerce_str(
                 set_row.get("notes", ""),
                 f"exercises[{ex_idx}].sets[{set_idx}].notes",
@@ -5679,7 +5763,7 @@ def complete_workout():
                 max_len=500,
             )
             if err2:
-                return err2
+                return _workout_sync_error_from_api_error(err2)
             if set_notes:
                 set_row["notes"] = set_notes
             else:
@@ -5689,7 +5773,7 @@ def complete_workout():
 
     notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
     if err2:
-        return err2
+        return _workout_sync_error_from_api_error(err2)
 
     cardio_payload = data.get("cardio")
     cardio_actual = None
@@ -5709,7 +5793,7 @@ def complete_workout():
             cardio_rec = {}
         cardio_notes, err2 = _coerce_str(cardio_payload.get("notes", ""), "cardio.notes", required=False, max_len=2000)
         if err2:
-            return err2
+            return _workout_sync_error_from_api_error(err2)
         activity_type, err2 = _coerce_str(
             cardio_payload.get("activity_type") or cardio_rec.get("type") or cardio_rec.get("machine") or "Cardio",
             "cardio.activity_type",
@@ -5717,7 +5801,7 @@ def complete_workout():
             max_len=64,
         )
         if err2:
-            return err2
+            return _workout_sync_error_from_api_error(err2)
         duration_minutes = max(0, min(_int_or_default(cardio_payload.get("duration_minutes") or cardio_rec.get("duration_minutes"), 0), 600))
         completed = bool(cardio_payload.get("completed"))
         cardio_actual = {
@@ -5842,6 +5926,45 @@ def complete_workout():
         "recommendation_id": recommendation_id,
         "adherence": adherence
     }
+    sync_fingerprint = _workout_sync_fingerprint(workout_entry)
+    received_at = datetime.now().isoformat(timespec="seconds")
+    workout_entry["offline_sync"] = _workout_sync_metadata(
+        data,
+        workout_id,
+        sync_fingerprint,
+        received_at,
+    )
+
+    if existing_by_client_id:
+        existing_fingerprint = (existing_by_client_id.get("offline_sync") or {}).get("fingerprint")
+        existing_fingerprint = existing_fingerprint or _workout_sync_fingerprint(existing_by_client_id)
+        if existing_fingerprint == sync_fingerprint:
+            return _workout_already_synced_response(
+                existing_by_client_id,
+                client_workout_id,
+                received_at=received_at,
+                fingerprint=existing_fingerprint,
+            )
+        meta = existing_by_client_id.setdefault("offline_sync", {})
+        meta["last_result"] = "conflicted"
+        meta["last_attempt_at"] = received_at
+        meta["sync_attempts"] = int(meta.get("sync_attempts") or 1) + 1
+        meta["last_conflict_at"] = received_at
+        meta["conflict_count"] = int(meta.get("conflict_count") or 0) + 1
+        meta["last_conflict_fingerprint"] = sync_fingerprint
+        meta.setdefault("fingerprint", existing_fingerprint)
+        save_json(WORKOUTS_FILE, WORKOUTS)
+        return api_error(
+            "Workout sync conflict for existing client workout ID",
+            409,
+            code="sync_conflict",
+            details={
+                "sync_status": "conflicted",
+                "workout_id": client_workout_id,
+                "existing_fingerprint": existing_fingerprint,
+                "incoming_fingerprint": sync_fingerprint,
+            },
+        )
 
     WORKOUTS.append(workout_entry)
     COMPLETED_WORKOUTS.append(workout_entry)
@@ -5854,6 +5977,7 @@ def complete_workout():
 
     return jsonify({
         "status": "success",
+        "sync_status": "inserted",
         "adherence": adherence,
         "workout_id": workout_id,
         "message": "Workout logged! Navigating to history..."
