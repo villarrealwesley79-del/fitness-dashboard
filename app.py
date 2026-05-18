@@ -5019,9 +5019,12 @@ def sync_oura_sleep():
     """Sync latest sleep data from Oura API."""
     from oura_sleep_sync import create_sleep_table, sync_sleep_data, get_latest_sleep
 
-    # Get optional start_date parameter (default to last 30 days)
-    data = request.get_json(silent=True) or {}
-    days_back = data.get("days_back", 30)
+    data, err = get_json_body(required=False)
+    if err:
+        return err
+    days_back, err = _coerce_int(data.get("days_back", 30), "days_back", min_v=1, max_v=365)
+    if err:
+        return err
 
     try:
         start_date = (datetime.now().date() - timedelta(days=days_back)).strftime("%Y-%m-%d")
@@ -5030,9 +5033,13 @@ def sync_oura_sleep():
         create_sleep_table(OURA_DB_FILE)
 
         # Get API token
-        api_token = os.environ.get("OURA_API_TOKEN")
+        api_token = os.environ.get("OURA_API_TOKEN", "").strip()
         if not api_token:
-            return jsonify({"status": "error", "message": "OURA_API_TOKEN not configured"}), 500
+            return api_error(
+                "Oura API token is not configured on this server. Set OURA_API_TOKEN and restart the app.",
+                503,
+                code="missing_oura_token",
+            )
 
         # Sync data
         sync_sleep_data(OURA_DB_FILE, api_token, start_date=start_date)
@@ -5047,8 +5054,20 @@ def sync_oura_sleep():
             "latest_records": len(latest),
             "latest_days": latest_days,
         })
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            detail = ""
+        message = f"Oura API returned HTTP {e.code}"
+        if detail:
+            message = f"{message}: {detail}"
+        return api_error(message, 502, code="oura_api_error")
+    except urllib.error.URLError as e:
+        return api_error(f"Oura API request failed: {e.reason}", 502, code="oura_api_error")
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return api_error(f"Oura sync failed: {str(e)}", 500, code="oura_sync_failed")
 
 
 @app.route('/api/oura/sleep-summary')

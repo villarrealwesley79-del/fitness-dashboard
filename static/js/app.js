@@ -170,6 +170,19 @@
         return 'Save failed: workout is still open. Review the set values and try again.';
     }
 
+    function apiErrorMessage(err, fallback) {
+        const raw = String((err && err.message) || err || '');
+        const jsonStart = raw.indexOf('{');
+        if (jsonStart >= 0) {
+            try {
+                const parsed = JSON.parse(raw.slice(jsonStart));
+                const serverMsg = parsed && parsed.error && parsed.error.message;
+                if (serverMsg) return serverMsg;
+            } catch {}
+        }
+        return fallback;
+    }
+
     // --- SVG chart helpers ---------------------------------------
     const SVG_NS = 'http://www.w3.org/2000/svg';
     function svg(attrs, children = []) {
@@ -2132,7 +2145,7 @@
             invalidateCaches();
             toast('Oura synced');
             loadTab(state.currentTab);
-        } catch (e) { console.error(e); toast('Sync failed', 'err'); }
+        } catch (e) { console.error(e); toast(apiErrorMessage(e, 'Oura sync failed'), 'err'); }
     }
 
     function downloadExport() {
