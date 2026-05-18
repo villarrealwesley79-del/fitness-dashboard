@@ -5346,6 +5346,23 @@ def complete_workout():
     if err:
         return err
 
+    client_workout_id, err2 = _coerce_str(data.get("id"), "id", required=False, max_len=80)
+    if err2:
+        return err2
+    if client_workout_id:
+        allowed_id_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_:.")
+        if any(ch not in allowed_id_chars for ch in client_workout_id):
+            return api_error("id contains unsupported characters", 400, code="invalid_field")
+        existing = next((w for w in WORKOUTS if w.get("id") == client_workout_id), None)
+        if existing:
+            return jsonify({
+                "status": "success",
+                "adherence": existing.get("adherence", {"followed": True, "skipped": [], "modified": [], "added": []}),
+                "workout_id": client_workout_id,
+                "duplicate": True,
+                "message": "Workout already logged. Using existing workout ID."
+            })
+
     recommendation_id = data.get("recommendation_id")
     actual_exercises = data.get("exercises", [])
     if not isinstance(actual_exercises, list):
@@ -5516,8 +5533,11 @@ def complete_workout():
         for s in (e.get("sets") or [])
     )
 
-    import uuid as _uuid
-    workout_id = _uuid.uuid4().hex[:12]
+    if client_workout_id:
+        workout_id = client_workout_id
+    else:
+        import uuid as _uuid
+        workout_id = _uuid.uuid4().hex[:12]
     workout_entry = {
         "id": workout_id,
         "created_at": datetime.now().isoformat(timespec="seconds"),
