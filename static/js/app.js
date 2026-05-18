@@ -641,17 +641,27 @@
             else { $('reco-rpe').hidden = true; }
         }
 
-        // Avoid list — surface existing avoid_muscles as chips (0-3 max)
+        // Avoid list — surface existing avoid_muscles as chips (0-3 max).
+        // Build via DOM + textContent (not innerHTML) so user-supplied soreness
+        // muscle names cannot inject HTML/JS into the dashboard card.
         const avoidEl = $('reco-avoid');
         if (avoidEl) {
             const avoidRaw = (reco && reco.avoid_muscles) || [];
             const avoid = (Array.isArray(avoidRaw) ? avoidRaw : []).slice(0, 3);
+            while (avoidEl.firstChild) avoidEl.removeChild(avoidEl.firstChild);
             if (avoid.length === 0) {
                 avoidEl.hidden = true;
-                avoidEl.innerHTML = '';
             } else {
-                avoidEl.innerHTML = '<span class="reco-avoid-label">Avoid</span>' +
-                    avoid.map(function (m) { return `<span class="chip chip-avoid">${humanizeMuscle(m)}</span>`; }).join('');
+                const label = document.createElement('span');
+                label.className = 'reco-avoid-label';
+                label.textContent = 'Avoid';
+                avoidEl.appendChild(label);
+                avoid.forEach(function (m) {
+                    const chip = document.createElement('span');
+                    chip.className = 'chip chip-avoid';
+                    chip.textContent = humanizeMuscle(m);
+                    avoidEl.appendChild(chip);
+                });
                 avoidEl.hidden = false;
             }
         }
