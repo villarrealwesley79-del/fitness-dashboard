@@ -12,6 +12,7 @@ import json
 import os
 import socket
 import sqlite3
+import hashlib
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -37,7 +38,7 @@ from oura_client import (
     get_oura_daily_range,
     compute_hrv_trend,
 )
-from data_store import init_data_db, add_food_log, clear_food_logs, get_food_logs
+from data_store import init_data_db, add_food_log, get_food_logs
 
 app = Flask(__name__)
 
@@ -753,6 +754,20 @@ def _nutrition_entry_pending_review(entry):
 
 def _nutrition_entry_accepted(entry):
     return isinstance(entry, dict) and not _nutrition_entry_pending_review(entry)
+
+
+def _food_log_import_record(food_log):
+    """Return a copy safe for idempotent backup replay."""
+    record = dict(food_log)
+    if record.get("client_id"):
+        return record
+    identity = "|".join(
+        str(record.get(key) or "")
+        for key in ("logged_at", "source_timestamp", "date", "item_name", "calories")
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    record["client_id"] = f"backup-food-log-{digest}"
+    return record
 
 
 def calculate_e1rm(weight: float, reps: int) -> float:
@@ -6078,10 +6093,9 @@ def import_backup():
 
         if "food_logs" in data:
             user_id = _current_data_user_id()
-            clear_food_logs(user_id)
             for food_log in data["food_logs"]:
                 if isinstance(food_log, dict):
-                    add_food_log(user_id, food_log)
+                    add_food_log(user_id, _food_log_import_record(food_log))
 
         return jsonify({
             "status": "success",
