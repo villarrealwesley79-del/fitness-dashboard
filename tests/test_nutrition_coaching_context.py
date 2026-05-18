@@ -417,6 +417,11 @@ def test_smart_recommendation_keeps_plan_but_adds_under_fueled_context(monkeypat
     monkeypatch.setattr(module, "_fetch_wttr", lambda *_args, **_kwargs: {"available": False})
     monkeypatch.setattr(
         module,
+        "generate_next_workout",
+        lambda *_args, **_kwargs: {"estimated_minutes": 60, "mesocycle": {"rpe_base": 8}},
+    )
+    monkeypatch.setattr(
+        module,
         "_compute_data_freshness",
         lambda *_args, **_kwargs: {
             "oura": {"status": "fresh"},
