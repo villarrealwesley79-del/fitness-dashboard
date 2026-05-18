@@ -767,6 +767,11 @@ def register_apple_health_routes(flask_app):
     @flask_app.route("/api/apple-health/sync/status")
     def apple_health_sync_status():
         """Show sync status: last sync time, record counts."""
+        token_configured = bool(os.environ.get("HEALTH_SYNC_TOKEN", "").strip())
+        public_url_configured = bool(
+            os.environ.get(PUBLIC_BASE_URL_ENV, "").strip()
+            or os.environ.get(APPLE_HEALTH_WEBHOOK_URL_ENV, "").strip()
+        )
         conn = sqlite3.connect(_AH_SYNC_DB)
         try:
             total = conn.execute("SELECT COUNT(*) FROM ah_sync_log").fetchone()[0]
@@ -795,6 +800,9 @@ def register_apple_health_routes(flask_app):
                 last_event,
             )) if last_event else None,
             "source": "health_auto_export",
+            "setup_configured": token_configured,
+            "has_token": token_configured,
+            "public_url_configured": public_url_configured,
         })
 
     @flask_app.route("/api/apple-health/sync/setup-url")

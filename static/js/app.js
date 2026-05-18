@@ -1977,11 +1977,16 @@
             const last = parseServerDateTime(lastExportRaw);
             const ageDays = last ? Math.floor((Date.now() - last.getTime()) / 86400000) : Infinity;
             const connected = last && ageDays <= 3;
+            const setupConfigured = Boolean(ah && ah.setup_configured);
             const chip = $('apple-connect-state');
             const detail = $('apple-last-export');
             if (connected) {
                 chip.textContent = `Synced ${ageDays === 0 ? 'today' : ageDays + 'd ago'}`;
                 chip.className = 'state-chip ok';
+                $('apple-int-dot').className = 'int-dot int-dot-on';
+            } else if (setupConfigured) {
+                chip.textContent = last ? `Setup · last sync ${ageDays}d ago` : 'Setup · waiting for export';
+                chip.className = 'state-chip warn';
                 $('apple-int-dot').className = 'int-dot int-dot-on';
             } else {
                 chip.textContent = last ? `Last sync ${ageDays}d ago` : 'Not connected';
@@ -3069,6 +3074,8 @@
                 const last = parseServerDateTime(lastExport);
                 const days = last ? Math.floor((Date.now() - last.getTime()) / 86400000) : 0;
                 detail.textContent = `Last accepted export ${fmtDateTime(lastExport)} · ${days}d ago · ${status.total_records || 0} records`;
+            } else if (status && status.setup_configured) {
+                detail.textContent = 'Webhook is configured — waiting for Health Auto Export to post data.';
             } else if (status) {
                 detail.textContent = 'No syncs yet — Health Auto Export has not posted.';
             } else {

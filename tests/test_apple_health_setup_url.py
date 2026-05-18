@@ -66,3 +66,16 @@ def test_sync_status_remains_auth_gated(fitness_app):
 
     assert response.status_code == 401
     assert response.get_json()["error"] == "Unauthorized"
+
+
+def test_sync_status_reports_setup_separately_from_export_data(fitness_app, monkeypatch):
+    monkeypatch.setenv("HEALTH_SYNC_TOKEN", "fit32-contract-token")
+    fitness_app.config.update(LOGIN_DISABLED=True)
+
+    response = fitness_app.test_client().get("/api/apple-health/sync/status")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["setup_configured"] is True
+    assert payload["has_token"] is True
+    assert "total_records" in payload
