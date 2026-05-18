@@ -2346,6 +2346,204 @@
         renderActiveWorkout();
     }
 
+    const SYNC_QUEUE_KEY = 'fit51:sync-queue:v1';
+    let _syncFlushInFlight = false;
+
+    function loadSyncQueue() {
+        try {
+            const raw = localStorage.getItem(SYNC_QUEUE_KEY);
+            const arr = raw ? JSON.parse(raw) : [];
+            return Array.isArray(arr) ? arr : [];
+        } catch (e) { return []; }
+    }
+
+    function saveSyncQueue(queue) {
+        try { localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue || [])); } catch (e) {}
+        renderSyncBanner();
+    }
+
+    function enqueueOfflineWorkout(payload, initialStatus = 'pending') {
+        const queue = loadSyncQueue();
+        const clientId = payload.client_workout_id || payload.id || `w-offline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const finalPayload = { ...payload, id: clientId, client_workout_id: clientId, offline: true };
+        const idx = queue.findIndex((e) => e.client_workout_id === clientId);
+        const entry = {
+            client_workout_id: clientId,
+            queued_at: new Date().toISOString(),
+            last_attempt_at: null,
+            last_status: initialStatus,
+            attempts: 0,
+            payload: finalPayload,
+            server_response: null,
+            reject_reason: null,
+        };
+        if (idx >= 0) {
+            queue[idx] = { ...queue[idx], ...entry, queued_at: queue[idx].queued_at, attempts: queue[idx].attempts };
+        } else {
+            queue.push(entry);
+        }
+        saveSyncQueue(queue);
+        return clientId;
+    }
+
+    function removeQueueEntry(clientId) {
+        const queue = loadSyncQueue().filter((e) => e.client_workout_id !== clientId);
+        saveSyncQueue(queue);
+    }
+
+    function updateQueueEntry(clientId, fields) {
+        const queue = loadSyncQueue();
+        const idx = queue.findIndex((e) => e.client_workout_id === clientId);
+        if (idx < 0) return;
+        queue[idx] = { ...queue[idx], ...fields };
+        saveSyncQueue(queue);
+    }
+
+    async function postCompleteWorkout(payload) {
+        // Lower-level than api() so we can read both 2xx and 4xx/5xx bodies and
+        // pull out the FIT-37 sync_status from response.error.details.
+        const res = await fetch('/api/complete-workout', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const body = await res.json().catch(() => null);
+        if (res.ok) {
+            return { ok: true, status: res.status, body, syncStatus: (body && body.sync_status) || 'inserted' };
+        }
+        const err = body && body.error;
+        const syncStatus = (err && err.details && err.details.sync_status) || (res.status === 409 ? 'conflicted' : 'rejected');
+        const reason = err && err.message;
+        return { ok: false, status: res.status, body, syncStatus, reason };
+    }
+
+    async function syncSingleEntry(clientId) {
+        const queue = loadSyncQueue();
+        const entry = queue.find((e) => e.client_workout_id === clientId);
+        if (!entry) return null;
+        try {
+            const result = await postCompleteWorkout(entry.payload);
+            const attemptedAt = new Date().toISOString();
+            const attempts = (entry.attempts || 0) + 1;
+            if (result.ok && (result.syncStatus === 'inserted' || result.syncStatus === 'already_synced')) {
+                removeQueueEntry(clientId);
+                invalidateCaches();
+                if (state.currentTab === 'tab-history') loadTab('tab-history');
+                return { ok: true, status: result.syncStatus };
+            }
+            updateQueueEntry(clientId, {
+                last_status: result.syncStatus || (result.ok ? 'pending' : 'rejected'),
+                last_attempt_at: attemptedAt,
+                attempts,
+                server_response: result.body || null,
+                reject_reason: result.reason || null,
+            });
+            return { ok: false, status: result.syncStatus };
+        } catch (e) {
+            updateQueueEntry(clientId, {
+                last_status: 'pending',
+                last_attempt_at: new Date().toISOString(),
+                attempts: (entry.attempts || 0) + 1,
+            });
+            return { ok: false, status: 'pending', error: e && e.message };
+        }
+    }
+
+    async function flushSyncQueue() {
+        if (!navigator.onLine || _syncFlushInFlight) return;
+        _syncFlushInFlight = true;
+        try {
+            const ids = loadSyncQueue()
+                .filter((e) => e.last_status === 'pending')
+                .map((e) => e.client_workout_id);
+            for (const id of ids) {
+                await syncSingleEntry(id);
+            }
+            renderSyncQueueModal();
+        } finally {
+            _syncFlushInFlight = false;
+        }
+    }
+
+    function renderSyncBanner() {
+        const banner = $('sync-banner');
+        const textEl = $('sync-banner-text');
+        if (!banner || !textEl) return;
+        const queue = loadSyncQueue();
+        if (!queue.length) { banner.hidden = true; return; }
+        const pending = queue.filter((e) => e.last_status === 'pending').length;
+        const failed = queue.filter((e) => e.last_status === 'rejected' || e.last_status === 'conflicted').length;
+        const parts = [];
+        if (pending) parts.push(`${pending} pending`);
+        if (failed) parts.push(`${failed} failed`);
+        textEl.textContent = parts.length ? parts.join(' · ') : `${queue.length} queued`;
+        banner.classList.toggle('has-failed', failed > 0);
+        banner.hidden = false;
+    }
+
+    function openSyncQueueModal() {
+        renderSyncQueueModal();
+        const modal = $('modal-sync-queue');
+        if (modal) modal.hidden = false;
+    }
+
+    function renderSyncQueueModal() {
+        const host = $('sync-queue-list');
+        if (!host) return;
+        const queue = loadSyncQueue();
+        host.innerHTML = '';
+        if (!queue.length) {
+            host.innerHTML = '<div class="empty">No queued workouts.</div>';
+            return;
+        }
+        const statusLabels = { pending: 'Pending', conflicted: 'Conflict', rejected: 'Rejected', inserted: 'Synced', already_synced: 'Synced' };
+        queue.forEach((entry) => {
+            const status = entry.last_status || 'pending';
+            const row = document.createElement('div');
+            row.className = `sync-row sync-row-${status}`;
+            const focusRaw = (entry.payload && entry.payload.session_type) || 'workout';
+            const focusLabel = capitalize(String(focusRaw).replace(/_/g, ' '));
+            const dateLabel = (entry.payload && entry.payload.date) ? fmtDate(entry.payload.date) : '—';
+            const lastAttempt = entry.last_attempt_at ? fmtDateTime(entry.last_attempt_at) : 'never';
+            const reasonHtml = entry.reject_reason ? `<div class="sync-row-reason">${escapeHtml(entry.reject_reason)}</div>` : '';
+            row.innerHTML = `
+                <div class="sync-row-head">
+                    <span class="sync-row-title">${escapeHtml(focusLabel)} · ${escapeHtml(dateLabel)}</span>
+                    <span class="sync-status-pill sync-status-${status}">${escapeHtml(statusLabels[status] || 'Pending')}</span>
+                </div>
+                <div class="sync-row-meta">${entry.attempts || 0} attempts · last attempt ${escapeHtml(lastAttempt)}</div>
+                ${reasonHtml}
+                <div class="sync-row-actions">
+                    <button class="btn btn-ghost btn-sm" data-sync-discard="${escapeHtml(entry.client_workout_id)}" type="button">Discard</button>
+                    <button class="btn btn-primary btn-sm" data-sync-retry="${escapeHtml(entry.client_workout_id)}" type="button">Retry</button>
+                </div>
+            `;
+            host.appendChild(row);
+        });
+        host.querySelectorAll('[data-sync-retry]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                btn.disabled = true;
+                btn.textContent = 'Retrying…';
+                const res = await syncSingleEntry(btn.dataset.syncRetry);
+                renderSyncQueueModal();
+                if (res && res.ok) toast('Workout synced');
+                else if (res) toast(`Sync ${res.status || 'failed'}`, 'err');
+            });
+        });
+        host.querySelectorAll('[data-sync-discard]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const clientId = btn.dataset.syncDiscard;
+                const entry = loadSyncQueue().find((e) => e.client_workout_id === clientId);
+                const needsConfirm = entry && (entry.last_status === 'rejected' || entry.last_status === 'conflicted');
+                if (needsConfirm && !window.confirm('Discard this queued workout permanently?')) return;
+                removeQueueEntry(clientId);
+                renderSyncQueueModal();
+                toast('Workout discarded from queue');
+            });
+        });
+    }
+
     async function completeWorkout() {
         const aw = state.activeWorkout;
         if (!aw) return;
@@ -2380,50 +2578,87 @@
         }
         aw.saveState = { message: 'Saving workout...', variant: '' };
         setActiveWorkoutStatus(aw.saveState.message, aw.saveState.variant);
-        try {
-            const saved = await api('/api/complete-workout', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    id: aw.id,
-                    date: today(),
-                    recommendation_id: aw.recommendation_id,
-                    session_type: aw.focus,
-                    exercises,
-                    cardio: aw.cardio ? {
-                        ...aw.cardio,
-                        completed: Boolean(aw.cardio.completed),
-                    } : null,
-                }),
-            });
-            aw.id = saved && saved.workout_id ? saved.workout_id : aw.id;
-            aw.saveState = { message: 'Workout saved.', variant: 'ok' };
-            setActiveWorkoutStatus(aw.saveState.message, aw.saveState.variant);
-            const totalSets = exercises.reduce((a, ex) => a + ex.sets.length, 0);
-            const totalVolume = exercises.reduce((a, ex) => a + ex.sets.reduce((sa, s) => sa + Number(s.weight_lbs || 0) * Number(s.reps || 0), 0), 0);
-            const summary = {
-                date: today(),
-                session_type: aw.focus,
-                exercises_count: exercises.length,
-                total_sets: totalSets,
-                total_volume: Math.round(totalVolume),
-                duration_minutes: aw.duration_minutes || 0,
-                cardio_completed: Boolean(aw.cardio && aw.cardio.completed),
-                adherence: saved && saved.adherence ? saved.adherence : null,
-                duplicate: Boolean(saved && saved.duplicate),
-            };
+        const clientWorkoutId = aw.id || `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        aw.id = clientWorkoutId;
+        const completePayload = {
+            id: clientWorkoutId,
+            client_workout_id: clientWorkoutId,
+            date: today(),
+            recommendation_id: aw.recommendation_id,
+            session_type: aw.focus,
+            exercises,
+            cardio: aw.cardio ? {
+                ...aw.cardio,
+                completed: Boolean(aw.cardio.completed),
+            } : null,
+        };
+        const totalSets = exercises.reduce((a, ex) => a + ex.sets.length, 0);
+        const totalVolume = exercises.reduce((a, ex) => a + ex.sets.reduce((sa, s) => sa + Number(s.weight_lbs || 0) * Number(s.reps || 0), 0), 0);
+        const summaryBase = {
+            date: today(),
+            session_type: aw.focus,
+            exercises_count: exercises.length,
+            total_sets: totalSets,
+            total_volume: Math.round(totalVolume),
+            duration_minutes: aw.duration_minutes || 0,
+            cardio_completed: Boolean(aw.cardio && aw.cardio.completed),
+        };
+
+        function settleQueued(reasonMsg) {
+            enqueueOfflineWorkout(completePayload, 'pending');
+            aw.saveState = { message: reasonMsg, variant: '' };
+            setActiveWorkoutStatus(reasonMsg, '');
             $('modal-active').hidden = true;
             state.activeWorkout = null;
             clearAdjustIntent();
             invalidateCaches();
             loadTab(state.currentTab);
-            openWorkoutSavedConfirm(summary);
+            openWorkoutSavedConfirm({ ...summaryBase, queued: true, queued_reason: reasonMsg });
+            toast('Saved offline — will sync when back online');
+        }
+
+        if (!navigator.onLine) {
+            settleQueued('Offline — queued for sync.');
+            if (btn) { btn.disabled = false; btn.textContent = 'Complete Workout'; }
+            return;
+        }
+
+        try {
+            const result = await postCompleteWorkout(completePayload);
+            if (result.ok && (result.syncStatus === 'inserted' || result.syncStatus === 'already_synced')) {
+                aw.saveState = { message: 'Workout saved.', variant: 'ok' };
+                setActiveWorkoutStatus(aw.saveState.message, aw.saveState.variant);
+                const summary = {
+                    ...summaryBase,
+                    adherence: (result.body && result.body.adherence) || null,
+                    duplicate: Boolean(result.body && result.body.duplicate),
+                };
+                $('modal-active').hidden = true;
+                state.activeWorkout = null;
+                clearAdjustIntent();
+                invalidateCaches();
+                loadTab(state.currentTab);
+                openWorkoutSavedConfirm(summary);
+            } else {
+                // Backend reported conflicted or rejected — enqueue so user can retry/discard.
+                enqueueOfflineWorkout(completePayload, result.syncStatus || 'rejected');
+                updateQueueEntry(clientWorkoutId, {
+                    last_status: result.syncStatus || 'rejected',
+                    last_attempt_at: new Date().toISOString(),
+                    attempts: 1,
+                    server_response: result.body || null,
+                    reject_reason: result.reason || null,
+                });
+                const msg = result.syncStatus === 'conflicted'
+                    ? 'Server reported a conflict — see the sync queue.'
+                    : `Save rejected — ${result.reason || 'see the sync queue'}.`;
+                aw.saveState = { message: msg, variant: 'err' };
+                setActiveWorkoutStatus(msg, 'err');
+                toast(result.syncStatus === 'conflicted' ? 'Sync conflict' : 'Save rejected', 'err');
+            }
         } catch (e) {
             console.error(e);
-            const message = workoutSaveErrorMessage(e);
-            aw.saveState = { message, variant: 'err' };
-            setActiveWorkoutStatus(message, 'err');
-            toast('Save failed', 'err');
+            settleQueued('Network error — queued for sync.');
         } finally {
             if (btn) {
                 btn.disabled = false;
@@ -2442,9 +2677,24 @@
         const dismissBtn = $('btn-saved-dismiss');
         if (!modal || !titleEl || !subEl || !statsEl || !analyzeBtn || !dismissBtn) return;
         const dateLabel = summary.date ? fmtDate(summary.date) : 'today';
-        titleEl.textContent = summary.duplicate ? 'Already logged.' : 'Logged.';
+        if (summary.queued) {
+            titleEl.textContent = 'Queued for sync.';
+        } else {
+            titleEl.textContent = summary.duplicate ? 'Already logged.' : 'Logged.';
+        }
         const focusLabel = summary.session_type ? capitalize(String(summary.session_type).replace(/_/g, ' ')) : 'Workout';
         subEl.textContent = `${focusLabel} · ${dateLabel}`;
+        const queuedNoteEl = $('saved-queued-note');
+        if (queuedNoteEl) {
+            if (summary.queued) {
+                queuedNoteEl.hidden = false;
+                queuedNoteEl.textContent = summary.queued_reason || 'Queued — will sync when back online.';
+            } else {
+                queuedNoteEl.hidden = true;
+            }
+        }
+        analyzeBtn.disabled = !!summary.queued;
+        analyzeBtn.title = summary.queued ? 'Available after sync completes' : '';
         statsEl.innerHTML = '';
         const cells = [
             { label: 'Exercises', value: String(summary.exercises_count || 0) },
@@ -2964,6 +3214,11 @@
             if (ta) { ta.value = b.dataset.preset || ''; ta.focus(); }
         }));
         $('btn-complete-workout') && $('btn-complete-workout').addEventListener('click', completeWorkout);
+        $('sync-banner') && $('sync-banner').addEventListener('click', openSyncQueueModal);
+        $('btn-sync-retry-all') && $('btn-sync-retry-all').addEventListener('click', async () => {
+            await flushSyncQueue();
+            renderSyncQueueModal();
+        });
         $('btn-sync-oura') && $('btn-sync-oura').addEventListener('click', syncOura);
         $('btn-export') && $('btn-export').addEventListener('click', downloadExport);
         $('btn-import') && $('btn-import').addEventListener('click', () => $('import-file').click());
@@ -3057,6 +3312,9 @@
         refreshAiStatus();
         if (aiStatusTimer) clearInterval(aiStatusTimer);
         aiStatusTimer = setInterval(refreshAiStatus, 60_000);
+        renderSyncBanner();
+        window.addEventListener('online', () => { flushSyncQueue(); });
+        if (navigator.onLine) flushSyncQueue();
     }
 
     if (document.readyState === 'loading') {
