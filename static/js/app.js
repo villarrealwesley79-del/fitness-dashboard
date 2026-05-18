@@ -2256,15 +2256,26 @@
                 }),
             });
             aw.id = saved && saved.workout_id ? saved.workout_id : aw.id;
-            aw.saveState = { message: 'Workout saved. Opening analysis...', variant: 'ok' };
+            aw.saveState = { message: 'Workout saved.', variant: 'ok' };
             setActiveWorkoutStatus(aw.saveState.message, aw.saveState.variant);
-            toast('Workout complete');
+            const totalSets = exercises.reduce((a, ex) => a + ex.sets.length, 0);
+            const totalVolume = exercises.reduce((a, ex) => a + ex.sets.reduce((sa, s) => sa + Number(s.weight_lbs || 0) * Number(s.reps || 0), 0), 0);
+            const summary = {
+                date: today(),
+                session_type: aw.focus,
+                exercises_count: exercises.length,
+                total_sets: totalSets,
+                total_volume: Math.round(totalVolume),
+                duration_minutes: aw.duration_minutes || 0,
+                cardio_completed: Boolean(aw.cardio && aw.cardio.completed),
+                adherence: saved && saved.adherence ? saved.adherence : null,
+                duplicate: Boolean(saved && saved.duplicate),
+            };
             $('modal-active').hidden = true;
             state.activeWorkout = null;
             invalidateCaches();
             loadTab(state.currentTab);
-            // Fire the AI post-mortem automatically after a successful save.
-            setTimeout(() => openAnalyzeModal({ latest: true }), 350);
+            openWorkoutSavedConfirm(summary);
         } catch (e) {
             console.error(e);
             const message = workoutSaveErrorMessage(e);
@@ -2277,6 +2288,60 @@
                 btn.textContent = 'Complete Workout';
             }
         }
+    }
+
+    function openWorkoutSavedConfirm(summary) {
+        const modal = $('modal-workout-saved');
+        const titleEl = $('saved-title');
+        const subEl = $('saved-sub');
+        const statsEl = $('saved-stats');
+        const adherenceEl = $('saved-adherence');
+        const analyzeBtn = $('btn-saved-analyze');
+        const dismissBtn = $('btn-saved-dismiss');
+        if (!modal || !titleEl || !subEl || !statsEl || !analyzeBtn || !dismissBtn) return;
+        const dateLabel = summary.date ? fmtDate(summary.date) : 'today';
+        titleEl.textContent = summary.duplicate ? 'Already logged.' : 'Logged.';
+        const focusLabel = summary.session_type ? capitalize(String(summary.session_type).replace(/_/g, ' ')) : 'Workout';
+        subEl.textContent = `${focusLabel} · ${dateLabel}`;
+        statsEl.innerHTML = '';
+        const cells = [
+            { label: 'Exercises', value: String(summary.exercises_count || 0) },
+            { label: 'Sets',      value: String(summary.total_sets || 0) },
+            { label: 'Volume',    value: summary.total_volume ? `${fmtKilo(summary.total_volume)} lbs` : '—' },
+        ];
+        if (summary.duration_minutes) cells.push({ label: 'Minutes', value: String(summary.duration_minutes) });
+        cells.forEach((c) => {
+            const cell = document.createElement('div');
+            cell.className = 'saved-stat';
+            cell.innerHTML = `<div class="saved-stat-value">${escapeHtml(c.value)}</div><div class="saved-stat-label">${escapeHtml(c.label)}</div>`;
+            statsEl.appendChild(cell);
+        });
+        const adherence = summary.adherence;
+        if (adherence && (Array.isArray(adherence.skipped) && adherence.skipped.length
+            || Array.isArray(adherence.added) && adherence.added.length
+            || Array.isArray(adherence.modified) && adherence.modified.length)) {
+            const lines = [];
+            if (adherence.skipped && adherence.skipped.length) lines.push(`Skipped: ${adherence.skipped.join(', ')}`);
+            if (adherence.added && adherence.added.length) lines.push(`Added: ${adherence.added.join(', ')}`);
+            if (adherence.modified && adherence.modified.length) lines.push(`Adjusted ${adherence.modified.length} ${adherence.modified.length === 1 ? 'exercise' : 'exercises'}`);
+            adherenceEl.textContent = lines.join(' · ');
+            adherenceEl.hidden = false;
+        } else {
+            adherenceEl.hidden = true;
+        }
+        const freshAnalyze = analyzeBtn.cloneNode(true);
+        analyzeBtn.parentNode.replaceChild(freshAnalyze, analyzeBtn);
+        freshAnalyze.addEventListener('click', () => {
+            modal.hidden = true;
+            openAnalyzeModal({ latest: true }, `Analysis · ${dateLabel}`);
+        });
+        const freshDismiss = dismissBtn.cloneNode(true);
+        dismissBtn.parentNode.replaceChild(freshDismiss, dismissBtn);
+        freshDismiss.addEventListener('click', () => {
+            modal.hidden = true;
+            switchTab('tab-history');
+        });
+        modal.hidden = false;
     }
 
     async function openSwap(exIdx, muscle, currentName, source = 'plan') {

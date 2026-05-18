@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260518-fit26-fit3-merge-1">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260518-fit25-saved-confirm-1">
 </head>
 <body>
     <div class="app-shell">
@@ -823,8 +823,30 @@
         </div>
     </div>
 
+    <div id="modal-workout-saved" class="modal" hidden>
+        <div class="modal-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title">Workout saved</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="saved-hero">
+                    <div class="saved-check" aria-hidden="true">✓</div>
+                    <div class="saved-title" id="saved-title">Logged.</div>
+                    <div class="saved-sub" id="saved-sub">—</div>
+                </div>
+                <div id="saved-stats" class="saved-stats"></div>
+                <div id="saved-adherence" class="saved-adherence" hidden></div>
+            </div>
+            <div class="modal-foot modal-foot-row">
+                <button id="btn-saved-dismiss" class="btn btn-ghost" type="button">Done</button>
+                <button id="btn-saved-analyze" class="btn btn-primary" type="button">Analyze workout</button>
+            </div>
+        </div>
+    </div>
+
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260518-fit26-fit3-merge-1"></script>
+    <script src="/static/js/app.js?v=20260518-fit25-saved-confirm-1"></script>
 </body>
 </html>
