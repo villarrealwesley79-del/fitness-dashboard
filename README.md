@@ -74,7 +74,7 @@ Do not commit real values for these variables.
 
 ## Git Workflow
 
-`main` is the stable branch. Updates should go through focused branches and pull requests.
+`main` is the stable branch. Every update must go through a focused branch and pull request before it reaches `main`.
 
 Use branch names like:
 
