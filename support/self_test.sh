@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Live authenticated smoke test.
+#
+# This script intentionally exercises a running Flask server and real session
+# cookie. Offline unit and route-shape coverage lives under tests/ and runs with
+# pytest.
+
 BASE_URL="${BASE_URL:-http://127.0.0.1:5050}"
 COOKIE="${COOKIE:-}"
 

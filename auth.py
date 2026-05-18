@@ -364,6 +364,8 @@ def init_auth(app):
     @app.before_request
     def require_login():
         """Globally protect all routes — redirect unauthenticated users to login."""
+        if app.config.get("LOGIN_DISABLED"):
+            return None
         if _is_public(request.path):
             return None
         if not current_user.is_authenticated:
