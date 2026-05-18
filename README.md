@@ -57,6 +57,22 @@ Run the Flask app:
 python app.py
 ```
 
+Run the authenticated smoke test against a local server:
+
+```bash
+BASE_URL=http://127.0.0.1:5050 \
+FITNESS_SMOKE_USERNAME=<owner-username> \
+FITNESS_SMOKE_PASSWORD=<owner-password> \
+bash support/self_test.sh
+```
+
+Run the same smoke against a Tailscale/public URL by changing `BASE_URL`. If you
+already have a session cookie and do not want the script to log in, pass
+`COOKIE=<session-cookie-value>` instead of the username/password pair. The smoke
+checks authenticated dashboard, settings, history, Oura, Apple Health sync
+status, smart recommendation, AI health, a safe rejected workout write path, and
+the existing file-descriptor leak regression.
+
 Optional integrations use environment variables such as:
 
 ```bash

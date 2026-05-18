@@ -9,32 +9,70 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:5050}"
 COOKIE="${COOKIE:-}"
+SMOKE_USERNAME="${FITNESS_SMOKE_USERNAME:-${SMOKE_USERNAME:-}}"
+SMOKE_PASSWORD="${FITNESS_SMOKE_PASSWORD:-${SMOKE_PASSWORD:-}}"
+COOKIE_JAR="${COOKIE_JAR:-/tmp/fitness-dashboard-self-test.cookies}"
+BODY_FILE="${BODY_FILE:-/tmp/fitness-dashboard-self-test.json}"
+export BODY_FILE
+
+rm -f "$COOKIE_JAR" "$BODY_FILE"
 
 echo "Self-test against: $BASE_URL"
+
+curl_auth_args=()
+if [ -n "$COOKIE" ]; then
+  curl_auth_args=(-H "Cookie: session=${COOKIE}")
+elif [ -n "$SMOKE_USERNAME" ] && [ -n "$SMOKE_PASSWORD" ]; then
+  echo "==> POST /login"
+  login_code="$(
+    curl -sS -L -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
+      -o "$BODY_FILE" \
+      -w "%{http_code}" \
+      --data-urlencode "username=${SMOKE_USERNAME}" \
+      --data-urlencode "password=${SMOKE_PASSWORD}" \
+      "$BASE_URL/login"
+  )"
+  if [ "$login_code" -lt 200 ] || [ "$login_code" -ge 300 ]; then
+    echo "FAIL: login returned HTTP $login_code" >&2
+    exit 1
+  fi
+  if grep -i "Invalid username or password" "$BODY_FILE" >/dev/null 2>&1; then
+    echo "FAIL: login rejected supplied smoke credentials" >&2
+    exit 1
+  fi
+  curl_auth_args=(-b "$COOKIE_JAR")
+else
+  echo "FAIL: provide COOKIE=session-value or FITNESS_SMOKE_USERNAME/FITNESS_SMOKE_PASSWORD" >&2
+  exit 1
+fi
+
+assert_no_sensitive_material() {
+  local path="$1"
+  if grep -E '"raw_json"|[?&]token=|HEALTH_SYNC_TOKEN|APPLE_HEALTH_WEBHOOK_URL' "$BODY_FILE" >/dev/null 2>&1; then
+    echo "FAIL: $path response includes sensitive raw/token material" >&2
+    return 1
+  fi
+}
 
 hit() {
   local path="$1"
   echo "\n==> GET $path"
   local body
   local code
-  local curl_args=(-sS -o /tmp/fitness-dashboard-self-test.json -w "%{http_code}")
-  if [ -n "$COOKIE" ]; then
-    curl_args+=(-H "Cookie: session=${COOKIE}")
-  fi
+  local curl_args=(-sS -o "$BODY_FILE" -w "%{http_code}")
+  curl_args+=("${curl_auth_args[@]}")
   code="$(curl "${curl_args[@]}" "$BASE_URL$path")"
-  body="$(cat /tmp/fitness-dashboard-self-test.json)"
+  body="$(cat "$BODY_FILE")"
 
-  if grep -E '"raw_json"|[?&]token=|HEALTH_SYNC_TOKEN' /tmp/fitness-dashboard-self-test.json >/dev/null 2>&1; then
-    echo "FAIL: $path response includes sensitive raw/token material" >&2
-    return 1
-  fi
+  assert_no_sensitive_material "$path"
   python3 - "$path" <<'PY'
 import json
 import sys
 
 path = sys.argv[1]
 try:
-    with open("/tmp/fitness-dashboard-self-test.json", "r", encoding="utf-8") as fh:
+    import os
+    with open(os.environ.get("BODY_FILE", "/tmp/fitness-dashboard-self-test.json"), "r", encoding="utf-8") as fh:
         body = json.load(fh)
 except Exception:
     print("body=non-json")
@@ -58,6 +96,9 @@ elif path == "/api/oura/status":
 elif path == "/api/oura/trends":
     summary["series_days"] = len(body.get("series", []))
     summary["hrv_trend"] = body.get("hrv_trend")
+elif path == "/api/apple-health/sync/status":
+    summary["last_sync"] = body.get("last_sync")
+    summary["last_record_date"] = body.get("last_record_date")
 elif path == "/api/weather":
     summary["source"] = body.get("source")
     summary["condition"] = body.get("condition")
@@ -81,21 +122,49 @@ PY
   fi
 }
 
+post_expect_error() {
+  local path="$1"
+  local payload="$2"
+  local expected="$3"
+  echo "\n==> POST $path expected=$expected"
+  local code
+  local curl_args=(-sS -o "$BODY_FILE" -w "%{http_code}" -H "Content-Type: application/json" -d "$payload")
+  curl_args+=("${curl_auth_args[@]}")
+  code="$(curl "${curl_args[@]}" "$BASE_URL$path")"
+  assert_no_sensitive_material "$path"
+  python3 - "$path" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+with open(os.environ.get("BODY_FILE", "/tmp/fitness-dashboard-self-test.json"), "r", encoding="utf-8") as fh:
+    body = json.load(fh)
+print(json.dumps({"path": path, "status": body.get("status"), "error": body.get("error")}, sort_keys=True))
+PY
+  if [ "$code" != "$expected" ]; then
+    echo "FAIL: $path returned HTTP $code, expected $expected" >&2
+    return 1
+  fi
+}
+
 hit "/api/dashboard"
 hit "/api/settings"
 hit "/api/history"
 hit "/api/history-all"
 hit "/api/oura/status"
 hit "/api/oura/trends"
+hit "/api/apple-health/sync/status"
 hit "/api/weather"
 hit "/api/recommendation/smart"
 hit "/api/ai/health"
 
 python3 - <<'PY'
 import json
+import os
 import sys
 
-with open("/tmp/fitness-dashboard-self-test.json", "r", encoding="utf-8") as fh:
+with open(os.environ.get("BODY_FILE", "/tmp/fitness-dashboard-self-test.json"), "r", encoding="utf-8") as fh:
     health = json.load(fh)
 
 if not health.get("reachable") or not health.get("model_loaded"):
@@ -126,6 +195,8 @@ else:
     print("WARN: ASUS primary route is degraded; Mac fallback is active")
 PY
 
+post_expect_error "/api/complete-workout" '{"client_workout_id":"smoke-invalid-empty","offline":true,"exercises":[]}' "400"
+
 if ! command -v lsof >/dev/null 2>&1; then
   echo "FAIL: lsof is required for FD leak regression check" >&2
   exit 1
@@ -149,9 +220,7 @@ fd_counts() {
 read -r fd_before auth_fd_before < <(fd_counts)
 for _ in $(seq 1 25); do
   curl_args=(-sS -o /dev/null -w "%{http_code}")
-  if [ -n "$COOKIE" ]; then
-    curl_args+=(-H "Cookie: session=${COOKIE}")
-  fi
+  curl_args+=("${curl_auth_args[@]}")
   code="$(curl "${curl_args[@]}" "$BASE_URL/api/settings")"
   if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
     echo "FAIL: FD regression loop /api/settings returned HTTP $code" >&2
