@@ -701,7 +701,189 @@ def _compute_carb_fat_targets(calories_target: int, protein_target: float):
     return carbs_target, fat_target
 
 
+SODIUM_NEXT_DAY_CONTEXT_MG = 2300
+LATE_MEAL_CONTEXT_HOUR = 20
+UNDER_FUELED_CALORIES_PCT = 60
+UNDER_FUELED_PROTEIN_PCT = 50
+
+
+def _nutrition_entry_logged_hour(entry):
+    raw = None
+    if isinstance(entry, dict):
+        raw = entry.get("logged_at") or entry.get("source_timestamp") or entry.get("timestamp")
+    dt = _parse_iso_date_or_datetime(raw) if raw else None
+    return dt.hour if dt else None
+
+
+def _food_log_entries_for_context(since=None, limit=None):
+    try:
+        return get_food_logs(_current_data_user_id(), limit=limit, since=since)
+    except Exception:
+        return []
+
+
+def _nutrition_context_for_date(
+    date_s: str,
+    now=None,
+    hard_training_planned: bool = False,
+    food_log_entries: list[dict] | None = None,
+):
+    """Backend contract for food-aware daily coaching context.
+
+    This is advisory context only. Food data does not silently mutate the workout
+    plan, and pending/unaccepted estimates are excluded from totals.
+    """
+    food_log_day_entries = [
+        entry for entry in (food_log_entries or [])
+        if _nutrition_entry_day(entry) == date_s and _nutrition_entry_accepted(entry)
+    ]
+    food_log_day_candidates = [
+        entry for entry in (food_log_entries or [])
+        if _nutrition_entry_day(entry) == date_s
+    ]
+    has_food_log_day_candidates = food_log_entries is not None and food_log_day_candidates
+    if has_food_log_day_candidates:
+        totals = _summarize_nutrition_entries_for_date(food_log_day_entries, date_s)
+    else:
+        totals = _summarize_nutrition_for_date(date_s)
+    calories_target, protein_target = _get_nutrition_targets()
+    carbs_target, fat_target = _compute_carb_fat_targets(calories_target, protein_target)
+
+    calories_pct = int(round((totals["calories"] / calories_target) * 100)) if calories_target else 0
+    protein_pct = int(round((totals["protein_g"] / protein_target) * 100)) if protein_target else 0
+    carbs_pct = int(round((totals["carbs_g"] / carbs_target) * 100)) if carbs_target else 0
+    fat_pct = int(round((totals["fat_g"] / fat_target) * 100)) if fat_target else 0
+
+    calories_remaining = int(calories_target - totals["calories"])
+    protein_gap_g = round(float(protein_target) - float(totals["protein_g"]), 1)
+    carbs_remaining_g = round(float(carbs_target) - float(totals["carbs_g"]), 1)
+    fat_remaining_g = round(float(fat_target) - float(totals["fat_g"]), 1)
+
+    accepted_entries = [
+        entry for entry in (NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else [])
+        if _nutrition_entry_day(entry) == date_s and _nutrition_entry_accepted(entry)
+    ]
+    context_entries = food_log_day_entries if has_food_log_day_candidates else accepted_entries
+    pending_candidates = (
+        food_log_day_candidates
+        if has_food_log_day_candidates
+        else list(NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else [])
+    )
+    pending_review_count = sum(
+        1 for entry in pending_candidates
+        if _nutrition_entry_day(entry) == date_s and _nutrition_entry_pending_review(entry)
+    )
+    late_entries_count = sum(
+        1 for entry in context_entries
+        if (_nutrition_entry_logged_hour(entry) or -1) >= LATE_MEAL_CONTEXT_HOUR
+    )
+
+    warnings = []
+    if calories_remaining < 0:
+        warnings.append({
+            "code": "calories_over_target",
+            "message": "Calories are over target for today.",
+            "severity": "warning",
+        })
+    elif totals["entries_count"] > 0 and calories_pct < 80:
+        warnings.append({
+            "code": "calories_remaining",
+            "message": "Calories remain below today's target.",
+            "severity": "info",
+        })
+    if protein_gap_g > 0 and totals["entries_count"] > 0:
+        warnings.append({
+            "code": "protein_gap",
+            "message": "Protein is still below today's target.",
+            "severity": "info",
+        })
+    if totals["entries_count"] > 0 and hard_training_planned and (
+        calories_pct < UNDER_FUELED_CALORIES_PCT or protein_pct < UNDER_FUELED_PROTEIN_PCT
+    ):
+        warnings.append({
+            "code": "under_fueled_hard_workout",
+            "message": "Hard training is planned while food intake is still low.",
+            "severity": "warning",
+        })
+    if pending_review_count:
+        warnings.append({
+            "code": "food_pending_review",
+            "message": "Pending food estimates are excluded until accepted.",
+            "severity": "info",
+        })
+
+    next_day_notes = []
+    high_sodium = int(totals["sodium_mg"]) >= SODIUM_NEXT_DAY_CONTEXT_MG
+    if high_sodium:
+        next_day_notes.append("High sodium today may affect tomorrow's scale/readiness interpretation.")
+    if late_entries_count:
+        next_day_notes.append("Late meal timing may affect tomorrow's scale/readiness interpretation.")
+
+    return {
+        "date": date_s,
+        "totals": {
+            "calories": totals["calories"],
+            "protein_g": round(totals["protein_g"], 1),
+            "carbs_g": round(totals["carbs_g"], 1),
+            "fat_g": round(totals["fat_g"], 1),
+            "sodium_mg": int(totals["sodium_mg"]),
+            "entries_count": totals["entries_count"],
+        },
+        "targets": {
+            "calories": calories_target,
+            "protein_g": round(protein_target, 1),
+            "carbs_g": carbs_target,
+            "fat_g": fat_target,
+        },
+        "remaining": {
+            "calories": calories_remaining,
+            "protein_g": protein_gap_g,
+            "carbs_g": carbs_remaining_g,
+            "fat_g": fat_remaining_g,
+        },
+        "percentages": {
+            "calories": calories_pct,
+            "protein": protein_pct,
+            "carbs": carbs_pct,
+            "fat": fat_pct,
+        },
+        "accepted_entries_count": len(context_entries),
+        "pending_review_count": pending_review_count,
+        "warnings": warnings,
+        "next_day_context": {
+            "high_sodium": high_sodium,
+            "late_meal": late_entries_count > 0,
+            "late_entries_count": late_entries_count,
+            "notes": next_day_notes,
+        },
+        "plan_adjustment": {
+            "allowed": False,
+            "reason": "Food context is advisory until a separate accepted plan-adjustment issue changes this behavior.",
+        },
+        "uses_only_accepted_entries": True,
+    }
+
+
+def _workout_looks_hard(recommendation) -> bool:
+    if not isinstance(recommendation, dict):
+        return False
+    try:
+        if int(recommendation.get("estimated_minutes") or 0) >= 60:
+            return True
+    except Exception:
+        pass
+    meso = recommendation.get("mesocycle") or {}
+    try:
+        return float(meso.get("rpe_base") or 0) >= 8
+    except Exception:
+        return False
+
+
 def _summarize_nutrition_for_date(date_s: str):
+    return _summarize_nutrition_entries_for_date(NUTRITION_DATA or [], date_s)
+
+
+def _summarize_nutrition_entries_for_date(entries, date_s: str):
     totals = {
         "calories": 0,
         "protein_g": 0.0,
@@ -710,7 +892,7 @@ def _summarize_nutrition_for_date(date_s: str):
         "sodium_mg": 0,
         "entries_count": 0,
     }
-    for entry in NUTRITION_DATA or []:
+    for entry in entries or []:
         if _nutrition_entry_day(entry) != date_s:
             continue
         if _nutrition_entry_pending_review(entry):
@@ -740,6 +922,7 @@ def _nutrition_entry_pending_review(entry):
         entry.get("status")
         or entry.get("review_state")
         or entry.get("estimate_status")
+        or entry.get("correction_state")
         or ""
     ).strip().lower()
     if status in {"pending", "pending_review", "needs_review", "review"}:
@@ -2384,16 +2567,17 @@ def api_dashboard():
     else:
         reason_bits.append("No soreness logged in last 24h")
 
-    # Nutrition totals
-    nutrition_totals = _summarize_nutrition_for_date(today_s)
-    calories_target, protein_target = _get_nutrition_targets()
-    carbs_target, fat_target = _compute_carb_fat_targets(calories_target, protein_target)
-    calories_pct = int(round((nutrition_totals["calories"] / calories_target) * 100)) if calories_target else 0
-    protein_pct = int(round((nutrition_totals["protein_g"] / protein_target) * 100)) if protein_target else 0
-    carbs_pct = int(round((nutrition_totals["carbs_g"] / carbs_target) * 100)) if carbs_target else 0
-    fat_pct = int(round((nutrition_totals["fat_g"] / fat_target) * 100)) if fat_target else 0
-
     next_workout = generate_next_workout(WORKOUTS, SORENESS_DATA)
+    food_log_entries = _food_log_entries_for_context(since=today_s)
+    nutrition_context = _nutrition_context_for_date(
+        today_s,
+        hard_training_planned=_workout_looks_hard(next_workout),
+        food_log_entries=food_log_entries,
+    )
+    nutrition_totals = nutrition_context["totals"]
+    nutrition_targets = nutrition_context["targets"]
+    nutrition_remaining = nutrition_context["remaining"]
+    nutrition_percentages = nutrition_context["percentages"]
     global LAST_WORKOUT_RECOMMENDATION
     LAST_WORKOUT_RECOMMENDATION = next_workout
 
@@ -2426,15 +2610,20 @@ def api_dashboard():
             "carbs_g": round(nutrition_totals["carbs_g"], 1),
             "fat_g": round(nutrition_totals["fat_g"], 1),
             "sodium_mg": int(nutrition_totals["sodium_mg"]),
-            "calories_target": calories_target,
-            "protein_target_g": round(protein_target, 1),
-            "carbs_target_g": carbs_target,
-            "fat_target_g": fat_target,
-            "calories_pct": calories_pct,
-            "protein_pct": protein_pct,
-            "carbs_pct": carbs_pct,
-            "fat_pct": fat_pct,
+            "calories_target": nutrition_targets["calories"],
+            "protein_target_g": round(nutrition_targets["protein_g"], 1),
+            "carbs_target_g": nutrition_targets["carbs_g"],
+            "fat_target_g": nutrition_targets["fat_g"],
+            "calories_remaining": nutrition_remaining["calories"],
+            "protein_gap_g": nutrition_remaining["protein_g"],
+            "carbs_remaining_g": nutrition_remaining["carbs_g"],
+            "fat_remaining_g": nutrition_remaining["fat_g"],
+            "calories_pct": nutrition_percentages["calories"],
+            "protein_pct": nutrition_percentages["protein"],
+            "carbs_pct": nutrition_percentages["carbs"],
+            "fat_pct": nutrition_percentages["fat"],
             "entries_count": nutrition_totals["entries_count"],
+            "coaching_context": nutrition_context,
         },
         "advanced_kpis": {
             "personal_records": prs,
@@ -2790,6 +2979,8 @@ def add_nutrition():
         "fiber_g": round(float(fiber_g), 1) if fiber_g is not None else None,
         "notes": notes,
     }
+    if correction_state:
+        entry["correction_state"] = correction_state
     if client_id:
         entry["client_id"] = client_id
 
@@ -2824,13 +3015,15 @@ def add_nutrition():
 def nutrition_today():
     """Return today's nutrition totals and targets."""
     date_s = _today_str()
-    totals = _summarize_nutrition_for_date(date_s)
-    calories_target, protein_target = _get_nutrition_targets()
-    carbs_target, fat_target = _compute_carb_fat_targets(calories_target, protein_target)
-    calories_pct = int(round((totals["calories"] / calories_target) * 100)) if calories_target else 0
-    protein_pct = int(round((totals["protein_g"] / protein_target) * 100)) if protein_target else 0
-    carbs_pct = int(round((totals["carbs_g"] / carbs_target) * 100)) if carbs_target else 0
-    fat_pct = int(round((totals["fat_g"] / fat_target) * 100)) if fat_target else 0
+    food_log_entries = _food_log_entries_for_context(since=date_s)
+    nutrition_context = _nutrition_context_for_date(
+        date_s,
+        food_log_entries=food_log_entries,
+    )
+    totals = nutrition_context["totals"]
+    targets = nutrition_context["targets"]
+    remaining = nutrition_context["remaining"]
+    percentages = nutrition_context["percentages"]
     return jsonify({
         "date": date_s,
         "calories": totals["calories"],
@@ -2838,15 +3031,20 @@ def nutrition_today():
         "carbs_g": round(totals["carbs_g"], 1),
         "fat_g": round(totals["fat_g"], 1),
         "sodium_mg": int(totals["sodium_mg"]),
-        "calories_target": calories_target,
-        "protein_target_g": round(protein_target, 1),
-        "carbs_target_g": carbs_target,
-        "fat_target_g": fat_target,
-        "calories_pct": calories_pct,
-        "protein_pct": protein_pct,
-        "carbs_pct": carbs_pct,
-        "fat_pct": fat_pct,
+        "calories_target": targets["calories"],
+        "protein_target_g": round(targets["protein_g"], 1),
+        "carbs_target_g": targets["carbs_g"],
+        "fat_target_g": targets["fat_g"],
+        "calories_remaining": remaining["calories"],
+        "protein_gap_g": remaining["protein_g"],
+        "carbs_remaining_g": remaining["carbs_g"],
+        "fat_remaining_g": remaining["fat_g"],
+        "calories_pct": percentages["calories"],
+        "protein_pct": percentages["protein"],
+        "carbs_pct": percentages["carbs"],
+        "fat_pct": percentages["fat"],
         "entries_count": totals["entries_count"],
+        "coaching_context": nutrition_context,
     })
 
 
@@ -5032,9 +5230,14 @@ def _latest_food_freshness(now=None):
     used by the brief — that bit doesn't fit the (status, dp, sync) triple cleanly.
     """
     entries = [
-        entry for entry in (NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else [])
+        entry for entry in _food_log_entries_for_context()
         if _nutrition_entry_accepted(entry)
     ]
+    if not entries:
+        entries = [
+            entry for entry in (NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else [])
+            if _nutrition_entry_accepted(entry)
+        ]
     if not entries:
         return ("missing", None, None)
     latest_iso = None
@@ -5064,17 +5267,26 @@ def _food_target_state(now=None):
     """
     today_s = (now or datetime.now()).strftime("%Y-%m-%d")
     try:
-        totals = _summarize_nutrition_for_date(today_s)
+        context = _nutrition_context_for_date(
+            today_s,
+            food_log_entries=_food_log_entries_for_context(since=today_s),
+        )
+        totals = context["totals"]
+        targets = context["targets"]
+        remaining = context["remaining"]
+        percentages = context["percentages"]
     except Exception:
         totals = {"calories": 0, "protein_g": 0.0}
-    try:
-        calories_target, protein_target = _get_nutrition_targets()
-    except Exception:
         calories_target, protein_target = 2200, 148.0
+        remaining = {"calories": calories_target, "protein_g": protein_target}
+        percentages = {"calories": 0, "protein": 0}
+    else:
+        calories_target = targets["calories"]
+        protein_target = targets["protein_g"]
     calories = int(totals.get("calories") or 0)
     protein_g = float(totals.get("protein_g") or 0.0)
-    cal_pct = int(round((calories / calories_target) * 100)) if calories_target else 0
-    pro_pct = int(round((protein_g / protein_target) * 100)) if protein_target else 0
+    cal_pct = int(percentages.get("calories") or 0)
+    pro_pct = int(percentages.get("protein") or 0)
     if calories <= 0 and protein_g <= 0:
         target_state = "none"
     elif cal_pct > 110:
@@ -5089,6 +5301,8 @@ def _food_target_state(now=None):
         "protein_g": round(protein_g, 1),
         "calories_target": int(calories_target),
         "protein_target_g": round(float(protein_target), 1),
+        "calories_remaining": int(remaining["calories"]),
+        "protein_gap_g": round(float(remaining["protein_g"]), 1),
         "calories_pct": cal_pct,
         "protein_pct": pro_pct,
     }
@@ -5096,7 +5310,11 @@ def _food_target_state(now=None):
 
 def _food_pending_review_state(now=None):
     today_s = (now or datetime.now()).strftime("%Y-%m-%d")
-    entries = NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else []
+    food_log_entries = [
+        entry for entry in _food_log_entries_for_context(since=today_s)
+        if _nutrition_entry_day(entry) == today_s
+    ]
+    entries = food_log_entries or (NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else [])
     return any(
         isinstance(entry, dict)
         and _nutrition_entry_day(entry) == today_s
@@ -5384,6 +5602,11 @@ def smart_recommendation_api():
         history_context = []
 
     freshness = _compute_data_freshness()
+    nutrition_context = _nutrition_context_for_date(
+        today,
+        hard_training_planned=(recommendation == "intensity"),
+        food_log_entries=_food_log_entries_for_context(since=today),
+    )
     confidence_level = _confidence_level_from(effective_readiness, freshness)
     return jsonify({
         "recommendation": recommendation,
@@ -5404,6 +5627,7 @@ def smart_recommendation_api():
         "history_context": history_context,
         "reasoning": "; ".join(reason_bits) if reason_bits else "No Oura/soreness data available",
         "freshness": freshness,
+        "nutrition_context": nutrition_context,
         "confidence_level": confidence_level,
     })
 

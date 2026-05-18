@@ -49,6 +49,7 @@ def test_add_nutrition_returns_sanitized_accepted_food_log(monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["nutrition"]["sodium_mg"] == 850
+    assert payload["nutrition"]["correction_state"] == "corrected"
     assert payload["food_log"]["meal_type"] == "snack"
     assert payload["food_log"]["context_note"] == "shared half"
     assert payload["food_log"]["original_estimate"] == {
