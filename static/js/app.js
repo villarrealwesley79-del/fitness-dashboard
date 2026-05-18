@@ -665,10 +665,13 @@
         const sub = $('macro-card-sub');
         if (!card || !body || !empty) return;
         const entries = n && n.entries_count ? Number(n.entries_count) : 0;
+        const coaching = n && n.coaching_context ? n.coaching_context : null;
+        const pendingReview = coaching && Number(coaching.pending_review_count) || 0;
         if (!n || entries <= 0) {
             body.hidden = true;
             empty.hidden = false;
-            if (sub) sub.textContent = 'no entries';
+            if (sub) sub.textContent = pendingReview ? `${pendingReview} pending review` : 'no entries';
+            renderFoodContext(coaching);
             return;
         }
         empty.hidden = true;
@@ -680,6 +683,73 @@
         renderMacroRow('fat',     n.fat_g,     n.fat_target_g,     n.fat_pct);
         const sodiumEl = $('macro-sodium-total');
         if (sodiumEl) sodiumEl.textContent = fmtInt(n.sodium_mg);
+        renderFoodContext(coaching);
+    }
+
+    function renderFoodContext(coaching) {
+        const chipsHost = $('food-context-chips');
+        const nextDayHost = $('food-context-nextday');
+        if (!chipsHost || !nextDayHost) return;
+        if (!coaching || !Array.isArray(coaching.warnings)) {
+            chipsHost.innerHTML = '';
+            chipsHost.hidden = true;
+            nextDayHost.hidden = true;
+            nextDayHost.textContent = '';
+            return;
+        }
+        const remaining = coaching.remaining || {};
+        const pendingReview = Number(coaching.pending_review_count) || 0;
+        const chipBuilders = {
+            calories_over_target: () => ({
+                tone: 'warn',
+                text: Number.isFinite(remaining.calories) && remaining.calories < 0
+                    ? `${fmtInt(Math.abs(remaining.calories))} kcal over target`
+                    : 'Over calorie target',
+            }),
+            calories_remaining: () => ({
+                tone: 'info',
+                text: Number.isFinite(remaining.calories) && remaining.calories > 0
+                    ? `${fmtInt(remaining.calories)} kcal remaining`
+                    : 'Calories remaining',
+            }),
+            protein_gap: () => ({
+                tone: 'info',
+                text: Number.isFinite(remaining.protein_g) && remaining.protein_g > 0
+                    ? `${fmtDecimal(remaining.protein_g)} g protein gap`
+                    : 'Protein gap',
+            }),
+            under_fueled_hard_workout: () => ({
+                tone: 'warn',
+                text: 'Under-fueled for today’s hard training',
+            }),
+            food_pending_review: () => ({
+                tone: 'pending',
+                text: pendingReview === 1 ? '1 estimate pending review' : `${pendingReview || ''} estimates pending review`.trim(),
+            }),
+        };
+        const chips = [];
+        coaching.warnings.forEach((w) => {
+            const build = chipBuilders[w && w.code];
+            if (!build) return;
+            const chip = build();
+            if (!chip || !chip.text) return;
+            chips.push(`<span class="food-context-chip food-context-chip-${chip.tone}">${escapeHtml(chip.text)}</span>`);
+        });
+        chipsHost.innerHTML = chips.join('');
+        chipsHost.hidden = chips.length === 0;
+
+        const nextDay = coaching.next_day_context || {};
+        const noteParts = [];
+        if (nextDay.high_sodium) noteParts.push('high sodium');
+        if (nextDay.late_meal) noteParts.push('late meal');
+        if (noteParts.length) {
+            const joined = noteParts.join(' · ');
+            nextDayHost.textContent = `Interpretation context: ${joined} — may shift tomorrow’s readiness reading.`;
+            nextDayHost.hidden = false;
+        } else {
+            nextDayHost.textContent = '';
+            nextDayHost.hidden = true;
+        }
     }
 
     async function refreshMacroCard() {
