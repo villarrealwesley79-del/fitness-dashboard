@@ -608,6 +608,56 @@
         return `${cal}/${calT} cal · ${pro}/${proT}g protein logged — on track.`;
     }
 
+    // --- Macro status card (FIT-23) ------------------------------
+    // Status threshold for each macro: under <80%, on-track 80-110%, over >110%.
+    function macroStatusClass(pct) {
+        if (pct > 110) return 'macro-status-over';
+        if (pct >= 80) return 'macro-status-ok';
+        return 'macro-status-under';
+    }
+
+    function renderMacroRow(key, consumed, target, pct) {
+        const consumedEl = $(`macro-${key}-consumed`);
+        const targetEl = $(`macro-${key}-target`);
+        const fill = $(`macro-${key}-fill`);
+        if (consumedEl) consumedEl.textContent = fmtInt(consumed);
+        if (targetEl) targetEl.textContent = fmtInt(target);
+        if (fill) {
+            fill.style.width = Math.min(Math.max(pct || 0, 0), 100) + '%';
+            fill.className = 'macro-progress-fill ' + macroStatusClass(pct || 0);
+        }
+    }
+
+    function renderMacroCard(n) {
+        const card = $('macro-card');
+        const body = $('macro-body');
+        const empty = $('macro-empty');
+        const sub = $('macro-card-sub');
+        if (!card || !body || !empty) return;
+        const entries = n && n.entries_count ? Number(n.entries_count) : 0;
+        if (!n || entries <= 0) {
+            body.hidden = true;
+            empty.hidden = false;
+            if (sub) sub.textContent = 'no entries';
+            return;
+        }
+        empty.hidden = true;
+        body.hidden = false;
+        if (sub) sub.textContent = entries + ' ' + (entries === 1 ? 'entry' : 'entries');
+        renderMacroRow('cal',     n.calories,  n.calories_target,  n.calories_pct);
+        renderMacroRow('protein', n.protein_g, n.protein_target_g, n.protein_pct);
+        renderMacroRow('carbs',   n.carbs_g,   n.carbs_target_g,   n.carbs_pct);
+        renderMacroRow('fat',     n.fat_g,     n.fat_target_g,     n.fat_pct);
+        const sodiumEl = $('macro-sodium-total');
+        if (sodiumEl) sodiumEl.textContent = fmtInt(n.sodium_mg);
+    }
+
+    async function refreshMacroCard() {
+        state.dashboard = null;
+        const dash = await getDashboard(true);
+        renderMacroCard(dash && dash.nutrition_today);
+    }
+
     // --- Dashboard render ----------------------------------------
     async function renderDashboard() {
         const [dash, oura, reco, sleep] = await Promise.all([
@@ -724,6 +774,9 @@
 
         // Freshness chips (always render — null freshness shows "unknown" state)
         renderFreshnessChips(freshness);
+
+        // Macro status card (FIT-23)
+        renderMacroCard(dash && dash.nutrition_today);
 
         // Today at a glance
         if ($('glance-steps')) $('glance-steps').textContent = fmtInt(oura && oura.steps);
@@ -2559,6 +2612,6 @@
         boot();
     }
 
-    // Expose for console debugging (read-only)
-    window.__aicoach = { state, switchTab, loadTab, invalidateCaches };
+    // Expose for console debugging (read-only) + macro card refresh hook (FIT-23)
+    window.__aicoach = { state, switchTab, loadTab, invalidateCaches, refreshMacroCard };
 })();

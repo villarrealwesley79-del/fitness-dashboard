@@ -83,6 +83,43 @@
                 </div>
             </div>
 
+            <div class="card macro-card" id="macro-card">
+                <div class="card-head">
+                    <div class="card-label">TODAY'S MACROS</div>
+                    <div class="card-sub" id="macro-card-sub">—</div>
+                </div>
+                <div class="macro-empty" id="macro-empty">
+                    <div class="empty-text">No food logged today.</div>
+                    <div class="empty-hint">Macros will appear after you log a meal.</div>
+                </div>
+                <div class="macro-body" id="macro-body" hidden>
+                    <div class="macro-row" data-macro="calories">
+                        <div class="macro-label">Calories</div>
+                        <div class="macro-progress" aria-hidden="true"><div class="macro-progress-fill" id="macro-cal-fill"></div></div>
+                        <div class="macro-values"><span id="macro-cal-consumed">0</span> / <span id="macro-cal-target">0</span></div>
+                    </div>
+                    <div class="macro-row" data-macro="protein">
+                        <div class="macro-label">Protein</div>
+                        <div class="macro-progress" aria-hidden="true"><div class="macro-progress-fill" id="macro-protein-fill"></div></div>
+                        <div class="macro-values"><span id="macro-protein-consumed">0</span> / <span id="macro-protein-target">0</span> g</div>
+                    </div>
+                    <div class="macro-row" data-macro="carbs">
+                        <div class="macro-label">Carbs</div>
+                        <div class="macro-progress" aria-hidden="true"><div class="macro-progress-fill" id="macro-carbs-fill"></div></div>
+                        <div class="macro-values"><span id="macro-carbs-consumed">0</span> / <span id="macro-carbs-target">0</span> g</div>
+                    </div>
+                    <div class="macro-row" data-macro="fat">
+                        <div class="macro-label">Fat</div>
+                        <div class="macro-progress" aria-hidden="true"><div class="macro-progress-fill" id="macro-fat-fill"></div></div>
+                        <div class="macro-values"><span id="macro-fat-consumed">0</span> / <span id="macro-fat-target">0</span> g</div>
+                    </div>
+                    <div class="macro-row macro-sodium" data-macro="sodium">
+                        <div class="macro-label">Sodium</div>
+                        <div class="macro-values"><span id="macro-sodium-total">0</span> mg</div>
+                    </div>
+                </div>
+            </div>
+
             <div class="section-title">TODAY AT A GLANCE</div>
             <div class="glance-grid">
                 <div class="glance-card">

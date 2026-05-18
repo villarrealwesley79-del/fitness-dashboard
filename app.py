@@ -679,8 +679,25 @@ def _get_nutrition_targets():
     return int(calories_target), float(protein_target)
 
 
+def _compute_carb_fat_targets(calories_target: int, protein_target: float):
+    # No per-user carb/fat target today (FIT-23 keeps scope tight); derive from
+    # remaining calories after protein, split 55% carbs / 45% fat by calories.
+    protein_cal = float(protein_target) * 4.0
+    remaining = max(float(calories_target) - protein_cal, 0.0)
+    carbs_target = round((remaining * 0.55) / 4.0, 1)
+    fat_target = round((remaining * 0.45) / 9.0, 1)
+    return carbs_target, fat_target
+
+
 def _summarize_nutrition_for_date(date_s: str):
-    totals = {"calories": 0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
+    totals = {
+        "calories": 0,
+        "protein_g": 0.0,
+        "carbs_g": 0.0,
+        "fat_g": 0.0,
+        "sodium_mg": 0,
+        "entries_count": 0,
+    }
     for entry in NUTRITION_DATA or []:
         if _nutrition_entry_day(entry) != date_s:
             continue
@@ -690,6 +707,8 @@ def _summarize_nutrition_for_date(date_s: str):
         totals["protein_g"] += float(entry.get("protein_g") or 0)
         totals["carbs_g"] += float(entry.get("carbs_g") or 0)
         totals["fat_g"] += float(entry.get("fat_g") or 0)
+        totals["sodium_mg"] += int(entry.get("sodium_mg") or 0)
+        totals["entries_count"] += 1
     return totals
 
 
@@ -2356,8 +2375,11 @@ def api_dashboard():
     # Nutrition totals
     nutrition_totals = _summarize_nutrition_for_date(today_s)
     calories_target, protein_target = _get_nutrition_targets()
+    carbs_target, fat_target = _compute_carb_fat_targets(calories_target, protein_target)
     calories_pct = int(round((nutrition_totals["calories"] / calories_target) * 100)) if calories_target else 0
     protein_pct = int(round((nutrition_totals["protein_g"] / protein_target) * 100)) if protein_target else 0
+    carbs_pct = int(round((nutrition_totals["carbs_g"] / carbs_target) * 100)) if carbs_target else 0
+    fat_pct = int(round((nutrition_totals["fat_g"] / fat_target) * 100)) if fat_target else 0
 
     next_workout = generate_next_workout(WORKOUTS, SORENESS_DATA)
     global LAST_WORKOUT_RECOMMENDATION
@@ -2389,10 +2411,18 @@ def api_dashboard():
         "nutrition_today": {
             "calories": nutrition_totals["calories"],
             "protein_g": round(nutrition_totals["protein_g"], 1),
+            "carbs_g": round(nutrition_totals["carbs_g"], 1),
+            "fat_g": round(nutrition_totals["fat_g"], 1),
+            "sodium_mg": int(nutrition_totals["sodium_mg"]),
             "calories_target": calories_target,
             "protein_target_g": round(protein_target, 1),
+            "carbs_target_g": carbs_target,
+            "fat_target_g": fat_target,
             "calories_pct": calories_pct,
             "protein_pct": protein_pct,
+            "carbs_pct": carbs_pct,
+            "fat_pct": fat_pct,
+            "entries_count": nutrition_totals["entries_count"],
         },
         "advanced_kpis": {
             "personal_records": prs,
@@ -2697,6 +2727,9 @@ def add_nutrition():
     fat_g, err2 = _coerce_float(data.get("fat_g"), "fat_g", min_v=0, allow_none=True)
     if err2:
         return err2
+    sodium_mg, err2 = _coerce_int(data.get("sodium_mg"), "sodium_mg", min_v=0, allow_none=True)
+    if err2:
+        return err2
     notes, err2 = _coerce_str(data.get("notes"), "notes", required=False, max_len=500)
     if err2:
         return err2
@@ -2707,6 +2740,7 @@ def add_nutrition():
         "protein_g": round(float(protein_g), 1),
         "carbs_g": round(float(carbs_g), 1) if carbs_g is not None else None,
         "fat_g": round(float(fat_g), 1) if fat_g is not None else None,
+        "sodium_mg": int(sodium_mg) if sodium_mg is not None else None,
         "notes": notes,
     }
 
@@ -2721,18 +2755,27 @@ def nutrition_today():
     date_s = _today_str()
     totals = _summarize_nutrition_for_date(date_s)
     calories_target, protein_target = _get_nutrition_targets()
+    carbs_target, fat_target = _compute_carb_fat_targets(calories_target, protein_target)
     calories_pct = int(round((totals["calories"] / calories_target) * 100)) if calories_target else 0
     protein_pct = int(round((totals["protein_g"] / protein_target) * 100)) if protein_target else 0
+    carbs_pct = int(round((totals["carbs_g"] / carbs_target) * 100)) if carbs_target else 0
+    fat_pct = int(round((totals["fat_g"] / fat_target) * 100)) if fat_target else 0
     return jsonify({
         "date": date_s,
         "calories": totals["calories"],
         "protein_g": round(totals["protein_g"], 1),
         "carbs_g": round(totals["carbs_g"], 1),
         "fat_g": round(totals["fat_g"], 1),
+        "sodium_mg": int(totals["sodium_mg"]),
         "calories_target": calories_target,
         "protein_target_g": round(protein_target, 1),
+        "carbs_target_g": carbs_target,
+        "fat_target_g": fat_target,
         "calories_pct": calories_pct,
         "protein_pct": protein_pct,
+        "carbs_pct": carbs_pct,
+        "fat_pct": fat_pct,
+        "entries_count": totals["entries_count"],
     })
 
 
