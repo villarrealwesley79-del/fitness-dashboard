@@ -1,11 +1,12 @@
 # FIT-11 mobile visual QA pass — Claude run
 
 - **Branch**: `villarrealwesley79/fit-11-mobile-visual-qa-claude-pass` (Codex's earlier `villarrealwesley79/fit-11-...interactive` branch is preserved in its own worktree).
-- **Viewport**: 375 × 812 (mobile preset) on the `fit11-dashboard` preview launcher (`/tmp/serve_fit11.py`, port 5081, `LOGIN_DISABLED=True`).
+- **Viewport**: 375 × 812 (mobile preset).
+- **Launcher**: [`docs/qa/fit-11-mobile/serve_fit11.py`](./serve_fit11.py) — boots `app.py` with `LOGIN_DISABLED=True` on port 5081. Run from a repo checkout: `python3 docs/qa/fit-11-mobile/serve_fit11.py`.
 - **Date**: 2026-05-18.
 - **Build under test**: `origin/main` at `7895de6` (Merge PR #27, FIT-47 food-aware brief context).
 - **In-scope tickets covered**: FIT-1, FIT-2, FIT-3, FIT-23, FIT-24, FIT-25, FIT-26, FIT-28, FIT-37, FIT-42, FIT-47, FIT-51.
-- **Evidence style**: text-based DOM/role snapshots captured via `preview_eval`. PNG screenshots were captured ad-hoc during development of the underlying PRs (#11, #13, #14, #15, #24, #25, #26, #27) and are linked in each PR description; they are intentionally not re-committed here because the `visual-review/` convention is gitignored and per-PR screenshots already document the visual side.
+- **Evidence style**: text-based DOM / role / class / z-index snapshots captured via `preview_eval` in the harness used during this pass. The rows below record `expected` vs `observed` strings verbatim so a re-run can diff against them. No PNG screenshots are committed to this directory — the `visual-review/` convention is `.gitignore`d, and the per-PR PNGs that supported the underlying tickets were not preserved as durable artifacts. Reproducibility comes from the launcher + the eval scripts in the appendix below, not from images.
 - **Defects found**: 0 real product defects. Two early test-eval anomalies traced to test-side stubbing (documented inline below).
 
 ---
@@ -158,8 +159,109 @@ Two preview-eval anomalies surfaced during this pass and were traced to test-sid
 ## Operational notes for future QA runs
 
 - The `villarrealwesley79/fit-11-…interactive` branch is owned by Codex's earlier worktree at `codex-worktrees/fitness-dashboard-fit11`. To avoid a `git worktree add … -b` collision, this pass uses a sibling branch `villarrealwesley79/fit-11-mobile-visual-qa-claude-pass`.
-- Port 5080 is held by a long-running node process unrelated to this repo (`lsof -i :5080`). The QA launcher uses 5081 instead.
-- The QA launcher (`/tmp/serve_fit11.py`) sets `LOGIN_DISABLED=True` so screenshots do not require touching `auth.db`.
+- Port 5080 is held by a long-running node process unrelated to this repo (`lsof -i :5080`). The launcher defaults to 5081 and respects a `PORT` env-var override.
+- The launcher [`serve_fit11.py`](./serve_fit11.py) sets `LOGIN_DISABLED=True` so QA does not touch `auth.db`.
+
+## Reproducing this pass
+
+```sh
+# from a fresh repo checkout on origin/main
+python3 docs/qa/fit-11-mobile/serve_fit11.py
+# in another terminal, open http://127.0.0.1:5081 in a browser at 375x812
+```
+
+Each row in this matrix was driven by a `preview_eval` script that
+opens the relevant tab / modal, mutates fields where needed, and
+reads back the resulting DOM. The scripts below reproduce the key
+states. Paste each into the browser console (or `preview_eval`) on a
+fresh page load.
+
+### A — Dashboard initial load
+```js
+(async () => {
+  return {
+    activeTab: document.querySelector('.tab-content.active').id,
+    recoTitle: document.getElementById('reco-title').textContent.trim(),
+    freshOura: document.getElementById('reco-fresh-oura').textContent.trim(),
+    freshApple: document.getElementById('reco-fresh-apple').textContent.trim(),
+    freshFood: document.getElementById('reco-fresh-food').textContent.trim(),
+    macroEmptyHidden: document.getElementById('macro-empty').hidden,
+    foodChipsHidden: document.getElementById('food-context-chips').hidden,
+  };
+})();
+```
+
+### B — FIT-47 food chips (stub `/api/dashboard`)
+```js
+(async () => {
+  const orig = window.fetch;
+  window.fetch = (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (url.includes('/api/dashboard')) {
+      return Promise.resolve(new Response(JSON.stringify({
+        headline: {}, muscles: [], exercises: [], alerts: [], next_workout: null,
+        readiness_factors: {}, body_stats: {}, recomp_command: {},
+        nutrition_today: {
+          calories: 1400, protein_g: 95, carbs_g: 180, fat_g: 65, sodium_mg: 4200,
+          calories_target: 2500, protein_target_g: 180, carbs_target_g: 280, fat_target_g: 70,
+          calories_pct: 56, protein_pct: 53, carbs_pct: 64, fat_pct: 93,
+          entries_count: 3,
+          coaching_context: {
+            totals: {}, targets: {}, remaining: { calories: 1100, protein_g: 85 },
+            percentages: {}, accepted_entries_count: 3, pending_review_count: 1,
+            warnings: [
+              { code: 'calories_remaining' }, { code: 'protein_gap' },
+              { code: 'under_fueled_hard_workout' }, { code: 'food_pending_review' },
+            ],
+            next_day_context: { high_sodium: true, late_meal: true },
+          },
+        },
+        advanced_kpis: {}, freshness: {},
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }
+    return orig(input, init);
+  };
+  window.__aicoach.state.dashboard = null;
+  await window.__aicoach.refreshMacroCard();
+  return Array.from(document.querySelectorAll('#food-context-chips .food-context-chip')).map((c) => c.textContent.trim());
+})();
+```
+
+### C — FIT-3 / FIT-42 Adjust kinds (stub `/api/workout/adjust`)
+Stub the endpoint to return each of `{status: 'ok', result_kind: 'changed'|'unchanged'|'refused', summary: …, applied_notes: […]}` then `{status: 'fallback', reason: …}`. Click `#btn-adjust-plan`, enter a constraint, submit, then read the chip / state / button label:
+```js
+[
+  document.querySelector('#adjust-summary .adjust-kind').textContent.trim(),
+  document.getElementById('adjust-state').className,
+  document.getElementById('btn-adjust-submit').textContent.trim(),
+];
+```
+
+### D — FIT-24 restore banner
+After a successful Adjust, close the modal and reopen. Check the banner:
+```js
+({
+  hidden: document.getElementById('adjust-restored-banner').hidden,
+  constraint: document.getElementById('adjust-constraint').value,
+  discardPresent: !!document.getElementById('btn-adjust-discard'),
+});
+```
+
+### E — FIT-26 delete confirmation
+On the History tab (range 365D), click the first lifted row, then click `#btn-delete-workout`. Expect `#modal-delete-confirm` to open with body text that includes the workout's date + top exercises. Cancel returns to the detail modal.
+
+### F — FIT-28 muscle heatmap
+On the Stats tab, expect 3 groups × 11 cells × 1-column grid at ≤480px. Tap a cell to verify the 4–6-row detail strip appears inline.
+
+### G — FIT-51 sync queue (seed + reload)
+```js
+localStorage.setItem('fit51:sync-queue:v1', JSON.stringify([
+  { client_workout_id: 'a', last_status: 'conflicted', attempts: 1, payload: { date: '2026-05-18', session_type: 'full_body', exercises: [{ machine: 'Leg Press', sets: [{}] }] }, reject_reason: 'conflict' },
+  { client_workout_id: 'b', last_status: 'pending', attempts: 0, payload: { date: '2026-05-18', session_type: 'upper_push', exercises: [] } },
+]));
+location.reload();
+```
+After reload, `#sync-banner` should show `2 pending` / `1 failed` (or similar depending on which entry the boot-flush resolves first) and the modal opens with one row per entry, status pills, and Retry / Discard / Retry-all controls.
 
 ## Sign-off
 
