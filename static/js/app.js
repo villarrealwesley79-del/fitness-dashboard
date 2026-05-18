@@ -1632,6 +1632,113 @@
     }
 
     // --- Stats ---------------------------------------------------
+    const MUSCLE_GROUPS = [
+        { label: 'Upper body', muscles: ['chest', 'back', 'shoulders', 'biceps', 'triceps'] },
+        { label: 'Lower body', muscles: ['quads', 'hamstrings', 'glutes', 'adductors', 'calves'] },
+        { label: 'Core',       muscles: ['core'] },
+    ];
+
+    async function renderMuscleRecovery() {
+        const data = await getMuscleFatigue();
+        const host = $('muscle-recovery-groups');
+        const empty = $('muscle-recovery-empty');
+        const subEl = $('muscle-recovery-sub');
+        if (!host || !empty) return;
+        if (!data || !Object.keys(data).length) {
+            empty.hidden = false;
+            host.hidden = true;
+            if (subEl) subEl.textContent = '—';
+            return;
+        }
+        empty.hidden = true;
+        host.hidden = false;
+        host.innerHTML = '';
+        MUSCLE_GROUPS.forEach(({ label, muscles }) => {
+            const visible = muscles.filter((m) => data[m]);
+            if (!visible.length) return;
+            const block = document.createElement('div');
+            block.className = 'mr-group';
+            const head = document.createElement('div');
+            head.className = 'mr-group-label';
+            head.textContent = label;
+            block.appendChild(head);
+            const grid = document.createElement('div');
+            grid.className = 'mr-grid';
+            visible.forEach((m) => {
+                const info = data[m] || {};
+                const level = info.fatigue_level || 'recovered';
+                const lastTrained = info.last_trained ? fmtDate(info.last_trained) : 'no record';
+                const sets = info.weekly_sets || 0;
+                const readiness = info.readiness != null ? info.readiness : '—';
+                const cell = document.createElement('button');
+                cell.type = 'button';
+                cell.className = `mr-cell mr-${level}`;
+                cell.setAttribute('aria-label', `${capitalize(m)}: ${level}, readiness ${readiness} of 10`);
+                cell.innerHTML = `
+                    <span class="mr-cell-row">
+                        <span class="mr-name">${escapeHtml(capitalize(m))}</span>
+                        <span class="mr-readiness">${escapeHtml(String(readiness))}<span class="mr-readiness-max">/10</span></span>
+                    </span>
+                    <span class="mr-meta">${sets} sets · ${escapeHtml(lastTrained)}</span>
+                `;
+                const tipLines = [
+                    `Recovery: ${level}`,
+                    `Readiness: ${readiness}/10`,
+                    `Weekly sets: ${sets}`,
+                    `Last trained: ${lastTrained}`,
+                ];
+                if (info.recent_soreness_note) tipLines.push(`Note: ${info.recent_soreness_note}`);
+                if (info.recommendation) tipLines.push(info.recommendation);
+                cell.title = tipLines.join('\n');
+                cell.addEventListener('click', () => toggleMuscleRecoveryDetail(cell, m, info));
+                grid.appendChild(cell);
+            });
+            block.appendChild(grid);
+            host.appendChild(block);
+        });
+
+        const counts = { recovered: 0, mild: 0, moderate: 0, high: 0, severe: 0 };
+        let total = 0;
+        Object.values(data).forEach((d) => {
+            const lvl = d && d.fatigue_level;
+            if (lvl && counts[lvl] != null) { counts[lvl] += 1; total += 1; }
+        });
+        if (subEl) {
+            if (!total) {
+                subEl.textContent = '—';
+            } else {
+                const fresh = counts.recovered + counts.mild;
+                const sore = counts.high + counts.severe;
+                subEl.textContent = sore
+                    ? `${fresh}/${total} fresh · ${sore} sore`
+                    : `${fresh}/${total} fresh`;
+            }
+        }
+    }
+
+    function toggleMuscleRecoveryDetail(cell, muscle, info) {
+        const existing = cell.parentNode.querySelector('.mr-detail');
+        const wasOpen = existing && existing.dataset.muscle === muscle;
+        if (existing) existing.remove();
+        cell.parentNode.querySelectorAll('.mr-cell.active').forEach((c) => c.classList.remove('active'));
+        if (wasOpen) return;
+        cell.classList.add('active');
+        const detail = document.createElement('div');
+        detail.className = 'mr-detail';
+        detail.dataset.muscle = muscle;
+        const lastTrained = info.last_trained ? fmtDate(info.last_trained) : 'no record';
+        const lines = [
+            { label: 'Recovery', value: info.fatigue_level || 'recovered' },
+            { label: 'Readiness', value: `${info.readiness ?? '—'}/10` },
+            { label: 'Weekly sets', value: String(info.weekly_sets || 0) },
+            { label: 'Last trained', value: lastTrained },
+        ];
+        if (info.recent_soreness_note) lines.push({ label: 'Soreness note', value: info.recent_soreness_note });
+        if (info.recommendation) lines.push({ label: 'Coach', value: info.recommendation });
+        detail.innerHTML = lines.map((l) => `<div class="mr-detail-row"><span class="mr-detail-k">${escapeHtml(l.label)}</span><span class="mr-detail-v">${escapeHtml(l.value)}</span></div>`).join('');
+        cell.parentNode.appendChild(detail);
+    }
+
     async function renderStats() {
         const hist = await getHistory();
         const all = (hist && hist.workouts) || [];
@@ -1669,6 +1776,8 @@
         $('stats-sets-delta').innerHTML = renderDelta(totalSets - priorSets, 'vs prior');
         $('stats-time').textContent = fmtDur(totalTime);
         $('stats-time-delta').innerHTML = renderDelta(totalTime - priorTime, 'min', false);
+
+        await renderMuscleRecovery();
 
         // Volume by muscle
         const muscles = {};
