@@ -2793,16 +2793,6 @@ def add_nutrition():
     if client_id:
         entry["client_id"] = client_id
 
-    replaced_legacy_entry = False
-    if client_id:
-        for idx, existing in enumerate(NUTRITION_DATA):
-            if isinstance(existing, dict) and existing.get("client_id") == client_id:
-                NUTRITION_DATA[idx] = entry
-                replaced_legacy_entry = True
-                break
-    if not replaced_legacy_entry:
-        NUTRITION_DATA.append(entry)
-    save_json(NUTRITION_FILE, NUTRITION_DATA)
     food_log = add_food_log(_current_data_user_id(), {
         **entry,
         "logged_at": logged_at,
@@ -2817,6 +2807,23 @@ def add_nutrition():
         "client_id": client_id,
         "original_estimate": data.get("original_estimate") or data.get("estimate"),
     })
+
+    previous_nutrition_data = list(NUTRITION_DATA)
+    try:
+        replaced_legacy_entry = False
+        if client_id:
+            for idx, existing in enumerate(NUTRITION_DATA):
+                if isinstance(existing, dict) and existing.get("client_id") == client_id:
+                    NUTRITION_DATA[idx] = entry
+                    replaced_legacy_entry = True
+                    break
+        if not replaced_legacy_entry:
+            NUTRITION_DATA.append(entry)
+        save_json(NUTRITION_FILE, NUTRITION_DATA)
+    except Exception:
+        NUTRITION_DATA[:] = previous_nutrition_data
+        raise
+
     return jsonify({"status": "success", "nutrition": entry, "food_log": food_log})
 
 

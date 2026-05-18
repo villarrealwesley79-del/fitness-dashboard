@@ -113,3 +113,57 @@ def test_add_nutrition_without_client_id_keeps_food_log_client_id_null(monkeypat
     assert second.status_code == 200
     assert seen_client_ids == [None, None]
     assert len(module.NUTRITION_DATA) == 2
+
+
+def test_add_nutrition_food_log_failure_leaves_legacy_json_unchanged(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "fit46-contract-secret")
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True, PROPAGATE_EXCEPTIONS=False)
+    original = [{"client_id": "existing", "date": "2026-05-18", "calories": 400, "protein_g": 20}]
+    saved_payloads = []
+    monkeypatch.setattr(module, "NUTRITION_DATA", list(original))
+    monkeypatch.setattr(module, "save_json", lambda _path, data: saved_payloads.append(list(data)))
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+
+    def fail_add_food_log(_user_id, _record):
+        raise RuntimeError("sqlite unavailable")
+
+    monkeypatch.setattr(module, "add_food_log", fail_add_food_log)
+
+    response = module.app.test_client().post(
+        "/api/add-nutrition",
+        json={"client_id": "new-entry", "date": "2026-05-18", "calories": 550, "protein_g": 35},
+    )
+
+    assert response.status_code == 500
+    assert module.NUTRITION_DATA == original
+    assert saved_payloads == []
+
+
+def test_add_nutrition_legacy_save_failure_rolls_back_memory_after_sqlite_write(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "fit46-contract-secret")
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True, PROPAGATE_EXCEPTIONS=False)
+    original = [{"client_id": "existing", "date": "2026-05-18", "calories": 400, "protein_g": 20}]
+    food_log_records = []
+    monkeypatch.setattr(module, "NUTRITION_DATA", list(original))
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+
+    def fake_add_food_log(_user_id, record):
+        food_log_records.append(record)
+        return record
+
+    def fail_save_json(_path, _data):
+        raise RuntimeError("legacy json disk unavailable")
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+    monkeypatch.setattr(module, "save_json", fail_save_json)
+
+    response = module.app.test_client().post(
+        "/api/add-nutrition",
+        json={"client_id": "new-entry", "date": "2026-05-18", "calories": 550, "protein_g": 35},
+    )
+
+    assert response.status_code == 500
+    assert len(food_log_records) == 1
+    assert module.NUTRITION_DATA == original
