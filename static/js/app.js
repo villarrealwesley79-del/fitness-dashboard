@@ -2329,18 +2329,38 @@
         } else {
             adherenceEl.hidden = true;
         }
+        const closeBtn = modal.querySelector('.modal-close');
+        const backdropHandler = (e) => {
+            if (e.target === modal) {
+                e.stopImmediatePropagation();
+                dismissToHistory();
+            }
+        };
+        function detachBackdrop() {
+            modal.removeEventListener('click', backdropHandler, true);
+        }
+        function dismissToHistory() {
+            detachBackdrop();
+            modal.hidden = true;
+            switchTab('tab-history');
+        }
         const freshAnalyze = analyzeBtn.cloneNode(true);
         analyzeBtn.parentNode.replaceChild(freshAnalyze, analyzeBtn);
         freshAnalyze.addEventListener('click', () => {
+            detachBackdrop();
             modal.hidden = true;
             openAnalyzeModal({ latest: true }, `Analysis · ${dateLabel}`);
         });
         const freshDismiss = dismissBtn.cloneNode(true);
         dismissBtn.parentNode.replaceChild(freshDismiss, dismissBtn);
-        freshDismiss.addEventListener('click', () => {
-            modal.hidden = true;
-            switchTab('tab-history');
-        });
+        freshDismiss.addEventListener('click', dismissToHistory);
+        if (closeBtn) {
+            const freshClose = closeBtn.cloneNode(true);
+            freshClose.removeAttribute('data-close-modal');
+            closeBtn.parentNode.replaceChild(freshClose, closeBtn);
+            freshClose.addEventListener('click', dismissToHistory);
+        }
+        modal.addEventListener('click', backdropHandler, true);
         modal.hidden = false;
     }
 
