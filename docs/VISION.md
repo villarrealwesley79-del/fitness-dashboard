@@ -1,7 +1,7 @@
 # Fitness Dashboard Vision
 
 Status: Draft for owner review  
-Last updated: 2026-05-17
+Last updated: 2026-05-18
 
 ## Product Direction
 
@@ -72,6 +72,14 @@ The app should make past work usable: workout history, volume by muscle, e1RM tr
 
 Wearable and AI integrations should fail gracefully. If Oura, Apple Health, or LM Studio is unavailable, the app should show the degraded state clearly and keep the deterministic plan usable.
 
+## App Surface Direction
+
+The long-term surface is hybrid: the Flask PWA remains the main product, Health Auto Export or Shortcuts webhook sync remains the Apple Health bridge, and native iOS stays deferred.
+
+The PWA owns the daily brief, food capture, review flows, workout execution, history, and settings. The backend remains the canonical source of truth for workout, food, wearable, and audit data. The Apple Health bridge is measured by freshness evidence rather than assumed connectivity.
+
+Native iOS should not be started as a full app rewrite. It is only a future narrow HealthKit helper if the bridge is stale more than three times in 30 days despite normal phone usage and improved HAE/Shortcuts instrumentation.
+
 ## North Star Outcome
 
 The owner can open the app before training or eating, trust the recommended plan, log food by photo, execute workouts on mobile, and see the next adjustment without manually reconciling multiple apps or spreadsheets.
@@ -91,15 +99,16 @@ The owner can open the app before training or eating, trust the recommended plan
 
 - The app is primarily for one owner, not a public multi-tenant product.
 - Mobile use is the primary workflow, especially during workouts.
+- The PWA is the primary product surface.
+- Health Auto Export or Shortcuts webhook sync is the Apple Health bridge.
 - Oura should remain the preferred sleep/recovery source, while Apple Health should remain the preferred workout/activity source when recent data is available.
 - The current dark analytical design direction is still desired.
 - Body recomposition, strength progression, and recovery-aware training are all core goals.
 - Food photo recognition will produce estimates, not verified nutrition facts, so the app needs confidence, review, and correction states.
+- Raw food photos should be discarded after extraction unless a later explicit retention issue changes that policy.
 
 ## Unknowns For Owner Review
 
-- Should the ideal end state include a native iOS app, or should the PWA remain the main surface?
-- Should food photo capture use a phone camera PWA flow first, or a native iOS shortcut/app flow?
 - Should the app auto-adjust only calories/macros from food, or also adjust workout recommendations when the day is under-fueled, over target, or low protein?
 - Should the app support multiple users later, or stay single-owner indefinitely?
 - Should coaching optimize primarily for fat loss, lean gain, strength, consistency, or a rotating phase-based goal?

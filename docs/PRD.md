@@ -1,7 +1,7 @@
 # Fitness Dashboard PRD
 
 Status: Draft  
-Last updated: 2026-05-17  
+Last updated: 2026-05-18
 Owner: Wesley  
 Product type: Single-owner mobile-first fitness coaching dashboard
 
@@ -200,7 +200,31 @@ The current MVP is a Flask PWA with:
 - Body, nutrition, soreness, cardio, recovery, history, stats, and backup surfaces.
 - Manual nutrition targets and nutrition log data, but not yet a finished photo-based food capture workflow.
 
-## 9. Next Product Milestones
+## 9. App Surface Decision
+
+Decision: use the hybrid shortcut/app flow, with the existing Flask PWA as the primary product surface.
+
+- Food camera capture stays PWA-first through mobile camera/file upload in the web app. Do not build native camera capture for the initial food logging milestone.
+- Apple Health sync stays bridged through Health Auto Export or Shortcuts-style token-gated webhook posts into the backend. Do not treat the browser/PWA as a direct HealthKit client.
+- Notifications should use Home Screen PWA Web Push for low-stakes reminders, stale-data warnings, and review-pending alerts. Do not treat Web Push as safety-critical infrastructure.
+- Offline workout logging should use a PWA local queue with stable client-generated workout IDs, idempotent backend sync, visible retry/reconcile states, and no silent double-save behavior.
+- Native iOS is deferred to a narrow HealthKit helper only if the Apple Health bridge fails a documented freshness SLA after HAE/Shortcuts instrumentation has been improved.
+
+Tradeoff record:
+
+- Speed: the hybrid path extends the current app and avoids a premature native rewrite.
+- Reliability: bridge freshness can be measured through last sync, last accepted attempt, event counts, and stale warnings.
+- Privacy: the backend remains canonical and token-gated; raw food photos should be discarded after extraction unless a future issue explicitly opts into retention.
+- Maintenance: the project avoids adding Swift, HealthKit permissions, App Store/provisioning, and native test surface before the product loop is hardened.
+
+Platform basis:
+
+- HealthKit is the native framework for Apple health and fitness data access.
+- iOS Home Screen web apps support Web Push for app-like notifications.
+- Web camera capture and file upload are appropriate for the PWA food-capture path when served from a secure context.
+- Service workers support the offline shell, caching, and request-handling foundation needed for queued workout sync.
+
+## 10. Next Product Milestones
 
 ### Milestone 1: Trustworthy Daily Brief
 
@@ -212,7 +236,7 @@ The current MVP is a Flask PWA with:
 
 ### Milestone 2: Photo Food Logging
 
-- Add mobile food camera/upload flow.
+- Add PWA-first mobile food camera/upload flow.
 - Add AI food estimate schema, confidence labels, and review/edit UI.
 - Save accepted food logs and recompute daily nutrition totals.
 - Make the dashboard explain what changed after a food entry.
@@ -222,6 +246,7 @@ The current MVP is a Flask PWA with:
 - Run full mobile visual QA across active workout, swap, adjust, complete, delete, empty, blocked, and warning states.
 - Make completion and post-workout analysis visibly connected.
 - Add stronger error states for failed saves.
+- Add offline workout queue/retry/reconcile behavior after the backend sync contract exists.
 
 ### Milestone 4: Progress Loop
 
@@ -235,21 +260,21 @@ The current MVP is a Flask PWA with:
 - Surface 24-hour AI metrics in Settings.
 - Add warnings when fallback rate rises.
 - Make Apple Health daily sync schedule and last-attempt evidence easy to inspect.
+- Add low-stakes PWA Web Push reminders and stale-data alerts after the backend subscription contract exists.
 
 ### Milestone 6: Product Hardening
 
-- Decide whether the long-term surface is PWA-only or native iOS plus backend.
+- Maintain the hybrid PWA plus webhook-bridge app surface decision.
 - Clean up legacy files and stale docs.
 - Add repeatable authenticated smoke testing.
 - Document release and rollback procedure.
+- Keep native HealthKit helper work behind the documented bridge freshness SLA trigger.
 
-## 10. Open Product Questions
+## 11. Open Product Questions
 
 - Should photo food logging start with rough estimates, or require a nutrition database match before save?
 - Should uncertain photo estimates affect the plan immediately, or only after owner confirmation?
-- Should the app store food photos long-term, or discard them after extracting structured nutrition?
 - Which nutrition fields are required for auto-adjustment: calories/protein only, or full macros plus sodium/fiber?
 - Should the app auto-apply safe plan adjustments, or require one-tap confirmation?
 - Should soreness tracking support side-specific joints and injuries?
-- Should the owner get proactive alerts when syncs fail, or only in-app warnings?
 - Should this remain single-owner permanently?
