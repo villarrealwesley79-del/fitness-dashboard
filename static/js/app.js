@@ -2281,7 +2281,39 @@
         } else {
             setActiveWorkoutStatus('');
         }
-        $('modal-active').hidden = false;
+        const modal = $('modal-active');
+        wireActiveWorkoutCancel(modal);
+        modal.hidden = false;
+    }
+
+    function cancelActiveWorkout() {
+        const modal = $('modal-active');
+        if (!modal) return;
+        state.activeWorkout = null;
+        clearAdjustIntent();
+        modal.hidden = true;
+    }
+
+    function wireActiveWorkoutCancel(modal) {
+        if (!modal) return;
+        const closeBtn = modal.querySelector('.modal-close');
+        if (closeBtn) {
+            const fresh = closeBtn.cloneNode(true);
+            fresh.removeAttribute('data-close-modal');
+            closeBtn.parentNode.replaceChild(fresh, closeBtn);
+            fresh.addEventListener('click', cancelActiveWorkout);
+        }
+        if (modal.__fit24BackdropHandler) {
+            modal.removeEventListener('click', modal.__fit24BackdropHandler, true);
+        }
+        const handler = (e) => {
+            if (e.target === modal) {
+                e.stopImmediatePropagation();
+                cancelActiveWorkout();
+            }
+        };
+        modal.__fit24BackdropHandler = handler;
+        modal.addEventListener('click', handler, true);
     }
 
     function removeActiveExercise(exIdx, name) {
