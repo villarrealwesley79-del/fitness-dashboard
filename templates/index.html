@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0b1120">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>AI Coach Feed</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260427-bodycomposition-1">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="app-header">
+            <div class="app-header-left">
+                <div class="app-header-title" id="app-header-title">AI Coach</div>
+            </div>
+            <button class="app-header-ai" id="btn-ai-status" aria-label="AI coach status" type="button" title="AI coach status">
+                <span class="ai-dot" id="ai-status-dot"></span>
+            </button>
+        </header>
+
+        <div id="popover-ai" class="popover-ai" hidden>
+            <div class="popover-arrow"></div>
+            <div class="popover-title">AI Coach · Primary / fallback</div>
+            <div class="popover-grid">
+                <div><div class="pop-label">Reachable</div><div class="pop-value" id="pop-reachable">—</div></div>
+                <div><div class="pop-label">Model Loaded</div><div class="pop-value" id="pop-model-loaded">—</div></div>
+                <div><div class="pop-label">24h Requests</div><div class="pop-value" id="pop-requests">—</div></div>
+                <div><div class="pop-label">Avg Latency</div><div class="pop-value" id="pop-latency">—</div></div>
+                <div><div class="pop-label">Cache Hit</div><div class="pop-value" id="pop-cache">—</div></div>
+                <div><div class="pop-label">Fallbacks</div><div class="pop-value" id="pop-fallbacks">—</div></div>
+            </div>
+            <div class="popover-foot" id="pop-foot">—</div>
+        </div>
+
+        <main class="app-main">
+
+        <!-- ============ DASHBOARD TAB ============ -->
+        <section id="tab-dashboard" class="tab-content active">
+            <div class="greeting-block">
+                <div class="greeting-title" id="greeting-title">Good morning.</div>
+                <div class="greeting-sub" id="greeting-sub">Here's your analysis for today.</div>
+            </div>
+
+            <div class="card readiness-card">
+                <div class="card-head">
+                    <div class="card-label">READINESS SCORE</div>
+                    <div class="card-link" id="readiness-caret">›</div>
+                </div>
+                <div class="readiness-row">
+                    <div class="readiness-gauge" id="readiness-gauge-svg"><!-- svg injected --></div>
+                    <div class="readiness-stats">
+                        <div class="mini-stat"><span class="mini-stat-label">HRV</span><span class="mini-stat-value" id="dash-hrv">--</span></div>
+                        <div class="mini-stat"><span class="mini-stat-label">RHR</span><span class="mini-stat-value" id="dash-rhr">--</span></div>
+                        <div class="mini-stat"><span class="mini-stat-label">Sleep</span><span class="mini-stat-value" id="dash-sleep">--</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card reco-card">
+                <div class="reco-head">
+                    <div class="reco-badge">AI RECOMMENDATION</div>
+                    <div class="reco-confidence"><span class="reco-conf-dot"></span><span id="reco-confidence-pct">--%</span></div>
+                </div>
+                <div class="reco-title" id="reco-title">—</div>
+                <div class="reco-meta">
+                    <span class="reco-tag" id="reco-intensity">—</span>
+                </div>
+                <div class="reco-why" id="reco-why">Analyzing your readiness, sleep, and training load…</div>
+                <div class="reco-actions">
+                    <button id="btn-start-workout" class="btn btn-primary" type="button">Start Workout</button>
+                    <button id="btn-adjust-plan" class="btn btn-ghost" type="button">Adjust Plan</button>
+                </div>
+            </div>
+
+            <div class="section-title">TODAY AT A GLANCE</div>
+            <div class="glance-grid">
+                <div class="glance-card">
+                    <div class="glance-label">Steps</div>
+                    <div class="glance-value" id="glance-steps">--</div>
+                    <div class="glance-sub" id="glance-steps-goal">—</div>
+                </div>
+                <div class="glance-card">
+                    <div class="glance-label">Active Cal</div>
+                    <div class="glance-value" id="glance-cal">--</div>
+                    <div class="glance-sub" id="glance-cal-goal">—</div>
+                </div>
+                <div class="glance-card">
+                    <div class="glance-label">Sleep</div>
+                    <div class="glance-value" id="glance-sleep">--</div>
+                    <div class="glance-sub" id="glance-sleep-quality">—</div>
+                </div>
+                <div class="glance-card">
+                    <div class="glance-label">Weight</div>
+                    <div class="glance-value" id="glance-weight">--</div>
+                    <div class="glance-sub" id="glance-weight-delta">—</div>
+                </div>
+            </div>
+
+            <div class="card insight-card">
+                <div class="insight-head">
+                    <span class="insight-tag">AI INSIGHT</span>
+                </div>
+                <div class="insight-title" id="insight-title">Gathering data…</div>
+                <div class="insight-body" id="insight-body"></div>
+                <div class="insight-sparkline" id="insight-sparkline"></div>
+            </div>
+
+            <div class="card trend-card">
+                <div class="card-head">
+                    <div class="card-label">READINESS (7D)</div>
+                    <div class="card-sub" id="readiness-7d-avg">avg —</div>
+                </div>
+                <div class="chart-holder" id="chart-readiness-7d"></div>
+            </div>
+
+            <div class="card trend-card">
+                <div class="card-head">
+                    <div class="card-label">VOLUME (4W)</div>
+                    <div class="card-sub" id="volume-4w-sub">—</div>
+                </div>
+                <div class="chart-holder" id="chart-volume-4w"></div>
+            </div>
+        </section>
+
+        <!-- ============ VITALS TAB ============ -->
+        <section id="tab-vitals" class="tab-content">
+            <div class="tab-title-row"><h2 class="tab-title">Vitals</h2><span class="tab-sub" id="vitals-date">—</span></div>
+
+            <div class="section-title">CORE METRICS</div>
+            <div class="metric-grid-2">
+                <div class="metric-card">
+                    <div class="metric-label">Resting HR</div>
+                    <div class="metric-value"><span id="v-rhr">--</span><span class="metric-unit">bpm</span></div>
+                    <div class="metric-delta" id="v-rhr-delta"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">HRV</div>
+                    <div class="metric-value"><span id="v-hrv">--</span><span class="metric-unit">ms</span></div>
+                    <div class="metric-delta" id="v-hrv-delta"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">HR Zone</div>
+                    <div class="metric-value"><span id="v-hr-zone">--</span></div>
+                    <div class="metric-delta" id="v-hr-zone-sub">Fat burn</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Body Temp</div>
+                    <div class="metric-value"><span id="v-temp">--</span><span class="metric-unit">°F</span></div>
+                    <div class="metric-delta" id="v-temp-delta"></div>
+                </div>
+            </div>
+
+            <div class="section-title">ACTIVITY</div>
+            <div class="metric-grid-2">
+                <div class="metric-card">
+                    <div class="metric-label">Steps</div>
+                    <div class="metric-value"><span id="v-steps">--</span></div>
+                    <div class="metric-delta" id="v-steps-goal">of 10,000</div>
+                    <div class="mini-spark" id="spark-steps"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Active Minutes</div>
+                    <div class="metric-value"><span id="v-active-min">--</span></div>
+                    <div class="metric-delta" id="v-active-min-goal">of 80 min</div>
+                    <div class="mini-spark" id="spark-active-min"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Active Calories</div>
+                    <div class="metric-value"><span id="v-active-cal">--</span></div>
+                    <div class="metric-delta" id="v-active-cal-goal">of 800 kcal</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Total Calories</div>
+                    <div class="metric-value"><span id="v-total-cal">--</span></div>
+                    <div class="metric-delta" id="v-total-cal-goal">Goal 2,300 kcal</div>
+                </div>
+            </div>
+
+            <div class="section-title">SLEEP</div>
+            <div class="metric-grid-2">
+                <div class="metric-card">
+                    <div class="metric-label">Sleep Duration</div>
+                    <div class="metric-value"><span id="v-sleep-dur">--</span></div>
+                    <div class="metric-delta" id="v-sleep-dur-sub">—</div>
+                    <div class="mini-spark" id="spark-sleep"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Sleep Score</div>
+                    <div class="metric-value"><span id="v-sleep-score">--</span></div>
+                    <div class="metric-delta" id="v-sleep-score-sub">—</div>
+                </div>
+            </div>
+
+            <div class="section-title">BODY</div>
+            <div class="metric-grid-2">
+                <div class="metric-card">
+                    <div class="metric-label">Weight</div>
+                    <div class="metric-value"><span id="v-weight">--</span><span class="metric-unit">lb</span></div>
+                    <div class="metric-delta" id="v-weight-delta"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Body Fat</div>
+                    <div class="metric-value"><span id="v-bf">--</span><span class="metric-unit">%</span></div>
+                    <div class="metric-delta" id="v-bf-delta"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============ NEXT WORKOUT TAB ============ -->
+        <section id="tab-workout" class="tab-content">
+            <div class="tab-title-row"><h2 class="tab-title">Next Workout</h2><span class="tab-sub">AI-Designed Plan</span></div>
+
+            <div class="card hero-card">
+                <div class="hero-badge">AI RECOMMENDED PLAN</div>
+                <div class="hero-title" id="nw-title">—</div>
+                <div class="hero-sub" id="nw-sub">Loading…</div>
+                <div class="hero-chips">
+                    <span class="chip chip-duration" id="nw-duration">— min</span>
+                    <span class="chip chip-rpe" id="nw-rpe">RPE —</span>
+                </div>
+                <div class="hero-why">
+                    <div class="hero-why-label">Why this plan?</div>
+                    <div class="hero-why-body" id="nw-why">—</div>
+                </div>
+            </div>
+
+            <div class="section-title">EXERCISES</div>
+            <div id="nw-exercise-list" class="exercise-list">
+                <div class="skeleton">Loading exercises…</div>
+            </div>
+
+            <div id="nw-cardio-card" class="card cardio-card" hidden>
+                <div class="card-head">
+                    <div class="card-label">CARDIO FINISHER</div>
+                </div>
+                <div class="cardio-body">
+                    <div class="cardio-title" id="nw-cardio-title">—</div>
+                    <div class="cardio-meta" id="nw-cardio-meta">—</div>
+                </div>
+            </div>
+
+            <div class="nw-cta">
+                <button id="btn-start-workout-2" class="btn btn-primary btn-lg" type="button">Start Workout</button>
+                <button id="btn-adjust-plan-2" class="btn btn-ghost btn-lg" type="button">Adjust Plan</button>
+            </div>
+        </section>
+
+        <!-- ============ LOG TAB ============ -->
+        <section id="tab-log" class="tab-content">
+            <div class="tab-title-row"><h2 class="tab-title">Log Workout</h2><span class="tab-sub" id="log-date-display">—</span></div>
+
+            <div class="segmented">
+                <button class="seg-btn active" data-log-type="strength" type="button">Strength</button>
+                <button class="seg-btn" data-log-type="cardio" type="button">Cardio</button>
+                <button class="seg-btn" data-log-type="recovery" type="button">Recovery</button>
+            </div>
+
+            <div id="panel-strength" class="log-panel active">
+                <form id="form-strength" class="form-grid" onsubmit="return false;">
+                    <div class="form-field">
+                        <label>Date</label>
+                        <input type="date" id="log-date" name="date" required>
+                    </div>
+                    <div class="form-field">
+                        <label>Exercise</label>
+                        <select id="log-exercise" name="exercise" required><option value="">Select exercise…</option></select>
+                    </div>
+                    <div class="form-row-2">
+                        <div class="form-field"><label>Sets</label><input type="number" id="log-sets" min="1" value="3"></div>
+                        <div class="form-field"><label>Reps</label><input type="number" id="log-reps" min="1" value="10"></div>
+                    </div>
+                    <div class="form-field">
+                        <label>Weight <span class="field-hint">lbs</span></label>
+                        <input type="number" id="log-weight" min="0" step="0.5" placeholder="175">
+                    </div>
+                    <div class="form-field">
+                        <label>RPE</label>
+                        <div class="rpe-row" id="rpe-row">
+                            <button type="button" data-rpe="1">1</button>
+                            <button type="button" data-rpe="2">2</button>
+                            <button type="button" data-rpe="3">3</button>
+                            <button type="button" data-rpe="4">4</button>
+                            <button type="button" data-rpe="5">5</button>
+                            <button type="button" data-rpe="6">6</button>
+                            <button type="button" data-rpe="7" class="active">7</button>
+                            <button type="button" data-rpe="8">8</button>
+                            <button type="button" data-rpe="9">9</button>
+                            <button type="button" data-rpe="10">10</button>
+                        </div>
+                        <input type="hidden" id="log-rpe" value="7">
+                    </div>
+                    <div class="form-field">
+                        <label>Notes <span class="field-hint">optional</span></label>
+                        <textarea id="log-notes" placeholder="How did it feel?"></textarea>
+                    </div>
+                    <button id="btn-log-strength" class="btn btn-primary btn-block" type="button">Log Set</button>
+                </form>
+            </div>
+
+            <div id="panel-cardio" class="log-panel">
+                <form id="form-cardio" class="form-grid" onsubmit="return false;">
+                    <div class="form-field"><label>Date</label><input type="date" id="cardio-date" name="date" required></div>
+                    <div class="form-field">
+                        <label>Activity</label>
+                        <select id="cardio-type">
+                            <option value="treadmill">Treadmill</option>
+                            <option value="stairmaster" selected>Stairmaster</option>
+                            <option value="bike">Bike</option>
+                            <option value="walk">Walk</option>
+                            <option value="run">Run</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                    <div class="form-row-2">
+                        <div class="form-field"><label>Duration <span class="field-hint">min</span></label><input type="number" id="cardio-duration" min="1" value="20"></div>
+                        <div class="form-field"><label>Avg HR</label><input type="number" id="cardio-hr" min="30" max="250" placeholder="opt"></div>
+                    </div>
+                    <div class="form-field"><label>Intensity 1–10</label><input type="number" id="cardio-intensity" min="1" max="10" value="5"></div>
+                    <div class="form-field"><label>Notes</label><textarea id="cardio-notes" placeholder="Zone, machine…"></textarea></div>
+                    <button id="btn-log-cardio" class="btn btn-primary btn-block" type="button">Log Cardio</button>
+                </form>
+            </div>
+
+            <div id="panel-recovery" class="log-panel">
+                <form id="form-recovery" class="form-grid" onsubmit="return false;">
+                    <div class="form-field"><label>Date</label><input type="date" id="recovery-date" name="date" required></div>
+                    <div class="form-field">
+                        <label>Modality</label>
+                        <select id="recovery-type">
+                            <option value="sauna">Sauna</option>
+                            <option value="cold plunge">Cold Plunge</option>
+                            <option value="stretching">Stretching</option>
+                            <option value="mobility">Mobility</option>
+                            <option value="massage">Massage</option>
+                            <option value="walk">Recovery Walk</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                    <div class="form-row-2">
+                        <div class="form-field"><label>Duration <span class="field-hint">min</span></label><input type="number" id="recovery-duration" min="1" value="10"></div>
+                        <div class="form-field"><label>Temp <span class="field-hint">°F</span></label><input type="number" id="recovery-temp" placeholder="opt"></div>
+                    </div>
+                    <div class="form-field"><label>Notes</label><textarea id="recovery-notes" placeholder="Protocol, how it felt…"></textarea></div>
+                    <button id="btn-log-recovery" class="btn btn-primary btn-block" type="button">Log Recovery</button>
+                </form>
+            </div>
+
+            <div id="log-result"></div>
+
+            <div class="card summary-card">
+                <div class="card-head"><div class="card-label">TODAY'S SUMMARY</div></div>
+                <div class="summary-grid">
+                    <div><div class="summary-label">Volume</div><div class="summary-value" id="today-volume">—</div></div>
+                    <div><div class="summary-label">Exercises</div><div class="summary-value" id="today-exercises">—</div></div>
+                    <div><div class="summary-label">Sets</div><div class="summary-value" id="today-sets">—</div></div>
+                    <div><div class="summary-label">Duration</div><div class="summary-value" id="today-duration">—</div></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============ HISTORY TAB ============ -->
+        <section id="tab-history" class="tab-content">
+            <div class="tab-title-row"><h2 class="tab-title">History</h2><span class="tab-sub">Workouts &amp; Progress</span></div>
+
+            <div class="range-chips" id="history-range-chips">
+                <button class="chip-btn" data-range="7">7D</button>
+                <button class="chip-btn" data-range="14">14D</button>
+                <button class="chip-btn active" data-range="30">30D</button>
+                <button class="chip-btn" data-range="90">90D</button>
+                <button class="chip-btn" data-range="365">1Y</button>
+            </div>
+
+            <div class="card">
+                <div class="card-head">
+                    <div class="card-label">WORKOUT FREQUENCY</div>
+                    <div class="card-sub" id="history-freq-sub">—</div>
+                </div>
+                <div class="big-kpi"><span id="history-count">--</span><span class="big-kpi-sub">Workouts</span></div>
+                <div class="chart-holder chart-tall" id="chart-history-freq"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-head">
+                    <div class="card-label">VOLUME OVER TIME</div>
+                    <div class="card-sub" id="history-vol-sub">—</div>
+                </div>
+                <div class="big-kpi"><span id="history-total-volume">--</span><span class="big-kpi-sub">lbs</span></div>
+                <div class="chart-holder chart-tall" id="chart-history-volume"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-head"><div class="card-label">TOP EXERCISES</div></div>
+                <div id="history-top-exercises" class="top-list"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-head"><div class="card-label">RECENT WORKOUTS</div></div>
+                <div id="history-type-filter" class="history-filter-chips" aria-label="Filter recent workouts"></div>
+                <div id="history-workout-list" class="workout-list"></div>
+            </div>
+        </section>
+
+        <!-- ============ BODY TAB ============ -->
+        <section id="tab-body" class="tab-content">
+            <div class="tab-title-row"><h2 class="tab-title">Body Composition</h2><span class="tab-sub" id="body-date">—</span></div>
+
+            <div class="metric-grid-2">
+                <div class="metric-card">
+                    <div class="metric-label">Weight</div>
+                    <div class="metric-value"><span id="body-weight">--</span><span class="metric-unit">lb</span></div>
+                    <div class="metric-delta" id="body-weight-delta"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Body Fat</div>
+                    <div class="metric-value"><span id="body-bf">--</span><span class="metric-unit">%</span></div>
+                    <div class="metric-delta" id="body-bf-delta"></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-head"><div class="card-label">WEIGHT TREND (90 DAYS)</div></div>
+                <div class="chart-holder chart-tall" id="chart-weight"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-head"><div class="card-label">BODY FAT TREND (90 DAYS)</div></div>
+                <div class="chart-holder chart-tall" id="chart-bf"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-head"><div class="card-label">COMPOSITION</div><div class="card-sub" id="measurements-date">—</div></div>
+                <div id="measurements-grid" class="measurement-grid"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-head"><div class="card-label">LOG MEASUREMENT</div></div>
+                <form id="form-body" class="form-grid" onsubmit="return false;">
+                    <div class="form-row-2">
+                        <div class="form-field"><label>Weight (lbs)</label><input type="number" id="body-log-weight" step="0.1" placeholder="185.5"></div>
+                        <div class="form-field"><label>Body Fat %</label><input type="number" id="body-log-bf" step="0.1" placeholder="18.5"></div>
+                    </div>
+                    <button id="btn-log-body" class="btn btn-primary btn-block" type="button">Save Measurement</button>
+                </form>
+            </div>
+        </section>
+
+        <!-- ============ STATS TAB ============ -->
+        <section id="tab-stats" class="tab-content">
+            <div class="tab-title-row"><h2 class="tab-title">Stats &amp; Analytics</h2><span class="tab-sub">Performance</span></div>
+
+            <div class="range-chips" id="stats-range-chips">
+                <button class="chip-btn" data-range="7">7D</button>
+                <button class="chip-btn" data-range="14">14D</button>
+                <button class="chip-btn active" data-range="30">30D</button>
+                <button class="chip-btn" data-range="90">90D</button>
+                <button class="chip-btn" data-range="365">1Y</button>
+            </div>
+
+            <div class="metric-grid-2">
+                <div class="metric-card">
+                    <div class="metric-label">Total Workouts</div>
+                    <div class="metric-value"><span id="stats-workouts">--</span></div>
+                    <div class="metric-delta" id="stats-workouts-delta"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Total Volume</div>
+                    <div class="metric-value"><span id="stats-volume">--</span><span class="metric-unit">lbs</span></div>
+                    <div class="metric-delta" id="stats-volume-delta"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Avg Vol/Workout</div>
+                    <div class="metric-value"><span id="stats-avg-vol">--</span><span class="metric-unit">lbs</span></div>
+                    <div class="metric-delta" id="stats-avg-vol-delta"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Avg RPE</div>
+                    <div class="metric-value"><span id="stats-rpe">--</span></div>
+                    <div class="metric-delta" id="stats-rpe-sub"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Total Sets</div>
+                    <div class="metric-value"><span id="stats-sets">--</span></div>
+                    <div class="metric-delta" id="stats-sets-delta"></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Workout Time</div>
+                    <div class="metric-value"><span id="stats-time">--</span></div>
+                    <div class="metric-delta" id="stats-time-delta"></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-head"><div class="card-label">VOLUME BY MUSCLE GROUP</div></div>
+                <div id="chart-muscle-donut" class="donut-holder"></div>
+                <div id="muscle-legend" class="legend"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-head"><div class="card-label">PROGRESS INSIGHTS</div></div>
+                <div id="insights-list" class="insight-list"></div>
+            </div>
+        </section>
+
+        <!-- ============ SETTINGS TAB ============ -->
+        <section id="tab-settings" class="tab-content">
+            <div class="tab-title-row"><h2 class="tab-title">Settings</h2><span class="tab-sub">Preferences &amp; Integrations</span></div>
+
+            <div class="section-title">TRAINING GOAL</div>
+            <div class="card-list" id="settings-goals"></div>
+
+            <div class="section-title">WORKOUT PREFERENCES</div>
+            <div class="card">
+                <div class="settings-row">
+                    <div class="settings-row-label">Preferred Duration</div>
+                    <div class="settings-row-control">
+                        <select id="settings-duration" class="select-inline"></select>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label">Sessions Per Week</div>
+                    <div class="settings-row-control">
+                        <input type="range" id="settings-sessions" min="1" max="7" step="1">
+                        <span id="settings-sessions-val" class="settings-row-val">3</span>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label">Equipment</div>
+                    <div class="settings-row-control">
+                        <select id="settings-equipment" class="select-inline"></select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section-title">INTEGRATIONS</div>
+            <div class="card">
+                <div class="settings-row">
+                    <div class="settings-row-label">
+                        <span class="int-dot int-dot-on"></span>
+                        Oura Ring
+                    </div>
+                    <div class="settings-row-control">
+                        <span id="oura-connect-state" class="state-chip">—</span>
+                        <button id="btn-sync-oura" class="btn btn-ghost btn-sm" type="button">Sync</button>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">
+                            <span class="int-dot" id="apple-int-dot"></span>
+                            Apple Health
+                        </span>
+                        <span id="apple-last-export" class="settings-row-detail">—</span>
+                    </div>
+                    <div class="settings-row-control">
+                        <span id="apple-connect-state" class="state-chip">—</span>
+                        <button id="btn-apple-setup" class="btn btn-ghost btn-sm" type="button">Setup</button>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label">
+                        <span class="int-dot int-dot-on"></span>
+                        Weather
+                    </div>
+                    <div class="settings-row-control">
+                        <span id="weather-state" class="state-chip">—</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section-title">DATA &amp; BACKUP</div>
+            <div class="card">
+                <div class="settings-row">
+                    <div class="settings-row-label">Export Data</div>
+                    <div class="settings-row-control">
+                        <button id="btn-export" class="btn btn-ghost btn-sm" type="button">Download</button>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label">Import Backup</div>
+                    <div class="settings-row-control">
+                        <input type="file" id="import-file" accept=".json" hidden>
+                        <button id="btn-import" class="btn btn-ghost btn-sm" type="button">Select File</button>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label">Last Backup</div>
+                    <div class="settings-row-control"><span id="last-backup" class="state-chip">—</span></div>
+                </div>
+            </div>
+
+            <div class="section-title">APP</div>
+            <div class="card">
+                <div class="settings-row">
+                    <div class="settings-row-label">Dark Mode</div>
+                    <div class="settings-row-control"><span class="toggle on" aria-hidden="true"></span></div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label">Units</div>
+                    <div class="settings-row-control"><span class="state-chip">Imperial (lb)</span></div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label">Account</div>
+                    <div class="settings-row-control"><a class="btn btn-ghost btn-sm" href="/logout">Sign Out</a></div>
+                </div>
+            </div>
+        </section>
+
+        </main>
+
+        <nav class="tab-bar" role="tablist">
+            <button class="tab-btn active" data-tab="tab-dashboard" type="button"><span class="tab-ico">◉</span><span class="tab-lbl">Dash</span></button>
+            <button class="tab-btn" data-tab="tab-vitals" type="button"><span class="tab-ico">♥</span><span class="tab-lbl">Vitals</span></button>
+            <button class="tab-btn" data-tab="tab-workout" type="button"><span class="tab-ico">▲</span><span class="tab-lbl">Next</span></button>
+            <button class="tab-btn" data-tab="tab-log" type="button"><span class="tab-ico">+</span><span class="tab-lbl">Log</span></button>
+            <button class="tab-btn" data-tab="tab-history" type="button"><span class="tab-ico">⟳</span><span class="tab-lbl">History</span></button>
+            <button class="tab-btn" data-tab="tab-body" type="button"><span class="tab-ico">◈</span><span class="tab-lbl">Body</span></button>
+            <button class="tab-btn" data-tab="tab-stats" type="button"><span class="tab-ico">⎔</span><span class="tab-lbl">Stats</span></button>
+            <button class="tab-btn" data-tab="tab-settings" type="button"><span class="tab-ico">⚙</span><span class="tab-lbl">Settings</span></button>
+        </nav>
+    </div>
+
+    <div id="modal-swap" class="modal" hidden>
+        <div class="modal-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title" id="swap-modal-title">Swap Exercise</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="dim" id="swap-modal-sub">Choose a replacement from the same muscle group.</p>
+                <div id="swap-alternatives" class="swap-list"><div class="skeleton">Loading alternatives…</div></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-adjust" class="modal" hidden>
+        <div class="modal-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title">Adjust Plan</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div id="adjust-body" class="modal-body">
+                <p class="dim">Tell the AI coach what's going on — sore shoulder, tight on time, low energy. It re-intents the plan; the algorithm keeps the final say on exercises and load.</p>
+                <div class="adjust-presets">
+                    <button class="chip-preset" type="button" data-preset="left shoulder is sore, avoid overhead pressing">Sore shoulder</button>
+                    <button class="chip-preset" type="button" data-preset="only 25 minutes today, cut volume">Tight on time</button>
+                    <button class="chip-preset" type="button" data-preset="feeling low energy, dial it back">Low energy</button>
+                    <button class="chip-preset" type="button" data-preset="skip cardio today">No cardio</button>
+                </div>
+                <textarea id="adjust-constraint" class="adjust-textarea" placeholder="e.g. left knee tweaky, avoid squats" rows="3"></textarea>
+                <div id="adjust-state" class="adjust-state"></div>
+                <div class="adjust-actions">
+                    <button id="btn-adjust-submit" class="btn btn-primary btn-block" type="button">Apply Adjustment</button>
+                </div>
+                <div id="adjust-result" class="adjust-result" hidden>
+                    <div class="adjust-summary" id="adjust-summary"></div>
+                    <div class="adjust-notes" id="adjust-notes"></div>
+                    <div class="adjust-meta" id="adjust-meta"></div>
+                </div>
+                <div id="adjust-plan-preview" class="adjust-plan-preview" hidden></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-analyze" class="modal" hidden>
+        <div class="modal-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title" id="analyze-title">Workout Analysis</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body" id="analyze-body">
+                <div class="skeleton" id="analyze-loading">AI coach reviewing your session…</div>
+                <div id="analyze-content" hidden>
+                    <div class="analyze-section">
+                        <div class="analyze-label">SUMMARY</div>
+                        <div class="analyze-summary" id="analyze-summary"></div>
+                    </div>
+                    <div class="analyze-section" id="analyze-wins-section">
+                        <div class="analyze-label">WHAT WENT WELL</div>
+                        <ul class="analyze-list ok" id="analyze-wins"></ul>
+                    </div>
+                    <div class="analyze-section" id="analyze-concerns-section">
+                        <div class="analyze-label">WATCH FOR</div>
+                        <ul class="analyze-list warn" id="analyze-concerns"></ul>
+                    </div>
+                    <div class="analyze-section">
+                        <div class="analyze-label">VS RECENT SESSIONS</div>
+                        <div class="analyze-comparison" id="analyze-comparison"></div>
+                    </div>
+                    <div class="analyze-section" id="analyze-cue-section">
+                        <div class="analyze-label">NEXT SESSION</div>
+                        <div class="analyze-cue" id="analyze-cue"></div>
+                    </div>
+                    <div class="analyze-section" id="analyze-notes-section" hidden>
+                        <div class="analyze-label">NOTES REVIEWED</div>
+                        <div class="analyze-note-context" id="analyze-notes-context"></div>
+                    </div>
+                    <div class="analyze-meta" id="analyze-meta"></div>
+                </div>
+                <div id="analyze-error" class="empty" hidden></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-workout-detail" class="modal" hidden>
+        <div class="modal-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title" id="workout-detail-title">Workout Details</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body" id="workout-detail-body"></div>
+        </div>
+    </div>
+
+    <div id="modal-apple" class="modal" hidden>
+        <div class="modal-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title">Connect Apple Health</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="dim">Apple Health has to push data to this dashboard — there's no system-level toggle Claude can flip for you. Here's the one-time setup.</p>
+                <ol class="setup-steps">
+                    <li>On your iPhone, install <strong>Health Auto Export – JSON+CSV</strong> from the App Store.</li>
+                    <li>Open it, grant Health permissions, then create two automations under <em>Automations</em> → <em>New Automation</em>.</li>
+                    <li>Automation 1: choose the metrics data type with <strong>Steps, Active Energy, Resting Heart Rate, HRV, Sleep Analysis</strong>.</li>
+                    <li>Automation 2: choose <strong>Workouts</strong>.</li>
+                    <li>For each automation, set Frequency to <em>Daily</em>, Format to <em>JSON</em>, and Destination to <em>REST API</em> with URL:
+                        <code class="setup-url" id="apple-webhook-url">https://admins-mac-mini.tail6c6490.ts.net:5050/api/apple-health/sync</code>
+                    </li>
+                    <li>Save each automation. To backfill or test, tap <em>Manual Export</em>, confirm the date range, then tap <em>Begin Export</em>.</li>
+                </ol>
+                <p class="dim">Once the first sync lands, this card will flip to "Synced today" automatically.</p>
+                <div id="apple-sync-state" class="setup-sync-state">
+                    <span class="setup-sync-label">Current backend state:</span>
+                    <span id="apple-sync-detail" class="setup-sync-detail">—</span>
+                </div>
+            </div>
+            <div class="modal-foot">
+                <button class="btn btn-ghost btn-block" data-close-modal type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-active" class="modal" hidden>
+        <div class="modal-sheet modal-sheet-tall">
+            <div class="modal-head">
+                <h3 class="modal-title" id="active-workout-title">Workout</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div id="active-workout-body" class="modal-body"></div>
+            <div class="modal-foot">
+                <button id="btn-complete-workout" class="btn btn-primary btn-block" type="button">Complete Workout</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast-host" class="toast-host"></div>
+
+    <script src="/static/js/app.js?v=20260427-bodycomposition-1"></script>
+</body>
+</html>
