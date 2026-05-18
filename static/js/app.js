@@ -2717,6 +2717,7 @@
         result.hidden = true;
         if (previewEl) { previewEl.hidden = true; previewEl.innerHTML = ''; }
 
+        let finalBtnLabel = 'Apply Another Adjustment';
         try {
             const payload = await api('/api/workout/adjust', {
                 method: 'POST',
@@ -2727,8 +2728,7 @@
             if (payload.status === 'fallback') {
                 stateEl.textContent = 'AI coach unavailable — plan unchanged. ' + (payload.reason || '');
                 stateEl.className = 'adjust-state err';
-                btn.disabled = false;
-                btn.textContent = 'Retry';
+                finalBtnLabel = 'Retry';
                 return;
             }
 
@@ -2779,9 +2779,10 @@
             console.error(e);
             stateEl.textContent = 'Request failed — keeping the original plan.';
             stateEl.className = 'adjust-state err';
+            finalBtnLabel = 'Retry';
         } finally {
             btn.disabled = false;
-            btn.textContent = 'Apply Another Adjustment';
+            btn.textContent = finalBtnLabel;
         }
     }
 
