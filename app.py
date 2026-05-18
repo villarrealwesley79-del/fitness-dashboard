@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 import base64
 import time
+import re
 
 # Load .env file if present (for OURA_API_TOKEN etc.)
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -500,6 +501,79 @@ NUTRITION_DATA = load_json(NUTRITION_FILE, [])
 
 # Initialize Oura SQLite storage (safe no-op if file exists)
 init_oura_db(OURA_DB_FILE)
+
+
+def _normalize_exercise_name(name):
+    return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+
+
+def _lookup_by_exercise_name(mapping, exercise_name):
+    if not isinstance(mapping, dict):
+        return None, None
+    if exercise_name in mapping:
+        return exercise_name, mapping[exercise_name]
+    wanted = _normalize_exercise_name(exercise_name)
+    for key, value in mapping.items():
+        if _normalize_exercise_name(key) == wanted:
+            return key, value
+    return None, None
+
+
+def _positive_float(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _select_recommendation_e1rm(exercise_name, ex_progression):
+    """Pick the load source for a recommendation and expose why it won."""
+    if not isinstance(ex_progression, dict):
+        ex_progression = {}
+
+    progression_e1rm = _positive_float(ex_progression.get("current_e1rm"))
+    progression_status = ex_progression.get("status", "On Track")
+
+    baseline_key, baseline_value = _lookup_by_exercise_name(BASELINES_DATA, exercise_name)
+    baseline_e1rm = _positive_float(baseline_value)
+
+    lookup_key, lookup_exercise = _lookup_by_exercise_name(EXERCISE_LOOKUP, exercise_name)
+    hardcoded_e1rm = _positive_float((lookup_exercise or {}).get("baseline"))
+
+    if baseline_e1rm is not None and progression_e1rm is not None and progression_e1rm < baseline_e1rm * 0.95:
+        return {
+            "e1rm": baseline_e1rm,
+            "status": "Calibrated Baseline",
+            "source": "baseline_json",
+            "detail": (
+                f"baseline_json:{baseline_key}; ignored stale progression "
+                f"{round(progression_e1rm, 1)} below calibrated baseline {round(baseline_e1rm, 1)}"
+            ),
+        }
+
+    if progression_e1rm is not None:
+        return {
+            "e1rm": progression_e1rm,
+            "status": progression_status,
+            "source": "progression",
+            "detail": f"progression:{exercise_name}",
+        }
+
+    if baseline_e1rm is not None:
+        return {
+            "e1rm": baseline_e1rm,
+            "status": "Calibrated Baseline",
+            "source": "baseline_json",
+            "detail": f"baseline_json:{baseline_key}",
+        }
+
+    return {
+        "e1rm": hardcoded_e1rm if hardcoded_e1rm is not None else 100,
+        "status": "Baseline",
+        "source": "hardcoded",
+        "detail": f"hardcoded:{lookup_key or exercise_name}",
+    }
 
 
 # ==================== API HELPERS / VALIDATION ====================
@@ -1098,19 +1172,17 @@ def _build_exercise_entry(
         muscle, soreness_data, volume_data, oura_readiness
     )
 
-    if ex_progression.get("current_e1rm"):
-        current_e1rm = ex_progression["current_e1rm"]
-        status = status
-    elif BASELINES_DATA.get(exercise_name):
-        current_e1rm = BASELINES_DATA[exercise_name]
-        status = "Baseline"
-    else:
-        current_e1rm = EXERCISE_LOOKUP.get(exercise_name, {}).get("baseline", 100)
-        status = "Baseline"
+    load_source = _select_recommendation_e1rm(exercise_name, ex_progression)
+    current_e1rm = load_source["e1rm"]
+    status = load_source["status"]
 
     if status == "Baseline":
         target_weight = round(current_e1rm * intensity_pct * 0.9, 0)
         rationale = f"{goal_params['name']}: Starting weight — log your first session to calibrate"
+        sets = target_sets
+    elif status == "Calibrated Baseline":
+        target_weight = round(current_e1rm * intensity_pct, 0)
+        rationale = f"{goal_params['name']}: Calibrated from saved baseline"
         sets = target_sets
     elif status == "On Track":
         target_weight = round(current_e1rm * intensity_pct + 5, 0)
@@ -1155,7 +1227,10 @@ def _build_exercise_entry(
         "estimated_time": round(max(2, volume_adjusted_sets) * time_per_set),
         "days_since_trained": days_since,
         "soreness": soreness_level,
-        "oura_readiness": oura_readiness if oura_readiness is not None else None
+        "oura_readiness": oura_readiness if oura_readiness is not None else None,
+        "load_source": load_source["source"],
+        "load_e1rm": round(current_e1rm, 1),
+        "load_source_detail": load_source["detail"],
     }
 
 
