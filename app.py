@@ -716,10 +716,20 @@ def _nutrition_entry_logged_hour(entry):
     return dt.hour if dt else None
 
 
+_food_log_read_failure_logged = False
+
+
 def _food_log_entries_for_context(since=None, limit=None):
+    global _food_log_read_failure_logged
     try:
         return get_food_logs(_current_data_user_id(), limit=limit, since=since)
     except Exception:
+        if not _food_log_read_failure_logged:
+            app.logger.warning(
+                "food_logs read failed; falling back to legacy nutrition JSON",
+                exc_info=True,
+            )
+            _food_log_read_failure_logged = True
         return []
 
 
