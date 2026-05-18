@@ -1,7 +1,7 @@
 # Fitness Dashboard Current State
 
 Status: Snapshot from local inspection  
-Last updated: 2026-05-17 local time
+Last updated: 2026-05-18 local time
 
 ## Summary
 
@@ -97,6 +97,13 @@ Apple Health supports two paths:
 - Legacy file exports from `~/Documents/Health/healthkit_*.json`.
 
 The current sync database has recent entries from 2026-05-17. The public webhook rejects missing tokens, and the status endpoint is auth-gated.
+
+Health Auto Export setup URL generation should use environment-driven public URL config:
+
+- `FITNESS_DASHBOARD_PUBLIC_BASE_URL=https://<your-public-fitness-dashboard-host>`
+- Optional override: `APPLE_HEALTH_WEBHOOK_URL=https://<your-public-health-sync-endpoint>`
+
+Do not hardcode a personal Tailscale hostname in docs or committed config. The owner-only setup route appends the configured `HEALTH_SYNC_TOKEN` to the public sync endpoint it returns.
 
 ### LM Studio
 

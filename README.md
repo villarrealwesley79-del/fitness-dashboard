@@ -62,6 +62,8 @@ Optional integrations use environment variables such as:
 ```bash
 OURA_API_TOKEN=
 HEALTH_SYNC_TOKEN=
+FITNESS_DASHBOARD_PUBLIC_BASE_URL=
+APPLE_HEALTH_WEBHOOK_URL=
 SECRET_KEY=
 STRIPE_SECRET_KEY=
 STRIPE_WEBHOOK_SECRET=
@@ -71,6 +73,20 @@ LM_STUDIO_MODEL=
 ```
 
 Do not commit real values for these variables.
+
+For Apple Health / Health Auto Export setup, keep `HEALTH_SYNC_TOKEN` secret and set one public URL source for setup URL generation:
+
+```bash
+FITNESS_DASHBOARD_PUBLIC_BASE_URL=https://<your-public-fitness-dashboard-host>
+```
+
+The owner-only setup route will emit:
+
+```text
+${FITNESS_DASHBOARD_PUBLIC_BASE_URL}/api/apple-health/sync?token=<HEALTH_SYNC_TOKEN>
+```
+
+Use `APPLE_HEALTH_WEBHOOK_URL` only when the sync endpoint is intentionally exposed at a different public path. The value should be the endpoint URL without the token; the setup route appends the token.
 
 ## Git Workflow
 
