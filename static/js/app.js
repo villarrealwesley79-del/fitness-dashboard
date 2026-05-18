@@ -2203,9 +2203,12 @@
     }
 
     function buildActiveExercise(ex, previous) {
+        const previousName = previous ? exerciseName(previous) : '';
+        const nextName = exerciseName(ex);
+        const carrySets = previousName && nextName && previousName === nextName;
         return {
             ...ex,
-            logged_sets: buildLoggedSets(ex, previous && previous.logged_sets),
+            logged_sets: buildLoggedSets(ex, carrySets ? previous.logged_sets : null),
         };
     }
 
