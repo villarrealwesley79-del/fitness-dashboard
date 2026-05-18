@@ -461,6 +461,121 @@
         state.body = state.settings = state.analytics = state.muscleFatigue = null;
     }
 
+    // --- Freshness chip rendering (FIT-2) -------------------------
+    const RECO_CONF_LABEL = { high: '92%', medium: '78%', low: '62%' };
+
+    function humanizeMuscle(s) {
+        return String(s || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).trim();
+    }
+
+    function formatFoodChip(food, ago) {
+        // Four states per FIT-2 spec: no food logged, pending estimate review,
+        // accepted food, over/under target. (pending_review is a backend stub
+        // that FIT-6 will flip once the photo → AI estimate flow exists.)
+        if (food && food.pending_review) {
+            return { cls: 'warn', label: 'Food · pending review' };
+        }
+        if (!food || food.status === 'missing' || (food.target_state === 'none')) {
+            return { cls: 'warn', label: 'No food logged today' };
+        }
+        if (food.target_state === 'over') {
+            return { cls: 'stale', label: 'Food · over target' };
+        }
+        if (food.target_state === 'under') {
+            return { cls: 'warn', label: 'Food · under target' };
+        }
+        // on_track / fresh accepted log
+        return { cls: 'ok', label: 'Food · on track' };
+    }
+
+    function formatOuraChip(oura, ago) {
+        if (!oura || oura.status === 'unknown' || oura.status == null) {
+            return { cls: 'unknown', label: 'Oura · —' };
+        }
+        if (oura.status === 'missing') {
+            return { cls: 'stale', label: 'Oura · no data' };
+        }
+        // Real Oura state: combine source (cached/live) + relative last-data-point age
+        const sourceLabel = oura.source === 'live' ? 'live' : 'cached';
+        const ageLabel = ago(oura.last_data_point) || 'today';
+        const label = 'Oura · ' + sourceLabel + ' · ' + ageLabel;
+        if (oura.status === 'fresh')  return { cls: 'ok',    label };
+        if (oura.status === 'aging')  return { cls: 'warn',  label };
+        if (oura.status === 'stale')  return { cls: 'stale', label };
+        return { cls: 'unknown', label };
+    }
+
+    function formatAppleChip(apple, ago) {
+        if (!apple || apple.status === 'unknown' || apple.status == null) {
+            return { cls: 'unknown', label: 'Apple · —' };
+        }
+        if (apple.status === 'missing') {
+            return { cls: 'stale', label: 'Apple · no data' };
+        }
+        // Render both signals when distinct: backend last_sync_attempt vs latest data point.
+        const syncedAgo = ago(apple.last_sync_attempt);
+        const dataAgo = ago(apple.last_data_point);
+        let label;
+        if (syncedAgo && dataAgo && syncedAgo !== dataAgo) {
+            label = 'Apple · synced ' + syncedAgo + ' · data ' + dataAgo;
+        } else if (dataAgo) {
+            label = 'Apple · ' + dataAgo;
+        } else {
+            label = 'Apple · —';
+        }
+        if (apple.status === 'fresh')  return { cls: 'ok',    label };
+        if (apple.status === 'aging')  return { cls: 'warn',  label };
+        if (apple.status === 'stale')  return { cls: 'stale', label };
+        return { cls: 'unknown', label };
+    }
+
+    function renderFreshnessChips(freshness) {
+        const ago = (window.__dashHelpers && window.__dashHelpers.ago) || function (s) { return s || ''; };
+        const slots = [
+            { id: 'reco-fresh-oura',  key: 'oura',         render: formatOuraChip  },
+            { id: 'reco-fresh-apple', key: 'apple_health', render: formatAppleChip },
+            { id: 'reco-fresh-food',  key: 'food',         render: formatFoodChip  },
+        ];
+        slots.forEach(function (slot) {
+            const el = $(slot.id);
+            if (!el) return;
+            const node = freshness ? freshness[slot.key] : null;
+            const { cls, label } = slot.render(node, ago);
+            el.classList.remove('ok', 'warn', 'stale', 'unknown');
+            el.classList.add(cls);
+            el.textContent = label;
+        });
+    }
+
+    function buildFoodGuidanceLine(food) {
+        // Returns a sentence explaining whether today's food changed/should change
+        // the remaining-day guidance. Always render something (per FIT-1 acceptance
+        // criterion: the UI must explain whether food logged today changed guidance).
+        if (!food) {
+            return 'Log food to see remaining macros for today.';
+        }
+        if (food.pending_review) {
+            return 'Food estimates pending review — accept or correct to update macro guidance.';
+        }
+        const cal = food.calories || 0;
+        const calT = food.calories_target || 0;
+        const pro = food.protein_g || 0;
+        const proT = food.protein_target_g || 0;
+        if (food.target_state === 'none' || cal === 0) {
+            return 'No food logged yet. Log meals for personalized macro guidance.';
+        }
+        if (food.target_state === 'over') {
+            return `Over calorie target (${cal}/${calT} cal) — ease intensity if you trained heavy.`;
+        }
+        if (food.target_state === 'under') {
+            const remCal = Math.max(0, calT - cal);
+            const remPro = Math.max(0, Math.round(proT - pro));
+            return `${cal}/${calT} cal · ${pro}/${proT}g protein logged · ${remCal} cal and ${remPro}g protein remaining.`;
+        }
+        // on_track
+        return `${cal}/${calT} cal · ${pro}/${proT}g protein logged — on track.`;
+    }
+
     // --- Dashboard render ----------------------------------------
     async function renderDashboard() {
         const [dash, oura, reco, sleep] = await Promise.all([
@@ -474,17 +589,109 @@
         if ($('dash-rhr')) $('dash-rhr').textContent = oura && oura.resting_hr != null ? `${oura.resting_hr} bpm` : '--';
         if ($('dash-sleep')) $('dash-sleep').textContent = oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--';
 
-        // Recommendation card
+        // Recommendation card — FIT-1 brief + FIT-2 honest freshness
         const nw = dash && dash.next_workout ? dash.next_workout : null;
-        const recoTitle = (reco && reco.suggested_workout) || (nw && (nw.focus || nw.goal_name)) || 'Rest Day';
-        const focus = nw ? (nw.focus || nw.goal_name || '') : '';
-        const intensity = nw && nw.estimated_minutes ? `${nw.estimated_minutes} min` : (reco && reco.time_of_day ? reco.time_of_day : '—');
-        const rpeText = nw && nw.goal && nw.goal.rpe_target ? `RPE ${nw.goal.rpe_target}` : '';
-        if ($('reco-title')) $('reco-title').textContent = recoTitle.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-        if ($('reco-intensity')) $('reco-intensity').textContent = [focus, intensity, rpeText].filter(Boolean).join(' · ') || 'Moderate';
-        if ($('reco-why')) $('reco-why').textContent = (reco && reco.reasoning) || 'Based on your readiness, sleep, and training load.';
-        const confidence = readiness >= 80 ? 92 : readiness >= 65 ? 78 : readiness >= 50 ? 62 : 45;
-        if ($('reco-confidence-pct')) $('reco-confidence-pct').textContent = `${confidence}%`;
+        const freshness = (reco && reco.freshness) || (dash && dash.freshness) || null;
+        const wearableStatuses = freshness ? [
+            freshness.oura && freshness.oura.status,
+            freshness.apple_health && freshness.apple_health.status,
+        ] : [];
+        const wearableStale = wearableStatuses.indexOf('stale') >= 0;
+        const wearableAllMissing = wearableStatuses.length > 0 && wearableStatuses.every(function (s) { return s === 'missing'; });
+        const wearableDegraded = wearableStale || wearableAllMissing;
+
+        // Title — swap to lower-confidence variant when wearable signal is gone
+        let recoTitle;
+        if (wearableAllMissing) {
+            recoTitle = 'Rest day — no recent wearable data';
+        } else if (wearableStale) {
+            const lastDayIso = freshness && freshness.oura && freshness.oura.last_data_point;
+            let daysOld = null;
+            if (lastDayIso) {
+                const t = new Date(lastDayIso).getTime();
+                if (!isNaN(t)) daysOld = Math.max(2, Math.floor((Date.now() - t) / 86400000));
+            }
+            recoTitle = daysOld
+                ? `Generic recommendation — wearable data is ${daysOld} days old`
+                : 'Generic recommendation — wearable data is stale';
+        } else {
+            recoTitle = (reco && reco.suggested_workout) || (nw && (nw.focus || nw.goal_name)) || 'Rest Day';
+        }
+        if ($('reco-title')) $('reco-title').textContent = recoTitle.replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+
+        // Intensity / time / RPE chips
+        const focusLabel = nw ? (nw.focus || nw.goal_name || '') : '';
+        const intensityWord = reco && reco.recommendation
+            ? (reco.recommendation === 'intensity' ? 'High'
+                : reco.recommendation === 'moderate' ? 'Moderate'
+                : reco.recommendation === 'recovery' ? 'Low'
+                : reco.recommendation)
+            : 'Moderate';
+        if ($('reco-intensity')) {
+            $('reco-intensity').textContent = [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ') || 'Moderate';
+        }
+        const timeMin = nw && nw.estimated_minutes;
+        if ($('reco-time')) {
+            if (timeMin) { $('reco-time').textContent = `${timeMin} min`; $('reco-time').hidden = false; }
+            else { $('reco-time').hidden = true; }
+        }
+        const rpeTarget = nw && nw.goal && nw.goal.rpe_target;
+        if ($('reco-rpe')) {
+            if (rpeTarget) { $('reco-rpe').textContent = `RPE ${rpeTarget}`; $('reco-rpe').hidden = false; }
+            else { $('reco-rpe').hidden = true; }
+        }
+
+        // Avoid list — surface existing avoid_muscles as chips (0-3 max).
+        // Build via DOM + textContent (not innerHTML) so user-supplied soreness
+        // muscle names cannot inject HTML/JS into the dashboard card.
+        const avoidEl = $('reco-avoid');
+        if (avoidEl) {
+            const avoidRaw = (reco && reco.avoid_muscles) || [];
+            const avoid = (Array.isArray(avoidRaw) ? avoidRaw : []).slice(0, 3);
+            while (avoidEl.firstChild) avoidEl.removeChild(avoidEl.firstChild);
+            if (avoid.length === 0) {
+                avoidEl.hidden = true;
+            } else {
+                const label = document.createElement('span');
+                label.className = 'reco-avoid-label';
+                label.textContent = 'Avoid';
+                avoidEl.appendChild(label);
+                avoid.forEach(function (m) {
+                    const chip = document.createElement('span');
+                    chip.className = 'chip chip-avoid';
+                    chip.textContent = humanizeMuscle(m);
+                    avoidEl.appendChild(chip);
+                });
+                avoidEl.hidden = false;
+            }
+        }
+
+        // Reason / "why" — wearable reasoning + explicit food guidance (FIT-1 AC)
+        const whyEl = $('reco-why');
+        if (whyEl) {
+            let whyText;
+            if (wearableAllMissing) {
+                whyText = 'No recent wearable data — showing a conservative default. Sync Oura or Apple Health for a personalized recommendation.';
+            } else if (wearableStale) {
+                whyText = ((reco && reco.reasoning) ? reco.reasoning + '. ' : '') + 'Confidence is lowered because wearable data is stale.';
+            } else {
+                whyText = (reco && reco.reasoning) || 'Based on your readiness, sleep, and training load.';
+            }
+            // Append food guidance line so the brief always explains how today's
+            // food changed (or could change) remaining-day guidance.
+            const foodLine = buildFoodGuidanceLine(freshness && freshness.food);
+            if (foodLine) whyText = whyText.replace(/\.\s*$/, '') + '. ' + foodLine;
+            whyEl.textContent = whyText;
+            whyEl.classList.toggle('lower-confidence', wearableDegraded);
+        }
+
+        // Confidence — server-driven bucket → label; legacy ladder as fallback
+        const confLabel = (reco && reco.confidence_level && RECO_CONF_LABEL[reco.confidence_level])
+            || (readiness >= 80 ? '92%' : readiness >= 65 ? '78%' : readiness >= 50 ? '62%' : '45%');
+        if ($('reco-confidence-pct')) $('reco-confidence-pct').textContent = confLabel;
+
+        // Freshness chips (always render — null freshness shows "unknown" state)
+        renderFreshnessChips(freshness);
 
         // Today at a glance
         if ($('glance-steps')) $('glance-steps').textContent = fmtInt(oura && oura.steps);

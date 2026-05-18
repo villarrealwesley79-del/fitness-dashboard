@@ -2293,7 +2293,8 @@ def api_dashboard():
             "deload_check": deload,
             "injury_risk": injury_risk,
             "summary_stats": summary_stats
-        }
+        },
+        "freshness": _compute_data_freshness(),
     })
 
 
@@ -4718,6 +4719,225 @@ def oura_sleep_summary():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# ==================== DATA FRESHNESS (Oura / Apple Health / Food) ====================
+#
+# Stale buckets (server-side; the client never does "Nh ago" math):
+#   fresh:   last data point within 24h
+#   aging:   24h–48h
+#   stale:   >48h
+#   missing: no record at all
+#
+# "Connected" never means "current" — the freshness object is what the dashboard
+# uses to drop confidence and swap the brief to lower-confidence copy.
+
+APPLE_HEALTH_SYNC_DB_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "apple_health_sync.db"
+)
+
+_FRESHNESS_AGING_HOURS = 24
+_FRESHNESS_STALE_HOURS = 48
+
+
+def _classify_freshness(last_data_point_dt, now=None):
+    if last_data_point_dt is None:
+        return "missing"
+    now = now or datetime.now()
+    hours = (now - last_data_point_dt).total_seconds() / 3600.0
+    if hours < _FRESHNESS_AGING_HOURS:
+        return "fresh"
+    if hours < _FRESHNESS_STALE_HOURS:
+        return "aging"
+    return "stale"
+
+
+def _latest_oura_freshness(now=None):
+    try:
+        conn = sqlite3.connect(OURA_DB_FILE)
+        try:
+            row = conn.execute(
+                "SELECT day, created_at FROM oura_daily ORDER BY day DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return ("missing", None, None)
+    if not row:
+        return ("missing", None, None)
+    day_str, created_at = row
+    # last_data_point uses oura_daily.day (the data-point date); last_sync_attempt
+    # uses created_at (when we upserted). A row upserted today with day=N days ago
+    # means Oura hasn't returned new data even though we "synced."
+    return (_classify_freshness(_parse_iso_date_or_datetime(day_str), now=now), day_str, created_at)
+
+
+def _latest_apple_health_freshness(now=None):
+    try:
+        conn = sqlite3.connect(APPLE_HEALTH_SYNC_DB_FILE)
+        try:
+            data_row = conn.execute("SELECT MAX(record_date) FROM ah_sync_log").fetchone()
+            sync_row = conn.execute("SELECT MAX(created_at) FROM ah_sync_events").fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return ("missing", None, None)
+    last_data = (data_row or (None,))[0]
+    last_sync = (sync_row or (None,))[0]
+    if not last_data:
+        return ("missing", None, last_sync)
+    return (_classify_freshness(_parse_iso_date_or_datetime(last_data), now=now), last_data, last_sync)
+
+
+def _latest_food_freshness(now=None):
+    """Return (status, last_data_point, last_sync_attempt) plus None placeholders.
+
+    Note: callers should also use `_food_target_state()` for the macro-target view
+    used by the brief — that bit doesn't fit the (status, dp, sync) triple cleanly.
+    """
+    entries = NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else []
+    if not entries:
+        return ("missing", None, None)
+    latest_iso = None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        d = entry.get("date") or entry.get("day") or entry.get("logged_at")
+        if d and (latest_iso is None or d > latest_iso):
+            latest_iso = d
+    if not latest_iso:
+        return ("missing", None, None)
+    return (_classify_freshness(_parse_iso_date_or_datetime(latest_iso), now=now), latest_iso, None)
+
+
+def _food_target_state(now=None):
+    """Return a dict describing today's food vs targets:
+        {"target_state": "none|under|on_track|over",
+         "calories": int, "protein_g": float,
+         "calories_target": int, "protein_target_g": float,
+         "calories_pct": int, "protein_pct": int}
+
+    `target_state` thresholds (calories-driven):
+        none       -> nothing logged today
+        under      -> < 80% of daily calorie target
+        on_track   -> 80–110%
+        over       -> > 110%
+    """
+    today_s = (now or datetime.now()).strftime("%Y-%m-%d")
+    try:
+        totals = _summarize_nutrition_for_date(today_s)
+    except Exception:
+        totals = {"calories": 0, "protein_g": 0.0}
+    try:
+        calories_target, protein_target = _get_nutrition_targets()
+    except Exception:
+        calories_target, protein_target = 2200, 148.0
+    calories = int(totals.get("calories") or 0)
+    protein_g = float(totals.get("protein_g") or 0.0)
+    cal_pct = int(round((calories / calories_target) * 100)) if calories_target else 0
+    pro_pct = int(round((protein_g / protein_target) * 100)) if protein_target else 0
+    if calories <= 0 and protein_g <= 0:
+        target_state = "none"
+    elif cal_pct > 110:
+        target_state = "over"
+    elif cal_pct >= 80:
+        target_state = "on_track"
+    else:
+        target_state = "under"
+    return {
+        "target_state": target_state,
+        "calories": calories,
+        "protein_g": round(protein_g, 1),
+        "calories_target": int(calories_target),
+        "protein_target_g": round(float(protein_target), 1),
+        "calories_pct": cal_pct,
+        "protein_pct": pro_pct,
+    }
+
+
+def _oura_source_label(last_sync_attempt_iso, now=None):
+    """Map last_sync_attempt to a cached/live label.
+
+    The freshness chip is always rendering locally-cached data; "live" here means
+    the last upsert happened recently enough that the cache is effectively current.
+    """
+    if not last_sync_attempt_iso:
+        return "cached"
+    dt = _parse_iso_date_or_datetime(last_sync_attempt_iso)
+    if dt is None:
+        return "cached"
+    now = now or datetime.now()
+    age_h = (now - dt).total_seconds() / 3600.0
+    return "live" if age_h < 1.0 else "cached"
+
+
+def _compute_data_freshness(now=None):
+    """Per-source freshness for Oura, Apple Health, and food.
+
+    Returns:
+        {
+          "oura":         {status, last_data_point, last_sync_attempt, source: "live|cached"},
+          "apple_health": {status, last_data_point, last_sync_attempt},
+          "food":         {status, last_data_point, last_sync_attempt,
+                           pending_review: bool, target_state: "none|under|on_track|over",
+                           calories, protein_g, calories_target, protein_target_g,
+                           calories_pct, protein_pct},
+        }
+    """
+    now = now or datetime.now()
+    oura_status, oura_last_data, oura_last_sync = _latest_oura_freshness(now)
+    apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness(now)
+    food_status, food_last_data, food_last_sync = _latest_food_freshness(now)
+    food_targets = _food_target_state(now)
+    return {
+        "oura": {
+            "status": oura_status,
+            "last_data_point": oura_last_data,
+            "last_sync_attempt": oura_last_sync,
+            "source": _oura_source_label(oura_last_sync, now=now),
+        },
+        "apple_health": {
+            "status": apple_status,
+            "last_data_point": apple_last_data,
+            "last_sync_attempt": apple_last_sync,
+        },
+        "food": {
+            "status": food_status,
+            "last_data_point": food_last_data,
+            "last_sync_attempt": food_last_sync,
+            # pending_review is a stub today (FIT-6 will flip when the photo →
+            # AI estimate flow exists). Surfaced now so the UI contract is stable.
+            "pending_review": False,
+            **food_targets,
+        },
+    }
+
+
+def _confidence_level_from(effective_readiness, freshness):
+    """Derive 'high' | 'medium' | 'low' from effective readiness + wearable freshness.
+
+    A stale or fully-missing wearable forces 'low' — we can't claim a confident
+    recommendation when the underlying signal is gone.
+    """
+    wearable_states = [
+        (freshness.get("oura") or {}).get("status"),
+        (freshness.get("apple_health") or {}).get("status"),
+    ]
+    if "stale" in wearable_states:
+        return "low"
+    if all(s == "missing" for s in wearable_states):
+        return "low"
+    if "missing" in wearable_states or "aging" in wearable_states:
+        if effective_readiness is None or effective_readiness < 65:
+            return "low"
+        return "medium"
+    if effective_readiness is None:
+        return "low"
+    if effective_readiness >= 78:
+        return "high"
+    if effective_readiness >= 60:
+        return "medium"
+    return "low"
+
+
 @app.route('/api/recommendation/smart')
 def smart_recommendation_api():
     """Smart recommendation factoring Oura readiness + HRV trend + recent soreness."""
@@ -4913,6 +5133,8 @@ def smart_recommendation_api():
     except Exception:
         history_context = []
 
+    freshness = _compute_data_freshness()
+    confidence_level = _confidence_level_from(effective_readiness, freshness)
     return jsonify({
         "recommendation": recommendation,
         "readiness": readiness,
@@ -4930,7 +5152,9 @@ def smart_recommendation_api():
         "weather": weather,
         "time_of_day": time_of_day,
         "history_context": history_context,
-        "reasoning": "; ".join(reason_bits) if reason_bits else "No Oura/soreness data available"
+        "reasoning": "; ".join(reason_bits) if reason_bits else "No Oura/soreness data available",
+        "freshness": freshness,
+        "confidence_level": confidence_level,
     })
 
 

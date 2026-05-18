@@ -26,11 +26,21 @@
     if (!dateStr) return "";
     var d = new Date(dateStr);
     if (isNaN(d)) return dateStr;
-    var diff = Math.floor((Date.now() - d.getTime()) / 86400000);
-    if (diff === 0) return "today";
-    if (diff === 1) return "yesterday";
-    return diff + "d ago";
+    var ms = Date.now() - d.getTime();
+    if (ms < 0) return "just now"; // clock drift guard
+    var mins = Math.floor(ms / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return mins + "m ago";
+    var hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + "h ago";
+    var days = Math.floor(hrs / 24);
+    if (days === 1) return "yesterday";
+    return days + "d ago";
   }
+
+  // Expose to other IIFE bundles (e.g. app.js) without polluting globals.
+  window.__dashHelpers = window.__dashHelpers || {};
+  window.__dashHelpers.ago = ago;
 
   // ── Dashboard Tab ───────────────────────────────────────────────────
   function loadDashboard() {
