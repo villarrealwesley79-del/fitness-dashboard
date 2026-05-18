@@ -56,6 +56,13 @@ try:
 except Exception as _e:
     print(f"WARN: apple_health_parser routes not registered: {_e}")
 
+# ── AI coach layer (LM Studio adapter) ──
+try:
+    import lm_studio_adapter as _lm_studio
+except Exception as _e:
+    print(f"WARN: lm_studio_adapter not loaded: {_e}")
+    _lm_studio = None
+
 
 # ==================== DATA PERSISTENCE ====================
 # Store data in JSON files in the same directory as the app
@@ -466,6 +473,23 @@ class SorenessEntry:
 
 # Load data from JSON files (persists across restarts)
 WORKOUTS = load_json(WORKOUTS_FILE, [])
+# Backfill stable IDs for legacy workouts (pre-id-tracking). Persist once.
+_id_backfill_needed = False
+if isinstance(WORKOUTS, list):
+    import uuid as _uuid_boot
+    for _w in WORKOUTS:
+        if isinstance(_w, dict) and not _w.get("id"):
+            _w["id"] = _uuid_boot.uuid4().hex[:12]
+            _id_backfill_needed = True
+    if _id_backfill_needed:
+        try:
+            # save_json isn't defined until later in the file, so do it raw.
+            with open(WORKOUTS_FILE, "w") as _fh:
+                json.dump(WORKOUTS, _fh, indent=2, default=str)
+            print(f"INFO: backfilled stable IDs on {sum(1 for w in WORKOUTS if w.get('id'))} workouts")
+        except Exception as _exc:
+            print(f"WARN: workout-id backfill save failed: {_exc}")
+
 SORENESS_DATA = load_json(SORENESS_FILE, [])
 CARDIO_DATA = load_json(CARDIO_FILE, [])
 RECOVERY_DATA = load_json(RECOVERY_FILE, [])
@@ -1008,7 +1032,7 @@ def _equipment_allowed(exercise, preference: str):
     if preference == "machines_and_cables":
         return equipment in ("machine", "cable")
     if preference == "machines_only":
-        return equipment in ("machine", "cable")
+        return equipment == "machine"
     return True
 
 
@@ -2854,8 +2878,8 @@ def settings():
             ],
             "time_options": TIME_OPTIONS,
             "equipment_options": [
-                {"value": "machines_only", "label": "Machines (includes cables)"},
-                {"value": "machines_and_cables", "label": "Machines + Cables"},
+                {"value": "machines_only", "label": "Machine"},
+                {"value": "machines_and_cables", "label": "Machine + Cable"},
                 {"value": "all", "label": "All Equipment"},
             ]
         })
@@ -2948,6 +2972,7 @@ def exercise_alternatives(muscle_group):
     muscle = (muscle_group or "").strip().lower()
     if not muscle:
         return api_error("Invalid muscle group", 400, code="invalid_field")
+    equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
     options = [
         {
             "name": ex["name"],
@@ -2955,11 +2980,11 @@ def exercise_alternatives(muscle_group):
             "equipment": ex.get("equipment"),
             "compound": ex.get("compound"),
         }
-        for ex in EXERCISE_LIBRARY
-        if ex.get("muscle") == muscle and ex.get("equipment") in ("machine", "cable")
+        for ex in _filtered_exercise_library(equipment_pref)
+        if ex.get("muscle") == muscle
     ]
     options.sort(key=lambda x: x["name"])
-    return jsonify({"muscle": muscle, "alternatives": options})
+    return jsonify({"muscle": muscle, "equipment_preference": equipment_pref, "alternatives": options})
 
 
 @app.route('/api/workout/swap', methods=['POST'])
@@ -2999,8 +3024,9 @@ def swap_workout_exercise():
     old_muscle = (old_ex.get("muscle") or "").lower()
     if new_ex.get("muscle") != old_muscle:
         return api_error("New exercise must match the same muscle group", 400, code="invalid_field")
-    if new_ex.get("equipment") not in ("machine", "cable"):
-        return api_error("New exercise must be a machine or cable movement", 400, code="invalid_field")
+    equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
+    if not _equipment_allowed(new_ex, equipment_pref):
+        return api_error("New exercise is not allowed by the current equipment preference", 400, code="invalid_field")
 
     goal = recommendation.get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
     goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
@@ -3039,6 +3065,744 @@ def swap_workout_exercise():
         LAST_WORKOUT_RECOMMENDATION = recommendation
 
     return jsonify({"status": "success", "recommendation": recommendation})
+
+
+# ==================== AI COACH — ADJUST PLAN ====================
+# Bob's spec (2026-04-23):
+# - LLM returns intent only; Python re-picks exercises and enforces safety.
+# - RPE delta max ±1.0; sets delta max ±20%; weight cap +10% over recent e1RM.
+# - Hard blacklist soreness/readiness-flagged muscles. Never override deload.
+# - Timeout 8s. One concurrent request. Deterministic fallback on any failure.
+# - Cache by workout_id + constraint + readiness_date + model_version + library_hash.
+
+_ADJUST_CACHE_DB = os.path.join(DATA_DIR, "ai_coach_cache.sqlite3")
+
+
+def _ai_cache_init():
+    conn = sqlite3.connect(_ADJUST_CACHE_DB)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS adjust_cache (
+            cache_key TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            response_json TEXT NOT NULL
+        )"""
+    )
+    # Bob's tweak 3 — observability so GX10 flakiness shows up before Wesley
+    # files a bug. One row per /api/workout/adjust call.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS adjust_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            latency_ms INTEGER NOT NULL DEFAULT 0,
+            constraint_len INTEGER NOT NULL DEFAULT 0,
+            model_version TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT ''
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_adjust_metrics_ts ON adjust_metrics(ts)")
+    conn.commit()
+    conn.close()
+
+
+_ai_cache_init()
+
+
+def _ai_metric_log(outcome, latency_ms=0, constraint_len=0, model_version="", reason=""):
+    """Record one /api/workout/adjust call. Swallow errors — metrics must
+    never break the user-visible path."""
+    try:
+        conn = sqlite3.connect(_ADJUST_CACHE_DB)
+        conn.execute(
+            "INSERT INTO adjust_metrics (ts, outcome, latency_ms, constraint_len, model_version, reason) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                outcome,
+                int(latency_ms or 0),
+                int(constraint_len or 0),
+                model_version or "",
+                (reason or "")[:200],
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        print(f"WARN: ai_metric_log failed: {exc}")
+
+
+def _exercise_library_hash(preference: str) -> str:
+    import hashlib
+    names = sorted(ex.get("name", "") for ex in _filtered_exercise_library(preference))
+    return hashlib.sha1(("|".join(names)).encode()).hexdigest()[:12]
+
+
+def _ai_cache_key(recommendation, constraint, readiness_date, model_version, equipment_pref):
+    """Hash of workout-content + constraint + model + library so edits to the
+    recommendation (swaps, adjustments) invalidate the cache properly."""
+    import hashlib
+    # Fingerprint the actual plan content so a swap or prior adjust changes
+    # the key, not just the workout id (which often stays constant).
+    content_fp = json.dumps({
+        "focus": recommendation.get("focus"),
+        "goal": recommendation.get("goal") or recommendation.get("goal_name"),
+        "estimated_minutes": recommendation.get("estimated_minutes"),
+        "exercises": [
+            {
+                "name": ex.get("exercise") or ex.get("machine") or ex.get("name"),
+                "muscle": ex.get("muscle") or ex.get("muscle_group"),
+                "target_sets": ex.get("target_sets") or ex.get("sets"),
+                "target_reps": ex.get("target_reps") or ex.get("reps"),
+                "target_weight": ex.get("target_weight") or ex.get("target_weight_lbs"),
+                "rpe_target": ex.get("rpe_target") or ex.get("rpe"),
+            }
+            for ex in (recommendation.get("exercises") or [])
+        ],
+        "cardio_type": (recommendation.get("cardio") or {}).get("type"),
+    }, default=str, sort_keys=True)
+    parts = [
+        str(recommendation.get("id") or ""),
+        hashlib.sha1(content_fp.encode()).hexdigest()[:16],
+        (constraint or "").strip().lower(),
+        readiness_date or "",
+        model_version or "",
+        _exercise_library_hash(equipment_pref),
+    ]
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()
+
+
+def _ai_cache_get(key):
+    try:
+        conn = sqlite3.connect(_ADJUST_CACHE_DB)
+        row = conn.execute(
+            "SELECT response_json FROM adjust_cache WHERE cache_key = ?", (key,)
+        ).fetchone()
+        conn.close()
+        return json.loads(row[0]) if row else None
+    except Exception:
+        return None
+
+
+def _ai_cache_put(key, payload):
+    try:
+        conn = sqlite3.connect(_ADJUST_CACHE_DB)
+        conn.execute(
+            "INSERT OR REPLACE INTO adjust_cache (cache_key, created_at, response_json) VALUES (?, ?, ?)",
+            (key, datetime.now().isoformat(), json.dumps(payload)),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        print(f"WARN: adjust_cache write failed: {exc}")
+
+
+def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref):
+    """Apply the LLM's intent patch to the deterministic recommendation.
+
+    Every mutation is clamped/validated here. The LLM cannot override safety.
+    Returns (patched_recommendation, applied_notes) where applied_notes is a
+    list of human-readable strings describing what actually changed.
+    """
+    notes = []
+    exercises = list(recommendation.get("exercises") or [])
+
+    # ── 1) Respect deload: skip rpe_delta / sets_delta_pct entirely on deload.
+    deload_active = bool((meso_plan.get("name") == "Deload"))
+
+    # ── 2) Clamp rpe_delta to ±1.0; disallow upward on poor readiness.
+    rpe_delta_raw = float(intent.get("rpe_delta") or 0)
+    rpe_delta = max(-1.0, min(1.0, rpe_delta_raw))
+    if deload_active and rpe_delta_raw > 0:
+        rpe_delta = min(0.0, rpe_delta)  # deload can only reduce
+        notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — deload week")
+    if oura_readiness is not None and oura_readiness < 60 and rpe_delta_raw > 0:
+        rpe_delta = min(0.0, rpe_delta)
+        notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — readiness {oura_readiness}/100")
+
+    # ── 3) Clamp sets_delta_pct to ±20; no upward on deload/low readiness.
+    sets_delta_raw = float(intent.get("sets_delta_pct") or 0)
+    sets_delta = max(-20.0, min(20.0, sets_delta_raw))
+    if deload_active or (oura_readiness is not None and oura_readiness < 60):
+        sets_delta = min(0.0, sets_delta)
+
+    # ── 4) Hard blacklist avoid_muscles using current soreness data.
+    avoid_muscles = {m.strip().lower() for m in (intent.get("avoid_muscles") or []) if isinstance(m, str)}
+    recent_soreness = filter_recent_soreness(SORENESS_DATA, hours=48)
+    sore_map = {}
+    for s in recent_soreness:
+        # Soreness rows are stored with key "muscle" by /api/add-soreness;
+        # accept legacy "muscle_group" / "body_part" too.
+        muscle = (s.get("muscle") or s.get("muscle_group") or s.get("body_part") or "").strip().lower()
+        if not muscle:
+            continue
+        try:
+            level = int(s.get("soreness_level") or 0)
+        except (TypeError, ValueError):
+            level = 0
+        sore_map[muscle] = max(sore_map.get(muscle, 0), level)
+    # Anything flagged ≥7 is blacklisted regardless of LLM input.
+    avoid_muscles.update(m for m, lvl in sore_map.items() if lvl >= 7)
+
+    if avoid_muscles:
+        kept = []
+        for ex in exercises:
+            muscle = (ex.get("muscle") or "").lower()
+            if muscle in avoid_muscles:
+                ex_name = ex.get("exercise") or ex.get("name") or ex.get("machine") or "exercise"
+                reason_bits = [f"{muscle} avoided"]
+                if sore_map.get(muscle, 0) >= 7:
+                    reason_bits.append(f"soreness {sore_map[muscle]}/10")
+                notes.append(f"Removed: {ex_name} — {', '.join(reason_bits)}")
+            else:
+                kept.append(ex)
+        exercises = kept
+
+    # ── 5) Apply swaps. LLM names the muscle; Python picks the exercise.
+    volume_data = calculate_volume(WORKOUTS, weeks=4)
+    progression = calculate_progression_status(WORKOUTS)
+    time_per_set = goal_params.get("time_per_set_minutes", 3)
+    volume_multiplier = meso_plan["volume_multiplier"]
+    if oura_readiness is not None and oura_readiness < 60:
+        volume_multiplier *= 0.8
+
+    swap_requests = intent.get("swap") or []
+    for sw in swap_requests:
+        if not isinstance(sw, dict):
+            continue
+        src_name = (sw.get("replace_exercise") or "").strip().lower()
+        target_muscle = (sw.get("target_muscle") or "").strip().lower()
+        if not src_name or not target_muscle:
+            continue
+        if target_muscle in avoid_muscles:
+            notes.append(f"Ignored: swap to {target_muscle} — muscle is avoided")
+            continue
+
+        # Find the exercise to replace by name (case-insensitive, contains).
+        idx = None
+        for i, ex in enumerate(exercises):
+            if src_name in (ex.get("exercise") or "").lower():
+                idx = i
+                break
+        if idx is None:
+            notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
+            continue
+
+        # Pick a new exercise for target_muscle from the equipment-filtered library,
+        # preferring compound movements and rotating off recently-trained exercises.
+        library = [ex for ex in _filtered_exercise_library(equipment_pref) if ex.get("muscle") == target_muscle]
+        if not library:
+            notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment")
+            continue
+        # Prefer compound, then alphabetical stability
+        library.sort(key=lambda e: (not e.get("compound"), e.get("name", "")))
+        # Avoid picking something already in the plan
+        already = {(ex.get("exercise") or "").lower() for ex in exercises}
+        picked = next((e for e in library if e["name"].lower() not in already), library[0])
+
+        new_entry = _build_exercise_entry(
+            exercise_name=picked["name"],
+            muscle=picked["muscle"],
+            is_compound=picked["compound"],
+            goal_params=goal_params,
+            meso_week=meso_week,
+            volume_multiplier=volume_multiplier,
+            oura_readiness=oura_readiness,
+            volume_data=volume_data,
+            soreness_data=SORENESS_DATA,
+            progression=progression,
+            workouts=WORKOUTS,
+            time_per_set=time_per_set,
+        )
+        reason = sw.get("reason") or ""
+        old_name = exercises[idx].get('exercise')
+        new_entry["rationale"] = f"{new_entry.get('rationale', '')} · Swapped from {old_name} ({reason})".strip(" ·")
+        exercises[idx] = new_entry
+        reason_suffix = f" — {reason}" if reason else ""
+        notes.append(f"Swapped: {old_name} → {picked['name']}{reason_suffix}")
+
+    # ── 6) Apply rpe_delta and sets_delta_pct to each exercise, enforcing caps.
+    if rpe_delta != 0 or sets_delta != 0:
+        for ex in exercises:
+            if rpe_delta:
+                cur = float(ex.get("rpe_target") or goal_params.get("rpe_target") or 7)
+                ex["rpe_target"] = max(1.0, min(10.0, cur + rpe_delta))
+            if sets_delta:
+                cur = int(ex.get("target_sets") or goal_params.get("sets_per_exercise") or 3)
+                new_sets = max(1, round(cur * (1 + sets_delta / 100.0)))
+                # Never add sets on deload
+                if deload_active:
+                    new_sets = min(cur, new_sets)
+                ex["target_sets"] = new_sets
+        if rpe_delta:
+            notes.append(f"RPE adjusted {rpe_delta:+.1f} across all exercises")
+        if sets_delta:
+            notes.append(f"Sets adjusted {sets_delta:+.0f}% across all exercises")
+
+    # ── 7) Weight guard: cap every exercise at +10% of its recent e1RM-derived load.
+    for ex in exercises:
+        ex_name = ex.get("exercise") or ""
+        prog = progression.get(ex_name) or {}
+        e1rm = prog.get("current_e1rm") or prog.get("peak_e1rm") or 0
+        if e1rm and ex.get("target_weight"):
+            target_w = float(ex.get("target_weight") or 0)
+            cap = e1rm * 1.10
+            if target_w > cap:
+                ex["target_weight"] = round(cap, 1)
+                notes.append(f"Capped: {ex_name} weight → {round(cap, 1)} lb (10% above e1RM ceiling)")
+
+    # ── 8) Duration cap — if user gave a tight time box, trim tail exercises.
+    duration_cap = float(intent.get("duration_cap_min") or 0)
+    if duration_cap and duration_cap > 0:
+        budget = duration_cap - 10  # warmup+cooldown
+        minutes_used = 0
+        kept = []
+        for ex in exercises:
+            ex_minutes = float(ex.get("target_sets") or 3) * time_per_set
+            if minutes_used + ex_minutes > budget:
+                break
+            minutes_used += ex_minutes
+            kept.append(ex)
+        if len(kept) < len(exercises):
+            dropped = [ex.get("exercise") or ex.get("name") or "exercise" for ex in exercises[len(kept):]]
+            notes.append(f"Trimmed: {', '.join(dropped)} — fits {int(duration_cap)} min window")
+            exercises = kept
+        recommendation["estimated_minutes"] = int(minutes_used + 10)
+
+    # ── 9) Drop cardio if requested.
+    if intent.get("drop_cardio"):
+        recommendation["cardio"] = None
+        notes.append("Removed: Cardio finisher — per your request")
+
+    recommendation["exercises"] = exercises
+    return recommendation, notes
+
+
+@app.route('/api/workout/adjust', methods=['POST'])
+def adjust_workout():
+    """AI coach adjustment: accept a natural-language constraint and return a
+    safety-validated patch of the current deterministic recommendation.
+
+    On any failure (LM Studio down, bad JSON, anything unexpected) we return
+    the deterministic plan unchanged with status='fallback' so the UI can show
+    a "AI coach unavailable" chip without breaking.
+    """
+    global LAST_WORKOUT_RECOMMENDATION
+
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    constraint, err2 = _coerce_str(data.get("constraint"), "constraint", required=True, max_len=280)
+    if err2:
+        return err2
+
+    if not _lm_studio:
+        _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
+        return jsonify({
+            "status": "fallback",
+            "reason": "LM Studio adapter not available on this server",
+            "recommendation": LAST_WORKOUT_RECOMMENDATION,
+            "summary": None,
+            "applied_notes": [],
+        })
+
+    recommendation = LAST_WORKOUT_RECOMMENDATION
+    if not recommendation:
+        recommendation = generate_next_workout(WORKOUTS, SORENESS_DATA)
+        LAST_WORKOUT_RECOMMENDATION = recommendation
+
+    goal = recommendation.get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
+    goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
+    sessions_per_week = USER_SETTINGS.get("sessions_per_week_target", 3)
+    meso_week = recommendation.get("mesocycle", {}).get("week") or _get_mesocycle_week(WORKOUTS, sessions_per_week)
+    meso_plan = MESOCYCLE_PLAN.get(meso_week, MESOCYCLE_PLAN[1])
+    oura_readiness = _get_oura_readiness_today()
+    equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
+
+    readiness_date = _today_str()
+    cache_key = _ai_cache_key(
+        recommendation,
+        constraint,
+        readiness_date,
+        _lm_studio.LM_STUDIO_MODEL_VERSION,
+        equipment_pref,
+    )
+    cached = _ai_cache_get(cache_key)
+    if cached:
+        cached["cache_hit"] = True
+        _ai_metric_log("cache_hit", latency_ms=0, constraint_len=len(constraint), model_version=_lm_studio.LM_STUDIO_MODEL_VERSION)
+        # Keep server-side canonical plan in sync with what the client sees,
+        # so a follow-up Adjust or Swap operates on the patched plan, not the
+        # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
+        if cached.get("recommendation"):
+            LAST_WORKOUT_RECOMMENDATION = cached["recommendation"]
+        return jsonify(cached)
+
+    # Send readiness context the LLM can reason about.
+    readiness_ctx = {
+        "oura_readiness": oura_readiness,
+        "mesocycle_week": meso_week,
+        "deload_active": bool((meso_plan.get("name") == "Deload")),
+    }
+
+    try:
+        raw_patch = _lm_studio.adjust_plan(recommendation, constraint, readiness=readiness_ctx)
+    except _lm_studio.LmStudioError as exc:
+        reason_code = "timeout" if "timeout" in str(exc).lower() else "unreachable" if "unreachable" in str(exc).lower() else "invalid_json" if "json" in str(exc).lower() else "error"
+        _ai_metric_log(
+            "fallback",
+            constraint_len=len(constraint),
+            model_version=_lm_studio.LM_STUDIO_MODEL_VERSION,
+            reason=f"{reason_code}: {exc}",
+        )
+        return jsonify({
+            "status": "fallback",
+            "reason": f"LM Studio: {exc}",
+            "recommendation": recommendation,
+            "summary": None,
+            "applied_notes": [],
+        })
+
+    intent = raw_patch.get("intent") or {}
+    summary = raw_patch.get("summary") or ""
+
+    # Deep-copy the recommendation so the in-memory canonical isn't mutated
+    # if the user re-opens without applying.
+    patched = json.loads(json.dumps(recommendation, default=str))
+    try:
+        patched, applied_notes = _apply_intent_patch(
+            patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
+        )
+    except Exception as exc:
+        # Any unexpected failure in safety-rail application (type error from a
+        # drifted LLM output that slipped past validation, missing helper
+        # preconditions, etc.) must not leak as a 500. Fall back to the
+        # deterministic plan, log the failure in metrics.
+        _ai_metric_log(
+            "fallback",
+            constraint_len=len(constraint),
+            model_version=_lm_studio.LM_STUDIO_MODEL_VERSION,
+            reason=f"apply_patch_error: {type(exc).__name__}: {str(exc)[:80]}",
+        )
+        return jsonify({
+            "status": "fallback",
+            "reason": f"safety-rail error: {type(exc).__name__}",
+            "recommendation": recommendation,
+            "summary": None,
+            "applied_notes": [],
+        })
+
+    payload = {
+        "status": "ok",
+        "recommendation": patched,
+        "summary": summary,
+        "applied_notes": applied_notes,
+        "constraint": constraint,
+        "meta": raw_patch.get("_meta", {}),
+        "cache_hit": False,
+    }
+    _ai_cache_put(cache_key, payload)
+    LAST_WORKOUT_RECOMMENDATION = patched
+    _ai_metric_log(
+        "ok",
+        latency_ms=(raw_patch.get("_meta") or {}).get("elapsed_ms", 0),
+        constraint_len=len(constraint),
+        model_version=_lm_studio.LM_STUDIO_MODEL_VERSION,
+    )
+    return jsonify(payload)
+
+
+@app.route('/api/workout/analyze', methods=['POST'])
+def analyze_workout():
+    """Post-mortem on one logged workout.
+
+    Accepts either {"workout_id": "..."} to analyze a specific stored workout,
+    {"workout_date": "YYYY-MM-DD"} to pick the most recent session on that day,
+    or {"latest": true} for the most recently completed session.
+    """
+    if not _lm_studio:
+        return jsonify({"status": "fallback", "reason": "LM Studio adapter not available"}), 200
+
+    data, err = get_json_body(required=False) if False else (request.get_json(force=True, silent=True) or {}, None)
+    if err:
+        return err
+
+    workout_id = data.get("workout_id")
+    workout_date = data.get("workout_date")
+    want_latest = bool(data.get("latest"))
+
+    target = None
+    if workout_id:
+        target = next((w for w in WORKOUTS if w.get("id") == workout_id), None)
+    elif workout_date:
+        matches = [w for w in WORKOUTS if w.get("date") == workout_date]
+        if matches:
+            target = matches[-1]
+    elif want_latest:
+        if WORKOUTS:
+            # Prefer created_at (precise timestamp) over date alone so the
+            # correct session wins when multiple were logged the same day.
+            target = max(
+                WORKOUTS,
+                key=lambda w: (w.get("created_at") or "", w.get("date") or "", w.get("id") or ""),
+            )
+
+    if not target:
+        return api_error("workout not found — supply workout_id, workout_date, or latest=true", 404, code="not_found")
+
+    set_note_count = sum(
+        1
+        for ex in (target.get("exercises") or [])
+        for s in (ex.get("sets") or [])
+        if (s.get("notes") or "").strip()
+    )
+    notes_context = {
+        "set_note_count": set_note_count,
+        "workout_notes_present": bool((target.get("notes") or "").strip()),
+        "cardio_notes_present": bool(((target.get("cardio") or {}).get("notes") or "").strip()),
+    }
+
+    # Build context: sessions touching any of the same muscles in the 28 days
+    # BEFORE the target workout (not before today) so historical analyses get
+    # the right context, plus progression data for each exercise in the target.
+    target_date = target.get("date")
+    try:
+        target_dt = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else datetime.now().date()
+    except Exception:
+        target_dt = datetime.now().date()
+    cutoff_date = target_dt - timedelta(days=28)
+    target_muscles = {
+        (ex.get("muscle_group") or ex.get("muscle") or "").lower()
+        for ex in (target.get("exercises") or [])
+        if (ex.get("muscle_group") or ex.get("muscle"))
+    }
+    target_exercise_names = {
+        (ex.get("machine") or ex.get("exercise") or ex.get("name") or "").lower()
+        for ex in (target.get("exercises") or [])
+    }
+
+    recent = []
+    for w in WORKOUTS:
+        d = w.get("date")
+        if not d or d == target_date:
+            continue
+        try:
+            wd = datetime.strptime(d, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if wd < cutoff_date or wd >= target_dt:
+            continue
+        w_muscles = {
+            (ex.get("muscle_group") or ex.get("muscle") or "").lower()
+            for ex in (w.get("exercises") or [])
+        }
+        if w_muscles & target_muscles:
+            recent.append(w)
+    recent.sort(key=lambda w: w.get("date") or "", reverse=True)
+    recent_compact = []
+    for w in recent[:6]:
+        recent_compact.append({
+            "date": w.get("date"),
+            "session_type": w.get("session_type") or w.get("focus"),
+            "duration_minutes": w.get("duration_minutes"),
+            "total_sets": w.get("total_sets"),
+            "total_volume_lbs": w.get("total_volume"),
+            "exercises": [
+                {
+                    "name": ex.get("machine") or ex.get("exercise") or ex.get("name"),
+                    "muscle": ex.get("muscle_group") or ex.get("muscle"),
+                    "set_count": len(ex.get("sets") or []),
+                    "top_weight": max(
+                        (float(s.get("weight_lbs") or 0) for s in (ex.get("sets") or [])),
+                        default=0,
+                    ),
+                    "top_rpe": max(
+                        (float(s.get("rpe") or 0) for s in (ex.get("sets") or [])),
+                        default=0,
+                    ),
+                }
+                for ex in (w.get("exercises") or [])
+            ],
+        })
+
+    progression_all = calculate_progression_status(WORKOUTS)
+    progression_subset = {
+        name: {
+            "current_e1rm": data_.get("current_e1rm"),
+            "peak_e1rm": data_.get("peak_e1rm"),
+            "trend_pct": data_.get("trend_pct"),
+            "status": data_.get("status"),
+        }
+        for name, data_ in progression_all.items()
+        if name.lower() in target_exercise_names
+    }
+
+    oura_snapshot = None
+    try:
+        oura_row = get_oura_daily(OURA_DB_FILE, target_date)
+        if oura_row:
+            oura_snapshot = {
+                "readiness": oura_row.get("readiness_score"),
+                "sleep_score": oura_row.get("sleep_score"),
+                "hrv": oura_row.get("hrv"),
+                "resting_hr": oura_row.get("resting_hr"),
+            }
+    except Exception:
+        oura_snapshot = None
+
+    goal = USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
+    goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
+
+    llm_context = {
+        "recent_sessions": recent_compact,
+        "progression": progression_subset,
+        "readiness": oura_snapshot,
+        "goal": {
+            "name": goal,
+            "rpe_target": goal_params.get("rpe_target"),
+            "rep_range": goal_params.get("rep_range"),
+        },
+    }
+
+    # Cache key based on workout content + model version so re-analyzing the
+    # same unchanged workout doesn't re-spend tokens.
+    import hashlib
+    fingerprint_src = json.dumps({
+        "analysis_prompt_version": getattr(_lm_studio, "ANALYZE_PROMPT_VERSION", "unknown"),
+        "target": {
+            "date": target.get("date"),
+            "exercises": [
+                {
+                    "name": ex.get("machine") or ex.get("exercise"),
+                    "sets": [
+                        {
+                            "r": s.get("reps"),
+                            "w": s.get("weight_lbs"),
+                            "rpe": s.get("rpe"),
+                            "notes": s.get("notes") or "",
+                        }
+                        for s in (ex.get("sets") or [])
+                    ],
+                }
+                for ex in (target.get("exercises") or [])
+            ],
+            "notes": target.get("notes") or "",
+            "cardio": target.get("cardio"),
+        },
+        "recent_keys": [w.get("date") for w in recent_compact],
+        "model": _lm_studio.LM_STUDIO_MODEL_VERSION,
+    }, default=str, sort_keys=True)
+    cache_key = "analyze:" + hashlib.sha1(fingerprint_src.encode()).hexdigest()
+    cached = _ai_cache_get(cache_key)
+    if cached:
+        cached["cache_hit"] = True
+        cached_ctx = cached.setdefault("context_used", {})
+        cached_ctx.update(notes_context)
+        _ai_metric_log("cache_hit", constraint_len=0, model_version=_lm_studio.LM_STUDIO_MODEL_VERSION, reason="analyze")
+        return jsonify(cached)
+
+    try:
+        result = _lm_studio.analyze_workout(target, llm_context)
+    except _lm_studio.LmStudioError as exc:
+        _ai_metric_log("fallback", constraint_len=0, model_version=_lm_studio.LM_STUDIO_MODEL_VERSION, reason=f"analyze: {exc}")
+        return jsonify({
+            "status": "fallback",
+            "reason": f"LM Studio: {exc}",
+            "workout": target,
+            "analysis": None,
+        })
+
+    payload = {
+        "status": "ok",
+        "workout": {
+            "id": target.get("id"),
+            "date": target.get("date"),
+            "session_type": target.get("session_type") or target.get("focus"),
+            "total_sets": target.get("total_sets"),
+            "total_volume": target.get("total_volume"),
+            "duration_minutes": target.get("duration_minutes"),
+        },
+        "analysis": {
+            "summary": result.get("summary"),
+            "wins": result.get("wins") or [],
+            "concerns": result.get("concerns") or [],
+            "comparison": result.get("comparison"),
+            "next_session_cue": result.get("next_session_cue"),
+        },
+        "context_used": {
+            "recent_session_count": len(recent_compact),
+            "exercise_progression_available": list(progression_subset.keys()),
+            "readiness_available": oura_snapshot is not None,
+            **notes_context,
+        },
+        "meta": result.get("_meta", {}),
+        "cache_hit": False,
+    }
+    _ai_cache_put(cache_key, payload)
+    _ai_metric_log(
+        "ok",
+        latency_ms=(result.get("_meta") or {}).get("elapsed_ms", 0),
+        constraint_len=0,
+        model_version=_lm_studio.LM_STUDIO_MODEL_VERSION,
+        reason="analyze",
+    )
+    return jsonify(payload)
+
+
+@app.route('/api/ai/health')
+def ai_health():
+    if not _lm_studio:
+        return jsonify({"reachable": False, "error": "adapter not loaded"})
+    return jsonify(_lm_studio.health())
+
+
+@app.route('/api/ai/metrics')
+def ai_metrics():
+    """Bob's tweak 3 — aggregate last-N-hours stats so a flaky GX10 shows up."""
+    try:
+        hours, _ = _coerce_int(request.args.get("hours", 24), "hours", min_v=1, max_v=720)
+        hours = hours or 24
+    except Exception:
+        hours = 24
+
+    cutoff = (datetime.now() - timedelta(hours=hours)).isoformat(timespec="seconds")
+    try:
+        conn = sqlite3.connect(_ADJUST_CACHE_DB)
+        rows = conn.execute(
+            "SELECT outcome, COUNT(*), COALESCE(AVG(NULLIF(latency_ms,0)),0) FROM adjust_metrics WHERE ts >= ? GROUP BY outcome",
+            (cutoff,),
+        ).fetchall()
+        last5 = conn.execute(
+            "SELECT ts, outcome, latency_ms, reason FROM adjust_metrics WHERE ts >= ? ORDER BY id DESC LIMIT 5",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    buckets = {"ok": 0, "cache_hit": 0, "fallback": 0}
+    avg_latency_ms = 0
+    for outcome, count, avg_ms in rows:
+        buckets[outcome] = count
+        if outcome == "ok":
+            avg_latency_ms = int(avg_ms or 0)
+    total = sum(buckets.values())
+    fallback_pct = round(100 * buckets.get("fallback", 0) / total, 1) if total else 0.0
+    cache_hit_pct = round(100 * buckets.get("cache_hit", 0) / total, 1) if total else 0.0
+
+    return jsonify({
+        "window_hours": hours,
+        "adjust_requests": total,
+        "ok": buckets.get("ok", 0),
+        "cache_hits": buckets.get("cache_hit", 0),
+        "fallbacks": buckets.get("fallback", 0),
+        "fallback_pct": fallback_pct,
+        "cache_hit_pct": cache_hit_pct,
+        "avg_latency_ms": avg_latency_ms,
+        "recent": [
+            {"ts": r[0], "outcome": r[1], "latency_ms": r[2], "reason": r[3]}
+            for r in last5
+        ],
+    })
 
 
 # ==================== WEATHER (wttr.in) ====================
@@ -3091,13 +3855,28 @@ def weather_api():
 
 # ==================== OURA INTEGRATION ====================
 
-OPEN_WEARABLES_USERNAME = os.environ.get("OW_USERNAME", "bobvillarreal97@gmail.com")
-OPEN_WEARABLES_PASSWORD = os.environ.get("OW_PASSWORD", "EbVPvtqkxVFoN6GRRZJJgA")
-OPEN_WEARABLES_USER_ID = os.environ.get("OW_USER_ID", "d18e9372-aecf-4992-a26b-f803c31fb71f")
-OPEN_WEARABLES_BASE = f"http://localhost:8000/api/v1/users/{OPEN_WEARABLES_USER_ID}"
+OPEN_WEARABLES_USERNAME = os.environ.get("OW_USERNAME", "").strip()
+OPEN_WEARABLES_PASSWORD = os.environ.get("OW_PASSWORD", "").strip()
+OPEN_WEARABLES_USER_ID = os.environ.get("OW_USER_ID", "").strip()
+OPEN_WEARABLES_BASE = (
+    f"http://localhost:8000/api/v1/users/{OPEN_WEARABLES_USER_ID}"
+    if OPEN_WEARABLES_USER_ID
+    else ""
+)
 OPEN_WEARABLES_LOGIN_URL = "http://localhost:8000/api/v1/auth/login"
 
 _OW_TOKEN_CACHE = {"token": None, "expires_at": 0}
+
+
+def _missing_open_wearables_config():
+    missing = []
+    if not OPEN_WEARABLES_USERNAME:
+        missing.append("OW_USERNAME")
+    if not OPEN_WEARABLES_PASSWORD:
+        missing.append("OW_PASSWORD")
+    if not OPEN_WEARABLES_USER_ID:
+        missing.append("OW_USER_ID")
+    return missing
 
 
 def _decode_jwt_exp(token: str | None):
@@ -3116,6 +3895,15 @@ def _decode_jwt_exp(token: str | None):
 
 def _get_ow_token():
     """Login once to Open Wearables and reuse token until expiry."""
+    missing = _missing_open_wearables_config()
+    if missing:
+        _OW_TOKEN_CACHE.update({
+            "token": None,
+            "expires_at": 0,
+            "error": f"missing_config:{','.join(missing)}",
+        })
+        return None
+
     now = int(time.time())
     cached = _OW_TOKEN_CACHE.get("token")
     expires_at = int(_OW_TOKEN_CACHE.get("expires_at") or 0)
@@ -3181,6 +3969,16 @@ def _ow_request(url: str, headers: dict, timeout_s: int = 6, retry_auth: bool = 
 
 def fetch_open_wearables_data():
     """Fetch sleep, workouts, and activity summaries from local Open Wearables bridge (best-effort)."""
+    missing = _missing_open_wearables_config()
+    if missing:
+        return {
+            "sleep": None,
+            "workouts": None,
+            "activity_summary": None,
+            "fetched_at": datetime.now().isoformat(),
+            "errors": {"config": f"missing:{','.join(missing)}"},
+        }
+
     token = _get_ow_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
@@ -3693,6 +4491,14 @@ def oura_trends():
     start_s = start.strftime("%Y-%m-%d")
     end_s = end.strftime("%Y-%m-%d")
 
+    def public_rows(items):
+        cleaned = []
+        for row in items or []:
+            public = dict(row)
+            public.pop("raw_json", None)
+            cleaned.append(public)
+        return cleaned
+
     rows = get_oura_daily_range(OURA_DB_FILE, start_s, end_s)
 
     # If we don't have enough cached days, fetch and upsert from API.
@@ -3726,7 +4532,7 @@ def oura_trends():
                 "start_date": start_s,
                 "end_date": end_s,
                 "hrv_trend": "unknown",
-                "series": rows,
+                "series": public_rows(rows),
                 "error": str(e)
             }), 200
 
@@ -3735,7 +4541,7 @@ def oura_trends():
         "start_date": start_s,
         "end_date": end_s,
         "hrv_trend": trend,
-        "series": rows
+        "series": public_rows(rows)
     })
 
 
@@ -3762,13 +4568,15 @@ def sync_oura_sleep():
         # Sync data
         sync_sleep_data(OURA_DB_FILE, api_token, start_date=start_date)
         
-        # Return latest sleep records
+        # Return a summary only; raw wearable rows stay server-side.
         latest = get_latest_sleep(OURA_DB_FILE, days=7)
+        latest_days = [r.get("day") for r in latest if r.get("day")]
         
         return jsonify({
             "status": "success",
             "synced_from": start_date,
-            "latest_records": latest
+            "latest_records": len(latest),
+            "latest_days": latest_days,
         })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -4233,6 +5041,8 @@ def all_history():
             for s in e.get("sets", [])
         )
         workouts_list.append({
+            "id": w.get("id"),
+            "created_at": w.get("created_at"),
             "date": w.get("date", ""),
             "session_type": w.get("session_type", "general"),
             "duration_minutes": w.get("duration_minutes", 0),
@@ -4321,7 +5131,7 @@ def complete_workout():
     if len(actual_exercises) == 0:
         return api_error("Workout must include at least one exercise", 400, code="invalid_field")
 
-    for ex in actual_exercises:
+    for ex_idx, ex in enumerate(actual_exercises):
         if not isinstance(ex, dict):
             return api_error("Each exercise must be an object", 400, code="invalid_field")
         if not ex.get("machine"):
@@ -4329,10 +5139,82 @@ def complete_workout():
         sets = ex.get("sets") or []
         if not isinstance(sets, list) or len(sets) == 0:
             return api_error("Each exercise must include at least one set", 400, code="invalid_field")
+        for set_idx, set_row in enumerate(sets):
+            if not isinstance(set_row, dict):
+                return api_error("Each set must be an object", 400, code="invalid_field")
+            set_notes, err2 = _coerce_str(
+                set_row.get("notes", ""),
+                f"exercises[{ex_idx}].sets[{set_idx}].notes",
+                required=False,
+                max_len=500,
+            )
+            if err2:
+                return err2
+            if set_notes:
+                set_row["notes"] = set_notes
+            else:
+                set_row.pop("notes", None)
+            if not set_row.get("set_number"):
+                set_row["set_number"] = set_idx + 1
 
     notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
     if err2:
         return err2
+
+    cardio_payload = data.get("cardio")
+    cardio_actual = None
+    cardio_log_entry = None
+
+    def _int_or_default(value, default=0):
+        if value in (None, ""):
+            return default
+        try:
+            return int(float(value))
+        except Exception:
+            return default
+
+    if isinstance(cardio_payload, dict):
+        cardio_rec = cardio_payload.get("recommendation")
+        if not isinstance(cardio_rec, dict):
+            cardio_rec = {}
+        cardio_notes, err2 = _coerce_str(cardio_payload.get("notes", ""), "cardio.notes", required=False, max_len=2000)
+        if err2:
+            return err2
+        activity_type, err2 = _coerce_str(
+            cardio_payload.get("activity_type") or cardio_rec.get("type") or cardio_rec.get("machine") or "Cardio",
+            "cardio.activity_type",
+            required=False,
+            max_len=64,
+        )
+        if err2:
+            return err2
+        duration_minutes = max(0, min(_int_or_default(cardio_payload.get("duration_minutes") or cardio_rec.get("duration_minutes"), 0), 600))
+        completed = bool(cardio_payload.get("completed"))
+        cardio_actual = {
+            "completed": completed,
+            "activity_type": activity_type or "Cardio",
+            "duration_minutes": duration_minutes,
+            "notes": cardio_notes,
+            "recommendation": {
+                "type": cardio_rec.get("type"),
+                "duration_minutes": cardio_rec.get("duration_minutes"),
+                "zone": cardio_rec.get("zone"),
+                "heart_rate_range": cardio_rec.get("heart_rate_range"),
+                "intensity": cardio_rec.get("intensity"),
+                "reason": cardio_rec.get("reason"),
+            },
+        }
+        if completed and duration_minutes > 0:
+            cardio_log_entry = {
+                "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
+                "activity_type": activity_type or "Cardio",
+                "duration_minutes": duration_minutes,
+                "avg_heart_rate": _int_or_default(cardio_payload.get("avg_heart_rate"), None),
+                "intensity": max(1, min(_int_or_default(cardio_payload.get("intensity"), 5), 10)),
+                "notes": cardio_notes,
+                "created_at": datetime.now().isoformat(),
+                "source": "completed_workout",
+            }
 
     # Find the recommendation
     recommendation = None
@@ -4376,6 +5258,8 @@ def complete_workout():
     except Exception:
         duration_minutes = 45
     duration_minutes = max(0, min(duration_minutes, 600))
+    if cardio_actual and cardio_actual.get("completed"):
+        duration_minutes = min(600, duration_minutes + int(cardio_actual.get("duration_minutes") or 0))
 
     overall_fatigue = data.get("fatigue", 5)
     try:
@@ -4401,13 +5285,27 @@ def complete_workout():
         if not ex.get("muscle_group") or ex["muscle_group"] == "unknown":
             ex["muscle_group"] = _MACHINE_TO_MUSCLE.get(ex.get("machine", ""), "unknown")
 
+    total_sets = sum(len(e.get("sets", [])) for e in actual_exercises)
+    total_volume = sum(
+        float(s.get("weight_lbs") or 0) * float(s.get("reps") or 0)
+        for e in actual_exercises
+        for s in (e.get("sets") or [])
+    )
+
+    import uuid as _uuid
+    workout_id = _uuid.uuid4().hex[:12]
     workout_entry = {
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "id": workout_id,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
         "session_type": session_type,
         "duration_minutes": duration_minutes,
         "exercises": actual_exercises,
+        "total_sets": total_sets,
+        "total_volume": round(total_volume),
         "overall_fatigue": overall_fatigue,
         "notes": notes,
+        "cardio": cardio_actual,
         "recommendation_id": recommendation_id,
         "adherence": adherence
     }
@@ -4415,11 +5313,16 @@ def complete_workout():
     WORKOUTS.append(workout_entry)
     COMPLETED_WORKOUTS.append(workout_entry)
     save_json(WORKOUTS_FILE, WORKOUTS)  # Persist to file
+    if cardio_log_entry:
+        cardio_log_entry["workout_id"] = workout_id
+        CARDIO_DATA.append(cardio_log_entry)
+        save_json(CARDIO_FILE, CARDIO_DATA)
     _notify_workout_logged(workout_entry)
 
     return jsonify({
         "status": "success",
         "adherence": adherence,
+        "workout_id": workout_id,
         "message": "Workout logged! Navigating to history..."
     })
 
@@ -4558,10 +5461,11 @@ def export_markdown():
     for workout in sorted(WORKOUTS, key=lambda x: x["date"]):
         for exercise in workout.get("exercises", []):
             machine = exercise["machine"]
-            for s in exercise.get("sets", []):
+            for idx, s in enumerate(exercise.get("sets", [])):
                 volume = s["weight_lbs"] * s["reps"]
                 notes = s.get("notes", "")
-                lines.append(f"| {workout['date']} | {machine} | {s['set_number']} | {s['reps']} | {s['weight_lbs']} | {volume} | {notes} |")
+                set_number = s.get("set_number") or idx + 1
+                lines.append(f"| {workout['date']} | {machine} | {set_number} | {s['reps']} | {s['weight_lbs']} | {volume} | {notes} |")
 
     lines.append("")
     lines.append("---")
@@ -5157,6 +6061,14 @@ def get_local_ip():
 
 
 if __name__ == '__main__':
+    from werkzeug.serving import WSGIRequestHandler
+
+    class SanitizedRequestHandler(WSGIRequestHandler):
+        def log_request(self, code="-", size="-"):
+            import re
+            requestline = re.sub(r"([?&]token=)[^&\s]+", r"\1<redacted>", self.requestline)
+            self.log("info", '"%s" %s %s', requestline, code, size)
+
     local_ip = get_local_ip()
     port = int(os.environ.get('PORT', 5050))
 
@@ -5170,8 +6082,10 @@ if __name__ == '__main__':
     print("  Then use the ngrok URL on your phone")
     print("\n" + "="*60 + "\n")
 
-    # Debug mode controlled by env var - NEVER expose debug=True via ngrok
-    debug_mode = os.getenv("FLASK_DEBUG", "1") == "1"
+    # Debug mode defaults OFF. Opt in explicitly via FLASK_DEBUG=1 for local
+    # iteration only. Debug=True enables the Werkzeug debugger/reloader which
+    # is an RCE surface and interferes with launchd supervision.
+    debug_mode = os.getenv("FLASK_DEBUG", "0") == "1"
 
-    host = os.environ.get('HOST', '0.0.0.0')
-    app.run(host=host, port=port, debug=debug_mode)
+    host = os.environ.get('HOST', '127.0.0.1')
+    app.run(host=host, port=port, debug=debug_mode, request_handler=SanitizedRequestHandler)

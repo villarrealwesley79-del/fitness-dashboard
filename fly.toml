@@ -1,0 +1,46 @@
+# fly.toml — Fitness Dashboard SaaS deployment config
+# Deploy: fly launch (first time) | fly deploy (updates)
+# Docs:   https://fly.io/docs/reference/configuration/
+
+app = "fitness-dashboard-saas"
+primary_region = "dfw"        # Dallas — closest to San Antonio
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT            = "8080"
+  FLASK_DEBUG     = "0"
+  # SECRET_KEY and OURA_API_TOKEN must be set as secrets:
+  #   fly secrets set SECRET_KEY="$(openssl rand -hex 32)"
+  #   fly secrets set OURA_API_TOKEN="your_token_here"
+
+[http_service]
+  internal_port        = 8080
+  force_https          = true
+  auto_stop_machines   = true    # free tier: stop when idle
+  auto_start_machines  = true
+  min_machines_running = 0       # 0 = full free-tier behavior
+
+  [[http_service.checks]]
+    grace_period  = "10s"
+    interval      = "30s"
+    method        = "GET"
+    path          = "/manifest.json"
+    timeout       = "5s"
+
+[[vm]]
+  memory      = "256mb"    # free tier: 256MB included
+  cpu_kind    = "shared"
+  cpus        = 1
+
+[mounts]
+  # Persistent volume for SQLite DBs and JSON data files
+  # Create before first deploy: fly volumes create fitness_data --size 1 --region dfw
+  source      = "fitness_data"
+  destination = "/data"
+
+# NOTE: After mounting /data, update DATA_DIR in app.py to:
+#   DATA_DIR = os.environ.get("DATA_DIR", "/data")
+# And update auth.py AUTH_DB to:
+#   AUTH_DB = os.path.join(os.environ.get("DATA_DIR", "/data"), "auth.db")

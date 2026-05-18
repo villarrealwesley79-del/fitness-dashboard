@@ -1,0 +1,33 @@
+# Secrets and local tokens
+.flask-secret
+.health-sync-token
+.apple-health-first-sync
+
+# Local tool state
+.claude/
+.DS_Store
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS junk
+*.swp
+.idea/
+.vscode/
+
+# Backups
+*.bak
+*.bak.*
+*.bak-*
+
+# Runtime logs
+*.log
+
+# Review scratch
+audit-bundles/
+visual-review/
+static/js/task-complete-proof.md
+static/js/task-response.txt
+support/ticket-*

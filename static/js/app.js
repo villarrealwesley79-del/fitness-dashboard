@@ -1,3161 +1,2289 @@
-// Fitness Dashboard - Mobile App JavaScript
+/* =======================================================
+   AI Coach Feed — Analytical Dashboard (consolidated)
+   One boot, one tab loader, real API endpoints, SVG charts.
+   ======================================================= */
 
-let currentRecommendation = null;
-let currentSettings = null;
-let charts = {};
+(function () {
+    'use strict';
 
-function escapeHtml(value) {
-    if (value == null) return '';
-    return String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
-// Global function to refresh Oura data
-async function refreshOura() {
-    console.log('refreshOura called');
-    const refreshBtn = document.getElementById('oura-refresh');
-    const readinessEl = document.getElementById('oura-readiness');
-    const hrvEl = document.getElementById('oura-hrv');
-    
-    if (refreshBtn) {
-        refreshBtn.textContent = '⏳';
-    }
-    
-    try {
-        // Fetch fresh data from Oura API
-        const statusResp = await fetch('/api/oura/status?refresh=true');
-        const status = await statusResp.json();
-        console.log('Oura status:', status);
-        
-        // Update readiness
-        if (readinessEl) {
-            readinessEl.textContent = (status && status.readiness != null) ? status.readiness : '--';
-        }
-        
-        // Fetch trends
-        const trendResp = await fetch('/api/oura/trends');
-        const trend = await trendResp.json();
-        console.log('Oura trend:', trend);
-        
-        // Update HRV trend
-        if (hrvEl) {
-            const hrvText = (trend && trend.hrv_trend && trend.hrv_trend !== 'unknown') ? trend.hrv_trend : '--';
-            hrvEl.textContent = hrvText;
-        }
-        
-        // Refresh smart recommendation
-        await loadSmartRecommendation();
-        
-        if (refreshBtn) {
-            refreshBtn.textContent = '✅';
-            setTimeout(() => { refreshBtn.textContent = '🔄'; }, 2000);
-        }
-    } catch (e) {
-        console.error('refreshOura error:', e);
-        if (refreshBtn) {
-            refreshBtn.textContent = '❌';
-            setTimeout(() => { refreshBtn.textContent = '🔄'; }, 2000);
-        }
-    }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    initTabs();
-    initForms();
-    initSettings();
-    initWorkoutButtons();
-    initHistoryFilters();
-    initBaselineConfig();
-    initBackupButtons();
-    initOfflineBanner();
-    initAccordions();
-    loadDashboard();
-    loadSettings();
-    loadHistory();
-    loadBodyRecomp();
-    loadSleepAnalytics();
-    checkInstallBanner();
-    registerServiceWorker();
-});
-
-// Tab Navigation
-function initTabs() {
-    const tabBtns = document.querySelectorAll('.tab-btn');
-    const tabContents = document.querySelectorAll('.tab-content');
-
-    tabBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const tabId = btn.dataset.tab;
-
-            tabBtns.forEach(b => b.classList.remove('active'));
-            tabContents.forEach(c => c.classList.remove('active'));
-
-            btn.classList.add('active');
-            document.getElementById(tabId).classList.add('active');
-
-            // Load tab-specific data
-            if (tabId === 'analytics') {
-                loadInsights();
-                loadWeightChart();
-                loadAdvancedAnalytics();
-                loadRecompTrendChart();
-            } else if (tabId === 'vitals') {
-                loadVitals();
-            } else if (tabId === 'body') {
-                loadBodyRecomp();
-                loadSleepAnalytics();
-            } else if (tabId === 'history') {
-                loadHistory();
-            } else if (tabId === 'settings') {
-                loadSettings();
-            }
-
-            // Haptic feedback on iOS
-            if (navigator.vibrate) {
-                navigator.vibrate(10);
-            }
-        });
-    });
-}
-
-function initAccordions() {
-    const headers = document.querySelectorAll('.accordion-header');
-    headers.forEach(header => {
-        header.addEventListener('click', () => {
-            const accordion = header.closest('.accordion');
-            if (!accordion) return;
-            const isOpen = accordion.classList.toggle('open');
-            header.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
-        });
-    });
-}
-
-// Navigate to a specific tab
-function navigateToTab(tabId) {
-    const tabBtn = document.querySelector(`[data-tab="${tabId}"]`);
-    if (tabBtn) {
-        tabBtn.click();
-    }
-}
-
-// Load Dashboard Data
-async function loadDashboard() {
-    try {
-        const response = await fetch('/api/dashboard');
-        const data = await response.json();
-
-        updateHeadlineKPIs(data.headline, data.body_stats);
-        updateGoalBanner(data.body_stats);
-        updateAlerts(data.alerts);
-        updateMuscleGroups(data.muscles);
-        updateExercises(data.exercises);
-        updateNextWorkout(data.next_workout);
-        updateRecompCommandCenter(data.recomp_command, data.nutrition_today);
-        updateReadinessGauge(data.recomp_command);
-        updateDashboardRecommendation(data.next_workout);
-        loadVitals();
-
-        // Oura recovery widget + smart recommendation + sleep insights (best-effort)
-        loadOuraWidget();
-        loadSmartRecommendation();
-        loadSleepInsights();
-
-        // Store current recommendation
-        currentRecommendation = data.next_workout;
-
-        // Advanced KPIs
-        if (data.advanced_kpis) {
-            updateAdvancedKPIs(data.advanced_kpis);
-        }
-
-    } catch (error) {
-        console.error('Failed to load dashboard:', error);
-    }
-}
-
-function updateReadinessGauge(recomp) {
-    const gauge = document.getElementById('readiness-gauge');
-    const scoreEl = document.getElementById('readiness-gauge-score');
-    const statusEl = document.getElementById('readiness-gauge-status');
-    const noteEl = document.getElementById('readiness-gauge-note');
-    if (!gauge || !scoreEl || !statusEl || !noteEl) return;
-
-    const readiness = recomp?.readiness ?? 0;
-    scoreEl.textContent = readiness || '--';
-
-    let color = 'var(--success)';
-    let status = 'Green Light';
-    if (readiness < 60) {
-        color = 'var(--danger)';
-        status = 'Recovery Priority';
-    } else if (readiness < 75) {
-        color = 'var(--warning)';
-        status = 'Caution / Technique Focus';
-    }
-
-    gauge.style.background = `conic-gradient(${color} ${Math.min(readiness, 100) * 3.6}deg, rgba(255,255,255,0.08) 0deg)`;
-    statusEl.textContent = status;
-    noteEl.textContent = recomp?.reason || 'Oura readiness signal';
-}
-
-function updateDashboardRecommendation(workout) {
-    const titleEl = document.getElementById('today-workout-title');
-    const focusEl = document.getElementById('today-workout-focus');
-    const durationEl = document.getElementById('today-workout-duration');
-    const rpeEl = document.getElementById('today-workout-rpe');
-    const notesEl = document.getElementById('today-workout-notes');
-    if (!titleEl || !focusEl || !durationEl || !rpeEl || !notesEl) return;
-
-    titleEl.textContent = workout?.focus ? `${workout.focus} Session` : '--';
-    focusEl.textContent = workout?.goal_name ? `Goal: ${workout.goal_name}` : '--';
-    durationEl.textContent = workout?.estimated_duration ? `${workout.estimated_duration}` : '--';
-    const firstRpe = workout?.exercises?.[0]?.rpe_target;
-    rpeEl.textContent = firstRpe ? `Target RPE ${firstRpe}` : 'RPE auto-regulated';
-    if (workout?.mesocycle) {
-        notesEl.textContent = `Week ${workout.mesocycle.week} (${workout.mesocycle.phase}) · Volume x${workout.mesocycle.volume_multiplier}`;
-    } else {
-        notesEl.textContent = 'Auto-adjusted by readiness and soreness.';
-    }
-}
-
-// Update Headline KPIs
-function updateHeadlineKPIs(headline, bodyStats) {
-    const setText = (id, value) => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = value;
+    // --- state ---------------------------------------------------
+    const state = {
+        currentTab: 'tab-dashboard',
+        dashboard: null,
+        vitals: null,
+        oura: null,
+        ouraSleep: null,
+        ouraTrends: null,
+        reco: null,
+        insights: null,
+        history: null,
+        body: null,
+        settings: null,
+        analytics: null,
+        muscleFatigue: null,
+        exercises: null,
+        ranges: { history: 30, stats: 30 },
+        historyTypeFilter: 'all',
+        activeWorkout: null,
+        adjustedWorkout: null,
+        swapContext: null,
     };
-    if (!headline) headline = {};
-    setText('total-sets', headline.total_sets ?? '--');
-    setText('progression', `${headline.improving ?? '--'}/${headline.total_exercises ?? '--'}`);
-    setText('readiness', headline.avg_readiness != null ? `${headline.avg_readiness}/10` : '--');
-    setText('sessions', headline.sessions ?? '--');
-    
-    // Update body weight
-    const bodyWeightEl = document.getElementById('body-weight');
-    if (bodyWeightEl && bodyStats && bodyStats.latest_weight) {
-        bodyWeightEl.textContent = Math.round(bodyStats.latest_weight * 10) / 10;
-    } else if (bodyWeightEl) {
-        bodyWeightEl.textContent = '--';
-    }
-}
 
-function updateGoalBanner(bodyStats) {
-    const weightCurrent = document.getElementById('goal-weight-current');
-    const weightRemaining = document.getElementById('goal-weight-remaining');
-    const bfCurrent = document.getElementById('goal-bf-current');
-    const bfRemaining = document.getElementById('goal-bf-remaining');
-    const bfRemainingLabel = document.getElementById('goal-bf-remaining-label');
-    const bfRemainingWrap = document.getElementById('goal-bf-remaining-wrap');
-    const targetWeight = 175;
-    const targetBf = 18;
+    // --- helpers -------------------------------------------------
+    const $ = (id) => document.getElementById(id);
+    const qs = (sel, root = document) => root.querySelector(sel);
+    const qsa = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+    const today = () => {
+        // Local-time YYYY-MM-DD. toISOString() uses UTC which flips to
+        // tomorrow after evening UTC rollover in CDT/CST.
+        const d = new Date();
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+    };
+    const fmtInt = (n) => (n == null || Number.isNaN(n)) ? '--' : Math.round(n).toLocaleString();
+    const fmtKilo = (n) => {
+        if (n == null || Number.isNaN(n)) return '--';
+        if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+        if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'K';
+        return Math.round(n).toString();
+    };
+    const fmtDur = (min) => {
+        if (min == null || Number.isNaN(min)) return '--';
+        const h = Math.floor(min / 60);
+        const m = Math.round(min % 60);
+        if (h === 0) return `${m}m`;
+        if (m === 0) return `${h}h`;
+        return `${h}h ${m}m`;
+    };
+    const fmtDecimal = (n, d = 1) => (n == null || Number.isNaN(n)) ? '--' : Number(n).toFixed(d);
+    const fmtDate = (iso) => {
+        if (!iso) return '—';
+        // Parse "YYYY-MM-DD" as LOCAL midnight, not UTC midnight. Otherwise
+        // CDT/CST users see the calendar day shifted back by one.
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso));
+        const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(iso);
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    };
+    const parseServerDateTime = (value) => {
+        if (!value) return null;
+        const raw = String(value).trim();
+        const d = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(raw)
+            ? new Date(raw.replace(' ', 'T') + 'Z')
+            : new Date(raw);
+        return Number.isNaN(d.getTime()) ? null : d;
+    };
+    const fmtDateTime = (value) => {
+        const d = parseServerDateTime(value);
+        if (!d) return '—';
+        return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    };
 
-    if (!weightCurrent || !weightRemaining || !bfCurrent || !bfRemaining) return;
-
-    const currentWeight = bodyStats?.latest_weight;
-    const currentBf = bodyStats?.latest_body_fat;
-
-    if (currentWeight != null && !Number.isNaN(currentWeight)) {
-        const remaining = Math.max(0, currentWeight - targetWeight);
-        weightCurrent.textContent = `${(Math.round(currentWeight * 10) / 10).toFixed(1)} lbs`;
-        weightRemaining.textContent = `${remaining.toFixed(1)} lbs`;
-    } else {
-        weightCurrent.textContent = '--';
-        weightRemaining.textContent = '--';
-    }
-
-    if (currentBf != null && !Number.isNaN(currentBf)) {
-        const remaining = Math.max(0, currentBf - targetBf);
-        bfCurrent.textContent = `${(Math.round(currentBf * 10) / 10).toFixed(1)}% BF`;
-        bfRemaining.textContent = `${remaining.toFixed(1)}%`;
-        if (bfRemainingWrap) bfRemainingWrap.style.display = 'inline';
-        if (bfRemainingLabel) bfRemainingLabel.style.display = 'inline';
-    } else {
-        bfCurrent.innerHTML = '<button type="button" class="goal-inline-btn" onclick="navigateToTab(\'body\')">Log BF%</button>';
-        bfRemaining.textContent = '';
-        if (bfRemainingWrap) bfRemainingWrap.style.display = 'none';
-        if (bfRemainingLabel) bfRemainingLabel.style.display = 'none';
-    }
-}
-
-async function loadVitals() {
-    try {
-        const response = await fetch('/api/vitals');
-        const data = await response.json();
-        updateVitalsMini(data);
-        updateVitalsTab(data);
-    } catch (error) {
-        console.error('Failed to load vitals:', error);
-        updateVitalsMini(null);
-        updateVitalsTab(null);
-    }
-}
-
-function updateVitalsMini(data) {
-    const weightEl = document.getElementById('vitals-mini-weight');
-    const rhrEl = document.getElementById('vitals-mini-rhr');
-    const sleepEl = document.getElementById('vitals-mini-sleep');
-    const stepsEl = document.getElementById('vitals-mini-steps');
-
-    if (!weightEl || !rhrEl || !sleepEl || !stepsEl) return;
-
-    const weight = data?.weight?.current_lbs;
-    const rhr = data?.heart_rate?.resting_bpm;
-    const lastNight = data?.sleep?.last_night;
-    const sleepHours = lastNight?.total_hours
-        ?? lastNight?.duration_hours
-        ?? (lastNight?.total_sleep_min != null ? lastNight.total_sleep_min / 60 : null)
-        ?? data?.sleep?.avg_7d_hours;
-    const steps = data?.activity?.steps_today;
-
-    if (weight != null) weightEl.textContent = `${weight}`;
-    if (rhr != null) rhrEl.textContent = `${Math.round(rhr)} bpm`;
-    if (sleepHours != null) sleepEl.textContent = `${Number(sleepHours).toFixed(1)}h`;
-    if (steps != null) stepsEl.textContent = Number(steps).toLocaleString();
-}
-
-function updateVitalsTab(data) {
-    const weightCurrentEl = document.getElementById('vitals-weight-current');
-    const weightChangeEl = document.getElementById('vitals-weight-change');
-    const weightBfEl = document.getElementById('vitals-weight-bodyfat');
-    const hrRestingEl = document.getElementById('vitals-hr-resting');
-    const hrAverageEl = document.getElementById('vitals-hr-average');
-    const sleepDurationEl = document.getElementById('vitals-sleep-duration');
-    const sleepAvgEl = document.getElementById('vitals-sleep-avg');
-    const sleepBreakdownEl = document.getElementById('vitals-sleep-breakdown');
-    const stepsRingEl = document.getElementById('vitals-steps-ring');
-    const stepsTodayEl = document.getElementById('vitals-steps-today');
-    const stepsAvgEl = document.getElementById('vitals-steps-avg');
-    const activeCaloriesEl = document.getElementById('vitals-active-calories');
-    const activeMinutesEl = document.getElementById('vitals-active-minutes');
-
-    if (!weightCurrentEl || !weightChangeEl || !weightBfEl || !hrRestingEl || !hrAverageEl ||
-        !sleepDurationEl || !sleepAvgEl || !sleepBreakdownEl || !stepsRingEl || !stepsTodayEl ||
-        !stepsAvgEl || !activeCaloriesEl || !activeMinutesEl) {
-        return;
-    }
-
-    const weight = data?.weight?.current_lbs;
-    weightCurrentEl.textContent = (weight != null) ? `${weight} lbs` : '--';
-
-    const weightChange = data?.weight?.change_7d;
-    weightChangeEl.className = '';
-    if (weightChange == null) {
-        weightChangeEl.textContent = '--';
-        weightChangeEl.classList.add('vitals-change-flat');
-    } else if (weightChange > 0) {
-        weightChangeEl.textContent = `▲ +${weightChange} lbs (7d)`;
-        weightChangeEl.classList.add('vitals-change-up');
-    } else if (weightChange < 0) {
-        weightChangeEl.textContent = `▼ ${weightChange} lbs (7d)`;
-        weightChangeEl.classList.add('vitals-change-down');
-    } else {
-        weightChangeEl.textContent = '— 0.0 lbs (7d)';
-        weightChangeEl.classList.add('vitals-change-flat');
-    }
-
-    const bf = data?.weight?.body_fat_pct;
-    weightBfEl.textContent = (bf != null) ? `BF ${bf}%` : '--';
-
-    const rhr = data?.heart_rate?.resting_bpm;
-    const avgHr = data?.heart_rate?.average_bpm;
-    hrRestingEl.textContent = (rhr != null) ? `${rhr} bpm` : '--';
-    hrAverageEl.textContent = (avgHr != null) ? `${avgHr} bpm` : '--';
-
-    hrRestingEl.classList.remove('hr-low', 'hr-mid', 'hr-high');
-    if (rhr != null) {
-        if (rhr < 60) hrRestingEl.classList.add('hr-low');
-        else if (rhr < 70) hrRestingEl.classList.add('hr-mid');
-        else hrRestingEl.classList.add('hr-high');
-    }
-
-    const lastNight = data?.sleep?.last_night;
-    const sleepHours = lastNight?.total_hours
-        ?? lastNight?.duration_hours
-        ?? (lastNight?.total_sleep_min != null ? lastNight.total_sleep_min / 60 : null);
-    sleepDurationEl.textContent = (sleepHours != null) ? `${Number(sleepHours).toFixed(1)}h` : '--';
-    sleepAvgEl.textContent = (data?.sleep?.avg_7d_hours != null) ? `${Number(data.sleep.avg_7d_hours).toFixed(1)}h` : '--';
-
-    const deep = lastNight?.deep_min;
-    const rem = lastNight?.rem_min;
-    const light = lastNight?.light_min;
-    const awake = lastNight?.awake_min;
-    const total = [deep, rem, light, awake].reduce((sum, v) => sum + (v || 0), 0);
-
-    const deepEl = document.getElementById('sleep-seg-deep');
-    const remEl = document.getElementById('sleep-seg-rem');
-    const lightEl = document.getElementById('sleep-seg-light');
-    const awakeEl = document.getElementById('sleep-seg-awake');
-
-    if (deepEl && remEl && lightEl && awakeEl) {
-        deepEl.style.width = total ? `${(deep || 0) / total * 100}%` : '0%';
-        remEl.style.width = total ? `${(rem || 0) / total * 100}%` : '0%';
-        lightEl.style.width = total ? `${(light || 0) / total * 100}%` : '0%';
-        awakeEl.style.width = total ? `${(awake || 0) / total * 100}%` : '0%';
-    }
-
-    if (deep != null || rem != null || light != null || awake != null) {
-        sleepBreakdownEl.textContent = `Deep ${deep ?? '--'}m · REM ${rem ?? '--'}m · Light ${light ?? '--'}m · Awake ${awake ?? '--'}m`;
-    } else {
-        sleepBreakdownEl.textContent = '--';
-    }
-
-    const stepsToday = data?.activity?.steps_today;
-    const stepsAvg = data?.activity?.steps_avg_7d;
-    const activeCalories = data?.activity?.active_calories_today;
-    const activeMinutes = data?.activity?.active_minutes_today;
-
-    stepsTodayEl.textContent = (stepsToday != null) ? `${stepsToday}` : '--';
-    stepsAvgEl.textContent = (stepsAvg != null) ? `${stepsAvg}` : '--';
-    activeCaloriesEl.textContent = (activeCalories != null) ? `${activeCalories}` : '--';
-    activeMinutesEl.textContent = (activeMinutes != null) ? `${activeMinutes}` : '--';
-
-    const target = 8000;
-    const pct = (stepsToday != null && target) ? Math.min(stepsToday / target, 1) : 0;
-    const ringDeg = Math.round(pct * 360);
-    stepsRingEl.style.background = `conic-gradient(var(--success) ${ringDeg}deg, rgba(255, 255, 255, 0.08) 0deg)`;
-
-    renderVitalsWeightChart(data?.weight?.trend_30d || []);
-    renderVitalsHrChart(data?.heart_rate?.trend_7d || []);
-}
-
-function renderVitalsWeightChart(trend) {
-    const canvas = document.getElementById('vitals-weight-chart');
-    if (!canvas) return;
-    const labels = trend.map(p => p.date);
-    const values = trend.map(p => p.weight_lbs);
-
-    if (charts.vitalsWeight) {
-        charts.vitalsWeight.destroy();
-    }
-
-    charts.vitalsWeight = new Chart(canvas, {
-        type: 'line',
-        data: {
-            labels,
-            datasets: [{
-                data: values,
-                borderColor: '#22d3ee',
-                backgroundColor: 'rgba(34, 211, 238, 0.15)',
-                fill: true,
-                tension: 0.35,
-                pointRadius: 0,
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false }, tooltip: { enabled: false } },
-            scales: { x: { display: false }, y: { display: false } }
+    async function api(path, opts = {}) {
+        const res = await fetch(path, {
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json', ...(opts.headers || {}) },
+            ...opts,
+        });
+        if (res.status === 401) {
+            window.location.href = '/login?next=' + encodeURIComponent(location.pathname);
+            throw new Error('unauthorized');
         }
-    });
-}
-
-function renderVitalsHrChart(trend) {
-    const canvas = document.getElementById('vitals-hr-chart');
-    if (!canvas) return;
-    const labels = trend.map(p => p.date);
-    const resting = trend.map(p => p.resting);
-    const average = trend.map(p => p.average);
-
-    if (charts.vitalsHr) {
-        charts.vitalsHr.destroy();
+        if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            throw new Error(`${res.status} ${path}: ${text.slice(0, 120)}`);
+        }
+        const ct = res.headers.get('content-type') || '';
+        return ct.includes('application/json') ? res.json() : res.text();
     }
 
-    charts.vitalsHr = new Chart(canvas, {
-        type: 'line',
-        data: {
-            labels,
-            datasets: [
-                {
-                    data: resting,
-                    borderColor: '#22c55e',
-                    tension: 0.35,
-                    pointRadius: 0,
-                },
-                {
-                    data: average,
-                    borderColor: '#f59e0b',
-                    tension: 0.35,
-                    pointRadius: 0,
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false }, tooltip: { enabled: false } },
-            scales: { x: { display: false }, y: { display: false } }
-        }
-    });
-}
-
-function updateRecompCommandCenter(recomp, nutrition) {
-    const badge = document.getElementById('recomp-signal');
-    const reason = document.getElementById('recomp-reason');
-    if (badge && recomp) {
-        badge.textContent = recomp.signal || '--';
-        badge.classList.remove('train', 'recover');
-        if (recomp.signal === 'TRAIN') {
-            badge.classList.add('train');
-        } else if (recomp.signal === 'RECOVER') {
-            badge.classList.add('recover');
-        }
-    }
-    if (reason) {
-        reason.textContent = recomp?.reason || '--';
+    function toast(msg, variant = 'ok') {
+        const host = $('toast-host');
+        if (!host) return;
+        const el = document.createElement('div');
+        el.className = `toast ${variant}`;
+        el.textContent = msg;
+        host.appendChild(el);
+        setTimeout(() => el.remove(), 2400);
     }
 
-    const proteinText = document.getElementById('protein-today');
-    const caloriesText = document.getElementById('calories-today');
-    const proteinFill = document.getElementById('protein-progress');
-    const caloriesFill = document.getElementById('calories-progress');
-    if (nutrition) {
-        if (proteinText) {
-            proteinText.textContent = `${Math.round(nutrition.protein_g)}g / ${Math.round(nutrition.protein_target_g)}g`;
-        }
-        if (caloriesText) {
-            caloriesText.textContent = `${nutrition.calories} / ${nutrition.calories_target}`;
-        }
-        if (proteinFill) {
-            const pct = Math.max(0, nutrition.protein_pct || 0);
-            proteinFill.style.width = `${Math.min(pct, 100)}%`;
-            proteinFill.classList.toggle('over', pct > 110);
-        }
-        if (caloriesFill) {
-            const pct = Math.max(0, nutrition.calories_pct || 0);
-            caloriesFill.style.width = `${Math.min(pct, 100)}%`;
-            caloriesFill.classList.toggle('over', pct > 110);
-        }
-    } else {
-        if (proteinText) proteinText.textContent = '--';
-        if (caloriesText) caloriesText.textContent = '--';
-        if (proteinFill) proteinFill.style.width = '0%';
-        if (caloriesFill) caloriesFill.style.width = '0%';
+    // --- SVG chart helpers ---------------------------------------
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    function svg(attrs, children = []) {
+        const el = document.createElementNS(SVG_NS, 'svg');
+        Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+        children.forEach((c) => el.appendChild(c));
+        return el;
     }
-}
-
-// Oura Recovery Widget
-async function loadOuraWidget(forceRefresh = false) {
-    const readinessEl = document.getElementById('oura-readiness');
-    const hrvEl = document.getElementById('oura-hrv');
-    if (!readinessEl || !hrvEl) return;
-
-    // Check if URL has refresh param
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('refresh')) {
-        forceRefresh = true;
-        // Clean URL without refresh param
-        window.history.replaceState({}, '', '/');
+    function ns(tag, attrs = {}, children = []) {
+        const el = document.createElementNS(SVG_NS, tag);
+        Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+        if (typeof children === 'string') el.textContent = children;
+        else children.forEach((c) => el.appendChild(c));
+        return el;
     }
 
-    try {
-        const statusUrl = forceRefresh ? '/api/oura/status?refresh=true' : '/api/oura/status';
-        const [statusResp, trendResp] = await Promise.all([
-            fetch(statusUrl),
-            fetch('/api/oura/trends')
+    function sparkline(container, values, opts = {}) {
+        if (!container) return;
+        container.innerHTML = '';
+        const clean = (values || []).map(Number).filter((v) => Number.isFinite(v));
+        if (clean.length < 2) {
+            container.innerHTML = '<div class="empty" style="padding:6px;font-size:11px">—</div>';
+            return;
+        }
+        const w = opts.width || 300;
+        const h = opts.height || 32;
+        const pad = 2;
+        const min = Math.min(...clean);
+        const max = Math.max(...clean);
+        const range = (max - min) || 1;
+        const stepX = (w - pad * 2) / (clean.length - 1);
+        const color = opts.color || '#60a5fa';
+        const pts = clean.map((v, i) => {
+            const x = pad + i * stepX;
+            const y = pad + (h - pad * 2) * (1 - (v - min) / range);
+            return [x, y];
+        });
+        const pathD = pts.map((p, i) => (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+        const areaD = pathD + ` L ${pts[pts.length - 1][0].toFixed(1)},${h - pad} L ${pts[0][0].toFixed(1)},${h - pad} Z`;
+
+        const gradId = 'g-' + Math.random().toString(36).slice(2, 8);
+        const root = svg({ viewBox: `0 0 ${w} ${h}`, preserveAspectRatio: 'none' });
+        const defs = ns('defs', {}, [
+            ns('linearGradient', { id: gradId, x1: 0, y1: 0, x2: 0, y2: 1 }, [
+                ns('stop', { offset: '0%', 'stop-color': color, 'stop-opacity': '0.35' }),
+                ns('stop', { offset: '100%', 'stop-color': color, 'stop-opacity': '0' }),
+            ]),
         ]);
-
-        const status = await statusResp.json();
-        const trend = await trendResp.json();
-
-        if (status && status.readiness != null) {
-            readinessEl.textContent = status.readiness;
-        } else {
-            readinessEl.textContent = '--';
-        }
-
-        // Populate Recovery Card (best-effort)
-        const setText = (id, val) => {
-            const el = document.getElementById(id);
-            if (!el) return;
-            el.textContent = (val != null && val !== '') ? val : '--';
-        };
-        const fmtMin = (m) => {
-            if (m == null) return '--';
-            const hh = Math.floor(m / 60);
-            const mm = m % 60;
-            return hh > 0 ? `${hh}h ${mm}m` : `${mm}m`;
-        };
-        if (status) {
-            setText('oura-steps', status.steps != null ? status.steps.toLocaleString() : null);
-            setText('oura-activity-score', status.activity_score);
-            setText('oura-rhr', status.resting_hr != null ? `${Math.round(status.resting_hr)} bpm` : null);
-            setText('oura-temp', status.temperature_deviation != null ? `${status.temperature_deviation > 0 ? '+' : ''}${status.temperature_deviation}°` : null);
-
-            setText('oura-sleep-duration', status.sleep_duration_min != null ? fmtMin(status.sleep_duration_min) : null);
-            const b = status.sleep_breakdown_min || {};
-            setText('oura-sleep-deep', b.deep != null ? `${b.deep}m` : null);
-            setText('oura-sleep-rem', b.rem != null ? `${b.rem}m` : null);
-            setText('oura-sleep-light', b.light != null ? `${b.light}m` : null);
-            setText('oura-sleep-awake', b.awake != null ? `${b.awake}m` : null);
-
-            const noteEl = document.getElementById('oura-recovery-note');
-            if (noteEl) {
-                noteEl.textContent = '';
-            }
-        }
-
-        if (trend && trend.hrv_trend) {
-            const hrvText = trend.hrv_trend === 'unknown' ? '--' : trend.hrv_trend;
-            hrvEl.textContent = hrvText;
-        } else {
-            hrvEl.textContent = '--';
-        }
-    } catch (e) {
-        readinessEl.textContent = '--';
-        hrvEl.textContent = '--';
+        root.appendChild(defs);
+        root.appendChild(ns('path', { d: areaD, fill: `url(#${gradId})`, stroke: 'none' }));
+        root.appendChild(ns('path', { d: pathD, fill: 'none', stroke: color, 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+        const last = pts[pts.length - 1];
+        root.appendChild(ns('circle', { cx: last[0], cy: last[1], r: '2.4', fill: color }));
+        container.appendChild(root);
     }
-}
 
-// Load Sleep Insights
-async function loadSleepInsights() {
-    try {
-        const resp = await fetch('/api/oura/sleep-summary');
-        const data = await resp.json();
-
-        if (!data || data.status === 'error') {
-            console.error('Failed to load sleep data:', data?.message);
+    function lineChart(container, points, opts = {}) {
+        if (!container) return;
+        container.innerHTML = '';
+        const pts = (points || []).filter((p) => p && p.value != null && Number.isFinite(Number(p.value)));
+        if (pts.length < 2) {
+            container.innerHTML = '<div class="empty">Not enough data yet.</div>';
             return;
         }
+        const w = 600;
+        const h = 160;
+        const padL = 28, padR = 10, padT = 10, padB = 22;
+        const ys = pts.map((p) => Number(p.value));
+        const min = Math.min(...ys);
+        const max = Math.max(...ys);
+        const range = (max - min) || 1;
+        const minPad = min - range * 0.12;
+        const maxPad = max + range * 0.12;
+        const trueRange = maxPad - minPad || 1;
+        const plotW = w - padL - padR;
+        const plotH = h - padT - padB;
+        const xFor = (i) => padL + (pts.length === 1 ? plotW / 2 : (i / (pts.length - 1)) * plotW);
+        const yFor = (v) => padT + plotH * (1 - (v - minPad) / trueRange);
 
-        // Last night summary
-        const lastNight = data.last_night || {};
-        const weekAvg = data.week_average || {};
-        const consistency = data.consistency || {};
+        const color = opts.color || '#60a5fa';
+        const gradId = 'lg-' + Math.random().toString(36).slice(2, 8);
+        const root = svg({ viewBox: `0 0 ${w} ${h}`, preserveAspectRatio: 'none' });
+        const defs = ns('defs', {}, [
+            ns('linearGradient', { id: gradId, x1: 0, y1: 0, x2: 0, y2: 1 }, [
+                ns('stop', { offset: '0%', 'stop-color': color, 'stop-opacity': '0.35' }),
+                ns('stop', { offset: '100%', 'stop-color': color, 'stop-opacity': '0' }),
+            ]),
+        ]);
+        root.appendChild(defs);
 
-        // Update KPIs
-        const setVal = (id, val, unit = '') => {
-            const el = document.getElementById(id);
-            if (el) el.textContent = val != null ? `${val}${unit}` : '--';
-        };
-
-        // Convert minutes to hours
-        const minToHrs = (min) => min ? (min / 60).toFixed(1) : null;
-
-        setVal('sleep-last-night-duration', minToHrs(lastNight.total_sleep_min), ' h');
-        const sleepScoreEl = document.getElementById('sleep-last-night-score');
-        if (sleepScoreEl) {
-            if (lastNight.sleep_score && lastNight.sleep_score > 0) {
-                sleepScoreEl.textContent = lastNight.sleep_score;
-            } else {
-                sleepScoreEl.innerHTML = 'N/A <span class="kpi-note">(not tracked by Oura)</span>';
-            }
-        }
-        setVal('sleep-week-avg', minToHrs(weekAvg.duration_min), ' h');
-        
-        // Consistency status
-        const consistencyText = consistency.status === 'excellent' ? '✅ Excellent' :
-                               consistency.status === 'good' ? '✔️ Good' :
-                               consistency.status === 'fair' ? '⚠️ Fair' :
-                               consistency.status === 'poor' ? '❌ Poor' : '--';
-        setVal('sleep-consistency', consistencyText);
-
-        // Sleep stage percentages (last night)
-        if (lastNight.total_sleep_min && lastNight.total_sleep_min > 0) {
-            const total = lastNight.total_sleep_min;
-            const deepPct = lastNight.deep_sleep_min ? ((lastNight.deep_sleep_min / total) * 100).toFixed(0) : 0;
-            const remPct = lastNight.rem_sleep_min ? ((lastNight.rem_sleep_min / total) * 100).toFixed(0) : 0;
-            const lightPct = lastNight.light_sleep_min ? ((lastNight.light_sleep_min / total) * 100).toFixed(0) : 0;
-
-            setVal('sleep-deep-pct', deepPct, '%');
-            setVal('sleep-rem-pct', remPct, '%');
-            setVal('sleep-light-pct', lightPct, '%');
-        } else {
-            setVal('sleep-deep-pct', '--');
-            setVal('sleep-rem-pct', '--');
-            setVal('sleep-light-pct', '--');
+        // Horizontal gridlines (3 lines)
+        for (let i = 0; i < 3; i++) {
+            const yv = minPad + (trueRange * (i + 1)) / 4;
+            const yy = yFor(yv);
+            root.appendChild(ns('line', { x1: padL, x2: w - padR, y1: yy, y2: yy, stroke: '#1e293b', 'stroke-width': '1', 'stroke-dasharray': '2 3' }));
         }
 
-        setVal('sleep-hr', lastNight.avg_heart_rate ? Math.round(lastNight.avg_heart_rate) : null, ' bpm');
+        const pathD = pts.map((p, i) => (i === 0 ? 'M' : 'L') + xFor(i).toFixed(1) + ',' + yFor(Number(p.value)).toFixed(1)).join(' ');
+        const areaD = pathD + ` L ${xFor(pts.length - 1).toFixed(1)},${h - padB} L ${xFor(0).toFixed(1)},${h - padB} Z`;
+        root.appendChild(ns('path', { d: areaD, fill: `url(#${gradId})`, stroke: 'none' }));
+        root.appendChild(ns('path', { d: pathD, fill: 'none', stroke: color, 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
 
-        // Chart is now rendered inline in index.html (bypasses app.js caching issues)
+        // Y-axis labels (min / max)
+        root.appendChild(ns('text', { x: 6, y: yFor(maxPad) + 4, fill: '#64748b', 'font-size': '10', 'font-weight': '600' }, String(Math.round(maxPad * 10) / 10)));
+        root.appendChild(ns('text', { x: 6, y: yFor(minPad) + 4, fill: '#64748b', 'font-size': '10', 'font-weight': '600' }, String(Math.round(minPad * 10) / 10)));
 
-    } catch (error) {
-        console.error('Failed to load sleep insights:', error);
-    }
-}
-
-// Render Sleep Trend Chart
-function renderSleepTrendChart(trendData) {
-    const canvas = document.getElementById('sleepTrendChart');
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    
-    // Destroy existing chart if present
-    if (window.sleepTrendChart) {
-        window.sleepTrendChart.destroy();
-    }
-
-    const labels = trendData.map(d => d.date);
-    const durations = trendData.map(d => (d.duration_min / 60).toFixed(1)); // Convert to hours
-    const scores = trendData.map(d => d.score || 0);
-
-    window.sleepTrendChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [
-                {
-                    label: 'Duration (hrs)',
-                    data: durations,
-                    borderColor: '#4361ee',
-                    backgroundColor: 'rgba(67, 97, 238, 0.1)',
-                    yAxisID: 'y',
-                    tension: 0.3,
-                    fill: true
-                },
-                {
-                    label: 'Score',
-                    data: scores,
-                    borderColor: '#3a0ca3',
-                    backgroundColor: 'rgba(58, 12, 163, 0.1)',
-                    yAxisID: 'y1',
-                    tension: 0.3,
-                    fill: false
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: {
-                mode: 'index',
-                intersect: false,
-            },
-            plugins: {
-                legend: {
-                    display: true,
-                    position: 'top',
-                },
-                title: {
-                    display: true,
-                    text: '7-Day Sleep Trend'
-                }
-            },
-            scales: {
-                y: {
-                    type: 'linear',
-                    display: true,
-                    position: 'left',
-                    title: {
-                        display: true,
-                        text: 'Duration (hours)'
-                    },
-                    min: 0,
-                    max: 12
-                },
-                y1: {
-                    type: 'linear',
-                    display: true,
-                    position: 'right',
-                    title: {
-                        display: true,
-                        text: 'Score'
-                    },
-                    min: 0,
-                    max: 100,
-                    grid: {
-                        drawOnChartArea: false,
-                    },
-                }
-            }
-        }
-    });
-}
-
-// Smart recommendation summary (Oura + soreness)
-async function loadSmartRecommendation() {
-    const el = document.getElementById('smart-reco');
-    if (!el) return;
-
-    try {
-        const resp = await fetch('/api/recommendation/smart');
-        const data = await resp.json();
-
-        if (!data) {
-            el.textContent = '';
-            return;
-        }
-
-        const summaryEl = document.getElementById('readiness-summary');
-        if (summaryEl) {
-            if (data.readiness == null) {
-                summaryEl.textContent = '';
-            } else if (data.readiness >= 80) {
-                summaryEl.textContent = '✅ High readiness — train hard';
-            } else if (data.readiness >= 60) {
-                summaryEl.textContent = '⚠️ Moderate readiness — train smart';
-            } else {
-                summaryEl.textContent = '🔴 Low readiness — consider recovery';
-            }
-        }
-
-        const rec = data.recommendation ? data.recommendation.toUpperCase() : '';
-        const avoid = (data.avoid_muscles && data.avoid_muscles.length) ? ` | Avoid: ${data.avoid_muscles.join(', ')}` : '';
-        const readiness = data.readiness != null ? `Readiness ${data.readiness}` : 'Readiness --';
-        const trend = data.hrv_trend && data.hrv_trend !== 'unknown' ? `HRV ${data.hrv_trend}` : 'HRV --';
-
-        // Show effective readiness if available
-        const effReadiness = data.effective_readiness != null ? `Eff. ${Math.round(data.effective_readiness)}` : readiness;
-        el.textContent = `${rec} • ${effReadiness} • ${trend}${avoid}`;
-
-        // Show reasoning factors
-        const reasoningContainer = document.getElementById('recommendation-reasoning');
-        const factorsContainer = document.getElementById('reasoning-factors');
-        if (reasoningContainer && factorsContainer && data.readiness_factors) {
-            const reasoningToggle = document.getElementById('reasoning-toggle');
-            const factors = [];
-            const rf = data.readiness_factors;
-            
-            // ACWR - hide if 0 (no meaningful data yet)
-            if (rf.acwr && rf.acwr.acwr > 0) {
-                const acwrClass = rf.acwr.risk === 'optimal' ? 'positive' : 
-                                  rf.acwr.risk === 'high' ? 'negative' : 'neutral';
-                factors.push(`<div class="reasoning-factor ${acwrClass}">
-                    <span class="icon">📈</span>
-                    <span>Training load ratio: ${rf.acwr.acwr.toFixed(2)}</span>
-                </div>`);
-            }
-            
-            // Sleep Debt - show friendly label, hide "severe" when data is sparse
-            if (rf.sleep_debt && rf.sleep_debt.debt_hours != null) {
-                const debtH = rf.sleep_debt.debt_hours;
-                const sleepClass = debtH < 2 ? 'positive' : debtH < 5 ? 'neutral' : 'negative';
-                const sleepLabel = debtH < 2 ? 'Well rested' : debtH < 5 ? 'Mild sleep debt' : 'Sleep debt: recover tonight';
-                factors.push(`<div class="reasoning-factor ${sleepClass}">
-                    <span class="icon">😴</span>
-                    <span>${sleepLabel}</span>
-                </div>`);
-            }
-            
-            // Recovery Bonus
-            if (rf.recovery_bonus && rf.recovery_bonus.bonus_points > 0) {
-                factors.push(`<div class="reasoning-factor positive">
-                    <span class="icon">🧊</span>
-                    <span>Recovery bonus: +${rf.recovery_bonus.bonus_points} (${rf.recovery_bonus.modalities_used.join(', ')})</span>
-                </div>`);
-            }
-            
-            // Base readiness vs effective
-            if (data.readiness != null && data.effective_readiness != null && data.readiness !== data.effective_readiness) {
-                factors.push(`<div class="reasoning-factor neutral">
-                    <span class="icon">💪</span>
-                    <span>Readiness: ${data.readiness} → ${Math.round(data.effective_readiness)} (adjusted)</span>
-                </div>`);
-            }
-            
-            if (factors.length > 0) {
-                factorsContainer.innerHTML = factors.join('');
-                reasoningContainer.style.display = 'block';
-                factorsContainer.style.display = 'flex';
-                if (reasoningToggle) {
-                    reasoningToggle.setAttribute('aria-expanded', 'true');
-                    reasoningToggle.onclick = () => {
-                        const isOpen = factorsContainer.style.display !== 'none';
-                        factorsContainer.style.display = isOpen ? 'none' : 'flex';
-                        reasoningToggle.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
-                    };
-                }
-            } else {
-                reasoningContainer.style.display = 'none';
-            }
-        }
-
-        // Also mirror avoid muscles into the existing avoid section (if present)
-        if (data.avoid_muscles && data.avoid_muscles.length) {
-            const section = document.getElementById('avoid-section');
-            const container = document.getElementById('avoid-container');
-            if (section && container) {
-                section.style.display = 'block';
-                const existing = container.innerHTML || '';
-                const extra = data.avoid_muscles.map(m => `
-                    <div class="avoid-item">
-                        <span class="avoid-muscle">${m}</span>
-                        <span class="avoid-reason">Recent soreness</span>
-                    </div>
-                `).join('');
-                container.innerHTML = existing + extra;
-            }
-        }
-
-    } catch (e) {
-        el.textContent = '';
-    }
-}
-
-// Update Alerts
-function updateAlerts(alerts) {
-    const container = document.getElementById('alerts-container');
-    const section = document.getElementById('alerts-section');
-    if (!container || !section) return;
-
-    if (!alerts || alerts.length === 0) {
-        section.style.display = 'none';
-        return;
-    }
-
-    section.style.display = 'block';
-    container.innerHTML = alerts.slice(0, 5).map(alert => `
-        <div class="alert alert-${alert.priority.toLowerCase()}">
-            <div class="alert-header">
-                <span class="alert-type">${alert.type}</span>
-                <span class="alert-priority priority-${alert.priority.toLowerCase()}">${alert.priority}</span>
-            </div>
-            <div class="alert-message">${alert.message}</div>
-            <div class="alert-action">${alert.action}</div>
-        </div>
-    `).join('');
-}
-
-// Update Muscle Groups
-function updateMuscleGroups(muscles) {
-    const container = document.getElementById('muscle-container');
-    const title = document.getElementById('muscle-accordion-title');
-    if (title) {
-        const count = Array.isArray(muscles) ? muscles.length : 0;
-        title.textContent = `Muscle Groups (${count})`;
-    }
-
-    if (container) {
-        container.innerHTML = muscles.map(muscle => `
-            <div class="muscle-card">
-                <div class="muscle-info">
-                    <span class="muscle-name">${muscle.muscle}</span>
-                    <span class="muscle-stats">${muscle.sets} sets | ${muscle.status} | Last: ${formatDate(muscle.last_trained)}</span>
-                </div>
-                <div class="muscle-readiness">
-                    <span class="readiness-score text-${muscle.readiness_color}">${muscle.readiness}/10</span>
-                    <span class="readiness-label">Readiness</span>
-                </div>
-            </div>
-        `).join('');
-    }
-
-    const heatmap = document.getElementById('muscle-heatmap');
-    if (heatmap) {
-        const muscleMap = {};
-        muscles.forEach(m => { muscleMap[m.muscle.toLowerCase()] = m; });
-
-        const getColor = (name) => {
-            const m = muscleMap[name];
-            if (!m) return 'rgba(255,255,255,0.06)';
-            const r = m.readiness || 0;
-            if (r >= 8) return 'rgba(16, 185, 129, 0.7)';
-            if (r >= 5) return 'rgba(245, 158, 11, 0.6)';
-            return 'rgba(239, 68, 68, 0.6)';
-        };
-        const getLabel = (name) => {
-            const m = muscleMap[name];
-            return m ? `${m.readiness}/10` : '--';
-        };
-
-        heatmap.innerHTML = `
-        <div class="body-heatmap-container">
-            <svg viewBox="0 0 200 380" class="body-svg" xmlns="http://www.w3.org/2000/svg">
-                <!-- Head -->
-                <circle cx="100" cy="28" r="18" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
-                <!-- Neck -->
-                <rect x="93" y="46" width="14" height="12" rx="4" fill="rgba(255,255,255,0.06)"/>
-                <!-- Shoulders -->
-                <ellipse cx="60" cy="72" rx="22" ry="12" fill="${getColor('shoulders')}" class="muscle-zone" data-muscle="shoulders"/>
-                <ellipse cx="140" cy="72" rx="22" ry="12" fill="${getColor('shoulders')}" class="muscle-zone" data-muscle="shoulders"/>
-                <!-- Chest -->
-                <ellipse cx="80" cy="95" rx="20" ry="18" fill="${getColor('chest')}" class="muscle-zone" data-muscle="chest"/>
-                <ellipse cx="120" cy="95" rx="20" ry="18" fill="${getColor('chest')}" class="muscle-zone" data-muscle="chest"/>
-                <!-- Back (shown as outline behind chest) -->
-                <rect x="68" y="80" width="64" height="50" rx="8" fill="${getColor('back')}" opacity="0.3" class="muscle-zone" data-muscle="back"/>
-                <!-- Biceps -->
-                <ellipse cx="42" cy="110" rx="10" ry="22" fill="${getColor('biceps')}" class="muscle-zone" data-muscle="biceps"/>
-                <ellipse cx="158" cy="110" rx="10" ry="22" fill="${getColor('biceps')}" class="muscle-zone" data-muscle="biceps"/>
-                <!-- Triceps -->
-                <ellipse cx="38" cy="115" rx="7" ry="18" fill="${getColor('triceps')}" opacity="0.5" class="muscle-zone" data-muscle="triceps"/>
-                <ellipse cx="162" cy="115" rx="7" ry="18" fill="${getColor('triceps')}" opacity="0.5" class="muscle-zone" data-muscle="triceps"/>
-                <!-- Core -->
-                <rect x="78" y="118" width="44" height="40" rx="6" fill="${getColor('core')}" class="muscle-zone" data-muscle="core"/>
-                <!-- Forearms -->
-                <ellipse cx="36" cy="145" rx="6" ry="16" fill="rgba(255,255,255,0.08)"/>
-                <ellipse cx="164" cy="145" rx="6" ry="16" fill="rgba(255,255,255,0.08)"/>
-                <!-- Glutes -->
-                <ellipse cx="85" cy="170" rx="18" ry="14" fill="${getColor('glutes')}" class="muscle-zone" data-muscle="glutes"/>
-                <ellipse cx="115" cy="170" rx="18" ry="14" fill="${getColor('glutes')}" class="muscle-zone" data-muscle="glutes"/>
-                <!-- Quads -->
-                <ellipse cx="80" cy="220" rx="16" ry="40" fill="${getColor('quads')}" class="muscle-zone" data-muscle="quads"/>
-                <ellipse cx="120" cy="220" rx="16" ry="40" fill="${getColor('quads')}" class="muscle-zone" data-muscle="quads"/>
-                <!-- Hamstrings (behind quads, subtle) -->
-                <ellipse cx="80" cy="225" rx="13" ry="35" fill="${getColor('hamstrings')}" opacity="0.4" class="muscle-zone" data-muscle="hamstrings"/>
-                <ellipse cx="120" cy="225" rx="13" ry="35" fill="${getColor('hamstrings')}" opacity="0.4" class="muscle-zone" data-muscle="hamstrings"/>
-                <!-- Adductors -->
-                <ellipse cx="95" cy="210" rx="6" ry="25" fill="${getColor('adductors')}" class="muscle-zone" data-muscle="adductors"/>
-                <ellipse cx="105" cy="210" rx="6" ry="25" fill="${getColor('adductors')}" class="muscle-zone" data-muscle="adductors"/>
-                <!-- Calves -->
-                <ellipse cx="78" cy="300" rx="10" ry="28" fill="${getColor('calves')}" class="muscle-zone" data-muscle="calves"/>
-                <ellipse cx="122" cy="300" rx="10" ry="28" fill="${getColor('calves')}" class="muscle-zone" data-muscle="calves"/>
-                <!-- Feet -->
-                <ellipse cx="78" cy="340" rx="12" ry="6" fill="rgba(255,255,255,0.06)"/>
-                <ellipse cx="122" cy="340" rx="12" ry="6" fill="rgba(255,255,255,0.06)"/>
-            </svg>
-            <div class="body-heatmap-legend">
-                ${muscles.map(m => `<div class="legend-row"><span class="legend-dot" style="background:${getColor(m.muscle.toLowerCase())}"></span><span class="legend-name">${m.muscle}</span><strong class="legend-score">${m.readiness}/10</strong></div>`).join('')}
-            </div>
-        </div>`;
-
-        const allMax = muscles.length > 0 && muscles.every(m => Number(m.readiness) >= 10);
-        if (allMax) {
-            const note = document.createElement('div');
-            note.className = 'muscle-readiness-note';
-            note.textContent = 'All muscles fully recovered — time to train! 💪';
-            heatmap.appendChild(note);
-        }
-    }
-}
-
-// Update Exercises
-function updateExercises(exercises) {
-    const container = document.getElementById('exercise-container');
-    const title = document.getElementById('exercise-accordion-title');
-    if (title) {
-        const count = Array.isArray(exercises) ? exercises.length : 0;
-        title.textContent = `Exercise Progress (${count})`;
-    }
-    if (!container || !Array.isArray(exercises)) return;
-
-    container.innerHTML = exercises.map(ex => `
-        <div class="exercise-card">
-            <div class="exercise-info">
-                <div class="exercise-name">${ex.exercise}</div>
-                <div class="exercise-stats">Peak: ${ex.peak_e1rm} lbs | Current: ${ex.current_e1rm} lbs</div>
-            </div>
-            <div class="exercise-trend">
-                <div class="trend-value text-${ex.trend_color}">${ex.trend_icon}${ex.trend_pct}%</div>
-                <span class="status-badge status-${ex.status_color}">${ex.status}</span>
-            </div>
-        </div>
-    `).join('');
-}
-
-// Update Next Workout
-function updateNextWorkout(workout) {
-    document.getElementById('workout-focus').textContent = workout.focus;
-
-    // Show duration with time info
-    const durationEl = document.getElementById('workout-duration');
-    let durationText = workout.estimated_duration;
-    if (workout.available_time) {
-        durationText = `${workout.estimated_duration} (${workout.available_time} min available)`;
-    }
-    durationEl.textContent = durationText;
-
-    // Show goal and time adjustment badge
-    const goalEl = document.getElementById('workout-goal');
-    if (workout.goal_name) {
-        let goalHtml = `Goal: ${workout.goal_name}`;
-        if (workout.time_adjusted) {
-            goalHtml += ' <span class="time-adjusted-badge">Time-Adjusted</span>';
-        }
-        goalEl.innerHTML = goalHtml;
-    }
-
-    const container = document.getElementById('next-workout-exercises');
-    if (!container || !workout?.exercises?.length) return;
-    container.innerHTML = workout.exercises.map((ex, i) => {
-        const restLabel = ex.rest_label ? ex.rest_label : (ex.rest_minutes != null ? `${ex.rest_minutes} min` : '--');
-        return `
-        <div class="workout-card">
-            <div class="workout-exercise-header">
-                <span class="workout-exercise-name">${i + 1}. ${ex.exercise}</span>
-                <span class="workout-muscle">${ex.muscle}</span>
-            </div>
-            <div class="workout-target">${ex.target_weight} lbs x ${ex.target_reps} reps x ${ex.target_sets} sets</div>
-            <div class="workout-rationale">${ex.rationale}</div>
-            <div class="workout-rest">Rest: ${restLabel}${ex.rpe_target ? ` | Target RPE: ${ex.rpe_target}` : ''}${ex.estimated_time ? ` | ~${ex.estimated_time} min` : ''}</div>
-        </div>
-    `}).join('');
-
-    // Cardio recommendation
-    const cardioSection = document.getElementById('cardio-section');
-    const cardioContainer = document.getElementById('cardio-container');
-
-    if (cardioSection && cardioContainer && workout.cardio) {
-        if (workout.cardio.type) {
-            cardioSection.style.display = 'block';
-            cardioContainer.innerHTML = `
-                <div class="cardio-recommendation">
-                    <div class="cardio-header">
-                        <span class="cardio-type">${workout.cardio.type}</span>
-                        <span class="cardio-duration">${workout.cardio.duration_minutes} min</span>
-                    </div>
-                    <div class="cardio-zone">
-                        <span class="zone-label">${workout.cardio.zone}</span>
-                        <span class="zone-desc">${workout.cardio.zone_description}</span>
-                    </div>
-                    <div class="cardio-hr">
-                        <span class="material-icons">favorite</span>
-                        <span>${workout.cardio.heart_rate_range}</span>
-                    </div>
-                    <div class="cardio-intensity">${workout.cardio.intensity}</div>
-                    <div class="cardio-technique">
-                        <strong>Technique:</strong> ${workout.cardio.technique}
-                    </div>
-                    <div class="cardio-reason">${workout.cardio.reason}</div>
-                </div>
-            `;
-        } else if (workout.cardio.reason) {
-            cardioSection.style.display = 'block';
-            cardioContainer.innerHTML = `
-                <div class="cardio-skip">
-                    <span class="material-icons">info</span>
-                    <span>${workout.cardio.reason}</span>
-                </div>
-            `;
-        } else {
-            cardioSection.style.display = 'none';
-        }
-    }
-
-    // Muscles to avoid
-    const avoidSection = document.getElementById('avoid-section');
-    const avoidContainer = document.getElementById('avoid-container');
-
-    if (avoidSection && avoidContainer) {
-        if (workout.muscles_to_avoid && workout.muscles_to_avoid.length > 0) {
-            avoidSection.style.display = 'block';
-            avoidContainer.innerHTML = workout.muscles_to_avoid.map(m => `
-                <div class="avoid-item">
-                    <span class="avoid-muscle">${m.muscle || m}</span>
-                    <span class="avoid-reason">${m.reason || ''}</span>
-                </div>
-            `).join('');
-        } else {
-            avoidSection.style.display = 'none';
-        }
-    }
-
-    // Store for completion tracking
-    currentRecommendation = workout;
-
-    const dashMeta = document.getElementById('dashboard-workout-meta');
-    const dashList = document.getElementById('dashboard-workout-exercises');
-    if (dashMeta && dashList) {
-        const meso = workout.mesocycle ? `Week ${workout.mesocycle.week} (${workout.mesocycle.phase})` : '';
-        dashMeta.textContent = `${workout.focus} · ${workout.estimated_duration}${meso ? ` · ${meso}` : ''}`;
-        dashList.innerHTML = workout.exercises.map(ex => `
-            <div class="workout-card">
-                <div class="workout-exercise-header">
-                    <span class="workout-exercise-name">${ex.exercise}</span>
-                    <span class="workout-muscle">${ex.muscle}</span>
-                </div>
-                <div class="workout-target">${ex.target_weight} lbs · ${ex.target_reps} reps · ${ex.target_sets} sets</div>
-                <div class="workout-rationale">${ex.rationale}</div>
-                <div class="workout-rest workout-rpe">RPE ${ex.rpe_target}</div>
-            </div>
-        `).join('');
-    }
-}
-
-// ==================== Advanced KPIs ====================
-
-function updateAdvancedKPIs(kpis) {
-    updateConsistency(kpis.consistency);
-    updateDeloadStatus(kpis.deload_check);
-    updateInjuryRisk(kpis.injury_risk);
-    updatePersonalRecords(kpis.personal_records);
-}
-
-function updateConsistency(consistency) {
-    const currentStreak = document.getElementById('current-streak');
-    const longestStreak = document.getElementById('longest-streak');
-    const weeklyAvg = document.getElementById('weekly-avg');
-    const consistencyPct = document.getElementById('consistency-pct');
-    const streakCount = document.getElementById('streak-count');
-    const streakMeta = document.getElementById('streak-meta');
-
-    if (currentStreak) currentStreak.textContent = consistency.current_streak;
-    if (longestStreak) longestStreak.textContent = consistency.longest_streak;
-    if (weeklyAvg) weeklyAvg.textContent = consistency.weekly_avg;
-    if (consistencyPct) consistencyPct.textContent = consistency.consistency_pct + '%';
-    if (streakCount) streakCount.textContent = consistency.current_streak;
-    if (streakMeta) streakMeta.textContent = `${consistency.weekly_avg} sessions/week · Longest ${consistency.longest_streak}`;
-}
-
-function updateDeloadStatus(deload) {
-    const container = document.getElementById('deload-container');
-    if (!container) return;
-
-    const statusColor = deload.needed ? 'yellow' : 'green';
-    const statusText = deload.needed ? 'Deload Recommended' : 'Continue Training';
-
-    container.innerHTML = `
-        <div class="status-header">
-            <span>Recovery Status</span>
-            <span class="status-indicator ${statusColor}">${statusText}</span>
-        </div>
-        <div class="status-details">
-            <p>Weeks since deload: ${deload.weeks_since_deload}</p>
-            ${deload.indicators && deload.indicators.length > 0 ? `
-                <p style="margin-top: 8px; font-weight: 600;">Indicators:</p>
-                ${deload.indicators.map(i => `<div class="status-item">${i}</div>`).join('')}
-            ` : ''}
-            <p style="margin-top: 12px; color: var(--primary);">${deload.recommendation}</p>
-        </div>
-    `;
-}
-
-function updateInjuryRisk(risk) {
-    const container = document.getElementById('injury-risk-container');
-    if (!container) return;
-
-    container.innerHTML = `
-        <div class="status-header">
-            <span>Risk Level</span>
-            <span class="status-indicator ${risk.color}">${risk.overall}</span>
-        </div>
-        <div class="status-details">
-            ${risk.risks && risk.risks.length > 0 ? risk.risks.map(r => `
-                <div class="status-item">
-                    <span class="risk-badge ${r.severity}">${r.type}</span>
-                    <span>${r.message}</span>
-                </div>
-            `).join('') : '<p>No significant risks detected</p>'}
-        </div>
-    `;
-}
-
-function updatePersonalRecords(prs) {
-    const container = document.getElementById('prs-container');
-    if (!container) return;
-
-    const prList = Object.entries(prs)
-        .filter(([_, data]) => data.all_time > 0)
-        .sort((a, b) => b[1].all_time - a[1].all_time)
-        .slice(0, 8);
-
-    container.innerHTML = prList.map(([exercise, data]) => `
-        <div class="pr-card">
-            <div class="pr-info">
-                <div class="pr-exercise">${exercise}</div>
-                <div class="pr-date">${formatDate(data.all_time_date)}</div>
-            </div>
-            <div class="pr-value">
-                <div class="pr-weight">${data.all_time} lbs</div>
-                <div class="pr-label">All-Time e1RM</div>
-            </div>
-        </div>
-    `).join('');
-}
-
-// ==================== Insights & Graphs Tab ====================
-
-async function loadInsights() {
-    try {
-        const response = await fetch('/api/insights');
-        const data = await response.json();
-
-        renderInsights(data.insights);
-        renderCharts(data.charts);
-    } catch (error) {
-        console.error('Failed to load insights:', error);
-    }
-}
-
-function renderInsights(insights) {
-    const container = document.getElementById('insights-container');
-    if (!container) return;
-
-    container.innerHTML = insights.map(insight => `
-        <div class="insight-card insight-${insight.type}">
-            <span class="material-icons insight-icon">${insight.icon}</span>
-            <div class="insight-content">
-                <div class="insight-title">${insight.title}</div>
-                <div class="insight-detail">${insight.detail}</div>
-            </div>
-        </div>
-    `).join('');
-}
-
-function renderCharts(chartData) {
-    // Destroy existing charts
-    Object.values(charts).forEach(chart => chart.destroy());
-    charts = {};
-
-    // e1RM Trends Chart
-    const progressCtx = document.getElementById('progressChart');
-    if (progressCtx && chartData.e1rm_trends) {
-        const allDates = new Set();
-        chartData.e1rm_trends.forEach(ex => {
-            ex.data.forEach(d => allDates.add(d.date));
+        // X-axis labels (first, middle, last)
+        const labelPts = [0, Math.floor(pts.length / 2), pts.length - 1];
+        labelPts.forEach((i) => {
+            if (!pts[i] || !pts[i].label) return;
+            const align = i === 0 ? 'start' : i === pts.length - 1 ? 'end' : 'middle';
+            root.appendChild(ns('text', {
+                x: xFor(i), y: h - 6,
+                fill: '#64748b', 'font-size': '10', 'font-weight': '600',
+                'text-anchor': align,
+            }, pts[i].label));
         });
-        const dates = Array.from(allDates).sort();
 
-        const colors = ['#4361ee', '#7209b7', '#10b981', '#f59e0b', '#ef4444'];
-        const datasets = chartData.e1rm_trends.slice(0, 5).map((ex, i) => ({
-            label: ex.exercise,
-            data: dates.map(date => {
-                const point = ex.data.find(d => d.date === date);
-                return point ? point.e1rm : null;
-            }),
-            borderColor: colors[i],
-            backgroundColor: colors[i] + '20',
-            tension: 0.3,
-            fill: false,
-            spanGaps: true
+        // End dot
+        root.appendChild(ns('circle', { cx: xFor(pts.length - 1), cy: yFor(Number(pts[pts.length - 1].value)), r: '3.2', fill: color }));
+        container.appendChild(root);
+    }
+
+    function barChart(container, bars, opts = {}) {
+        if (!container) return;
+        container.innerHTML = '';
+        const data = (bars || []).filter(b => b && b.value != null);
+        if (!data.length) { container.innerHTML = '<div class="empty">No data.</div>'; return; }
+        const w = 600;
+        const h = 160;
+        const padL = 10, padR = 10, padT = 10, padB = 22;
+        const plotW = w - padL - padR;
+        const plotH = h - padT - padB;
+        const max = Math.max(...data.map(b => Number(b.value))) || 1;
+        const barW = Math.max(4, Math.min(20, (plotW / data.length) * 0.7));
+        const gap = (plotW - barW * data.length) / Math.max(1, data.length - 1);
+        const color = opts.color || '#60a5fa';
+
+        const root = svg({ viewBox: `0 0 ${w} ${h}`, preserveAspectRatio: 'none' });
+        data.forEach((b, i) => {
+            const x = padL + i * (barW + gap);
+            const bh = Math.max(2, (plotH * Number(b.value)) / max);
+            const y = padT + plotH - bh;
+            root.appendChild(ns('rect', { x: x.toFixed(1), y: y.toFixed(1), width: barW.toFixed(1), height: bh.toFixed(1), rx: '2', fill: color, opacity: i === data.length - 1 ? 1 : 0.75 }));
+        });
+
+        const labelIdx = [0, Math.floor(data.length / 2), data.length - 1];
+        labelIdx.forEach((i) => {
+            const b = data[i];
+            if (!b || !b.label) return;
+            const x = padL + i * (barW + gap) + barW / 2;
+            const align = i === 0 ? 'start' : i === data.length - 1 ? 'end' : 'middle';
+            root.appendChild(ns('text', { x, y: h - 6, fill: '#64748b', 'font-size': '10', 'font-weight': '600', 'text-anchor': align }, b.label));
+        });
+        container.appendChild(root);
+    }
+
+    function donutChart(container, slices, opts = {}) {
+        if (!container) return;
+        container.innerHTML = '';
+        const total = slices.reduce((a, s) => a + Number(s.value || 0), 0);
+        if (!slices.length || total <= 0) { container.innerHTML = '<div class="empty">No data yet.</div>'; return; }
+        const size = opts.size || 180;
+        const r = size / 2 - 6;
+        const inner = r * 0.6;
+        const root = svg({ viewBox: `0 0 ${size} ${size}`, width: size, height: size });
+        let ang = -Math.PI / 2;
+        slices.forEach((s) => {
+            const frac = Number(s.value) / total;
+            const next = ang + frac * Math.PI * 2;
+            const large = frac > 0.5 ? 1 : 0;
+            const cx = size / 2, cy = size / 2;
+            const x1 = cx + r * Math.cos(ang), y1 = cy + r * Math.sin(ang);
+            const x2 = cx + r * Math.cos(next), y2 = cy + r * Math.sin(next);
+            const x3 = cx + inner * Math.cos(next), y3 = cy + inner * Math.sin(next);
+            const x4 = cx + inner * Math.cos(ang), y4 = cy + inner * Math.sin(ang);
+            const d = [
+                `M ${x1.toFixed(2)} ${y1.toFixed(2)}`,
+                `A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`,
+                `L ${x3.toFixed(2)} ${y3.toFixed(2)}`,
+                `A ${inner} ${inner} 0 ${large} 0 ${x4.toFixed(2)} ${y4.toFixed(2)}`,
+                'Z',
+            ].join(' ');
+            root.appendChild(ns('path', { d, fill: s.color || '#60a5fa' }));
+            ang = next;
+        });
+        root.appendChild(ns('text', { x: size / 2, y: size / 2 + 4, 'text-anchor': 'middle', fill: '#f1f5f9', 'font-size': '20', 'font-weight': '800' }, fmtKilo(total)));
+        root.appendChild(ns('text', { x: size / 2, y: size / 2 + 20, 'text-anchor': 'middle', fill: '#94a3b8', 'font-size': '10', 'font-weight': '700' }, opts.subtitle || 'TOTAL'));
+        container.appendChild(root);
+    }
+
+    function gaugeChart(container, value, opts = {}) {
+        if (!container) return;
+        container.innerHTML = '';
+        const size = 120;
+        const pct = Math.max(0, Math.min(100, Number(value) || 0));
+        const stroke = 10;
+        const r = size / 2 - stroke - 2;
+        const cx = size / 2, cy = size / 2;
+        const circumference = 2 * Math.PI * r;
+        const dash = (pct / 100) * circumference;
+        const color = pct >= 75 ? '#22c55e' : pct >= 55 ? '#f59e0b' : '#ef4444';
+
+        const root = svg({ viewBox: `0 0 ${size} ${size}` });
+        root.appendChild(ns('circle', { cx, cy, r, fill: 'none', stroke: '#1e293b', 'stroke-width': stroke }));
+        root.appendChild(ns('circle', {
+            cx, cy, r,
+            fill: 'none',
+            stroke: color,
+            'stroke-width': stroke,
+            'stroke-linecap': 'round',
+            'stroke-dasharray': `${dash} ${circumference - dash}`,
+            transform: `rotate(-90 ${cx} ${cy})`,
         }));
+        container.appendChild(root);
 
-        charts.progress = new Chart(progressCtx, {
-            type: 'line',
-            data: { labels: dates.map(d => formatDate(d)), datasets },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { position: 'bottom', labels: { color: '#a0a0b0', font: { size: 10 }, boxWidth: 12 } }
-                },
-                scales: {
-                    x: { ticks: { color: '#a0a0b0', font: { size: 10 } }, grid: { color: '#2a2a4a' } },
-                    y: { ticks: { color: '#a0a0b0', font: { size: 10 } }, grid: { color: '#2a2a4a' }, title: { display: true, text: 'e1RM (lbs)', color: '#a0a0b0', font: { size: 10 } } }
-                }
-            }
-        });
+        const overlay = document.createElement('div');
+        overlay.className = 'readiness-gauge-value';
+        overlay.innerHTML = `<div class="val">${Math.round(pct)}<span class="pct">%</span></div><div class="label">${opts.label || ''}</div>`;
+        container.appendChild(overlay);
     }
 
-    // Volume Distribution Chart
-    const volumeCtx = document.getElementById('volumeChart');
-    if (volumeCtx && chartData.muscle_volume) {
-        charts.volume = new Chart(volumeCtx, {
-            type: 'bar',
-            data: {
-                labels: chartData.muscle_volume.map(m => m.muscle),
-                datasets: [{
-                    label: 'Weekly Sets',
-                    data: chartData.muscle_volume.map(m => m.sets),
-                    backgroundColor: '#4361ee80',
-                    borderColor: '#4361ee',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { display: false } },
-                scales: {
-                    x: { ticks: { color: '#a0a0b0' }, grid: { color: '#2a2a4a' } },
-                    y: { ticks: { color: '#a0a0b0' }, grid: { color: '#2a2a4a' }, beginAtZero: true }
-                }
-            }
-        });
+    // --- greeting ------------------------------------------------
+    function renderGreeting() {
+        const h = new Date().getHours();
+        const part = h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening';
+        const sub = $('greeting-sub');
+        if ($('greeting-title')) $('greeting-title').textContent = `Good ${part}.`;
+        if (sub) sub.textContent = `Here's your analysis for ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}.`;
+        if ($('vitals-date')) $('vitals-date').textContent = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        if ($('body-date')) $('body-date').textContent = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        if ($('log-date-display')) $('log-date-display').textContent = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     }
 
-    // Push/Pull Chart
-    const pushPullCtx = document.getElementById('pushPullChart');
-    const pushPullEmpty = document.getElementById('pushpull-empty');
-    if (pushPullCtx && chartData.push_pull) {
-        const pushSets = chartData.push_pull.push || 0;
-        const pullSets = chartData.push_pull.pull || 0;
-        const totalSets = pushSets + pullSets;
-        if (totalSets < 10) {
-            if (charts.pushPull) {
-                charts.pushPull.destroy();
+    // --- tab switching -------------------------------------------
+    function switchTab(tabId) {
+        state.currentTab = tabId;
+        qsa('.tab-content').forEach((el) => el.classList.toggle('active', el.id === tabId));
+        qsa('.tab-btn').forEach((b) => b.classList.toggle('active', b.getAttribute('data-tab') === tabId));
+        loadTab(tabId);
+        window.scrollTo({ top: 0, behavior: 'instant' });
+    }
+
+    async function loadTab(tabId) {
+        try {
+            switch (tabId) {
+                case 'tab-dashboard': await renderDashboard(); break;
+                case 'tab-vitals': await renderVitals(); break;
+                case 'tab-workout': await renderNextWorkout(); break;
+                case 'tab-log': await prepareLog(); break;
+                case 'tab-history': await renderHistory(); break;
+                case 'tab-body': await renderBody(); break;
+                case 'tab-stats': await renderStats(); break;
+                case 'tab-settings': await renderSettings(); break;
             }
-            pushPullCtx.style.display = 'none';
-            if (pushPullEmpty) pushPullEmpty.style.display = 'block';
+        } catch (e) {
+            console.error('loadTab', tabId, e);
+            toast(`Load failed: ${tabId.replace('tab-', '')}`, 'err');
+        }
+    }
+
+    // --- loaders (cached) ----------------------------------------
+    async function getDashboard(force = false) {
+        if (!force && state.dashboard) return state.dashboard;
+        state.dashboard = await api('/api/dashboard');
+        return state.dashboard;
+    }
+    async function getVitals(force = false) {
+        if (!force && state.vitals) return state.vitals;
+        state.vitals = await api('/api/vitals');
+        return state.vitals;
+    }
+    async function getOuraStatus(force = false, refreshApi = false) {
+        if (!force && !refreshApi && state.oura) return state.oura;
+        try { state.oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : '')); }
+        catch { state.oura = null; }
+        return state.oura;
+    }
+    async function getOuraSleep(force = false) {
+        if (!force && state.ouraSleep) return state.ouraSleep;
+        try { state.ouraSleep = await api('/api/oura/sleep-summary'); }
+        catch { state.ouraSleep = null; }
+        return state.ouraSleep;
+    }
+    async function getOuraTrends(force = false) {
+        if (!force && state.ouraTrends) return state.ouraTrends;
+        try { state.ouraTrends = await api('/api/oura/trends'); }
+        catch { state.ouraTrends = null; }
+        return state.ouraTrends;
+    }
+    async function getReco(force = false) {
+        if (!force && state.reco) return state.reco;
+        try { state.reco = await api('/api/recommendation/smart'); }
+        catch { state.reco = null; }
+        return state.reco;
+    }
+    async function getInsights(force = false) {
+        if (!force && state.insights) return state.insights;
+        try { state.insights = await api('/api/insights'); }
+        catch { state.insights = null; }
+        return state.insights;
+    }
+    async function getHistory(force = false) {
+        if (!force && state.history) return state.history;
+        state.history = await api('/api/history-all');
+        return state.history;
+    }
+    async function getAppleHealthWorkouts(days = 90, force = false) {
+        const key = `aw_${days}`;
+        if (!force && state[key]) return state[key];
+        try {
+            const r = await api(`/api/apple-health/workouts?days=${days}`);
+            state[key] = r && Array.isArray(r.workouts) ? r.workouts : [];
+        } catch { state[key] = []; }
+        return state[key];
+    }
+    async function getBody(force = false) {
+        if (!force && state.body) return state.body;
+        state.body = await api('/api/body-history');
+        return state.body;
+    }
+    async function getSettings(force = false) {
+        if (!force && state.settings) return state.settings;
+        state.settings = await api('/api/settings');
+        return state.settings;
+    }
+    async function getAnalytics(force = false) {
+        if (!force && state.analytics) return state.analytics;
+        try { state.analytics = await api('/api/analytics/advanced'); }
+        catch { state.analytics = null; }
+        return state.analytics;
+    }
+    async function getMuscleFatigue(force = false) {
+        if (!force && state.muscleFatigue) return state.muscleFatigue;
+        try { state.muscleFatigue = await api('/api/muscle-fatigue'); }
+        catch { state.muscleFatigue = null; }
+        return state.muscleFatigue;
+    }
+    async function getExercises(force = false) {
+        if (!force && state.exercises) return state.exercises;
+        try {
+            const r = await api('/api/exercises');
+            state.exercises = r && r.exercises ? r.exercises : Array.isArray(r) ? r : [];
+        } catch { state.exercises = []; }
+        return state.exercises;
+    }
+
+    function invalidateCaches() {
+        state.dashboard = state.vitals = state.oura = state.ouraSleep = null;
+        state.ouraTrends = state.reco = state.insights = state.history = null;
+        state.body = state.settings = state.analytics = state.muscleFatigue = null;
+    }
+
+    // --- Dashboard render ----------------------------------------
+    async function renderDashboard() {
+        const [dash, oura, reco, sleep] = await Promise.all([
+            getDashboard(), getOuraStatus(), getReco(), getOuraSleep(),
+        ]);
+        const readiness = (oura && oura.readiness) || (dash && dash.recomp_command && dash.recomp_command.readiness) || 0;
+
+        gaugeChart($('readiness-gauge-svg'), readiness, { label: readiness >= 75 ? 'Very Good' : readiness >= 55 ? 'Good' : 'Low' });
+
+        if ($('dash-hrv')) $('dash-hrv').textContent = oura && oura.hrv != null ? `${oura.hrv} ms` : '--';
+        if ($('dash-rhr')) $('dash-rhr').textContent = oura && oura.resting_hr != null ? `${oura.resting_hr} bpm` : '--';
+        if ($('dash-sleep')) $('dash-sleep').textContent = oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--';
+
+        // Recommendation card
+        const nw = dash && dash.next_workout ? dash.next_workout : null;
+        const recoTitle = (reco && reco.suggested_workout) || (nw && (nw.focus || nw.goal_name)) || 'Rest Day';
+        const focus = nw ? (nw.focus || nw.goal_name || '') : '';
+        const intensity = nw && nw.estimated_minutes ? `${nw.estimated_minutes} min` : (reco && reco.time_of_day ? reco.time_of_day : '—');
+        const rpeText = nw && nw.goal && nw.goal.rpe_target ? `RPE ${nw.goal.rpe_target}` : '';
+        if ($('reco-title')) $('reco-title').textContent = recoTitle.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+        if ($('reco-intensity')) $('reco-intensity').textContent = [focus, intensity, rpeText].filter(Boolean).join(' · ') || 'Moderate';
+        if ($('reco-why')) $('reco-why').textContent = (reco && reco.reasoning) || 'Based on your readiness, sleep, and training load.';
+        const confidence = readiness >= 80 ? 92 : readiness >= 65 ? 78 : readiness >= 50 ? 62 : 45;
+        if ($('reco-confidence-pct')) $('reco-confidence-pct').textContent = `${confidence}%`;
+
+        // Today at a glance
+        if ($('glance-steps')) $('glance-steps').textContent = fmtInt(oura && oura.steps);
+        if ($('glance-steps-goal')) $('glance-steps-goal').textContent = oura && oura.steps != null ? `${Math.round((oura.steps / 10000) * 100)}% of 10,000` : 'Pending sync';
+        if ($('glance-cal')) $('glance-cal').textContent = fmtInt(oura && oura.active_calories);
+        if ($('glance-cal-goal')) $('glance-cal-goal').textContent = oura && oura.active_calories != null ? `${Math.round((oura.active_calories / 800) * 100)}% of 800` : '';
+        if ($('glance-sleep')) $('glance-sleep').textContent = oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--';
+        if ($('glance-sleep-quality')) {
+            const score = oura && oura.sleep_score;
+            $('glance-sleep-quality').textContent = score != null ? (score >= 85 ? 'Excellent' : score >= 70 ? 'Good' : 'Fair') : '—';
+        }
+        const bs = (dash && dash.body_stats) || {};
+        if ($('glance-weight')) $('glance-weight').textContent = bs.latest_weight != null ? `${fmtDecimal(bs.latest_weight, 1)} lb` : '--';
+        if ($('glance-weight-delta')) {
+            const ch = bs.weight_change_30d;
+            if (ch == null) $('glance-weight-delta').textContent = bs.trend || '—';
+            else {
+                $('glance-weight-delta').textContent = (ch > 0 ? '↑' : ch < 0 ? '↓' : '·') + ' ' + Math.abs(ch).toFixed(1) + ' lb';
+            }
+        }
+
+        // Insight card
+        const recoFactors = reco && reco.readiness_factors;
+        let insightTitle = 'Recovery is on track';
+        let insightBody = reco && reco.reasoning ? reco.reasoning : 'Keep your sleep consistent and you\'ll stay ready.';
+        if (recoFactors) {
+            if (recoFactors.sleep_debt && recoFactors.sleep_debt.status === 'severe') {
+                insightTitle = 'Sleep debt is high';
+                insightBody = recoFactors.sleep_debt.message;
+            } else if (recoFactors.acwr && recoFactors.acwr.risk === 'detraining') {
+                insightTitle = 'Training load is low';
+                insightBody = recoFactors.acwr.message;
+            }
+        }
+        if ($('insight-title')) $('insight-title').textContent = insightTitle;
+        if ($('insight-body')) $('insight-body').textContent = insightBody;
+
+        // Sparkline: sleep scores from Oura trend
+        const sleepSeries = (sleep && sleep.trend_data ? sleep.trend_data : []).map((d) => d.score);
+        sparkline($('insight-sparkline'), sleepSeries, { color: '#22d3ee', height: 32 });
+
+        // Readiness 7D line
+        const trends = await getOuraTrends();
+        const series = trends && trends.series ? trends.series : [];
+        const readinessPts = series.map((s) => ({ value: s.readiness_score, label: fmtDate(s.day) })).filter(p => p.value != null);
+        lineChart($('chart-readiness-7d'), readinessPts, { color: '#22c55e' });
+        if ($('readiness-7d-avg')) {
+            const vals = readinessPts.map(p => p.value);
+            const avg = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+            $('readiness-7d-avg').textContent = avg != null ? `avg ${avg}` : '—';
+        }
+
+        // Volume 4W bar chart (bucket dashboard.next_workout + history by week)
+        const hist = (state.history || (await getHistory().catch(() => null)))?.workouts || [];
+        const weekVolumes = computeWeeklyVolumes(hist, 4);
+        barChart($('chart-volume-4w'), weekVolumes.map(w => ({ value: w.volume, label: w.label })), { color: '#a78bfa' });
+        if ($('volume-4w-sub')) {
+            const total = weekVolumes.reduce((a, w) => a + w.volume, 0);
+            $('volume-4w-sub').textContent = total ? `${fmtKilo(total)} lbs` : '—';
+        }
+    }
+
+    function computeWeeklyVolumes(workouts, weeks = 4) {
+        const now = new Date();
+        const buckets = [];
+        for (let i = weeks - 1; i >= 0; i--) {
+            const end = new Date(now);
+            end.setDate(end.getDate() - 7 * i);
+            const start = new Date(end);
+            start.setDate(end.getDate() - 6);
+            buckets.push({ start, end, volume: 0, label: fmtDate(end.toISOString().slice(0, 10)) });
+        }
+        workouts.forEach((w) => {
+            if (!w.date) return;
+            const wd = new Date(w.date + 'T00:00:00');
+            for (const b of buckets) {
+                if (wd >= b.start && wd <= b.end) { b.volume += Number(w.total_volume || 0); break; }
+            }
+        });
+        return buckets;
+    }
+
+    // --- Vitals --------------------------------------------------
+    async function renderVitals() {
+        const [vit, oura, sleep, body] = await Promise.all([getVitals(), getOuraStatus(), getOuraSleep(), getBody()]);
+
+        // RHR
+        const rhr = (oura && oura.resting_hr) || (vit && vit.heart_rate && vit.heart_rate.resting_bpm);
+        $('v-rhr').textContent = rhr != null ? Math.round(rhr) : '--';
+        // HRV
+        const hrv = oura && oura.hrv;
+        $('v-hrv').textContent = hrv != null ? Math.round(hrv) : '--';
+        // HR zone (static approximation)
+        const zone = rhr ? (rhr < 58 ? 'Zone 2' : rhr < 68 ? 'Zone 2' : 'Zone 3') : '—';
+        $('v-hr-zone').textContent = zone;
+        // Body temp
+        const tempDev = oura && oura.temperature_deviation;
+        $('v-temp').textContent = tempDev != null ? (98.6 + Number(tempDev)).toFixed(1) : '--';
+        $('v-temp-delta').textContent = tempDev != null ? `${tempDev >= 0 ? '+' : ''}${Number(tempDev).toFixed(2)}°F` : '';
+
+        // Activity
+        const steps = oura && oura.steps;
+        $('v-steps').textContent = fmtInt(steps);
+        $('v-steps-goal').textContent = steps != null ? `${Math.round((steps / 10000) * 100)}% of 10,000` : 'of 10,000';
+        const activeCal = oura && oura.active_calories;
+        $('v-active-cal').textContent = fmtInt(activeCal);
+        $('v-active-cal-goal').textContent = activeCal != null ? `${Math.round((activeCal / 800) * 100)}% of 800` : 'of 800 kcal';
+        const totalCal = oura && oura.active_calories ? Math.round(oura.active_calories + 1600) : null;
+        $('v-total-cal').textContent = fmtInt(totalCal);
+        $('v-total-cal-goal').textContent = 'Est. target 2,300';
+        const activityScore = oura && oura.activity_score;
+        $('v-active-min').textContent = activityScore != null ? Math.round(activityScore * 0.9) : '--';
+        $('v-active-min-goal').textContent = 'of 80 min';
+
+        // Sparks from trends
+        const trends = await getOuraTrends();
+        const series = trends && trends.series ? trends.series : [];
+        sparkline($('spark-steps'), series.map((s) => s.steps), { color: '#22c55e' });
+        sparkline($('spark-active-min'), series.map((s) => s.activity_score), { color: '#fbbf24' });
+        sparkline($('spark-sleep'), series.map((s) => (s.sleep_duration_min || 0) / 60), { color: '#a78bfa' });
+
+        // Sleep details
+        const last = sleep && sleep.last_night;
+        if (last) {
+            $('v-sleep-dur').textContent = fmtDur(last.total_sleep_min);
+            $('v-sleep-dur-sub').textContent = `${Math.round(last.rem_sleep_min)}m REM · ${Math.round(last.deep_sleep_min)}m Deep`;
         } else {
-            pushPullCtx.style.display = 'block';
-            if (pushPullEmpty) pushPullEmpty.style.display = 'none';
-            if (charts.pushPull) {
-                charts.pushPull.destroy();
-            }
-            charts.pushPull = new Chart(pushPullCtx, {
-                type: 'doughnut',
-                data: {
-                    labels: ['Push', 'Pull'],
-                    datasets: [{
-                        data: [pushSets, pullSets],
-                        backgroundColor: ['#ef4444', '#3b82f6'],
-                        borderWidth: 0
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'bottom', labels: { color: '#a0a0b0' } }
-                    }
-                }
+            $('v-sleep-dur').textContent = '--';
+            $('v-sleep-dur-sub').textContent = '—';
+        }
+        $('v-sleep-score').textContent = oura && oura.sleep_score != null ? oura.sleep_score : '--';
+        const wa = sleep && sleep.week_average;
+        $('v-sleep-score-sub').textContent = wa && wa.score ? `avg ${wa.score} · 7d` : '';
+
+        // Body
+        const latest = body && body.history && body.history[0];
+        if (latest) {
+            $('v-weight').textContent = latest.weight_lbs != null ? Number(latest.weight_lbs).toFixed(1) : '--';
+            $('v-bf').textContent = latest.body_fat_pct != null ? Number(latest.body_fat_pct).toFixed(1) : '--';
+        }
+        const wTrend = body && body.history ? body.history : [];
+        // Compare latest vs 7 days ago
+        const sevenAgo = wTrend.find((h, i) => {
+            if (!wTrend[0] || !h.date) return false;
+            const days = Math.round((new Date(wTrend[0].date) - new Date(h.date)) / 86400000);
+            return days >= 7;
+        });
+        if (latest && sevenAgo && latest.weight_lbs != null && sevenAgo.weight_lbs != null) {
+            const d = Number(latest.weight_lbs) - Number(sevenAgo.weight_lbs);
+            $('v-weight-delta').textContent = `${d >= 0 ? '↑' : '↓'} ${Math.abs(d).toFixed(1)} lb (7d)`;
+            $('v-weight-delta').className = 'metric-delta ' + (d < 0 ? 'pos' : 'neg');
+        } else { $('v-weight-delta').textContent = ''; }
+        if (latest && sevenAgo && latest.body_fat_pct != null && sevenAgo.body_fat_pct != null) {
+            const d = Number(latest.body_fat_pct) - Number(sevenAgo.body_fat_pct);
+            $('v-bf-delta').textContent = `${d >= 0 ? '↑' : '↓'} ${Math.abs(d).toFixed(1)}% (7d)`;
+            $('v-bf-delta').className = 'metric-delta ' + (d < 0 ? 'pos' : 'neg');
+        } else { $('v-bf-delta').textContent = ''; }
+
+        // RHR/HRV deltas (7d from trends)
+        const rhrSeries = series.map(s => s.resting_hr).filter(v => v != null);
+        if (rhrSeries.length >= 2 && rhr != null) {
+            const avg = rhrSeries.slice(0, -1).reduce((a, b) => a + b, 0) / Math.max(1, rhrSeries.length - 1);
+            const d = rhr - avg;
+            $('v-rhr-delta').textContent = `${d >= 0 ? '↑' : '↓'} ${Math.abs(d).toFixed(1)} vs 7d`;
+            $('v-rhr-delta').className = 'metric-delta ' + (d < 0 ? 'pos' : 'neg');
+        }
+        const hrvSeries = series.map(s => s.hrv).filter(v => v != null);
+        if (hrvSeries.length >= 2 && hrv != null) {
+            const avg = hrvSeries.slice(0, -1).reduce((a, b) => a + b, 0) / Math.max(1, hrvSeries.length - 1);
+            const d = hrv - avg;
+            $('v-hrv-delta').textContent = `${d >= 0 ? '↑' : '↓'} ${Math.abs(d).toFixed(1)} vs 7d`;
+            $('v-hrv-delta').className = 'metric-delta ' + (d >= 0 ? 'pos' : 'neg');
+        }
+    }
+
+    // --- Next Workout --------------------------------------------
+    async function renderNextWorkout() {
+        const [dash, reco, st] = await Promise.all([getDashboard(), getReco(), getSettings()]);
+        const nw = dash && dash.next_workout;
+        if (!nw) {
+            $('nw-title').textContent = 'Rest Day';
+            $('nw-sub').textContent = 'Take recovery seriously today.';
+            $('nw-exercise-list').innerHTML = '<div class="empty">No exercises scheduled.</div>';
+            return;
+        }
+        const focus = (nw.focus || nw.goal_name || 'Workout').replace(/_/g, ' ');
+        const title = focus.replace(/\b\w/g, (c) => c.toUpperCase());
+        $('nw-title').textContent = title;
+        $('nw-sub').textContent = nw.goal_name || 'Moderate Intensity';
+        $('nw-duration').textContent = (nw.estimated_minutes || nw.available_time || '—') + ' min';
+        const goalRpe = (st && st.goal_details && st.goal_details.rpe_target) || null;
+        const exRpes = (nw.exercises || []).map((e) => Number(e.rpe_target)).filter((v) => Number.isFinite(v));
+        const avgExRpe = exRpes.length ? Math.round((exRpes.reduce((a, b) => a + b, 0) / exRpes.length) * 10) / 10 : null;
+        const rpeTarget = goalRpe || avgExRpe;
+        $('nw-rpe').textContent = rpeTarget ? `RPE ${rpeTarget}` : 'RPE —';
+        const why = reco && reco.reasoning ? reco.reasoning : 'Your readiness is high and your plan optimizes strength while managing fatigue.';
+        $('nw-why').textContent = why;
+
+        const list = $('nw-exercise-list');
+        list.innerHTML = '';
+        (nw.exercises || []).forEach((ex, i) => {
+            const card = document.createElement('div');
+            card.className = 'ex-card';
+            const muscle = (ex.muscle || ex.muscle_group || '').toString().toLowerCase().trim();
+            const tagClass = muscle ? 'tag-' + muscle.replace(/\s+/g, '-') : '';
+            const sets = ex.target_sets || ex.sets || 3;
+            const reps = ex.target_reps || ex.reps || (ex.rep_range ? ex.rep_range.join('–') : 10);
+            const w = ex.target_weight != null ? ex.target_weight : ex.target_weight_lbs;
+            const weightStr = w != null && Number(w) > 0 ? ` · ${Math.round(w)} lb` : '';
+            const rpe = ex.rpe_target || ex.rpe;
+            const rationale = ex.rationale || ex.reason || '';
+            const exerciseName = ex.exercise || ex.name || ex.machine || '—';
+            card.innerHTML = `
+                <div class="ex-row-1">
+                    <div class="ex-num">${i + 1}</div>
+                    <div class="ex-name">${escapeHtml(exerciseName)}</div>
+                    ${muscle ? `<span class="ex-tag ${tagClass}">${escapeHtml(muscle)}</span>` : ''}
+                    <button class="ex-swap-btn" type="button" data-ex-idx="${i}" data-ex-muscle="${escapeHtml(muscle)}" data-ex-name="${escapeHtml(exerciseName)}" title="Swap this exercise" aria-label="Swap ${escapeHtml(exerciseName)}">⇄</button>
+                </div>
+                <div class="ex-row-2">
+                    <span class="ex-sets">${sets} × ${reps}${weightStr}</span>
+                    ${rpe ? `<span class="ex-rpe">RPE ${rpe}</span>` : ''}
+                    ${ex.rest_label ? `<span class="ex-rpe">Rest ${escapeHtml(ex.rest_label)}</span>` : ''}
+                </div>
+                ${rationale ? `<div class="ex-why">${escapeHtml(rationale)}</div>` : ''}
+            `;
+            card.querySelector('.ex-swap-btn').addEventListener('click', () => openSwap(i, muscle, exerciseName));
+            list.appendChild(card);
+        });
+        if (!nw.exercises || !nw.exercises.length) list.innerHTML = '<div class="empty">No exercises planned — rest day.</div>';
+
+        const card = $('nw-cardio-card');
+        const c = nw.cardio;
+        if (c && (c.type || c.machine)) {
+            card.hidden = false;
+            $('nw-cardio-title').textContent = c.type || c.machine || 'Cardio';
+            const bits = [];
+            if (c.duration_minutes != null) bits.push(`${c.duration_minutes} min`);
+            if (c.zone) bits.push(c.zone);
+            if (c.heart_rate_range) bits.push(c.heart_rate_range);
+            else if (c.target_hr) bits.push(`${c.target_hr} bpm`);
+            $('nw-cardio-meta').textContent = bits.join(' · ') || (c.intensity || '');
+        } else {
+            card.hidden = true;
+        }
+    }
+
+    function workoutTitle(nw) {
+        const focus = (nw && (nw.focus || nw.goal_name) || 'Workout').replace(/_/g, ' ');
+        return focus.replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
+    function exerciseTargetText(ex) {
+        const sets = ex.target_sets || ex.sets || 3;
+        const reps = ex.target_reps || ex.reps || (ex.rep_range ? ex.rep_range.join('–') : 10);
+        const w = ex.target_weight != null ? ex.target_weight : ex.target_weight_lbs;
+        const bits = [`${sets} × ${reps}`];
+        if (w != null && Number(w) > 0) bits.push(`${Math.round(w)} lb`);
+        if (ex.rpe_target || ex.rpe) bits.push(`RPE ${ex.rpe_target || ex.rpe}`);
+        return bits.join(' · ');
+    }
+
+    function cardioTargetText(cardio) {
+        if (!cardio || !(cardio.type || cardio.machine)) return '';
+        const bits = [cardio.type || cardio.machine || 'Cardio'];
+        if (cardio.duration_minutes != null) bits.push(`${cardio.duration_minutes} min`);
+        if (cardio.zone) bits.push(cardio.zone);
+        if (cardio.heart_rate_range) bits.push(cardio.heart_rate_range);
+        else if (cardio.target_hr) bits.push(`${cardio.target_hr} bpm`);
+        return bits.join(' · ');
+    }
+
+    function renderAdjustedPlanPreview(nw) {
+        const host = $('adjust-plan-preview');
+        if (!host) return;
+        if (!nw) {
+            host.hidden = true;
+            host.innerHTML = '';
+            return;
+        }
+        const exercises = (nw.exercises || []).slice(0, 8);
+        const duration = nw.estimated_minutes || nw.available_time;
+        const cardioText = cardioTargetText(nw.cardio);
+        host.innerHTML = `
+            <div class="adjust-preview-head">
+                <div>
+                    <div class="adjust-preview-kicker">Updated workout plan</div>
+                    <div class="adjust-preview-title">${escapeHtml(workoutTitle(nw))}</div>
+                </div>
+                ${duration ? `<div class="adjust-preview-duration">${escapeHtml(String(duration))} min</div>` : ''}
+            </div>
+            <div class="adjust-preview-list">
+                ${exercises.length ? exercises.map((ex, i) => `
+                    <div class="adjust-preview-row">
+                        <span class="adjust-preview-num">${i + 1}</span>
+                        <span class="adjust-preview-name">${escapeHtml(exerciseName(ex))}</span>
+                        <span class="adjust-preview-target">${escapeHtml(exerciseTargetText(ex))}</span>
+                    </div>
+                `).join('') : '<div class="empty">No exercises planned — rest day.</div>'}
+            </div>
+            ${cardioText ? `<div class="adjust-preview-cardio">${escapeHtml(cardioText)}</div>` : ''}
+            <div class="adjust-preview-actions">
+                <button id="btn-adjust-view-plan" class="btn btn-ghost" type="button">View Full Plan</button>
+                <button id="btn-adjust-start-workout" class="btn btn-primary" type="button">Start Workout</button>
+            </div>
+        `;
+        host.hidden = false;
+        const viewBtn = $('btn-adjust-view-plan');
+        const startBtn = $('btn-adjust-start-workout');
+        if (viewBtn) viewBtn.addEventListener('click', viewAdjustedPlan);
+        if (startBtn) startBtn.addEventListener('click', startAdjustedWorkout);
+    }
+
+    // --- Log -----------------------------------------------------
+    async function prepareLog() {
+        const dateInputs = ['log-date', 'cardio-date', 'recovery-date'];
+        dateInputs.forEach((id) => { if ($(id) && !$(id).value) $(id).value = today(); });
+
+        const select = $('log-exercise');
+        if (select && select.options.length <= 1) {
+            const list = await getExercises();
+            list.forEach((ex) => {
+                const opt = document.createElement('option');
+                const name = typeof ex === 'string' ? ex : (ex.name || ex.exercise || ex.machine);
+                opt.value = name; opt.textContent = name;
+                select.appendChild(opt);
             });
         }
-    }
-}
 
-async function loadWeightChart() {
-    try {
-        const response = await fetch('/api/body-history');
-        const data = await response.json();
-        
-        if (!data.history || data.history.length === 0) {
-            return; // No data to display
-        }
-        
-        const weightCtx = document.getElementById('weightChart');
-        if (!weightCtx) return;
-        
-        // Destroy existing weight chart if any
-        if (charts.weight) {
-            charts.weight.destroy();
-        }
-        
-        // Sort by date ascending for chronological display
-        const sortedHistory = [...data.history].reverse();
-        const dates = sortedHistory.map(entry => entry.date);
-        const weights = sortedHistory.map(entry => entry.weight_lbs);
-        
-        charts.weight = new Chart(weightCtx, {
-            type: 'line',
-            data: {
-                labels: dates.map(d => formatDate(d)),
-                datasets: [{
-                    label: 'Weight (lbs)',
-                    data: weights,
-                    borderColor: '#10b981',
-                    backgroundColor: '#10b98120',
-                    tension: 0.3,
-                    fill: true,
-                    pointRadius: 4,
-                    pointHoverRadius: 6
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { 
-                        display: true,
-                        position: 'top',
-                        labels: { 
-                            color: '#a0a0b0', 
-                            font: { size: 12 },
-                            boxWidth: 15
-                        }
-                    }
-                },
-                scales: {
-                    x: { 
-                        ticks: { 
-                            color: '#a0a0b0', 
-                            font: { size: 10 }
-                        }, 
-                        grid: { color: '#2a2a4a' }
-                    },
-                    y: { 
-                        ticks: { 
-                            color: '#a0a0b0', 
-                            font: { size: 10 }
-                        }, 
-                        grid: { color: '#2a2a4a' },
-                        title: { 
-                            display: true, 
-                            text: 'Weight (lbs)', 
-                            color: '#a0a0b0', 
-                            font: { size: 12 } 
-                        }
-                    }
-                }
-            }
+        // today's summary
+        const hist = await getHistory();
+        const workouts = hist && hist.workouts ? hist.workouts : [];
+        const todaysW = workouts.filter((w) => w.date === today());
+        const vol = todaysW.reduce((a, w) => a + Number(w.total_volume || 0), 0);
+        const setsCount = todaysW.reduce((a, w) => a + Number(w.total_sets || 0), 0);
+        const exCount = todaysW.reduce((a, w) => a + ((w.exercises || []).length), 0);
+        const dur = todaysW.reduce((a, w) => a + Number(w.duration_minutes || 0), 0);
+        $('today-volume').textContent = vol ? fmtKilo(vol) + ' lbs' : '—';
+        $('today-sets').textContent = setsCount || '—';
+        $('today-exercises').textContent = exCount || '—';
+        $('today-duration').textContent = dur ? `${dur} min` : '—';
+    }
+
+    // --- History -------------------------------------------------
+    async function renderHistory() {
+        const [hist, aw] = await Promise.all([
+            getHistory(),
+            getAppleHealthWorkouts(Math.max(state.ranges.history, 30)),
+        ]);
+        const allLifts = (hist && hist.workouts) || [];
+        const days = state.ranges.history;
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - days);
+
+        const lifts = allLifts
+            .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
+            .map((w) => ({ ...w, source: 'lifted' }));
+        const watch = (aw || [])
+            .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
+            .map((w) => ({ ...w, source: 'watch' }));
+
+        // Exclude Apple Watch's own "Traditional Strength Training" entries on
+        // days the user already logged a lift — same session, different source.
+        const liftDates = new Set(lifts.map((w) => w.date));
+        const watchFiltered = watch.filter((w) => {
+            const t = (w.activity_type || w.activity || '').toLowerCase();
+            const looksLikeLift = t.includes('strength') || t.includes('weight') || t.includes('functional');
+            return !(looksLikeLift && liftDates.has(w.date));
         });
-    } catch (error) {
-        console.error('Failed to load weight chart:', error);
-    }
-}
 
-async function loadRecompTrendChart() {
-    const emptyEl = document.getElementById('recomp-empty');
-    try {
-        const response = await fetch('/api/body-history');
-        const data = await response.json();
-        const history = data.history || [];
-        if (!history || history.length < 2) {
-            if (emptyEl) emptyEl.style.display = 'block';
-            if (charts.recomp) {
-                charts.recomp.destroy();
-                charts.recomp = null;
-            }
+        const workouts = lifts.length ? lifts : [];
+        const liftFreqDates = new Set(lifts.map((w) => w.date));
+        const watchFreqDates = new Set(watchFiltered.map((w) => w.date));
+        const sessionDates = new Set([...liftFreqDates, ...watchFreqDates]);
+
+        const totalVol = lifts.reduce((a, w) => a + Number(w.total_volume || 0), 0);
+        const totalSessions = lifts.length + watchFiltered.length;
+        $('history-count').textContent = totalSessions || '0';
+        $('history-freq-sub').textContent = lifts.length && watchFiltered.length
+            ? `Last ${days} days · ${lifts.length} lifted + ${watchFiltered.length} from Watch`
+            : `Last ${days} days`;
+        $('history-total-volume').textContent = fmtKilo(totalVol);
+        $('history-vol-sub').textContent = `Last ${days} days · lifting only`;
+
+        // frequency bars by day — count both lifted and watch sessions
+        const buckets = buildDailyBuckets(days);
+        [...lifts, ...watchFiltered].forEach((w) => {
+            if (!w.date) return;
+            const b = buckets.find((bb) => bb.iso === w.date);
+            if (b) b.count += 1;
+        });
+        const barBuckets = groupIntoBuckets(buckets, Math.min(days, 30));
+        barChart($('chart-history-freq'), barBuckets.map((b) => ({ value: b.count, label: b.label })), { color: '#60a5fa' });
+
+        // volume over time (line)
+        const volPts = barBuckets.map((b) => ({ value: b.volume, label: b.label }));
+        workouts.forEach((w) => {
+            if (!w.date) return;
+            const dt = new Date(w.date + 'T00:00:00');
+            const idx = barBuckets.findIndex((b) => dt >= b.start && dt <= b.end);
+            if (idx >= 0) barBuckets[idx].volume = (barBuckets[idx].volume || 0) + Number(w.total_volume || 0);
+        });
+        lineChart($('chart-history-volume'), barBuckets.map((b) => ({ value: b.volume || 0, label: b.label })), { color: '#a78bfa' });
+
+        // top exercises
+        const topEx = {};
+        workouts.forEach((w) => {
+            (w.exercises || []).forEach((e) => {
+                const name = e.machine || e.exercise || '—';
+                topEx[name] = topEx[name] || { volume: 0, sets: 0 };
+                (e.sets || []).forEach((s) => {
+                    topEx[name].volume += Number(s.weight_lbs || 0) * Number(s.reps || 0);
+                    topEx[name].sets += 1;
+                });
+            });
+        });
+        const topList = Object.entries(topEx)
+            .map(([name, v]) => ({ name, ...v }))
+            .sort((a, b) => b.volume - a.volume)
+            .slice(0, 5);
+        const topHost = $('history-top-exercises');
+        topHost.innerHTML = topList.length ? '' : '<div class="empty">No exercises in range.</div>';
+        topList.forEach((t) => {
+            const row = document.createElement('div');
+            row.className = 'top-row';
+            row.innerHTML = `<span class="top-name">${escapeHtml(t.name)}</span><span class="top-val">${fmtKilo(t.volume)} lbs</span>`;
+            topHost.appendChild(row);
+        });
+
+        // recent workouts — interleaved, newest first, with source tag
+        const listHost = $('history-workout-list');
+        const filterHost = $('history-type-filter');
+        listHost.innerHTML = '';
+        const merged = [...lifts, ...watchFiltered].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+        if (!merged.length) { listHost.innerHTML = '<div class="empty">No workouts in this range.</div>'; return; }
+
+        renderHistoryTypeFilter(merged, filterHost);
+        const visible = merged.filter((w) => historyFilterKey(w) === state.historyTypeFilter || state.historyTypeFilter === 'all');
+        if (!visible.length) {
+            const label = state.historyTypeFilter === 'lifted' ? 'Lifted' : state.historyTypeFilter;
+            listHost.innerHTML = `<div class="empty">No ${escapeHtml(label)} workouts in this range.</div>`;
             return;
         }
 
-        if (emptyEl) emptyEl.style.display = 'none';
-
-        const recompCtx = document.getElementById('recompChart');
-        if (!recompCtx) return;
-
-        if (charts.recomp) {
-            charts.recomp.destroy();
-        }
-
-        const sortedHistory = [...history].reverse();
-        const dates = sortedHistory.map(entry => entry.date);
-        const weights = sortedHistory.map(entry => entry.weight_lbs);
-        const bodyFat = sortedHistory.map(entry => entry.body_fat_pct);
-
-        charts.recomp = new Chart(recompCtx, {
-            type: 'line',
-            data: {
-                labels: dates.map(d => formatDate(d)),
-                datasets: [
-                    {
-                        label: 'Weight (lbs)',
-                        data: weights,
-                        borderColor: '#10b981',
-                        backgroundColor: 'rgba(16, 185, 129, 0.15)',
-                        yAxisID: 'y',
-                        tension: 0.3,
-                        fill: true,
-                        pointRadius: 3
-                    },
-                    {
-                        label: 'Body Fat %',
-                        data: bodyFat,
-                        borderColor: '#f59e0b',
-                        backgroundColor: 'rgba(245, 158, 11, 0.15)',
-                        yAxisID: 'y1',
-                        tension: 0.3,
-                        fill: false,
-                        pointRadius: 3
+        visible.slice(0, 40).forEach((w) => {
+            const row = document.createElement('div');
+            row.className = 'w-row';
+            row.tabIndex = 0;
+            if (w.source === 'watch') {
+                const title = w.activity_type || w.activity || 'Workout';
+                const mins = w.duration_minutes || w.duration_min || 0;
+                const kcal = w.total_energy_kcal || w.energy_kcal || 0;
+                const hr = w.avg_heart_rate ? `${Math.round(w.avg_heart_rate)} bpm` : '';
+                const meta = [mins ? `${Math.round(mins)} min` : null, kcal ? `${Math.round(kcal)} kcal` : null, hr].filter(Boolean).join(' · ');
+                row.innerHTML = `
+                    <div class="w-date">${fmtDate(w.date)}</div>
+                    <div>
+                        <div class="w-summary"><span class="src-tag src-watch">WATCH</span>${escapeHtml(title)}</div>
+                        <div class="w-meta">${escapeHtml(meta) || '—'}</div>
+                    </div>
+                        <div class="w-volume watch-volume">${mins ? Math.round(mins) + ' min' : ''}</div>
+                `;
+                row.addEventListener('click', () => openWorkoutDetail(w));
+                row.addEventListener('keydown', (ev) => {
+                    if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault();
+                        openWorkoutDetail(w);
                     }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'top',
-                        labels: { color: '#a0a0b0', font: { size: 12 } }
-                    }
-                },
-                scales: {
-                    x: { ticks: { color: '#a0a0b0' }, grid: { color: '#2a2a4a' } },
-                    y: {
-                        type: 'linear',
-                        position: 'left',
-                        ticks: { color: '#a0a0b0' },
-                        grid: { color: '#2a2a4a' },
-                        title: { display: true, text: 'Weight (lbs)', color: '#a0a0b0', font: { size: 12 } }
-                    },
-                    y1: {
-                        type: 'linear',
-                        position: 'right',
-                        ticks: { color: '#a0a0b0' },
-                        grid: { drawOnChartArea: false },
-                        title: { display: true, text: 'Body Fat %', color: '#a0a0b0', font: { size: 12 } }
-                    }
-                }
-            }
-        });
-    } catch (error) {
-        if (emptyEl) emptyEl.style.display = 'block';
-        console.error('Failed to load recomp chart:', error);
-    }
-}
-
-// ==================== History Tab ====================
-
-let currentHistoryFilter = 'workouts';
-let currentDateRange = 'all';
-let customDateFrom = null;
-let customDateTo = null;
-let historyData = { workouts: [], cardio: [], recovery: [] };
-
-function initHistoryFilters() {
-    // Activity type filter buttons
-    const filterBtns = document.querySelectorAll('.history-filter-btn');
-    filterBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const filter = btn.dataset.filter;
-            filterBtns.forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            currentHistoryFilter = filter;
-            renderHistoryByFilter();
-            if (navigator.vibrate) navigator.vibrate(10);
-        });
-    });
-
-    // Date range filter buttons
-    const dateRangeBtns = document.querySelectorAll('.date-range-btn');
-    const customDateContainer = document.getElementById('custom-date-range');
-
-    dateRangeBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const range = btn.dataset.range;
-            dateRangeBtns.forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            currentDateRange = range;
-
-            // Show/hide custom date inputs
-            if (range === 'custom') {
-                customDateContainer.style.display = 'flex';
+                });
             } else {
-                customDateContainer.style.display = 'none';
-                customDateFrom = null;
-                customDateTo = null;
-                renderHistoryByFilter();
+                const exNames = (w.exercises || []).map((e) => e.machine || e.exercise).filter(Boolean).slice(0, 3).join(', ');
+                row.innerHTML = `
+                    <div class="w-date">${fmtDate(w.date)}</div>
+                    <div>
+                        <div class="w-summary"><span class="src-tag src-lifted">LIFTED</span>${escapeHtml(exNames || '—')}</div>
+                        <div class="w-meta">${w.total_sets || 0} sets · ${w.duration_minutes || 0} min</div>
+                    </div>
+                    <div class="w-analyze-wrap">
+                        <div class="w-volume">${fmtKilo(w.total_volume)} lbs</div>
+                        <button class="ex-analyze-btn" type="button" data-analyze-id="${escapeHtml(w.id || '')}" data-analyze-date="${escapeHtml(w.date || '')}" title="Analyze this workout" aria-label="Analyze workout from ${escapeHtml(w.date || '')}">↗</button>
+                    </div>
+                `;
+                const btn = row.querySelector('.ex-analyze-btn');
+                if (btn) {
+                    btn.addEventListener('click', (ev) => {
+                        ev.stopPropagation();
+                        const req = btn.dataset.analyzeId
+                            ? { workout_id: btn.dataset.analyzeId }
+                            : { workout_date: btn.dataset.analyzeDate };
+                        openAnalyzeModal(req, `Analysis · ${fmtDate(btn.dataset.analyzeDate)}`);
+                    });
+                }
+                row.addEventListener('click', () => openWorkoutDetail(w));
+                row.addEventListener('keydown', (ev) => {
+                    if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault();
+                        openWorkoutDetail(w);
+                    }
+                });
             }
-
-            if (navigator.vibrate) navigator.vibrate(10);
-        });
-    });
-
-    // Apply custom date range button
-    const applyBtn = document.getElementById('apply-date-range');
-    if (applyBtn) {
-        applyBtn.addEventListener('click', () => {
-            const fromInput = document.getElementById('date-from');
-            const toInput = document.getElementById('date-to');
-            customDateFrom = fromInput.value ? new Date(fromInput.value) : null;
-            customDateTo = toInput.value ? new Date(toInput.value + 'T23:59:59') : null;
-            renderHistoryByFilter();
-            if (navigator.vibrate) navigator.vibrate(10);
+            listHost.appendChild(row);
         });
     }
-}
 
-function filterByDateRange(items) {
-    // Add original index to each item for delete functionality
-    const itemsWithIndex = items.map((item, idx) => ({ ...item, _originalIndex: idx }));
-
-    if (currentDateRange === 'all') {
-        return itemsWithIndex;
+    function historyFilterKey(w) {
+        if (!w) return 'other';
+        if (w.source === 'lifted') return 'lifted';
+        return (w.activity_type || w.activity || 'Other').toString().trim().toLowerCase() || 'other';
     }
 
-    const now = new Date();
-    let startDate;
+    function historyFilterLabel(key) {
+        if (key === 'all') return 'All';
+        if (key === 'lifted') return 'Lifted';
+        return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }
 
-    if (currentDateRange === 'custom') {
-        return itemsWithIndex.filter(item => {
-            const itemDate = new Date(item.date);
-            if (customDateFrom && itemDate < customDateFrom) return false;
-            if (customDateTo && itemDate > customDateTo) return false;
-            return true;
+    function renderHistoryTypeFilter(items, host) {
+        if (!host) return;
+        const counts = new Map();
+        items.forEach((w) => {
+            const key = historyFilterKey(w);
+            counts.set(key, (counts.get(key) || 0) + 1);
         });
-    } else {
-        const days = parseInt(currentDateRange);
-        startDate = new Date(now.getTime() - (days * 24 * 60 * 60 * 1000));
-        return itemsWithIndex.filter(item => {
-            const itemDate = new Date(item.date);
-            return itemDate >= startDate;
+        const keys = ['all'];
+        if (counts.has('lifted')) keys.push('lifted');
+        Array.from(counts.keys())
+            .filter((key) => key !== 'lifted')
+            .sort((a, b) => a.localeCompare(b))
+            .forEach((key) => keys.push(key));
+        if (state.historyTypeFilter !== 'all' && !counts.has(state.historyTypeFilter)) {
+            state.historyTypeFilter = 'all';
+        }
+        host.innerHTML = '';
+        keys.forEach((key) => {
+            const btn = document.createElement('button');
+            btn.className = 'history-filter-chip' + (state.historyTypeFilter === key ? ' active' : '');
+            btn.type = 'button';
+            btn.dataset.filter = key;
+            const count = key === 'all' ? items.length : counts.get(key);
+            btn.innerHTML = `${escapeHtml(historyFilterLabel(key))}<span>${count || 0}</span>`;
+            btn.addEventListener('click', () => {
+                state.historyTypeFilter = key;
+                renderHistory();
+            });
+            host.appendChild(btn);
         });
     }
-}
 
-async function loadHistory() {
-    try {
-        const response = await fetch('/api/history-all');
-        historyData = await response.json();
-        renderHistoryByFilter();
-    } catch (error) {
-        console.error('Failed to load history:', error);
+    function setVolume(set) {
+        return Number(set && set.weight_lbs || 0) * Number(set && set.reps || 0);
     }
-}
 
-function renderHistoryByFilter() {
-    const container = document.getElementById('history-container');
-    const totalEl = document.getElementById('history-total');
-    const volumeEl = document.getElementById('history-volume');
-    const totalLabel = document.getElementById('history-total-label');
-    const volumeLabel = document.getElementById('history-volume-label');
-    const overloadSection = document.getElementById('progressive-overload-section');
-
-    if (!container) return;
-    if (overloadSection) overloadSection.style.display = 'none';
-
-    if (currentHistoryFilter === 'workouts') {
-        const allWorkouts = historyData.workouts || [];
-        const workouts = filterByDateRange(allWorkouts);
-        totalEl.textContent = workouts.length;
-        totalLabel.textContent = 'Total Workouts';
-        const totalVolume = workouts.reduce((sum, w) => sum + (w.total_volume || 0), 0);
-        volumeEl.textContent = (totalVolume / 1000).toFixed(0) + 'K';
-        volumeLabel.textContent = 'Total Volume';
-        renderWorkoutHeatmap(allWorkouts);
-        renderWorkoutHistory(workouts);
-        loadProgressiveOverload();
-    } else if (currentHistoryFilter === 'cardio') {
-        const allCardio = historyData.cardio || [];
-        const cardio = filterByDateRange(allCardio);
-        totalEl.textContent = cardio.length;
-        totalLabel.textContent = 'Total Sessions';
-        const totalMinutes = cardio.reduce((sum, c) => sum + (c.duration_minutes || 0), 0);
-        volumeEl.textContent = totalMinutes;
-        volumeLabel.textContent = 'Total Minutes';
-        renderCardioHistory(cardio);
-    } else if (currentHistoryFilter === 'recovery') {
-        const allRecovery = historyData.recovery || [];
-        const recovery = filterByDateRange(allRecovery);
-        totalEl.textContent = recovery.length;
-        totalLabel.textContent = 'Total Sessions';
-        const totalMinutes = recovery.reduce((sum, r) => sum + (r.duration_minutes || 0), 0);
-        volumeEl.textContent = totalMinutes;
-        volumeLabel.textContent = 'Total Minutes';
-        renderRecoveryHistory(recovery);
+    function workoutExerciseName(ex) {
+        return ex && (ex.machine || ex.exercise || ex.name) || 'Exercise';
     }
-}
 
-async function loadProgressiveOverload() {
-    const section = document.getElementById('progressive-overload-section');
-    const container = document.getElementById('progressive-overload-container');
-    if (!section || !container) return;
-    try {
-        const response = await fetch('/api/progressive-overload');
-        const data = await response.json();
-        const exercises = data.exercises || [];
-        if (!exercises.length) {
-            section.style.display = 'none';
+    function openWorkoutDetail(item) {
+        const modal = $('modal-workout-detail');
+        const body = $('workout-detail-body');
+        const title = $('workout-detail-title');
+        if (!modal || !body || !title || !item) return;
+
+        if (item.source === 'watch') {
+            const activity = item.activity_type || item.activity || 'Workout';
+            const mins = item.duration_minutes || item.duration_min || 0;
+            const kcal = item.total_energy_kcal || item.energy_kcal || 0;
+            const hr = item.avg_heart_rate ? `${Math.round(item.avg_heart_rate)} bpm` : '';
+            title.textContent = `${activity} · ${fmtDate(item.date)}`;
+            body.innerHTML = `
+                <div class="workout-detail-kpis">
+                    <div><span>${Math.round(mins || 0)}</span><label>minutes</label></div>
+                    <div><span>${Math.round(kcal || 0)}</span><label>kcal</label></div>
+                    <div><span>${escapeHtml(hr || '—')}</span><label>avg HR</label></div>
+                </div>
+                ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
+            `;
+            modal.hidden = false;
             return;
         }
-        section.style.display = 'block';
-        container.innerHTML = exercises.map(ex => {
-            const last = ex.last_weight != null ? `${ex.last_weight} lbs` : '--';
-            const prev = ex.previous_weight != null ? `${ex.previous_weight} lbs` : '--';
-            let changeText = '—';
-            if (ex.change_lbs != null) {
-                const arrow = ex.change_dir === 'up' ? '▲' : ex.change_dir === 'down' ? '▼' : '•';
-                changeText = `${arrow} ${Math.abs(ex.change_lbs)} lbs`;
-            }
-            const trend = ex.trend || '--';
+
+        const exercises = item.exercises || [];
+        const totalSets = item.total_sets || exercises.reduce((sum, ex) => sum + ((ex.sets || []).length), 0);
+        const totalVolume = item.total_volume || exercises.reduce((sum, ex) => sum + (ex.sets || []).reduce((s, set) => s + setVolume(set), 0), 0);
+        title.textContent = `Workout · ${fmtDate(item.date)}`;
+
+        const exerciseHtml = exercises.map((ex) => {
+            const sets = ex.sets || [];
+            const rows = sets.map((set) => `
+                <div class="workout-set-row">
+                    <span>${escapeHtml(set.set_number || '')}</span>
+                    <span>${escapeHtml(set.weight_lbs ?? 0)} lb</span>
+                    <span>${escapeHtml(set.reps ?? 0)} reps</span>
+                    <span>${set.rpe ? `RPE ${escapeHtml(set.rpe)}` : 'RPE —'}</span>
+                    ${set.notes ? `<div class="workout-set-note">${escapeHtml(set.notes)}</div>` : ''}
+                </div>
+            `).join('');
+            const exVolume = sets.reduce((sum, set) => sum + setVolume(set), 0);
             return `
-                <div class="overload-card">
-                    <div class="overload-header">
-                        <span class="overload-name">${escapeHtml(ex.exercise)}</span>
-                        <span class="overload-change ${ex.change_dir}">${changeText}</span>
+                <div class="workout-detail-ex">
+                    <div class="workout-detail-ex-head">
+                        <h4>${escapeHtml(workoutExerciseName(ex))}</h4>
+                        <span>${sets.length} sets · ${fmtKilo(exVolume)} lbs</span>
                     </div>
-                    <div class="overload-row">
-                        <span>Last: ${last}</span>
-                        <span>Prev: ${prev}</span>
-                    </div>
-                    <div class="overload-trend">Trend: ${trend}</div>
+                    ${rows || '<div class="empty">No sets logged.</div>'}
                 </div>
             `;
         }).join('');
-    } catch (error) {
-        section.style.display = 'none';
-        console.error('Failed to load progressive overload:', error);
-    }
-}
 
-function renderWorkoutHistory(workouts) {
-    const container = document.getElementById('history-container');
-    const prs = historyData.personal_records || {};
-
-    if (workouts.length === 0) {
-        container.innerHTML = '<p class="empty-state">No workouts logged yet</p>';
-        return;
-    }
-
-    container.innerHTML = workouts.map((w) => `
-        <div class="history-card" id="history-${w.date}" onclick="toggleHistoryDetail(this)">
-            <div class="history-header">
-                <div class="history-date">${formatDate(w.date)}</div>
-                <div class="history-type">${(w.session_type || 'general').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</div>
+        const cardio = item.cardio || null;
+        const cardioHtml = cardio ? `
+            <div class="workout-detail-section">
+                <div class="analyze-label">CARDIO</div>
+                <div class="workout-note">
+                    ${cardio.completed ? 'Completed' : 'Planned'} · ${escapeHtml(cardio.activity_type || (cardio.recommendation || {}).type || 'Cardio')} · ${escapeHtml(cardio.duration_minutes || (cardio.recommendation || {}).duration_minutes || 0)} min
+                    ${cardio.notes ? `<div class="workout-set-note">${escapeHtml(cardio.notes)}</div>` : ''}
+                </div>
             </div>
-            <div class="history-summary">
-                <span>${w.total_sets} sets</span>
-                <span>${((w.total_volume || 0) / 1000).toFixed(1)}K lbs</span>
-                <span>${w.duration_minutes || '--'} min</span>
+        ` : '';
+
+        body.innerHTML = `
+            <div class="workout-detail-kpis">
+                <div><span>${fmtInt(totalSets)}</span><label>sets</label></div>
+                <div><span>${fmtKilo(totalVolume)}</span><label>lbs</label></div>
+                <div><span>${fmtInt(item.duration_minutes || 0)}</span><label>minutes</label></div>
             </div>
-            ${w.notes ? `<div class="history-notes-preview"><span class="material-icons" style="font-size:14px;vertical-align:middle;">notes</span> ${escapeHtml(w.notes.substring(0, 40))}${w.notes.length > 40 ? '...' : ''}</div>` : ''}
-            <div class="history-detail" style="display:none;">
-                ${(w.exercises || []).map(e => `
-                    <div class="history-exercise">
-                        <strong>${escapeHtml(e.machine)}</strong>
-                        ${prs[e.machine] && prs[e.machine].all_time_date === w.date ? `<span class="pr-badge">PR</span>` : ''}
-                        ${(e.sets || []).map(s => `<div class="history-set">${s.weight_lbs}lbs x ${s.reps} @ RPE ${s.rpe || '?'}</div>`).join('')}
+            ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">WORKOUT NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
+            <div class="workout-detail-section">
+                <div class="analyze-label">EXERCISES</div>
+                ${exerciseHtml || '<div class="empty">No exercises logged.</div>'}
+            </div>
+            ${cardioHtml}
+        `;
+        modal.hidden = false;
+    }
+
+    function buildDailyBuckets(days) {
+        // Build local-date buckets (not UTC) so evening-hour rendering doesn't
+        // shift the History bars forward by a day in CDT/CST.
+        const buckets = [];
+        for (let i = days - 1; i >= 0; i--) {
+            const d = new Date();
+            d.setDate(d.getDate() - i);
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            buckets.push({ iso: `${y}-${m}-${day}`, count: 0, volume: 0 });
+        }
+        return buckets;
+    }
+    function groupIntoBuckets(dailyBuckets, targetBuckets) {
+        if (dailyBuckets.length <= targetBuckets) {
+            return dailyBuckets.map((b) => ({ start: new Date(b.iso + 'T00:00:00'), end: new Date(b.iso + 'T23:59:59'), count: b.count, volume: b.volume, label: fmtDate(b.iso) }));
+        }
+        const binSize = Math.ceil(dailyBuckets.length / targetBuckets);
+        const out = [];
+        for (let i = 0; i < dailyBuckets.length; i += binSize) {
+            const slice = dailyBuckets.slice(i, i + binSize);
+            if (!slice.length) continue;
+            out.push({
+                start: new Date(slice[0].iso + 'T00:00:00'),
+                end: new Date(slice[slice.length - 1].iso + 'T23:59:59'),
+                count: slice.reduce((a, s) => a + s.count, 0),
+                volume: slice.reduce((a, s) => a + (s.volume || 0), 0),
+                label: fmtDate(slice[slice.length - 1].iso),
+            });
+        }
+        return out;
+    }
+
+    // --- Body ----------------------------------------------------
+    async function renderBody() {
+        const body = await getBody();
+        const all = (body && body.history) || [];
+        const latest = all[0] || {};
+        $('body-weight').textContent = latest.weight_lbs != null ? Number(latest.weight_lbs).toFixed(1) : '--';
+        $('body-bf').textContent = latest.body_fat_pct != null ? Number(latest.body_fat_pct).toFixed(1) : '--';
+
+        const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 90);
+        const recent = all.filter((h) => h.date && new Date(h.date + 'T00:00:00') >= cutoff)
+            .slice().reverse();
+        const wPts = recent.filter(h => h.weight_lbs != null).map((h) => ({ value: Number(h.weight_lbs), label: fmtDate(h.date) }));
+        const bfPts = recent.filter(h => h.body_fat_pct != null).map((h) => ({ value: Number(h.body_fat_pct), label: fmtDate(h.date) }));
+        lineChart($('chart-weight'), wPts, { color: '#60a5fa' });
+        lineChart($('chart-bf'), bfPts, { color: '#a78bfa' });
+
+        if (wPts.length >= 2) {
+            const d = wPts[wPts.length - 1].value - wPts[0].value;
+            $('body-weight-delta').textContent = `${d >= 0 ? '↑' : '↓'} ${Math.abs(d).toFixed(1)} lb (30d)`;
+            $('body-weight-delta').className = 'metric-delta ' + (d < 0 ? 'pos' : 'neg');
+        }
+        if (bfPts.length >= 2) {
+            const d = bfPts[bfPts.length - 1].value - bfPts[0].value;
+            $('body-bf-delta').textContent = `${d >= 0 ? '↑' : '↓'} ${Math.abs(d).toFixed(1)}% (30d)`;
+            $('body-bf-delta').className = 'metric-delta ' + (d < 0 ? 'pos' : 'neg');
+        }
+
+        const grid = $('measurements-grid');
+        grid.innerHTML = '';
+        const latestWeight = latest.weight_lbs != null ? Number(latest.weight_lbs) : null;
+        const latestBf = latest.body_fat_pct != null ? Number(latest.body_fat_pct) : null;
+        const oldest = recent.find((h) => h.weight_lbs != null || h.body_fat_pct != null) || {};
+        const oldestWeight = oldest.weight_lbs != null ? Number(oldest.weight_lbs) : null;
+        const oldestBf = oldest.body_fat_pct != null ? Number(oldest.body_fat_pct) : null;
+        const fatMass = latestWeight != null && latestBf != null ? latestWeight * latestBf / 100 : null;
+        const leanMass = latestWeight != null && fatMass != null ? latestWeight - fatMass : null;
+        const composition = [
+            {
+                label: 'Lean Mass',
+                value: leanMass != null ? `${leanMass.toFixed(1)} lb` : '—',
+                sub: latestWeight != null && latestBf != null ? 'estimated from body fat' : 'needs weight + body fat',
+            },
+            {
+                label: 'Fat Mass',
+                value: fatMass != null ? `${fatMass.toFixed(1)} lb` : '—',
+                sub: latestWeight != null && latestBf != null ? `${latestBf.toFixed(1)}% of body weight` : 'needs body fat %',
+            },
+            {
+                label: 'Weight 90D',
+                value: latestWeight != null && oldestWeight != null ? `${latestWeight - oldestWeight >= 0 ? '+' : '-'}${Math.abs(latestWeight - oldestWeight).toFixed(1)} lb` : '—',
+                sub: oldest.date ? `since ${fmtDate(oldest.date)}` : 'needs more entries',
+            },
+            {
+                label: 'Body Fat 90D',
+                value: latestBf != null && oldestBf != null ? `${latestBf - oldestBf >= 0 ? '+' : '-'}${Math.abs(latestBf - oldestBf).toFixed(1)}%` : '—',
+                sub: oldest.date ? `since ${fmtDate(oldest.date)}` : 'needs more entries',
+            },
+        ];
+        composition.forEach((m) => {
+            const row = document.createElement('div');
+            row.className = 'm-row';
+            row.innerHTML = `<div><span class="m-label">${escapeHtml(m.label)}</span>${m.sub ? `<span class="m-sub">${escapeHtml(m.sub)}</span>` : ''}</div><span class="m-val">${escapeHtml(m.value)}</span>`;
+            grid.appendChild(row);
+        });
+        if (latest && latest.date) $('measurements-date').textContent = fmtDate(latest.date);
+    }
+
+    // --- Stats ---------------------------------------------------
+    async function renderStats() {
+        const hist = await getHistory();
+        const all = (hist && hist.workouts) || [];
+        const days = state.ranges.stats;
+        const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days);
+        const workouts = all.filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff);
+
+        // Prior period for deltas
+        const priorCutoffEnd = cutoff;
+        const priorCutoffStart = new Date(cutoff); priorCutoffStart.setDate(priorCutoffStart.getDate() - days);
+        const priorWorkouts = all.filter((w) => w.date && new Date(w.date + 'T00:00:00') >= priorCutoffStart && new Date(w.date + 'T00:00:00') < priorCutoffEnd);
+
+        const totalVol = workouts.reduce((a, w) => a + Number(w.total_volume || 0), 0);
+        const priorVol = priorWorkouts.reduce((a, w) => a + Number(w.total_volume || 0), 0);
+        const totalSets = workouts.reduce((a, w) => a + Number(w.total_sets || 0), 0);
+        const priorSets = priorWorkouts.reduce((a, w) => a + Number(w.total_sets || 0), 0);
+        const totalTime = workouts.reduce((a, w) => a + Number(w.duration_minutes || 0), 0);
+        const priorTime = priorWorkouts.reduce((a, w) => a + Number(w.duration_minutes || 0), 0);
+        const avgVol = workouts.length ? totalVol / workouts.length : 0;
+        const rpeList = [];
+        workouts.forEach((w) => (w.exercises || []).forEach((e) => (e.sets || []).forEach((s) => {
+            if (s.rpe != null) rpeList.push(Number(s.rpe));
+        })));
+        const avgRpe = rpeList.length ? rpeList.reduce((a, b) => a + b, 0) / rpeList.length : 0;
+
+        $('stats-workouts').textContent = workouts.length;
+        $('stats-workouts-delta').innerHTML = renderDelta(workouts.length - priorWorkouts.length, 'vs prior');
+        $('stats-volume').textContent = fmtKilo(totalVol);
+        $('stats-volume-delta').innerHTML = renderDelta(pctDelta(totalVol, priorVol), 'vs prior', true);
+        $('stats-avg-vol').textContent = fmtKilo(avgVol);
+        $('stats-avg-vol-delta').textContent = '';
+        $('stats-rpe').textContent = avgRpe ? avgRpe.toFixed(1) : '--';
+        $('stats-rpe-sub').textContent = rpeList.length ? `${rpeList.length} sets` : '';
+        $('stats-sets').textContent = totalSets;
+        $('stats-sets-delta').innerHTML = renderDelta(totalSets - priorSets, 'vs prior');
+        $('stats-time').textContent = fmtDur(totalTime);
+        $('stats-time-delta').innerHTML = renderDelta(totalTime - priorTime, 'min', false);
+
+        // Volume by muscle
+        const muscles = {};
+        workouts.forEach((w) => (w.exercises || []).forEach((e) => {
+            const mg = (e.muscle_group || 'other').toLowerCase();
+            const vol = (e.sets || []).reduce((a, s) => a + Number(s.weight_lbs || 0) * Number(s.reps || 0), 0);
+            muscles[mg] = (muscles[mg] || 0) + vol;
+        }));
+        const muscleColors = { back: '#22d3ee', legs: '#a78bfa', quads: '#a78bfa', hamstrings: '#c084fc', glutes: '#e879f9', chest: '#fb923c', shoulders: '#22c55e', biceps: '#f472b6', triceps: '#f472b6', arms: '#f472b6', core: '#fbbf24', other: '#64748b' };
+        const slices = Object.entries(muscles)
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, v]) => ({ label: k, value: v, color: muscleColors[k] || '#64748b' }));
+        donutChart($('chart-muscle-donut'), slices, { subtitle: 'VOLUME' });
+        const legend = $('muscle-legend');
+        legend.innerHTML = '';
+        const totalMuscle = slices.reduce((a, s) => a + s.value, 0) || 1;
+        slices.slice(0, 8).forEach((s) => {
+            const row = document.createElement('div');
+            row.className = 'legend-row';
+            const pct = ((s.value / totalMuscle) * 100).toFixed(0);
+            row.innerHTML = `<span class="legend-dot" style="background:${s.color}"></span><span>${escapeHtml(capitalize(s.label))}</span><span class="legend-val">${pct}%</span>`;
+            legend.appendChild(row);
+        });
+
+        // Insights list
+        const insights = await getInsights();
+        const list = $('insights-list');
+        list.innerHTML = '';
+        const items = (insights && insights.insights) || [];
+        if (!items.length) {
+            list.innerHTML = '<div class="empty">No insights yet — log more workouts to unlock.</div>';
+        } else {
+            items.forEach((ins) => {
+                const card = document.createElement('div');
+                card.className = 'in-card';
+                const kind = (ins.type || 'info').toLowerCase();
+                const map = { success: 'pos', warning: 'warn', danger: 'neg', info: 'info' };
+                const iconClass = map[kind] || 'info';
+                const iconChar = kind === 'success' ? '↑' : kind === 'warning' ? '!' : kind === 'danger' ? '▲' : 'i';
+                card.innerHTML = `
+                    <div class="in-icon ${iconClass}">${iconChar}</div>
+                    <div>
+                        <div class="in-title">${escapeHtml(ins.title || '—')}</div>
+                        <div class="in-detail">${escapeHtml(ins.detail || '')}</div>
                     </div>
-                `).join('')}
-                ${w.notes ? `<div class="history-notes-full"><strong>Notes:</strong> ${escapeHtml(w.notes)}</div>` : ''}
-                <button class="btn-danger" onclick="event.stopPropagation(); deleteHistoryItem('workout', ${w._originalIndex})" title="Delete this workout">
-                    <span class="material-icons">delete</span> Delete Workout
-                </button>
-            </div>
-        </div>
-    `).join('');
-}
-
-function renderWorkoutHeatmap(workouts) {
-    const heatmap = document.getElementById('history-heatmap');
-    if (!heatmap) return;
-
-    const byDate = {};
-    (workouts || []).forEach(w => {
-        if (!w.date) return;
-        byDate[w.date] = (byDate[w.date] || 0) + 1;
-    });
-
-    const totalDays = 84;
-    const end = new Date();
-    const start = new Date();
-    start.setDate(end.getDate() - totalDays + 1);
-
-    const cells = [];
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        const dateStr = d.toISOString().slice(0, 10);
-        const count = byDate[dateStr] || 0;
-        const level = count >= 3 ? 3 : count === 2 ? 2 : count === 1 ? 1 : 0;
-        cells.push(`<div class="heatmap-cell level-${level}" data-date="${dateStr}" title="${dateStr} • ${count} workout${count === 1 ? '' : 's'}"></div>`);
-    }
-
-    // Add day-of-week labels
-    const dayLabels = ['M', '', 'W', '', 'F', '', 'S'];
-    const dayLabelHtml = dayLabels.map(d => `<div class="heatmap-day-label">${d}</div>`).join('');
-    
-    // Add month labels
-    const months = [];
-    let lastMonth = -1;
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        const m = d.getMonth();
-        if (m !== lastMonth) {
-            const weekOffset = Math.floor((d - start) / (7 * 86400000));
-            months.push({ name: d.toLocaleString('en', { month: 'short' }), offset: weekOffset });
-            lastMonth = m;
+                `;
+                list.appendChild(card);
+            });
         }
     }
-    const monthLabelHtml = `<div class="heatmap-month-labels">${months.map(m => `<span style="grid-column:${m.offset + 2}">${m.name}</span>`).join('')}</div>`;
-    
-    heatmap.innerHTML = monthLabelHtml + `<div class="heatmap-grid"><div class="heatmap-day-labels">${dayLabelHtml}</div><div class="heatmap-cells">${cells.join('')}</div></div>`;
-    heatmap.querySelectorAll('.heatmap-cell').forEach(cell => {
-        cell.addEventListener('click', () => {
-            const date = cell.getAttribute('data-date');
-            const card = document.getElementById(`history-${date}`);
-            if (card) {
-                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                card.classList.add('flash');
-                setTimeout(() => card.classList.remove('flash'), 1200);
-            }
-        });
-    });
-}
 
-function renderCardioHistory(cardio) {
-    const container = document.getElementById('history-container');
-
-    if (cardio.length === 0) {
-        container.innerHTML = '<p class="empty-state">No cardio sessions logged yet</p>';
-        return;
+    function pctDelta(cur, prev) {
+        if (!prev) return cur ? 100 : 0;
+        return ((cur - prev) / prev) * 100;
     }
-
-    container.innerHTML = cardio.map((c) => `
-        <div class="cardio-history-card" onclick="toggleHistoryDetail(this)">
-            <div class="cardio-history-header">
-                <div class="cardio-history-type">
-                    <span class="material-icons">directions_run</span>
-                    <span class="cardio-history-activity">${escapeHtml(c.activity_type || 'Cardio')}</span>
-                </div>
-                <div class="cardio-history-date">${formatDate(c.date)}</div>
-            </div>
-            <div class="cardio-history-stats">
-                <span><span class="material-icons">timer</span> ${c.duration_minutes} min</span>
-                ${c.avg_heart_rate ? `<span class="cardio-history-hr"><span class="material-icons">favorite</span> ${c.avg_heart_rate} BPM</span>` : ''}
-                <span><span class="material-icons">speed</span> ${c.intensity}/10</span>
-            </div>
-            ${c.notes ? `<div class="history-notes-preview" style="margin-top:8px;">${escapeHtml(c.notes)}</div>` : ''}
-            <div class="history-detail" style="display:none;">
-                <button class="btn-danger" onclick="event.stopPropagation(); deleteHistoryItem('cardio', ${c._originalIndex})" title="Delete this cardio session">
-                    <span class="material-icons">delete</span> Delete Session
-                </button>
-            </div>
-        </div>
-    `).join('');
-}
-
-function renderRecoveryHistory(recovery) {
-    const container = document.getElementById('history-container');
-
-    if (recovery.length === 0) {
-        container.innerHTML = '<p class="empty-state">No recovery sessions logged yet</p>';
-        return;
+    function renderDelta(d, suffix = '', isPct = false) {
+        if (d == null || Number.isNaN(d) || d === 0) return '<span class="metric-delta mute">— '+suffix+'</span>';
+        const cls = d > 0 ? 'pos' : 'neg';
+        const sym = d > 0 ? '↑' : '↓';
+        const val = Math.abs(d);
+        const out = isPct ? val.toFixed(0) + '%' : (Number.isInteger(val) ? val : val.toFixed(1));
+        return `<span class="metric-delta ${cls}">${sym} ${out} ${suffix}</span>`;
     }
+    function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+    function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-    container.innerHTML = recovery.map((r) => `
-        <div class="recovery-history-card" onclick="toggleHistoryDetail(this)">
-            <div class="recovery-history-header">
-                <div class="recovery-history-type">
-                    <span class="material-icons">spa</span>
-                    <span class="recovery-history-activity">${escapeHtml((r.recovery_type || 'Recovery').replace('_', ' '))}</span>
+    // --- Settings ------------------------------------------------
+    async function renderSettings() {
+        const [st, oura] = await Promise.all([getSettings(), getOuraStatus(true, true)]);
+        const host = $('settings-goals');
+        host.innerHTML = '';
+        (st.available_goals || []).forEach((g) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'goal-opt' + (st.training_goal === g.value || st.goal === g.value || (st.goal_details && st.goal_details.name === g.name) ? ' active' : '');
+            btn.dataset.goal = g.value;
+            btn.innerHTML = `
+                <div>
+                    <div class="goal-title">${escapeHtml(g.name)}</div>
+                    <span class="goal-sub">${escapeHtml(g.description)}</span>
                 </div>
-                <div class="recovery-history-date">${formatDate(r.date)}</div>
-            </div>
-            <div class="recovery-history-stats">
-                <span><span class="material-icons">timer</span> ${r.duration_minutes} min</span>
-                ${r.temperature ? `<span><span class="material-icons">thermostat</span> ${r.temperature}°F</span>` : ''}
-            </div>
-            ${r.notes ? `<div class="history-notes-preview" style="margin-top:8px;">${escapeHtml(r.notes)}</div>` : ''}
-            <div class="history-detail" style="display:none;">
-                <button class="btn-danger" onclick="event.stopPropagation(); deleteHistoryItem('recovery', ${r._originalIndex})" title="Delete this recovery session">
-                    <span class="material-icons">delete</span> Delete Session
-                </button>
-            </div>
-        </div>
-    `).join('');
-}
-
-async function deleteHistoryItem(type, index) {
-    if (!confirm('Delete this entry?')) return;
-
-    try {
-        await fetch('/api/delete-history', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type, index })
-        });
-
-        // Reload history
-        loadHistory();
-        loadDashboard();
-
-        if (navigator.vibrate) navigator.vibrate(20);
-    } catch (error) {
-        console.error('Failed to delete:', error);
-        alert('Failed to delete entry');
-    }
-}
-
-function toggleHistoryDetail(card) {
-    const detail = card.querySelector('.history-detail');
-    if (detail) {
-        detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
-    }
-}
-
-// ==================== Settings Tab ====================
-
-async function loadSettings() {
-    try {
-        const response = await fetch('/api/settings');
-        currentSettings = await response.json();
-
-        renderGoals(currentSettings.available_goals, currentSettings.training_goal);
-        renderTimeOptions(currentSettings.time_options, currentSettings.available_time_minutes);
-        document.getElementById('sessions-target').value = currentSettings.sessions_per_week_target;
-        document.getElementById('target-value').textContent = currentSettings.sessions_per_week_target;
-        const calTarget = document.getElementById('settings-calories-target');
-        const proteinTarget = document.getElementById('settings-protein-target');
-        if (calTarget) calTarget.value = currentSettings.daily_calorie_target || '';
-        if (proteinTarget) proteinTarget.value = currentSettings.daily_protein_target_g || '';
-
-        // Update subtitle with current goal
-        const goalName = currentSettings.goal_details?.name || 'Training';
-        const subtitle = document.getElementById('goal-subtitle') || document.getElementById('app-subtitle');
-        if (subtitle) subtitle.textContent = goalName + ' Mode';
-
-        // Load baseline configuration
-        loadBaselines();
-        
-        // Load protocols
-        loadProtocols();
-    } catch (error) {
-        console.error('Failed to load settings:', error);
-    }
-}
-
-async function loadProtocols() {
-    try {
-        const response = await fetch('/api/protocols');
-        const data = await response.json();
-        const protocols = data.lean_gain;
-        
-        const container = document.getElementById('protocols-container');
-        if (!container) return;
-        
-        let html = '';
-        
-        // Protein
-        html += `
-            <div class="protocol-card" style="background: var(--card-bg); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
-                <h3 style="margin: 0 0 8px 0; font-size: 16px; color: var(--text-primary);">💪 Protein</h3>
-                <div style="font-size: 14px; color: var(--text-secondary); line-height: 1.5;">
-                    <strong>Target:</strong> ${protocols.protein.target}<br>
-                    <strong>Timing:</strong> ${protocols.protein.timing}<br>
-                    <strong>Sources:</strong> ${protocols.protein.sources}
-                </div>
-            </div>
-        `;
-        
-        // Calories
-        html += `
-            <div class="protocol-card" style="background: var(--card-bg); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
-                <h3 style="margin: 0 0 8px 0; font-size: 16px; color: var(--text-primary);">🔥 Calories</h3>
-                <div style="font-size: 14px; color: var(--text-secondary); line-height: 1.5;">
-                    <strong>Surplus:</strong> ${protocols.calories.surplus}<br>
-                    <em>${protocols.calories.note}</em>
-                </div>
-            </div>
-        `;
-        
-        // Training
-        html += `
-            <div class="protocol-card" style="background: var(--card-bg); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
-                <h3 style="margin: 0 0 8px 0; font-size: 16px; color: var(--text-primary);">🏋️ Training</h3>
-                <div style="font-size: 14px; color: var(--text-secondary); line-height: 1.5;">
-                    <strong>Frequency:</strong> ${protocols.training.frequency}<br>
-                    <strong>Volume:</strong> ${protocols.training.volume}<br>
-                    <strong>Overload:</strong> ${protocols.training.overload}<br>
-                    <strong>Rest:</strong> ${protocols.training.rest}
-                </div>
-            </div>
-        `;
-        
-        // Sleep
-        html += `
-            <div class="protocol-card" style="background: var(--card-bg); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
-                <h3 style="margin: 0 0 8px 0; font-size: 16px; color: var(--text-primary);">😴 Sleep</h3>
-                <div style="font-size: 14px; color: var(--text-secondary); line-height: 1.5;">
-                    <strong>Target:</strong> ${protocols.sleep.target}<br>
-                    <strong>Why:</strong> ${protocols.sleep.why}
-                </div>
-            </div>
-        `;
-        
-        // Hydration
-        html += `
-            <div class="protocol-card" style="background: var(--card-bg); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
-                <h3 style="margin: 0 0 8px 0; font-size: 16px; color: var(--text-primary);">💧 Hydration</h3>
-                <div style="font-size: 14px; color: var(--text-secondary); line-height: 1.5;">
-                    <strong>Target:</strong> ${protocols.hydration.target}
-                </div>
-            </div>
-        `;
-        
-        // Supplements
-        html += `
-            <div class="protocol-card" style="background: var(--card-bg); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
-                <h3 style="margin: 0 0 8px 0; font-size: 16px; color: var(--text-primary);">💊 Supplements</h3>
-                <div style="font-size: 14px; color: var(--text-secondary); line-height: 1.5;">
-                    ${protocols.supplements.map(s => `• ${s}`).join('<br>')}
-                </div>
-            </div>
-        `;
-        
-        // Key Principles
-        if (protocols.key_principles && protocols.key_principles.length > 0) {
-            html += `
-                <div class="protocol-card" style="background: var(--card-bg); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
-                    <h3 style="margin: 0 0 8px 0; font-size: 16px; color: var(--text-primary);">🎯 Key Principles</h3>
-                    <ul style="font-size: 14px; color: var(--text-secondary); line-height: 1.6; margin: 0; padding-left: 20px;">
-                        ${protocols.key_principles.map(p => `<li>${escapeHtml(p)}</li>`).join('')}
-                    </ul>
-                </div>
+                <span class="goal-check">✓</span>
             `;
+            btn.addEventListener('click', () => updateSetting({ training_goal: g.value }));
+            host.appendChild(btn);
+        });
+
+        const durSel = $('settings-duration');
+        durSel.innerHTML = '';
+        (st.time_options || []).forEach((t) => {
+            const opt = document.createElement('option');
+            opt.value = t.value; opt.textContent = t.label;
+            if (Number(t.value) === Number(st.available_time_minutes)) opt.selected = true;
+            durSel.appendChild(opt);
+        });
+        durSel.onchange = () => updateSetting({ available_time_minutes: Number(durSel.value) });
+
+        const range = $('settings-sessions');
+        range.value = st.sessions_per_week_target || 3;
+        $('settings-sessions-val').textContent = range.value;
+        range.oninput = () => { $('settings-sessions-val').textContent = range.value; };
+        range.onchange = () => updateSetting({ sessions_per_week_target: Number(range.value) });
+
+        const eqSel = $('settings-equipment');
+        eqSel.innerHTML = '';
+        (st.equipment_options || []).forEach((e) => {
+            const opt = document.createElement('option');
+            opt.value = e.value; opt.textContent = e.label;
+            if (e.value === st.equipment_preference) opt.selected = true;
+            eqSel.appendChild(opt);
+        });
+        eqSel.onchange = () => updateEquipment(eqSel.value);
+
+        // integration state
+        const ouraState = $('oura-connect-state');
+        if (oura && oura.source) {
+            ouraState.textContent = oura.source === 'api' ? 'Connected' : 'Cached';
+            ouraState.className = 'state-chip ' + (oura.source === 'api' ? 'ok' : 'warn');
+        } else { ouraState.textContent = 'Not connected'; ouraState.className = 'state-chip'; }
+
+        // Apple Health — prefer the real sync-status endpoint over
+        // the file-existence probe, and only claim "connected" when a
+        // sync actually landed recently.
+        try {
+            const ah = await api('/api/apple-health/sync/status');
+            const lastExportRaw = ah && (ah.last_attempt || ah.last_sync);
+            const last = parseServerDateTime(lastExportRaw);
+            const ageDays = last ? Math.floor((Date.now() - last.getTime()) / 86400000) : Infinity;
+            const connected = last && ageDays <= 3;
+            const chip = $('apple-connect-state');
+            const detail = $('apple-last-export');
+            if (connected) {
+                chip.textContent = `Synced ${ageDays === 0 ? 'today' : ageDays + 'd ago'}`;
+                chip.className = 'state-chip ok';
+                $('apple-int-dot').className = 'int-dot int-dot-on';
+            } else {
+                chip.textContent = last ? `Last sync ${ageDays}d ago` : 'Not connected';
+                chip.className = 'state-chip';
+                $('apple-int-dot').className = 'int-dot';
+            }
+            if (detail) {
+                detail.textContent = last
+                    ? `Last export ${fmtDateTime(lastExportRaw)} · ${ah.total_records || 0} records`
+                    : 'No accepted export yet';
+            }
+        } catch {
+            $('apple-connect-state').textContent = 'Not connected';
+            $('apple-int-dot').className = 'int-dot';
+            const detail = $('apple-last-export');
+            if (detail) detail.textContent = 'Export status unavailable';
         }
-        
-        container.innerHTML = html;
-    } catch (error) {
-        console.error('Failed to load protocols:', error);
+        const setupBtn = $('btn-apple-setup');
+        if (setupBtn && !setupBtn.dataset.wired) {
+            setupBtn.dataset.wired = '1';
+            setupBtn.addEventListener('click', openAppleSetup);
+        }
+
+        try {
+            const w = await api('/api/weather');
+            if (w && w.condition) {
+                $('weather-state').textContent = `${w.condition} · ${w.temp_f != null ? Math.round(w.temp_f) + '°F' : ''}`;
+                $('weather-state').className = 'state-chip ok';
+            }
+        } catch {}
     }
-}
 
-function renderTimeOptions(options, currentTime) {
-    const container = document.getElementById('time-options-container');
-    if (!container || !options) return;
-
-    container.innerHTML = options.map(opt => `
-        <div class="time-option ${opt.value === currentTime ? 'active' : ''}" data-time="${opt.value}">
-            <span class="time-option-value">${opt.label}</span>
-            <span class="time-option-desc">${opt.description.split(' - ')[1] || ''}</span>
-        </div>
-    `).join('');
-
-    // Add click handlers
-    container.querySelectorAll('.time-option').forEach(opt => {
-        opt.addEventListener('click', () => selectTime(parseInt(opt.dataset.time)));
-    });
-}
-
-async function selectTime(timeValue) {
-    try {
-        await fetch('/api/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ available_time_minutes: timeValue })
-        });
-
-        // Update UI
-        document.querySelectorAll('.time-option').forEach(c => c.classList.remove('active'));
-        document.querySelector(`[data-time="${timeValue}"]`)?.classList.add('active');
-
-        // Reload dashboard to get updated recommendations
-        loadDashboard();
-
-        if (navigator.vibrate) navigator.vibrate(20);
-    } catch (error) {
-        console.error('Failed to update time:', error);
-    }
-}
-
-function renderGoals(goals, currentGoal) {
-    const container = document.getElementById('goals-container');
-    if (!container) return;
-
-    container.innerHTML = goals.map(g => `
-        <div class="goal-card ${g.value === currentGoal ? 'active' : ''}" data-goal="${g.value}">
-            <div class="goal-name">${g.name}</div>
-            <div class="goal-desc">${g.description}</div>
-        </div>
-    `).join('');
-
-    // Add click handlers
-    container.querySelectorAll('.goal-card').forEach(card => {
-        card.addEventListener('click', () => selectGoal(card.dataset.goal));
-    });
-}
-
-async function selectGoal(goalValue) {
-    try {
-        await fetch('/api/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ training_goal: goalValue })
-        });
-
-        // Update UI
-        document.querySelectorAll('.goal-card').forEach(c => c.classList.remove('active'));
-        document.querySelector(`[data-goal="${goalValue}"]`)?.classList.add('active');
-
-        // Reload dashboard to get updated recommendations
-        loadDashboard();
-        loadSettings();
-
-        if (navigator.vibrate) navigator.vibrate(20);
-    } catch (error) {
-        console.error('Failed to update goal:', error);
-    }
-}
-
-function initSettings() {
-    const targetSlider = document.getElementById('sessions-target');
-    const targetValue = document.getElementById('target-value');
-
-    if (targetSlider && targetValue) {
-        targetSlider.addEventListener('input', async () => {
-            targetValue.textContent = targetSlider.value;
-            await fetch('/api/settings', {
+    async function updateSetting(patch) {
+        try {
+            await api('/api/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessions_per_week_target: parseInt(targetSlider.value) })
+                body: JSON.stringify(patch),
             });
-        });
-    }
-
-    const saveNutritionBtn = document.getElementById('save-nutrition-targets');
-    if (saveNutritionBtn) {
-        saveNutritionBtn.addEventListener('click', async () => {
-            const calTarget = document.getElementById('settings-calories-target');
-            const proteinTarget = document.getElementById('settings-protein-target');
-            const calValue = parseInt(calTarget?.value || 0);
-            const proteinValue = parseFloat(proteinTarget?.value || 0);
-            if (!calValue || !proteinValue) {
-                alert('Please enter calorie and protein targets.');
-                return;
-            }
-            try {
-                await fetch('/api/settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        daily_calorie_target: calValue,
-                        daily_protein_target_g: proteinValue
-                    })
-                });
-                loadDashboard();
-                if (navigator.vibrate) navigator.vibrate(20);
-            } catch (error) {
-                console.error('Failed to update nutrition targets:', error);
-            }
-        });
-    }
-
-    // Export button
-    const exportBtn = document.getElementById('export-btn');
-    if (exportBtn) {
-        exportBtn.addEventListener('click', exportWorkouts);
-    }
-
-    const exportAllBtn = document.getElementById('export-all-btn');
-    if (exportAllBtn) {
-        exportAllBtn.addEventListener('click', exportWorkouts);
-    }
-}
-
-// ==================== Baseline Configuration ====================
-
-let baselineData = {};
-
-function initBaselineConfig() {
-    const saveBtn = document.getElementById('save-baseline-btn');
-    if (saveBtn) {
-        saveBtn.addEventListener('click', saveBaselines);
-    }
-}
-
-async function loadBaselines() {
-    try {
-        const response = await fetch('/api/baselines');
-        const data = await response.json();
-        baselineData = data;
-        renderBaselines(data);
-    } catch (error) {
-        console.error('Failed to load baselines:', error);
-    }
-}
-
-function renderBaselines(data) {
-    const container = document.getElementById('baseline-container');
-    if (!container) return;
-
-    const exercises = data.exercises || [];
-
-    container.innerHTML = exercises.map(ex => `
-        <div class="baseline-item">
-            <div>
-                <div class="baseline-exercise">${ex.name}</div>
-                <div class="baseline-muscle">${ex.muscle}</div>
-            </div>
-            <div style="display:flex;align-items:center;">
-                <input type="number" class="baseline-input"
-                    data-exercise="${ex.name}"
-                    value="${ex.baseline_weight || ''}"
-                    placeholder="${ex.suggested || 50}"
-                    min="0" step="5">
-                <span class="baseline-status ${ex.has_history ? 'has-data' : 'no-data'}">
-                    ${ex.has_history ? 'Has Data' : 'No Data'}
-                </span>
-            </div>
-        </div>
-    `).join('');
-}
-
-async function saveBaselines() {
-    const inputs = document.querySelectorAll('.baseline-input');
-    const baselines = {};
-
-    inputs.forEach(input => {
-        const exercise = input.dataset.exercise;
-        const weight = parseInt(input.value) || null;
-        if (weight) {
-            baselines[exercise] = weight;
+            toast('Setting saved');
+            state.settings = null; state.dashboard = null;
+            renderSettings();
+        } catch (e) {
+            console.error(e); toast('Save failed', 'err');
         }
-    });
-
-    try {
-        await fetch('/api/baselines', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ baselines })
-        });
-
-        alert('Baselines saved!');
-        loadDashboard();
-        if (navigator.vibrate) navigator.vibrate(20);
-    } catch (error) {
-        console.error('Failed to save baselines:', error);
-        alert('Failed to save baselines');
     }
-}
-
-async function exportWorkouts() {
-    try {
-        const response = await fetch('/api/export-md');
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'workout_export.md';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-    } catch (error) {
-        console.error('Export failed:', error);
-        alert('Export failed. Please try again.');
-    }
-}
-
-// ==================== Backup Functions ====================
-
-async function exportBackup() {
-    try {
-        const response = await fetch('/api/export-backup');
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        // Get filename from response headers or use default
-        const contentDisposition = response.headers.get('Content-Disposition');
-        let filename = `fitness_backup_${new Date().toISOString().split('T')[0]}.json`;
-        if (contentDisposition) {
-            const match = contentDisposition.match(/filename=(.+)/);
-            if (match) filename = match[1];
-        }
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-
-        if (navigator.vibrate) navigator.vibrate(20);
-        alert('Backup exported successfully!');
-    } catch (error) {
-        console.error('Backup export failed:', error);
-        alert('Backup export failed. Please try again.');
-    }
-}
-
-function initBackupButtons() {
-    const exportBackupBtn = document.getElementById('export-backup-btn');
-    if (exportBackupBtn) {
-        exportBackupBtn.addEventListener('click', exportBackup);
-    }
-
-    const importBackupBtn = document.getElementById('import-backup-btn');
-    const importBackupInput = document.getElementById('import-backup-input');
-
-    if (importBackupBtn && importBackupInput) {
-        importBackupBtn.addEventListener('click', () => {
-            importBackupInput.click();
-        });
-
-        importBackupInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            // Confirm before importing
-            const confirmed = confirm(
-                'Import backup?\n\nThis will REPLACE all your current data with the backup data.\n\nAre you sure you want to continue?'
-            );
-
-            if (!confirmed) {
-                importBackupInput.value = '';
-                return;
-            }
-
-            try {
-                const text = await file.text();
-                const backupData = JSON.parse(text);
-
-                // Validate it looks like a backup
-                if (!backupData.data) {
-                    alert('Invalid backup file: missing data field');
-                    importBackupInput.value = '';
-                    return;
-                }
-
-                const response = await fetch('/api/import-backup', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(backupData)
-                });
-
-                const result = await response.json();
-
-                if (result.status === 'success') {
-                    if (navigator.vibrate) navigator.vibrate(20);
-
-                    // Show what was imported
-                    const imported = result.imported;
-                    let message = 'Backup restored successfully!\n\nImported:';
-                    if (imported.workouts) message += `\n- ${imported.workouts} workouts`;
-                    if (imported.soreness) message += `\n- ${imported.soreness} soreness entries`;
-                    if (imported.cardio) message += `\n- ${imported.cardio} cardio sessions`;
-                    if (imported.recovery) message += `\n- ${imported.recovery} recovery sessions`;
-                    if (imported.settings) message += `\n- Settings`;
-                    if (imported.baselines) message += `\n- ${imported.baselines} baseline weights`;
-
-                    alert(message);
-
-                    // Reload the dashboard to show restored data
-                    loadDashboard();
-                    loadSettings();
-                    loadHistory();
-                } else {
-                    alert('Import failed: ' + (result.message || 'Unknown error'));
-                }
-            } catch (error) {
-                console.error('Import failed:', error);
-                alert('Import failed: ' + error.message);
-            }
-
-            // Reset file input
-            importBackupInput.value = '';
-        });
-    }
-}
-
-// ==================== Workout Completion ====================
-
-let hasCardioRecommendation = false;
-
-function initWorkoutButtons() {
-    const startBtn = document.getElementById('start-workout-btn');
-    if (startBtn) {
-        startBtn.addEventListener('click', startWorkout);
-    }
-
-    const completeBtn = document.getElementById('complete-workout');
-    if (completeBtn) {
-        completeBtn.addEventListener('click', completeWorkout);
-    }
-
-    const cancelBtn = document.getElementById('cancel-workout');
-    if (cancelBtn) {
-        cancelBtn.addEventListener('click', closeWorkoutModal);
-    }
-
-    // Next step button (exercises -> cardio)
-    const nextStepBtn = document.getElementById('next-step-btn');
-    if (nextStepBtn) {
-        nextStepBtn.addEventListener('click', handleNextStep);
-    }
-
-    // Back button (cardio -> exercises)
-    const backBtn = document.getElementById('back-to-exercises');
-    if (backBtn) {
-        backBtn.addEventListener('click', () => {
-            document.getElementById('workout-step-cardio').style.display = 'none';
-            document.getElementById('workout-step-exercises').style.display = 'block';
-        });
-    }
-
-    // Cardio intensity slider
-    const cardioIntensity = document.getElementById('cardio-actual-intensity');
-    const cardioIntensityValue = document.getElementById('cardio-actual-intensity-value');
-    if (cardioIntensity && cardioIntensityValue) {
-        cardioIntensity.addEventListener('input', () => {
-            cardioIntensityValue.textContent = cardioIntensity.value;
-        });
-    }
-
-    // Cardio skipped checkbox
-    const cardioSkipped = document.getElementById('cardio-skipped');
-    if (cardioSkipped) {
-        cardioSkipped.addEventListener('change', () => {
-            const inputs = document.querySelectorAll('#workout-step-cardio input:not([type="checkbox"])');
-            inputs.forEach(input => {
-                input.disabled = cardioSkipped.checked;
-                if (cardioSkipped.checked) {
-                    input.style.opacity = '0.5';
-                } else {
-                    input.style.opacity = '1';
-                }
+    async function updateEquipment(value) {
+        try {
+            await api('/api/settings/equipment', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ equipment_preference: value }),
             });
+            toast('Equipment updated');
+            state.settings = null;
+            state.dashboard = null;
+            state.reco = null;
+            state.activeWorkout = null;
+            await Promise.allSettled([renderSettings(), renderDashboard()]);
+        } catch (e) { console.error(e); toast('Update failed', 'err'); }
+    }
+
+    // --- Logging actions -----------------------------------------
+    async function logStrength() {
+        const payload = {
+            date: $('log-date').value || today(),
+            exercise: $('log-exercise').value,
+            sets: Number($('log-sets').value || 0),
+            reps: Number($('log-reps').value || 0),
+            weight: Number($('log-weight').value || 0),
+            rpe: Number($('log-rpe').value || 0),
+            notes: $('log-notes').value || '',
+        };
+        if (!payload.exercise) return toast('Pick an exercise', 'err');
+        try {
+            await api('/api/add-workout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            toast('Set logged');
+            invalidateCaches();
+            prepareLog();
+        } catch (e) { console.error(e); toast('Log failed', 'err'); }
+    }
+
+    async function logCardio() {
+        const payload = {
+            date: $('cardio-date').value || today(),
+            activity_type: $('cardio-type').value,
+            duration_minutes: Number($('cardio-duration').value || 0),
+            avg_heart_rate: Number($('cardio-hr').value) || null,
+            intensity: Number($('cardio-intensity').value || 5),
+            notes: $('cardio-notes').value || '',
+        };
+        try {
+            await api('/api/add-cardio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            toast('Cardio logged');
+            invalidateCaches();
+        } catch (e) { console.error(e); toast('Log failed', 'err'); }
+    }
+
+    async function logRecovery() {
+        const payload = {
+            date: $('recovery-date').value || today(),
+            recovery_type: $('recovery-type').value,
+            duration_minutes: Number($('recovery-duration').value || 0),
+            temperature: Number($('recovery-temp').value) || null,
+            notes: $('recovery-notes').value || '',
+        };
+        try {
+            await api('/api/add-recovery', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            toast('Recovery logged');
+            invalidateCaches();
+        } catch (e) { console.error(e); toast('Log failed', 'err'); }
+    }
+
+    async function logBody() {
+        const payload = {
+            weight_lbs: Number($('body-log-weight').value) || null,
+            body_fat_pct: Number($('body-log-bf').value) || null,
+        };
+        if (!payload.weight_lbs && !payload.body_fat_pct) return toast('Enter a value', 'err');
+        try {
+            await api('/api/add-body-measurement', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            toast('Measurement saved');
+            state.body = null; state.dashboard = null;
+            renderBody();
+        } catch (e) { console.error(e); toast('Save failed', 'err'); }
+    }
+
+    async function syncOura() {
+        toast('Syncing Oura…');
+        try {
+            await api('/api/oura/sync-sleep', { method: 'POST' });
+            invalidateCaches();
+            toast('Oura synced');
+            loadTab(state.currentTab);
+        } catch (e) { console.error(e); toast('Sync failed', 'err'); }
+    }
+
+    function downloadExport() {
+        const a = document.createElement('a');
+        a.href = '/api/export-backup';
+        a.download = `fitness-backup-${today()}.json`;
+        document.body.appendChild(a); a.click(); a.remove();
+    }
+    async function importBackupFile(file) {
+        if (!file) return;
+        const fd = new FormData();
+        fd.append('file', file);
+        try {
+            await api('/api/import-backup', { method: 'POST', body: fd });
+            toast('Backup imported');
+            invalidateCaches();
+            loadTab(state.currentTab);
+        } catch (e) { console.error(e); toast('Import failed', 'err'); }
+    }
+
+    // --- Active Workout flow -------------------------------------
+    function exerciseName(ex) {
+        return ex.exercise || ex.name || ex.machine || 'Exercise';
+    }
+
+    function exerciseMuscle(ex) {
+        return (ex.muscle || ex.muscle_group || '').toString().toLowerCase().trim();
+    }
+
+    function numericInputValue(value) {
+        if (value == null || value === '') return '';
+        const n = Number(value);
+        return Number.isFinite(n) ? String(n) : '';
+    }
+
+    function recommendedRepsValue(ex) {
+        if (ex.target_reps != null) return numericInputValue(ex.target_reps);
+        if (ex.reps != null) return numericInputValue(ex.reps);
+        if (Array.isArray(ex.rep_range) && ex.rep_range.length) return numericInputValue(ex.rep_range[0]);
+        return '';
+    }
+
+    function recommendedWeightValue(ex) {
+        if (ex.target_weight != null) return numericInputValue(ex.target_weight);
+        if (ex.target_weight_lbs != null) return numericInputValue(ex.target_weight_lbs);
+        return '';
+    }
+
+    function setCountForExercise(ex) {
+        const count = Number(ex.target_sets || ex.sets || 3);
+        return Number.isFinite(count) && count > 0 ? Math.round(count) : 3;
+    }
+
+    function buildLoggedSets(ex, previousSets) {
+        const reps = recommendedRepsValue(ex);
+        const weight = recommendedWeightValue(ex);
+        const priorCount = Array.isArray(previousSets) ? previousSets.length : 0;
+        const rowCount = Math.max(setCountForExercise(ex), priorCount);
+        return Array.from({ length: rowCount }, (_, idx) => {
+            const prev = previousSets && previousSets[idx];
+            return {
+                reps: prev && prev.reps !== '' && prev.reps != null ? prev.reps : reps,
+                weight: prev && prev.weight !== '' && prev.weight != null ? prev.weight : weight,
+                done: prev ? Boolean(prev.done) : false,
+                notes: prev && prev.notes != null ? prev.notes : '',
+            };
         });
     }
-}
 
-function closeWorkoutModal() {
-    const modal = document.getElementById('workout-modal');
-    modal.style.display = 'none';
-    // Reset to exercises step
-    document.getElementById('workout-step-exercises').style.display = 'block';
-    document.getElementById('workout-step-cardio').style.display = 'none';
-}
-
-function createSetRow(setNum, weight, reps, rpe) {
-    const weightValue = Number.isFinite(weight) ? weight : (weight ?? '');
-    const repsValue = Number.isFinite(reps) ? reps : (reps ?? '');
-    const rpeValue = Number.isFinite(rpe) ? rpe : (rpe ?? '');
-    return `<div class="set-row" data-set="${setNum}">
-        <span class="set-label">Set ${setNum}</span>
-        <input type="number" class="set-weight" value="${weightValue}" min="0" step="5" placeholder="lbs">
-        <span class="set-x">×</span>
-        <input type="number" class="set-reps" value="${repsValue}" min="1" max="50" placeholder="reps">
-        <input type="number" class="set-rpe" value="${rpeValue}" min="1" max="10" step="0.5" placeholder="RPE">
-        <button type="button" class="set-complete" title="Tap to log set">✓</button>
-        <button class="btn-remove-set" onclick="removeSetRow(this)">✕</button>
-    </div>`;
-}
-
-function addSetRow(btn) {
-    const container = btn.previousElementSibling;
-    const rows = container.querySelectorAll('.set-row');
-    const lastRow = rows[rows.length - 1];
-    const lastWeight = lastRow ? lastRow.querySelector('.set-weight').value : '';
-    const lastReps = lastRow ? lastRow.querySelector('.set-reps').value : '';
-    const lastRpe = lastRow ? (parseFloat(lastRow.querySelector('.set-rpe').value) || 7) : 7;
-    const newSetNum = rows.length + 1;
-    const div = document.createElement('div');
-    div.innerHTML = createSetRow(newSetNum, lastWeight === '' ? '' : parseFloat(lastWeight), lastReps === '' ? '' : parseInt(lastReps, 10), lastRpe);
-    container.appendChild(div.firstElementChild);
-    bindSetRow(container.lastElementChild);
-}
-
-function removeSetRow(btn) {
-    const container = btn.closest('.exercise-sets-container');
-    const rows = container.querySelectorAll('.set-row');
-    if (rows.length <= 1) return; // keep at least 1 set
-    btn.closest('.set-row').remove();
-    // Re-number remaining rows
-    container.querySelectorAll('.set-row').forEach((row, i) => {
-        row.dataset.set = i + 1;
-        row.querySelector('.set-label').textContent = `Set ${i + 1}`;
-    });
-    updateWorkoutVolume();
-}
-
-function startWorkout() {
-    if (!currentRecommendation) return;
-
-    const modal = document.getElementById('workout-modal');
-    const container = document.getElementById('active-workout-exercises');
-
-    // Check if cardio is recommended
-    hasCardioRecommendation = currentRecommendation.cardio && currentRecommendation.cardio.type;
-
-    // Update button text based on whether cardio follows
-    const nextBtn = document.getElementById('next-step-btn');
-    if (hasCardioRecommendation) {
-        nextBtn.textContent = 'Next: Cardio';
-        nextBtn.innerHTML = 'Next: Cardio <span class="material-icons" style="font-size:16px;vertical-align:middle;margin-left:4px;">arrow_forward</span>';
-
-        // Pre-fill cardio info
-        const cardioInfo = document.getElementById('cardio-recommendation-info');
-        const cardio = currentRecommendation.cardio;
-        cardioInfo.innerHTML = `
-            <div class="cardio-step-header">
-                <span class="material-icons">directions_run</span>
-                <strong>${cardio.type}</strong>
-            </div>
-            <div class="cardio-step-details">
-                <span>Recommended: ${cardio.duration_minutes} min</span>
-                <span>${cardio.zone} (${cardio.heart_rate_range})</span>
-            </div>
-        `;
-
-        // Pre-fill duration
-        document.getElementById('cardio-actual-duration').value = cardio.duration_minutes;
-        document.getElementById('cardio-skipped').checked = false;
-    } else {
-        nextBtn.textContent = 'Complete Workout';
+    function buildActiveExercise(ex, previous) {
+        return {
+            ...ex,
+            logged_sets: buildLoggedSets(ex, previous && previous.logged_sets),
+        };
     }
 
-    // Reset steps
-    document.getElementById('workout-step-exercises').style.display = 'block';
-    document.getElementById('workout-step-cardio').style.display = 'none';
+    function setActiveWorkoutFromRecommendation(nw, previousExercises = []) {
+        state.activeWorkout = {
+            id: nw.id || (state.activeWorkout && state.activeWorkout.id) || `w-${Date.now()}`,
+            recommendation_id: nw.id || (state.activeWorkout && state.activeWorkout.recommendation_id) || null,
+            focus: nw.focus || nw.goal_name || (state.activeWorkout && state.activeWorkout.focus) || 'Workout',
+            exercises: (nw.exercises || []).map((ex, i) => buildActiveExercise(ex, previousExercises[i])),
+            cardio: buildActiveCardio(nw.cardio, state.activeWorkout && state.activeWorkout.cardio),
+        };
+    }
 
-    container.innerHTML = currentRecommendation.exercises.map((ex, i) => {
-        const numSets = Math.max(1, ex.target_sets || 3);
-        let setRowsHtml = '';
-        const defaultWeight = ex.target_weight ?? '';
-        const defaultReps = ex.target_reps ?? '';
-        for (let s = 1; s <= numSets; s++) {
-            setRowsHtml += createSetRow(s, defaultWeight, defaultReps, 7);
+    function hasRecommendedCardio(cardio) {
+        return Boolean(cardio && cardio.include_cardio !== false && (cardio.type || cardio.machine || Number(cardio.duration_minutes || 0) > 0));
+    }
+
+    function buildActiveCardio(cardio, previous) {
+        if (!hasRecommendedCardio(cardio)) return null;
+        return {
+            recommendation: cardio,
+            completed: previous ? Boolean(previous.completed) : false,
+            activity_type: previous && previous.activity_type ? previous.activity_type : (cardio.type || cardio.machine || 'Cardio'),
+            duration_minutes: previous && previous.duration_minutes !== '' && previous.duration_minutes != null
+                ? previous.duration_minutes
+                : numericInputValue(cardio.duration_minutes),
+            notes: previous && previous.notes != null ? previous.notes : '',
+        };
+    }
+
+    function updateLoggedSetFromRow(row) {
+        const exIdx = Number(row.dataset.ex);
+        const setIdx = Number(row.dataset.set);
+        const ex = state.activeWorkout && state.activeWorkout.exercises && state.activeWorkout.exercises[exIdx];
+        if (!ex || !ex.logged_sets || !ex.logged_sets[setIdx]) return;
+        ex.logged_sets[setIdx] = {
+            weight: qs('input[data-field="weight"]', row).value,
+            reps: qs('input[data-field="reps"]', row).value,
+            done: qs('input[data-field="done"]', row).checked,
+            notes: qs('input[data-field="notes"]', row).value,
+        };
+    }
+
+    function updateActiveCardio() {
+        const cardio = state.activeWorkout && state.activeWorkout.cardio;
+        const card = qs('.active-cardio', $('active-workout-body'));
+        if (!cardio || !card) return;
+        cardio.completed = qs('input[data-cardio-field="completed"]', card).checked;
+        cardio.activity_type = qs('input[data-cardio-field="activity_type"]', card).value;
+        cardio.duration_minutes = qs('input[data-cardio-field="duration_minutes"]', card).value;
+        cardio.notes = qs('textarea[data-cardio-field="notes"]', card).value;
+    }
+
+    function renderActiveWorkout() {
+        if (!state.activeWorkout) return;
+        $('active-workout-title').textContent = (state.activeWorkout.focus + ' Workout').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+        const body = $('active-workout-body');
+        body.innerHTML = '';
+        state.activeWorkout.exercises.forEach((ex, i) => {
+            const card = document.createElement('div');
+            card.className = 'active-ex';
+            const sets = setCountForExercise(ex);
+            const reps = ex.target_reps || ex.reps || 10;
+            const rpe = ex.rpe_target || ex.rpe || '7';
+            ex.rpe = rpe; // keep for completeWorkout payload
+            const target = `${sets} × ${reps} RPE ${rpe}`;
+            let rowsHtml = '';
+            ex.logged_sets.forEach((set, sidx) => {
+                rowsHtml += `
+                    <div class="set-row" data-ex="${i}" data-set="${sidx}">
+                        <label>${sidx + 1}</label>
+                        <input type="number" placeholder="Weight" data-field="weight" inputmode="decimal" value="${escapeHtml(set.weight)}">
+                        <input type="number" placeholder="Reps" data-field="reps" inputmode="numeric" value="${escapeHtml(set.reps)}">
+                        <input type="checkbox" data-field="done" aria-label="done"${set.done ? ' checked' : ''}>
+                        <input class="set-notes" type="text" placeholder="Set notes" data-field="notes" value="${escapeHtml(set.notes)}">
+                    </div>
+                `;
+            });
+            const name = exerciseName(ex);
+            const muscle = exerciseMuscle(ex);
+            card.innerHTML = `
+                <div class="active-ex-head">
+                    <div class="active-ex-main">
+                        <h4>${escapeHtml(name)}</h4>
+                        <span class="active-ex-target">${target}</span>
+                    </div>
+                    <div class="active-ex-actions">
+                        <button class="ex-swap-btn active-swap-btn" type="button" title="Swap this exercise" aria-label="Swap ${escapeHtml(name)}">⇄</button>
+                        <button class="ex-swap-btn active-remove-btn" type="button" title="Remove this exercise" aria-label="Remove ${escapeHtml(name)}">×</button>
+                    </div>
+                </div>
+                ${rowsHtml}
+            `;
+            card.querySelector('.active-swap-btn').addEventListener('click', () => openSwap(i, muscle, name, 'active'));
+            card.querySelector('.active-remove-btn').addEventListener('click', () => removeActiveExercise(i, name));
+            body.appendChild(card);
+        });
+        if (!state.activeWorkout.exercises.length) {
+            body.innerHTML = '<div class="empty active-empty">No exercises left in this workout.</div>';
         }
-        return `
-        <div class="active-exercise" data-exercise="${ex.exercise}">
-            <div class="active-exercise-header">
-                <label>
-                    <input type="checkbox" class="exercise-done" checked>
-                    ${ex.exercise}
+        if (state.activeWorkout.cardio) {
+            const cardio = state.activeWorkout.cardio;
+            const rec = cardio.recommendation || {};
+            const bits = [
+                rec.zone,
+                rec.heart_rate_range,
+                rec.intensity,
+            ].filter(Boolean);
+            const card = document.createElement('div');
+            card.className = 'active-ex active-cardio';
+            card.innerHTML = `
+                <div class="active-ex-head">
+                    <div class="active-ex-main">
+                        <h4>Cardio Follow-Up</h4>
+                        <span class="active-ex-target">${escapeHtml(rec.type || cardio.activity_type)} · ${escapeHtml(cardio.duration_minutes || rec.duration_minutes || '')} min</span>
+                    </div>
+                </div>
+                ${bits.length ? `<div class="active-cardio-meta">${escapeHtml(bits.join(' · '))}</div>` : ''}
+                <label class="active-cardio-check">
+                    <input type="checkbox" data-cardio-field="completed"${cardio.completed ? ' checked' : ''}>
+                    <span>Completed recommended cardio</span>
                 </label>
-            </div>
-            <div class="exercise-sets-header">
-                <span class="set-col-label">Set</span>
-                <span class="set-col-label">lbs</span>
-                <span class="set-col-spacer"></span>
-                <span class="set-col-label">Reps</span>
-                <span class="set-col-label">RPE</span>
-                <span class="set-col-remove"></span>
-            </div>
-            <div class="exercise-sets-container">
-                ${setRowsHtml}
-            </div>
-            <button class="btn-add-set btn-secondary btn-small" onclick="addSetRow(this)">+ Add Set</button>
-        </div>
-        `;
-    }).join('');
-
-    bindWorkoutInteractions(container);
-    updateWorkoutVolume();
-    modal.style.display = 'flex';
-}
-
-function bindWorkoutInteractions(container) {
-    container.querySelectorAll('.set-row').forEach(row => bindSetRow(row));
-}
-
-function bindSetRow(row) {
-    if (row.dataset.bound === 'true') return;
-    row.dataset.bound = 'true';
-
-    const completeBtn = row.querySelector('.set-complete');
-    if (completeBtn) {
-        completeBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            toggleSetRow(row);
-        });
-    }
-
-    row.addEventListener('click', (e) => {
-        const tag = e.target.tagName.toLowerCase();
-        if (tag === 'input' || e.target.classList.contains('btn-remove-set')) return;
-        toggleSetRow(row);
-    });
-
-    let touchStartX = null;
-    row.addEventListener('touchstart', (e) => {
-        touchStartX = e.touches[0].clientX;
-    }, { passive: true });
-
-    row.addEventListener('touchend', (e) => {
-        if (touchStartX == null) return;
-        const touchEndX = e.changedTouches[0].clientX;
-        const delta = touchEndX - touchStartX;
-        if (delta > 50) {
-            copyPreviousSet(row);
+                <div class="active-cardio-grid">
+                    <input type="text" data-cardio-field="activity_type" value="${escapeHtml(cardio.activity_type)}" placeholder="Cardio type">
+                    <input type="number" data-cardio-field="duration_minutes" value="${escapeHtml(cardio.duration_minutes)}" placeholder="Minutes" inputmode="numeric">
+                </div>
+                <textarea data-cardio-field="notes" rows="2" placeholder="Cardio notes">${escapeHtml(cardio.notes)}</textarea>
+            `;
+            body.appendChild(card);
         }
-        touchStartX = null;
-    });
-
-    row.querySelectorAll('input').forEach(input => {
-        input.addEventListener('input', updateWorkoutVolume);
-    });
-}
-
-function toggleSetRow(row) {
-    row.classList.toggle('completed');
-    updateWorkoutVolume();
-}
-
-function copyPreviousSet(row) {
-    const container = row.closest('.exercise-sets-container');
-    if (!container) return;
-    const rows = Array.from(container.querySelectorAll('.set-row'));
-    const index = rows.indexOf(row);
-    if (index <= 0) return;
-    const prev = rows[index - 1];
-    const prevWeight = prev.querySelector('.set-weight')?.value;
-    const prevReps = prev.querySelector('.set-reps')?.value;
-    const prevRpe = prev.querySelector('.set-rpe')?.value;
-    if (prevWeight != null) row.querySelector('.set-weight').value = prevWeight;
-    if (prevReps != null) row.querySelector('.set-reps').value = prevReps;
-    if (prevRpe != null) row.querySelector('.set-rpe').value = prevRpe;
-    updateWorkoutVolume();
-}
-
-function updateWorkoutVolume() {
-    const volumeEl = document.getElementById('workout-volume-total');
-    const setCountEl = document.getElementById('workout-set-count');
-    if (!volumeEl || !setCountEl) return;
-
-    const rows = Array.from(document.querySelectorAll('.set-row'));
-    const completed = rows.filter(r => r.classList.contains('completed'));
-    const activeRows = completed.length ? completed : rows;
-    let totalVolume = 0;
-    let setCount = 0;
-
-    activeRows.forEach(row => {
-        const weight = parseFloat(row.querySelector('.set-weight')?.value || 0);
-        const reps = parseInt(row.querySelector('.set-reps')?.value || 0, 10);
-        if (weight > 0 && reps > 0) {
-            totalVolume += weight * reps;
-            setCount += 1;
-        }
-    });
-
-    volumeEl.textContent = Math.round(totalVolume);
-    setCountEl.textContent = setCount;
-}
-
-function handleNextStep() {
-    if (hasCardioRecommendation) {
-        // Move to cardio step
-        document.getElementById('workout-step-exercises').style.display = 'none';
-        document.getElementById('workout-step-cardio').style.display = 'block';
-    } else {
-        // No cardio, complete directly
-        completeWorkout();
-    }
-}
-
-async function completeWorkout() {
-    const modal = document.getElementById('workout-modal');
-    const exercises = [];
-
-    document.querySelectorAll('.active-exercise').forEach(el => {
-        const done = el.querySelector('.exercise-done').checked;
-        if (done) {
-            const machine = el.dataset.exercise;
-            const sets = [];
-            el.querySelectorAll('.set-row').forEach((row, i) => {
-                const weightValue = row.querySelector('.set-weight').value;
-                const repsValue = row.querySelector('.set-reps').value;
-                const rpeValue = row.querySelector('.set-rpe').value;
-                const weight = weightValue === '' ? null : parseFloat(weightValue);
-                const reps = repsValue === '' ? null : parseInt(repsValue, 10);
-                const rpe = rpeValue === '' ? null : parseFloat(rpeValue);
-                if (weight !== null || reps !== null || rpe !== null) {
-                    sets.push({
-                        set_number: i + 1,
-                        weight_lbs: weight ?? 0,
-                        reps: reps ?? 0,
-                        rpe: rpe ?? 7
-                    });
-                }
+        qsa('.set-row', body).forEach((row) => {
+            qsa('input', row).forEach((input) => {
+                input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => updateLoggedSetFromRow(row));
             });
-            if (sets.length > 0) {
-                exercises.push({ machine, muscle_group: 'unknown', sets });
-            }
+        });
+        qsa('[data-cardio-field]', body).forEach((input) => {
+            input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', updateActiveCardio);
+        });
+        $('modal-active').hidden = false;
+    }
+
+    function removeActiveExercise(exIdx, name) {
+        const aw = state.activeWorkout;
+        if (!aw || !Array.isArray(aw.exercises) || exIdx < 0 || exIdx >= aw.exercises.length) return;
+        aw.exercises.splice(exIdx, 1);
+        renderActiveWorkout();
+        toast(`Removed ${name}`, 'ok');
+    }
+
+    async function startWorkout() {
+        const dash = await getDashboard();
+        const nw = dash && dash.next_workout;
+        if (!nw) { toast('No workout planned', 'err'); return; }
+        setActiveWorkoutFromRecommendation(nw);
+        renderActiveWorkout();
+    }
+
+    async function viewAdjustedPlan() {
+        if ($('modal-adjust')) $('modal-adjust').hidden = true;
+        await switchTab('tab-workout');
+    }
+
+    function startAdjustedWorkout() {
+        const nw = state.adjustedWorkout || (state.dashboard && state.dashboard.next_workout);
+        if (!nw) { toast('No adjusted workout available', 'err'); return; }
+        if ($('modal-adjust')) $('modal-adjust').hidden = true;
+        setActiveWorkoutFromRecommendation(nw);
+        renderActiveWorkout();
+    }
+
+    async function completeWorkout() {
+        const aw = state.activeWorkout;
+        if (!aw) return;
+        const exercises = [];
+        aw.exercises.forEach((ex, i) => {
+            const rows = qsa(`.set-row[data-ex="${i}"]`, $('active-workout-body'));
+            const sets = rows.map((r) => ({
+                reps: Number(qs('input[data-field="reps"]', r).value || 0),
+                weight_lbs: Number(qs('input[data-field="weight"]', r).value || 0),
+                rpe: ex.rpe ? Number(ex.rpe) : null,
+                done: qs('input[data-field="done"]', r).checked,
+                notes: (qs('input[data-field="notes"]', r).value || '').trim(),
+            }));
+            const hasCheckedSets = sets.some((s) => s.done);
+            const completedSets = sets
+                .filter((s) => s.reps > 0 && s.weight_lbs >= 0 && (!hasCheckedSets || s.done))
+                .map(({ done, ...s }) => s);
+            if (completedSets.length) exercises.push({ machine: exerciseName(ex), muscle_group: ex.muscle_group || ex.muscle, sets: completedSets });
+        });
+        if (!exercises.length) { toast('Log at least one set', 'err'); return; }
+        try {
+            await api('/api/complete-workout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: aw.id,
+                    date: today(),
+                    recommendation_id: aw.recommendation_id,
+                    session_type: aw.focus,
+                    exercises,
+                    cardio: aw.cardio ? {
+                        ...aw.cardio,
+                        completed: Boolean(aw.cardio.completed),
+                    } : null,
+                }),
+            });
+            toast('Workout complete');
+            $('modal-active').hidden = true;
+            state.activeWorkout = null;
+            invalidateCaches();
+            loadTab(state.currentTab);
+            // Fire the AI post-mortem automatically after a successful save.
+            setTimeout(() => openAnalyzeModal({ latest: true }), 350);
+        } catch (e) { console.error(e); toast('Save failed', 'err'); }
+    }
+
+    async function openSwap(exIdx, muscle, currentName, source = 'plan') {
+        state.swapContext = { exIdx, muscle, currentName, source };
+        const modal = $('modal-swap');
+        const host = $('swap-alternatives');
+        const title = $('swap-modal-title');
+        const sub = $('swap-modal-sub');
+        title.textContent = `Swap: ${currentName}`;
+        sub.textContent = muscle
+            ? `Pick a replacement from the ${muscle} library (equipment-filtered).`
+            : 'Pick a replacement exercise.';
+        host.innerHTML = '<div class="skeleton">Loading alternatives…</div>';
+        modal.hidden = false;
+
+        if (!muscle) {
+            host.innerHTML = '<div class="empty">No muscle group on this exercise — can\'t look up alternatives.</div>';
+            return;
         }
-    });
 
-    // Get workout notes
-    const notesEl = document.getElementById('workout-notes');
-    const workoutNotes = notesEl ? notesEl.value.trim() : '';
+        let data;
+        try {
+            data = await api(`/api/exercises/alternatives/${encodeURIComponent(muscle)}`);
+        } catch (e) {
+            host.innerHTML = '<div class="empty">Couldn\'t load alternatives.</div>';
+            return;
+        }
+        const alts = (data && data.alternatives) || [];
+        if (!alts.length) {
+            host.innerHTML = `<div class="empty">No alternatives for ${escapeHtml(muscle)} under your current equipment preference. Change equipment in Settings to see more.</div>`;
+            return;
+        }
 
-    // Log cardio if it was part of the workout
-    if (hasCardioRecommendation) {
-        const cardioSkipped = document.getElementById('cardio-skipped').checked;
-
-        if (!cardioSkipped) {
-            const cardioDuration = parseInt(document.getElementById('cardio-actual-duration').value) || 0;
-            const cardioHR = parseInt(document.getElementById('cardio-actual-hr').value) || null;
-            const cardioIntensity = parseInt(document.getElementById('cardio-actual-intensity').value) || 5;
-
-            if (cardioDuration > 0) {
-                // Log cardio session
-                try {
-                    await fetch('/api/add-cardio', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            date: new Date().toISOString().split('T')[0],
-                            activity_type: currentRecommendation.cardio.type.toLowerCase(),
-                            duration_minutes: cardioDuration,
-                            avg_heart_rate: cardioHR,
-                            intensity: cardioIntensity,
-                            notes: `Post-workout ${currentRecommendation.cardio.zone}`
-                        })
-                    });
-                } catch (error) {
-                    console.error('Failed to log cardio:', error);
-                }
+        host.innerHTML = '';
+        const currentLower = (currentName || '').toLowerCase();
+        alts.forEach((alt) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            const isCurrent = alt.name.toLowerCase() === currentLower;
+            btn.className = 'swap-row' + (isCurrent ? ' current' : '');
+            const equipClass = alt.equipment === 'machine' ? 'machine' : alt.equipment === 'cable' ? 'cable' : '';
+            btn.innerHTML = `
+                <span>${escapeHtml(alt.name)}${alt.compound ? ' <span class="swap-current-tag">COMPOUND</span>' : ''}</span>
+                ${isCurrent ? '<span class="swap-current-tag">CURRENT</span>' : `<span class="swap-row-equip ${equipClass}">${escapeHtml(alt.equipment || '—')}</span>`}
+            `;
+            if (!isCurrent) {
+                btn.addEventListener('click', () => applySwap(exIdx, alt.name, currentName));
             }
+            host.appendChild(btn);
+        });
+    }
+
+    async function applySwap(exIdx, newName, oldName) {
+        const host = $('swap-alternatives');
+        host.innerHTML = '<div class="skeleton">Swapping…</div>';
+        try {
+            const resp = await api('/api/workout/swap', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workout_index: 0, exercise_index: exIdx, new_exercise_name: newName }),
+            });
+            if (resp && resp.recommendation) {
+                if (!state.dashboard) state.dashboard = {};
+                state.dashboard.next_workout = resp.recommendation;
+            }
+            $('modal-swap').hidden = true;
+            toast(`Swapped ${oldName} → ${newName}`, 'ok');
+            if (state.swapContext && state.swapContext.source === 'active' && resp && resp.recommendation) {
+                const previous = (state.activeWorkout && state.activeWorkout.exercises) || [];
+                setActiveWorkoutFromRecommendation(resp.recommendation, previous);
+                renderActiveWorkout();
+            } else {
+                renderNextWorkout();
+            }
+        } catch (e) {
+            console.error(e);
+            host.innerHTML = `<div class="empty">Swap failed — ${escapeHtml(String(e.message || e))}</div>`;
         }
     }
 
-    try {
-        const response = await fetch('/api/complete-workout', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                recommendation_id: currentRecommendation?.id,
-                exercises: exercises,
-                session_type: currentRecommendation?.focus?.toLowerCase() || 'general',
-                duration_minutes: currentRecommendation?.estimated_minutes || 45,
-                notes: workoutNotes
-            })
-        });
-
-        const result = await response.json();
-
-        closeWorkoutModal();
-
-        // Clear notes for next time
-        if (notesEl) notesEl.value = '';
-
-        // Show feedback
-        let message = 'Workout completed!';
-        if (hasCardioRecommendation && !document.getElementById('cardio-skipped').checked) {
-            message = 'Workout + Cardio logged!';
-        }
-        if (result.adherence && !result.adherence.followed) {
-            message += ` (Skipped: ${result.adherence.skipped.join(', ')})`;
-        }
-        alert(message);
-
-        // Auto-navigate to history
-        navigateToTab('history');
-        loadHistory();
-        loadDashboard();
-
-    } catch (error) {
-        console.error('Failed to complete workout:', error);
-        alert('Failed to log workout. Please try again.');
-    }
-}
-
-// Initialize Forms
-function initForms() {
-    // Soreness level display
-    const sorenessSlider = document.getElementById('soreness-level');
-    const sorenessValue = document.getElementById('soreness-value');
-    if (sorenessSlider && sorenessValue) {
-        sorenessSlider.addEventListener('input', () => {
-            sorenessValue.textContent = sorenessSlider.value;
-        });
+    function openAdjust() {
+        const modal = $('modal-adjust');
+        const textarea = $('adjust-constraint');
+        const result = $('adjust-result');
+        const stateEl = $('adjust-state');
+        const preview = $('adjust-plan-preview');
+        if (textarea) textarea.value = '';
+        if (result) result.hidden = true;
+        if (preview) { preview.hidden = true; preview.innerHTML = ''; }
+        state.adjustedWorkout = null;
+        if (stateEl) { stateEl.textContent = ''; stateEl.className = 'adjust-state'; }
+        modal.hidden = false;
+        setTimeout(() => textarea && textarea.focus(), 60);
     }
 
-    // RPE display
-    const rpeSlider = document.getElementById('workout-rpe');
-    const rpeValue = document.getElementById('rpe-value');
-    if (rpeSlider && rpeValue) {
-        rpeSlider.addEventListener('input', () => {
-            rpeValue.textContent = rpeSlider.value;
-        });
-    }
+    async function openAnalyzeModal(request, titleOverride) {
+        const modal = $('modal-analyze');
+        const titleEl = $('analyze-title');
+        const loading = $('analyze-loading');
+        const content = $('analyze-content');
+        const errEl = $('analyze-error');
+        if (titleOverride) titleEl.textContent = titleOverride;
+        loading.hidden = false;
+        loading.textContent = 'AI coach reviewing your session…';
+        content.hidden = true;
+        errEl.hidden = true;
+        modal.hidden = false;
 
-    // Cardio intensity display
-    const cardioIntensitySlider = document.getElementById('cardio-intensity');
-    const cardioIntensityValue = document.getElementById('cardio-intensity-value');
-    if (cardioIntensitySlider && cardioIntensityValue) {
-        cardioIntensitySlider.addEventListener('input', () => {
-            cardioIntensityValue.textContent = cardioIntensitySlider.value;
-        });
-    }
+        try {
+            const payload = await api('/api/workout/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(request || { latest: true }),
+            });
 
-    // Nutrition form submission
-    const nutritionForm = document.getElementById('nutrition-form');
-    if (nutritionForm) {
-        nutritionForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-
-            const data = {
-                date: new Date().toISOString().split('T')[0],
-                calories: parseInt(document.getElementById('nutrition-calories').value),
-                protein_g: parseFloat(document.getElementById('nutrition-protein').value),
-                carbs_g: parseFloat(document.getElementById('nutrition-carbs').value) || null,
-                fat_g: parseFloat(document.getElementById('nutrition-fat').value) || null,
-                notes: document.getElementById('nutrition-notes').value
-            };
-
-            try {
-                await fetch('/api/add-nutrition', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
-
-                alert('Nutrition logged!');
-                e.target.reset();
-                loadDashboard();
-            } catch (error) {
-                alert('Failed to log nutrition');
+            if (payload.status === 'fallback') {
+                loading.hidden = true;
+                errEl.hidden = false;
+                errEl.textContent = `AI coach unavailable — ${payload.reason || 'try again later'}.`;
+                return;
             }
-        });
-    }
 
-    // Cardio form submission
-    const cardioForm = document.getElementById('cardio-form');
-    if (cardioForm) {
-        cardioForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
+            const w = payload.workout || {};
+            const a = payload.analysis || {};
+            titleEl.textContent = w.date ? `Analysis · ${fmtDate(w.date)}` : 'Workout Analysis';
 
-            const data = {
-                date: new Date().toISOString().split('T')[0],
-                activity_type: document.getElementById('cardio-type').value,
-                duration_minutes: parseInt(document.getElementById('cardio-duration').value),
-                avg_heart_rate: parseInt(document.getElementById('cardio-hr').value) || null,
-                intensity: parseInt(document.getElementById('cardio-intensity').value),
-                notes: document.getElementById('cardio-notes').value
-            };
+            $('analyze-summary').textContent = a.summary || '—';
 
-            try {
-                await fetch('/api/add-cardio', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
+            const winsEl = $('analyze-wins');
+            const concernsEl = $('analyze-concerns');
+            winsEl.innerHTML = '';
+            concernsEl.innerHTML = '';
+            (a.wins || []).forEach((w) => {
+                const li = document.createElement('li');
+                li.textContent = w;
+                winsEl.appendChild(li);
+            });
+            (a.concerns || []).forEach((c) => {
+                const li = document.createElement('li');
+                li.textContent = c;
+                concernsEl.appendChild(li);
+            });
+            $('analyze-wins-section').style.display = (a.wins || []).length ? '' : 'none';
+            $('analyze-concerns-section').style.display = (a.concerns || []).length ? '' : 'none';
 
-                alert('Cardio session logged!');
-                e.target.reset();
-                if (cardioIntensityValue) cardioIntensityValue.textContent = '5';
-                loadDashboard();
-            } catch (error) {
-                alert('Failed to log cardio');
+            $('analyze-comparison').textContent = a.comparison || '—';
+            if (a.next_session_cue) {
+                $('analyze-cue').textContent = a.next_session_cue;
+                $('analyze-cue-section').style.display = '';
+            } else {
+                $('analyze-cue-section').style.display = 'none';
             }
-        });
-    }
 
-    // Sauna/Recovery form submission
-    const saunaForm = document.getElementById('sauna-form');
-    if (saunaForm) {
-        saunaForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-
-            const data = {
-                date: new Date().toISOString().split('T')[0],
-                recovery_type: document.getElementById('recovery-type').value,
-                duration_minutes: parseInt(document.getElementById('recovery-duration').value),
-                temperature: parseInt(document.getElementById('recovery-temp').value) || null,
-                notes: document.getElementById('recovery-notes').value
-            };
-
-            try {
-                await fetch('/api/add-recovery', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
-
-                alert('Recovery session logged!');
-                e.target.reset();
-                loadDashboard();
-            } catch (error) {
-                alert('Failed to log recovery session');
-            }
-        });
-    }
-
-    // Body measurement form submission
-    const bodyForm = document.getElementById('body-form');
-    if (bodyForm) {
-        bodyForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-
-            const data = {
-                date: new Date().toISOString().split('T')[0],
-                weight_lbs: parseFloat(document.getElementById('body-weight-input').value),
-                body_fat_pct: parseFloat(document.getElementById('body-fat').value) || null,
-                neck_in: parseFloat(document.getElementById('body-neck')?.value) || null,
-                waist_in: parseFloat(document.getElementById('body-waist')?.value) || null,
-                chest_in: parseFloat(document.getElementById('body-chest')?.value) || null,
-                hips_in: parseFloat(document.getElementById('body-hips')?.value) || null,
-                arms: (document.getElementById('body-arms')?.value || '').trim(),
-                legs: (document.getElementById('body-legs')?.value || '').trim(),
-                notes: document.getElementById('body-notes').value
-            };
-
-            try {
-                await fetch('/api/add-body-measurement', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
-
-                alert('Body measurement logged!');
-                e.target.reset();
-                loadDashboard();
-            } catch (error) {
-                alert('Failed to log body measurement');
-            }
-        });
-    }
-
-
-    const navyBtn = document.getElementById('navy-calc-btn');
-    if (navyBtn) {
-        navyBtn.addEventListener('click', async () => {
-            try {
-                const payload = {
-                    sex: 'male',
-                    height_in: 70,
-                    neck_in: parseFloat(document.getElementById('body-neck')?.value),
-                    waist_in: parseFloat(document.getElementById('body-waist')?.value),
-                    hip_in: parseFloat(document.getElementById('body-hips')?.value) || null
-                };
-                const r = await fetch('/api/body/navy-calc', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-                const j = await r.json();
-                if (j.body_fat_pct != null) {
-                    document.getElementById('body-fat').value = j.body_fat_pct;
-                }
-            } catch (e) {
-                alert('Failed to estimate body fat');
-            }
-        });
-    }
-
-    const sleepImportForm = document.getElementById('sleep-import-form');
-    if (sleepImportForm) {
-        sleepImportForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const text = (document.getElementById('sleep-import-text')?.value || '').trim();
-            if (!text) return;
-            try {
-                let payload;
-                if (text.startsWith('[') || text.startsWith('{')) {
-                    const parsed = JSON.parse(text);
-                    payload = { entries: Array.isArray(parsed) ? parsed : (parsed.entries || []) };
+            const m = payload.meta || {};
+            const ctx = payload.context_used || {};
+            const noteBits = [];
+            if (ctx.set_note_count) noteBits.push(`${ctx.set_note_count} set note${ctx.set_note_count === 1 ? '' : 's'}`);
+            if (ctx.workout_notes_present) noteBits.push('workout note');
+            if (ctx.cardio_notes_present) noteBits.push('cardio note');
+            const notesSection = $('analyze-notes-section');
+            const notesContext = $('analyze-notes-context');
+            if (notesSection && notesContext) {
+                if (noteBits.length) {
+                    notesContext.textContent = `AI analysis received ${noteBits.join(', ')} for this session.`;
+                    notesSection.hidden = false;
                 } else {
-                    payload = { csv: text };
+                    notesContext.textContent = '';
+                    notesSection.hidden = true;
                 }
-                const r = await fetch('/api/sleep/import', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-                const j = await r.json();
-                alert(`Imported ${j.imported || 0} sleep rows`);
-                loadSleepAnalytics();
-            } catch (e) {
-                alert('Sleep import failed. Check CSV/JSON format.');
             }
-        });
+            const contextBits = [];
+            if (ctx.recent_session_count) contextBits.push(`${ctx.recent_session_count} recent sessions`);
+            if (ctx.readiness_available) contextBits.push('readiness');
+            if (noteBits.length) contextBits.push('notes reviewed');
+            contextBits.push(m.model_version || m.model || 'local model');
+            if (m.elapsed_ms) contextBits.push(`${m.elapsed_ms}ms`);
+            if (payload.cache_hit) contextBits.push('cached');
+            $('analyze-meta').textContent = contextBits.join(' · ');
+
+            loading.hidden = true;
+            content.hidden = false;
+        } catch (e) {
+            console.error(e);
+            loading.hidden = true;
+            errEl.hidden = false;
+            errEl.textContent = 'Request failed — please try again.';
+        }
     }
 
-    // Soreness form submission
-    const sorenessForm = document.getElementById('soreness-form');
-    if (sorenessForm) {
-        sorenessForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
+    async function openAppleSetup() {
+        const urlEl = $('apple-webhook-url');
+        const detail = $('apple-sync-detail');
+        if (detail) detail.textContent = 'Checking…';
 
-            const data = {
-                date: new Date().toISOString().split('T')[0],
-                muscle: document.getElementById('soreness-muscle').value,
-                soreness_level: parseInt(document.getElementById('soreness-level').value),
-                notes: document.getElementById('soreness-notes').value
-            };
+        // Setup URL is split from routine status so Settings doesn't fetch
+        // token material unless the setup modal is explicitly opened.
+        const appleHealthOrigin = (location.hostname.endsWith('.tail6c6490.ts.net') && location.protocol === 'http:')
+            ? `https://${location.host}`
+            : location.origin;
+        let tokenizedUrl = `${appleHealthOrigin}/api/apple-health/sync`;
+        let status = null;
+        try {
+            status = await api('/api/apple-health/sync/status');
+        } catch {}
+        try {
+            const setup = await api('/api/apple-health/sync/setup-url');
+            if (setup && setup.webhook_url) tokenizedUrl = setup.webhook_url;
+        } catch {}
 
-            try {
-                await fetch('/api/add-soreness', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
+        if (urlEl) urlEl.textContent = tokenizedUrl;
 
-                alert('Soreness logged successfully!');
-                e.target.reset();
-                sorenessValue.textContent = '5';
-                loadDashboard();
-            } catch (error) {
-                alert('Failed to log soreness');
+        if (detail) {
+            if (status && status.last_sync) {
+                const lastExport = status.last_attempt || status.last_sync;
+                const last = parseServerDateTime(lastExport);
+                const days = last ? Math.floor((Date.now() - last.getTime()) / 86400000) : 0;
+                detail.textContent = `Last accepted export ${fmtDateTime(lastExport)} · ${days}d ago · ${status.total_records || 0} records`;
+            } else if (status) {
+                detail.textContent = 'No syncs yet — Health Auto Export has not posted.';
+            } else {
+                detail.textContent = 'Sync endpoint not reachable.';
             }
-        });
-    }
-
-    // Workout form
-    const workoutForm = document.getElementById('workout-form');
-    if (workoutForm) {
-        workoutForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            alert('Set logged! Use the Workout tab for full workout logging.');
-            e.target.reset();
-            if (rpeValue) rpeValue.textContent = '7';
-        });
-    }
-}
-
-// Format date for display
-function formatDate(dateStr) {
-    if (!dateStr) return '--';
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-// iOS Install Banner
-function checkInstallBanner() {
-    const banner = document.getElementById('install-banner');
-    if (!banner) return;
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
-
-    if (isIOS && !isStandalone && !localStorage.getItem('installBannerDismissed')) {
-        banner.style.display = 'flex';
-    }
-
-    const closeBanner = document.getElementById('close-banner');
-    if (closeBanner) {
-        closeBanner.addEventListener('click', () => {
-            banner.style.display = 'none';
-            localStorage.setItem('installBannerDismissed', 'true');
-        });
-    }
-}
-
-// Register Service Worker
-function registerServiceWorker() {
-    if ('serviceWorker' in navigator) {
-        // Unregister old service worker to clear stale cache
-        navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
-    }
-}
-
-function initOfflineBanner() {
-    const banner = document.getElementById('offline-banner');
-    if (!banner) return;
-
-    const update = () => {
-        banner.style.display = navigator.onLine ? 'none' : 'block';
-    };
-
-    window.addEventListener('online', update);
-    window.addEventListener('offline', update);
-    update();
-}
-
-// Pull-to-refresh (native iOS feel)
-let touchStartY = 0;
-document.addEventListener('touchstart', (e) => {
-    touchStartY = e.touches[0].clientY;
-});
-
-document.addEventListener('touchmove', (e) => {
-    const touchY = e.touches[0].clientY;
-    const scrollTop = document.documentElement.scrollTop || document.body.scrollTop;
-
-    if (scrollTop === 0 && touchY > touchStartY + 100) {
-        loadDashboard();
-    }
-});
-
-
-async function loadBodyRecomp() {
-    try {
-        const r = await fetch('/api/body-recomp');
-        const data = await r.json();
-        const summary = data.summary || {};
-        const box = document.getElementById('body-summary');
-        if (box) {
-            box.innerHTML = `
-                <div class="kpi-card"><span class="kpi-value">${summary.latest?.weight_lbs || '--'}</span><span class="kpi-label">Current Weight</span></div>
-                <div class="kpi-card"><span class="kpi-value">${summary.latest?.body_fat_pct || '--'}%</span><span class="kpi-label">Body Fat</span></div>
-                <div class="kpi-card"><span class="kpi-value">${summary.target_weight_lbs || '--'}</span><span class="kpi-label">Target Weight</span></div>
-                <div class="kpi-card"><span class="kpi-value">${summary.eta_weeks || '--'}</span><span class="kpi-label">ETA (weeks)</span></div>`;
         }
-        if (!data.dates || !data.dates.length) return;
-        if (charts.bodyWeightTrend) charts.bodyWeightTrend.destroy();
-        const c1 = document.getElementById('bodyWeightTrendChart');
-        if (c1) charts.bodyWeightTrend = new Chart(c1, {
-            type: 'line',
-            data: { labels: data.dates.map(formatDate), datasets: [
-                {label:'Weight', data:data.weight, borderColor:'#3b82f6', tension:0.25},
-                {label:'7d Avg', data:data.weight_7d_avg, borderColor:'#10b981', tension:0.25}
-            ]}, options:{responsive:true, maintainAspectRatio:false}
-        });
-        if (charts.bodyComp) charts.bodyComp.destroy();
-        const c2 = document.getElementById('bodyCompositionChart');
-        if (c2) charts.bodyComp = new Chart(c2, {
-            type: 'line',
-            data: { labels: data.dates.map(formatDate), datasets: [
-                {label:'Lean Mass', data:data.lean_mass_lbs, borderColor:'#22c55e', tension:0.25},
-                {label:'Fat Mass', data:data.fat_mass_lbs, borderColor:'#ef4444', tension:0.25}
-            ]}, options:{responsive:true, maintainAspectRatio:false}
-        });
-    } catch (e) { console.error('loadBodyRecomp', e); }
-}
+        $('modal-apple').hidden = false;
+    }
 
-async function loadSleepAnalytics() {
-    try {
-        const r = await fetch('/api/sleep/analytics');
-        const data = await r.json();
-        const el = document.getElementById('sleep-summary');
-        if (el) {
-            el.innerHTML = `Consistency: <strong>${data.consistency_score ?? '--'}</strong>/100<br>Sleep→Next-Day Performance Correlation: <strong>${data.sleep_perf_correlation ?? '--'}</strong>`;
+    async function submitAdjust() {
+        const textarea = $('adjust-constraint');
+        const btn = $('btn-adjust-submit');
+        const stateEl = $('adjust-state');
+        const result = $('adjust-result');
+        const summaryEl = $('adjust-summary');
+        const notesEl = $('adjust-notes');
+        const metaEl = $('adjust-meta');
+        const previewEl = $('adjust-plan-preview');
+        const constraint = (textarea.value || '').trim();
+        if (!constraint) { stateEl.textContent = 'Tell the coach what to adjust.'; stateEl.className = 'adjust-state err'; return; }
+        if (constraint.length > 280) { stateEl.textContent = 'Keep it under 280 chars.'; stateEl.className = 'adjust-state err'; return; }
+
+        btn.disabled = true;
+        btn.textContent = 'Consulting coach…';
+        stateEl.textContent = 'Calling local LM Studio model (usually 2–8s)…';
+        stateEl.className = 'adjust-state';
+        result.hidden = true;
+        if (previewEl) { previewEl.hidden = true; previewEl.innerHTML = ''; }
+
+        try {
+            const payload = await api('/api/workout/adjust', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ constraint }),
+            });
+
+            if (payload.status === 'fallback') {
+                stateEl.textContent = 'AI coach unavailable — plan unchanged. ' + (payload.reason || '');
+                stateEl.className = 'adjust-state err';
+                btn.disabled = false;
+                btn.textContent = 'Retry';
+                return;
+            }
+
+            summaryEl.textContent = payload.summary || 'Adjustment applied.';
+            const notes = Array.isArray(payload.applied_notes) ? payload.applied_notes : [];
+            if (notes.length) {
+                notesEl.innerHTML = '<ul>' + notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul>';
+            } else {
+                notesEl.innerHTML = '<div class="dim">No structural changes — the intent was already within the algorithm\'s envelope.</div>';
+            }
+            const meta = payload.meta || {};
+            metaEl.textContent = `${meta.model_version || meta.model || 'local model'} · ${meta.elapsed_ms || '?'} ms${payload.cache_hit ? ' · cached' : ''}`;
+            result.hidden = false;
+            stateEl.textContent = 'Updated. Review the new plan below or start it now.';
+            stateEl.className = 'adjust-state ok';
+
+            if (payload.recommendation && !state.dashboard) state.dashboard = {};
+            if (state.dashboard && payload.recommendation) {
+                state.dashboard.next_workout = payload.recommendation;
+            }
+            if (payload.recommendation) {
+                state.adjustedWorkout = payload.recommendation;
+                renderAdjustedPlanPreview(payload.recommendation);
+            }
+            if (state.currentTab === 'tab-workout') {
+                renderNextWorkout();
+            }
+        } catch (e) {
+            console.error(e);
+            stateEl.textContent = 'Request failed — keeping the original plan.';
+            stateEl.className = 'adjust-state err';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Apply Another Adjustment';
         }
-    } catch (e) { console.error(e); }
-}
+    }
 
-async function loadAdvancedAnalytics() {
-    try {
-        const r = await fetch('/api/analytics/advanced');
-        const data = await r.json();
-        const deload = document.getElementById('deload-container');
-        if (deload) {
-            deload.innerHTML = `Fatigue: <strong>${data.fatigue_score}</strong>/100 • Mesocycle week: <strong>${data.mesocycle_weeks}</strong><br>Deload: <strong>${data.deload_recommended ? 'Recommended' : 'Not needed'}</strong>`;
+    // --- Init ----------------------------------------------------
+    function wireEvents() {
+        // Tab nav
+        qsa('.tab-btn').forEach((btn) => {
+            btn.addEventListener('click', () => switchTab(btn.getAttribute('data-tab')));
+        });
+
+        // Log segmented
+        qsa('.seg-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const t = btn.getAttribute('data-log-type');
+                qsa('.seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
+                qsa('.log-panel').forEach((p) => p.classList.toggle('active', p.id === `panel-${t}`));
+            });
+        });
+
+        // RPE selector
+        qsa('#rpe-row button').forEach((b) => {
+            b.addEventListener('click', () => {
+                qsa('#rpe-row button').forEach((x) => x.classList.toggle('active', x === b));
+                $('log-rpe').value = b.dataset.rpe;
+            });
+        });
+
+        // Range chips
+        qsa('#history-range-chips .chip-btn').forEach((c) => {
+            c.addEventListener('click', () => {
+                state.ranges.history = Number(c.dataset.range);
+                qsa('#history-range-chips .chip-btn').forEach((x) => x.classList.toggle('active', x === c));
+                renderHistory();
+            });
+        });
+        qsa('#stats-range-chips .chip-btn').forEach((c) => {
+            c.addEventListener('click', () => {
+                state.ranges.stats = Number(c.dataset.range);
+                qsa('#stats-range-chips .chip-btn').forEach((x) => x.classList.toggle('active', x === c));
+                renderStats();
+            });
+        });
+
+        // Log buttons
+        $('btn-log-strength') && $('btn-log-strength').addEventListener('click', logStrength);
+        $('btn-log-cardio') && $('btn-log-cardio').addEventListener('click', logCardio);
+        $('btn-log-recovery') && $('btn-log-recovery').addEventListener('click', logRecovery);
+        $('btn-log-body') && $('btn-log-body').addEventListener('click', logBody);
+
+        // Actions
+        $('btn-start-workout') && $('btn-start-workout').addEventListener('click', startWorkout);
+        $('btn-start-workout-2') && $('btn-start-workout-2').addEventListener('click', startWorkout);
+        $('btn-adjust-plan') && $('btn-adjust-plan').addEventListener('click', openAdjust);
+        $('btn-adjust-plan-2') && $('btn-adjust-plan-2').addEventListener('click', openAdjust);
+        $('btn-adjust-submit') && $('btn-adjust-submit').addEventListener('click', submitAdjust);
+        qsa('.chip-preset').forEach((b) => b.addEventListener('click', () => {
+            const ta = $('adjust-constraint');
+            if (ta) { ta.value = b.dataset.preset || ''; ta.focus(); }
+        }));
+        $('btn-complete-workout') && $('btn-complete-workout').addEventListener('click', completeWorkout);
+        $('btn-sync-oura') && $('btn-sync-oura').addEventListener('click', syncOura);
+        $('btn-export') && $('btn-export').addEventListener('click', downloadExport);
+        $('btn-import') && $('btn-import').addEventListener('click', () => $('import-file').click());
+        $('import-file') && $('import-file').addEventListener('change', (e) => importBackupFile(e.target.files && e.target.files[0]));
+
+        // Close modals
+        qsa('[data-close-modal]').forEach((b) => b.addEventListener('click', () => {
+            const modal = b.closest('.modal');
+            if (modal) modal.hidden = true;
+        }));
+        qsa('.modal').forEach((m) => {
+            m.addEventListener('click', (e) => { if (e.target === m) m.hidden = true; });
+        });
+
+        // AI status button (top right)
+        $('btn-ai-status') && $('btn-ai-status').addEventListener('click', toggleAiPopover);
+        document.addEventListener('click', closeAiPopoverOnOutsideClick, true);
+    }
+
+    // --- AI coach status (header button) -----------------------
+    let aiStatusTimer = null;
+
+    async function refreshAiStatus() {
+        const dot = $('ai-status-dot');
+        if (!dot) return;
+        try {
+            const h = await api('/api/ai/health');
+            if (h.reachable && h.model_loaded) dot.className = 'ai-dot ok';
+            else if (h.reachable) dot.className = 'ai-dot warn';
+            else dot.className = 'ai-dot err';
+        } catch {
+            dot.className = 'ai-dot err';
         }
-    } catch (e) { console.error(e); }
-}
+    }
 
-// Global Chart.js defaults for better label display
-if (typeof Chart !== 'undefined') {
-    Chart.defaults.scales.category.ticks.maxRotation = 45;
-    Chart.defaults.scales.category.ticks.autoSkip = true;
-    Chart.defaults.scales.category.ticks.maxTicksLimit = 10;
-    Chart.defaults.color = '#9ca3af';
-    Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
-}
+    async function toggleAiPopover() {
+        const pop = $('popover-ai');
+        if (!pop) return;
+        if (!pop.hidden) { pop.hidden = true; return; }
+
+        pop.hidden = false;
+        $('pop-reachable').textContent = '…';
+        $('pop-model-loaded').textContent = '…';
+        $('pop-requests').textContent = '…';
+        $('pop-latency').textContent = '…';
+        $('pop-cache').textContent = '…';
+        $('pop-fallbacks').textContent = '…';
+        $('pop-foot').textContent = 'Checking LM Studio…';
+
+        try {
+            const [h, m] = await Promise.all([
+                api('/api/ai/health'),
+                api('/api/ai/metrics?hours=24').catch(() => null),
+            ]);
+            $('pop-reachable').textContent = h.reachable ? 'Yes' : 'No';
+            $('pop-model-loaded').textContent = h.model_loaded ? 'Yes' : h.reachable ? 'No' : '—';
+            if (m) {
+                $('pop-requests').textContent = m.adjust_requests || 0;
+                $('pop-latency').textContent = m.avg_latency_ms ? `${(m.avg_latency_ms / 1000).toFixed(2)}s` : '—';
+                $('pop-cache').textContent = m.adjust_requests ? `${m.cache_hit_pct}%` : '—';
+                const fb = m.fallbacks || 0;
+                $('pop-fallbacks').textContent = fb;
+                if (fb > 0 && m.recent) {
+                    const lastFallback = m.recent.find((r) => r.outcome === 'fallback');
+                    $('pop-foot').textContent = lastFallback
+                        ? `Last fallback: ${lastFallback.reason || 'unknown'}`
+                        : h.reachable ? 'LM Studio reachable' : 'LM Studio unreachable';
+                } else {
+                    $('pop-foot').textContent = h.reachable ? 'LM Studio reachable · all calls clean 24h' : 'LM Studio unreachable';
+                }
+            } else {
+                $('pop-foot').textContent = h.reachable ? 'LM Studio reachable · metrics unavailable' : 'LM Studio unreachable';
+            }
+        } catch (e) {
+            $('pop-foot').textContent = 'Status check failed.';
+        }
+    }
+
+    function closeAiPopoverOnOutsideClick(ev) {
+        const pop = $('popover-ai');
+        const btn = $('btn-ai-status');
+        if (!pop || pop.hidden) return;
+        if (pop.contains(ev.target) || (btn && btn.contains(ev.target))) return;
+        pop.hidden = true;
+    }
+
+    function boot() {
+        renderGreeting();
+        wireEvents();
+        switchTab('tab-dashboard');
+        refreshAiStatus();
+        if (aiStatusTimer) clearInterval(aiStatusTimer);
+        aiStatusTimer = setInterval(refreshAiStatus, 60_000);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot);
+    } else {
+        boot();
+    }
+
+    // Expose for console debugging (read-only)
+    window.__aicoach = { state, switchTab, loadTab, invalidateCaches };
+})();

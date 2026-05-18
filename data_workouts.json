@@ -151,7 +151,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "40294b955ecc"
   },
   {
     "date": "2025-09-13",
@@ -276,7 +277,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "b40f5e8c456f"
   },
   {
     "date": "2025-09-18",
@@ -430,7 +432,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "36fabef14c25"
   },
   {
     "date": "2025-09-21",
@@ -584,7 +587,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "43d092895249"
   },
   {
     "date": "2025-10-03",
@@ -622,7 +626,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "64163a361901"
   },
   {
     "date": "2025-10-05",
@@ -689,7 +694,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "9ffc52bf5971"
   },
   {
     "date": "2025-12-13",
@@ -872,7 +878,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "a0d51638cb3e"
   },
   {
     "date": "2025-12-22",
@@ -1106,7 +1113,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "178c18bd7038"
   },
   {
     "date": "2025-12-26",
@@ -1410,7 +1418,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "13fe0cab7ea6"
   },
   {
     "date": "2025-12-28",
@@ -1659,7 +1668,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "5fc9f8f5a2ed"
   },
   {
     "date": "2025-12-29",
@@ -2062,7 +2072,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "f39cdcccf572"
   },
   {
     "date": "2026-01-02",
@@ -2458,7 +2469,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "8c8a000a9317"
   },
   {
     "date": "2026-01-09",
@@ -2632,7 +2644,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "5a5146e642ad"
   },
   {
     "date": "2026-01-16",
@@ -2785,7 +2798,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "9c095bf59f1f"
   },
   {
     "date": "2026-01-18",
@@ -3104,7 +3118,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "dd58e1b9a139"
   },
   {
     "date": "2026-01-22",
@@ -3351,7 +3366,8 @@
       }
     ],
     "overall_fatigue": 6,
-    "notes": ""
+    "notes": "",
+    "id": "7104b7de020f"
   },
   {
     "date": "2026-02-01",
@@ -3547,7 +3563,8 @@
         }
       ],
       "added": []
-    }
+    },
+    "id": "b93b3442cbdf"
   },
   {
     "date": "2026-02-08",
@@ -3719,7 +3736,8 @@
       "skipped": [],
       "modified": [],
       "added": []
-    }
+    },
+    "id": "d2722a753976"
   },
   {
     "date": "2026-02-12",
@@ -3927,7 +3945,8 @@
       "skipped": [],
       "modified": [],
       "added": []
-    }
+    },
+    "id": "f15707ba7c28"
   },
   {
     "date": "2026-02-22",
@@ -4087,7 +4106,8 @@
       "skipped": [],
       "modified": [],
       "added": []
-    }
+    },
+    "id": "e9b13208bee0"
   },
   {
     "date": "2026-02-26",
@@ -4259,7 +4279,8 @@
       "skipped": [],
       "modified": [],
       "added": []
-    }
+    },
+    "id": "a4393b1c844a"
   },
   {
     "date": "2026-03-05",
@@ -4337,6 +4358,793 @@
       }
     ],
     "overall_fatigue": 5,
-    "notes": "Shoulder press left arm gave out at 13 reps on set 2. Stair stepper cardio after."
+    "notes": "Shoulder press left arm gave out at 13 reps on set 2. Stair stepper cardio after.",
+    "id": "2c614a61fd44"
+  },
+  {
+    "id": "11e1870c868f",
+    "created_at": "2026-04-24T17:39:59",
+    "date": "2026-04-24",
+    "session_type": "Full Body",
+    "duration_minutes": 45,
+    "exercises": [
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 45,
+            "rpe": 6
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 45,
+            "rpe": 6
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 65,
+            "rpe": 6
+          },
+          {
+            "reps": 10,
+            "weight_lbs": 45,
+            "rpe": 6
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 140,
+            "rpe": 6
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 140,
+            "rpe": 6
+          }
+        ]
+      },
+      {
+        "machine": "Hip Adductor",
+        "muscle_group": "adductors",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 80,
+            "rpe": 6
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 80,
+            "rpe": 6
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 35.5,
+            "rpe": 6
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 35.5,
+            "rpe": 6
+          }
+        ]
+      },
+      {
+        "machine": "Calf Raise (Seated)",
+        "muscle_group": "calves",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 50,
+            "rpe": 6
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 50,
+            "rpe": 6
+          }
+        ]
+      },
+      {
+        "machine": "Crunch Machine",
+        "muscle_group": "core",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 64.5,
+            "rpe": 6
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 64.5,
+            "rpe": 6
+          }
+        ]
+      },
+      {
+        "machine": "Hip Abductor",
+        "muscle_group": "glutes",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 80,
+            "rpe": 6
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 80,
+            "rpe": 6
+          }
+        ]
+      },
+      {
+        "machine": "Leg Curl",
+        "muscle_group": "hamstrings",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 35,
+            "rpe": 6
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 75,
+            "rpe": 6
+          }
+        ]
+      },
+      {
+        "machine": "Shoulder Press",
+        "muscle_group": "shoulders",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 40,
+            "rpe": 6
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 40,
+            "rpe": 6
+          }
+        ]
+      },
+      {
+        "machine": "Overhead Tricep Extension",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 50,
+            "rpe": 6
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 50,
+            "rpe": 6
+          }
+        ]
+      }
+    ],
+    "overall_fatigue": 5,
+    "notes": "",
+    "recommendation_id": null,
+    "adherence": {
+      "followed": true,
+      "skipped": [],
+      "modified": [],
+      "added": []
+    }
+  },
+  {
+    "id": "1cdfaccd62f1",
+    "created_at": "2026-04-27T17:38:34",
+    "date": "2026-04-27",
+    "session_type": "Full Body",
+    "duration_minutes": 45,
+    "exercises": [
+      {
+        "machine": "Seated Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 40,
+            "rpe": 3,
+            "notes": "No struggle at all.",
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 40,
+            "rpe": 3,
+            "notes": "Felt good finished 50 seconds. Starting to feel rep 13 on my top right back",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 37.5,
+            "rpe": 6,
+            "notes": "Felt good no struggle at all. Finished 50 seconds.",
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 37.5,
+            "rpe": 6,
+            "notes": "Felt good.",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "reps": 18,
+            "weight_lbs": 95,
+            "rpe": 3,
+            "notes": "Felt good",
+            "set_number": 1
+          },
+          {
+            "reps": 18,
+            "weight_lbs": 95,
+            "rpe": 3,
+            "notes": "Felt good started felling rep 14.",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Hip Adductor",
+        "muscle_group": "adductors",
+        "sets": [
+          {
+            "reps": 18,
+            "weight_lbs": 68,
+            "rpe": 3,
+            "set_number": 1
+          },
+          {
+            "reps": 18,
+            "weight_lbs": 68,
+            "rpe": 3,
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "reps": 18,
+            "weight_lbs": 25,
+            "rpe": 6,
+            "notes": "Felt good finished 50 seconds",
+            "set_number": 1
+          },
+          {
+            "reps": 18,
+            "weight_lbs": 25,
+            "rpe": 6,
+            "notes": "Felt good left arm staring to feel rep 13.",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Calf Raise",
+        "muscle_group": "calves",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 54.5,
+            "rpe": 3,
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 54.5,
+            "rpe": 3,
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Hip Abductor",
+        "muscle_group": "glutes",
+        "sets": [
+          {
+            "reps": 18,
+            "weight_lbs": 68,
+            "rpe": 3,
+            "set_number": 1
+          },
+          {
+            "reps": 18,
+            "weight_lbs": 68,
+            "rpe": 3,
+            "set_number": 2
+          }
+        ]
+      }
+    ],
+    "total_sets": 14,
+    "total_volume": 13704,
+    "overall_fatigue": 5,
+    "notes": "",
+    "cardio": null,
+    "recommendation_id": "20260427163837",
+    "adherence": {
+      "followed": true,
+      "skipped": [],
+      "modified": [],
+      "added": []
+    }
+  },
+  {
+    "id": "a37c66a003f3",
+    "created_at": "2026-05-09T13:44:59",
+    "date": "2026-05-09",
+    "session_type": "Full Body",
+    "duration_minutes": 65,
+    "exercises": [
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 45,
+            "rpe": 7.5,
+            "notes": "Felt good no strain",
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 45,
+            "rpe": 7.5,
+            "notes": "Felt good. Stating feeling burn 13",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 45,
+            "rpe": 7.5,
+            "notes": "Starting feel burn at 13",
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 45,
+            "rpe": 7.5,
+            "notes": "Felt burn at 13. But felt it in my biceps and Chest",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 160,
+            "rpe": 7.5,
+            "notes": "Felt good true rpe 7",
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 160,
+            "rpe": 7.5,
+            "notes": "Felt burn on rep 13. Right Knee was popping at 12 but no pain or anything",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 30,
+            "rpe": 7.5,
+            "notes": "Recommended 19 but that’s way to easy",
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 30,
+            "rpe": 7.5,
+            "notes": "Felt good. Left arm starting burning at 13",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Shoulder Press",
+        "muscle_group": "shoulders",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 35,
+            "rpe": 7.5,
+            "notes": "Starting feel burn at 10. Right arm was struggling.",
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 35,
+            "rpe": 7.5,
+            "notes": "Staring feeling burn at 10. Had to take a break while arm in the air at 14 (5 seconds).",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Tricep Pushdown",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 40,
+            "rpe": 7.5,
+            "notes": "It was tricep extension",
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 40,
+            "rpe": 7.5,
+            "notes": "It was tricep extension",
+            "set_number": 2
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 40,
+            "rpe": 7.5,
+            "notes": "It was tricep extension",
+            "set_number": 3
+          }
+        ]
+      }
+    ],
+    "total_sets": 13,
+    "total_volume": 12750,
+    "overall_fatigue": 5,
+    "notes": "",
+    "cardio": {
+      "completed": true,
+      "activity_type": "Stairmaster",
+      "duration_minutes": 20,
+      "notes": "Active calorie 193, avg hr 150, flights climb 47",
+      "recommendation": {
+        "type": "Stairmaster",
+        "duration_minutes": 20,
+        "zone": "Zone 2-3",
+        "heart_rate_range": "114-152 BPM",
+        "intensity": "Moderate steady state with intervals",
+        "reason": "Cardio is essential for creating calorie deficit while preserving muscle tone."
+      }
+    },
+    "recommendation_id": "20260509124610",
+    "adherence": {
+      "followed": true,
+      "skipped": [],
+      "modified": [],
+      "added": []
+    }
+  },
+  {
+    "id": "2d514a0b8f13",
+    "created_at": "2026-05-11T17:18:31",
+    "date": "2026-05-11",
+    "session_type": "Full Body",
+    "duration_minutes": 45,
+    "exercises": [
+      {
+        "machine": "Seated Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "reps": 18,
+            "weight_lbs": 45,
+            "rpe": 7,
+            "set_number": 1
+          },
+          {
+            "reps": 18,
+            "weight_lbs": 45,
+            "rpe": 7,
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "reps": 18,
+            "weight_lbs": 60,
+            "rpe": 7.5,
+            "notes": "Felt good slight burn",
+            "set_number": 1
+          },
+          {
+            "reps": 18,
+            "weight_lbs": 30,
+            "rpe": 7.5,
+            "notes": "Started felling burn rep 14",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "reps": 18,
+            "weight_lbs": 110,
+            "rpe": 7,
+            "notes": "Felt good burn at rep 14",
+            "set_number": 1
+          },
+          {
+            "reps": 18,
+            "weight_lbs": 110,
+            "rpe": 7,
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "reps": 18,
+            "weight_lbs": 20,
+            "rpe": 7.5,
+            "notes": "Way to easy felt nothing finished in 20 seconds",
+            "set_number": 1
+          },
+          {
+            "reps": 18,
+            "weight_lbs": 40,
+            "rpe": 7.5,
+            "notes": "Left arm felt burn at 11",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Crunch Machine",
+        "muscle_group": "core",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 47.5,
+            "rpe": 7.5,
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 47.5,
+            "rpe": 7.5,
+            "set_number": 2
+          }
+        ]
+      }
+    ],
+    "total_sets": 10,
+    "total_volume": 9895,
+    "overall_fatigue": 5,
+    "notes": "",
+    "cardio": null,
+    "recommendation_id": "20260511163221",
+    "adherence": {
+      "followed": true,
+      "skipped": [],
+      "modified": [],
+      "added": []
+    }
+  },
+  {
+    "id": "907f90ecd391",
+    "created_at": "2026-05-17T13:44:00",
+    "date": "2026-05-17",
+    "session_type": "Full Body",
+    "duration_minutes": 45,
+    "exercises": [
+      {
+        "machine": "Mid Row",
+        "muscle_group": "back",
+        "sets": [
+          {
+            "reps": 18,
+            "weight_lbs": 65,
+            "rpe": 8.5,
+            "notes": "Felt good",
+            "set_number": 1
+          },
+          {
+            "reps": 18,
+            "weight_lbs": 65,
+            "rpe": 8.5,
+            "notes": "Felt good felt burn at 10",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Chest Press",
+        "muscle_group": "chest",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 65,
+            "rpe": 7.5,
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 65,
+            "rpe": 7.5,
+            "notes": "Had to take a pause at rep 10 was feeling it afterwards.",
+            "set_number": 2
+          },
+          {
+            "reps": 13,
+            "weight_lbs": 65,
+            "rpe": 7.5,
+            "notes": "Had to take a break at 10",
+            "set_number": 3
+          }
+        ]
+      },
+      {
+        "machine": "Leg Press",
+        "muscle_group": "quads",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 80,
+            "rpe": 8.5,
+            "notes": "Felt way to easy",
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 160,
+            "rpe": 8.5,
+            "notes": "Felt burn at 12",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Biceps Curl",
+        "muscle_group": "biceps",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 30,
+            "rpe": 7.5,
+            "notes": "Felt good left arm felt more then right",
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 27,
+            "rpe": 7.5,
+            "notes": "Felt good left arm felt more then right",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Shoulder Press",
+        "muscle_group": "shoulders",
+        "sets": [
+          {
+            "reps": 18,
+            "weight_lbs": 23,
+            "rpe": 7.5,
+            "notes": "Felt burn at 17",
+            "set_number": 1
+          },
+          {
+            "reps": 18,
+            "weight_lbs": 23,
+            "rpe": 7.5,
+            "notes": "Felt good just staring feeling burn at 14",
+            "set_number": 2
+          }
+        ]
+      },
+      {
+        "machine": "Seated Dip",
+        "muscle_group": "triceps",
+        "sets": [
+          {
+            "reps": 17,
+            "weight_lbs": 85,
+            "rpe": 7.5,
+            "notes": "Felt good no problem",
+            "set_number": 1
+          },
+          {
+            "reps": 17,
+            "weight_lbs": 85,
+            "rpe": 7.5,
+            "notes": "Felt good no problem",
+            "set_number": 2
+          }
+        ]
+      }
+    ],
+    "total_sets": 13,
+    "total_volume": 14162,
+    "overall_fatigue": 5,
+    "notes": "",
+    "cardio": {
+      "completed": false,
+      "activity_type": "Stairmaster",
+      "duration_minutes": 20,
+      "notes": "Active calories 165, flights climb 136 bpm,  38 flights, avg hr 136, effort 4 (moderate)",
+      "recommendation": {
+        "type": "Stairmaster",
+        "duration_minutes": 20,
+        "zone": "Zone 2-3",
+        "heart_rate_range": "114-152 BPM",
+        "intensity": "Moderate steady state with intervals",
+        "reason": "Cardio is essential for creating calorie deficit while preserving muscle tone."
+      }
+    },
+    "recommendation_id": "20260517125349",
+    "adherence": {
+      "followed": true,
+      "skipped": [],
+      "modified": [],
+      "added": []
+    }
   }
 ]
