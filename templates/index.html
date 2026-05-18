@@ -67,11 +67,19 @@
                 <div class="reco-title" id="reco-title">—</div>
                 <div class="reco-meta">
                     <span class="reco-tag" id="reco-intensity">—</span>
+                    <span class="reco-tag" id="reco-time" hidden></span>
+                    <span class="reco-tag" id="reco-rpe" hidden></span>
                 </div>
+                <div class="reco-avoid" id="reco-avoid" hidden></div>
                 <div class="reco-why" id="reco-why">Analyzing your readiness, sleep, and training load…</div>
                 <div class="reco-actions">
                     <button id="btn-start-workout" class="btn btn-primary" type="button">Start Workout</button>
                     <button id="btn-adjust-plan" class="btn btn-ghost" type="button">Adjust Plan</button>
+                </div>
+                <div class="reco-freshness" id="reco-freshness">
+                    <span class="state-chip" id="reco-fresh-oura" data-source="oura" title="Oura freshness">Oura —</span>
+                    <span class="state-chip" id="reco-fresh-apple" data-source="apple_health" title="Apple Health freshness">Apple —</span>
+                    <span class="state-chip" id="reco-fresh-food" data-source="food" title="Food log freshness">Food —</span>
                 </div>
             </div>
 

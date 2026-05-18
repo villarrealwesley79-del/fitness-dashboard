@@ -2293,7 +2293,8 @@ def api_dashboard():
             "deload_check": deload,
             "injury_risk": injury_risk,
             "summary_stats": summary_stats
-        }
+        },
+        "freshness": _compute_data_freshness(),
     })
 
 
@@ -4718,6 +4719,150 @@ def oura_sleep_summary():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# ==================== DATA FRESHNESS (Oura / Apple Health / Food) ====================
+#
+# Stale buckets (server-side; the client never does "Nh ago" math):
+#   fresh:   last data point within 24h
+#   aging:   24h–48h
+#   stale:   >48h
+#   missing: no record at all
+#
+# "Connected" never means "current" — the freshness object is what the dashboard
+# uses to drop confidence and swap the brief to lower-confidence copy.
+
+APPLE_HEALTH_SYNC_DB_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "apple_health_sync.db"
+)
+
+_FRESHNESS_AGING_HOURS = 24
+_FRESHNESS_STALE_HOURS = 48
+
+
+def _classify_freshness(last_data_point_dt, now=None):
+    if last_data_point_dt is None:
+        return "missing"
+    now = now or datetime.now()
+    hours = (now - last_data_point_dt).total_seconds() / 3600.0
+    if hours < _FRESHNESS_AGING_HOURS:
+        return "fresh"
+    if hours < _FRESHNESS_STALE_HOURS:
+        return "aging"
+    return "stale"
+
+
+def _latest_oura_freshness(now=None):
+    try:
+        conn = sqlite3.connect(OURA_DB_FILE)
+        try:
+            row = conn.execute(
+                "SELECT day, created_at FROM oura_daily ORDER BY day DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return ("missing", None, None)
+    if not row:
+        return ("missing", None, None)
+    day_str, created_at = row
+    # last_data_point uses oura_daily.day (the data-point date); last_sync_attempt
+    # uses created_at (when we upserted). A row upserted today with day=N days ago
+    # means Oura hasn't returned new data even though we "synced."
+    return (_classify_freshness(_parse_iso_date_or_datetime(day_str), now=now), day_str, created_at)
+
+
+def _latest_apple_health_freshness(now=None):
+    try:
+        conn = sqlite3.connect(APPLE_HEALTH_SYNC_DB_FILE)
+        try:
+            data_row = conn.execute("SELECT MAX(record_date) FROM ah_sync_log").fetchone()
+            sync_row = conn.execute("SELECT MAX(created_at) FROM ah_sync_events").fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return ("missing", None, None)
+    last_data = (data_row or (None,))[0]
+    last_sync = (sync_row or (None,))[0]
+    if not last_data:
+        return ("missing", None, last_sync)
+    return (_classify_freshness(_parse_iso_date_or_datetime(last_data), now=now), last_data, last_sync)
+
+
+def _latest_food_freshness(now=None):
+    entries = NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else []
+    if not entries:
+        return ("missing", None, None)
+    latest_iso = None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        d = entry.get("date") or entry.get("day") or entry.get("logged_at")
+        if d and (latest_iso is None or d > latest_iso):
+            latest_iso = d
+    if not latest_iso:
+        return ("missing", None, None)
+    return (_classify_freshness(_parse_iso_date_or_datetime(latest_iso), now=now), latest_iso, None)
+
+
+def _compute_data_freshness(now=None):
+    """Per-source freshness for Oura, Apple Health, and food.
+
+    Returns:
+        {
+          "oura":         {"status": ..., "last_data_point": ..., "last_sync_attempt": ...},
+          "apple_health": {"status": ..., "last_data_point": ..., "last_sync_attempt": ...},
+          "food":         {"status": ..., "last_data_point": ..., "last_sync_attempt": ...},
+        }
+    """
+    now = now or datetime.now()
+    oura_status, oura_last_data, oura_last_sync = _latest_oura_freshness(now)
+    apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness(now)
+    food_status, food_last_data, food_last_sync = _latest_food_freshness(now)
+    return {
+        "oura": {
+            "status": oura_status,
+            "last_data_point": oura_last_data,
+            "last_sync_attempt": oura_last_sync,
+        },
+        "apple_health": {
+            "status": apple_status,
+            "last_data_point": apple_last_data,
+            "last_sync_attempt": apple_last_sync,
+        },
+        "food": {
+            "status": food_status,
+            "last_data_point": food_last_data,
+            "last_sync_attempt": food_last_sync,
+        },
+    }
+
+
+def _confidence_level_from(effective_readiness, freshness):
+    """Derive 'high' | 'medium' | 'low' from effective readiness + wearable freshness.
+
+    A stale or fully-missing wearable forces 'low' — we can't claim a confident
+    recommendation when the underlying signal is gone.
+    """
+    wearable_states = [
+        (freshness.get("oura") or {}).get("status"),
+        (freshness.get("apple_health") or {}).get("status"),
+    ]
+    if "stale" in wearable_states:
+        return "low"
+    if all(s == "missing" for s in wearable_states):
+        return "low"
+    if "missing" in wearable_states or "aging" in wearable_states:
+        if effective_readiness is None or effective_readiness < 65:
+            return "low"
+        return "medium"
+    if effective_readiness is None:
+        return "low"
+    if effective_readiness >= 78:
+        return "high"
+    if effective_readiness >= 60:
+        return "medium"
+    return "low"
+
+
 @app.route('/api/recommendation/smart')
 def smart_recommendation_api():
     """Smart recommendation factoring Oura readiness + HRV trend + recent soreness."""
@@ -4913,6 +5058,8 @@ def smart_recommendation_api():
     except Exception:
         history_context = []
 
+    freshness = _compute_data_freshness()
+    confidence_level = _confidence_level_from(effective_readiness, freshness)
     return jsonify({
         "recommendation": recommendation,
         "readiness": readiness,
@@ -4930,7 +5077,9 @@ def smart_recommendation_api():
         "weather": weather,
         "time_of_day": time_of_day,
         "history_context": history_context,
-        "reasoning": "; ".join(reason_bits) if reason_bits else "No Oura/soreness data available"
+        "reasoning": "; ".join(reason_bits) if reason_bits else "No Oura/soreness data available",
+        "freshness": freshness,
+        "confidence_level": confidence_level,
     })
 
 

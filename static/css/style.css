@@ -1231,6 +1231,8 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 }
 .state-chip.ok { color: var(--accent-green); background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.3); }
 .state-chip.warn { color: var(--accent-amber); background: rgba(251,191,36,0.1); border-color: rgba(251,191,36,0.3); }
+.state-chip.stale { color: #f87171; background: rgba(248,113,113,0.1); border-color: rgba(248,113,113,0.35); }
+.state-chip.unknown { color: var(--fg-dimmer); background: rgba(51,65,85,0.25); border-color: var(--border-2); font-style: italic; }
 
 .int-dot { width: 9px; height: 9px; border-radius: 999px; background: var(--fg-dimmer); display: inline-block; }
 .int-dot-on { background: var(--accent-green); box-shadow: 0 0 8px rgba(34,197,94,0.5); }
@@ -1862,4 +1864,44 @@ input[type=number] { -moz-appearance: textfield; }
     .readiness-gauge { width: 100px; height: 100px; }
     .readiness-gauge-value .val { font-size: 24px; }
     .summary-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+}
+
+/* ── FIT-1 / FIT-2: Daily Command Brief — avoid row, freshness strip, lower-confidence ── */
+.reco-avoid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin: 6px 0 10px 0;
+}
+.reco-avoid-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    margin-right: 2px;
+}
+.chip.chip-avoid {
+    color: #fca5a5;
+    background: rgba(248,113,113,0.12);
+    border: 1px solid rgba(248,113,113,0.3);
+}
+.reco-why.lower-confidence {
+    opacity: 0.85;
+    font-style: italic;
+}
+.reco-freshness {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border-2);
+}
+@media (max-width: 420px) {
+    .reco-freshness .state-chip {
+        font-size: 11px;
+        padding: 2px 8px;
+    }
 }
