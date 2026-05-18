@@ -117,7 +117,7 @@ The repo documents a primary ASUS GX10 LM Studio route and a Mac mini fallback r
 - The app is single-owner by design; public multi-user mode would require per-user data stores.
 - Apple Health timestamp date slicing can be wrong during cross-timezone travel.
 - Side-specific soreness and joint limitations are not modeled yet.
-- Nutrition data and targets exist, but nutrition is not yet a first-class daily decision surface.
+- Nutrition data and targets exist, and accepted food logs now have a SQLite persistence path that preserves final values, sanitized original estimates, confidence/correction metadata, context notes, meal type, and source timestamps. Legacy `data_nutrition.json` remains readable for current dashboard totals and migration/backfill safety.
 - There is no finished food photo capture, AI food estimation, confidence/review, or auto-adjustment workflow yet.
 - `auth.db` currently has 52 user rows even though the app is documented as single-owner by default; that should be reviewed before any multi-user assumption.
 

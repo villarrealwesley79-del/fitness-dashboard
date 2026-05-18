@@ -11,8 +11,10 @@ Usage:
 Created for Fitness Dashboard SaaS per-user isolation.
 """
 
+import json
 import os
 import sqlite3
+from datetime import datetime
 from typing import Optional
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -34,6 +36,46 @@ def _row_to_dict(row) -> dict:
     d.pop("user_id", None)
     d.pop("id", None)
     return d
+
+
+FOOD_ESTIMATE_FIELDS = {
+    "item_name",
+    "portion_description",
+    "meal_type",
+    "calories",
+    "protein_g",
+    "carbs_g",
+    "fat_g",
+    "sodium_mg",
+    "fiber_g",
+    "confidence",
+    "source",
+    "logged_at",
+    "date",
+}
+
+
+def _json_dumps_or_none(value):
+    if value in (None, ""):
+        return None
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _json_loads_or_none(value):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def sanitize_food_estimate(estimate: Optional[dict]) -> Optional[dict]:
+    """Return export/API-safe estimate fields, dropping raw traces and images."""
+    if not isinstance(estimate, dict):
+        return None
+    safe = {k: estimate.get(k) for k in FOOD_ESTIMATE_FIELDS if k in estimate}
+    return safe or None
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -87,6 +129,32 @@ def init_data_db():
                 UNIQUE(user_id, date)
             );
 
+            CREATE TABLE IF NOT EXISTS food_logs (
+                id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id                INTEGER NOT NULL,
+                client_id              TEXT,
+                date                   TEXT    NOT NULL,
+                logged_at              TEXT    NOT NULL,
+                source_timestamp       TEXT,
+                meal_type              TEXT,
+                item_name              TEXT,
+                portion_description    TEXT,
+                context_note           TEXT,
+                calories               INTEGER,
+                protein_g              REAL,
+                carbs_g                REAL,
+                fat_g                  REAL,
+                sodium_mg              INTEGER,
+                fiber_g                REAL,
+                confidence             REAL,
+                source                 TEXT,
+                correction_state       TEXT,
+                original_estimate_json TEXT,
+                created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+                updated_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, client_id)
+            );
+
             CREATE TABLE IF NOT EXISTS recovery_data (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id          INTEGER NOT NULL,
@@ -112,6 +180,26 @@ def init_data_db():
         existing_nutrition_cols = {r["name"] for r in conn.execute("PRAGMA table_info(nutrition_data)").fetchall()}
         if "sodium_mg" not in existing_nutrition_cols:
             conn.execute("ALTER TABLE nutrition_data ADD COLUMN sodium_mg INTEGER")
+        existing_food_log_cols = {r["name"] for r in conn.execute("PRAGMA table_info(food_logs)").fetchall()}
+        food_log_columns = {
+            "client_id": "TEXT",
+            "source_timestamp": "TEXT",
+            "meal_type": "TEXT",
+            "item_name": "TEXT",
+            "portion_description": "TEXT",
+            "context_note": "TEXT",
+            "sodium_mg": "INTEGER",
+            "fiber_g": "REAL",
+            "confidence": "REAL",
+            "source": "TEXT",
+            "correction_state": "TEXT",
+            "original_estimate_json": "TEXT",
+            "created_at": "TEXT",
+            "updated_at": "TEXT",
+        }
+        for col, col_type in food_log_columns.items():
+            if col not in existing_food_log_cols:
+                conn.execute(f"ALTER TABLE food_logs ADD COLUMN {col} {col_type}")
         conn.commit()
 
 
@@ -207,6 +295,94 @@ def add_nutrition_record(user_id: int, record: dict) -> None:
         conn.commit()
 
 
+def _food_log_row_to_dict(row) -> dict:
+    d = _row_to_dict(row)
+    d["original_estimate"] = _json_loads_or_none(d.pop("original_estimate_json", None))
+    return d
+
+
+def get_food_logs(user_id: int, limit: Optional[int] = None, since: Optional[str] = None) -> list[dict]:
+    """Return accepted food logs for user, sorted by logged_at desc."""
+    sql = "SELECT * FROM food_logs WHERE user_id = ?"
+    params: list = [user_id]
+    if since:
+        sql += " AND date >= ?"
+        params.append(since)
+    sql += " ORDER BY logged_at DESC, id DESC"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    with _get_db() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_food_log_row_to_dict(r) for r in rows]
+
+
+def clear_food_logs(user_id: int) -> None:
+    """Delete accepted food logs for a user before a full backup restore."""
+    with _get_db() as conn:
+        conn.execute("DELETE FROM food_logs WHERE user_id = ?", (user_id,))
+        conn.commit()
+
+
+def add_food_log(user_id: int, record: dict) -> dict:
+    """Persist one accepted food entry with sanitized estimate/correction metadata."""
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    logged_at = record.get("logged_at") or record.get("timestamp") or now_iso
+    date_s = record.get("date") or str(logged_at)[:10]
+    original_estimate = sanitize_food_estimate(record.get("original_estimate") or record.get("estimate"))
+    entry = {
+        "client_id": record.get("client_id") or None,
+        "date": date_s,
+        "logged_at": logged_at,
+        "source_timestamp": record.get("source_timestamp") or logged_at,
+        "meal_type": record.get("meal_type"),
+        "item_name": record.get("item_name"),
+        "portion_description": record.get("portion_description"),
+        "context_note": record.get("context_note") or record.get("notes"),
+        "calories": record.get("calories"),
+        "protein_g": record.get("protein_g"),
+        "carbs_g": record.get("carbs_g"),
+        "fat_g": record.get("fat_g"),
+        "sodium_mg": record.get("sodium_mg"),
+        "fiber_g": record.get("fiber_g"),
+        "confidence": record.get("confidence"),
+        "source": record.get("source") or ("vision_estimate" if original_estimate else "manual"),
+        "correction_state": record.get("correction_state") or ("accepted" if original_estimate else "manual"),
+        "original_estimate_json": _json_dumps_or_none(original_estimate),
+        "created_at": record.get("created_at") or now_iso,
+        "updated_at": now_iso,
+    }
+    with _get_db() as conn:
+        row_id = None
+        if entry.get("client_id"):
+            existing = conn.execute(
+                "SELECT id FROM food_logs WHERE user_id = ? AND client_id = ?",
+                (user_id, entry["client_id"]),
+            ).fetchone()
+            if existing:
+                row_id = existing["id"]
+                update_cols = [c for c in entry if c not in {"client_id", "created_at"}]
+                assignments = ", ".join(f"{c} = ?" for c in update_cols)
+                conn.execute(
+                    f"UPDATE food_logs SET {assignments} WHERE user_id = ? AND id = ?",
+                    [entry[c] for c in update_cols] + [user_id, row_id],
+                )
+        if row_id is None:
+            cols = ["user_id"] + list(entry.keys())
+            vals = [user_id] + [entry[c] for c in entry]
+            placeholders = ", ".join(["?"] * len(cols))
+            cursor = conn.execute(
+                f"INSERT INTO food_logs ({', '.join(cols)}) VALUES ({placeholders})",
+                vals,
+            )
+            row_id = cursor.lastrowid
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM food_logs WHERE user_id = ? AND id = ?",
+            (user_id, row_id),
+        ).fetchone() if row_id else None
+    return _food_log_row_to_dict(row) if row else {k: v for k, v in entry.items() if not k.endswith("_json")}
+
+
 # ── Recovery Data ─────────────────────────────────────────────────────────────
 def get_recovery_data(user_id: int, limit: Optional[int] = None) -> list[dict]:
     """Return recovery records for user, sorted by date desc."""
@@ -288,7 +464,7 @@ def upsert_settings(user_id: int, settings: dict) -> None:
 # ── Account Management ────────────────────────────────────────────────────────
 def delete_user_data(user_id: int) -> None:
     """Permanently delete all data for a user (GDPR / account deletion)."""
-    tables = ["body_data", "cardio_data", "nutrition_data", "recovery_data", "user_settings"]
+    tables = ["body_data", "cardio_data", "nutrition_data", "food_logs", "recovery_data", "user_settings"]
     with _get_db() as conn:
         for table in tables:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
@@ -297,7 +473,7 @@ def delete_user_data(user_id: int) -> None:
 
 def get_user_data_summary(user_id: int) -> dict:
     """Return record counts per table for a user (useful for admin/debugging)."""
-    tables = ["body_data", "cardio_data", "nutrition_data", "recovery_data"]
+    tables = ["body_data", "cardio_data", "nutrition_data", "food_logs", "recovery_data"]
     summary = {}
     with _get_db() as conn:
         for table in tables:
