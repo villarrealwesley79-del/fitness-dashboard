@@ -18,9 +18,12 @@ import glob
 from datetime import datetime, timezone
 from collections import defaultdict
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from flask import jsonify, request
 
 HEALTH_DIR = os.path.expanduser("~/Documents/Health")
+PUBLIC_BASE_URL_ENV = "FITNESS_DASHBOARD_PUBLIC_BASE_URL"
+APPLE_HEALTH_WEBHOOK_URL_ENV = "APPLE_HEALTH_WEBHOOK_URL"
 
 ACTIVITY_MAP = {
     1: "Walking", 2: "Running", 3: "Cycling", 4: "Hiking",
@@ -58,6 +61,61 @@ def _load_json(pattern: str) -> dict:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _clean_public_url(value: str) -> str:
+    value = (value or "").strip().rstrip("/")
+    if not value:
+        return ""
+    if "://" not in value:
+        value = f"https://{value}"
+    return value
+
+
+def _append_sync_token(url: str, token: str) -> str:
+    if not token:
+        return url
+    parts = urlsplit(url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    if any(key == "token" for key, _value in query):
+        return url
+    query.append(("token", token))
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        parts.path,
+        urlencode(query),
+        parts.fragment,
+    ))
+
+
+def _public_base_url_from_request() -> str:
+    configured = _clean_public_url(os.environ.get(PUBLIC_BASE_URL_ENV, ""))
+    if configured:
+        return configured
+
+    host = (
+        request.headers.get("X-Forwarded-Host")
+        or request.headers.get("Host")
+        or request.host
+        or "127.0.0.1:5050"
+    ).split(",", 1)[0].strip()
+    scheme = (
+        request.headers.get("X-Forwarded-Proto")
+        or request.scheme
+        or "https"
+    ).split(",", 1)[0].strip()
+    hostname = host.rsplit(":", 1)[0].lower()
+    if hostname.endswith(".ts.net"):
+        scheme = "https"
+    return f"{scheme}://{host}".rstrip("/")
+
+
+def _apple_health_sync_endpoint() -> str:
+    configured = _clean_public_url(os.environ.get(APPLE_HEALTH_WEBHOOK_URL_ENV, ""))
+    if configured:
+        return configured
+    return f"{_public_base_url_from_request()}/api/apple-health/sync"
 
 
 def parse_workouts() -> list[dict]:
@@ -743,19 +801,9 @@ def register_apple_health_routes(flask_app):
     def apple_health_sync_setup_url():
         """Return the tokenized Health Auto Export webhook URL for setup UI only."""
         token = os.environ.get("HEALTH_SYNC_TOKEN", "").strip()
-        host = (
-            request.headers.get("X-Forwarded-Host")
-            or request.headers.get("Host")
-            or request.host
-            or "admins-mac-mini.tail6c6490.ts.net:5050"
-        ).split(",", 1)[0].strip()
-        scheme = (request.headers.get("X-Forwarded-Proto") or request.scheme or "https").split(",", 1)[0].strip()
-        hostname = host.split(":", 1)[0].lower()
-        if hostname.endswith(".tail6c6490.ts.net") or hostname == "admins-mac-mini.tail6c6490.ts.net":
-            scheme = "https"
-        base_url = f"{scheme}://{host}/api/apple-health/sync"
+        base_url = _apple_health_sync_endpoint()
         return jsonify({
-            "webhook_url": f"{base_url}?token={token}" if token else base_url,
+            "webhook_url": _append_sync_token(base_url, token),
             "has_token": bool(token),
         })
 
