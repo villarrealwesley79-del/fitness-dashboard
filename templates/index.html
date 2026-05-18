@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260518-fit26-fit3-merge-1">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260518-fit28-muscle-heatmap-1">
 </head>
 <body>
     <div class="app-shell">
@@ -538,6 +538,22 @@
             </div>
 
             <div class="card">
+                <div class="card-head">
+                    <div class="card-label">MUSCLE RECOVERY</div>
+                    <div class="card-sub" id="muscle-recovery-sub">—</div>
+                </div>
+                <div id="muscle-recovery-empty" class="empty" hidden>No fatigue data yet — log a workout to populate.</div>
+                <div id="muscle-recovery-groups" class="muscle-recovery-groups"></div>
+                <div class="muscle-recovery-legend" aria-hidden="true">
+                    <span class="mr-key mr-key-recovered">Fresh</span>
+                    <span class="mr-key mr-key-mild">Loaded</span>
+                    <span class="mr-key mr-key-moderate">Fatigued</span>
+                    <span class="mr-key mr-key-high">Sore</span>
+                    <span class="mr-key mr-key-severe">Avoid</span>
+                </div>
+            </div>
+
+            <div class="card">
                 <div class="card-head"><div class="card-label">VOLUME BY MUSCLE GROUP</div></div>
                 <div id="chart-muscle-donut" class="donut-holder"></div>
                 <div id="muscle-legend" class="legend"></div>
@@ -825,6 +841,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260518-fit26-fit3-merge-1"></script>
+    <script src="/static/js/app.js?v=20260518-fit28-muscle-heatmap-1"></script>
 </body>
 </html>
