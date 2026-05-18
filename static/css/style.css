@@ -2338,6 +2338,40 @@ input[type=number] { -moz-appearance: textfield; }
     border-top: 1px dashed var(--border-2);
 }
 .macro-row.macro-sodium .macro-values { text-align: left; color: var(--fg-2); }
+
+.food-context-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-top: 10px;
+    margin-top: 8px;
+    border-top: 1px dashed var(--border-2);
+}
+.food-context-chips[hidden] { display: none; }
+.food-context-chip {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-2);
+    background: rgba(15,23,42,0.7);
+    color: var(--fg-1);
+}
+.food-context-chip-info    { color: var(--accent-blue);    border-color: rgba(96,165,250,0.4);  background: rgba(96,165,250,0.12); }
+.food-context-chip-warn    { color: var(--accent-amber-2); border-color: rgba(245,158,11,0.45); background: rgba(245,158,11,0.14); }
+.food-context-chip-pending { color: var(--fg-2);           border-color: rgba(148,163,184,0.45); background: rgba(148,163,184,0.10); }
+
+.food-context-nextday {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border-2);
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-style: italic;
+}
+.food-context-nextday[hidden] { display: none; }
+
 @media (max-width: 420px) {
     .macro-row {
         grid-template-columns: 56px 1fr 96px;
