@@ -3643,8 +3643,24 @@ def adjust_workout():
             "applied_notes": [],
         })
 
+    intent_is_empty = (
+        not intent.get("avoid_muscles")
+        and not intent.get("swap")
+        and not intent.get("rpe_delta")
+        and not intent.get("sets_delta_pct")
+        and not intent.get("duration_cap_min")
+        and not intent.get("drop_cardio")
+    )
+    if applied_notes:
+        result_kind = "changed"
+    elif intent_is_empty:
+        result_kind = "refused"
+    else:
+        result_kind = "unchanged"
+
     payload = {
         "status": "ok",
+        "result_kind": result_kind,
         "recommendation": patched,
         "summary": summary,
         "applied_notes": applied_notes,
