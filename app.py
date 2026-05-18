@@ -608,13 +608,46 @@ def _get_nutrition_targets():
 def _summarize_nutrition_for_date(date_s: str):
     totals = {"calories": 0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
     for entry in NUTRITION_DATA or []:
-        if entry.get("date") != date_s:
+        if _nutrition_entry_day(entry) != date_s:
+            continue
+        if _nutrition_entry_pending_review(entry):
             continue
         totals["calories"] += int(entry.get("calories") or 0)
         totals["protein_g"] += float(entry.get("protein_g") or 0)
         totals["carbs_g"] += float(entry.get("carbs_g") or 0)
         totals["fat_g"] += float(entry.get("fat_g") or 0)
     return totals
+
+
+def _nutrition_entry_day(entry):
+    if not isinstance(entry, dict):
+        return None
+    raw = entry.get("date") or entry.get("day") or entry.get("logged_at")
+    if not raw:
+        return None
+    return str(raw)[:10]
+
+
+def _nutrition_entry_pending_review(entry):
+    if not isinstance(entry, dict):
+        return False
+    status = str(
+        entry.get("status")
+        or entry.get("review_state")
+        or entry.get("estimate_status")
+        or ""
+    ).strip().lower()
+    if status in {"pending", "pending_review", "needs_review", "review"}:
+        return True
+    if entry.get("pending_review") is True:
+        return True
+    if entry.get("accepted") is False:
+        return True
+    return False
+
+
+def _nutrition_entry_accepted(entry):
+    return isinstance(entry, dict) and not _nutrition_entry_pending_review(entry)
 
 
 def calculate_e1rm(weight: float, reps: int) -> float:
@@ -4793,14 +4826,17 @@ def _latest_food_freshness(now=None):
     Note: callers should also use `_food_target_state()` for the macro-target view
     used by the brief — that bit doesn't fit the (status, dp, sync) triple cleanly.
     """
-    entries = NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else []
+    entries = [
+        entry for entry in (NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else [])
+        if _nutrition_entry_accepted(entry)
+    ]
     if not entries:
         return ("missing", None, None)
     latest_iso = None
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        d = entry.get("date") or entry.get("day") or entry.get("logged_at")
+        d = _nutrition_entry_day(entry)
         if d and (latest_iso is None or d > latest_iso):
             latest_iso = d
     if not latest_iso:
@@ -4853,6 +4889,17 @@ def _food_target_state(now=None):
     }
 
 
+def _food_pending_review_state(now=None):
+    today_s = (now or datetime.now()).strftime("%Y-%m-%d")
+    entries = NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else []
+    return any(
+        isinstance(entry, dict)
+        and _nutrition_entry_day(entry) == today_s
+        and _nutrition_entry_pending_review(entry)
+        for entry in entries
+    )
+
+
 def _oura_source_label(last_sync_attempt_iso, now=None):
     """Map last_sync_attempt to a cached/live label.
 
@@ -4903,9 +4950,7 @@ def _compute_data_freshness(now=None):
             "status": food_status,
             "last_data_point": food_last_data,
             "last_sync_attempt": food_last_sync,
-            # pending_review is a stub today (FIT-6 will flip when the photo →
-            # AI estimate flow exists). Surfaced now so the UI contract is stable.
-            "pending_review": False,
+            "pending_review": _food_pending_review_state(now),
             **food_targets,
         },
     }
