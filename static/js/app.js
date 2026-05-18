@@ -2420,18 +2420,37 @@
                 return;
             }
 
-            summaryEl.textContent = payload.summary || 'Adjustment applied.';
             const notes = Array.isArray(payload.applied_notes) ? payload.applied_notes : [];
-            if (notes.length) {
+            const rawKind = payload.result_kind || (notes.length ? 'changed' : 'unchanged');
+            const kindTable = {
+                changed:   { label: 'Plan updated',     cls: 'adjust-kind-changed',   stateMsg: 'Updated. Review the new plan below or start it now.', stateCls: 'adjust-state ok' },
+                unchanged: { label: 'No net change',    cls: 'adjust-kind-unchanged', stateMsg: 'Coach considered the change but kept the plan.',       stateCls: 'adjust-state' },
+                refused:   { label: 'Coach left as is', cls: 'adjust-kind-refused',   stateMsg: 'Coach declined to change the plan.',                   stateCls: 'adjust-state' },
+            };
+            const kind = kindTable[rawKind] ? rawKind : 'changed';
+            const kindMeta = kindTable[kind];
+            const modelSummary = (payload.summary || '').trim();
+            const fallbackSummary = kind === 'changed'
+                ? 'Adjustment applied.'
+                : kind === 'refused'
+                    ? 'The coach decided no structural change was warranted.'
+                    : 'The constraint was within the algorithm\'s envelope; no net change applied.';
+            const summaryText = modelSummary || fallbackSummary;
+            summaryEl.innerHTML = `<span class="adjust-kind ${kindMeta.cls}">${escapeHtml(kindMeta.label)}</span><span class="adjust-summary-text">${escapeHtml(summaryText)}</span>`;
+            if (kind === 'changed' && notes.length) {
                 notesEl.innerHTML = '<ul>' + notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('') + '</ul>';
+            } else if (kind === 'unchanged') {
+                notesEl.innerHTML = '<div class="dim">Safety rails clamped the requested change to zero net effect. The original plan stands.</div>';
+            } else if (kind === 'refused') {
+                notesEl.innerHTML = '<div class="dim">No edits applied — the model returned an empty intent. See the explanation above.</div>';
             } else {
-                notesEl.innerHTML = '<div class="dim">No structural changes — the intent was already within the algorithm\'s envelope.</div>';
+                notesEl.innerHTML = '';
             }
             const meta = payload.meta || {};
             metaEl.textContent = `${meta.model_version || meta.model || 'local model'} · ${meta.elapsed_ms || '?'} ms${payload.cache_hit ? ' · cached' : ''}`;
             result.hidden = false;
-            stateEl.textContent = 'Updated. Review the new plan below or start it now.';
-            stateEl.className = 'adjust-state ok';
+            stateEl.textContent = kindMeta.stateMsg;
+            stateEl.className = kindMeta.stateCls;
 
             if (payload.recommendation && !state.dashboard) state.dashboard = {};
             if (state.dashboard && payload.recommendation) {
