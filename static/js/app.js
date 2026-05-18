@@ -108,6 +108,38 @@
         setTimeout(() => el.remove(), 2400);
     }
 
+    function newWorkoutId(recommendationId) {
+        const suffix = Math.random().toString(36).slice(2, 8);
+        return `w-${recommendationId || Date.now()}-${suffix}`;
+    }
+
+    function setActiveWorkoutStatus(message, variant = '') {
+        const el = $('active-workout-status');
+        if (!el) return;
+        el.hidden = !message;
+        el.textContent = message || '';
+        el.className = `active-workout-status ${variant}`.trim();
+    }
+
+    function workoutSaveErrorMessage(err) {
+        if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) {
+            return 'Offline: workout is still open. Reconnect and tap Complete Workout again.';
+        }
+        const raw = String((err && err.message) || err || '');
+        const jsonStart = raw.indexOf('{');
+        if (jsonStart >= 0) {
+            try {
+                const parsed = JSON.parse(raw.slice(jsonStart));
+                const serverMsg = parsed && parsed.error && parsed.error.message;
+                if (serverMsg) return `Validation failed: ${serverMsg}. Fix the highlighted workout data and try again.`;
+            } catch {}
+        }
+        if (/Failed to fetch|NetworkError|Load failed/i.test(raw)) {
+            return 'Connection failed: workout is still open. Check the server or network and retry.';
+        }
+        return 'Save failed: workout is still open. Review the set values and try again.';
+    }
+
     // --- SVG chart helpers ---------------------------------------
     const SVG_NS = 'http://www.w3.org/2000/svg';
     function svg(attrs, children = []) {
@@ -1828,12 +1860,14 @@
     }
 
     function setActiveWorkoutFromRecommendation(nw, previousExercises = []) {
+        const existing = state.activeWorkout;
         state.activeWorkout = {
-            id: nw.id || (state.activeWorkout && state.activeWorkout.id) || `w-${Date.now()}`,
-            recommendation_id: nw.id || (state.activeWorkout && state.activeWorkout.recommendation_id) || null,
-            focus: nw.focus || nw.goal_name || (state.activeWorkout && state.activeWorkout.focus) || 'Workout',
+            id: (existing && existing.id) || nw.workout_id || newWorkoutId(nw.id),
+            recommendation_id: nw.id || (existing && existing.recommendation_id) || null,
+            focus: nw.focus || nw.goal_name || (existing && existing.focus) || 'Workout',
             exercises: (nw.exercises || []).map((ex, i) => buildActiveExercise(ex, previousExercises[i])),
-            cardio: buildActiveCardio(nw.cardio, state.activeWorkout && state.activeWorkout.cardio),
+            cardio: buildActiveCardio(nw.cardio, existing && existing.cardio),
+            saveState: existing && existing.saveState ? existing.saveState : null,
         };
     }
 
@@ -1962,6 +1996,11 @@
         qsa('[data-cardio-field]', body).forEach((input) => {
             input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', updateActiveCardio);
         });
+        if (state.activeWorkout.saveState) {
+            setActiveWorkoutStatus(state.activeWorkout.saveState.message, state.activeWorkout.saveState.variant);
+        } else {
+            setActiveWorkoutStatus('');
+        }
         $('modal-active').hidden = false;
     }
 
@@ -1969,6 +2008,7 @@
         const aw = state.activeWorkout;
         if (!aw || !Array.isArray(aw.exercises) || exIdx < 0 || exIdx >= aw.exercises.length) return;
         aw.exercises.splice(exIdx, 1);
+        if (!aw.exercises.length) aw.saveState = null;
         renderActiveWorkout();
         toast(`Removed ${name}`, 'ok');
     }
@@ -1997,6 +2037,7 @@
     async function completeWorkout() {
         const aw = state.activeWorkout;
         if (!aw) return;
+        setActiveWorkoutStatus('', '');
         const exercises = [];
         aw.exercises.forEach((ex, i) => {
             const rows = qsa(`.set-row[data-ex="${i}"]`, $('active-workout-body'));
@@ -2013,9 +2054,22 @@
                 .map(({ done, ...s }) => s);
             if (completedSets.length) exercises.push({ machine: exerciseName(ex), muscle_group: ex.muscle_group || ex.muscle, sets: completedSets });
         });
-        if (!exercises.length) { toast('Log at least one set', 'err'); return; }
+        if (!exercises.length) {
+            const message = 'Validation failed: log at least one set before completing this workout.';
+            aw.saveState = { message, variant: 'err' };
+            setActiveWorkoutStatus(message, 'err');
+            toast('Log at least one set', 'err');
+            return;
+        }
+        const btn = $('btn-complete-workout');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+        }
+        aw.saveState = { message: 'Saving workout...', variant: '' };
+        setActiveWorkoutStatus(aw.saveState.message, aw.saveState.variant);
         try {
-            await api('/api/complete-workout', {
+            const saved = await api('/api/complete-workout', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -2030,6 +2084,9 @@
                     } : null,
                 }),
             });
+            aw.id = saved && saved.workout_id ? saved.workout_id : aw.id;
+            aw.saveState = { message: 'Workout saved. Opening analysis...', variant: 'ok' };
+            setActiveWorkoutStatus(aw.saveState.message, aw.saveState.variant);
             toast('Workout complete');
             $('modal-active').hidden = true;
             state.activeWorkout = null;
@@ -2037,7 +2094,18 @@
             loadTab(state.currentTab);
             // Fire the AI post-mortem automatically after a successful save.
             setTimeout(() => openAnalyzeModal({ latest: true }), 350);
-        } catch (e) { console.error(e); toast('Save failed', 'err'); }
+        } catch (e) {
+            console.error(e);
+            const message = workoutSaveErrorMessage(e);
+            aw.saveState = { message, variant: 'err' };
+            setActiveWorkoutStatus(message, 'err');
+            toast('Save failed', 'err');
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Complete Workout';
+            }
+        }
     }
 
     async function openSwap(exIdx, muscle, currentName, source = 'plan') {
