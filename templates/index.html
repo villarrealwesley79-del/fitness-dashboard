@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260518-fit24-persist-adjust-1">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260518-fit51-offline-queue-1">
 </head>
 <body>
     <div class="app-shell">
@@ -857,6 +857,7 @@
                 </div>
                 <div id="saved-stats" class="saved-stats"></div>
                 <div id="saved-adherence" class="saved-adherence" hidden></div>
+                <div id="saved-queued-note" class="saved-queued-note" hidden></div>
             </div>
             <div class="modal-foot modal-foot-row">
                 <button id="btn-saved-dismiss" class="btn btn-ghost" type="button">Done</button>
@@ -865,8 +866,29 @@
         </div>
     </div>
 
+    <div id="modal-sync-queue" class="modal" hidden>
+        <div class="modal-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title">Pending sync</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="dim sync-queue-intro">Workouts you finished while offline (or that the server hasn't accepted yet). Retry pushes them up; Discard drops them locally.</p>
+                <div id="sync-queue-list" class="sync-queue-list"></div>
+            </div>
+            <div class="modal-foot">
+                <button id="btn-sync-retry-all" class="btn btn-primary btn-block" type="button">Retry all</button>
+            </div>
+        </div>
+    </div>
+
+    <button id="sync-banner" class="sync-banner" type="button" hidden>
+        <span class="sync-banner-dot" aria-hidden="true"></span>
+        <span class="sync-banner-text" id="sync-banner-text">Queued workouts</span>
+    </button>
+
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260518-fit24-persist-adjust-2"></script>
+    <script src="/static/js/app.js?v=20260518-fit51-offline-queue-1"></script>
 </body>
 </html>
