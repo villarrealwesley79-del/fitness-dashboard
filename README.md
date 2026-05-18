@@ -1,0 +1,88 @@
+# Fitness Dashboard
+
+Fitness Dashboard is a local-first fitness and recovery app for planning workouts, tracking training execution, and turning wearable/health signals into practical daily guidance.
+
+The product direction is to become a trusted daily fitness operating system: the user should know what to train, how hard to train, what recovery signals matter, and how food choices affect the rest of the day.
+
+## What It Does
+
+- Plans and adjusts strength workouts based on readiness, soreness, recent volume, and user constraints.
+- Tracks active workouts, set completion, swaps, notes, and workout history.
+- Surfaces recovery context from Oura, Apple Health / Health Auto Export, and local cached data.
+- Supports nutrition and body-composition tracking.
+- Plans toward photo-based food logging, where a user can snap a picture of food and the app updates calorie/macronutrient context and daily coaching guidance.
+- Keeps sensitive runtime data local by default.
+
+## Current Repo Contents
+
+This GitHub repo is a sanitized project copy. It intentionally does not include the old local git history because that history contained private runtime artifacts.
+
+Included:
+
+- Flask application source
+- Templates and static assets
+- Oura, Apple Health, nutrition, workout, and AI-coach integration code
+- Deployment entry files
+- Product planning docs in `docs/`
+
+Excluded:
+
+- `.env` files
+- auth databases
+- SQLite databases
+- local health exports
+- Oura/Apple Health caches
+- local JSON workout/health data
+- logs, backups, virtualenvs, and generated artifacts
+
+## Key Docs
+
+- `docs/VISION.md` describes the target product direction and ideal end state.
+- `docs/PRD.md` defines the product requirements and roadmap.
+- `docs/CURRENT_STATE.md` captures the current app state, risks, and known gaps.
+
+## Running Locally
+
+Create a Python environment and install dependencies:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Run the Flask app:
+
+```bash
+python app.py
+```
+
+Optional integrations use environment variables such as:
+
+```bash
+OURA_API_TOKEN=
+HEALTH_SYNC_TOKEN=
+SECRET_KEY=
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+STRIPE_PRICE_ID=
+LM_STUDIO_URL=
+LM_STUDIO_MODEL=
+```
+
+Do not commit real values for these variables.
+
+## Git Workflow
+
+`main` is the stable branch. Updates should go through focused branches and pull requests.
+
+Use branch names like:
+
+```text
+codex/docs-photo-food-logging
+codex/feature-apple-health-sync
+codex/fix-workout-execution
+codex/qa-mobile-active-workout
+```
+
+Before pushing code, check that no private runtime data is included.
