@@ -37,6 +37,7 @@ from oura_client import (
     get_oura_daily_range,
     compute_hrv_trend,
 )
+from data_store import init_data_db, add_food_log, clear_food_logs, get_food_logs
 
 app = Flask(__name__)
 
@@ -501,6 +502,7 @@ NUTRITION_DATA = load_json(NUTRITION_FILE, [])
 
 # Initialize Oura SQLite storage (safe no-op if file exists)
 init_oura_db(OURA_DB_FILE)
+init_data_db()
 
 
 def _normalize_exercise_name(name):
@@ -647,6 +649,16 @@ def _coerce_float(v, field_name: str, min_v=None, max_v=None, allow_none: bool =
 
 def _today_str():
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def _current_data_user_id():
+    try:
+        from flask_login import current_user
+        if current_user and current_user.is_authenticated:
+            return int(current_user.get_id())
+    except Exception:
+        pass
+    return 1
 
 
 def _get_latest_weight():
@@ -2730,7 +2742,41 @@ def add_nutrition():
     sodium_mg, err2 = _coerce_int(data.get("sodium_mg"), "sodium_mg", min_v=0, allow_none=True)
     if err2:
         return err2
+    fiber_g, err2 = _coerce_float(data.get("fiber_g"), "fiber_g", min_v=0, allow_none=True)
+    if err2:
+        return err2
     notes, err2 = _coerce_str(data.get("notes"), "notes", required=False, max_len=500)
+    if err2:
+        return err2
+    item_name, err2 = _coerce_str(data.get("item_name"), "item_name", required=False, max_len=160)
+    if err2:
+        return err2
+    portion_description, err2 = _coerce_str(data.get("portion_description"), "portion_description", required=False, max_len=240)
+    if err2:
+        return err2
+    meal_type, err2 = _coerce_str(data.get("meal_type"), "meal_type", required=False, max_len=64)
+    if err2:
+        return err2
+    context_note, err2 = _coerce_str(data.get("context_note"), "context_note", required=False, max_len=500)
+    if err2:
+        return err2
+    logged_at, err2 = _coerce_str(data.get("logged_at"), "logged_at", required=False, max_len=64)
+    if err2:
+        return err2
+    source_timestamp, err2 = _coerce_str(data.get("source_timestamp"), "source_timestamp", required=False, max_len=64)
+    if err2:
+        return err2
+    source, err2 = _coerce_str(data.get("source"), "source", required=False, max_len=64)
+    if err2:
+        return err2
+    correction_state, err2 = _coerce_str(data.get("correction_state"), "correction_state", required=False, max_len=64)
+    if err2:
+        return err2
+    client_id, err2 = _coerce_str(data.get("client_id"), "client_id", required=False, max_len=128)
+    if err2:
+        return err2
+    client_id = client_id or None
+    confidence, err2 = _coerce_float(data.get("confidence"), "confidence", min_v=0, max_v=100, allow_none=True)
     if err2:
         return err2
 
@@ -2741,12 +2787,37 @@ def add_nutrition():
         "carbs_g": round(float(carbs_g), 1) if carbs_g is not None else None,
         "fat_g": round(float(fat_g), 1) if fat_g is not None else None,
         "sodium_mg": int(sodium_mg) if sodium_mg is not None else None,
+        "fiber_g": round(float(fiber_g), 1) if fiber_g is not None else None,
         "notes": notes,
     }
+    if client_id:
+        entry["client_id"] = client_id
 
-    NUTRITION_DATA.append(entry)
+    replaced_legacy_entry = False
+    if client_id:
+        for idx, existing in enumerate(NUTRITION_DATA):
+            if isinstance(existing, dict) and existing.get("client_id") == client_id:
+                NUTRITION_DATA[idx] = entry
+                replaced_legacy_entry = True
+                break
+    if not replaced_legacy_entry:
+        NUTRITION_DATA.append(entry)
     save_json(NUTRITION_FILE, NUTRITION_DATA)
-    return jsonify({"status": "success", "nutrition": entry})
+    food_log = add_food_log(_current_data_user_id(), {
+        **entry,
+        "logged_at": logged_at,
+        "source_timestamp": source_timestamp,
+        "meal_type": meal_type,
+        "item_name": item_name,
+        "portion_description": portion_description,
+        "context_note": context_note,
+        "confidence": round(float(confidence), 3) if confidence is not None else None,
+        "source": source,
+        "correction_state": correction_state,
+        "client_id": client_id,
+        "original_estimate": data.get("original_estimate") or data.get("estimate"),
+    })
+    return jsonify({"status": "success", "nutrition": entry, "food_log": food_log})
 
 
 @app.route('/api/nutrition-today')
@@ -5737,8 +5808,9 @@ def complete_workout():
 @app.route('/api/export-backup')
 def export_backup():
     """Export all data as a single JSON backup file."""
+    user_id = _current_data_user_id()
     backup_data = {
-        "version": "1.0",
+        "version": "1.1",
         "exported_at": datetime.now().isoformat(),
         "data": {
             "workouts": WORKOUTS,
@@ -5749,7 +5821,8 @@ def export_backup():
             "baselines": BASELINES_DATA,
             "body": BODY_DATA,
             "sleep": SLEEP_DATA,
-            "nutrition": NUTRITION_DATA
+            "nutrition": NUTRITION_DATA,
+            "food_logs": get_food_logs(user_id)
         }
     }
 
@@ -5824,6 +5897,13 @@ def import_backup():
             NUTRITION_DATA.extend(data["nutrition"])
             save_json(NUTRITION_FILE, NUTRITION_DATA)
 
+        if "food_logs" in data:
+            user_id = _current_data_user_id()
+            clear_food_logs(user_id)
+            for food_log in data["food_logs"]:
+                if isinstance(food_log, dict):
+                    add_food_log(user_id, food_log)
+
         return jsonify({
             "status": "success",
             "message": "Backup restored successfully",
@@ -5836,7 +5916,8 @@ def import_backup():
                 "baselines": len(data.get("baselines", {})),
                 "body": len(data.get("body", [])),
                 "sleep": len(data.get("sleep", [])),
-                "nutrition": len(data.get("nutrition", []))
+                "nutrition": len(data.get("nutrition", [])),
+                "food_logs": len(data.get("food_logs", []))
             }
         })
     except Exception as e:

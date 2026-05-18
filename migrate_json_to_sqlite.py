@@ -16,7 +16,7 @@ import sys
 # Ensure we can import data_store from this directory
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from data_store import init_data_db, add_body_record, add_cardio_record, \
-    add_nutrition_record, add_recovery_record, upsert_settings, get_user_data_summary
+    add_food_log, add_nutrition_record, add_recovery_record, upsert_settings, get_user_data_summary
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_USER_ID = 1  # Migrate existing data for the first registered user
@@ -69,9 +69,18 @@ def migrate():
     # 4. Nutrition data
     nutrition_records = _load_json("data_nutrition.json", [])
     nutrition_ok = 0
-    for r in nutrition_records:
+    for idx, r in enumerate(nutrition_records):
         try:
             add_nutrition_record(DEFAULT_USER_ID, r)
+            if isinstance(r, dict):
+                add_food_log(DEFAULT_USER_ID, {
+                    **r,
+                    "client_id": r.get("client_id") or f"legacy-nutrition:{r.get('date') or idx}:{idx}",
+                    "logged_at": r.get("logged_at") or r.get("date"),
+                    "source_timestamp": r.get("source_timestamp") or r.get("date"),
+                    "source": r.get("source") or "legacy_json",
+                    "correction_state": r.get("correction_state") or "legacy_import",
+                })
             nutrition_ok += 1
         except Exception as e:
             print(f"  nutrition skip: {r.get('date')} — {e}")
