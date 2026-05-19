@@ -2408,6 +2408,7 @@
             exercises: (nw.exercises || []).map((ex, i) => buildActiveExercise(ex, previousExercises[i])),
             cardio: buildActiveCardio(nw.cardio, existing && existing.cardio),
             saveState: existing && existing.saveState ? existing.saveState : null,
+            dirty: Boolean(existing && existing.dirty),
         };
     }
 
@@ -2439,6 +2440,7 @@
             done: qs('input[data-field="done"]', row).checked,
             notes: qs('input[data-field="notes"]', row).value,
         };
+        state.activeWorkout.dirty = true;
     }
 
     function updateActiveCardio() {
@@ -2449,6 +2451,7 @@
         cardio.activity_type = qs('input[data-cardio-field="activity_type"]', card).value;
         cardio.duration_minutes = qs('input[data-cardio-field="duration_minutes"]', card).value;
         cardio.notes = qs('textarea[data-cardio-field="notes"]', card).value;
+        state.activeWorkout.dirty = true;
     }
 
     function renderActiveWorkout() {
@@ -2542,26 +2545,66 @@
             setActiveWorkoutStatus('');
         }
         const modal = $('modal-active');
-        wireActiveWorkoutCancel(modal);
+        wireActiveWorkoutGuards(modal);
         modal.hidden = false;
     }
 
-    function cancelActiveWorkout() {
+    function activeWorkoutHasProgress() {
+        const aw = state.activeWorkout;
+        if (!aw) return false;
+        if (aw.dirty) return true;
+        const body = $('active-workout-body');
+        if (!body) return false;
+        let hasProgress = false;
+        qsa('.set-row', body).forEach((row) => {
+            const exIdx = Number(row.dataset.ex);
+            const setIdx = Number(row.dataset.set);
+            const ex = aw.exercises && aw.exercises[exIdx];
+            const set = ex && ex.logged_sets && ex.logged_sets[setIdx];
+            const weight = qs('input[data-field="weight"]', row).value;
+            const reps = qs('input[data-field="reps"]', row).value;
+            const done = qs('input[data-field="done"]', row).checked;
+            const notes = qs('input[data-field="notes"]', row).value.trim();
+            if (done || notes) {
+                hasProgress = true;
+            }
+            if (set && (String(weight) !== String(set.weight) || String(reps) !== String(set.reps))) {
+                hasProgress = true;
+            }
+        });
+        const cardio = aw.cardio;
+        const cardioCard = qs('.active-cardio', body);
+        if (cardio && cardioCard) {
+            const completed = qs('input[data-cardio-field="completed"]', cardioCard).checked;
+            const activityType = qs('input[data-cardio-field="activity_type"]', cardioCard).value;
+            const duration = qs('input[data-cardio-field="duration_minutes"]', cardioCard).value;
+            const notes = qs('textarea[data-cardio-field="notes"]', cardioCard).value.trim();
+            if (completed || notes || String(activityType) !== String(cardio.activity_type || '') || String(duration) !== String(cardio.duration_minutes || '')) {
+                hasProgress = true;
+            }
+        }
+        return hasProgress;
+    }
+
+    function cancelActiveWorkout({ requireConfirm = false } = {}) {
         const modal = $('modal-active');
         if (!modal) return;
+        if (requireConfirm && activeWorkoutHasProgress() && !window.confirm('Discard this in-progress workout?')) {
+            return;
+        }
         state.activeWorkout = null;
         clearAdjustIntent();
         modal.hidden = true;
     }
 
-    function wireActiveWorkoutCancel(modal) {
+    function wireActiveWorkoutGuards(modal) {
         if (!modal) return;
         const closeBtn = modal.querySelector('.modal-close');
         if (closeBtn) {
             const fresh = closeBtn.cloneNode(true);
             fresh.removeAttribute('data-close-modal');
             closeBtn.parentNode.replaceChild(fresh, closeBtn);
-            fresh.addEventListener('click', cancelActiveWorkout);
+            fresh.addEventListener('click', () => cancelActiveWorkout({ requireConfirm: true }));
         }
         if (modal.__fit24BackdropHandler) {
             modal.removeEventListener('click', modal.__fit24BackdropHandler, true);
@@ -2569,7 +2612,6 @@
         const handler = (e) => {
             if (e.target === modal) {
                 e.stopImmediatePropagation();
-                cancelActiveWorkout();
             }
         };
         modal.__fit24BackdropHandler = handler;
@@ -2580,6 +2622,7 @@
         const aw = state.activeWorkout;
         if (!aw || !Array.isArray(aw.exercises) || exIdx < 0 || exIdx >= aw.exercises.length) return;
         aw.exercises.splice(exIdx, 1);
+        aw.dirty = true;
         if (!aw.exercises.length) aw.saveState = null;
         renderActiveWorkout();
         toast(`Removed ${name}`, 'ok');
@@ -3491,10 +3534,14 @@
         // Close modals
         qsa('[data-close-modal]').forEach((b) => b.addEventListener('click', () => {
             const modal = b.closest('.modal');
+            if (modal && modal.id === 'modal-active') return;
             if (modal) modal.hidden = true;
         }));
         qsa('.modal').forEach((m) => {
-            m.addEventListener('click', (e) => { if (e.target === m) m.hidden = true; });
+            m.addEventListener('click', (e) => {
+                if (m.id === 'modal-active') return;
+                if (e.target === m) m.hidden = true;
+            });
         });
 
         // AI status button (top right)
