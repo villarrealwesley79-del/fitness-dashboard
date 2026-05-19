@@ -39,6 +39,14 @@ from oura_client import (
     compute_hrv_trend,
 )
 from data_store import init_data_db, add_food_log, get_food_logs, delete_food_log_by_client_id
+from meal_text_parser import parse_meal_text
+from meal_log_policy import (
+    CORRECTION_STATE_ACCEPTED,
+    CORRECTION_STATE_PENDING_REVIEW,
+    STATUS_LOGGED,
+    STATUS_PENDING_REVIEW,
+    evaluate_meal_log,
+)
 
 app = Flask(__name__)
 
@@ -650,6 +658,56 @@ def _coerce_float(v, field_name: str, min_v=None, max_v=None, allow_none: bool =
 
 def _today_str():
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def _parse_iso_to_local_datetime(iso_str):
+    """Parse an ISO 8601 timestamp and return a naive server-local datetime.
+
+    The composer sends ``new Date().toISOString()`` (UTC, e.g.
+    ``2026-05-19T03:00:00.000Z``). Downstream code in
+    ``_nutrition_entry_logged_hour`` reads ``.hour`` directly on the
+    parsed value without TZ conversion, so storing the raw UTC string
+    misreports a 10 PM CT meal as hour 3. Converting incoming UTC to the
+    server's local timezone (via ``astimezone()``) and dropping the
+    offset matches the pre-FIT-59 behavior of storing naive local time.
+
+    Returns None when ``iso_str`` is empty or unparseable so callers can
+    fall back to their default.
+    """
+    if not iso_str:
+        return None
+    s = iso_str.strip()
+    if not s:
+        return None
+    # datetime.fromisoformat tolerates a trailing 'Z' from 3.11+, but
+    # normalize for safety and older runtimes.
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt  # already naive — assume server-local
+    return dt.astimezone().replace(tzinfo=None)
+
+
+def _local_date_from_iso(iso_str):
+    """Return the server-local YYYY-MM-DD for an ISO timestamp, or None.
+
+    See ``_parse_iso_to_local_datetime`` for the parsing/TZ rules.
+    """
+    dt = _parse_iso_to_local_datetime(iso_str)
+    return dt.date().isoformat() if dt is not None else None
+
+
+def _local_iso_from_iso(iso_str):
+    """Return a naive server-local ISO timestamp for an ISO input, or None.
+
+    See ``_parse_iso_to_local_datetime`` for the parsing/TZ rules.
+    """
+    dt = _parse_iso_to_local_datetime(iso_str)
+    return dt.isoformat(timespec="seconds") if dt is not None else None
 
 
 def _current_data_user_id():
@@ -3113,19 +3171,90 @@ def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
             "sodium_mg": preset.get("sodium_mg"),
             "fiber_g": preset.get("fiber_g"),
             "confidence": round(base_confidence, 2),
+            # FIT-61: surface ambiguity inside the estimate dict so the
+            # meal-log policy sees the same signal as the text-parser path.
+            # Without this, "shared movie popcorn" with a photo would land
+            # in the policy's high-confidence band and auto-log.
+            "ambiguous": ambiguous,
             "uncertainty_notes": uncertainty_notes,
         },
     }
 
 
-def _meal_intake_stub_persist(client_id, estimate, *, source, has_image, text_hint):
-    """Persist an accepted estimate via the canonical food_logs path."""
+# FIT-61: human-readable copy for each stable policy reason code. Kept
+# next to the endpoint (not in meal_log_policy) so the policy module
+# stays pure and free of UI strings — i18n can swap this map later.
+_POLICY_REASON_NOTES = {
+    "low_confidence": "AI is unsure about this estimate — confirm before it counts.",
+    "medium_confidence": "Confidence is moderate — a quick double-check is recommended.",
+    "ambiguous_input": "Portion or items are unclear — confirm before it counts.",
+    "implausible_calories": "Calorie estimate looks off — please review.",
+    "implausible_macros": "Macros look unusually high — please review.",
+    "implausible_sodium": "Sodium estimate looks unusually high — please review.",
+    "missing_calories": "Calories are missing from the estimate — please enter manually.",
+}
+
+
+def _merge_policy_reasons_into_uncertainty_notes(estimate: dict, reasons: list) -> None:
+    """Append human-readable notes for each policy reason to estimate.uncertainty_notes.
+
+    The composer's pending-review card renders estimate.uncertainty_notes
+    directly (it doesn't yet know about the sibling policy.reasons block),
+    so policy-only pending decisions (e.g. medium_confidence, implausible
+    macros) would otherwise show a review card with no explanation. This
+    keeps the existing UI contract working while the JS catches up.
+
+    De-duplicates against existing notes (case-insensitive) so the same
+    message isn't shown twice when the parser already added it.
+    """
+    if not reasons:
+        return
+    existing = estimate.setdefault("uncertainty_notes", [])
+    existing_lower = {str(n).strip().lower() for n in existing if isinstance(n, str)}
+    for code in reasons:
+        note = _POLICY_REASON_NOTES.get(code)
+        if note and note.strip().lower() not in existing_lower:
+            existing.append(note)
+            existing_lower.add(note.strip().lower())
+
+
+def _meal_intake_stub_persist(
+    client_id,
+    estimate,
+    *,
+    source,
+    has_image,
+    text_hint,
+    local_timestamp=None,
+    correction_state=CORRECTION_STATE_ACCEPTED,
+):
+    """Persist a food estimate via the canonical food_logs path.
+
+    ``correction_state`` (FIT-61) controls whether the row counts toward
+    daily totals: ``"accepted"`` for auto-logged entries, ``"pending_review"``
+    for entries that the meal-log policy held back for explicit user
+    confirmation. ``_nutrition_entry_accepted`` filters pending rows out
+    of nutrition totals and coaching context (see app.py:999).
+
+    ``local_timestamp`` (FIT-59) is the client-supplied ISO timestamp from
+    the composer. When present we use it for both ``logged_at`` and
+    ``source_timestamp`` and derive ``date`` from its YYYY-MM-DD prefix so
+    meals logged near midnight or from a saved draft land on the correct
+    day. Server time is the fallback.
+    """
     now_iso = datetime.now().isoformat(timespec="seconds")
+    # Store ``logged_at`` as naive server-local ISO. The composer sends
+    # UTC (new Date().toISOString()) and downstream ``.hour`` reads in
+    # _nutrition_entry_logged_hour are not TZ-aware, so storing the raw
+    # UTC string misreports late-meal hour. Convert to local first.
+    logged_at_iso = _local_iso_from_iso(local_timestamp) or now_iso
+    # Derive ``date`` from the same TZ-converted server-local calendar day.
+    date_str = _local_date_from_iso(local_timestamp) or _today_str()
     record = {
         "client_id": client_id,
-        "date": _today_str(),
-        "logged_at": now_iso,
-        "source_timestamp": now_iso,
+        "date": date_str,
+        "logged_at": logged_at_iso,
+        "source_timestamp": logged_at_iso,
         "meal_type": estimate.get("meal_type"),
         "item_name": estimate.get("item_name"),
         "portion_description": estimate.get("portion_description"),
@@ -3138,7 +3267,7 @@ def _meal_intake_stub_persist(client_id, estimate, *, source, has_image, text_hi
         "fiber_g": estimate.get("fiber_g"),
         "confidence": estimate.get("confidence"),
         "source": source,
-        "correction_state": "accepted",
+        "correction_state": correction_state,
         "original_estimate": {k: v for k, v in estimate.items() if k != "uncertainty_notes"},
     }
     return add_food_log(_current_data_user_id(), record)
@@ -3162,6 +3291,10 @@ def meal_intake_stub():
     client_id = (request.form.get("client_id") or "").strip()
     if not client_id or len(client_id) > 128:
         return jsonify({"error": {"message": "client_id required (<=128 chars)"}}), 400
+    local_timestamp_raw = (request.form.get("local_timestamp") or "").strip()
+    if len(local_timestamp_raw) > 64:
+        return jsonify({"error": {"message": "local_timestamp too long (max 64 chars)"}}), 400
+    local_timestamp = local_timestamp_raw or None
 
     image_file = request.files.get("image")
     has_image = False
@@ -3184,22 +3317,67 @@ def meal_intake_stub():
     if not text_raw and not has_image:
         return jsonify({"error": {"message": "provide a meal description or photo"}}), 400
 
-    result = _meal_intake_stub_estimate(text_raw, has_image)
-    estimate = result["estimate"]
-    status = result["status"]
-    source = "stub_vision_estimate" if has_image else "stub_text_estimate"
+    # FIT-59: text-only input flows through the real meal_text_parser
+    # (LM Studio primary + deterministic fallback). Image-bearing input
+    # stays on the FIT-60 stub until FIT-5 ships the vision estimator.
+    response_extras: dict = {}
+    if has_image:
+        result = _meal_intake_stub_estimate(text_raw, has_image)
+        estimate = result["estimate"]
+        source = "stub_vision_estimate"
+        response_extras["stub"] = True
+    else:
+        parsed = parse_meal_text(text_raw, timestamp=local_timestamp)
+        estimate = parsed["estimate"]
+        # ``source`` lives inside the estimate so it round-trips through
+        # the pending-review accept handler (which reads
+        # estimate.get("source") to label the persisted food_log).
+        source = estimate["source"]
+        response_extras["fallback_used"] = parsed["fallback_used"]
 
+    # FIT-61: the meal-log policy is the single source of truth for
+    # auto-log vs pending-review. Confidence bands, ambiguous-input
+    # detection, and macro plausibility gates all live in
+    # ``meal_log_policy.evaluate_meal_log`` so both the text-parser and
+    # image-stub paths share the same decision and reason copy.
+    decision = evaluate_meal_log(estimate)
+    status = decision["status"]
+    response_extras["policy"] = {
+        "confidence_band": decision["confidence_band"],
+        "reasons": decision["reasons"],
+    }
+    # Translate stable policy reason codes into the existing
+    # ``uncertainty_notes`` list so the composer's pending-review card
+    # (which reads ``estimate.uncertainty_notes``) shows the user why
+    # their entry was held back, even when the reason is policy-only
+    # (e.g. medium_confidence, implausible_macros). Without this, a
+    # pending entry from the new MEDIUM band has no explanation surface.
+    _merge_policy_reasons_into_uncertainty_notes(estimate, decision["reasons"])
+
+    # FIT-61: only auto-logged entries are persisted server-side. Pending
+    # entries live in the composer's JS state until the user explicitly
+    # accepts (which goes through /api/meal-intake/<client_id>/accept and
+    # persists with correction_state="accepted") or discards.
+    #
+    # We deliberately do NOT persist pending estimates here. An earlier
+    # iteration tried this so the dashboard freshness path could surface a
+    # pending_review_count, but it created orphaned rows whenever the user
+    # refreshed, closed the tab, or switched devices before accepting or
+    # discarding — no list endpoint or cross-device reconciliation exists
+    # yet. See FIT-67 for the durable resolution.
     food_log = None
-    if status == "logged":
+    if decision["correction_state"] == CORRECTION_STATE_ACCEPTED:
         food_log = _meal_intake_stub_persist(
-            client_id, estimate, source=source, has_image=has_image, text_hint=text_raw or None,
+            client_id, estimate, source=source, has_image=has_image,
+            text_hint=text_raw or None, local_timestamp=local_timestamp,
+            correction_state=CORRECTION_STATE_ACCEPTED,
         )
 
     return jsonify({
         "status": status,
         "estimate": estimate,
         "food_log": food_log,
-        "stub": True,
+        **response_extras,
     })
 
 
