@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
-from urllib import parse, request
+from urllib import error, parse, request
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +51,10 @@ def main() -> int:
             )
         )
         return 0
+
+    if not os.environ.get("USDA_FDC_API_KEY"):
+        print(json.dumps({"status": "missing_api_key", "env_var": "USDA_FDC_API_KEY", "writes": False}, sort_keys=True))
+        return 2
 
     refreshed = build_snapshot(USDA_SEED_QUERIES[: max(args.limit, 0)])
     output = Path(args.output)
@@ -97,8 +101,11 @@ def fetch_usda_food(query: str, *, timeout: float = 10.0) -> dict | None:
     if api_key:
         params["api_key"] = api_key
     url = f"{FDC_SEARCH_URL}?{parse.urlencode(params)}"
-    with request.urlopen(request.Request(url, headers={"Accept": "application/json"}), timeout=timeout) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+    try:
+        with request.urlopen(request.Request(url, headers={"Accept": "application/json"}), timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError):
+        return None
     foods = payload.get("foods") if isinstance(payload, dict) else None
     if not foods:
         return None

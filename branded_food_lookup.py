@@ -116,7 +116,7 @@ def snapshot_lookup(normalized_text: str) -> dict[str, Any] | None:
     if not key:
         return None
     snapshot = _load_snapshot()
-    item = snapshot.get(key)
+    item = _snapshot_item(snapshot, key)
     if not item:
         return None
     estimate = {
@@ -139,6 +139,18 @@ def snapshot_lookup(normalized_text: str) -> dict[str, Any] | None:
         "portion_basis": item.get("portion_basis"),
     }
     return _sanitize_with_provenance(estimate)
+
+
+def _snapshot_item(snapshot: dict[str, dict[str, Any]], key: str) -> dict[str, Any] | None:
+    item = snapshot.get(key)
+    if item:
+        return item
+    tokens = key.split()
+    for snapshot_key in sorted(snapshot, key=lambda candidate: len(candidate.split()), reverse=True):
+        candidate_tokens = snapshot_key.split()
+        if len(tokens) > len(candidate_tokens) and tokens[-len(candidate_tokens):] == candidate_tokens:
+            return snapshot[snapshot_key]
+    return None
 
 
 def _load_snapshot() -> dict[str, dict[str, Any]]:

@@ -39,6 +39,9 @@ def test_snapshot_plural_variants_hit_bundled_foods():
     assert branded_food_lookup.lookup("eggs", source_priority=("snapshot",))["external_food_id"] == "173424"
     assert branded_food_lookup.lookup("almonds", source_priority=("snapshot",))["external_food_id"] == "170567"
     assert branded_food_lookup.lookup("sweet potatoes", source_priority=("snapshot",))["external_food_id"] == "168482"
+    assert branded_food_lookup.lookup("a banana", source_priority=("snapshot",))["external_food_id"] == "173944"
+    assert branded_food_lookup.lookup("2 eggs", source_priority=("snapshot",))["external_food_id"] == "173424"
+    assert branded_food_lookup.lookup("one sweet potato", source_priority=("snapshot",))["external_food_id"] == "168482"
 
 
 def test_snapshot_file_is_small_and_documents_license():
@@ -134,3 +137,23 @@ def test_refresh_script_dry_run_does_not_write():
     assert payload["status"] == "dry_run"
     assert payload["writes"] is False
     assert after == before
+
+
+def test_refresh_script_write_without_usda_key_explains_requirement(monkeypatch, tmp_path):
+    monkeypatch.delenv("USDA_FDC_API_KEY", raising=False)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/refresh_nutrition_snapshot.py",
+            "--write",
+            "--output",
+            str(tmp_path / "snapshot.json"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 2
+    assert payload == {"status": "missing_api_key", "env_var": "USDA_FDC_API_KEY", "writes": False}
