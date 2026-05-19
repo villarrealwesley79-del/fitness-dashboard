@@ -1324,13 +1324,39 @@
         const filterHost = $('history-type-filter');
         listHost.innerHTML = '';
         const merged = [...lifts, ...watchFiltered].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-        if (!merged.length) { listHost.innerHTML = '<div class="empty">No workouts in this range.</div>'; return; }
+        if (!merged.length) {
+            // FIT-14: explain WHY the range is empty and offer a path
+            // forward — most users opening History on a quiet week want
+            // to know it's not broken.
+            listHost.innerHTML = `
+                <div class="empty">
+                    <div class="empty-title">No workouts in this range</div>
+                    <div class="empty-hint">Log a workout from the Next or Log tabs and it will appear here.</div>
+                </div>
+            `;
+            return;
+        }
 
         renderHistoryTypeFilter(merged, filterHost);
         const visible = merged.filter((w) => historyFilterKey(w) === state.historyTypeFilter || state.historyTypeFilter === 'all');
         if (!visible.length) {
             const label = state.historyTypeFilter === 'lifted' ? 'Lifted' : state.historyTypeFilter;
-            listHost.innerHTML = `<div class="empty">No ${escapeHtml(label)} workouts in this range.</div>`;
+            // FIT-14: filtered-empty state distinguishes itself from the
+            // truly-empty case and offers a one-tap Clear-filter CTA.
+            listHost.innerHTML = `
+                <div class="empty">
+                    <div class="empty-title">No ${escapeHtml(label)} workouts in this range</div>
+                    <div class="empty-hint">Other types may exist — try clearing the filter.</div>
+                    <button type="button" class="btn btn-ghost btn-sm" id="btn-history-clear-filter">Show all</button>
+                </div>
+            `;
+            const clearBtn = $('btn-history-clear-filter');
+            if (clearBtn) {
+                clearBtn.addEventListener('click', () => {
+                    state.historyTypeFilter = 'all';
+                    renderHistory();
+                });
+            }
             return;
         }
 
@@ -1487,6 +1513,29 @@
         const totalVolume = item.total_volume || exercises.reduce((sum, ex) => sum + (ex.sets || []).reduce((s, set) => s + setVolume(set), 0), 0);
         title.textContent = `Workout · ${fmtDate(item.date)}`;
 
+        // FIT-14: per-exercise source labelling from the workout's
+        // adherence record. Exercises in ``adherence.added`` were
+        // added freehand; in ``adherence.modified`` were performed
+        // with different weight/reps than the plan called for;
+        // everything else is treated as planned. Skipped exercises
+        // (in ``adherence.skipped``) get their own section below
+        // since they have no sets to render.
+        const adherence = item.adherence || {};
+        const addedSet = new Set((adherence.added || []).map((n) => String(n).toLowerCase()));
+        const modifiedSet = new Set((adherence.modified || []).map((m) =>
+            String((m && (m.exercise || m.machine || m.name)) || m).toLowerCase()
+        ));
+        const skipped = (adherence.skipped || []).filter(Boolean);
+
+        const _sourceBadge = (label, cls) =>
+            `<span class="exercise-source-tag exercise-source-${cls}">${escapeHtml(label)}</span>`;
+        const _exerciseSourceLabel = (name) => {
+            const lc = String(name || '').toLowerCase();
+            if (addedSet.has(lc)) return _sourceBadge('Added', 'added');
+            if (modifiedSet.has(lc)) return _sourceBadge('Modified', 'modified');
+            return _sourceBadge('Planned', 'planned');
+        };
+
         const exerciseHtml = exercises.map((ex) => {
             const sets = ex.sets || [];
             const rows = sets.map((set) => `
@@ -1499,16 +1548,53 @@
                 </div>
             `).join('');
             const exVolume = sets.reduce((sum, set) => sum + setVolume(set), 0);
+            const exName = workoutExerciseName(ex);
             return `
                 <div class="workout-detail-ex">
                     <div class="workout-detail-ex-head">
-                        <h4>${escapeHtml(workoutExerciseName(ex))}</h4>
+                        <h4>${escapeHtml(exName)} ${_exerciseSourceLabel(exName)}</h4>
                         <span>${sets.length} sets · ${fmtKilo(exVolume)} lbs</span>
                     </div>
                     ${rows || '<div class="empty">No sets logged.</div>'}
                 </div>
             `;
         }).join('');
+
+        // FIT-14: skipped exercises — show what the plan called for
+        // that the user didn't do, so adherence stays honest.
+        const skippedHtml = skipped.length ? `
+            <div class="workout-detail-section">
+                <div class="analyze-label">SKIPPED</div>
+                <div class="workout-detail-skipped">
+                    ${skipped.map((name) =>
+                        `<span class="skipped-exercise">${escapeHtml(name)}</span>`
+                    ).join('')}
+                </div>
+            </div>
+        ` : '';
+
+        // FIT-14: adherence summary line — single-glance "X planned ·
+        // Y added · Z skipped" so the user can scan the day's discipline
+        // without reading every exercise. ``followed`` is a precomputed
+        // boolean from the backend. ``planned`` is the residual after
+        // backing out added AND modified exercises — otherwise a
+        // modified exercise would be counted in both buckets.
+        const plannedCount = exercises.filter((ex) => {
+            const n = String(workoutExerciseName(ex) || '').toLowerCase();
+            return !addedSet.has(n) && !modifiedSet.has(n);
+        }).length;
+        const adherenceParts = [];
+        adherenceParts.push(`${plannedCount} planned`);
+        if (addedSet.size) adherenceParts.push(`${addedSet.size} added`);
+        if (skipped.length) adherenceParts.push(`${skipped.length} skipped`);
+        if (modifiedSet.size) adherenceParts.push(`${modifiedSet.size} modified`);
+        const adherenceHtml = (plannedCount + addedSet.size + skipped.length + modifiedSet.size) ? `
+            <div class="workout-detail-adherence">
+                <span class="adherence-label">Adherence</span>
+                <span class="adherence-summary">${escapeHtml(adherenceParts.join(' · '))}</span>
+                ${adherence.followed === false ? '<span class="adherence-flag">Off-plan</span>' : ''}
+            </div>
+        ` : '';
 
         const cardio = item.cardio || null;
         const cardioHtml = cardio ? `
@@ -1521,19 +1607,52 @@
             </div>
         ` : '';
 
+        // FIT-14: in-modal Analyze button so the user doesn't have to
+        // close the detail to find the row's analyze affordance. Reuses
+        // the existing openAnalyzeModal which is read-only and does NOT
+        // mutate LAST_WORKOUT_RECOMMENDATION (verified by FIT-14 tests).
+        const analyzeBtnHtml = `
+            <div class="workout-detail-actions">
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-analyze-detail"
+                    data-analyze-id="${escapeHtml(item.id || '')}"
+                    data-analyze-date="${escapeHtml(item.date || '')}">
+                    Analyze workout
+                </button>
+            </div>
+        `;
+
         body.innerHTML = `
             <div class="workout-detail-kpis">
                 <div><span>${fmtInt(totalSets)}</span><label>sets</label></div>
                 <div><span>${fmtKilo(totalVolume)}</span><label>lbs</label></div>
                 <div><span>${fmtInt(item.duration_minutes || 0)}</span><label>minutes</label></div>
             </div>
+            ${adherenceHtml}
+            ${analyzeBtnHtml}
             ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">WORKOUT NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
             <div class="workout-detail-section">
                 <div class="analyze-label">EXERCISES</div>
                 ${exerciseHtml || '<div class="empty">No exercises logged.</div>'}
             </div>
+            ${skippedHtml}
             ${cardioHtml}
         `;
+
+        // Wire the Analyze button. Build the same request shape the
+        // history-row analyze button uses (id preferred, date fallback).
+        const analyzeBtn = $('btn-analyze-detail');
+        if (analyzeBtn) {
+            analyzeBtn.addEventListener('click', () => {
+                const id = analyzeBtn.dataset.analyzeId;
+                const date = analyzeBtn.dataset.analyzeDate;
+                const request = id ? { workout_id: id }
+                    : date ? { workout_date: date }
+                    : { latest: true };
+                modal.hidden = true;
+                openAnalyzeModal(request, `Analyze · ${fmtDate(item.date)}`);
+            });
+        }
+
         modal.hidden = false;
     }
 
