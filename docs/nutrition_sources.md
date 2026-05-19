@@ -26,10 +26,11 @@ Before merging FIT-72 (PR #56), the owner must log into the Nutritionix develope
 - **Body:** `{"query": "<free text>"}`
 - **Response:** array of `foods` with `food_name`, `serving_qty`, `serving_unit`, `nf_calories`, `nf_protein`, `nf_total_carbohydrate`, `nf_total_fat`, `nf_sodium`, `nf_dietary_fiber`, and per-food provenance fields.
 
-### Auth (planning context, unverified)
-- Two env vars required: `NUTRITIONIX_APP_ID` and `NUTRITIONIX_APP_KEY`.
-- Passed as request headers: `x-app-id`, `x-app-key`.
+### Auth (planning context, **UNVERIFIED**)
+- Two env vars expected: `NUTRITIONIX_APP_ID` and `NUTRITIONIX_APP_KEY`.
+- Expected to pass as request headers: `x-app-id`, `x-app-key`.
 - Never logged or echoed. Absent keys → silently skip the Nutritionix layer (FIT-72 AC8).
+- **Owner must verify the exact header names and env-var contract from the Nutritionix developer dashboard before FIT-72 PR #56 merges.**
 
 ### Quota (planning context, UNVERIFIED — owner must confirm)
 - "Free developer tier: ~150 requests/day" — **this number is from prior planning notes, NOT confirmed against the live dashboard**. The actual number may differ. Verify before relying on it.
@@ -66,7 +67,7 @@ Source: the FDC API Guide page, sections "Sample Calls," "Gaining Access," "Rate
 - API key is **required.** Documentation: "a data.gov API key must be incorporated into each API request."
 - **Passed as query parameter:** `api_key=YOUR_KEY` — not a header.
 - Two key types:
-  - **`FDC_API_KEY`** — the standard data.gov API key. Each user obtains one from https://api.data.gov/signup/. Use this in production.
+  - **`USDA_FDC_API_KEY`** (env var name used by `usda_fdc_client.py` on the FIT-72 branch) — the standard data.gov API key. Each user obtains one from https://api.data.gov/signup/. Use this in production.
   - **`DEMO_KEY`** — global demo key with much lower rate limits. Dev-only. Do not use in production.
 
 ### Rate limits
@@ -80,7 +81,7 @@ Source: the FDC API Guide page, sections "Sample Calls," "Gaining Access," "Rate
 - Experimental Foods
 - Branded Foods
 
-FIT-72 will filter to Foundation / SR Legacy for high-quality generic foods. Branded Foods coverage exists but is thin for chain restaurants — see FIT-72's rationale for Nutritionix sitting ahead in the lookup chain.
+Which subset FIT-72 actually filters to is a repo-specific implementation choice; see `usda_fdc_client.py` on the FIT-72 branch for the current `PREFERRED_DATA_TYPES` value. Branded Foods coverage exists but is thin for chain restaurants — see FIT-72's rationale for Nutritionix sitting ahead in the lookup chain.
 
 ### License
 - **Public domain** under CC0 1.0 Universal. "USDA FoodData Central data are in the public domain and they are not copyrighted."
@@ -92,8 +93,8 @@ FIT-72 will filter to Foundation / SR Legacy for high-quality generic foods. Bra
 - For practical use: long caching (months to years for stable foods like "banana") is fine; refresh on schema change announcements.
 
 ### Production posture for this repo
-- Production: require `FDC_API_KEY` in env. Skip the USDA layer if unset (FIT-72 graceful-degradation AC).
-- Local dev: `DEMO_KEY` is acceptable for spike work. Do not commit `DEMO_KEY` cassettes to vcr — re-record with `FDC_API_KEY` for the committed cassettes so CI behavior is predictable.
+- Production: require `USDA_FDC_API_KEY` in env. Skip the USDA layer if unset (FIT-72 graceful-degradation AC).
+- Local dev: `DEMO_KEY` is acceptable for spike work. Do not commit `DEMO_KEY` cassettes to vcr — re-record with `USDA_FDC_API_KEY` for the committed cassettes so CI behavior is predictable.
 
 ---
 
@@ -184,9 +185,20 @@ This is the same posture FIT-72 documented in its rejection of Scrapling. Do not
 
 ### Open verification items (must close before the named PRs merge)
 
-- [ ] **FIT-72 (PR #56):** owner confirms Nutritionix free-tier daily quota and ToS cache-TTL constraint. Updates this doc with verified numbers.
-- [ ] **FIT-75 (PR #59):** owner confirms whether Nutritionix ToS permits redistributing response data in this repo's offline snapshot. If forbidden, FIT-75 reduces to USDA-FDC-only snapshot.
-- [ ] **FIT-76 (PR #60):** integrator confirms exact OFF attribution text + format required by current ODbL/DbCL terms. Updates the attribution row in FIT-76's UI follow-up.
+- [ ] **FIT-72 (PR #56):** owner verifies all Nutritionix integration details that this doc marks unverified, AND updates the doc with the verified numbers:
+  - Exact base URL and `/v2/natural/nutrients` endpoint shape.
+  - Required auth header names (`x-app-id` / `x-app-key`) and env-var contract (`NUTRITIONIX_APP_ID` / `NUTRITIONIX_APP_KEY`).
+  - Required response and provenance fields actually returned by the live API.
+  - Free-tier daily request quota.
+  - ToS cache-TTL constraint (relative to the planned 180-day local cache).
+  - Whether the planned `vcr` cassettes the implementation depends on can be recorded under the free tier.
+- [ ] **FIT-75 (PR #59):** owner confirms whether Nutritionix ToS permits redistributing response data in this repo's offline snapshot bundle. If forbidden, FIT-75 reduces to USDA-FDC-only snapshot.
+- [ ] **FIT-76 (PR #60):** integrator verifies all OFF integration details that this doc marks partial / unverified, AND updates the doc with verified facts:
+  - Exact attribution text and format required by ODbL + DbCL for derived works.
+  - Share-alike obligations that apply to per-row consumption vs full-database republication.
+  - Required `User-Agent` header format and any other request headers OFF expects from API consumers.
+  - Search endpoint shape (path, query parameters, response schema) — the data page references an external API doc that wasn't retrievable at FIT-81 writeup time.
+  - Documented or socially-expected rate-limit policy (beyond the "1 API call = 1 real scan" social contract).
 
 ### Re-verification cadence
 
