@@ -66,7 +66,13 @@ OFF_LOCALE_COUNTRY_TAGS = {
     "irish": "en:ireland",
     "japanese": "en:japan",
     "uk": "en:united-kingdom",
+    "u.k": "en:united-kingdom",
     "u.k.": "en:united-kingdom",
+}
+
+OFF_COMPLETE_QUALITY_TAGS = {
+    "en:nutrition-completed",
+    "en:nutrition-data-complete",
 }
 
 
@@ -314,7 +320,7 @@ def _off_quality_ok(product: dict[str, Any]) -> bool:
         return False
     tags = product.get("data_quality_tags") or []
     lowered_tags = [str(tag).lower() for tag in tags]
-    if "en:nutrition-data-complete" not in lowered_tags:
+    if not OFF_COMPLETE_QUALITY_TAGS.intersection(lowered_tags):
         return False
     if any("error" in tag for tag in lowered_tags):
         return False

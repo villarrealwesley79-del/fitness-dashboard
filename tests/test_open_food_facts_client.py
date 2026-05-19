@@ -230,6 +230,44 @@ def test_open_food_facts_rejects_rows_without_complete_quality_tag(monkeypatch):
     assert estimate is None
 
 
+def test_open_food_facts_accepts_actual_completion_quality_tag(monkeypatch):
+    product = _product("Completed Product", code="completed")
+    product["data_quality_tags"] = ["en:nutrition-completed"]
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": [product]},
+    )
+
+    estimate = branded_food_lookup.lookup("completed product")
+
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["external_food_id"] == "completed"
+
+
+def test_open_food_facts_handles_punctuated_uk_locale(monkeypatch):
+    wrong_country = _product("Walkers Crisps", code="wrong", country="en:france")
+    uk_product = _product("Walkers Crisps", code="uk", country="en:united-kingdom")
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": [wrong_country, uk_product]},
+    )
+
+    estimate = branded_food_lookup.lookup("U.K. Walkers crisps")
+
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["external_food_id"] == "uk"
+
+
 def test_open_food_facts_skips_nutrition_mismatch_warnings(monkeypatch):
     bad = _product("Bad Product", code="bad")
     bad["data_quality_tags"] = [
