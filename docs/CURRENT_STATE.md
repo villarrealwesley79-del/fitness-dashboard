@@ -115,7 +115,8 @@ The repo documents a primary ASUS GX10 LM Studio route and a Mac mini fallback r
 - Authenticated smoke testing requires a valid session cookie.
 - Some older docs are stale relative to the newer Health Auto Export token-gated sync model.
 - The app is single-owner by design; public multi-user mode would require per-user data stores.
-- Apple Health timestamp date slicing can be wrong during cross-timezone travel.
+- Apple Health Health Auto Export ingest derives `record_date` from the ISO timestamp's own timezone offset rather than slicing the first 10 characters.
+- If older Apple Health synced rows look misdated after travel, backfill by deleting the affected `health_auto_export` rows for the wrong `record_date` range from `apple_health_sync.db` and replaying the original HAE export payload; the widened `(source, record_type, record_date, record_key)` uniqueness will reinsert them under the corrected local day.
 - Side-specific soreness and joint limitations are not modeled yet.
 - Nutrition data and targets exist, and accepted food logs now have a SQLite persistence path that preserves final values, sanitized original estimates, confidence/correction metadata, context notes, meal type, and source timestamps. Legacy `data_nutrition.json` remains readable for current dashboard totals and migration/backfill safety.
 - There is no finished food photo capture, AI food estimation, confidence/review, or auto-adjustment workflow yet.

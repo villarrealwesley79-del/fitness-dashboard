@@ -24,6 +24,7 @@ from flask import jsonify, request
 HEALTH_DIR = os.path.expanduser("~/Documents/Health")
 PUBLIC_BASE_URL_ENV = "FITNESS_DASHBOARD_PUBLIC_BASE_URL"
 APPLE_HEALTH_WEBHOOK_URL_ENV = "APPLE_HEALTH_WEBHOOK_URL"
+APPLE_HEALTH_SYNC_DB_ENV = "APPLE_HEALTH_SYNC_DB"
 
 ACTIVITY_MAP = {
     1: "Walking", 2: "Running", 3: "Cycling", 4: "Hiking",
@@ -50,6 +51,34 @@ def _ms_to_datetime(ms: float) -> str:
         return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
     except (ValueError, TypeError, OSError):
         return ""
+
+
+def _local_date_from_iso(value) -> str:
+    """Return the calendar date encoded by an ISO timestamp's own offset.
+
+    Health Auto Export includes timezone offsets in many timestamps. For daily
+    HealthKit records the intended bucket is the local date in that timestamp,
+    not the server's UTC date. Date-only strings pass through unchanged.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return text
+    try:
+        normalized = text
+        if normalized.endswith("Z"):
+            normalized = f"{normalized[:-1]}+00:00"
+        return datetime.fromisoformat(normalized).date().isoformat()
+    except (TypeError, ValueError):
+        return text[:10]
+
+
+def _apple_health_sync_db_path() -> str:
+    return (
+        os.environ.get(APPLE_HEALTH_SYNC_DB_ENV)
+        or os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple_health_sync.db")
+    )
 
 
 def _load_json(pattern: str) -> dict:
@@ -225,7 +254,7 @@ def health_data_available() -> bool:
         return True
     # Also check sync DB
     try:
-        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple_health_sync.db")
+        db_path = _apple_health_sync_db_path()
         conn = sqlite3.connect(db_path)
         count = conn.execute("SELECT COUNT(*) FROM ah_sync_log").fetchone()[0]
         conn.close()
@@ -236,7 +265,7 @@ def health_data_available() -> bool:
 
 def _get_sync_records(record_type: str, days: int = 0) -> list[dict]:
     """Read records from the sync database for a given type."""
-    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple_health_sync.db")
+    db_path = _apple_health_sync_db_path()
     if not os.path.exists(db_path):
         return []
     try:
@@ -417,12 +446,12 @@ def register_apple_health_routes(flask_app):
         # Normalize sync heart rate records
         sync_rhr = []
         for r in sync_hr:
-            r.setdefault("date", r.get("startDate", "")[:10])
+            r.setdefault("date", _local_date_from_iso(r.get("startDate")))
             r.setdefault("avg", r.get("value", r.get("avg", 0)))
             sync_rhr.append({"date": r["date"], "avg": r["avg"]})
         sync_hrv_norm = []
         for h in sync_hrv:
-            h.setdefault("date", h.get("startDate", "")[:10])
+            h.setdefault("date", _local_date_from_iso(h.get("startDate")))
             h.setdefault("avg", h.get("value", h.get("avg", 0)))
             sync_hrv_norm.append({"date": h["date"], "avg": h["avg"]})
         rhr = _merge_timeseries(file_rhr, sync_rhr)
@@ -434,10 +463,8 @@ def register_apple_health_routes(flask_app):
         return jsonify({"rhr": rhr, "hrv": hrv})
 
     # ── Sync endpoint for Health Auto Export app (interim auto-sync) ──
-    _AH_SYNC_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple_health_sync.db")
-
     def _init_ah_sync_db():
-        conn = sqlite3.connect(_AH_SYNC_DB)
+        conn = sqlite3.connect(_apple_health_sync_db_path())
         conn.execute("""CREATE TABLE IF NOT EXISTS ah_sync_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source TEXT NOT NULL,
@@ -581,7 +608,7 @@ def register_apple_health_routes(flask_app):
             if not isinstance(w, dict):
                 continue
             start = w.get("start") or w.get("startDate") or w.get("start_time") or ""
-            date_part = str(start)[:10]
+            date_part = _local_date_from_iso(start)
             duration_raw = w.get("duration") or w.get("duration_minutes") or 0
             try:
                 duration_raw = float(duration_raw)
@@ -633,7 +660,7 @@ def register_apple_health_routes(flask_app):
             for pt in (metric.get("data") or []):
                 if not isinstance(pt, dict):
                     continue
-                rec_date = str(pt.get("date", ""))[:10]
+                rec_date = _local_date_from_iso(pt.get("date"))
                 if not rec_date:
                     continue
                 if internal == "heart_rate":
@@ -710,7 +737,8 @@ def register_apple_health_routes(flask_app):
         # the HAE export template.
         data = _normalize_hae_payload(data)
 
-        conn = sqlite3.connect(_AH_SYNC_DB)
+        _init_ah_sync_db()
+        conn = sqlite3.connect(_apple_health_sync_db_path())
         inserted = 0
         skipped = 0
 
@@ -720,15 +748,17 @@ def register_apple_health_routes(flask_app):
                 continue
             for rec in records:
                 # Each record must have a 'date' field
-                rec_date = rec.get("date") or rec.get("startDate", "")[:10]
+                rec_date = _local_date_from_iso(rec.get("date") or rec.get("startDate"))
                 if not rec_date:
                     skipped += 1
                     continue
                 try:
-                    rec_key = _record_key(record_type, rec)
+                    stored_rec = dict(rec)
+                    stored_rec["date"] = rec_date
+                    rec_key = _record_key(record_type, stored_rec)
                     cur = conn.execute(
                         "INSERT OR IGNORE INTO ah_sync_log (source, record_type, record_date, record_key, data_json) VALUES (?, ?, ?, ?, ?)",
-                        ("health_auto_export", record_type, rec_date, rec_key, json.dumps(rec, default=str))
+                        ("health_auto_export", record_type, rec_date, rec_key, json.dumps(stored_rec, default=str))
                     )
                     # cursor.rowcount is 1 on insert, 0 when IGNORE suppressed a
                     # duplicate — report the truth so Manual Export doesn't lie.
@@ -772,7 +802,8 @@ def register_apple_health_routes(flask_app):
             os.environ.get(PUBLIC_BASE_URL_ENV, "").strip()
             or os.environ.get(APPLE_HEALTH_WEBHOOK_URL_ENV, "").strip()
         )
-        conn = sqlite3.connect(_AH_SYNC_DB)
+        _init_ah_sync_db()
+        conn = sqlite3.connect(_apple_health_sync_db_path())
         try:
             total = conn.execute("SELECT COUNT(*) FROM ah_sync_log").fetchone()[0]
             by_type = dict(conn.execute(
