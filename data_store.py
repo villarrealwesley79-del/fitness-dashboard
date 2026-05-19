@@ -14,6 +14,7 @@ Created for Fitness Dashboard SaaS per-user isolation.
 import json
 import os
 import sqlite3
+import hashlib
 from datetime import datetime
 from typing import Optional
 
@@ -78,6 +79,101 @@ def sanitize_food_estimate(estimate: Optional[dict]) -> Optional[dict]:
         return None
     safe = {k: estimate.get(k) for k in FOOD_ESTIMATE_FIELDS if k in estimate}
     return safe or None
+
+
+def _endpoint_hash(endpoint: str) -> str:
+    return hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
+
+
+def _subscription_public_row(row) -> dict:
+    payload = _json_loads_or_none(row["subscription_json"]) or {}
+    endpoint = row["endpoint"] or ""
+    host = endpoint.split("/")[2] if "://" in endpoint and len(endpoint.split("/")) > 2 else None
+    return {
+        "endpoint_hash": row["endpoint_hash"],
+        "endpoint_host": host,
+        "permission_state": row["permission_state"],
+        "pwa_installed": bool(row["pwa_installed"]) if row["pwa_installed"] is not None else None,
+        "revoked": bool(row["revoked_at"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "keys_present": bool(((payload.get("keys") or {}).get("p256dh")) and ((payload.get("keys") or {}).get("auth"))),
+    }
+
+
+def save_push_subscription(user_id: int, subscription: dict, metadata: Optional[dict] = None) -> dict:
+    """Persist a Web Push subscription and return a secret-free summary."""
+    if not isinstance(subscription, dict):
+        raise ValueError("subscription must be an object")
+    endpoint = subscription.get("endpoint")
+    keys = subscription.get("keys") or {}
+    if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
+        raise ValueError("subscription.endpoint must be an https URL")
+    if not isinstance(keys, dict) or not keys.get("p256dh") or not keys.get("auth"):
+        raise ValueError("subscription.keys.p256dh and keys.auth are required")
+    metadata = metadata or {}
+    endpoint_hash = _endpoint_hash(endpoint)
+    now = datetime.now().isoformat(timespec="seconds")
+    with _get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO push_subscriptions (
+                user_id, endpoint_hash, endpoint, subscription_json, permission_state,
+                pwa_installed, user_agent, revoked_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            ON CONFLICT(user_id, endpoint_hash) DO UPDATE SET
+                endpoint=excluded.endpoint,
+                subscription_json=excluded.subscription_json,
+                permission_state=excluded.permission_state,
+                pwa_installed=excluded.pwa_installed,
+                user_agent=excluded.user_agent,
+                revoked_at=NULL,
+                updated_at=excluded.updated_at
+            """,
+            (
+                user_id,
+                endpoint_hash,
+                endpoint,
+                json.dumps(subscription, sort_keys=True),
+                metadata.get("permission_state"),
+                1 if metadata.get("pwa_installed") is True else 0 if metadata.get("pwa_installed") is False else None,
+                metadata.get("user_agent"),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM push_subscriptions WHERE user_id = ? AND endpoint_hash = ?",
+            (user_id, endpoint_hash),
+        ).fetchone()
+    return _subscription_public_row(row)
+
+
+def list_push_subscriptions(user_id: int, include_revoked: bool = False) -> list[dict]:
+    sql = "SELECT * FROM push_subscriptions WHERE user_id = ?"
+    params: list = [user_id]
+    if not include_revoked:
+        sql += " AND revoked_at IS NULL"
+    sql += " ORDER BY updated_at DESC"
+    with _get_db() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_subscription_public_row(row) for row in rows]
+
+
+def revoke_push_subscription(user_id: int, endpoint_hash: str) -> bool:
+    now = datetime.now().isoformat(timespec="seconds")
+    with _get_db() as conn:
+        cur = conn.execute(
+            """
+            UPDATE push_subscriptions
+            SET revoked_at = ?, updated_at = ?
+            WHERE user_id = ? AND endpoint_hash = ? AND revoked_at IS NULL
+            """,
+            (now, now, user_id, endpoint_hash),
+        )
+        conn.commit()
+    return cur.rowcount > 0
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -176,6 +272,21 @@ def init_data_db():
                 target_body_fat_pct       REAL,
                 updated                   TEXT DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id               INTEGER NOT NULL,
+                endpoint_hash         TEXT    NOT NULL,
+                endpoint              TEXT    NOT NULL,
+                subscription_json     TEXT    NOT NULL,
+                permission_state      TEXT,
+                pwa_installed         INTEGER,
+                user_agent            TEXT,
+                revoked_at            TEXT,
+                created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+                updated_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, endpoint_hash)
+            );
         """)
         # Idempotent column adds for pre-existing DBs created before this column existed.
         # SQLite has no native ADD COLUMN IF NOT EXISTS, so probe table_info first.
@@ -202,6 +313,18 @@ def init_data_db():
         for col, col_type in food_log_columns.items():
             if col not in existing_food_log_cols:
                 conn.execute(f"ALTER TABLE food_logs ADD COLUMN {col} {col_type}")
+        existing_push_cols = {r["name"] for r in conn.execute("PRAGMA table_info(push_subscriptions)").fetchall()}
+        push_columns = {
+            "permission_state": "TEXT",
+            "pwa_installed": "INTEGER",
+            "user_agent": "TEXT",
+            "revoked_at": "TEXT",
+            "created_at": "TEXT",
+            "updated_at": "TEXT",
+        }
+        for col, col_type in push_columns.items():
+            if col not in existing_push_cols:
+                conn.execute(f"ALTER TABLE push_subscriptions ADD COLUMN {col} {col_type}")
         conn.commit()
 
 
