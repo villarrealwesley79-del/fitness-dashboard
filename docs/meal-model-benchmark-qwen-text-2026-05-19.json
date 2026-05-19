@@ -1,0 +1,905 @@
+{
+  "benchmark": {
+    "candidate_passed": false,
+    "case_count": 20,
+    "latency_gates": {
+      "text": {
+        "latency_limit_ms": 10000,
+        "latency_ms_avg": 23560.8,
+        "latency_passed": false
+      }
+    },
+    "latency_limit_ms": 10000,
+    "latency_ms_avg": 23560.8,
+    "latency_passed": false,
+    "missing_image_count": 0,
+    "model": "qwen/qwen3.6-35b-a3b",
+    "model_run_count": 20,
+    "quality_pass_count": 14,
+    "quality_pass_rate": 0.7,
+    "results": [
+      {
+        "ambiguous": true,
+        "case_id": "txt-001",
+        "confidence": 0.4,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 150,
+          "carbs_g": 3,
+          "confidence": 0.4,
+          "fat_g": 1,
+          "fiber_g": 0,
+          "item_name": "Protein Shake",
+          "meal_type": "snack",
+          "portion_description": "One standard serving (approximately 12-16 oz or 350-470 ml), prepared with water or milk as per typical commercial or homemade recipes",
+          "protein_g": 25,
+          "sodium_mg": 120,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is not specified (could be a scoop, a full glass, or a large bottle)",
+            "Macronutrient content varies significantly based on the type of protein powder (whey, casein, plant-based) and the liquid used (water, skim milk, whole milk, almond milk)",
+            "Added ingredients like fruits, nut butters, or sweeteners are unknown",
+            "Brand-specific nutritional values can differ widely"
+          ]
+        },
+        "expected_item_hint": "protein shake",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 29832,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-002",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 350,
+          "carbs_g": 20,
+          "confidence": 0.6,
+          "fat_g": 18,
+          "fiber_g": 1,
+          "item_name": "Eggs and Toast",
+          "meal_type": "breakfast",
+          "portion_description": "2 large eggs with 1 slice of toast",
+          "protein_g": 18,
+          "sodium_mg": 300,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size of toast is unclear (1 slice vs 2 slices)",
+            "Preparation method of eggs (scrambled, fried, boiled) affects fat and calorie content",
+            "Type of toast (white, whole wheat, buttered) is unspecified",
+            "Additional condiments or cooking fats not specified"
+          ]
+        },
+        "expected_item_hint": "eggs and toast",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 19351,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-003",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 900,
+          "carbs_g": 85,
+          "confidence": 0.6,
+          "fat_g": 35,
+          "fiber_g": 8,
+          "item_name": "Chipotle Bowl with Chicken and White Rice",
+          "meal_type": "lunch",
+          "portion_description": "Standard-sized bowl with chicken, white rice, and typical toppings (beans, salsa, guacamole, cheese, sour cream)",
+          "protein_g": 45,
+          "sodium_mg": 1200,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is not specified (standard vs. large)",
+            "Toppings and quantities are unknown",
+            "Sodium and fat content vary significantly based on added ingredients"
+          ]
+        },
+        "expected_item_hint": "chipotle bowl",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 20087,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-004",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 450,
+          "carbs_g": 55,
+          "confidence": 0.6,
+          "fat_g": 22,
+          "fiber_g": 3,
+          "item_name": "Movie Theater Popcorn",
+          "meal_type": "snack",
+          "portion_description": "Medium-sized serving (approximately 4-6 cups or 100-150g)",
+          "protein_g": 6,
+          "sodium_mg": 350,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size varies significantly by theater and size ordered (small/medium/large)",
+            "Butter/oil content and type are unknown, affecting fat and calorie counts",
+            "Sodium levels depend on specific seasoning and preparation method"
+          ]
+        },
+        "expected_item_hint": "popcorn",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 18255,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-005",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 105,
+          "carbs_g": 27,
+          "confidence": 0.6,
+          "fat_g": 0.4,
+          "fiber_g": 3.1,
+          "item_name": "banana",
+          "meal_type": "snack",
+          "portion_description": "1 medium banana (approximately 118 grams)",
+          "protein_g": 1.3,
+          "sodium_mg": 1,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is estimated as a medium banana; actual size may vary.",
+            "Nutritional values are approximate and can vary based on ripeness and specific variety."
+          ]
+        },
+        "expected_item_hint": "banana",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 14978,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-006",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 250,
+          "carbs_g": 25,
+          "confidence": 0.6,
+          "fat_g": 5,
+          "fiber_g": 4,
+          "item_name": "Greek Yogurt with Berries",
+          "meal_type": "breakfast",
+          "portion_description": "Approximately 1 cup (245g) of plain Greek yogurt topped with 1/2 cup mixed fresh berries",
+          "protein_g": 20,
+          "sodium_mg": 80,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size of yogurt is estimated as 1 cup, but could vary significantly.",
+            "Type of yogurt (plain, flavored, fat content) is unspecified.",
+            "Type and quantity of berries are not specified.",
+            "Added sweeteners or toppings are not mentioned."
+          ]
+        },
+        "expected_item_hint": "yogurt",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 18708,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-007",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 350,
+          "carbs_g": 45,
+          "confidence": 0.6,
+          "fat_g": 5,
+          "fiber_g": 1,
+          "item_name": "Chicken and Rice",
+          "meal_type": "dinner",
+          "portion_description": "Approximately 1 cup of cooked white rice with 3-4 oz of grilled or roasted chicken breast, without specified sauce or seasoning details",
+          "protein_g": 30,
+          "sodium_mg": 150,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion sizes are not specified (e.g., cup vs. plate, weight of chicken).",
+            "Cooking method and added ingredients (oil, butter, sauces, salt) are unknown, significantly affecting calorie, fat, and sodium counts.",
+            "Type of rice (white, brown, jasmine, basmati) is unspecified, affecting fiber and carb content.",
+            "Preparation style (fried, steamed, baked) is unclear."
+          ]
+        },
+        "expected_item_hint": "chicken and rice",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 32244,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-008",
+        "confidence": 0.4,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 350,
+          "carbs_g": 45,
+          "confidence": 0.4,
+          "fat_g": 10,
+          "fiber_g": 3,
+          "item_name": "Pasta Leftovers",
+          "meal_type": "lunch",
+          "portion_description": "Approximately 1 cup of cooked pasta with an unspecified sauce (e.g., marinara, alfredo, or meat sauce)",
+          "protein_g": 12,
+          "sodium_mg": 400,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "The term 'half' is relative and does not specify the original serving size.",
+            "The type of pasta (shape, size) is unknown.",
+            "The sauce composition (cream-based, tomato-based, oil-based) and ingredients (meat, vegetables, cheese) are unspecified, leading to significant variance in macronutrients and sodium.",
+            "Portion volume is estimated based on a standard 'cup' serving for leftovers."
+          ]
+        },
+        "expected_item_hint": "pasta",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 29365,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-009",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 450,
+          "carbs_g": 40,
+          "confidence": 0.6,
+          "fat_g": 15,
+          "fiber_g": 3,
+          "item_name": "Turkey Sandwich",
+          "meal_type": "lunch",
+          "portion_description": "Standard sandwich on two slices of white or whole wheat bread with sliced turkey, lettuce, tomato, and condiments (e.g., mayonnaise or mustard)",
+          "protein_g": 30,
+          "sodium_mg": 900,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is not specified (e.g., number of slices, thickness of turkey)",
+            "Type of bread is unknown (white, whole wheat, sourdough, etc.)",
+            "Condiments and additional ingredients (cheese, avocado, etc.) are not specified",
+            "Sodium content can vary significantly based on processed turkey and condiments"
+          ]
+        },
+        "expected_item_hint": "sandwich",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 30409,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-010",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 350,
+          "carbs_g": 45,
+          "confidence": 0.6,
+          "fat_g": 14,
+          "fiber_g": 6,
+          "item_name": "Oatmeal with Peanut Butter",
+          "meal_type": "breakfast",
+          "portion_description": "Approximately 1 cup of cooked oatmeal topped with 1 tablespoon of peanut butter",
+          "protein_g": 10,
+          "sodium_mg": 150,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion sizes for both oatmeal and peanut butter are estimated and not specified.",
+            "Caloric and macronutrient values can vary significantly based on the type of oats (e.g., instant vs. rolled) and the brand/type of peanut butter (e.g., natural vs. processed, added sugars/oils).",
+            "Additional ingredients like sugar, milk, or salt are not accounted for in this estimate."
+          ]
+        },
+        "expected_item_hint": "oatmeal",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 27161,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-011",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 50,
+          "carbs_g": 0.5,
+          "confidence": 0.6,
+          "fat_g": 5,
+          "fiber_g": 0,
+          "item_name": "Coffee with Cream",
+          "meal_type": "breakfast",
+          "portion_description": "1 cup (8 oz) brewed coffee with 1 tablespoon of heavy cream",
+          "protein_g": 0.5,
+          "sodium_mg": 10,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size of cream is estimated (1 tbsp) as it is not specified.",
+            "Type of cream (e.g., half-and-half, heavy cream, light cream) is not specified, which affects calorie and fat content.",
+            "Coffee strength and brewing method are not specified, though typically negligible in calories."
+          ]
+        },
+        "expected_item_hint": "coffee",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 22124,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-012",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 350,
+          "carbs_g": 10,
+          "confidence": 0.6,
+          "fat_g": 15,
+          "fiber_g": 4,
+          "item_name": "Salad with Grilled Chicken",
+          "meal_type": "lunch",
+          "portion_description": "Approximately 1 large bowl (about 300-400g total), containing mixed greens, a standard serving of grilled chicken breast (approx. 150g), and unspecified dressing/toppings",
+          "protein_g": 35,
+          "sodium_mg": 400,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is estimated as 'large bowl' but could vary significantly",
+            "Dressing type and amount are unknown, which greatly affects calories, fat, and sodium",
+            "Vegetable composition and quantity are unspecified",
+            "Chicken portion size is assumed to be standard (approx. 150g) but could be smaller or larger"
+          ]
+        },
+        "expected_item_hint": "salad",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 29727,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-013",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 850,
+          "carbs_g": 75,
+          "confidence": 0.6,
+          "fat_g": 45,
+          "fiber_g": 4,
+          "item_name": "Burger and Fries",
+          "meal_type": "lunch",
+          "portion_description": "One standard beef burger (approx. 150g patty with bun and condiments) and one medium serving of french fries (approx. 117g)",
+          "protein_g": 30,
+          "sodium_mg": 900,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion sizes are highly variable; 'burger' and 'fries' lack specific weight or size details.",
+            "Caloric and macronutrient values depend heavily on patty size, bun type, cheese, condiments, and fry preparation method."
+          ]
+        },
+        "expected_item_hint": "burger and fries",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 19858,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-014",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 520,
+          "carbs_g": 40,
+          "confidence": 0.6,
+          "fat_g": 27,
+          "fiber_g": 2,
+          "item_name": "McDonald's Quarter Pounder",
+          "meal_type": "lunch",
+          "portion_description": "One standard Quarter Pounder with cheese (beef patty, cheese, ketchup, mustard, onions on a sesame seed bun)",
+          "protein_g": 30,
+          "sodium_mg": 740,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is standard but exact nutritional values may vary by region and specific preparation.",
+            "Assumes standard cheese inclusion; no mention of extra toppings or modifications.",
+            "Sodium and fat content can fluctuate based on cooking methods and ingredient sourcing."
+          ]
+        },
+        "expected_item_hint": "quarter pounder",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 20157,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-015",
+        "confidence": 0.4,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 200,
+          "carbs_g": 22,
+          "confidence": 0.4,
+          "fat_g": 8,
+          "fiber_g": 5,
+          "item_name": "Protein Bar",
+          "meal_type": "snack",
+          "portion_description": "One standard-sized protein bar (approximately 50-60g)",
+          "protein_g": 20,
+          "sodium_mg": 180,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size varies significantly by brand and type (e.g., Quest, RXBAR, Clif Builder's).",
+            "Nutritional values (calories, macros, sodium) differ widely between brands.",
+            "No specific brand or size provided, leading to high uncertainty in precise values."
+          ]
+        },
+        "expected_item_hint": "protein bar",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 23132,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-016",
+        "confidence": 0.4,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 350,
+          "carbs_g": 55,
+          "confidence": 0.4,
+          "fat_g": 8,
+          "fiber_g": 2,
+          "item_name": "Sushi Roll",
+          "meal_type": "lunch",
+          "portion_description": "Standard 6-8 piece maki roll",
+          "protein_g": 12,
+          "sodium_mg": 600,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is highly variable (6-12+ pieces)",
+            "Fillings are unspecified (can range from 50 to 400+ calories per roll)",
+            "Rice type and seasoning (sushi vinegar vs. sugar/salt) affect macros",
+            "Presence of tempura, cream cheese, or avocado significantly alters fat/calorie content",
+            "Sodium varies based on soy sauce dipping and fish type"
+          ]
+        },
+        "expected_item_hint": "sushi",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 23751,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-017",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 450,
+          "carbs_g": 35,
+          "confidence": 0.6,
+          "fat_g": 20,
+          "fiber_g": 4,
+          "item_name": "Steak Tacos",
+          "meal_type": "lunch",
+          "portion_description": "Approximately 2-3 soft corn tortillas filled with grilled steak, topped with onions, cilantro, and salsa",
+          "protein_g": 28,
+          "sodium_mg": 600,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is not specified (number of tacos)",
+            "Tortilla type and size vary",
+            "Toppings and sauces are not detailed",
+            "Steak cut and preparation method are unknown",
+            "Cooking oil or butter usage is unclear"
+          ]
+        },
+        "expected_item_hint": "tacos",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 18207,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-018",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 285,
+          "carbs_g": 36,
+          "confidence": 0.6,
+          "fat_g": 10,
+          "fiber_g": 2.5,
+          "item_name": "Pizza Slice",
+          "meal_type": "lunch",
+          "portion_description": "One standard slice of cheese pizza, approximately 1/8 of a 14-inch pizza",
+          "protein_g": 12,
+          "sodium_mg": 640,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is highly variable (thin crust vs. thick crust, topping variations)",
+            "Caloric and macronutrient content depends heavily on specific ingredients and preparation method",
+            "Sodium content can vary significantly by brand or restaurant"
+          ]
+        },
+        "expected_item_hint": "pizza",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 19563,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-019",
+        "confidence": 0.6,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 450,
+          "carbs_g": 65,
+          "confidence": 0.6,
+          "fat_g": 12,
+          "fiber_g": 8,
+          "item_name": "Smoothie Bowl",
+          "meal_type": "breakfast",
+          "portion_description": "Approximately 1 standard bowl (around 12-16 oz or 350-450g), typically containing blended fruits, yogurt or milk, and topped with granola, seeds, and fresh fruit",
+          "protein_g": 15,
+          "sodium_mg": 120,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is highly variable and not specified",
+            "Ingredients and toppings are not detailed, leading to significant variation in nutritional content",
+            "Base ingredients (e.g., type of fruit, yogurt vs. milk, added sweeteners) are unknown"
+          ]
+        },
+        "expected_item_hint": "smoothie bowl",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 24653,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      },
+      {
+        "ambiguous": true,
+        "case_id": "txt-020",
+        "confidence": 0.3,
+        "estimate": {
+          "ambiguous": true,
+          "calories": 200,
+          "carbs_g": 25,
+          "confidence": 0.3,
+          "fat_g": 10,
+          "fiber_g": 2,
+          "item_name": "Mixed Snacks",
+          "meal_type": "snack",
+          "portion_description": "Undefined quantity of unspecified snack items",
+          "protein_g": 3,
+          "sodium_mg": 250,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "The term 'some snacks' is highly ambiguous and lacks specific details about the type, quantity, or brand of the food items.",
+            "Nutritional values are estimated based on an average of common snack foods (e.g., chips, crackers, or mixed nuts) for a small, undefined portion.",
+            "Actual nutritional content could vary significantly depending on the specific snacks consumed."
+          ]
+        },
+        "expected_item_hint": "snacks",
+        "has_image": false,
+        "input_type": "text",
+        "latency_ms": 29655,
+        "model": "qwen/qwen3.6-35b-a3b",
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "ran_model": true,
+        "schema_errors": [],
+        "schema_valid": true
+      }
+    ],
+    "schema_valid_count": 20,
+    "schema_valid_rate": 1.0
+  },
+  "case_counts": {
+    "ambiguous": 10,
+    "image_capable": 40,
+    "packaged_photo": 10,
+    "photo": 20,
+    "text": 20,
+    "total": 60
+  },
+  "hardware": {
+    "machine": "arm64",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "system_profiler": "Model Name: Mac mini\nChip: Apple M4 Pro\nTotal Number of Cores: 12 (8 Performance and 4 Efficiency)\nMemory: 48 GB"
+  },
+  "lm_studio": {
+    "latency_ms": 11,
+    "models": [
+      "google/gemma-4-31b",
+      "qwen/qwen3.6-35b-a3b",
+      "text-embedding-nomic-embed-text-v1.5"
+    ],
+    "reachable": true
+  },
+  "routing_recommendation": {
+    "auto_log_threshold": "confidence >= 0.75, unambiguous, plausible macros",
+    "candidate_text_model": "qwen/qwen3.6-35b-a3b",
+    "candidate_vision_model": "Qwen2.5-VL 7B on ASUS GX10 first; Qwen2.5-VL 32B only if latency and memory fit",
+    "fallback": "deterministic parser fallback with pending_review; cloud disabled by default",
+    "pending_review_threshold": "confidence < 0.75 or ambiguous/impossible nutrition",
+    "production_text_route": "deterministic parser fallback with pending_review until a benchmark passes",
+    "production_vision_route": "manual pending-review fallback until a local VLM benchmark passes"
+  }
+}
