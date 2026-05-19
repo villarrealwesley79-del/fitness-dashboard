@@ -39,6 +39,9 @@ PLURALS = {
     "salads": "salad",
     "bowls": "bowl",
     "bananas": "banana",
+    "eggs": "egg",
+    "almonds": "almond",
+    "potatoes": "potato",
 }
 CUSTOMIZABLE_CHAIN_TOKENS = {"chipotle"}
 CUSTOMIZABLE_ITEM_TOKENS = {"burrito", "bowl", "taco", "tacos", "salad"}

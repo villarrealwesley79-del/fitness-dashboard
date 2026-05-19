@@ -2,6 +2,19 @@
   "version": "2026-05-19-usda-starter",
   "license": "USDA FoodData Central data is public domain. No Nutritionix-derived data is redistributed in this starter snapshot.",
   "generated_at": "2026-05-19T00:00:00",
+  "data_sources": [
+    {
+      "name": "USDA FoodData Central",
+      "url": "https://fdc.nal.usda.gov/",
+      "license": "U.S. public domain"
+    }
+  ],
+  "nutritionix_redistribution_status": "blocked_pending_tos_review; no Nutritionix-derived data included",
+  "coverage": {
+    "profile": "starter_usda_generic_only",
+    "seed_queries": ["banana", "oatmeal", "egg", "sweet potato", "almond"],
+    "full_curation_status": "deferred; FIT-75 marks actual snapshot data content as a separate curation pass"
+  },
   "items": [
     {
       "normalized_text": "banana",
