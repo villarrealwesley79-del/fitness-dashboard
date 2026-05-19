@@ -8,12 +8,13 @@ from typing import Any
 
 import data_store
 import nutritionix_client
+import open_food_facts_client
 import usda_fdc_client
 from meal_estimate_schema import sanitize_meal_estimate
 
 
 CACHE_TTL_DAYS = 180
-SOURCE_PRIORITY = ("cache", "nutritionix", "usda_fdc")
+SOURCE_PRIORITY = ("cache", "nutritionix", "usda_fdc", "open_food_facts")
 KNOWN_BRANDS = {
     "chipotle",
     "starbucks",
@@ -94,6 +95,11 @@ def lookup(
         if usda:
             data_store.save_branded_lookup_cache(normalized, usda["source"], usda)
             return usda
+    if "open_food_facts" in priorities:
+        off = _open_food_facts_lookup(text)
+        if off:
+            data_store.save_branded_lookup_cache(normalized, off["source"], off)
+            return off
     return None
 
 
@@ -180,6 +186,43 @@ def _usda_lookup(text: str, _normalized: str) -> dict[str, Any] | None:
     return _sanitize_with_provenance(estimate)
 
 
+def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
+    payload = open_food_facts_client.search_products(text)
+    products = payload.get("products") if isinstance(payload, dict) else None
+    if not products:
+        return None
+    product = next((item for item in products if _off_quality_ok(item)), None)
+    if not product:
+        return None
+    nutriments = product.get("nutriments") or {}
+    name = " ".join(
+        str(part).strip()
+        for part in (product.get("brands"), product.get("product_name"))
+        if part
+    ).strip()
+    estimate = {
+        "item_name": name or product.get("product_name") or "Packaged food",
+        "portion_description": "100 g",
+        "meal_type": "snack",
+        "calories": nutriments.get("energy-kcal_100g") or nutriments.get("energy-kcal"),
+        "protein_g": nutriments.get("proteins_100g"),
+        "carbs_g": nutriments.get("carbohydrates_100g"),
+        "fat_g": nutriments.get("fat_100g"),
+        "sodium_mg": _off_sodium_mg(nutriments),
+        "fiber_g": nutriments.get("fiber_100g") if nutriments.get("fiber_100g") is not None else 0,
+        "confidence": 0.72,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "open_food_facts",
+        "external_food_id": product.get("code"),
+        "verified_source_url": product.get("url") or "https://world.openfoodfacts.org/",
+        "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
+        "portion_basis": "100 g Open Food Facts packaged-food reference",
+        "off_attribution": "Source: Open Food Facts, licensed under CC-BY-SA.",
+    }
+    return _sanitize_with_provenance(estimate)
+
+
 def _sanitize_with_provenance(estimate: dict[str, Any]) -> dict[str, Any]:
     sanitized = sanitize_meal_estimate(estimate, plausible_ranges=True)
     for key in (
@@ -194,6 +237,25 @@ def _sanitize_with_provenance(estimate: dict[str, Any]) -> dict[str, Any]:
         if estimate.get(key) is not None:
             sanitized[key] = estimate[key]
     return sanitized
+
+
+def _off_quality_ok(product: dict[str, Any]) -> bool:
+    if not isinstance(product, dict):
+        return False
+    tags = product.get("data_quality_tags") or []
+    if any("error" in str(tag).lower() for tag in tags):
+        return False
+    nutriments = product.get("nutriments") or {}
+    required = ("energy-kcal_100g", "proteins_100g", "carbohydrates_100g", "fat_100g")
+    return bool(product.get("product_name")) and all(nutriments.get(key) is not None for key in required)
+
+
+def _off_sodium_mg(nutriments: dict[str, Any]) -> int:
+    if nutriments.get("sodium_100g") is not None:
+        return int(round(float(nutriments["sodium_100g"]) * 1000))
+    if nutriments.get("salt_100g") is not None:
+        return int(round(float(nutriments["salt_100g"]) * 393.4))
+    return 0
 
 
 def _portion_from_nutritionix(food: dict[str, Any]) -> str | None:
