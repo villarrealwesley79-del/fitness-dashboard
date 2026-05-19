@@ -58,6 +58,7 @@ def test_open_food_facts_client_searches_keyless_endpoint(monkeypatch):
     assert params["search_terms"] == ["Walkers crisps"]
     assert params["json"] == ["1"]
     assert captured["timeout"] == open_food_facts_client.TIMEOUT_SECONDS
+    assert open_food_facts_client.TIMEOUT_SECONDS >= 5
     assert captured["ua"] == open_food_facts_client.USER_AGENT
 
 

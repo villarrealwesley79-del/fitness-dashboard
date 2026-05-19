@@ -8,7 +8,7 @@ from urllib import error, parse, request
 
 
 OFF_SEARCH_URL = "https://world.openfoodfacts.org/cgi/search.pl"
-TIMEOUT_SECONDS = 1.5
+TIMEOUT_SECONDS = 5.0
 USER_AGENT = "FitnessDashboard/1.0 (https://github.com/villarrealwesley79-del/fitness-dashboard)"
 LOCALE_QUERY_TOKENS = {
     "australian",
