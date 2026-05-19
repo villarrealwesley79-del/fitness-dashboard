@@ -431,6 +431,84 @@ def test_meal_intake_accept_requires_calories(monkeypatch):
     assert "calories" in res.get_json()["error"]["message"]
 
 
+def test_local_iso_from_iso_strips_offset_for_downstream_hour_reads():
+    """Regression for Codex audit round 4: logged_at is read by
+    _nutrition_entry_logged_hour via .hour without TZ conversion, so
+    storing the raw UTC ISO misreports late-meal hour. The helper must
+    return a naive server-local datetime string so .hour is local hour.
+    """
+    module = importlib.import_module("app")
+    # Naive input: stays naive (already server-local by convention).
+    result = module._local_iso_from_iso("2026-05-18T22:00:00")
+    assert result is not None
+    # The parsed value's hour should be 22 — that's the user's local hour.
+    from datetime import datetime as _dt
+    parsed = _dt.fromisoformat(result)
+    assert parsed.tzinfo is None, "stored ISO must be naive (no offset suffix)"
+    assert parsed.hour == 22
+
+    # UTC input: converts to server-local before stripping tzinfo.
+    result_utc = module._local_iso_from_iso("2026-05-19T03:00:00+00:00")
+    assert result_utc is not None
+    parsed_utc = _dt.fromisoformat(result_utc)
+    assert parsed_utc.tzinfo is None
+    # Hour depends on the test server's TZ — just assert it's a valid hour.
+    assert 0 <= parsed_utc.hour <= 23
+
+
+def test_local_iso_from_iso_returns_none_for_invalid():
+    module = importlib.import_module("app")
+    assert module._local_iso_from_iso(None) is None
+    assert module._local_iso_from_iso("") is None
+    assert module._local_iso_from_iso("not a date") is None
+
+
+def test_meal_intake_text_stores_logged_at_as_naive_local(monkeypatch):
+    """End-to-end check: a UTC local_timestamp submitted via the endpoint
+    is persisted as a naive ISO (no offset) so downstream local-hour
+    extractors see the user's actual hour.
+    """
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Protein shake",
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.85,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    captured = {}
+
+    def fake_add_food_log(_user_id, record):
+        captured.update(record)
+        return {"client_id": record["client_id"], "logged_at": record["logged_at"]}
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "protein shake",
+            "client_id": "meal-naive-1",
+            "local_timestamp": "2026-05-19T03:00:00+00:00",
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200
+    logged_at = captured["logged_at"]
+    from datetime import datetime as _dt
+    parsed = _dt.fromisoformat(logged_at)
+    assert parsed.tzinfo is None, (
+        f"logged_at must be naive server-local (no tzinfo): {logged_at!r}"
+    )
+
+
 def test_local_date_from_iso_returns_none_for_empty_or_invalid():
     module = importlib.import_module("app")
     assert module._local_date_from_iso(None) is None
@@ -503,6 +581,11 @@ def test_meal_intake_text_preserves_client_local_timestamp(monkeypatch):
 
     monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
 
+    # Use an explicit-offset timestamp where the local-converted hour
+    # depends on the server TZ; pick a value where the converted date is
+    # 2026-05-18 in any reasonable TZ (UTC midnight is still that day in
+    # any non-positive offset, and 23:55 UTC is still that day in any
+    # offset down to about -23).
     local_ts = "2026-05-18T23:55:30.000Z"
     res = module.app.test_client().post(
         "/api/meal-intake",
@@ -514,8 +597,13 @@ def test_meal_intake_text_preserves_client_local_timestamp(monkeypatch):
         content_type="multipart/form-data",
     )
     assert res.status_code == 200, res.get_data(as_text=True)
-    assert captured["logged_at"] == local_ts
-    assert captured["source_timestamp"] == local_ts
+    # Storage normalizes to naive server-local ISO (round-4 fix). Don't
+    # require byte-equality with the UTC input; require that the value
+    # is honored (non-empty, naive) and that the date derives correctly.
+    from datetime import datetime as _dt
+    parsed_logged_at = _dt.fromisoformat(captured["logged_at"])
+    assert parsed_logged_at.tzinfo is None
+    assert captured["source_timestamp"] == captured["logged_at"]
     assert captured["date"] == "2026-05-18", "date must derive from local_timestamp"
 
 
