@@ -22,6 +22,10 @@ LOCALE_QUERY_TOKENS = {
     "u.k.",
     "united",
 }
+PRODUCT_QUERY_ALIASES = {
+    "petit ecolier": "Petit Écolier",
+    "tim tams": "Tim Tam",
+}
 
 
 def search_products(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any] | None:
@@ -40,6 +44,9 @@ def _search_variants(query: str) -> list[str]:
     product_only = _strip_locale_words(query)
     if product_only and product_only.lower() != query.lower():
         variants.append(product_only)
+    alias = PRODUCT_QUERY_ALIASES.get(product_only.lower())
+    if alias and alias.lower() not in {variant.lower() for variant in variants}:
+        variants.append(alias)
     return variants
 
 

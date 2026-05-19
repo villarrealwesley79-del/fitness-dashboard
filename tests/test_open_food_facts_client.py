@@ -67,7 +67,7 @@ def test_open_food_facts_client_retries_without_locale_word(monkeypatch):
     def fake_urlopen(req, timeout):
         params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
         seen_terms.append(params["search_terms"][0])
-        if len(seen_terms) == 1:
+        if len(seen_terms) < 3:
             return _Response({"products": []})
         return _Response({"products": [_product("Tim Tam")]})
 
@@ -75,7 +75,7 @@ def test_open_food_facts_client_retries_without_locale_word(monkeypatch):
 
     result = open_food_facts_client.search_products("Australian Tim Tams")
 
-    assert seen_terms == ["Australian Tim Tams", "Tim Tams"]
+    assert seen_terms == ["Australian Tim Tams", "Tim Tams", "Tim Tam"]
     assert result["products"][0]["product_name"] == "Tim Tam"
 
 
