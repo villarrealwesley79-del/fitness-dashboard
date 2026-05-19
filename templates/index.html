@@ -798,6 +798,48 @@
                 </div>
             </div>
 
+            <div class="section-title">NOTIFICATIONS</div>
+            <div class="card" id="push-notifications-card">
+                <div class="settings-row">
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">
+                            <span class="int-dot" id="push-dot"></span>
+                            Coaching reminders
+                        </span>
+                        <span id="push-state-detail" class="settings-row-detail">Low-stakes nudges — stale wearable data, pending food review. Never used for safety-critical alerts.</span>
+                    </div>
+                    <div class="settings-row-control">
+                        <span id="push-state-chip" class="state-chip">—</span>
+                        <button id="btn-push-enable" class="btn btn-ghost btn-sm" type="button" hidden>Enable</button>
+                        <button id="btn-push-disable" class="btn btn-ghost btn-sm" type="button" hidden>Disable</button>
+                    </div>
+                </div>
+                <div class="settings-row" id="push-install-row" hidden>
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">⚠ Add to Home Screen first</span>
+                        <span class="settings-row-detail">iOS only delivers push when the app is installed to the Home Screen. Tap Share → Add to Home Screen, then reopen this card.</span>
+                    </div>
+                </div>
+                <div class="settings-row" id="push-blocked-row" hidden>
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">⚠ Notifications blocked</span>
+                        <span id="push-blocked-detail" class="settings-row-detail">You denied notification permission. Re-enable via your browser's site settings, then refresh.</span>
+                    </div>
+                </div>
+                <div class="settings-row" id="push-vapid-row" hidden>
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">⚠ Push delivery not configured</span>
+                        <span class="settings-row-detail">Permission granted, but the server hasn't published a VAPID key yet. In-app alerts still surface here; backend delivery requires server config.</span>
+                    </div>
+                </div>
+                <div class="settings-row" id="push-alerts-row" hidden>
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">Active alerts</span>
+                        <span id="push-alerts-list" class="settings-row-detail">—</span>
+                    </div>
+                </div>
+            </div>
+
             <div class="section-title">DATA &amp; BACKUP</div>
             <div class="card">
                 <div class="settings-row">
