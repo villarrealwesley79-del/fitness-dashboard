@@ -157,3 +157,14 @@ def test_refresh_script_write_without_usda_key_explains_requirement(monkeypatch,
 
     assert result.returncode == 2
     assert payload == {"status": "missing_api_key", "env_var": "USDA_FDC_API_KEY", "writes": False}
+
+
+def test_refresh_script_refuses_partial_writes(monkeypatch, tmp_path):
+    monkeypatch.setenv("USDA_FDC_API_KEY", "test-key")
+    monkeypatch.setattr(refresh_nutrition_snapshot, "fetch_usda_food", lambda query: None)
+
+    snapshot = refresh_nutrition_snapshot.build_snapshot(["banana"])
+    error = refresh_nutrition_snapshot.refresh_completeness_error(snapshot, ["banana"])
+
+    assert snapshot["items"] == []
+    assert error == {"status": "incomplete_refresh", "expected_items": 1, "items": 0, "writes": False}

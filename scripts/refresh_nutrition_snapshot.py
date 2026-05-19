@@ -56,7 +56,12 @@ def main() -> int:
         print(json.dumps({"status": "missing_api_key", "env_var": "USDA_FDC_API_KEY", "writes": False}, sort_keys=True))
         return 2
 
-    refreshed = build_snapshot(USDA_SEED_QUERIES[: max(args.limit, 0)])
+    seed_queries = USDA_SEED_QUERIES[: max(args.limit, 0)]
+    refreshed = build_snapshot(seed_queries)
+    completeness_error = refresh_completeness_error(refreshed, seed_queries)
+    if completeness_error:
+        print(json.dumps(completeness_error, sort_keys=True))
+        return 3
     output = Path(args.output)
     output.write_text(json.dumps(refreshed, indent=2, sort_keys=True) + "\n")
     print(json.dumps({"status": "written", "items": len(refreshed.get("items", [])), "writes": True}, sort_keys=True))
@@ -88,6 +93,18 @@ def build_snapshot(seed_queries: tuple[str, ...] | list[str]) -> dict:
             "full_curation_status": "deferred; FIT-75 marks actual snapshot data content as a separate curation pass",
         },
         "items": items,
+    }
+
+
+def refresh_completeness_error(snapshot: dict, seed_queries: tuple[str, ...] | list[str]) -> dict | None:
+    item_count = len(snapshot.get("items", []))
+    if item_count == len(seed_queries):
+        return None
+    return {
+        "status": "incomplete_refresh",
+        "expected_items": len(seed_queries),
+        "items": item_count,
+        "writes": False,
     }
 
 
