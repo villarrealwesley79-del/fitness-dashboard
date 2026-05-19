@@ -102,6 +102,23 @@ def test_refresh_script_builds_snapshot_from_official_usda_api(monkeypatch):
     assert snapshot["items"][0]["calories"] == 89
 
 
+def test_refresh_script_maps_atwater_energy_names():
+    item = refresh_nutrition_snapshot.food_to_snapshot_item(
+        "beans",
+        {
+            "fdcId": 123,
+            "description": "Beans",
+            "foodNutrients": [
+                {"nutrientName": "Energy (Atwater General Factors)", "value": 132},
+                {"nutrientName": "Protein", "value": 8.9},
+            ],
+        },
+    )
+
+    assert item["calories"] == 132
+    assert item["protein_g"] == 8.9
+
+
 def test_refresh_script_dry_run_does_not_write():
     path = Path("data/nutrition_snapshot.json")
     before = path.read_text()

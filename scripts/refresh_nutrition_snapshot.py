@@ -21,7 +21,7 @@ SNAPSHOT_PATH = ROOT / "data" / "nutrition_snapshot.json"
 FDC_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 USDA_SEED_QUERIES = ("banana", "oatmeal", "egg", "sweet potato", "almond")
 NUTRIENTS = {
-    "calories": {"Energy"},
+    "calories": {"Energy", "Energy (Atwater General Factors)", "Energy (Atwater Specific Factors)"},
     "protein_g": {"Protein"},
     "carbs_g": {"Carbohydrate, by difference"},
     "fat_g": {"Total lipid (fat)"},
