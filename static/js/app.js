@@ -2183,8 +2183,12 @@
         } else {
             const metricsPct = $('ai-metrics-fallback-pct');
             const metricsDetail = $('ai-metrics-detail');
+            const warnRow = $('ai-coach-warning-row');
             if (metricsPct) { metricsPct.textContent = '—'; metricsPct.className = 'state-chip unknown'; }
             if (metricsDetail) metricsDetail.textContent = 'Metrics unavailable';
+            // Don't leave a stale "flaky" warning on screen if /api/ai/metrics
+            // fails after a previous refresh exposed a high fallback rate.
+            if (warnRow) warnRow.hidden = true;
         }
     }
 

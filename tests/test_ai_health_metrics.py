@@ -13,11 +13,23 @@ relies on is:
 The tests also lock in that neither endpoint exposes raw model output,
 prompt content, or stack traces — the UI surfaces these values to the
 user and they must never carry sensitive runtime detail.
+
+Timestamps are seeded relative to ``datetime.now()`` because the
+metrics endpoint filters with ``datetime.now() - timedelta(hours=...)``;
+hard-coded ISO literals would silently drop out of the 24h window once
+real time moves past them.
 """
 from __future__ import annotations
 
 import importlib
 import sqlite3
+from datetime import datetime, timedelta
+
+
+def _iso_minutes_ago(minutes: int) -> str:
+    """ISO timestamp ``minutes`` ago in server-local time (matches the
+    format the metrics route compares against)."""
+    return (datetime.now() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
 
 
 def _client(monkeypatch):
@@ -165,10 +177,10 @@ def test_ai_metrics_computes_fallback_pct(monkeypatch, tmp_path):
     module = _client(monkeypatch)
     db_path = tmp_path / "adjust_cache.db"
     _seed_adjust_metrics(db_path, [
-        ("2026-05-19T01:00:00", "ok", 200, None),
-        ("2026-05-19T02:00:00", "ok", 220, None),
-        ("2026-05-19T03:00:00", "ok", 180, None),
-        ("2026-05-19T04:00:00", "fallback", 0, "timeout"),
+        (_iso_minutes_ago(240), "ok", 200, None),
+        (_iso_minutes_ago(180), "ok", 220, None),
+        (_iso_minutes_ago(120), "ok", 180, None),
+        (_iso_minutes_ago(60), "fallback", 0, "timeout"),
     ])
     monkeypatch.setattr(module, "_ADJUST_CACHE_DB", str(db_path), raising=False)
 
@@ -192,11 +204,11 @@ def test_ai_metrics_warning_threshold_triggers_above_twenty_pct(monkeypatch, tmp
     db_path = tmp_path / "adjust_cache.db"
     # 4 ok + 1 fallback = 20% — boundary case.
     _seed_adjust_metrics(db_path, [
-        ("2026-05-19T01:00:00", "ok", 200, None),
-        ("2026-05-19T02:00:00", "ok", 200, None),
-        ("2026-05-19T03:00:00", "ok", 200, None),
-        ("2026-05-19T04:00:00", "ok", 200, None),
-        ("2026-05-19T05:00:00", "fallback", 0, "timeout"),
+        (_iso_minutes_ago(300), "ok", 200, None),
+        (_iso_minutes_ago(240), "ok", 200, None),
+        (_iso_minutes_ago(180), "ok", 200, None),
+        (_iso_minutes_ago(120), "ok", 200, None),
+        (_iso_minutes_ago(60), "fallback", 0, "timeout"),
     ])
     monkeypatch.setattr(module, "_ADJUST_CACHE_DB", str(db_path), raising=False)
 
@@ -214,7 +226,7 @@ def test_ai_metrics_recent_does_not_include_prompt_or_completion(monkeypatch, tm
     module = _client(monkeypatch)
     db_path = tmp_path / "adjust_cache.db"
     _seed_adjust_metrics(db_path, [
-        ("2026-05-19T01:00:00", "fallback", 0, "timeout"),
+        (_iso_minutes_ago(120), "fallback", 0, "timeout"),
     ])
     monkeypatch.setattr(module, "_ADJUST_CACHE_DB", str(db_path), raising=False)
 
