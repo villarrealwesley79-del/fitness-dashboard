@@ -3508,14 +3508,11 @@ def meal_intake_stub():
     # yet. See FIT-67 for the durable resolution.
     food_log = None
     if decision["correction_state"] == CORRECTION_STATE_ACCEPTED:
-        is_new_food_log = not food_log_exists_by_client_id(_current_data_user_id(), client_id)
         food_log = _meal_intake_stub_persist(
             client_id, estimate, source=source, has_image=has_image,
             text_hint=text_raw or None, local_timestamp=local_timestamp,
             correction_state=CORRECTION_STATE_ACCEPTED,
         )
-        if is_new_food_log:
-            personal_vocab.record_accept(_current_data_user_id(), text_raw or None, estimate)
 
     return jsonify({
         "status": status,
