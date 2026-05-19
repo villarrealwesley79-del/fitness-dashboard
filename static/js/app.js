@@ -1576,10 +1576,12 @@
         // FIT-14: adherence summary line — single-glance "X planned ·
         // Y added · Z skipped" so the user can scan the day's discipline
         // without reading every exercise. ``followed`` is a precomputed
-        // boolean from the backend.
+        // boolean from the backend. ``planned`` is the residual after
+        // backing out added AND modified exercises — otherwise a
+        // modified exercise would be counted in both buckets.
         const plannedCount = exercises.filter((ex) => {
             const n = String(workoutExerciseName(ex) || '').toLowerCase();
-            return !addedSet.has(n);
+            return !addedSet.has(n) && !modifiedSet.has(n);
         }).length;
         const adherenceParts = [];
         adherenceParts.push(`${plannedCount} planned`);
