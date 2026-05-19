@@ -165,26 +165,24 @@ def test_nutrition_history_flags_high_sodium_and_late_meal(fitness_app):
 # Sanity: existing fields preserved
 # ──────────────────────────────────────────────────────────────────
 
-def test_nutrition_history_merges_food_logs_with_legacy_nutrition_data(fitness_app, monkeypatch):
+def test_nutrition_history_surfaces_food_logs_entries(fitness_app, monkeypatch):
     """Regression for Codex audit round 1: the active meal composer
     (FIT-60/59/61) persists accepted entries via ``add_food_log`` into
     SQLite ``food_logs`` — NOT the legacy NUTRITION_DATA JSON. The
-    endpoint must merge both so the Body tab's interpretation and
-    14-day trend reflect the actual logged meals.
+    endpoint must surface those entries so the Body tab's
+    interpretation and 14-day trend reflect the actual logged meals.
 
-    Mirrors what /api/nutrition-today does via
-    _food_log_entries_for_context.
+    The endpoint prefers food_logs per-day when any food_logs entry
+    exists for that date (matching _nutrition_context_for_date for
+    /api/nutrition-today, and avoiding the dual-write double-count
+    scenario covered in test_nutrition_history_does_not_double_count_...).
     """
-    # Legacy entry in NUTRITION_DATA.
-    _seed_nutrition(fitness_app, [
-        {"date": _today(), "calories": 500, "protein_g": 30,
-         "carbs_g": 0, "fat_g": 0, "sodium_mg": 0,
-         "correction_state": "accepted"},
-    ])
+    # Legacy NUTRITION_DATA empty for today.
+    _seed_nutrition(fitness_app, [])
     # Modern entry in food_logs (simulated via monkeypatched fetcher).
     food_log_row = {
         "id": 1, "client_id": "fit13-test-1",
-        "date": _today(), "logged_at": f"{_today()}T19:00:00",
+        "date": _today(), "logged_at": f"{_today()}T21:00:00",
         "calories": 700, "protein_g": 40, "carbs_g": 60, "fat_g": 25,
         "sodium_mg": 1200, "confidence": 0.85,
         "correction_state": "accepted", "source": "ai_text_estimate",
@@ -196,12 +194,71 @@ def test_nutrition_history_merges_food_logs_with_legacy_nutrition_data(fitness_a
     today = next(d for d in fitness_app.app.test_client()
                  .get("/api/nutrition-history").get_json()["history"]
                  if d["date"] == _today())
-    assert today["calories"] == 1200, (
-        "history must include both legacy + food_logs sources "
-        f"(got {today['calories']}, expected 500+700=1200)"
+    assert today["calories"] == 700, (
+        f"food_logs entry must surface in history (got {today['calories']})"
     )
-    assert today["entries_count"] == 2
+    assert today["entries_count"] == 1
     assert today["sodium_mg"] == 1200
+    assert today["late_meal"] is True
+
+
+def test_nutrition_history_does_not_double_count_dual_write_entries(fitness_app, monkeypatch):
+    """Regression for Codex audit round 2: /api/add-nutrition writes the
+    same entry to BOTH stores (food_logs via add_food_log AND legacy
+    NUTRITION_DATA). Concatenating them would double-count the meal.
+
+    The endpoint must prefer food_logs per-day when any food_logs row
+    exists for that date — matching the rule
+    _nutrition_context_for_date already uses for /api/nutrition-today.
+    """
+    # Same meal logged via /api/add-nutrition → appears in both stores
+    # with the same client_id.
+    legacy_entry = {
+        "date": _today(), "calories": 600, "protein_g": 35,
+        "carbs_g": 50, "fat_g": 20, "sodium_mg": 800,
+        "client_id": "dual-write-1",
+        "correction_state": "accepted",
+    }
+    food_log_entry = {
+        "id": 1, "client_id": "dual-write-1",
+        "date": _today(), "logged_at": f"{_today()}T13:00:00",
+        "calories": 600, "protein_g": 35, "carbs_g": 50, "fat_g": 20,
+        "sodium_mg": 800, "confidence": 0.85,
+        "correction_state": "accepted",
+    }
+    _seed_nutrition(fitness_app, [legacy_entry])
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [food_log_entry],
+    )
+    today = next(d for d in fitness_app.app.test_client()
+                 .get("/api/nutrition-history").get_json()["history"]
+                 if d["date"] == _today())
+    assert today["calories"] == 600, (
+        "dual-write entry must count once, not twice "
+        f"(got {today['calories']}, expected 600)"
+    )
+    assert today["entries_count"] == 1
+
+
+def test_nutrition_history_falls_back_to_legacy_on_days_without_food_logs(fitness_app, monkeypatch):
+    """Days that pre-date the food_logs migration still have entries in
+    NUTRITION_DATA only. Those must continue to render in the Body trend.
+    """
+    legacy_only_date = _today_minus(10)
+    _seed_nutrition(fitness_app, [
+        {"date": legacy_only_date, "calories": 1900, "protein_g": 120,
+         "carbs_g": 220, "fat_g": 65, "sodium_mg": 1500,
+         "correction_state": "accepted"},
+    ])
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [],  # no food_logs at all
+    )
+    days = fitness_app.app.test_client().get("/api/nutrition-history").get_json()["history"]
+    target = next(d for d in days if d["date"] == legacy_only_date)
+    assert target["calories"] == 1900
+    assert target["entries_count"] == 1
 
 
 def test_nutrition_history_still_exposes_legacy_macro_keys(fitness_app):

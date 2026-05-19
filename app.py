@@ -3604,13 +3604,22 @@ def nutrition_history():
     calories_target = USER_SETTINGS.get("daily_calorie_target")
     protein_target = USER_SETTINGS.get("daily_protein_target_g")
     earliest = (today - timedelta(days=13)).strftime("%Y-%m-%d")
-    food_log_entries = _food_log_entries_for_context(since=earliest)
-    merged_entries = list(NUTRITION_DATA or []) + list(food_log_entries)
+    food_log_entries = list(_food_log_entries_for_context(since=earliest) or [])
+    legacy_entries = list(NUTRITION_DATA or [])
+    # Avoid double-counting entries on the dual-write path:
+    # /api/add-nutrition appends to BOTH stores with the same client_id,
+    # so concatenating them naively would inflate every day's totals.
+    # Per-day, prefer food_logs when any entries exist for that date
+    # (matches the rule _nutrition_context_for_date already uses for
+    # /api/nutrition-today). Days with no food_logs fall back to legacy
+    # NUTRITION_DATA so historical data pre-dating food_logs still shows.
+    food_log_dates = {_nutrition_entry_day(e) for e in food_log_entries}
     days = []
     for i in range(13, -1, -1):
         d = today - timedelta(days=i)
         date_s = d.strftime("%Y-%m-%d")
-        totals = _nutrition_history_breakdown(date_s, merged_entries)
+        entries_for_day = food_log_entries if date_s in food_log_dates else legacy_entries
+        totals = _nutrition_history_breakdown(date_s, entries_for_day)
         cals = totals["calories"]
         protein = totals["protein_g"]
         days.append({
