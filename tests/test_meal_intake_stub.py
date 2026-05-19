@@ -93,6 +93,56 @@ def test_meal_intake_text_only_auto_logs_when_parser_is_confident(monkeypatch):
     assert persisted["source"] == "ai_text_estimate"
 
 
+def test_meal_intake_preserves_open_food_facts_attribution(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Walkers Crisps",
+        "portion_description": "100 g",
+        "meal_type": "snack",
+        "calories": 500,
+        "protein_g": 6,
+        "carbs_g": 60,
+        "fat_g": 25,
+        "sodium_mg": 400,
+        "fiber_g": 3,
+        "confidence": 0.82,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "external_food_id": "500032837",
+        "verified_source_url": "https://world.openfoodfacts.org/product/500032837",
+        "portion_basis": "100 g Open Food Facts packaged-food reference",
+        "off_attribution": "Source: Open Food Facts, licensed under CC-BY-SA.",
+    }, source="open_food_facts")
+
+    persisted = {}
+
+    def fake_add_food_log(_user_id, record):
+        persisted.update(record)
+        return {
+            "id": 8,
+            "client_id": record["client_id"],
+            "item_name": record["item_name"],
+            "calories": record["calories"],
+            "source": record["source"],
+        }
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "UK Walkers crisps", "client_id": "meal-off-1"},
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["estimate"]["source"] == "open_food_facts"
+    assert body["estimate"]["verified_source_url"] == "https://world.openfoodfacts.org/product/500032837"
+    assert "CC-BY-SA" in body["estimate"]["off_attribution"]
+    assert persisted["original_estimate"]["verified_source_url"] == "https://world.openfoodfacts.org/product/500032837"
+    assert "CC-BY-SA" in persisted["original_estimate"]["off_attribution"]
+
+
 def test_meal_intake_text_pending_review_when_parser_ambiguous(monkeypatch):
     module = _client(monkeypatch)
     _stub_parser(monkeypatch, module, estimate={

@@ -58,6 +58,7 @@ OFF_REJECT_QUALITY_TAG_FRAGMENTS = (
     "nutrition-packaging-as-sold-100g-value-under-0-01-g-salt",
     "nutrition-value-very-low-for-category-salt",
 )
+OFF_COMPLETE_QUALITY_TAG = "nutrition-data-complete"
 
 
 def normalize_meal_text(text: str) -> str:
@@ -254,13 +255,19 @@ def _off_quality_ok(product: dict[str, Any]) -> bool:
         return False
     tags = product.get("data_quality_tags") or []
     lowered_tags = [str(tag).lower() for tag in tags]
+    if not any(OFF_COMPLETE_QUALITY_TAG in tag for tag in lowered_tags):
+        return False
     if any("error" in tag for tag in lowered_tags):
         return False
     if any(fragment in tag for tag in lowered_tags for fragment in OFF_REJECT_QUALITY_TAG_FRAGMENTS):
         return False
     nutriments = product.get("nutriments") or {}
     required = ("energy-kcal_100g", "proteins_100g", "carbohydrates_100g", "fat_100g")
-    return bool(product.get("product_name")) and all(nutriments.get(key) is not None for key in required) and _off_macros_plausible(nutriments)
+    return (
+        bool(product.get("product_name"))
+        and all(nutriments.get(key) is not None for key in required)
+        and _off_macros_plausible(nutriments)
+    )
 
 
 def _off_macros_plausible(nutriments: dict[str, Any]) -> bool:

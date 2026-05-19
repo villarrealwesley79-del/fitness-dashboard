@@ -3301,6 +3301,28 @@ _POLICY_REASON_NOTES = {
     "missing_calories": "Calories are missing from the estimate — please enter manually.",
 }
 
+_MEAL_ESTIMATE_PROVENANCE_FIELDS = (
+    "external_food_id",
+    "verified_source_url",
+    "data_fetched_at",
+    "portion_basis",
+    "brand_id",
+    "underlying_source",
+    "off_attribution",
+)
+
+
+def _copy_meal_estimate_provenance(estimate: dict, raw_estimate: dict) -> None:
+    """Keep safe lookup provenance after schema validation drops unknown fields."""
+    if not isinstance(raw_estimate, dict):
+        return
+    for key in _MEAL_ESTIMATE_PROVENANCE_FIELDS:
+        value = raw_estimate.get(key)
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                estimate[key] = cleaned[:1000]
+
 
 def _merge_policy_reasons_into_uncertainty_notes(estimate: dict, reasons: list) -> None:
     """Append human-readable notes for each policy reason to estimate.uncertainty_notes.
@@ -3436,8 +3458,10 @@ def meal_intake_stub():
         response_extras["stub"] = True
     else:
         parsed = parse_meal_text(text_raw, timestamp=local_timestamp)
+        raw_estimate = parsed["estimate"]
         try:
-            estimate = sanitize_meal_estimate(parsed["estimate"])
+            estimate = sanitize_meal_estimate(raw_estimate)
+            _copy_meal_estimate_provenance(estimate, raw_estimate)
         except MealEstimateValidationError:
             estimate = manual_review_estimate(text=text_raw, source="manual_text_review")
             parsed = {"fallback_used": True}
@@ -3514,6 +3538,7 @@ def meal_intake_accept_stub(client_id: str):
     if err:
         return err
     estimate = data.get("estimate") or {}
+    raw_estimate = estimate
     source_hint = estimate.get("source") if isinstance(estimate, dict) else None
     try:
         estimate = sanitize_meal_estimate(
@@ -3522,6 +3547,7 @@ def meal_intake_accept_stub(client_id: str):
             legacy_defaults=True,
             plausible_ranges=True,
         )
+        _copy_meal_estimate_provenance(estimate, raw_estimate)
     except MealEstimateValidationError as exc:
         return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
     text_hint, _ = _coerce_str(data.get("text"), "text", required=False, max_len=500)
