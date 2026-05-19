@@ -3207,6 +3207,18 @@ def add_nutrition():
 
 _MEAL_INTAKE_STUB_MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6 MB
 _MEAL_INTAKE_SUPPORTED_IMAGE_MIMETYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+_MEAL_ESTIMATE_SAFE_METADATA_FIELDS = (
+    "external_food_id",
+    "verified_source_url",
+    "data_fetched_at",
+    "portion_basis",
+    "brand_id",
+    "underlying_source",
+    "off_attribution",
+    "vision_description",
+    "vision_provider",
+    "vision_confidence",
+)
 _FOOD_PHOTO_RETENTION = {
     "policy": "discard_after_extraction",
     "raw_photo_retained": False,
@@ -3240,6 +3252,13 @@ def _food_photo_retention_payload(has_image: bool = False) -> dict:
     payload = dict(_FOOD_PHOTO_RETENTION)
     payload["image_received"] = bool(has_image)
     return payload
+
+
+def _preserve_safe_estimate_metadata(estimate: dict, raw: dict) -> dict:
+    for key in _MEAL_ESTIMATE_SAFE_METADATA_FIELDS:
+        if raw.get(key) is not None:
+            estimate[key] = raw[key]
+    return estimate
 
 
 def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
@@ -3302,8 +3321,11 @@ def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype:
         media_type=mimetype or "image/jpeg",
     )
     description = vision["item_description"]
-    lookup_text = " ".join(part for part in (description, vision.get("portion_hint")) if part)
-    lookup = branded_food_lookup.lookup(lookup_text, brand_hint=text_raw or None)
+    lookup_text = " ".join(part for part in (text_raw, description, vision.get("portion_hint")) if part)
+    try:
+        lookup = branded_food_lookup.lookup(lookup_text)
+    except Exception:
+        lookup = None
     provider = vision.get("provider") or vision_estimator.configured_provider()
     if lookup:
         estimate = dict(lookup)
@@ -3610,15 +3632,17 @@ def meal_intake_accept_stub(client_id: str):
     data, err = get_json_body(required=True)
     if err:
         return err
-    estimate = data.get("estimate") or {}
-    source_hint = estimate.get("source") if isinstance(estimate, dict) else None
+    raw_estimate = data.get("estimate") or {}
+    source_hint = raw_estimate.get("source") if isinstance(raw_estimate, dict) else None
     try:
         estimate = sanitize_meal_estimate(
-            estimate,
+            raw_estimate,
             source=source_hint or "stub_text_estimate",
             legacy_defaults=True,
             plausible_ranges=True,
         )
+        if isinstance(raw_estimate, dict):
+            _preserve_safe_estimate_metadata(estimate, raw_estimate)
     except MealEstimateValidationError as exc:
         return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
     text_hint, _ = _coerce_str(data.get("text"), "text", required=False, max_len=500)
