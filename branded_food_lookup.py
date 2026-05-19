@@ -54,6 +54,9 @@ OFF_REJECT_QUALITY_TAG_FRAGMENTS = (
     "nutrition-energy-value-in-kcal-may-not-match",
     "nutrition-packaging-as-sold-100g-energy-value-in-kcal-does-not-match",
     "nutrition-packaging-as-sold-100g-energy-value-in-kcal-may-not-match",
+    "nutrition-value-under-0-01-g-salt",
+    "nutrition-packaging-as-sold-100g-value-under-0-01-g-salt",
+    "nutrition-value-very-low-for-category-salt",
 )
 
 

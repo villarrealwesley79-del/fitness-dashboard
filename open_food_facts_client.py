@@ -9,6 +9,7 @@ from urllib import error, parse, request
 
 OFF_SEARCH_URL = "https://world.openfoodfacts.org/cgi/search.pl"
 TIMEOUT_SECONDS = 1.5
+USER_AGENT = "FitnessDashboard/1.0 (https://github.com/villarrealwesley79-del/fitness-dashboard)"
 
 
 def search_products(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any] | None:
@@ -37,7 +38,7 @@ def search_products(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str
         f"{OFF_SEARCH_URL}?{parse.urlencode(params)}",
         headers={
             "Accept": "application/json",
-            "User-Agent": "fitness-dashboard/1.0 single-user nutrition lookup",
+            "User-Agent": USER_AGENT,
         },
     )
     try:

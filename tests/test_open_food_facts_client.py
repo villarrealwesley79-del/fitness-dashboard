@@ -58,7 +58,7 @@ def test_open_food_facts_client_searches_keyless_endpoint(monkeypatch):
     assert params["search_terms"] == ["Walkers crisps"]
     assert params["json"] == ["1"]
     assert captured["timeout"] == open_food_facts_client.TIMEOUT_SECONDS
-    assert "fitness-dashboard" in captured["ua"]
+    assert captured["ua"] == open_food_facts_client.USER_AGENT
 
 
 def test_open_food_facts_tier_runs_after_usda(monkeypatch):
@@ -114,6 +114,31 @@ def test_open_food_facts_skips_nutrition_mismatch_warnings(monkeypatch):
     assert estimate["source"] == "open_food_facts"
     assert estimate["external_food_id"] == "good"
     assert estimate["calories"] == 500
+
+
+def test_open_food_facts_skips_salt_quality_warnings(monkeypatch):
+    bad = _product("Bad Product", code="bad")
+    bad["data_quality_tags"] = [
+        "en:nutrition-packaging-as-sold-100g-value-under-0-01-g-salt",
+    ]
+    bad["nutriments"]["sodium_100g"] = 0.00116
+    good = _product("Clean Product", code="good")
+    good["nutriments"]["sodium_100g"] = 0.252
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a: {"products": [bad, good]},
+    )
+
+    estimate = branded_food_lookup.lookup("non us salty snack")
+
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["external_food_id"] == "good"
+    assert estimate["sodium_mg"] == 252
 
 
 def test_open_food_facts_non_us_cases_are_appendable(monkeypatch):
