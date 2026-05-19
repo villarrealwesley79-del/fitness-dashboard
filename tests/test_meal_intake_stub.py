@@ -679,9 +679,10 @@ def test_meal_intake_text_passes_local_timestamp_through_to_parser(monkeypatch):
     module = _client(monkeypatch)
     seen = {}
 
-    def fake_parse(text, *, timestamp=None):
+    def fake_parse(text, *, timestamp=None, user_id=None):
         seen["text"] = text
         seen["timestamp"] = timestamp
+        seen["user_id"] = user_id
         return {
             "estimate": {
                 "item_name": "Yogurt", "portion_description": None,
@@ -708,6 +709,7 @@ def test_meal_intake_text_passes_local_timestamp_through_to_parser(monkeypatch):
     assert res.status_code == 200
     assert seen["text"] == "yogurt"
     assert seen["timestamp"] == "2026-05-19T08:15:00"
+    assert seen["user_id"] == 1
 
 
 def test_meal_intake_accept_persists_parser_source_when_present(monkeypatch):

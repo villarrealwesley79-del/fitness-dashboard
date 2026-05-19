@@ -48,7 +48,7 @@ def test_usda_search_adds_optional_api_key(monkeypatch):
     params = urllib.parse.parse_qs(urllib.parse.urlparse(captured["url"]).query)
     assert params["api_key"] == ["fdc-key"]
     assert params["query"] == ["oatmeal"]
-    assert params["dataType"] == ["Foundation,SR Legacy"]
+    assert params["dataType"] == ["Branded,Foundation,SR Legacy"]
 
 
 def test_usda_handles_network_errors(monkeypatch):
