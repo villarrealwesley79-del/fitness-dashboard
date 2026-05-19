@@ -1040,6 +1040,7 @@ def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
         "ambiguous photo+text submissions must be held for review"
     )
     assert body["estimate"]["ambiguous"] is True
+    assert body["estimate"]["from_image"] is True
     assert "ambiguous_input" in body["policy"]["reasons"]
     assert body["photo_retention"]["image_received"] is True
     assert body["photo_retention"]["raw_model_trace_retained"] is False
