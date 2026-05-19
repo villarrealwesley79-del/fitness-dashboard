@@ -88,24 +88,25 @@ def lookup(
         return None
     priorities = tuple(source_priority or SOURCE_PRIORITY)
 
-    if "cache" in priorities:
-        cached = _cache_lookup(normalized)
-        if cached:
-            return cached
-    if "snapshot" in priorities:
-        snapshot = snapshot_lookup(normalized)
-        if snapshot:
-            return snapshot
-    if "nutritionix" in priorities:
-        nutritionix = _nutritionix_lookup(text, normalized)
-        if nutritionix:
-            data_store.save_branded_lookup_cache(normalized, nutritionix["source"], nutritionix)
-            return nutritionix
-    if "usda_fdc" in priorities:
-        usda = _usda_lookup(text, normalized)
-        if usda:
-            data_store.save_branded_lookup_cache(normalized, usda["source"], usda)
-            return usda
+    for source in priorities:
+        if source == "cache":
+            cached = _cache_lookup(normalized)
+            if cached:
+                return cached
+        elif source == "snapshot":
+            snapshot = snapshot_lookup(normalized)
+            if snapshot:
+                return snapshot
+        elif source == "nutritionix":
+            nutritionix = _nutritionix_lookup(text, normalized)
+            if nutritionix:
+                data_store.save_branded_lookup_cache(normalized, nutritionix["source"], nutritionix)
+                return nutritionix
+        elif source == "usda_fdc":
+            usda = _usda_lookup(text, normalized)
+            if usda:
+                data_store.save_branded_lookup_cache(normalized, usda["source"], usda)
+                return usda
     return None
 
 
