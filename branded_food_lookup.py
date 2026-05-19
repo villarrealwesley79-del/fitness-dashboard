@@ -98,12 +98,18 @@ def lookup(
             if cached:
                 return cached
         elif source == "nutritionix":
-            nutritionix = _nutritionix_lookup(lookup_text, normalized)
+            try:
+                nutritionix = _nutritionix_lookup(lookup_text, normalized)
+            except Exception:
+                nutritionix = None
             if nutritionix:
                 _save_cache_best_effort(normalized, nutritionix["source"], nutritionix, user_id=user_id)
                 return nutritionix
         elif source == "usda_fdc":
-            usda = _usda_lookup(lookup_text, normalized)
+            try:
+                usda = _usda_lookup(lookup_text, normalized)
+            except Exception:
+                usda = None
             if usda:
                 _save_cache_best_effort(normalized, usda["source"], usda, user_id=user_id)
                 return usda

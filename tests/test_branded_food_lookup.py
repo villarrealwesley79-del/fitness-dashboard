@@ -417,6 +417,69 @@ def test_cache_write_failure_does_not_drop_valid_source_result(monkeypatch):
     assert estimate["item_name"] == "Chipotle chicken burrito"
 
 
+def test_malformed_nutritionix_result_falls_through_to_usda(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(nf_calories=99999),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a: {
+            "foods": [
+                {
+                    "fdcId": 173944,
+                    "description": "BANANAS,RAW",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "value": 89},
+                        {"nutrientName": "Protein", "value": 1.1},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 22.8},
+                        {"nutrientName": "Total lipid (fat)", "value": 0.3},
+                    ],
+                }
+            ]
+        },
+    )
+
+    estimate = branded_food_lookup.lookup("banana")
+
+    assert estimate["source"] == "usda_fdc"
+    assert estimate["item_name"] == "BANANAS,RAW"
+
+
+def test_malformed_external_results_return_none(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(nf_calories=99999),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a: {
+            "foods": [
+                {
+                    "fdcId": 12345,
+                    "description": "BROKEN FOOD",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "value": 99999},
+                        {"nutrientName": "Protein", "value": 1},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 1},
+                        {"nutrientName": "Total lipid (fat)", "value": 1},
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert branded_food_lookup.lookup("broken food") is None
+
+
 def test_stale_cache_falls_through_to_usda(monkeypatch):
     stale_at = (datetime.now() - timedelta(days=181)).isoformat(timespec="seconds")
     monkeypatch.setattr(
