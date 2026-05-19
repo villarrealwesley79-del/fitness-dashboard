@@ -431,6 +431,44 @@ def test_meal_intake_accept_requires_calories(monkeypatch):
     assert "calories" in res.get_json()["error"]["message"]
 
 
+def test_local_date_from_iso_returns_none_for_empty_or_invalid():
+    module = importlib.import_module("app")
+    assert module._local_date_from_iso(None) is None
+    assert module._local_date_from_iso("") is None
+    assert module._local_date_from_iso("   ") is None
+    assert module._local_date_from_iso("not a date") is None
+    assert module._local_date_from_iso("2026-99-99T00:00:00Z") is None
+
+
+def test_local_date_from_iso_handles_naive_input():
+    module = importlib.import_module("app")
+    assert module._local_date_from_iso("2026-05-18T23:55:30") == "2026-05-18"
+    assert module._local_date_from_iso("2026-05-19T02:30:00") == "2026-05-19"
+
+
+def test_local_date_from_iso_parses_utc_z_suffix():
+    """The composer emits ``new Date().toISOString()`` which ends in Z.
+    The helper must accept that without raising and return a YYYY-MM-DD.
+    """
+    module = importlib.import_module("app")
+    result = module._local_date_from_iso("2026-05-19T03:00:00.000Z")
+    assert result is not None
+    assert len(result) == 10 and result[4] == "-" and result[7] == "-"
+
+
+def test_local_date_from_iso_parses_explicit_offset():
+    """When the timestamp carries an explicit offset, parsing must
+    succeed and the returned date is the server-local conversion.
+    """
+    module = importlib.import_module("app")
+    # 23:00 UTC === 18:00 CT (-05) === same calendar day in any negative
+    # offset down to about -23. Just assert parsing succeeds and produces
+    # a well-shaped date.
+    result = module._local_date_from_iso("2026-05-18T23:00:00+00:00")
+    assert result is not None
+    assert len(result) == 10
+
+
 def test_meal_intake_text_preserves_client_local_timestamp(monkeypatch):
     """Regression for Codex audit round 2: the composer already sends
     `local_timestamp` (static/js/app.js); the endpoint must honor it as

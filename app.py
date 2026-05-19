@@ -653,6 +653,38 @@ def _today_str():
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def _local_date_from_iso(iso_str):
+    """Parse an ISO 8601 timestamp and return its server-local YYYY-MM-DD.
+
+    The composer sends ``new Date().toISOString()`` (UTC, e.g.
+    ``2026-05-19T03:00:00.000Z``). Slicing ``[:10]`` would store the UTC
+    calendar day, which logs the meal on tomorrow's date for users in
+    negative-UTC timezones submitting after early evening. Converting to
+    the server's local timezone via ``astimezone()`` aligns the meal
+    date with ``_today_str()`` for the user's actual day.
+
+    Returns None when ``iso_str`` is empty or unparseable so the caller
+    can fall back to ``_today_str()``.
+    """
+    if not iso_str:
+        return None
+    s = iso_str.strip()
+    if not s:
+        return None
+    # datetime.fromisoformat tolerates a trailing 'Z' from 3.11+, but
+    # normalize for safety and older runtimes.
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        # Naive timestamp — treat as already in the server's local TZ.
+        return dt.date().isoformat()
+    return dt.astimezone().date().isoformat()
+
+
 def _current_data_user_id():
     try:
         from flask_login import current_user
@@ -3130,13 +3162,10 @@ def _meal_intake_stub_persist(client_id, estimate, *, source, has_image, text_hi
     """
     now_iso = datetime.now().isoformat(timespec="seconds")
     logged_at_iso = local_timestamp or now_iso
-    # Derive date from local_timestamp's YYYY-MM-DD prefix when possible;
-    # fall back to server today on any non-conforming value.
-    date_str = _today_str()
-    if local_timestamp and len(local_timestamp) >= 10 and local_timestamp[4] == "-" and local_timestamp[7] == "-":
-        candidate = local_timestamp[:10]
-        if candidate[:4].isdigit() and candidate[5:7].isdigit() and candidate[8:10].isdigit():
-            date_str = candidate
+    # Derive ``date`` from local_timestamp's server-local calendar day
+    # (after parsing and TZ-converting the UTC ISO string the composer
+    # sends). Falls back to server today when missing or unparseable.
+    date_str = _local_date_from_iso(local_timestamp) or _today_str()
     record = {
         "client_id": client_id,
         "date": date_str,
