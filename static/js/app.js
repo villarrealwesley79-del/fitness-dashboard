@@ -1935,15 +1935,15 @@
         // AFTER that upsert lands — parallel fetches race and can show
         // "Cached · stale" right after a successful live refresh.
         const [st, oura] = await Promise.all([getSettings(), getOuraStatus(true, true)]);
-        // Fetch freshness via a local variable — DO NOT replace
-        // state.dashboard. /api/dashboard generates a fresh next_workout
-        // and updates the server-side recommendation state; if Settings
-        // overwrote state.dashboard the user's adjusted/swapped plan
-        // on the Workout tab would silently get replaced.
+        // FIT-16: use the side-effect-free /api/freshness endpoint.
+        // /api/dashboard would also work but it regenerates
+        // next_workout and writes LAST_WORKOUT_RECOMMENDATION server-
+        // side, which would silently overwrite an adjusted/swapped
+        // plan whenever the user opens Settings.
         let freshness = null;
         try {
-            const dash = await api('/api/dashboard');
-            freshness = (dash && dash.freshness) || null;
+            const fresh = await api('/api/freshness');
+            freshness = (fresh && fresh.freshness) || null;
         } catch {
             freshness = null;
         }

@@ -180,6 +180,44 @@ def test_dashboard_freshness_block_distinguishes_attempt_from_data_point(fitness
         )
 
 
+def test_freshness_only_endpoint_returns_same_shape_as_dashboard(fitness_app):
+    """FIT-16: /api/freshness must return the same freshness block as
+    /api/dashboard but without the recommendation side effects. The UI
+    panel hits this endpoint from Settings so visiting Settings can't
+    reset LAST_WORKOUT_RECOMMENDATION (which /api/dashboard does write).
+    """
+    client = fitness_app.app.test_client()
+    fresh = client.get("/api/freshness").get_json()
+    dash = client.get("/api/dashboard").get_json()
+    assert "freshness" in fresh, "endpoint must return a freshness top-level key"
+    assert set(fresh["freshness"].keys()) == set((dash.get("freshness") or {}).keys()), (
+        "/api/freshness and /api/dashboard.freshness must expose the same sources"
+    )
+    for src, block in fresh["freshness"].items():
+        for key in ("status", "last_data_point", "last_sync_attempt"):
+            assert key in block, f"freshness.{src} must expose {key!r}"
+
+
+def test_freshness_only_endpoint_does_not_mutate_workout_recommendation(fitness_app):
+    """Hitting /api/freshness must NOT touch LAST_WORKOUT_RECOMMENDATION.
+    Codex round 6 finding: /api/dashboard rewrites that global as a side
+    effect of regenerating next_workout, so Settings using it would
+    silently reset a user's adjusted plan. The new endpoint must skip
+    that path entirely.
+    """
+    module = importlib.import_module("app")
+    sentinel = {"name": "fit16-sentinel-plan", "muscles": ["chest"]}
+    original = getattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+    module.LAST_WORKOUT_RECOMMENDATION = sentinel
+    try:
+        fitness_app.app.test_client().get("/api/freshness")
+        assert module.LAST_WORKOUT_RECOMMENDATION is sentinel, (
+            "LAST_WORKOUT_RECOMMENDATION was replaced by a /api/freshness call"
+        )
+    finally:
+        module.LAST_WORKOUT_RECOMMENDATION = original
+
+
 def test_dashboard_freshness_status_uses_documented_buckets(fitness_app):
     """Each source's ``status`` must be one of fresh / aging / stale /
     missing. The FIT-16 panel's stale warning threshold (48h) aligns

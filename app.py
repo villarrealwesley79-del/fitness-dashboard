@@ -6023,6 +6023,20 @@ def _oura_source_label(last_sync_attempt_iso, now=None):
     return "live" if age_h < 1.0 else "cached"
 
 
+@app.route('/api/freshness')
+def freshness_only():
+    """FIT-16: side-effect-free freshness block for the Settings panel.
+
+    /api/dashboard also returns freshness but as part of regenerating the
+    next-workout recommendation (it writes LAST_WORKOUT_RECOMMENDATION).
+    Hitting that endpoint from Settings would silently reset the server-
+    canonical plan a user adjusted/swapped on the Workout tab. This
+    endpoint just exposes the same freshness dict without any of the
+    recommendation-state mutations.
+    """
+    return jsonify({"freshness": _compute_data_freshness()})
+
+
 def _compute_data_freshness(now=None):
     """Per-source freshness for Oura, Apple Health, and food.
 
