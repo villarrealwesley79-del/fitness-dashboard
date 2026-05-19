@@ -3381,6 +3381,33 @@ def _meal_intake_stub_persist(
     return add_food_log(_current_data_user_id(), record)
 
 
+def _meal_accept_was_corrected(submitted: dict, original: dict | None) -> bool:
+    if not isinstance(original, dict):
+        return False
+    try:
+        original_source = original.get("source") if isinstance(original, dict) else None
+        sanitized_original = sanitize_meal_estimate(
+            original,
+            source=original_source or submitted.get("source") or "stub_text_estimate",
+            legacy_defaults=True,
+            plausible_ranges=True,
+        )
+    except MealEstimateValidationError:
+        return True
+    compare_fields = (
+        "item_name",
+        "portion_description",
+        "meal_type",
+        "calories",
+        "protein_g",
+        "carbs_g",
+        "fat_g",
+        "sodium_mg",
+        "fiber_g",
+    )
+    return any(sanitized_original.get(field) != submitted.get(field) for field in compare_fields)
+
+
 @app.route("/api/meal-intake", methods=["POST"])
 def meal_intake_stub():
     """FIT-60 stub — accept text and/or image, return a canned estimate.
@@ -3534,7 +3561,12 @@ def meal_intake_accept_stub(client_id: str):
         has_image=bool(estimate.get("from_image")),
         text_hint=text_hint or None,
     )
-    if data.get("corrected") or data.get("correction_state") == "corrected":
+    corrected = (
+        bool(data.get("corrected"))
+        or data.get("correction_state") == "corrected"
+        or _meal_accept_was_corrected(estimate, data.get("original_estimate"))
+    )
+    if corrected:
         personal_vocab.record_correct(_current_data_user_id(), text_hint or None, estimate)
     else:
         personal_vocab.record_accept(_current_data_user_id(), text_hint or None, estimate)

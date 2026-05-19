@@ -29,6 +29,17 @@ PUBLIC_ESTIMATE_FIELDS = (
     "source",
 )
 
+PUBLIC_PROVENANCE_FIELDS = (
+    "external_food_id",
+    "verified_source_url",
+    "data_fetched_at",
+    "portion_basis",
+    "brand_id",
+    "underlying_source",
+    "off_attribution",
+    "personal_vocab_phrase",
+)
+
 CALORIE_MAX = 5000
 MACRO_GRAM_MAX = 500
 SODIUM_MG_MAX = 12000
@@ -103,7 +114,7 @@ def sanitize_meal_estimate(
     if not isinstance(estimate_source, str) or not estimate_source.strip():
         raise MealEstimateValidationError("source is required")
 
-    return {
+    sanitized = {
         "item_name": item_name.strip(),
         "portion_description": _string_or_none(raw.get("portion_description"), "portion_description"),
         "meal_type": meal_type,
@@ -130,6 +141,10 @@ def sanitize_meal_estimate(
         "uncertainty_notes": [note.strip() for note in notes if note.strip()],
         "source": estimate_source.strip(),
     }
+    for field in PUBLIC_PROVENANCE_FIELDS:
+        if raw.get(field) is not None:
+            sanitized[field] = raw[field]
+    return sanitized
 
 
 def manual_review_estimate(*, text: str = "", source: str = "manual_review_estimate") -> dict:

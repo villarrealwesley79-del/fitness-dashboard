@@ -4412,7 +4412,7 @@
             await api(`/api/meal-intake/${encodeURIComponent(clientId)}/accept`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ estimate: edited, text: entry.text || '' }),
+                body: JSON.stringify({ estimate: edited, original_estimate: entry.estimate || null, text: entry.text || '' }),
             });
             mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
             renderMealPendingList();

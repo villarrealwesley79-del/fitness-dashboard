@@ -62,6 +62,9 @@ def lookup(phrase: str | None, *, user_id: int = 1) -> dict | None:
         and _trusted(entry, minimum_accepts=MIN_ACCEPTS_FOR_FUZZY)
     ]
     candidates = {entry["normalized_input"]: entry for entry in trusted}
+    abbreviation = _abbreviation_match(normalized, candidates.keys())
+    if abbreviation:
+        return _estimate_from_entry(candidates[abbreviation])
     matches = get_close_matches(normalized, candidates.keys(), n=1, cutoff=FUZZY_CUTOFF)
     if matches:
         return _estimate_from_entry(candidates[matches[0]])
@@ -94,6 +97,29 @@ def _canonical_estimate(estimate: dict[str, Any]) -> dict | None:
 
 def _trusted(entry: dict, *, minimum_accepts: int) -> bool:
     return int(entry.get("accept_count") or 0) >= minimum_accepts and int(entry.get("correct_count") or 0) == 0
+
+
+def _abbreviation_match(query: str, candidate_keys) -> str | None:
+    query_tokens = query.split()
+    if not query_tokens or any(len(token) < 3 for token in query_tokens):
+        return None
+    for candidate in candidate_keys:
+        candidate_tokens = candidate.split()
+        if len(query_tokens) != len(candidate_tokens):
+            continue
+        if all(_token_matches_abbreviation(q, c) for q, c in zip(query_tokens, candidate_tokens)):
+            return candidate
+    return None
+
+
+def _token_matches_abbreviation(query_token: str, candidate_token: str) -> bool:
+    if query_token == candidate_token or candidate_token.startswith(query_token):
+        return True
+    pos = 0
+    for char in candidate_token:
+        if pos < len(query_token) and query_token[pos] == char:
+            pos += 1
+    return pos == len(query_token)
 
 
 def _estimate_from_entry(entry: dict) -> dict | None:

@@ -105,6 +105,19 @@ def test_personal_vocab_fuzzy_match_after_one_confirmed_mapping(tmp_path, monkey
     assert result["item_name"] == "Chipotle chicken burrito"
 
 
+def test_personal_vocab_matches_abbreviated_phrase_after_one_confirmed_mapping(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    personal_vocab.record_accept(1, "chipotle chicken burrito", _estimate())
+
+    result = personal_vocab.lookup("chip ckn bur", user_id=1)
+
+    assert result["source"] == "personal_vocab"
+    assert result["item_name"] == "Chipotle chicken burrito"
+
+
 def test_parse_meal_text_consults_personal_vocab_before_branded_lookup(monkeypatch):
     parser = importlib.import_module("meal_text_parser")
     personal = _estimate(source="personal_vocab", confidence=0.9)
@@ -163,3 +176,62 @@ def test_accept_endpoint_records_personal_vocab(monkeypatch, tmp_path):
     entry = data_store.get_personal_vocab_entry(1, "chip ckn bur")
     assert entry["accept_count"] == 1
     assert entry["canonical_resolution"]["item_name"] == "Chipotle chicken burrito"
+
+
+def test_accept_endpoint_records_edited_pending_estimate_as_correction(monkeypatch, tmp_path):
+    import app
+    import data_store
+
+    monkeypatch.setenv("SECRET_KEY", "fit74-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    app.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(app, "_current_data_user_id", lambda: 1)
+    monkeypatch.setattr(app, "add_food_log", lambda _uid, record: {"client_id": record["client_id"], **record})
+    calls = {"accept": 0, "correct": 0}
+    monkeypatch.setattr(app.personal_vocab, "record_accept", lambda *_a, **_kw: calls.__setitem__("accept", calls["accept"] + 1))
+    monkeypatch.setattr(app.personal_vocab, "record_correct", lambda *_a, **_kw: calls.__setitem__("correct", calls["correct"] + 1))
+    original = _estimate(calories=1075)
+    edited = _estimate(calories=900)
+
+    res = app.app.test_client().post(
+        "/api/meal-intake/meal-vocab-corrected/accept",
+        json={"estimate": edited, "original_estimate": original, "text": "chip ckn bur"},
+    )
+
+    assert res.status_code == 200
+    assert calls == {"accept": 0, "correct": 1}
+
+
+def test_meal_intake_preserves_personal_vocab_provenance(monkeypatch, tmp_path):
+    import app
+    import data_store
+
+    monkeypatch.setenv("SECRET_KEY", "fit74-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    app.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(app, "_current_data_user_id", lambda: 1)
+    captured = {}
+    monkeypatch.setattr(app, "add_food_log", lambda _uid, record: (captured.update(record), {"client_id": record["client_id"], **record})[1])
+    estimate = _estimate(
+        source="personal_vocab",
+        confidence=0.95,
+        underlying_source="nutritionix",
+        personal_vocab_phrase="chip usual",
+    )
+    monkeypatch.setattr(app, "parse_meal_text", lambda *_a, **_kw: {"estimate": estimate, "fallback_used": False})
+
+    res = app.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "chip usual", "client_id": "meal-personal-provenance"},
+        content_type="multipart/form-data",
+    )
+
+    body = res.get_json()
+    assert res.status_code == 200
+    assert body["estimate"]["source"] == "personal_vocab"
+    assert body["estimate"]["underlying_source"] == "nutritionix"
+    assert body["estimate"]["personal_vocab_phrase"] == "chip usual"
+    assert captured["original_estimate"]["underlying_source"] == "nutritionix"
+    assert captured["original_estimate"]["personal_vocab_phrase"] == "chip usual"
