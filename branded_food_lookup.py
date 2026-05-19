@@ -24,6 +24,9 @@ KNOWN_BRANDS = {
     "chick-fil-a",
     "chickfila",
 }
+BRAND_ALIASES = {
+    "chickfila": "chick-fil-a",
+}
 BRAND_TYPOS = {
     "mcdonalds": {"mcdonals", "mcdonlds", "mcdonald"},
     "starbucks": {"starbuks", "starbukcs"},
@@ -362,7 +365,7 @@ def _needs_modifier_review(normalized: str) -> bool:
 def _brand_from_text(normalized: str) -> str | None:
     for token in normalized.split():
         if token in KNOWN_BRANDS:
-            return token
+            return BRAND_ALIASES.get(token, token)
     return None
 
 

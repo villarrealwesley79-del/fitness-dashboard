@@ -250,6 +250,36 @@ def test_requested_brand_without_source_brand_is_pending_review(monkeypatch):
     assert any("did not verify" in note for note in estimate["uncertainty_notes"])
 
 
+def test_brand_aliases_verify_against_provider_brand(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(
+            food_name="sandwich",
+            brand_name="Chick-fil-A",
+            serving_unit="sandwich",
+            nf_calories=420,
+            nf_protein=29,
+            nf_total_carbohydrate=41,
+            nf_total_fat=18,
+            nf_sodium=1460,
+            nf_dietary_fiber=1,
+            nix_item_id="chickfila-sandwich",
+        ),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    estimate = branded_food_lookup.lookup("Chickfila sandwich")
+
+    assert estimate["item_name"] == "Chick-fil-A sandwich"
+    assert estimate["brand_id"] == "chick-fil-a"
+    assert estimate["confidence"] == 0.85
+    assert estimate["ambiguous"] is False
+    assert not any("did not verify" in note for note in estimate["uncertainty_notes"])
+
+
 def test_requested_item_category_mismatch_is_pending_review(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
