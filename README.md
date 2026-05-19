@@ -75,6 +75,10 @@ checks authenticated dashboard, settings, history, Oura, Apple Health sync
 status, smart recommendation, AI health, a safe rejected workout write path, and
 the existing file-descriptor leak regression.
 
+The smoke script creates per-run temporary cookie/body files and removes them on
+success, failure, or signal. `COOKIE_JAR` and `BODY_FILE` can still override the
+paths for debugging, but the script owns and removes those files during cleanup.
+
 Optional integrations use environment variables such as:
 
 ```bash

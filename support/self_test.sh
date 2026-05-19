@@ -11,11 +11,24 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:5050}"
 COOKIE="${COOKIE:-}"
 SMOKE_USERNAME="${FITNESS_SMOKE_USERNAME:-${SMOKE_USERNAME:-}}"
 SMOKE_PASSWORD="${FITNESS_SMOKE_PASSWORD:-${SMOKE_PASSWORD:-}}"
-COOKIE_JAR="${COOKIE_JAR:-/tmp/fitness-dashboard-self-test.cookies}"
-BODY_FILE="${BODY_FILE:-/tmp/fitness-dashboard-self-test.json}"
+
+cleanup() {
+  rm -f "${COOKIE_JAR:-}" "${BODY_FILE:-}"
+}
+
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 129' HUP
+
+COOKIE_JAR="${COOKIE_JAR:-$(mktemp -t fitness-dashboard-self-test.cookies.XXXXXX)}"
+BODY_FILE="${BODY_FILE:-$(mktemp -t fitness-dashboard-self-test.body.XXXXXX)}"
 export BODY_FILE
 
 rm -f "$COOKIE_JAR" "$BODY_FILE"
+: > "$COOKIE_JAR"
+: > "$BODY_FILE"
+chmod 600 "$COOKIE_JAR" "$BODY_FILE"
 
 echo "Self-test against: $BASE_URL"
 
