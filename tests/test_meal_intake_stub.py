@@ -31,9 +31,15 @@ def _client(monkeypatch):
 def _stub_parser(monkeypatch, module, *, estimate, source="ai_text_estimate", fallback_used=False):
     """Replace meal_text_parser.parse_meal_text with a deterministic stub
     so endpoint tests exercise the wiring, not the parser internals.
+
+    ``source`` is injected inside the returned estimate dict to match the
+    real parser shape — provenance lives in the estimate so it round-trips
+    through the /api/meal-intake/<client_id>/accept handler.
     """
     def fake(_text, **_kw):
-        return {"estimate": dict(estimate), "source": source, "fallback_used": fallback_used}
+        e = dict(estimate)
+        e["source"] = source
+        return {"estimate": e, "fallback_used": fallback_used}
 
     monkeypatch.setattr(module, "parse_meal_text", fake)
 
@@ -423,3 +429,43 @@ def test_meal_intake_accept_requires_calories(monkeypatch):
     )
     assert res.status_code == 400
     assert "calories" in res.get_json()["error"]["message"]
+
+
+def test_meal_intake_accept_persists_parser_source_when_present(monkeypatch):
+    """Regression for Codex audit round 1, finding 3: when a pending-review
+    estimate originated from the FIT-59 parser (text path), the accept
+    handler must persist the parser-assigned ``source`` from the estimate
+    rather than defaulting to ``stub_text_estimate``.
+    """
+    module = _client(monkeypatch)
+    captured = {}
+
+    def fake_add_food_log(_user_id, record):
+        captured.update(record)
+        return {
+            "client_id": record["client_id"],
+            "calories": record["calories"],
+            "source": record["source"],
+        }
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/meal-accept-ai/accept",
+        json={
+            "estimate": {
+                "item_name": "Popcorn",
+                "meal_type": "snack",
+                "calories": 180,
+                "protein_g": 3,
+                "carbs_g": 22,
+                "fat_g": 9,
+                "source": "ai_text_estimate",
+            },
+            "text": "movie theater popcorn",
+        },
+    )
+    assert res.status_code == 200
+    assert captured["source"] == "ai_text_estimate", (
+        "accept handler must honor parser-assigned source, not default to stub"
+    )

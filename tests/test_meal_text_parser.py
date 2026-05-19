@@ -31,6 +31,7 @@ REQUIRED_ESTIMATE_KEYS = {
     "confidence",
     "ambiguous",
     "uncertainty_notes",
+    "source",  # parser-controlled; round-trips via the accept handler
 }
 
 
@@ -83,7 +84,7 @@ def test_parse_empty_text_returns_fallback_zero_confidence(monkeypatch):
 
     result = parser.parse_meal_text("")
     assert result["fallback_used"] is True
-    assert result["source"] == "fallback_text_estimate"
+    assert result["estimate"]["source"] == "fallback_text_estimate"
     assert result["estimate"]["confidence"] == 0.0
     assert result["estimate"]["ambiguous"] is True
 
@@ -94,6 +95,7 @@ def test_parse_whitespace_only_text_returns_fallback(monkeypatch):
     result = parser.parse_meal_text("    \n\t")
     assert result["fallback_used"] is True
     assert result["estimate"]["confidence"] == 0.0
+    assert result["estimate"]["source"] == "fallback_text_estimate"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -114,7 +116,7 @@ def test_parse_text_uses_llm_when_available(monkeypatch):
     _patch_completion(monkeypatch, fake)
     result = parser.parse_meal_text("two eggs and toast")
     assert result["fallback_used"] is False
-    assert result["source"] == "ai_text_estimate"
+    assert result["estimate"]["source"] == "ai_text_estimate"
     assert result["estimate"]["item_name"] == "Eggs and toast"
     assert result["estimate"]["calories"] == 420
     assert "_meta" not in result["estimate"], "raw model trace must be stripped"
@@ -157,7 +159,7 @@ def test_parse_text_falls_back_when_lm_studio_unreachable(monkeypatch):
     _patch_completion(monkeypatch, boom)
     result = parser.parse_meal_text("two eggs and toast")
     assert result["fallback_used"] is True
-    assert result["source"] == "fallback_text_estimate"
+    assert result["estimate"]["source"] == "fallback_text_estimate"
     # Deterministic preset hit for "egg" + "toast".
     assert result["estimate"]["item_name"] == "Eggs and toast"
     # Fallback confidence is intentionally below the LM Studio ceiling.
@@ -183,7 +185,7 @@ def test_parse_text_falls_back_when_lm_studio_returns_invalid_schema(monkeypatch
     _patch_completion(monkeypatch, fake)
     result = parser.parse_meal_text("two eggs and toast")
     assert result["fallback_used"] is True
-    assert result["source"] == "fallback_text_estimate"
+    assert result["estimate"]["source"] == "fallback_text_estimate"
 
 
 def test_parse_text_validator_rejects_implausible_calories(monkeypatch):
@@ -272,7 +274,7 @@ def test_parse_text_post_processes_ambiguous_words_even_when_llm_is_confident(mo
 
     _patch_completion(monkeypatch, fake)
     result = parser.parse_meal_text("movie theater popcorn, shared")
-    assert result["source"] == "ai_text_estimate"
+    assert result["estimate"]["source"] == "ai_text_estimate"
     estimate = result["estimate"]
     assert estimate["ambiguous"] is True, "ambiguous tokens must flip the flag"
     assert estimate["confidence"] <= 0.55, "confidence must be clamped below auto-log threshold"
@@ -380,3 +382,162 @@ def test_parse_text_does_not_leak_prompt_content_in_output(monkeypatch):
     assert set(result["estimate"].keys()) <= REQUIRED_ESTIMATE_KEYS
     # _meta must always be stripped even when present in the model output.
     assert "_meta" not in result["estimate"]
+
+
+# ──────────────────────────────────────────────────────────────────
+# Regression tests for Codex audit round 1 findings
+# ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text", ["fish tacos", "rice dish", "rabbit stew", "danish pastry"])
+def test_parse_text_does_not_flag_words_containing_short_substrings_as_ambiguous(text, monkeypatch):
+    """Regression: substring matching of short approximation markers (e.g.
+    ``ish``) used to flag normal food names like ``fish tacos`` as ambiguous
+    and force them to pending review. Codex audit round 1, finding 1.
+    """
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+    _patch_completion(monkeypatch, lambda *_a, **_kw: (_ for _ in ()).throw(
+        adapter.LmStudioError("unreachable")
+    ))
+    result = parser.parse_meal_text(text)
+    assert result["estimate"]["ambiguous"] is False, (
+        f"{text!r} should not be flagged ambiguous from a substring collision"
+    )
+
+
+@pytest.mark.parametrize(
+    "field,bad_value",
+    [
+        ("calories", True),
+        ("protein_g", False),
+        ("carbs_g", True),
+        ("fat_g", True),
+        ("sodium_mg", True),
+        ("fiber_g", True),
+        ("confidence", True),
+    ],
+)
+def test_validator_rejects_booleans_for_numeric_fields(field, bad_value, monkeypatch):
+    """Regression: ``bool`` is an ``int`` subclass in Python, so
+    ``isinstance(True, (int, float))`` returns True. The validator must
+    reject booleans for numeric fields to prevent malformed model JSON
+    from auto-logging non-numeric nutrition values. Codex audit round 1,
+    finding 2.
+    """
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+    payload = _good_llm_payload(**{field: bad_value})
+    with pytest.raises(adapter.LmStudioError):
+        parser._validate_estimate(payload)
+
+
+def test_validator_still_accepts_booleans_for_ambiguous_field():
+    """Sanity check: the bool-rejection logic must NOT block the
+    ``ambiguous`` field, which is intentionally a boolean.
+    """
+    parser = _import_parser()
+    payload = _good_llm_payload(ambiguous=True)
+    parser._validate_estimate(payload)  # should not raise
+
+
+def test_parser_acquires_lm_studio_inference_lock(monkeypatch):
+    """Regression: the parser must respect the shared LM Studio inference
+    lock so concurrent meal submissions don't stampede the local model —
+    matches the pattern other adapter entry points already use. Codex
+    audit round 1, finding 4.
+    """
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    acquisitions = []
+    releases = []
+    original_lock = adapter._INFERENCE_LOCK
+
+    class TrackingLock:
+        def acquire(self, timeout=None):
+            acquisitions.append(timeout)
+            return original_lock.acquire(timeout=timeout)
+
+        def release(self):
+            releases.append(True)
+            return original_lock.release()
+
+    tracking = TrackingLock()
+    monkeypatch.setattr(adapter, "_INFERENCE_LOCK", tracking)
+    monkeypatch.setattr(parser, "_INFERENCE_LOCK", tracking)
+
+    def fake(path, payload_in, timeout, validate, clean=None):
+        payload = _good_llm_payload()
+        if clean:
+            clean(payload)
+        validate(payload)
+        return payload
+
+    _patch_completion(monkeypatch, fake)
+
+    parser.parse_meal_text("two eggs and toast")
+    assert len(acquisitions) == 1, "parser must acquire the inference lock"
+    assert len(releases) == 1, "parser must release the inference lock"
+
+
+def test_parser_returns_fallback_when_inference_lock_times_out(monkeypatch):
+    """If the inference lock is held by another request and times out,
+    fall through to the deterministic fallback rather than blocking
+    forever or raising.
+    """
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    class BusyLock:
+        def acquire(self, timeout=None):
+            return False  # always busy
+
+        def release(self):
+            raise AssertionError("release should not be called when acquire fails")
+
+    busy = BusyLock()
+    monkeypatch.setattr(adapter, "_INFERENCE_LOCK", busy)
+    monkeypatch.setattr(parser, "_INFERENCE_LOCK", busy)
+
+    # _completion_json must not be reached.
+    _patch_completion(monkeypatch, lambda *_a, **_kw: pytest.fail("should not call LM"))
+
+    result = parser.parse_meal_text("two eggs and toast")
+    assert result["fallback_used"] is True
+    assert result["estimate"]["source"] == "fallback_text_estimate"
+
+
+def test_parser_strips_source_from_llm_output(monkeypatch):
+    """Regression: ``source`` is parser-controlled. If the model returns
+    its own ``source`` field, the cleaner must drop it and the parser
+    must re-apply the correct value. Codex audit round 1, finding 3
+    (provenance integrity).
+    """
+    parser = _import_parser()
+    payload = _good_llm_payload()
+    payload["source"] = "definitely-not-the-real-source"
+
+    def fake(path, payload_in, timeout, validate, clean=None):
+        if clean:
+            clean(payload)
+        validate(payload)
+        return payload
+
+    _patch_completion(monkeypatch, fake)
+    result = parser.parse_meal_text("two eggs and toast")
+    assert result["estimate"]["source"] == "ai_text_estimate"
+
+
+def test_parser_source_round_trips_inside_estimate(monkeypatch):
+    """Regression: ``source`` must live inside the estimate dict so the
+    pending-review accept handler (which reads ``estimate.get("source")``)
+    persists the right provenance. Codex audit round 1, finding 3.
+    """
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+    _patch_completion(monkeypatch, lambda *_a, **_kw: (_ for _ in ()).throw(
+        adapter.LmStudioError("unreachable")
+    ))
+    result = parser.parse_meal_text("two eggs and toast")
+    assert "source" in result["estimate"]
+    assert result["estimate"]["source"] == "fallback_text_estimate"

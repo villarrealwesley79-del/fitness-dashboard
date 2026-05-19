@@ -3198,7 +3198,10 @@ def meal_intake_stub():
     else:
         parsed = parse_meal_text(text_raw)
         estimate = parsed["estimate"]
-        source = parsed["source"]
+        # ``source`` lives inside the estimate so it round-trips through
+        # the pending-review accept handler (which reads
+        # estimate.get("source") to label the persisted food_log).
+        source = estimate["source"]
         # Same threshold as the FIT-60 stub: ambiguous input or confidence
         # below 0.65 falls through to pending review.
         status = (

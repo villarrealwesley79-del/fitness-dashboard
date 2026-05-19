@@ -24,6 +24,7 @@ from lm_studio_adapter import (
     LM_STUDIO_ANALYZE_TIMEOUT_SEC,
     LmStudioError,
     _completion_json,
+    _INFERENCE_LOCK,
 )
 
 
@@ -32,7 +33,8 @@ ALLOWED_MEAL_TYPES = ("breakfast", "lunch", "dinner", "snack")
 
 # Estimate keys we accept from the model. Anything else is dropped before
 # validation so the model can't smuggle raw prompt, image refs, or trace fields
-# into the response we return to the client.
+# into the response we return to the client. ``source`` is parser-controlled
+# (we never trust the model to label provenance) — see _PARSER_CONTROLLED_KEYS.
 _ALLOWED_ESTIMATE_KEYS = frozenset({
     "item_name",
     "portion_description",
@@ -46,7 +48,13 @@ _ALLOWED_ESTIMATE_KEYS = frozenset({
     "confidence",
     "ambiguous",
     "uncertainty_notes",
+    "source",
 })
+
+# Fields the parser owns regardless of what the model returns. They are
+# stripped before validation and re-applied after the model output is
+# accepted, so the model can never lie about provenance.
+_PARSER_CONTROLLED_KEYS = frozenset({"source"})
 
 # Plausible-range guards. Anything outside these ranges is treated as model
 # error and falls through to the deterministic fallback.
@@ -57,10 +65,13 @@ _SODIUM_MAX = 12000  # 12 g sodium per meal is already a red flag.
 
 # Tokens that should pull confidence down even when the LLM is bullish.
 # Mirrors the FIT-60 stub list so behavior is continuous across the swap.
+# Substring match: each token must be either long enough or whitespace-anchored
+# to avoid false positives like "fish" / "rice dish" / "rabbit" matching short
+# approximation markers.
 _AMBIGUOUS_TOKENS = (
     "popcorn", "movie", "shared", "leftover", "leftovers", "snacks",
     "buffet", "potluck", "?", "guessing", "guess", "some food", "a bit",
-    "a few", "ish",
+    "a few",
 )
 
 
@@ -150,13 +161,17 @@ def _clean_estimate(parsed: dict) -> None:
     """In-place cleanup before validation.
 
     Drops unknown keys to keep the model from leaking raw prompt fragments,
-    trace data, or image references through the response. Coerces simple
-    missing-field cases to safe defaults.
+    trace data, or image references through the response. Also strips
+    parser-controlled fields (``source``) so the model cannot lie about
+    provenance — the parser re-applies them after validation. Coerces
+    simple missing-field cases to safe defaults.
     """
     if not isinstance(parsed, dict):
         raise LmStudioError(f"expected dict, got {type(parsed).__name__}")
     for key in list(parsed.keys()):
-        if key not in _ALLOWED_ESTIMATE_KEYS and key != "_meta":
+        if key in _PARSER_CONTROLLED_KEYS:
+            del parsed[key]
+        elif key not in _ALLOWED_ESTIMATE_KEYS and key != "_meta":
             del parsed[key]
     parsed.setdefault("ambiguous", False)
     parsed.setdefault("uncertainty_notes", [])
@@ -184,9 +199,16 @@ def _validate_estimate(parsed: dict) -> None:
     for key, types in required_types.items():
         if key not in parsed:
             raise LmStudioError(f"missing field: {key}")
-        if not isinstance(parsed[key], types):
+        val = parsed[key]
+        # bool is a subclass of int in Python, so isinstance(True, (int, float))
+        # is True. Reject booleans explicitly for any field where bool isn't
+        # in the allowed type list (numeric, string, etc.) — otherwise a
+        # malformed "calories": true would pass through and auto-log.
+        if isinstance(val, bool) and bool not in types:
+            raise LmStudioError(f"wrong type for {key}: bool not allowed")
+        if not isinstance(val, types):
             raise LmStudioError(
-                f"wrong type for {key}: {type(parsed[key]).__name__}"
+                f"wrong type for {key}: {type(val).__name__}"
             )
     if not parsed["item_name"].strip():
         raise LmStudioError("item_name is empty")
@@ -216,7 +238,9 @@ def _fallback_estimate(text: str) -> dict:
     Keyword-matches a small preset table that mirrors the FIT-60 stub so
     behavior is continuous, and lowers confidence (below the LM Studio
     ceiling) so the endpoint downgrades to pending review unless the entry
-    is unambiguously simple.
+    is unambiguously simple. Returns the estimate with ``source`` already
+    set to ``fallback_text_estimate`` so it round-trips through the
+    pending-review accept flow.
     """
     norm = (text or "").lower().strip()
     estimate: dict = dict(_FALLBACK_DEFAULT)
@@ -266,6 +290,7 @@ def _fallback_estimate(text: str) -> dict:
         "confidence": confidence,
         "ambiguous": ambiguous,
         "uncertainty_notes": notes,
+        "source": "fallback_text_estimate",
     }
 
 
@@ -295,8 +320,8 @@ def parse_meal_text(
 
     Tries LM Studio first via the shared completion path (primary + fallback
     candidates, schema-validated JSON output). On any failure — unreachable
-    endpoint, invalid JSON, schema mismatch — returns a deterministic
-    fallback estimate. Never raises.
+    endpoint, invalid JSON, schema mismatch, lock timeout — returns a
+    deterministic fallback estimate. Never raises.
 
     Returns a dict shaped:
         {
@@ -305,10 +330,14 @@ def parse_meal_text(
                 "calories", "protein_g", "carbs_g", "fat_g",
                 "sodium_mg", "fiber_g",
                 "confidence", "ambiguous", "uncertainty_notes",
+                "source",          # parser-controlled, never trusted from model
             },
-            "source": "ai_text_estimate" | "fallback_text_estimate",
             "fallback_used": bool,
         }
+
+    ``source`` lives inside the estimate so it round-trips through the
+    pending-review accept handler in app.py (which reads
+    ``estimate.get("source")`` to label the persisted food_log).
 
     Never includes raw prompt content, raw model output, chain of thought,
     image references, or any other model trace.
@@ -317,7 +346,6 @@ def parse_meal_text(
     if not cleaned:
         return {
             "estimate": _fallback_estimate(""),
-            "source": "fallback_text_estimate",
             "fallback_used": True,
         }
 
@@ -331,25 +359,39 @@ def parse_meal_text(
         "response_format": {"type": "json_object"},
     }
 
-    try:
-        parsed = _completion_json(
-            "/v1/chat/completions",
-            payload,
-            LM_STUDIO_ANALYZE_TIMEOUT_SEC,
-            validate=_validate_estimate,
-            clean=_clean_estimate,
-        )
-    except LmStudioError:
+    # Respect the shared LM Studio inference lock so concurrent meal
+    # submissions don't stampede the local model — matches the pattern the
+    # Adjust Plan and other adapter entry points use.
+    timeout = LM_STUDIO_ANALYZE_TIMEOUT_SEC
+    acquired = _INFERENCE_LOCK.acquire(timeout=timeout + 1)
+    if not acquired:
         return {
             "estimate": _fallback_estimate(cleaned),
-            "source": "fallback_text_estimate",
             "fallback_used": True,
         }
+    try:
+        try:
+            parsed = _completion_json(
+                "/v1/chat/completions",
+                payload,
+                timeout,
+                validate=_validate_estimate,
+                clean=_clean_estimate,
+            )
+        except LmStudioError:
+            return {
+                "estimate": _fallback_estimate(cleaned),
+                "fallback_used": True,
+            }
+    finally:
+        _INFERENCE_LOCK.release()
 
     parsed.pop("_meta", None)
     estimate = _post_process(parsed, source_text=cleaned)
+    # Parser-controlled provenance: re-applied after the model output is
+    # accepted so the model can't lie about which path produced the estimate.
+    estimate["source"] = "ai_text_estimate"
     return {
         "estimate": estimate,
-        "source": "ai_text_estimate",
         "fallback_used": False,
     }
