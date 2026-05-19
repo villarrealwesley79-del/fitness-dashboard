@@ -2277,15 +2277,15 @@
     }
 
     async function _getAppleHealthFreshness() {
-        // Reuse cached dashboard payload when available, otherwise
-        // fetch /api/dashboard just to get freshness.apple_health.
-        // The freshness block is computed from MAX(record_date), which
-        // is the data date — distinct from ah.last_sync (insertion).
-        if (state.dashboard && state.dashboard.freshness && state.dashboard.freshness.apple_health) {
-            return state.dashboard.freshness.apple_health;
-        }
+        // Always fetch live freshness — reusing state.dashboard would
+        // pair a fresh /api/apple-health/sync/status with a possibly-
+        // hours-old freshness block, and the two could disagree.
+        // The freshness block is computed from MAX(record_date), the
+        // data date, distinct from ah.last_sync (insertion timestamp).
         try {
             const dash = await api('/api/dashboard');
+            // Update the cache so other tabs see the fresh data too,
+            // but never depend on the previous cache value here.
             state.dashboard = dash;
             return (dash && dash.freshness && dash.freshness.apple_health) || null;
         } catch {
