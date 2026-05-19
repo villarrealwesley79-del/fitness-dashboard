@@ -2018,14 +2018,16 @@
             // FIT-16: Apple Health freshness evidence — distinguishes
             // last accepted (records actually inserted) from last
             // attempt (raw HAE webhook hits), surfaces total record
-            // counts, and reveals a stale warning past 48h.
-            renderAppleHealthFreshnessDetail(ah);
+            // counts, and reveals a stale warning past 48h based on
+            // the server's record_date (NOT the insertion timestamp,
+            // so an HAE replay of an old export can't hide the alert).
+            renderAppleHealthFreshnessDetail(ah, await _getAppleHealthFreshness());
         } catch {
             $('apple-connect-state').textContent = 'Not connected';
             $('apple-int-dot').className = 'int-dot';
             const detail = $('apple-last-export');
             if (detail) detail.textContent = 'Export status unavailable';
-            renderAppleHealthFreshnessDetail(null);
+            renderAppleHealthFreshnessDetail(null, null);
         }
         const setupBtn = $('btn-apple-setup');
         if (setupBtn && !setupBtn.dataset.wired) {
@@ -2274,7 +2276,24 @@
             + (oura.warning ? ` · ${oura.warning}` : ''));
     }
 
-    function renderAppleHealthFreshnessDetail(ah) {
+    async function _getAppleHealthFreshness() {
+        // Reuse cached dashboard payload when available, otherwise
+        // fetch /api/dashboard just to get freshness.apple_health.
+        // The freshness block is computed from MAX(record_date), which
+        // is the data date — distinct from ah.last_sync (insertion).
+        if (state.dashboard && state.dashboard.freshness && state.dashboard.freshness.apple_health) {
+            return state.dashboard.freshness.apple_health;
+        }
+        try {
+            const dash = await api('/api/dashboard');
+            state.dashboard = dash;
+            return (dash && dash.freshness && dash.freshness.apple_health) || null;
+        } catch {
+            return null;
+        }
+    }
+
+    function renderAppleHealthFreshnessDetail(ah, freshness) {
         const detail = $('apple-detail');
         if (!detail) return;
         const staleRow = $('apple-detail-stale-row');
@@ -2283,6 +2302,7 @@
         if (!ah) {
             _setDetail('apple-detail-last-sync', 'Status endpoint unavailable');
             _setDetail('apple-detail-records', '—');
+            _setDetail('apple-detail-data-through', '—');
             if (attemptRow) attemptRow.hidden = true;
             if (staleRow) staleRow.hidden = true;
             return;
@@ -2292,8 +2312,9 @@
         const lastAttemptDt = parseServerDateTime(ah.last_attempt);
 
         // Last accepted: the timestamp of the most recent inserted row
-        // (not just a webhook hit). This is the field that actually
-        // tells the owner whether data is landing.
+        // (insertion event, not the data date). This is when the
+        // import landed. The data covered by that import is in
+        // ``freshness.apple_health.last_data_point``.
         if (lastSyncDt) {
             const ago = _fmtAgo(lastSyncDt);
             _setDetail('apple-detail-last-sync',
@@ -2325,6 +2346,13 @@
             }
         }
 
+        // Data through: the date the most recent record_date covers.
+        // Honest signal of how current the data actually is — survives
+        // HAE replays of old exports.
+        const dataThrough = freshness && freshness.last_data_point;
+        _setDetail('apple-detail-data-through',
+            dataThrough ? `${dataThrough} (${freshness.status || 'unknown'})` : 'No data points');
+
         // Records: total + small per-type breakdown so the owner can
         // see whether the categories they care about (workouts, HRV,
         // sleep) are actually landing.
@@ -2339,23 +2367,22 @@
         if (typeSummary.length) recordParts.push(typeSummary.join(' · '));
         _setDetail('apple-detail-records', recordParts.join(' — '));
 
-        // Stale warning: ≥ 48h since last accepted export. Matches the
-        // server's _FRESHNESS_STALE_HOURS = 48 so freshness chips and
-        // this panel agree.
+        // Stale warning: drive off the server's freshness status, NOT
+        // ah.last_sync. The server computes stale from MAX(record_date)
+        // and the documented _FRESHNESS_STALE_HOURS=48 threshold, so a
+        // recent HAE replay of an old export still triggers the alert.
         if (staleRow) {
-            if (lastSyncDt) {
-                const ageH = (Date.now() - lastSyncDt.getTime()) / 3600000;
-                if (ageH >= 48) {
-                    staleRow.hidden = false;
-                    _setDetail('apple-detail-stale-text',
-                        `Last accepted export was ${_fmtAgo(lastSyncDt)}. Expected daily.`);
-                } else {
-                    staleRow.hidden = true;
-                }
-            } else if (ah.setup_configured) {
+            const freshnessStatus = freshness && freshness.status;
+            if (freshnessStatus === 'stale') {
                 staleRow.hidden = false;
                 _setDetail('apple-detail-stale-text',
-                    'Webhook configured but Health Auto Export has not posted any data yet.');
+                    dataThrough
+                        ? `Data through ${dataThrough} — more than 48h old. Expected daily.`
+                        : 'No accepted export in the last 48 hours. Expected daily.');
+            } else if (freshnessStatus === 'missing' && ah.setup_configured) {
+                staleRow.hidden = false;
+                _setDetail('apple-detail-stale-text',
+                    'Webhook configured but no Apple Health records have landed yet.');
             } else {
                 staleRow.hidden = true;
             }

@@ -690,6 +690,14 @@
                         <span class="detail-label">Last attempt</span>
                         <span class="detail-value" id="apple-detail-last-attempt">—</span>
                     </div>
+                    <!-- "Data through" is the most recent record_date the
+                         server has — distinct from "Last accepted" (insertion
+                         timestamp) so an HAE replay of an old export can't
+                         masquerade as fresh data. -->
+                    <div class="integration-detail-row">
+                        <span class="detail-label">Data through</span>
+                        <span class="detail-value" id="apple-detail-data-through">—</span>
+                    </div>
                     <div class="integration-detail-row">
                         <span class="detail-label">Records</span>
                         <span class="detail-value" id="apple-detail-records">—</span>
