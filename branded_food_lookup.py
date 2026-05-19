@@ -316,7 +316,7 @@ def _requested_item_mismatch(normalized: str, foods: list[dict[str, Any]]) -> bo
         return False
     returned_text = " ".join(str(food.get("food_name") or food.get("description") or "") for food in foods)
     returned_items = set(normalize_meal_text(returned_text).split()) & CUSTOMIZABLE_ITEM_TOKENS
-    return bool(returned_items) and not bool(requested_items & returned_items)
+    return bool(returned_items) and requested_items != returned_items
 
 
 def _matching_usda_source_brand(food: dict[str, Any], requested_brand: str | None) -> str | None:
