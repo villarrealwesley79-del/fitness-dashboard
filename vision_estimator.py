@@ -58,6 +58,8 @@ def _clean_description(result: dict[str, Any], *, provider: str) -> dict[str, An
         "provider": provider,
         "item_description": description[:300],
         "portion_hint": str(result.get("portion_hint") or "").strip()[:160] or None,
+        "brand_hint": _brand_hint(result),
+        "brand_hint_confidence": _confidence(result.get("brand_hint_confidence")),
         "confidence": round(confidence, 2),
         "ambiguous": bool(result.get("ambiguous", confidence < 0.65)),
         "uncertainty_notes": [str(note).strip() for note in notes if str(note).strip()],
@@ -66,3 +68,22 @@ def _clean_description(result: dict[str, Any], *, provider: str) -> dict[str, An
     if isinstance(macro_estimate, dict):
         cleaned["macro_estimate"] = dict(macro_estimate)
     return cleaned
+
+
+def _brand_hint(result: dict[str, Any]) -> str | None:
+    raw = result.get("brand_hint")
+    if raw is None:
+        return None
+    hint = str(raw).strip().lower()
+    if not hint or hint in {"none", "null", "unknown", "n/a"}:
+        return None
+    if _confidence(result.get("brand_hint_confidence")) < 0.65:
+        return None
+    return hint[:80]
+
+
+def _confidence(value: Any) -> float:
+    try:
+        return round(max(0.0, min(1.0, float(value))), 2)
+    except (TypeError, ValueError):
+        return 0.0

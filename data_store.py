@@ -65,6 +65,8 @@ FOOD_ESTIMATE_FIELDS = {
     "vision_description",
     "vision_provider",
     "vision_confidence",
+    "brand_hint",
+    "brand_hint_confidence",
 }
 
 

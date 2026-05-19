@@ -3302,7 +3302,7 @@ def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype:
     )
     description = vision["item_description"]
     lookup_text = " ".join(part for part in (description, vision.get("portion_hint")) if part)
-    lookup = branded_food_lookup.lookup(lookup_text)
+    lookup = branded_food_lookup.lookup(lookup_text, brand_hint=vision.get("brand_hint"))
     provider = vision.get("provider") or vision_estimator.configured_provider()
     if lookup:
         estimate = dict(lookup)
@@ -3311,6 +3311,9 @@ def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype:
         estimate["vision_description"] = description
         estimate["vision_provider"] = provider
         estimate["vision_confidence"] = vision.get("confidence")
+        if vision.get("brand_hint"):
+            estimate["brand_hint"] = vision.get("brand_hint")
+            estimate["brand_hint_confidence"] = vision.get("brand_hint_confidence")
         if vision.get("portion_hint") and not estimate.get("portion_description"):
             estimate["portion_description"] = vision.get("portion_hint")
         if vision.get("ambiguous"):
@@ -3349,6 +3352,9 @@ def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype:
     estimate["vision_description"] = description
     estimate["vision_provider"] = provider
     estimate["vision_confidence"] = vision.get("confidence")
+    if vision.get("brand_hint"):
+        estimate["brand_hint"] = vision.get("brand_hint")
+        estimate["brand_hint_confidence"] = vision.get("brand_hint_confidence")
     return estimate
 
 
