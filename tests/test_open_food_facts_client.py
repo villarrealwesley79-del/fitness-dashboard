@@ -92,6 +92,30 @@ def test_open_food_facts_filters_bad_quality(monkeypatch):
     assert branded_food_lookup.lookup("bad product") is None
 
 
+def test_open_food_facts_skips_nutrition_mismatch_warnings(monkeypatch):
+    bad = _product("Bad Product", code="bad")
+    bad["data_quality_tags"] = [
+        "en:nutrition-energy-value-in-kcal-does-not-match-value-computed-from-other-nutrients",
+    ]
+    bad["nutriments"]["energy-kcal_100g"] = 1213.95
+    good = _product("Clean Product", code="good")
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a: {"products": [bad, good]},
+    )
+
+    estimate = branded_food_lookup.lookup("non us packaged food")
+
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["external_food_id"] == "good"
+    assert estimate["calories"] == 500
+
+
 def test_open_food_facts_non_us_cases_are_appendable(monkeypatch):
     cases = [
         ("UK Walkers crisps", "Walkers Crisps", "en:united-kingdom"),

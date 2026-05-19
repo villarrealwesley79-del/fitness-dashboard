@@ -48,6 +48,13 @@ PROTEIN_TOKENS = {
     "beef",
     "pork",
 }
+OFF_REJECT_QUALITY_TAG_FRAGMENTS = (
+    "nutrition-data-error",
+    "nutrition-energy-value-in-kcal-does-not-match",
+    "nutrition-energy-value-in-kcal-may-not-match",
+    "nutrition-packaging-as-sold-100g-energy-value-in-kcal-does-not-match",
+    "nutrition-packaging-as-sold-100g-energy-value-in-kcal-may-not-match",
+)
 
 
 def normalize_meal_text(text: str) -> str:
@@ -243,11 +250,25 @@ def _off_quality_ok(product: dict[str, Any]) -> bool:
     if not isinstance(product, dict):
         return False
     tags = product.get("data_quality_tags") or []
-    if any("error" in str(tag).lower() for tag in tags):
+    lowered_tags = [str(tag).lower() for tag in tags]
+    if any("error" in tag for tag in lowered_tags):
+        return False
+    if any(fragment in tag for tag in lowered_tags for fragment in OFF_REJECT_QUALITY_TAG_FRAGMENTS):
         return False
     nutriments = product.get("nutriments") or {}
     required = ("energy-kcal_100g", "proteins_100g", "carbohydrates_100g", "fat_100g")
-    return bool(product.get("product_name")) and all(nutriments.get(key) is not None for key in required)
+    return bool(product.get("product_name")) and all(nutriments.get(key) is not None for key in required) and _off_macros_plausible(nutriments)
+
+
+def _off_macros_plausible(nutriments: dict[str, Any]) -> bool:
+    try:
+        calories = float(nutriments.get("energy-kcal_100g"))
+        protein = float(nutriments.get("proteins_100g"))
+        carbs = float(nutriments.get("carbohydrates_100g"))
+        fat = float(nutriments.get("fat_100g"))
+    except (TypeError, ValueError):
+        return False
+    return 0 < calories <= 900 and all(0 <= value <= 100 for value in (protein, carbs, fat))
 
 
 def _off_sodium_mg(nutriments: dict[str, Any]) -> int:
