@@ -1981,9 +1981,11 @@
             ouraState.className = 'state-chip ' + (oura.source === 'api' ? 'ok' : 'warn');
         } else { ouraState.textContent = 'Not connected'; ouraState.className = 'state-chip'; }
         // FIT-16: Oura freshness evidence — latest daily / latest sleep
-        // rows + cached vs live state. Lets the owner see what was
-        // actually pulled without poking SQLite.
-        renderOuraFreshnessDetail(oura);
+        // rows + cached vs live state. Pass the dashboard freshness
+        // block too so a missing today-row falls back to honest "stale
+        // cached data through X" copy instead of rendering "Not
+        // connected" (which is reserved for genuinely-disconnected).
+        renderOuraFreshnessDetail(oura, await _getOuraFreshness());
 
         // Apple Health — prefer the real sync-status endpoint over
         // the file-existence probe, and only claim "connected" when a
@@ -2236,44 +2238,74 @@
         if (el) el.textContent = text;
     }
 
-    function renderOuraFreshnessDetail(oura) {
+    async function _getOuraFreshness() {
+        // Same pattern as _getAppleHealthFreshness — always fetch live
+        // so the panel reflects the current MAX(record_date) signal.
+        try {
+            const dash = await api('/api/dashboard');
+            state.dashboard = dash;
+            return (dash && dash.freshness && dash.freshness.oura) || null;
+        } catch {
+            return null;
+        }
+    }
+
+    function renderOuraFreshnessDetail(oura, freshness) {
         const detail = $('oura-detail');
         if (!detail) return;
-        if (!oura || !oura.source) {
+        const hasFreshness = freshness && freshness.last_data_point;
+
+        if ((!oura || !oura.source) && !hasFreshness) {
+            // Genuinely no data — no today-row AND no historical
+            // record_date the server knows about.
             _setDetail('oura-detail-daily', 'Not connected');
             _setDetail('oura-detail-sleep', '—');
             _setDetail('oura-detail-source', '—');
             return;
         }
+
         // Latest daily: combine date + the headline readiness/HRV pair.
+        // Fall back to the freshness block's last_data_point when the
+        // today-row is missing — that surfaces honest stale-cache state
+        // ("data through 2026-05-15") instead of misreporting as
+        // disconnected.
         const dailyParts = [];
-        if (oura.date) dailyParts.push(oura.date);
+        if (oura && oura.date) dailyParts.push(oura.date);
+        else if (hasFreshness) dailyParts.push(`through ${freshness.last_data_point}`);
         const dailyStats = [];
-        if (oura.readiness != null) dailyStats.push(`readiness ${oura.readiness}`);
-        if (oura.hrv != null) dailyStats.push(`HRV ${oura.hrv}`);
-        if (oura.resting_hr != null) dailyStats.push(`RHR ${oura.resting_hr}`);
+        if (oura && oura.readiness != null) dailyStats.push(`readiness ${oura.readiness}`);
+        if (oura && oura.hrv != null) dailyStats.push(`HRV ${oura.hrv}`);
+        if (oura && oura.resting_hr != null) dailyStats.push(`RHR ${oura.resting_hr}`);
         if (dailyStats.length) dailyParts.push(dailyStats.join(' · '));
+        else if (hasFreshness && freshness.status) dailyParts.push(`(${freshness.status})`);
         _setDetail('oura-detail-daily', dailyParts.length ? dailyParts.join(' — ') : 'No daily row');
 
         // Latest sleep: duration formatted as Xh Ym + score if present.
         const sleepParts = [];
-        if (oura.sleep_duration_min != null) {
+        if (oura && oura.sleep_duration_min != null) {
             const h = Math.floor(oura.sleep_duration_min / 60);
             const m = oura.sleep_duration_min % 60;
             sleepParts.push(`${h}h ${m}m`);
         }
-        if (oura.sleep_score != null) sleepParts.push(`score ${oura.sleep_score}`);
+        if (oura && oura.sleep_score != null) sleepParts.push(`score ${oura.sleep_score}`);
         _setDetail('oura-detail-sleep', sleepParts.length ? sleepParts.join(' · ') : 'No sleep row');
 
         // Source: distinguish a real API pull from a cached DB read.
         // ``api`` == fresh live fetch; ``db`` == served from local cache.
-        const sourceText = oura.source === 'api'
-            ? 'Live (fresh API pull)'
-            : oura.source === 'db'
-                ? 'Cached (local SQLite)'
-                : oura.source || '—';
-        _setDetail('oura-detail-source', sourceText
-            + (oura.warning ? ` · ${oura.warning}` : ''));
+        // When only the freshness block is available, label as cached
+        // and surface the freshness status so the user can tell why
+        // today's row is missing.
+        let sourceText;
+        if (oura && oura.source === 'api') sourceText = 'Live (fresh API pull)';
+        else if (oura && oura.source === 'db') sourceText = 'Cached (local SQLite)';
+        else if (oura && oura.source) sourceText = oura.source;
+        else if (hasFreshness) sourceText = `Cached (${freshness.status})`;
+        else sourceText = '—';
+        const warnings = [];
+        if (oura && oura.warning) warnings.push(oura.warning);
+        if (hasFreshness && freshness.status === 'stale') warnings.push('Data is stale (≥48h)');
+        if (warnings.length) sourceText += ` · ${warnings.join(' · ')}`;
+        _setDetail('oura-detail-source', sourceText);
     }
 
     async function _getAppleHealthFreshness() {
