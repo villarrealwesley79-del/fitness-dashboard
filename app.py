@@ -3206,6 +3206,7 @@ def add_nutrition():
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MEAL_INTAKE_STUB_MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6 MB
+_MEAL_INTAKE_SUPPORTED_IMAGE_MIMETYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 _FOOD_PHOTO_RETENTION = {
     "policy": "discard_after_extraction",
     "raw_photo_retained": False,
@@ -3302,7 +3303,7 @@ def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype:
     )
     description = vision["item_description"]
     lookup_text = " ".join(part for part in (description, vision.get("portion_hint")) if part)
-    lookup = branded_food_lookup.lookup(lookup_text)
+    lookup = branded_food_lookup.lookup(lookup_text, brand_hint=text_raw or None)
     provider = vision.get("provider") or vision_estimator.configured_provider()
     if lookup:
         estimate = dict(lookup)
@@ -3482,6 +3483,8 @@ def meal_intake_stub():
         mimetype = (image_file.mimetype or "").lower()
         if not mimetype.startswith("image/"):
             return jsonify({"error": {"message": "image must be image/*"}}), 400
+        if mimetype not in _MEAL_INTAKE_SUPPORTED_IMAGE_MIMETYPES:
+            return jsonify({"error": {"message": "unsupported image type; use JPEG, PNG, WebP, or GIF"}}), 415
         image_mimetype = mimetype
         image_file.stream.seek(0, os.SEEK_END)
         size = image_file.stream.tell()

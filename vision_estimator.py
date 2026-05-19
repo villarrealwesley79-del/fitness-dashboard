@@ -8,7 +8,7 @@ from typing import Any
 import claude_vision_adapter
 
 
-DEFAULT_PROVIDER = "claude"
+DEFAULT_PROVIDER = "disabled"
 SUPPORTED_PROVIDERS = {"claude"}
 
 
@@ -29,6 +29,8 @@ def describe(
 ) -> dict[str, Any]:
     """Describe a food image without retaining raw image bytes."""
     provider = configured_provider()
+    if provider == "disabled":
+        raise VisionEstimatorError("vision provider disabled; set VISION_ESTIMATOR_PROVIDER=claude to enable cloud vision")
     if provider not in SUPPORTED_PROVIDERS:
         raise VisionEstimatorError(f"unsupported vision provider: {provider}")
     try:

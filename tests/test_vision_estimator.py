@@ -23,6 +23,19 @@ class _Response:
         return json.dumps(self.payload).encode("utf-8")
 
 
+def test_vision_estimator_is_disabled_without_explicit_provider(monkeypatch):
+    monkeypatch.delenv("VISION_ESTIMATOR_PROVIDER", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setattr(
+        vision_estimator.claude_vision_adapter,
+        "describe_food_photo",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("cloud provider must not run")),
+    )
+
+    with pytest.raises(vision_estimator.VisionEstimatorError, match="provider disabled"):
+        vision_estimator.describe(b"fake-image")
+
+
 def test_vision_estimator_cleans_claude_response(monkeypatch):
     monkeypatch.setenv("VISION_ESTIMATOR_PROVIDER", "claude")
     monkeypatch.setattr(vision_estimator.claude_vision_adapter, "describe_food_photo", lambda *_a, **_kw: {
