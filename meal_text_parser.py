@@ -334,6 +334,7 @@ def parse_meal_text(
     text: str,
     *,
     timestamp: Optional[str] = None,  # noqa: ARG001 — accepted for forward-compat
+    user_id: int = 1,
 ) -> dict:
     """Convert free-form meal text into a sanitized food estimate.
 
@@ -371,7 +372,7 @@ def parse_meal_text(
     branded_estimate = None
     if branded_food_lookup.should_attempt_direct_lookup(cleaned):
         try:
-            branded_estimate = branded_food_lookup.lookup(cleaned)
+            branded_estimate = branded_food_lookup.lookup(cleaned, user_id=user_id)
         except Exception:
             branded_estimate = None
     if branded_estimate:

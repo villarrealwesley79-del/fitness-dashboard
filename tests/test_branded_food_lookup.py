@@ -33,6 +33,8 @@ def test_normalize_plural_and_brand_typos():
 
 def test_direct_lookup_gate_blocks_multi_item_generic_text():
     assert branded_food_lookup.should_attempt_direct_lookup("Chipotle chicken burrito") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("Chipotle") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("Starbucks") is False
     assert branded_food_lookup.should_attempt_direct_lookup("banana") is True
     assert branded_food_lookup.should_attempt_direct_lookup("two eggs and toast") is False
     assert branded_food_lookup.should_attempt_direct_lookup("chicken with rice") is False
@@ -40,12 +42,12 @@ def test_direct_lookup_gate_blocks_multi_item_generic_text():
 
 def test_lookup_uses_nutritionix_and_records_provenance(monkeypatch):
     saved = {}
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.data_store,
         "save_branded_lookup_cache",
-        lambda normalized, source, response: saved.update(
-            {"normalized": normalized, "source": source, "response": response}
+        lambda normalized, source, response, **kwargs: saved.update(
+            {"normalized": normalized, "source": source, "response": response, "user_id": kwargs.get("user_id")}
         ),
     )
     monkeypatch.setattr(
@@ -66,10 +68,11 @@ def test_lookup_uses_nutritionix_and_records_provenance(monkeypatch):
     assert estimate["portion_basis"] == "1 burrito (440 g)"
     assert saved["normalized"] == "chipotle chicken burrito"
     assert saved["source"] == "nutritionix"
+    assert saved["user_id"] == 1
 
 
 def test_customizable_item_without_modifier_goes_pending_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.nutritionix_client,
@@ -86,7 +89,7 @@ def test_customizable_item_without_modifier_goes_pending_review(monkeypatch):
 
 
 def test_nutritionix_multi_item_response_sums_all_foods(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.nutritionix_client,
@@ -136,7 +139,7 @@ def test_nutritionix_multi_item_response_sums_all_foods(monkeypatch):
 
 
 def test_requested_brand_without_source_brand_is_pending_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.nutritionix_client,
@@ -154,7 +157,7 @@ def test_requested_brand_without_source_brand_is_pending_review(monkeypatch):
 
 
 def test_requested_item_category_mismatch_is_pending_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.nutritionix_client,
@@ -192,7 +195,7 @@ def test_cache_hit_returns_local_cache_without_network(monkeypatch):
     monkeypatch.setattr(
         branded_food_lookup.data_store,
         "get_branded_lookup_cache",
-        lambda normalized: {
+        lambda normalized, **_kw: {
             "normalized_text": normalized,
             "source": "nutritionix",
             "response_json": cached_estimate,
@@ -217,7 +220,7 @@ def test_stale_cache_falls_through_to_usda(monkeypatch):
     monkeypatch.setattr(
         branded_food_lookup.data_store,
         "get_branded_lookup_cache",
-        lambda normalized: {
+        lambda normalized, **_kw: {
             "normalized_text": normalized,
             "source": "nutritionix",
             "response_json": {},
@@ -253,7 +256,7 @@ def test_stale_cache_falls_through_to_usda(monkeypatch):
 
 
 def test_branded_usda_fallback_without_verified_brand_is_pending_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(
@@ -285,7 +288,7 @@ def test_branded_usda_fallback_without_verified_brand_is_pending_review(monkeypa
 
 
 def test_branded_usda_fallback_with_verified_brand_can_stay_high_confidence(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(
@@ -333,7 +336,7 @@ def test_parse_meal_text_uses_branded_lookup_before_lm(monkeypatch):
         "uncertainty_notes": [],
         "source": "nutritionix",
     }
-    monkeypatch.setattr(parser.branded_food_lookup, "lookup", lambda text: branded_estimate)
+    monkeypatch.setattr(parser.branded_food_lookup, "lookup", lambda text, **_kw: branded_estimate)
     monkeypatch.setattr(parser, "_completion_json", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("LM must not run")))
 
     result = parser.parse_meal_text("Chipotle chicken burrito")
@@ -358,7 +361,7 @@ def test_parse_meal_text_applies_review_modifiers_to_branded_lookup(monkeypatch)
         "uncertainty_notes": [],
         "source": "nutritionix",
     }
-    monkeypatch.setattr(parser.branded_food_lookup, "lookup", lambda text: dict(branded_estimate))
+    monkeypatch.setattr(parser.branded_food_lookup, "lookup", lambda text, **_kw: dict(branded_estimate))
     monkeypatch.setattr(parser, "_completion_json", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("LM must not run")))
 
     result = parser.parse_meal_text("half Chipotle chicken burrito")
@@ -420,12 +423,18 @@ def test_data_store_cache_round_trip(tmp_path, monkeypatch):
         "source": "usda_fdc",
     }
 
-    data_store.save_branded_lookup_cache("banana", "usda_fdc", response)
-    row = data_store.get_branded_lookup_cache("banana")
+    data_store.save_branded_lookup_cache("banana", "usda_fdc", response, user_id=1)
+    row = data_store.get_branded_lookup_cache("banana", user_id=1)
 
+    assert row["user_id"] == 1
     assert row["source"] == "usda_fdc"
     assert row["response_json"] == response
     assert row["fetched_at"]
 
+    assert data_store.get_branded_lookup_cache("banana", user_id=2) is None
+    data_store.save_branded_lookup_cache("banana", "usda_fdc", {**response, "item_name": "User 2 banana"}, user_id=2)
+    assert data_store.get_branded_lookup_cache("banana", user_id=2)["response_json"]["item_name"] == "User 2 banana"
+
     data_store.delete_user_data(1)
-    assert data_store.get_branded_lookup_cache("banana") is None
+    assert data_store.get_branded_lookup_cache("banana", user_id=1) is None
+    assert data_store.get_branded_lookup_cache("banana", user_id=2)["response_json"]["item_name"] == "User 2 banana"

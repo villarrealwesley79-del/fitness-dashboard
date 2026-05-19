@@ -270,10 +270,12 @@ def init_data_db():
             );
 
             CREATE TABLE IF NOT EXISTS branded_lookup_cache (
-                normalized_text TEXT PRIMARY KEY,
+                user_id         INTEGER NOT NULL DEFAULT 1,
+                normalized_text TEXT NOT NULL,
                 source          TEXT NOT NULL,
                 response_json   TEXT NOT NULL,
-                fetched_at      TEXT NOT NULL
+                fetched_at      TEXT NOT NULL,
+                PRIMARY KEY(user_id, normalized_text)
             );
 
             CREATE TABLE IF NOT EXISTS recovery_data (
@@ -348,6 +350,25 @@ def init_data_db():
         for col, col_type in push_columns.items():
             if col not in existing_push_cols:
                 conn.execute(f"ALTER TABLE push_subscriptions ADD COLUMN {col} {col_type}")
+        existing_cache_cols = {r["name"] for r in conn.execute("PRAGMA table_info(branded_lookup_cache)").fetchall()}
+        if "user_id" not in existing_cache_cols:
+            conn.execute("ALTER TABLE branded_lookup_cache RENAME TO branded_lookup_cache_old")
+            conn.execute("""
+                CREATE TABLE branded_lookup_cache (
+                    user_id         INTEGER NOT NULL DEFAULT 1,
+                    normalized_text TEXT NOT NULL,
+                    source          TEXT NOT NULL,
+                    response_json   TEXT NOT NULL,
+                    fetched_at      TEXT NOT NULL,
+                    PRIMARY KEY(user_id, normalized_text)
+                )
+            """)
+            conn.execute("""
+                INSERT INTO branded_lookup_cache (user_id, normalized_text, source, response_json, fetched_at)
+                SELECT 1, normalized_text, source, response_json, fetched_at
+                  FROM branded_lookup_cache_old
+            """)
+            conn.execute("DROP TABLE branded_lookup_cache_old")
         conn.execute("""
             UPDATE food_logs
                SET client_id = NULL
@@ -479,7 +500,7 @@ def get_food_logs(user_id: int, limit: Optional[int] = None, since: Optional[str
     return [_food_log_row_to_dict(r) for r in rows]
 
 
-def get_branded_lookup_cache(normalized_text: str) -> Optional[dict]:
+def get_branded_lookup_cache(normalized_text: str, *, user_id: int = 1) -> Optional[dict]:
     """Return a cached branded-food lookup payload by normalized text."""
     key = (normalized_text or "").strip()
     if not key:
@@ -487,8 +508,12 @@ def get_branded_lookup_cache(normalized_text: str) -> Optional[dict]:
     init_data_db()
     with _get_db() as conn:
         row = conn.execute(
-            "SELECT normalized_text, source, response_json, fetched_at FROM branded_lookup_cache WHERE normalized_text = ?",
-            (key,),
+            """
+            SELECT user_id, normalized_text, source, response_json, fetched_at
+              FROM branded_lookup_cache
+             WHERE user_id = ? AND normalized_text = ?
+            """,
+            (user_id, key),
         ).fetchone()
     if not row:
         return None
@@ -497,7 +522,7 @@ def get_branded_lookup_cache(normalized_text: str) -> Optional[dict]:
     return result
 
 
-def save_branded_lookup_cache(normalized_text: str, source: str, response: dict) -> None:
+def save_branded_lookup_cache(normalized_text: str, source: str, response: dict, *, user_id: int = 1) -> None:
     """Persist a source response for cache-first meal lookup."""
     key = (normalized_text or "").strip()
     if not key or not isinstance(response, dict):
@@ -507,14 +532,14 @@ def save_branded_lookup_cache(normalized_text: str, source: str, response: dict)
     with _get_db() as conn:
         conn.execute(
             """
-            INSERT INTO branded_lookup_cache (normalized_text, source, response_json, fetched_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(normalized_text) DO UPDATE SET
+            INSERT INTO branded_lookup_cache (user_id, normalized_text, source, response_json, fetched_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, normalized_text) DO UPDATE SET
                 source = excluded.source,
                 response_json = excluded.response_json,
                 fetched_at = excluded.fetched_at
             """,
-            (key, source, _json_dumps_or_none(response), now_iso),
+            (user_id, key, source, _json_dumps_or_none(response), now_iso),
         )
         conn.commit()
 
@@ -670,8 +695,7 @@ def delete_user_data(user_id: int) -> None:
     with _get_db() as conn:
         for table in tables:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
-        # Single-user app: cache keys include user-entered meal text, so account deletion clears them.
-        conn.execute("DELETE FROM branded_lookup_cache")
+        conn.execute("DELETE FROM branded_lookup_cache WHERE user_id = ?", (user_id,))
         conn.commit()
 
 

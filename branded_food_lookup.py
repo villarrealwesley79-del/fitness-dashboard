@@ -74,6 +74,7 @@ def lookup(
     *,
     brand_hint: str | None = None,
     source_priority: tuple[str, ...] | list[str] | None = None,
+    user_id: int = 1,
 ) -> dict[str, Any] | None:
     """Return a sanitized estimate from cache/Nutritionix/USDA, or None."""
     normalized = normalize_meal_text(f"{brand_hint or ''} {text}".strip())
@@ -82,18 +83,18 @@ def lookup(
     priorities = tuple(source_priority or SOURCE_PRIORITY)
 
     if "cache" in priorities:
-        cached = _cache_lookup(normalized)
+        cached = _cache_lookup(normalized, user_id=user_id)
         if cached:
             return cached
     if "nutritionix" in priorities:
         nutritionix = _nutritionix_lookup(text, normalized)
         if nutritionix:
-            data_store.save_branded_lookup_cache(normalized, nutritionix["source"], nutritionix)
+            data_store.save_branded_lookup_cache(normalized, nutritionix["source"], nutritionix, user_id=user_id)
             return nutritionix
     if "usda_fdc" in priorities:
         usda = _usda_lookup(text, normalized)
         if usda:
-            data_store.save_branded_lookup_cache(normalized, usda["source"], usda)
+            data_store.save_branded_lookup_cache(normalized, usda["source"], usda, user_id=user_id)
             return usda
     return None
 
@@ -107,12 +108,12 @@ def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) ->
     if any(token in tokens for token in MULTI_ITEM_TOKENS):
         return False
     if brand_hint or _brand_from_text(normalized):
-        return True
+        return bool([token for token in tokens if token not in KNOWN_BRANDS])
     return len(tokens) == 1
 
 
-def _cache_lookup(normalized: str) -> dict[str, Any] | None:
-    row = data_store.get_branded_lookup_cache(normalized)
+def _cache_lookup(normalized: str, *, user_id: int = 1) -> dict[str, Any] | None:
+    row = data_store.get_branded_lookup_cache(normalized, user_id=user_id)
     if not row:
         return None
     fetched_at = _parse_iso(row.get("fetched_at"))
