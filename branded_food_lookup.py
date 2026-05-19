@@ -213,11 +213,14 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     if _requested_item_mismatch(normalized, [food]):
         ambiguous = True
         notes.append("USDA FDC returned a different item category; review before logging.")
+    calories = nutrients.get("Energy")
+    if calories is None:
+        calories = nutrients.get("Energy (Atwater General Factors)")
     estimate = {
         "item_name": food.get("description") or "Food",
         "portion_description": "100 g",
         "meal_type": _infer_meal_type(normalized),
-        "calories": nutrients.get("Energy") or nutrients.get("Energy (Atwater General Factors)"),
+        "calories": calories,
         "protein_g": nutrients.get("Protein"),
         "carbs_g": nutrients.get("Carbohydrate, by difference"),
         "fat_g": nutrients.get("Total lipid (fat)"),
@@ -316,7 +319,7 @@ def _requested_item_mismatch(normalized: str, foods: list[dict[str, Any]]) -> bo
         return False
     returned_text = " ".join(str(food.get("food_name") or food.get("description") or "") for food in foods)
     returned_items = set(normalize_meal_text(returned_text).split()) & CUSTOMIZABLE_ITEM_TOKENS
-    return bool(returned_items) and requested_items != returned_items
+    return not returned_items or requested_items != returned_items
 
 
 def _matching_usda_source_brand(food: dict[str, Any], requested_brand: str | None) -> str | None:

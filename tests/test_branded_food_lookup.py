@@ -284,6 +284,23 @@ def test_requested_burrito_rejects_burrito_bowl_hit(monkeypatch):
     assert any("different item category" in note for note in estimate["uncertainty_notes"])
 
 
+def test_requested_item_category_missing_is_pending_review(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(food_name="chicken"),
+    )
+
+    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
+
+    assert estimate["item_name"] == "Chipotle chicken"
+    assert estimate["confidence"] == 0.55
+    assert estimate["ambiguous"] is True
+    assert any("different item category" in note for note in estimate["uncertainty_notes"])
+
+
 def test_cache_hit_returns_local_cache_without_network(monkeypatch):
     fetched_at = datetime.now().isoformat(timespec="seconds")
     cached = _nutritionix_payload()["foods"][0]
@@ -367,6 +384,36 @@ def test_stale_cache_falls_through_to_usda(monkeypatch):
     assert estimate["ambiguous"] is True
     assert estimate["external_food_id"] == "173944"
     assert any("100 g reference portion" in note for note in estimate["uncertainty_notes"])
+
+
+def test_usda_lookup_preserves_zero_calorie_energy(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a: {
+            "foods": [
+                {
+                    "fdcId": 174158,
+                    "description": "WATER, BOTTLED",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "value": 0},
+                        {"nutrientName": "Protein", "value": 0},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 0},
+                        {"nutrientName": "Total lipid (fat)", "value": 0},
+                    ],
+                }
+            ]
+        },
+    )
+
+    estimate = branded_food_lookup.lookup("water", source_priority=("usda_fdc",))
+
+    assert estimate["source"] == "usda_fdc"
+    assert estimate["calories"] == 0
+    assert estimate["external_food_id"] == "174158"
 
 
 def test_branded_usda_fallback_without_verified_brand_is_pending_review(monkeypatch):
