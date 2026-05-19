@@ -3157,7 +3157,7 @@
                 body: JSON.stringify(request || { latest: true }),
             });
 
-            if (payload.status === 'fallback') {
+            if (payload.status === 'fallback' && !payload.analysis) {
                 loading.hidden = true;
                 errEl.hidden = false;
                 errEl.textContent = `AI coach unavailable — ${payload.reason || 'try again later'}.`;
@@ -3213,10 +3213,12 @@
                 }
             }
             const contextBits = [];
+            if (payload.status === 'fallback') contextBits.push('fallback analysis');
             if (ctx.recent_session_count) contextBits.push(`${ctx.recent_session_count} recent sessions`);
             if (ctx.readiness_available) contextBits.push('readiness');
             if (noteBits.length) contextBits.push('notes reviewed');
             contextBits.push(m.model_version || m.model || 'local model');
+            if (m.fallback_reason) contextBits.push(m.fallback_reason);
             if (m.elapsed_ms) contextBits.push(`${m.elapsed_ms}ms`);
             if (payload.cache_hit) contextBits.push('cached');
             $('analyze-meta').textContent = contextBits.join(' · ');

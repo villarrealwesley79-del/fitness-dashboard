@@ -3980,6 +3980,126 @@ def adjust_workout():
     return jsonify(payload)
 
 
+def _exercise_display_name(ex):
+    return ex.get("machine") or ex.get("exercise") or ex.get("name") or "Exercise"
+
+
+def _analysis_number(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _workout_analysis_response(target, analysis, recent_compact, progression_subset, oura_snapshot, notes_context, *, status="ok", meta=None, cache_hit=False):
+    return {
+        "status": status,
+        "workout": {
+            "id": target.get("id"),
+            "date": target.get("date"),
+            "session_type": target.get("session_type") or target.get("focus"),
+            "total_sets": target.get("total_sets"),
+            "total_volume": target.get("total_volume"),
+            "duration_minutes": target.get("duration_minutes"),
+        },
+        "analysis": {
+            "summary": analysis.get("summary"),
+            "wins": analysis.get("wins") or [],
+            "concerns": analysis.get("concerns") or [],
+            "comparison": analysis.get("comparison"),
+            "next_session_cue": analysis.get("next_session_cue"),
+        },
+        "context_used": {
+            "recent_session_count": len(recent_compact),
+            "exercise_progression_available": list(progression_subset.keys()),
+            "readiness_available": oura_snapshot is not None,
+            **notes_context,
+        },
+        "meta": meta or {},
+        "cache_hit": cache_hit,
+    }
+
+
+def _deterministic_workout_analysis(target, recent_compact, progression_subset, notes_context, reason):
+    exercises = target.get("exercises") or []
+    set_count = sum(len(ex.get("sets") or []) for ex in exercises)
+    volume = target.get("total_volume")
+    if volume is None:
+        volume = sum(
+            _analysis_number(s.get("weight_lbs")) * _analysis_number(s.get("reps"))
+            for ex in exercises
+            for s in (ex.get("sets") or [])
+        )
+    else:
+        volume = _analysis_number(volume)
+    exercise_names = [_exercise_display_name(ex) for ex in exercises]
+    notable_notes = []
+    high_rpe = False
+    for ex in exercises:
+        name = _exercise_display_name(ex)
+        for s in (ex.get("sets") or []):
+            note = (s.get("notes") or "").strip()
+            if note:
+                notable_notes.append(f"{name}: {note}")
+            try:
+                high_rpe = high_rpe or _analysis_number(s.get("rpe")) >= 9
+            except Exception:
+                pass
+
+    wins = []
+    if set_count:
+        wins.append(f"Logged {set_count} working set{'s' if set_count != 1 else ''} across {len(exercises)} exercise{'s' if len(exercises) != 1 else ''}.")
+    if volume:
+        wins.append(f"Captured about {int(round(volume)):,} lb of recorded volume.")
+    if notes_context.get("set_note_count") or notes_context.get("workout_notes_present"):
+        wins.append("Captured session notes, so the next recommendation can account for how sets actually felt.")
+    if not wins:
+        wins.append("Workout data was saved and is available for the training history.")
+
+    concerns = []
+    sore_notes = [n for n in notable_notes if any(term in n.lower() for term in ("sore", "pain", "hurt", "ache", "tight", "struggle"))]
+    if sore_notes:
+        concerns.append("Some set notes mention soreness or struggle; treat those muscles conservatively next session.")
+    if high_rpe:
+        concerns.append("At least one set reached very high RPE, so avoid stacking another hard session on the same area too soon.")
+    if not recent_compact:
+        concerns.append("No recent matching sessions were available for a strong trend comparison.")
+
+    if recent_compact:
+        recent_sets = [int(_analysis_number(w.get("total_sets"))) for w in recent_compact if w.get("total_sets") is not None]
+        recent_volumes = [_analysis_number(w.get("total_volume_lbs")) for w in recent_compact if w.get("total_volume_lbs") is not None]
+        avg_sets = round(sum(recent_sets) / len(recent_sets), 1) if recent_sets else None
+        avg_volume = round(sum(recent_volumes) / len(recent_volumes)) if recent_volumes else None
+        comparison_bits = [f"Compared with {len(recent_compact)} recent related session{'s' if len(recent_compact) != 1 else ''}"]
+        if avg_sets is not None:
+            comparison_bits.append(f"recent average was {avg_sets} sets")
+        if avg_volume:
+            comparison_bits.append(f"about {avg_volume:,} lb average volume")
+        comparison = "; ".join(comparison_bits) + "."
+    else:
+        comparison = "No recent same-muscle sessions were available, so this fallback is based on the logged workout itself."
+
+    if sore_notes or high_rpe:
+        cue = "Next session: keep the affected muscles at moderate RPE, repeat or slightly reduce load, and prioritize clean reps."
+    elif progression_subset:
+        cue = "Next session: use the saved progression data and add load or reps only if warmups feel normal."
+    else:
+        cue = "Next session: repeat the same movement pattern and progress slowly if the first working sets feel solid."
+
+    summary_target = ", ".join(exercise_names[:3]) if exercise_names else "this workout"
+    if len(exercise_names) > 3:
+        summary_target += f", plus {len(exercise_names) - 3} more"
+    summary = f"Fallback analysis used because {reason}. {summary_target} is logged with enough detail to guide the next session."
+
+    return {
+        "summary": summary,
+        "wins": wins,
+        "concerns": concerns,
+        "comparison": comparison,
+        "next_session_cue": cue,
+    }
+
+
 @app.route('/api/workout/analyze', methods=['POST'])
 def analyze_workout():
     """Post-mortem on one logged workout.
@@ -3988,9 +4108,6 @@ def analyze_workout():
     {"workout_date": "YYYY-MM-DD"} to pick the most recent session on that day,
     or {"latest": true} for the most recently completed session.
     """
-    if not _lm_studio:
-        return jsonify({"status": "fallback", "reason": "LM Studio adapter not available"}), 200
-
     data, err = get_json_body(required=False) if False else (request.get_json(force=True, silent=True) or {}, None)
     if err:
         return err
@@ -4081,11 +4198,11 @@ def analyze_workout():
                     "muscle": ex.get("muscle_group") or ex.get("muscle"),
                     "set_count": len(ex.get("sets") or []),
                     "top_weight": max(
-                        (float(s.get("weight_lbs") or 0) for s in (ex.get("sets") or [])),
+                        (_analysis_number(s.get("weight_lbs")) for s in (ex.get("sets") or [])),
                         default=0,
                     ),
                     "top_rpe": max(
-                        (float(s.get("rpe") or 0) for s in (ex.get("sets") or [])),
+                        (_analysis_number(s.get("rpe")) for s in (ex.get("sets") or [])),
                         default=0,
                     ),
                 }
@@ -4093,7 +4210,10 @@ def analyze_workout():
             ],
         })
 
-    progression_all = calculate_progression_status(WORKOUTS)
+    try:
+        progression_all = calculate_progression_status(WORKOUTS)
+    except Exception:
+        progression_all = {}
     progression_subset = {
         name: {
             "current_e1rm": data_.get("current_e1rm"),
@@ -4132,11 +4252,34 @@ def analyze_workout():
         },
     }
 
+    model_version = getattr(_lm_studio, "LM_STUDIO_MODEL_VERSION", "deterministic-fallback")
+    prompt_version = getattr(_lm_studio, "ANALYZE_PROMPT_VERSION", "deterministic-v1")
+
+    if not _lm_studio:
+        reason = "LM Studio adapter not available"
+        analysis = _deterministic_workout_analysis(target, recent_compact, progression_subset, notes_context, reason)
+        _ai_metric_log("fallback", constraint_len=0, model_version=model_version, reason="analyze: adapter_missing")
+        return jsonify(_workout_analysis_response(
+            target,
+            analysis,
+            recent_compact,
+            progression_subset,
+            oura_snapshot,
+            notes_context,
+            status="fallback",
+            meta={
+                "fallback": True,
+                "fallback_reason": reason,
+                "model_version": model_version,
+                "analysis_source": "deterministic",
+            },
+        ))
+
     # Cache key based on workout content + model version so re-analyzing the
     # same unchanged workout doesn't re-spend tokens.
     import hashlib
     fingerprint_src = json.dumps({
-        "analysis_prompt_version": getattr(_lm_studio, "ANALYZE_PROMPT_VERSION", "unknown"),
+        "analysis_prompt_version": prompt_version,
         "target": {
             "date": target.get("date"),
             "exercises": [
@@ -4158,7 +4301,7 @@ def analyze_workout():
             "cardio": target.get("cardio"),
         },
         "recent_keys": [w.get("date") for w in recent_compact],
-        "model": _lm_studio.LM_STUDIO_MODEL_VERSION,
+        "model": model_version,
     }, default=str, sort_keys=True)
     cache_key = "analyze:" + hashlib.sha1(fingerprint_src.encode()).hexdigest()
     cached = _ai_cache_get(cache_key)
@@ -4166,52 +4309,48 @@ def analyze_workout():
         cached["cache_hit"] = True
         cached_ctx = cached.setdefault("context_used", {})
         cached_ctx.update(notes_context)
-        _ai_metric_log("cache_hit", constraint_len=0, model_version=_lm_studio.LM_STUDIO_MODEL_VERSION, reason="analyze")
+        _ai_metric_log("cache_hit", constraint_len=0, model_version=model_version, reason="analyze")
         return jsonify(cached)
 
     try:
         result = _lm_studio.analyze_workout(target, llm_context)
-    except _lm_studio.LmStudioError as exc:
-        _ai_metric_log("fallback", constraint_len=0, model_version=_lm_studio.LM_STUDIO_MODEL_VERSION, reason=f"analyze: {exc}")
-        return jsonify({
-            "status": "fallback",
-            "reason": f"LM Studio: {exc}",
-            "workout": target,
-            "analysis": None,
-        })
+    except (_lm_studio.LmStudioError, Exception) as exc:
+        reason = f"LM Studio: {exc}" if isinstance(exc, _lm_studio.LmStudioError) else f"analysis failure: {exc}"
+        _ai_metric_log("fallback", constraint_len=0, model_version=model_version, reason=f"analyze: {exc}")
+        analysis = _deterministic_workout_analysis(target, recent_compact, progression_subset, notes_context, reason)
+        return jsonify(_workout_analysis_response(
+            target,
+            analysis,
+            recent_compact,
+            progression_subset,
+            oura_snapshot,
+            notes_context,
+            status="fallback",
+            meta={
+                "fallback": True,
+                "fallback_reason": reason,
+                "model_version": model_version,
+                "analysis_source": "deterministic",
+            },
+        ))
 
-    payload = {
-        "status": "ok",
-        "workout": {
-            "id": target.get("id"),
-            "date": target.get("date"),
-            "session_type": target.get("session_type") or target.get("focus"),
-            "total_sets": target.get("total_sets"),
-            "total_volume": target.get("total_volume"),
-            "duration_minutes": target.get("duration_minutes"),
-        },
-        "analysis": {
-            "summary": result.get("summary"),
-            "wins": result.get("wins") or [],
-            "concerns": result.get("concerns") or [],
-            "comparison": result.get("comparison"),
-            "next_session_cue": result.get("next_session_cue"),
-        },
-        "context_used": {
-            "recent_session_count": len(recent_compact),
-            "exercise_progression_available": list(progression_subset.keys()),
-            "readiness_available": oura_snapshot is not None,
-            **notes_context,
-        },
-        "meta": result.get("_meta", {}),
-        "cache_hit": False,
-    }
+    payload = _workout_analysis_response(
+        target,
+        result,
+        recent_compact,
+        progression_subset,
+        oura_snapshot,
+        notes_context,
+        status="ok",
+        meta=result.get("_meta", {}),
+        cache_hit=False,
+    )
     _ai_cache_put(cache_key, payload)
     _ai_metric_log(
         "ok",
         latency_ms=(result.get("_meta") or {}).get("elapsed_ms", 0),
         constraint_len=0,
-        model_version=_lm_studio.LM_STUDIO_MODEL_VERSION,
+        model_version=model_version,
         reason="analyze",
     )
     return jsonify(payload)
