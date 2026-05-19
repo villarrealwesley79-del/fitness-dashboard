@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from difflib import get_close_matches
+from difflib import SequenceMatcher
 from typing import Any
 
 import branded_food_lookup
@@ -67,9 +67,9 @@ def lookup(phrase: str | None, *, user_id: int = 1) -> dict | None:
     abbreviation = _abbreviation_match(normalized, candidates.keys())
     if abbreviation:
         return _estimate_from_entry(candidates[abbreviation])
-    matches = get_close_matches(normalized, candidates.keys(), n=1, cutoff=FUZZY_CUTOFF)
-    if matches:
-        return _estimate_from_entry(candidates[matches[0]])
+    typo = _typo_match(normalized, candidates.keys())
+    if typo:
+        return _estimate_from_entry(candidates[typo])
     return None
 
 
@@ -112,6 +112,29 @@ def _abbreviation_match(query: str, candidate_keys) -> str | None:
         if all(_token_matches_abbreviation(q, c) for q, c in zip(query_tokens, candidate_tokens)):
             return candidate
     return None
+
+
+def _typo_match(query: str, candidate_keys) -> str | None:
+    query_tokens = query.split()
+    if not query_tokens:
+        return None
+    for candidate in candidate_keys:
+        candidate_tokens = candidate.split()
+        if len(query_tokens) != len(candidate_tokens):
+            continue
+        if all(_token_matches_typo(q, c) for q, c in zip(query_tokens, candidate_tokens)):
+            return candidate
+    return None
+
+
+def _token_matches_typo(query_token: str, candidate_token: str) -> bool:
+    if query_token == candidate_token:
+        return True
+    if len(query_token) < 4 or len(candidate_token) < 4:
+        return False
+    if query_token[0] != candidate_token[0] or query_token[-1] != candidate_token[-1]:
+        return False
+    return SequenceMatcher(None, query_token, candidate_token).ratio() >= FUZZY_CUTOFF
 
 
 def _token_matches_abbreviation(query_token: str, candidate_token: str) -> bool:
