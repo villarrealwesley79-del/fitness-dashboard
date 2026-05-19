@@ -58,8 +58,6 @@ OFF_REJECT_QUALITY_TAG_FRAGMENTS = (
     "nutrition-packaging-as-sold-100g-value-under-0-01-g-salt",
     "nutrition-value-very-low-for-category-salt",
 )
-OFF_COMPLETE_QUALITY_TAG = "nutrition-data-complete"
-
 
 def normalize_meal_text(text: str) -> str:
     """Normalize user text for cache keys and typo-tolerant source lookup."""
@@ -255,8 +253,6 @@ def _off_quality_ok(product: dict[str, Any]) -> bool:
         return False
     tags = product.get("data_quality_tags") or []
     lowered_tags = [str(tag).lower() for tag in tags]
-    if not any(OFF_COMPLETE_QUALITY_TAG in tag for tag in lowered_tags):
-        return False
     if any("error" in tag for tag in lowered_tags):
         return False
     if any(fragment in tag for tag in lowered_tags for fragment in OFF_REJECT_QUALITY_TAG_FRAGMENTS):

@@ -61,6 +61,24 @@ def test_open_food_facts_client_searches_keyless_endpoint(monkeypatch):
     assert captured["ua"] == open_food_facts_client.USER_AGENT
 
 
+def test_open_food_facts_client_retries_without_locale_word(monkeypatch):
+    seen_terms = []
+
+    def fake_urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        seen_terms.append(params["search_terms"][0])
+        if len(seen_terms) == 1:
+            return _Response({"products": []})
+        return _Response({"products": [_product("Tim Tam")]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = open_food_facts_client.search_products("Australian Tim Tams")
+
+    assert seen_terms == ["Australian Tim Tams", "Tim Tams"]
+    assert result["products"][0]["product_name"] == "Tim Tam"
+
+
 def test_open_food_facts_tier_runs_after_usda(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
@@ -92,10 +110,9 @@ def test_open_food_facts_filters_bad_quality(monkeypatch):
     assert branded_food_lookup.lookup("bad product") is None
 
 
-def test_open_food_facts_requires_complete_nutrition_tag(monkeypatch):
-    bad = _product("Untagged Product")
-    bad["data_quality_tags"] = []
-    good = _product("Complete Product", code="good")
+def test_open_food_facts_accepts_complete_untagged_rows(monkeypatch):
+    product = _product("Untagged Product", code="untagged")
+    product["data_quality_tags"] = []
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
@@ -103,13 +120,13 @@ def test_open_food_facts_requires_complete_nutrition_tag(monkeypatch):
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "search_products",
-        lambda *_a: {"products": [bad, good]},
+        lambda *_a: {"products": [product]},
     )
 
     estimate = branded_food_lookup.lookup("non us packaged food")
 
     assert estimate["source"] == "open_food_facts"
-    assert estimate["external_food_id"] == "good"
+    assert estimate["external_food_id"] == "untagged"
 
 
 def test_open_food_facts_skips_nutrition_mismatch_warnings(monkeypatch):
