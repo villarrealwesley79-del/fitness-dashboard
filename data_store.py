@@ -780,7 +780,15 @@ def upsert_settings(user_id: int, settings: dict) -> None:
 # ── Account Management ────────────────────────────────────────────────────────
 def delete_user_data(user_id: int) -> None:
     """Permanently delete all data for a user (GDPR / account deletion)."""
-    tables = ["body_data", "cardio_data", "nutrition_data", "food_logs", "recovery_data", "user_settings"]
+    tables = [
+        "body_data",
+        "cardio_data",
+        "nutrition_data",
+        "food_logs",
+        "personal_vocab",
+        "recovery_data",
+        "user_settings",
+    ]
     with _get_db() as conn:
         for table in tables:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
@@ -789,7 +797,7 @@ def delete_user_data(user_id: int) -> None:
 
 def get_user_data_summary(user_id: int) -> dict:
     """Return record counts per table for a user (useful for admin/debugging)."""
-    tables = ["body_data", "cardio_data", "nutrition_data", "food_logs", "recovery_data"]
+    tables = ["body_data", "cardio_data", "nutrition_data", "food_logs", "personal_vocab", "recovery_data"]
     summary = {}
     with _get_db() as conn:
         for table in tables:

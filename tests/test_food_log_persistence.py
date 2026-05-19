@@ -135,6 +135,37 @@ def test_clear_food_logs_removes_only_target_user_logs(isolated_store):
     assert len(store.get_food_logs(user_id=2)) == 1
 
 
+def test_delete_user_data_removes_personal_vocab_rows(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+    canonical = {
+        "item_name": "Chipotle chicken burrito",
+        "calories": 1075,
+        "protein_g": 51,
+        "source": "nutritionix",
+    }
+    store.upsert_personal_vocab_entry(
+        1,
+        normalized_input="chip ckn bur",
+        phrase="chip ckn bur",
+        canonical_resolution=canonical,
+        accepted=True,
+    )
+    store.upsert_personal_vocab_entry(
+        2,
+        normalized_input="chip ckn bur",
+        phrase="chip ckn bur",
+        canonical_resolution=canonical,
+        accepted=True,
+    )
+
+    store.delete_user_data(user_id=1)
+
+    assert store.get_personal_vocab_entry(1, "chip ckn bur") is None
+    assert store.get_personal_vocab_entry(2, "chip ckn bur") is not None
+    assert store.get_user_data_summary(1)["personal_vocab"] == 0
+
+
 def test_init_data_db_adds_food_log_columns_to_pre_existing_table(isolated_store):
     store, db_path = isolated_store
     with sqlite3.connect(db_path) as conn:
