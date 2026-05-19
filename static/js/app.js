@@ -2171,7 +2171,16 @@
             return;
         }
         if (health) {
-            _renderAiHealthFields(health);
+            // Degraded payload when the adapter failed to import:
+            // {reachable: false, error: "adapter not loaded"} with no
+            // primary/fallback. Treat that the same as a 5xx so the UI
+            // doesn't render "Primary: Not configured / Fallback: Same
+            // as primary" instead of showing the real error.
+            if (health.reachable === false && !health.primary) {
+                _setAiCoachUnavailable(health.error || 'AI adapter unavailable');
+            } else {
+                _renderAiHealthFields(health);
+            }
         } else {
             const primaryState = $('ai-primary-state');
             const fallbackState = $('ai-fallback-state');
