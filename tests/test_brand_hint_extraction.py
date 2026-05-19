@@ -74,6 +74,40 @@ def test_lookup_hint_is_non_binding_when_text_already_has_brand(monkeypatch):
     assert captured["query"] == "Starbucks latte"
 
 
+def test_lookup_hint_is_non_binding_for_unlisted_brand_phrase(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+
+    def fake_nutritionix(query):
+        captured["query"] = query
+        return None
+
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", fake_nutritionix)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+
+    branded_food_lookup.lookup("Taco Bell crunchy taco", brand_hint="chipotle")
+
+    assert captured["query"] == "Taco Bell crunchy taco"
+
+
+def test_lookup_hint_does_not_duplicate_matching_unlisted_brand(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+
+    def fake_nutritionix(query):
+        captured["query"] = query
+        return None
+
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", fake_nutritionix)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+
+    branded_food_lookup.lookup("Taco Bell crunchy taco", brand_hint="Taco Bell")
+
+    assert captured["query"] == "Taco Bell crunchy taco"
+
+
 def test_meal_intake_passes_brand_hint_to_lookup(monkeypatch):
     import app
 
@@ -114,6 +148,47 @@ def test_meal_intake_passes_brand_hint_to_lookup(monkeypatch):
     assert captured["text"] == "foil wrapped burrito 1 burrito"
     assert body["estimate"]["brand_hint"] == "chipotle"
     assert body["estimate"]["source"] == "vision_claude+nutritionix"
+
+
+def test_meal_intake_accept_preserves_brand_hint(monkeypatch):
+    import app
+
+    app.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(app, "_current_data_user_id", lambda: 1)
+    captured = {}
+
+    def fake_add_food_log(_user_id, record):
+        captured.update(record)
+        return {"client_id": record["client_id"], "source": record["source"]}
+
+    monkeypatch.setattr(app, "add_food_log", fake_add_food_log)
+
+    res = app.app.test_client().post(
+        "/api/meal-intake/brand-hint-accept-1/accept",
+        json={
+            "estimate": {
+                "item_name": "Chipotle chicken burrito",
+                "portion_description": "1 burrito",
+                "meal_type": "lunch",
+                "calories": 1075,
+                "protein_g": 51,
+                "carbs_g": 116,
+                "fat_g": 41,
+                "sodium_mg": 2310,
+                "fiber_g": 13,
+                "confidence": 0.72,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+                "source": "vision_claude+nutritionix",
+                "brand_hint": "chipotle",
+                "brand_hint_confidence": 0.91,
+            },
+        },
+    )
+
+    assert res.status_code == 200
+    assert captured["original_estimate"]["brand_hint"] == "chipotle"
+    assert captured["original_estimate"]["brand_hint_confidence"] == 0.91
 
 
 def test_meal_intake_omits_brand_hint_when_none(monkeypatch):

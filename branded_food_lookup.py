@@ -22,6 +22,13 @@ KNOWN_BRANDS = {
     "chick-fil-a",
     "chickfila",
 }
+KNOWN_BRAND_PHRASES = {
+    "burger king",
+    "dunkin donuts",
+    "panda express",
+    "taco bell",
+    "wendys",
+}
 BRAND_TYPOS = {
     "mcdonalds": {"mcdonals", "mcdonlds", "mcdonald"},
     "starbucks": {"starbuks", "starbukcs"},
@@ -104,9 +111,19 @@ def _text_with_brand_hint(text: str, brand_hint: str | None) -> str:
     hint = normalize_meal_text(brand_hint or "")
     if not hint:
         return cleaned
-    if any(token in KNOWN_BRANDS for token in normalized_text.split()):
+    if _text_has_explicit_brand(normalized_text, hint):
         return cleaned
     return f"{hint} {cleaned}".strip()
+
+
+def _text_has_explicit_brand(normalized_text: str, hint: str) -> bool:
+    tokens = set(normalized_text.split())
+    if tokens & KNOWN_BRANDS:
+        return True
+    padded = f" {normalized_text} "
+    if hint and f" {hint} " in padded:
+        return True
+    return any(f" {phrase} " in padded for phrase in KNOWN_BRAND_PHRASES)
 
 
 def _cache_lookup(normalized: str) -> dict[str, Any] | None:
