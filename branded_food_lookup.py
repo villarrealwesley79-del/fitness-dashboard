@@ -145,6 +145,9 @@ def _nutritionix_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     if requested_brand and not source_brand:
         ambiguous = True
         notes.append("Nutritionix did not verify the requested brand; review before logging.")
+    if _requested_item_mismatch(normalized, food_items):
+        ambiguous = True
+        notes.append("Nutritionix returned a different item category; review before logging.")
     if len(food_items) > 1:
         notes.append("Nutritionix returned multiple foods; macros were summed from all returned items.")
     item_name = _nutritionix_item_name(food_items, source_brand)
@@ -274,6 +277,15 @@ def _matching_source_brand(foods: list[dict[str, Any]], requested_brand: str | N
         if _brand_from_text(normalize_meal_text(brand)) == requested_brand:
             return brand
     return None
+
+
+def _requested_item_mismatch(normalized: str, foods: list[dict[str, Any]]) -> bool:
+    requested_items = set(normalized.split()) & CUSTOMIZABLE_ITEM_TOKENS
+    if not requested_items:
+        return False
+    returned_text = " ".join(str(food.get("food_name") or "") for food in foods)
+    returned_items = set(normalize_meal_text(returned_text).split()) & CUSTOMIZABLE_ITEM_TOKENS
+    return bool(returned_items) and not bool(requested_items & returned_items)
 
 
 def _needs_modifier_review(normalized: str) -> bool:

@@ -84,7 +84,16 @@ def sanitize_food_estimate(estimate: Optional[dict]) -> Optional[dict]:
     """Return export/API-safe estimate fields, dropping raw traces and images."""
     if not isinstance(estimate, dict):
         return None
-    safe = {k: estimate.get(k) for k in FOOD_ESTIMATE_FIELDS if k in estimate}
+    safe = {k: estimate.get(k) for k in FOOD_ESTIMATE_FIELDS if k in estimate and k != "off_attribution"}
+    off_attribution = estimate.get("off_attribution")
+    if isinstance(off_attribution, dict):
+        cleaned = {
+            key: value
+            for key, value in off_attribution.items()
+            if isinstance(key, str) and (value is None or isinstance(value, (str, int, float, bool)))
+        }
+        if cleaned:
+            safe["off_attribution"] = cleaned
     return safe or None
 
 

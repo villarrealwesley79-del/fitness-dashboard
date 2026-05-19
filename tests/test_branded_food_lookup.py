@@ -153,6 +153,23 @@ def test_requested_brand_without_source_brand_is_pending_review(monkeypatch):
     assert any("did not verify" in note for note in estimate["uncertainty_notes"])
 
 
+def test_requested_item_category_mismatch_is_pending_review(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(food_name="chicken bowl"),
+    )
+
+    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
+
+    assert estimate["item_name"] == "Chipotle chicken bowl"
+    assert estimate["confidence"] == 0.55
+    assert estimate["ambiguous"] is True
+    assert any("different item category" in note for note in estimate["uncertainty_notes"])
+
+
 def test_cache_hit_returns_local_cache_without_network(monkeypatch):
     fetched_at = datetime.now().isoformat(timespec="seconds")
     cached = _nutritionix_payload()["foods"][0]
