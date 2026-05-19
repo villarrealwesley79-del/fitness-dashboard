@@ -175,6 +175,7 @@ Acceptance criteria:
 - Export/import backup through the app.
 - Avoid exposing raw tokens, raw JSON, or sync-token material through normal API responses.
 - Treat food photos as sensitive personal data. Do not expose images or raw model traces through normal API responses.
+- Default food photo retention is documented in `docs/FOOD_PHOTO_PRIVACY.md`: discard raw photos after extraction unless a future explicit opt-in retention issue changes that policy.
 - Accepted food logs are persisted separately from the daily nutrition summary so multiple meals/snacks can retain final values plus sanitized original estimate and correction metadata. Existing nutrition JSON remains a readable legacy/backfill source.
 
 ## 7. Non-Functional Requirements

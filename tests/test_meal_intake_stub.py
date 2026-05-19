@@ -324,6 +324,11 @@ def test_meal_intake_image_only_auto_logs(monkeypatch):
     body = res.get_json()
     assert body["status"] == "logged"
     assert body["estimate"]["confidence"] >= 0.7
+    assert body["photo_retention"]["policy"] == "discard_after_extraction"
+    assert body["photo_retention"]["raw_photo_retained"] is False
+    assert body["photo_retention"]["backup_includes_raw_photo"] is False
+    assert "image_bytes" not in str(body)
+    assert "plate.png" not in str(body)
     assert captured["source"] == "stub_vision_estimate"
     assert captured["context_note"] is None
 
@@ -1036,8 +1041,18 @@ def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
     )
     assert body["estimate"]["ambiguous"] is True
     assert "ambiguous_input" in body["policy"]["reasons"]
+    assert body["photo_retention"]["image_received"] is True
+    assert body["photo_retention"]["raw_model_trace_retained"] is False
     assert persisted == [], "ambiguous estimates must not auto-persist"
     assert body["food_log"] is None
+
+    accept = module.app.test_client().post(
+        "/api/meal-intake/meal-ambig-img-1/accept",
+        json={"estimate": body["estimate"], "text": "shared movie popcorn"},
+    )
+    accepted = accept.get_json()
+    assert accept.status_code == 200
+    assert accepted["photo_retention"]["image_received"] is True
 
 
 def test_nutrition_today_surfaces_pending_review_count(monkeypatch):
