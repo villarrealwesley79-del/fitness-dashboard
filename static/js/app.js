@@ -1929,7 +1929,22 @@
 
     // --- Settings ------------------------------------------------
     async function renderSettings() {
-        const [st, oura] = await Promise.all([getSettings(), getOuraStatus(true, true)]);
+        // FIT-16: fetch the dashboard freshness block alongside the
+        // settings/Oura payloads so the integration chips AND the new
+        // detail panels share the same MAX(record_date)-derived signal.
+        // Without this, the chip could read green ("Synced today" from a
+        // recent attempt that didn't insert) while the panel correctly
+        // shows "stale" — or vice versa.
+        const [st, oura, freshness] = await Promise.all([
+            getSettings(),
+            getOuraStatus(true, true),
+            api('/api/dashboard').then((d) => {
+                state.dashboard = d;
+                return (d && d.freshness) || null;
+            }).catch(() => null),
+        ]);
+        const ouraFreshness = freshness && freshness.oura;
+        const appleFreshness = freshness && freshness.apple_health;
         const host = $('settings-goals');
         host.innerHTML = '';
         (st.available_goals || []).forEach((g) => {
@@ -1975,33 +1990,63 @@
         eqSel.onchange = () => updateEquipment(eqSel.value);
 
         // integration state
+        // FIT-16: chip honors the dashboard freshness block too, so a
+        // stale-cached integration (no today-row, but historical
+        // last_data_point) reads as "Cached · stale" instead of
+        // contradicting the new detail panel below.
         const ouraState = $('oura-connect-state');
+        const ouraFreshnessStatus = ouraFreshness && ouraFreshness.status;
         if (oura && oura.source) {
-            ouraState.textContent = oura.source === 'api' ? 'Connected' : 'Cached';
-            ouraState.className = 'state-chip ' + (oura.source === 'api' ? 'ok' : 'warn');
-        } else { ouraState.textContent = 'Not connected'; ouraState.className = 'state-chip'; }
-        // FIT-16: Oura freshness evidence — latest daily / latest sleep
-        // rows + cached vs live state. Pass the dashboard freshness
-        // block too so a missing today-row falls back to honest "stale
-        // cached data through X" copy instead of rendering "Not
-        // connected" (which is reserved for genuinely-disconnected).
-        renderOuraFreshnessDetail(oura, await _getOuraFreshness());
+            const stale = ouraFreshnessStatus === 'stale';
+            ouraState.textContent = stale ? 'Cached · stale'
+                : oura.source === 'api' ? 'Connected' : 'Cached';
+            ouraState.className = 'state-chip ' + (
+                stale ? 'stale' : (oura.source === 'api' ? 'ok' : 'warn')
+            );
+        } else if (ouraFreshness && ouraFreshness.last_data_point) {
+            // No today-row but historical record exists — surface as
+            // cached with the freshness status so the chip agrees with
+            // the panel below it.
+            ouraState.textContent = `Cached · ${ouraFreshnessStatus || 'unknown'}`;
+            ouraState.className = 'state-chip ' + (
+                ouraFreshnessStatus === 'stale' ? 'stale' : 'warn'
+            );
+        } else {
+            ouraState.textContent = 'Not connected';
+            ouraState.className = 'state-chip';
+        }
+        // FIT-16: latest daily / latest sleep rows + cached/live state.
+        renderOuraFreshnessDetail(oura, ouraFreshness);
 
         // Apple Health — prefer the real sync-status endpoint over
         // the file-existence probe, and only claim "connected" when a
-        // sync actually landed recently.
+        // sync actually landed recently AND the server's freshness
+        // block agrees the data isn't stale. The chip must not contradict
+        // the detail panel: a recent HAE attempt that inserted only
+        // duplicate / old records should NOT read green.
         try {
             const ah = await api('/api/apple-health/sync/status');
-            const lastExportRaw = ah && (ah.last_attempt || ah.last_sync);
-            const last = parseServerDateTime(lastExportRaw);
+            // FIT-16: use ``last_sync`` (insertion ts) for the chip's
+            // age calc — not ``last_attempt``, which can be recent
+            // even when nothing actually inserted.
+            const lastSyncRaw = ah && ah.last_sync;
+            const last = parseServerDateTime(lastSyncRaw);
             const ageDays = last ? Math.floor((Date.now() - last.getTime()) / 86400000) : Infinity;
-            const connected = last && ageDays <= 3;
+            const ahFreshnessStatus = appleFreshness && appleFreshness.status;
+            const dataIsStale = ahFreshnessStatus === 'stale';
+            const dataIsMissing = ahFreshnessStatus === 'missing';
+            const connected = last && ageDays <= 3 && !dataIsStale && !dataIsMissing;
             const setupConfigured = Boolean(ah && ah.setup_configured);
             const chip = $('apple-connect-state');
             const detail = $('apple-last-export');
             if (connected) {
                 chip.textContent = `Synced ${ageDays === 0 ? 'today' : ageDays + 'd ago'}`;
-                chip.className = 'state-chip ok';
+                chip.className = 'state-chip ' + (ahFreshnessStatus === 'fresh' ? 'ok' : 'warn');
+                $('apple-int-dot').className = 'int-dot int-dot-on';
+            } else if (dataIsStale) {
+                const through = appleFreshness.last_data_point;
+                chip.textContent = through ? `Stale · through ${through}` : 'Stale data';
+                chip.className = 'state-chip stale';
                 $('apple-int-dot').className = 'int-dot int-dot-on';
             } else if (setupConfigured) {
                 chip.textContent = last ? `Setup · last sync ${ageDays}d ago` : 'Setup · waiting for export';
@@ -2014,22 +2059,20 @@
             }
             if (detail) {
                 detail.textContent = last
-                    ? `Last export ${fmtDateTime(lastExportRaw)} · ${ah.total_records || 0} records`
+                    ? `Last export ${fmtDateTime(lastSyncRaw)} · ${ah.total_records || 0} records`
                     : 'No accepted export yet';
             }
-            // FIT-16: Apple Health freshness evidence — distinguishes
-            // last accepted (records actually inserted) from last
-            // attempt (raw HAE webhook hits), surfaces total record
-            // counts, and reveals a stale warning past 48h based on
-            // the server's record_date (NOT the insertion timestamp,
-            // so an HAE replay of an old export can't hide the alert).
-            renderAppleHealthFreshnessDetail(ah, await _getAppleHealthFreshness());
+            // FIT-16: detail panel — last accepted vs last attempt,
+            // data-through (record_date), record-type breakdown, and
+            // a stale-warning row driven by the same freshness signal
+            // the chip above uses.
+            renderAppleHealthFreshnessDetail(ah, appleFreshness);
         } catch {
             $('apple-connect-state').textContent = 'Not connected';
             $('apple-int-dot').className = 'int-dot';
             const detail = $('apple-last-export');
             if (detail) detail.textContent = 'Export status unavailable';
-            renderAppleHealthFreshnessDetail(null, null);
+            renderAppleHealthFreshnessDetail(null, appleFreshness);
         }
         const setupBtn = $('btn-apple-setup');
         if (setupBtn && !setupBtn.dataset.wired) {
@@ -2238,18 +2281,6 @@
         if (el) el.textContent = text;
     }
 
-    async function _getOuraFreshness() {
-        // Same pattern as _getAppleHealthFreshness — always fetch live
-        // so the panel reflects the current MAX(record_date) signal.
-        try {
-            const dash = await api('/api/dashboard');
-            state.dashboard = dash;
-            return (dash && dash.freshness && dash.freshness.oura) || null;
-        } catch {
-            return null;
-        }
-    }
-
     function renderOuraFreshnessDetail(oura, freshness) {
         const detail = $('oura-detail');
         if (!detail) return;
@@ -2306,23 +2337,6 @@
         if (hasFreshness && freshness.status === 'stale') warnings.push('Data is stale (≥48h)');
         if (warnings.length) sourceText += ` · ${warnings.join(' · ')}`;
         _setDetail('oura-detail-source', sourceText);
-    }
-
-    async function _getAppleHealthFreshness() {
-        // Always fetch live freshness — reusing state.dashboard would
-        // pair a fresh /api/apple-health/sync/status with a possibly-
-        // hours-old freshness block, and the two could disagree.
-        // The freshness block is computed from MAX(record_date), the
-        // data date, distinct from ah.last_sync (insertion timestamp).
-        try {
-            const dash = await api('/api/dashboard');
-            // Update the cache so other tabs see the fresh data too,
-            // but never depend on the previous cache value here.
-            state.dashboard = dash;
-            return (dash && dash.freshness && dash.freshness.apple_health) || null;
-        } catch {
-            return null;
-        }
     }
 
     function renderAppleHealthFreshnessDetail(ah, freshness) {
