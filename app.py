@@ -3640,17 +3640,21 @@ def nutrition_history():
         """Stable dedup key for entries without a client_id.
 
         /api/add-nutrition without a client_id appends the same meal
-        to both stores with no shared key, so the only way to avoid
-        double-counting is a content tuple. Choosing the fields the
-        dual-write path always copies verbatim: day, logged_at,
-        calories, protein, and item_name.
+        to both stores. The legacy NUTRITION_DATA entry is built from
+        a smaller dict that ONLY carries date + macros (logged_at and
+        item_name are passed to add_food_log but not appended to the
+        legacy entry — see app.py:3110-3149). So the signature must
+        only use fields both stores definitely have: the date and the
+        macro tuple. Anything else (logged_at, item_name) is missing
+        on one side and would prevent the match.
         """
         return (
             _nutrition_entry_day(entry),
-            entry.get("logged_at"),
             entry.get("calories"),
             entry.get("protein_g"),
-            entry.get("item_name"),
+            entry.get("carbs_g"),
+            entry.get("fat_g"),
+            entry.get("sodium_mg"),
         )
 
     food_log_content_keys = {

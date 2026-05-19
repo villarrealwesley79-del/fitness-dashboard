@@ -348,6 +348,42 @@ def test_nutrition_history_classifies_legacy_entry_with_ai_signal_as_estimated(f
     assert today["manual_count"] == 0
 
 
+def test_nutrition_history_dedupes_clientless_dual_write_with_partial_legacy_fields(fitness_app, monkeypatch):
+    """Regression for Codex audit round 5 finding 1: /api/add-nutrition
+    builds the legacy NUTRITION_DATA entry from a smaller dict that
+    only carries date + macros (see app.py:3110-3149). logged_at,
+    item_name, and source_timestamp are added only to the food_log
+    record. The dedupe signature must NOT include those fields,
+    otherwise dual-write clientless entries never match.
+    """
+    legacy_partial = {  # Mirrors what /api/add-nutrition appends to NUTRITION_DATA.
+        "date": _today(),
+        "calories": 500, "protein_g": 30, "carbs_g": 50, "fat_g": 18,
+        "sodium_mg": 600,
+        "correction_state": "manual",
+    }
+    food_log_full = {  # Mirrors what add_food_log persists for the same call.
+        "id": 1, "client_id": None,
+        "date": _today(), "logged_at": f"{_today()}T13:00:00",
+        "calories": 500, "protein_g": 30, "carbs_g": 50, "fat_g": 18,
+        "sodium_mg": 600, "item_name": "Lunch",
+        "correction_state": "manual",
+    }
+    _seed_nutrition(fitness_app, [legacy_partial])
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [food_log_full],
+    )
+    today = next(d for d in fitness_app.app.test_client()
+                 .get("/api/nutrition-history").get_json()["history"]
+                 if d["date"] == _today())
+    assert today["calories"] == 500, (
+        "dual-write entries with partial-legacy shape must dedupe "
+        f"(got {today['calories']}, expected 500)"
+    )
+    assert today["entries_count"] == 1
+
+
 def test_nutrition_history_dedupes_clientless_dual_write_entries(fitness_app, monkeypatch):
     """Regression for Codex audit round 4: /api/add-nutrition appends
     to BOTH NUTRITION_DATA and food_logs. When called without a
@@ -391,9 +427,9 @@ def test_nutrition_history_dedupes_clientless_dual_write_entries(fitness_app, mo
 
 
 def test_nutrition_history_keeps_distinct_clientless_entries_with_different_content(fitness_app, monkeypatch):
-    """Counter-test: clientless entries with DIFFERENT content (e.g.
+    """Counter-test: clientless entries with DIFFERENT macros (e.g.
     a legacy breakfast and a food_log lunch, both lacking client_id
-    but distinguishable by logged_at + calories) must both count.
+    but distinguishable by their macro tuple) must both count.
     The content dedupe must not collapse legitimate distinct meals.
     """
     legacy_breakfast = {

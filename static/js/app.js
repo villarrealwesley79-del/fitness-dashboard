@@ -1884,12 +1884,26 @@
                 sub: `${Math.abs(diff).toFixed(1)}% ${direction} target`,
             });
         }
+        // ETA can be negative when the current weight trend is moving
+        // AWAY from the target (e.g., target 175lb, currently 180lb,
+        // weight is still going up). Rendering "-3.4 weeks" is
+        // nonsense — surface honest copy instead so the body view
+        // doesn't lie about reachability.
         if (eta != null && Number.isFinite(Number(eta))) {
-            items.push({
-                label: 'ETA at current pace',
-                value: `${Number(eta).toFixed(1)} weeks`,
-                sub: 'based on 14-day weight velocity',
-            });
+            const etaNum = Number(eta);
+            if (etaNum < 0) {
+                items.push({
+                    label: 'ETA at current pace',
+                    value: 'Not on track',
+                    sub: 'current trend is moving away from target',
+                });
+            } else {
+                items.push({
+                    label: 'ETA at current pace',
+                    value: `${etaNum.toFixed(1)} weeks`,
+                    sub: 'based on 14-day weight velocity',
+                });
+            }
         }
         if (!items.length) {
             card.hidden = true;
