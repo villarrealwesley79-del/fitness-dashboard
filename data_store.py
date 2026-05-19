@@ -325,6 +325,21 @@ def init_data_db():
         for col, col_type in push_columns.items():
             if col not in existing_push_cols:
                 conn.execute(f"ALTER TABLE push_subscriptions ADD COLUMN {col} {col_type}")
+        conn.execute("""
+            UPDATE food_logs
+               SET client_id = NULL
+             WHERE client_id IS NOT NULL
+               AND id NOT IN (
+                   SELECT MAX(id)
+                     FROM food_logs
+                    WHERE client_id IS NOT NULL
+                    GROUP BY user_id, client_id
+               )
+        """)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_food_logs_user_client_id "
+            "ON food_logs(user_id, client_id)"
+        )
         conn.commit()
 
 
@@ -490,34 +505,20 @@ def add_food_log(user_id: int, record: dict) -> dict:
         "updated_at": now_iso,
     }
     with _get_db() as conn:
-        row_id = None
-        if entry.get("client_id"):
-            existing = conn.execute(
-                "SELECT id FROM food_logs WHERE user_id = ? AND client_id = ?",
-                (user_id, entry["client_id"]),
-            ).fetchone()
-            if existing:
-                row_id = existing["id"]
-                update_cols = [c for c in entry if c not in {"client_id", "created_at"}]
-                assignments = ", ".join(f"{c} = ?" for c in update_cols)
-                conn.execute(
-                    f"UPDATE food_logs SET {assignments} WHERE user_id = ? AND id = ?",
-                    [entry[c] for c in update_cols] + [user_id, row_id],
-                )
-        if row_id is None:
-            cols = ["user_id"] + list(entry.keys())
-            vals = [user_id] + [entry[c] for c in entry]
-            placeholders = ", ".join(["?"] * len(cols))
-            cursor = conn.execute(
-                f"INSERT INTO food_logs ({', '.join(cols)}) VALUES ({placeholders})",
-                vals,
-            )
-            row_id = cursor.lastrowid
-        conn.commit()
+        cols = ["user_id"] + list(entry.keys())
+        vals = [user_id] + [entry[c] for c in entry]
+        placeholders = ", ".join(["?"] * len(cols))
+        update_cols = [c for c in entry if c not in {"client_id", "created_at"}]
+        assignments = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
         row = conn.execute(
-            "SELECT * FROM food_logs WHERE user_id = ? AND id = ?",
-            (user_id, row_id),
-        ).fetchone() if row_id else None
+            f"""
+            INSERT INTO food_logs ({', '.join(cols)}) VALUES ({placeholders})
+            ON CONFLICT(user_id, client_id) DO UPDATE SET {assignments}
+            RETURNING *
+            """,
+            vals,
+        ).fetchone()
+        conn.commit()
     return _food_log_row_to_dict(row) if row else {k: v for k, v in entry.items() if not k.endswith("_json")}
 
 
