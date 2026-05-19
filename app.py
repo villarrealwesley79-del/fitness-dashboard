@@ -38,7 +38,7 @@ from oura_client import (
     get_oura_daily_range,
     compute_hrv_trend,
 )
-from data_store import init_data_db, add_food_log, get_food_logs
+from data_store import init_data_db, add_food_log, get_food_logs, delete_food_log_by_client_id
 
 app = Flask(__name__)
 
@@ -3041,6 +3041,204 @@ def add_nutrition():
         raise
 
     return jsonify({"status": "success", "nutrition": entry, "food_log": food_log})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIT-60 STUB — /api/meal-intake (Universal meal composer backend).
+#
+# Temporary canned-response stub so the FIT-60 UI can be developed and verified
+# end-to-end before FIT-57 (zero-context meal intake contract), FIT-59 (text
+# parser), and FIT-5 (vision estimator) land. Remove this entire block once
+# the real intake pipeline is shipped. Tracked by FIT-60 follow-up issue.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MEAL_INTAKE_STUB_MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6 MB
+_MEAL_INTAKE_STUB_AMBIGUOUS_WORDS = (
+    "popcorn", "movie", "shared", "leftover", "leftovers", "snacks",
+    "buffet", "potluck", "?", "guessing", "guess",
+)
+_MEAL_INTAKE_STUB_PRESETS = (
+    (("shake", "smoothie"),     dict(item_name="Protein shake",      meal_type="snack",     calories=210, protein_g=30, carbs_g=14, fat_g=4,  sodium_mg=180, fiber_g=2)),
+    (("egg", "toast"),          dict(item_name="Eggs and toast",     meal_type="breakfast", calories=420, protein_g=24, carbs_g=36, fat_g=18, sodium_mg=520, fiber_g=4)),
+    (("bowl", "chipotle"),      dict(item_name="Chipotle bowl",      meal_type="lunch",     calories=680, protein_g=42, carbs_g=72, fat_g=22, sodium_mg=1450, fiber_g=10)),
+    (("salad",),                dict(item_name="Salad",              meal_type="lunch",     calories=320, protein_g=18, carbs_g=22, fat_g=18, sodium_mg=460, fiber_g=6)),
+    (("chicken", "rice"),       dict(item_name="Chicken and rice",   meal_type="dinner",    calories=560, protein_g=40, carbs_g=58, fat_g=14, sodium_mg=720, fiber_g=4)),
+    (("yogurt",),               dict(item_name="Yogurt",             meal_type="snack",     calories=180, protein_g=14, carbs_g=22, fat_g=4,  sodium_mg=90,  fiber_g=1)),
+)
+_MEAL_INTAKE_STUB_DEFAULT = dict(
+    item_name="Meal", meal_type="snack", calories=400, protein_g=22,
+    carbs_g=40, fat_g=15, sodium_mg=560, fiber_g=4,
+)
+
+
+def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
+    """Deterministic canned estimate for the FIT-60 UI stub.
+
+    Picks a preset by keyword, downgrades to pending_review when the input
+    looks ambiguous, and bumps confidence slightly when an image is attached.
+    """
+    norm = (text or "").lower().strip()
+    preset = dict(_MEAL_INTAKE_STUB_DEFAULT)
+    portion_description = None
+    for keywords, values in _MEAL_INTAKE_STUB_PRESETS:
+        if any(k in norm for k in keywords):
+            preset = dict(values)
+            break
+    if "half" in norm:
+        for key in ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g"):
+            if preset.get(key) is not None:
+                preset[key] = round(preset[key] / 2, 1) if isinstance(preset[key], float) else preset[key] // 2
+        portion_description = "approx half portion"
+
+    base_confidence = 0.78 if has_image else 0.68
+    if not norm and not has_image:
+        base_confidence = 0.0
+
+    ambiguous = any(token in norm for token in _MEAL_INTAKE_STUB_AMBIGUOUS_WORDS)
+    status = "pending_review" if (ambiguous or base_confidence < 0.65) else "logged"
+    uncertainty_notes = []
+    if ambiguous:
+        uncertainty_notes.append("Portion is unclear — confirm before it counts toward today.")
+
+    return {
+        "status": status,
+        "estimate": {
+            "item_name": preset["item_name"],
+            "portion_description": portion_description,
+            "meal_type": preset.get("meal_type"),
+            "calories": preset.get("calories"),
+            "protein_g": preset.get("protein_g"),
+            "carbs_g": preset.get("carbs_g"),
+            "fat_g": preset.get("fat_g"),
+            "sodium_mg": preset.get("sodium_mg"),
+            "fiber_g": preset.get("fiber_g"),
+            "confidence": round(base_confidence, 2),
+            "uncertainty_notes": uncertainty_notes,
+        },
+    }
+
+
+def _meal_intake_stub_persist(client_id, estimate, *, source, has_image, text_hint):
+    """Persist an accepted estimate via the canonical food_logs path."""
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    record = {
+        "client_id": client_id,
+        "date": _today_str(),
+        "logged_at": now_iso,
+        "source_timestamp": now_iso,
+        "meal_type": estimate.get("meal_type"),
+        "item_name": estimate.get("item_name"),
+        "portion_description": estimate.get("portion_description"),
+        "context_note": text_hint,
+        "calories": estimate.get("calories"),
+        "protein_g": estimate.get("protein_g"),
+        "carbs_g": estimate.get("carbs_g"),
+        "fat_g": estimate.get("fat_g"),
+        "sodium_mg": estimate.get("sodium_mg"),
+        "fiber_g": estimate.get("fiber_g"),
+        "confidence": estimate.get("confidence"),
+        "source": source,
+        "correction_state": "accepted",
+        "original_estimate": {k: v for k, v in estimate.items() if k != "uncertainty_notes"},
+    }
+    return add_food_log(_current_data_user_id(), record)
+
+
+@app.route("/api/meal-intake", methods=["POST"])
+def meal_intake_stub():
+    """FIT-60 stub — accept text and/or image, return a canned estimate.
+
+    Replace once FIT-57 / FIT-59 / FIT-5 land.
+    Request: multipart/form-data with optional ``text`` (<= 500 chars),
+    optional ``image`` (<= 6 MB, image/*), required ``client_id`` for idempotency.
+    Response shape mirrors the FIT-57 proposed contract.
+    """
+    if request.content_type and "multipart/form-data" not in request.content_type and "application/x-www-form-urlencoded" not in request.content_type:
+        return jsonify({"error": {"message": "multipart/form-data expected"}}), 415
+
+    text_raw = (request.form.get("text") or "").strip()
+    if len(text_raw) > 500:
+        return jsonify({"error": {"message": "text too long (max 500 chars)"}}), 400
+    client_id = (request.form.get("client_id") or "").strip()
+    if not client_id or len(client_id) > 128:
+        return jsonify({"error": {"message": "client_id required (<=128 chars)"}}), 400
+
+    image_file = request.files.get("image")
+    has_image = False
+    if image_file is not None and image_file.filename:
+        mimetype = (image_file.mimetype or "").lower()
+        if not mimetype.startswith("image/"):
+            return jsonify({"error": {"message": "image must be image/*"}}), 400
+        image_file.stream.seek(0, os.SEEK_END)
+        size = image_file.stream.tell()
+        image_file.stream.seek(0)
+        if size > _MEAL_INTAKE_STUB_MAX_IMAGE_BYTES:
+            return jsonify({"error": {"message": "image exceeds 6 MB limit"}}), 413
+        if size <= 0:
+            return jsonify({"error": {"message": "image is empty"}}), 400
+        # FIT-60 stub: image bytes are discarded after size validation; the real
+        # implementation (FIT-5) will pass them to the vision model. We never
+        # echo image data back, persist it, or log it — matches FIT-9 privacy.
+        has_image = True
+
+    if not text_raw and not has_image:
+        return jsonify({"error": {"message": "provide a meal description or photo"}}), 400
+
+    result = _meal_intake_stub_estimate(text_raw, has_image)
+    estimate = result["estimate"]
+    status = result["status"]
+    source = "stub_vision_estimate" if has_image else "stub_text_estimate"
+
+    food_log = None
+    if status == "logged":
+        food_log = _meal_intake_stub_persist(
+            client_id, estimate, source=source, has_image=has_image, text_hint=text_raw or None,
+        )
+
+    return jsonify({
+        "status": status,
+        "estimate": estimate,
+        "food_log": food_log,
+        "stub": True,
+    })
+
+
+@app.route("/api/meal-intake/<client_id>", methods=["DELETE"])
+def meal_intake_undo_stub(client_id: str):
+    """FIT-60 stub — undo a logged meal by deleting its food_log row."""
+    client_id = (client_id or "").strip()
+    if not client_id or len(client_id) > 128:
+        return jsonify({"error": {"message": "invalid client_id"}}), 400
+    removed = delete_food_log_by_client_id(_current_data_user_id(), client_id)
+    return jsonify({"status": "ok" if removed else "not_found", "removed": removed})
+
+
+@app.route("/api/meal-intake/<client_id>/accept", methods=["POST"])
+def meal_intake_accept_stub(client_id: str):
+    """FIT-60 stub — accept a pending-review estimate; persist as food_log."""
+    client_id = (client_id or "").strip()
+    if not client_id or len(client_id) > 128:
+        return jsonify({"error": {"message": "invalid client_id"}}), 400
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+    estimate = data.get("estimate") or {}
+    if not isinstance(estimate, dict) or estimate.get("calories") is None:
+        return jsonify({"error": {"message": "estimate.calories required"}}), 400
+    text_hint, _ = _coerce_str(data.get("text"), "text", required=False, max_len=500)
+    food_log = _meal_intake_stub_persist(
+        client_id,
+        estimate,
+        source=estimate.get("source") or "stub_text_estimate",
+        has_image=bool(estimate.get("from_image")),
+        text_hint=text_hint or None,
+    )
+    return jsonify({"status": "logged", "food_log": food_log, "stub": True})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# END FIT-60 STUB
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 @app.route('/api/nutrition-today')

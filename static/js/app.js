@@ -3398,6 +3398,348 @@
         pop.hidden = true;
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // FIT-60 — Universal meal composer (text or photo → AI auto-log).
+    // Talks to POST /api/meal-intake (FIT-57 contract; currently a stub).
+    // ─────────────────────────────────────────────────────────────────────────
+    const MEAL_DRAFT_KEY = 'fit60_meal_draft';
+    const MEAL_UNDO_MS = 30_000;
+    const mealComposerState = {
+        imageFile: null,
+        imagePreviewUrl: null,
+        submitting: false,
+        backendUnavailable: false,
+        pending: [],
+    };
+
+    function mealComposerEls() {
+        return {
+            form: $('meal-composer'),
+            text: $('meal-composer-text'),
+            image: $('meal-composer-image'),
+            submit: $('meal-composer-submit'),
+            preview: $('meal-composer-preview'),
+            previewImg: $('meal-composer-preview-img'),
+            previewClear: $('meal-composer-preview-clear'),
+            error: $('meal-composer-error'),
+            status: $('meal-composer-status'),
+            pendingList: $('meal-pending-list'),
+        };
+    }
+
+    function newMealClientId() {
+        if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+        return 'meal-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    }
+
+    function setMealComposerError(msg) {
+        const { error } = mealComposerEls();
+        if (!error) return;
+        if (!msg) { error.hidden = true; error.textContent = ''; return; }
+        error.textContent = msg;
+        error.hidden = false;
+    }
+
+    function refreshMealSubmitState() {
+        const { text, submit } = mealComposerEls();
+        if (!submit) return;
+        const hasText = text && text.value.trim().length > 0;
+        const hasImage = !!mealComposerState.imageFile;
+        const enabled = (hasText || hasImage) && !mealComposerState.submitting && !mealComposerState.backendUnavailable;
+        submit.disabled = !enabled;
+        submit.textContent = mealComposerState.submitting ? 'Logging…' : 'Log';
+    }
+
+    function saveMealDraft() {
+        try {
+            const { text } = mealComposerEls();
+            const draft = { text: text ? text.value : '', has_image: !!mealComposerState.imageFile };
+            if (draft.text || draft.has_image) localStorage.setItem(MEAL_DRAFT_KEY, JSON.stringify(draft));
+            else localStorage.removeItem(MEAL_DRAFT_KEY);
+        } catch (_) { /* storage may be unavailable */ }
+    }
+
+    function clearMealDraft() {
+        try { localStorage.removeItem(MEAL_DRAFT_KEY); } catch (_) {}
+    }
+
+    function loadMealDraft() {
+        try {
+            const raw = localStorage.getItem(MEAL_DRAFT_KEY);
+            if (!raw) return;
+            const draft = JSON.parse(raw);
+            const { text } = mealComposerEls();
+            if (text && draft && typeof draft.text === 'string') text.value = draft.text;
+        } catch (_) {}
+    }
+
+    function clearMealImage() {
+        const { image, preview, previewImg } = mealComposerEls();
+        if (mealComposerState.imagePreviewUrl) {
+            URL.revokeObjectURL(mealComposerState.imagePreviewUrl);
+            mealComposerState.imagePreviewUrl = null;
+        }
+        mealComposerState.imageFile = null;
+        if (image) image.value = '';
+        if (preview) preview.hidden = true;
+        if (previewImg) previewImg.removeAttribute('src');
+        refreshMealSubmitState();
+    }
+
+    function applyMealImage(file) {
+        if (!file) { clearMealImage(); return; }
+        if (!/^image\//.test(file.type)) {
+            setMealComposerError('That file isn’t an image.');
+            return;
+        }
+        if (file.size > 6 * 1024 * 1024) {
+            setMealComposerError('Image is over 6 MB — pick a smaller one.');
+            return;
+        }
+        setMealComposerError(null);
+        if (mealComposerState.imagePreviewUrl) URL.revokeObjectURL(mealComposerState.imagePreviewUrl);
+        mealComposerState.imageFile = file;
+        mealComposerState.imagePreviewUrl = URL.createObjectURL(file);
+        const { preview, previewImg } = mealComposerEls();
+        if (previewImg) previewImg.src = mealComposerState.imagePreviewUrl;
+        if (preview) preview.hidden = false;
+        refreshMealSubmitState();
+    }
+
+    function setMealBackendUnavailable(message) {
+        mealComposerState.backendUnavailable = true;
+        const { form, status, submit, text, image } = mealComposerEls();
+        if (form) form.classList.add('meal-composer-disabled');
+        if (status) {
+            status.hidden = false;
+            status.textContent = message || 'Meal intake coming soon — backend not yet enabled.';
+        }
+        if (submit) submit.disabled = true;
+        if (text) text.disabled = true;
+        if (image) image.disabled = true;
+    }
+
+    function setMealBackendAvailable() {
+        mealComposerState.backendUnavailable = false;
+        const { form, status, text, image } = mealComposerEls();
+        if (form) form.classList.remove('meal-composer-disabled');
+        if (status) { status.hidden = true; status.textContent = ''; }
+        if (text) text.disabled = false;
+        if (image) image.disabled = false;
+        refreshMealSubmitState();
+    }
+
+    function mealEstimateChip(estimate) {
+        if (!estimate) return 'Logged.';
+        const item = estimate.item_name || 'Meal';
+        const portion = estimate.portion_description ? ` (${estimate.portion_description})` : '';
+        const parts = [item + portion];
+        if (Number.isFinite(Number(estimate.calories))) parts.push(`${Math.round(estimate.calories)} kcal`);
+        const macroBits = [];
+        if (Number.isFinite(Number(estimate.protein_g))) macroBits.push(`${Math.round(estimate.protein_g)}P`);
+        if (Number.isFinite(Number(estimate.carbs_g))) macroBits.push(`${Math.round(estimate.carbs_g)}C`);
+        if (Number.isFinite(Number(estimate.fat_g))) macroBits.push(`${Math.round(estimate.fat_g)}F`);
+        if (macroBits.length) parts.push(macroBits.join('/'));
+        return 'Logged: ' + parts.join(' · ');
+    }
+
+    async function postMealUndo(clientId) {
+        try {
+            await api(`/api/meal-intake/${encodeURIComponent(clientId)}`, { method: 'DELETE' });
+            toast('Meal removed', 'ok');
+        } catch (e) {
+            console.error(e);
+            toast('Undo failed', 'err');
+        } finally {
+            refreshMacroCard();
+        }
+    }
+
+    function renderMealPendingList() {
+        const { pendingList } = mealComposerEls();
+        if (!pendingList) return;
+        pendingList.innerHTML = '';
+        mealComposerState.pending.forEach((entry) => pendingList.appendChild(buildMealPendingRow(entry)));
+    }
+
+    function buildMealPendingRow(entry) {
+        const row = document.createElement('div');
+        row.className = 'meal-pending-row';
+        row.setAttribute('data-client-id', entry.client_id);
+        const est = entry.estimate || {};
+        const conf = Number(est.confidence);
+        const confLabel = Number.isFinite(conf) ? `${Math.round(conf * 100)}%` : '—';
+        const uncertainty = Array.isArray(est.uncertainty_notes) && est.uncertainty_notes.length
+            ? `<div class="meal-pending-note">${escapeHtml(est.uncertainty_notes.join(' '))}</div>`
+            : '';
+        row.innerHTML = `
+            <div class="meal-pending-head">
+                <span class="meal-pending-title">Review estimate</span>
+                <span class="meal-pending-conf" title="Estimated confidence">${escapeHtml(confLabel)}</span>
+            </div>
+            <div class="meal-pending-fields">
+                <label>Item<input type="text" data-field="item_name" value="${escapeHtml(est.item_name || '')}" maxlength="160"></label>
+                <label>Portion<input type="text" data-field="portion_description" value="${escapeHtml(est.portion_description || '')}" maxlength="240"></label>
+                <label>Calories<input type="number" inputmode="numeric" min="0" data-field="calories" value="${escapeHtml(est.calories ?? '')}"></label>
+                <label>Protein (g)<input type="number" inputmode="decimal" min="0" step="0.1" data-field="protein_g" value="${escapeHtml(est.protein_g ?? '')}"></label>
+                <label>Carbs (g)<input type="number" inputmode="decimal" min="0" step="0.1" data-field="carbs_g" value="${escapeHtml(est.carbs_g ?? '')}"></label>
+                <label>Fat (g)<input type="number" inputmode="decimal" min="0" step="0.1" data-field="fat_g" value="${escapeHtml(est.fat_g ?? '')}"></label>
+            </div>
+            ${uncertainty}
+            <div class="meal-pending-actions">
+                <button type="button" class="btn btn-ghost meal-pending-discard">Discard</button>
+                <button type="button" class="btn btn-primary meal-pending-accept">Accept</button>
+            </div>
+        `;
+        row.querySelector('.meal-pending-discard').addEventListener('click', () => discardMealPending(entry.client_id));
+        row.querySelector('.meal-pending-accept').addEventListener('click', () => acceptMealPending(entry.client_id, row));
+        return row;
+    }
+
+    function discardMealPending(clientId) {
+        mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
+        renderMealPendingList();
+        toast('Estimate discarded', 'ok');
+    }
+
+    async function acceptMealPending(clientId, rowEl) {
+        const entry = mealComposerState.pending.find((p) => p.client_id === clientId);
+        if (!entry) return;
+        const edited = { ...entry.estimate };
+        rowEl.querySelectorAll('[data-field]').forEach((input) => {
+            const field = input.getAttribute('data-field');
+            const raw = input.value;
+            if (input.type === 'number') {
+                const num = raw === '' ? null : Number(raw);
+                edited[field] = Number.isFinite(num) ? num : null;
+            } else {
+                edited[field] = raw.trim() || null;
+            }
+        });
+        if (!Number.isFinite(Number(edited.calories))) {
+            toast('Set calories before accepting', 'err');
+            return;
+        }
+        try {
+            await api(`/api/meal-intake/${encodeURIComponent(clientId)}/accept`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ estimate: edited, text: entry.text || '' }),
+            });
+            mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
+            renderMealPendingList();
+            toast('Meal logged', 'ok');
+            refreshMacroCard();
+        } catch (e) {
+            console.error(e);
+            toast(apiErrorMessage(e, 'Accept failed'), 'err');
+        }
+    }
+
+    async function submitMealComposer(ev) {
+        if (ev) ev.preventDefault();
+        if (mealComposerState.submitting || mealComposerState.backendUnavailable) return;
+        const { text } = mealComposerEls();
+        const textValue = text ? text.value.trim() : '';
+        const file = mealComposerState.imageFile;
+        if (!textValue && !file) {
+            setMealComposerError('Type a meal or attach a photo.');
+            return;
+        }
+        setMealComposerError(null);
+        mealComposerState.submitting = true;
+        refreshMealSubmitState();
+
+        const clientId = newMealClientId();
+        const form = new FormData();
+        if (textValue) form.append('text', textValue);
+        if (file) form.append('image', file, file.name || 'meal.jpg');
+        form.append('client_id', clientId);
+        form.append('local_timestamp', new Date().toISOString());
+
+        try {
+            const res = await fetch('/api/meal-intake', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json' },
+                body: form,
+            });
+            if (res.status === 404 || res.status === 501) {
+                setMealBackendUnavailable();
+                setMealComposerError('Meal intake isn’t enabled yet. Your draft is saved.');
+                saveMealDraft();
+                return;
+            }
+            const ct = res.headers.get('content-type') || '';
+            const payload = ct.includes('application/json') ? await res.json() : null;
+            if (!res.ok) {
+                const msg = (payload && payload.error && payload.error.message) || `Couldn’t log meal (${res.status}).`;
+                setMealComposerError(msg);
+                return;
+            }
+            handleMealIntakeResponse(payload, { textValue, clientId });
+        } catch (e) {
+            console.error(e);
+            saveMealDraft();
+            toast('Couldn’t reach the meal estimator — your draft is saved.', 'err');
+        } finally {
+            mealComposerState.submitting = false;
+            refreshMealSubmitState();
+        }
+    }
+
+    function handleMealIntakeResponse(payload, ctx) {
+        const status = payload && payload.status;
+        if (status === 'logged') {
+            clearMealComposerInputs();
+            clearMealDraft();
+            const msg = mealEstimateChip(payload.estimate);
+            toastUndo(msg, () => postMealUndo(ctx.clientId), MEAL_UNDO_MS);
+            refreshMacroCard();
+            return;
+        }
+        if (status === 'pending_review') {
+            mealComposerState.pending.push({
+                client_id: ctx.clientId,
+                estimate: payload.estimate || {},
+                text: ctx.textValue || '',
+            });
+            clearMealComposerInputs();
+            clearMealDraft();
+            renderMealPendingList();
+            toast('Review the estimate before it counts toward today.', 'warn');
+            return;
+        }
+        setMealComposerError('Couldn’t parse that meal — try a clearer description.');
+    }
+
+    function clearMealComposerInputs() {
+        const { text } = mealComposerEls();
+        if (text) text.value = '';
+        clearMealImage();
+        refreshMealSubmitState();
+    }
+
+    function wireMealComposer() {
+        const { form, text, image, previewClear } = mealComposerEls();
+        if (!form) return;
+        loadMealDraft();
+        form.addEventListener('submit', submitMealComposer);
+        if (text) {
+            text.addEventListener('input', () => { refreshMealSubmitState(); saveMealDraft(); });
+        }
+        if (image) {
+            image.addEventListener('change', () => {
+                const file = image.files && image.files[0];
+                applyMealImage(file || null);
+            });
+        }
+        if (previewClear) {
+            previewClear.addEventListener('click', clearMealImage);
+        }
+        refreshMealSubmitState();
+    }
+
     function boot() {
         renderGreeting();
         wireEvents();
@@ -3406,6 +3748,7 @@
         if (aiStatusTimer) clearInterval(aiStatusTimer);
         aiStatusTimer = setInterval(refreshAiStatus, 60_000);
         renderSyncBanner();
+        wireMealComposer();
         window.addEventListener('online', () => { flushSyncQueue(); });
         if (navigator.onLine) flushSyncQueue();
     }
