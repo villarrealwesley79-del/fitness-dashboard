@@ -228,6 +228,27 @@ def test_open_food_facts_defaults_malformed_optional_nutrients(monkeypatch):
     assert estimate["sodium_mg"] == 0
 
 
+def test_open_food_facts_skips_schema_invalid_candidates(monkeypatch):
+    bad = _product("Too Salty Product", code="bad")
+    bad["nutriments"]["sodium_100g"] = 20
+    good = _product("Clean Product", code="good")
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a: {"products": [bad, good]},
+    )
+
+    estimate = branded_food_lookup.lookup("non us packaged food")
+
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["external_food_id"] == "good"
+    assert estimate["sodium_mg"] == 400
+
+
 def test_open_food_facts_non_us_cases_are_appendable(monkeypatch):
     cases = [
         ("UK Walkers crisps", "Walkers Crisps", "en:united-kingdom"),

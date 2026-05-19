@@ -59,6 +59,7 @@ OFF_REJECT_QUALITY_TAG_FRAGMENTS = (
     "nutrition-value-very-low-for-category-salt",
 )
 
+
 def normalize_meal_text(text: str) -> str:
     """Normalize user text for cache keys and typo-tolerant source lookup."""
     tokens = []
@@ -200,9 +201,17 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
     products = payload.get("products") if isinstance(payload, dict) else None
     if not products:
         return None
-    product = next((item for item in products if _off_quality_ok(item)), None)
-    if not product:
-        return None
+    for product in products:
+        if not _off_quality_ok(product):
+            continue
+        try:
+            return _open_food_facts_estimate(product)
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return None
+
+
+def _open_food_facts_estimate(product: dict[str, Any]) -> dict[str, Any]:
     nutriments = product.get("nutriments") or {}
     name = " ".join(
         str(part).strip()
