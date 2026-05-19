@@ -66,6 +66,8 @@ Modals and interactive states currently include active workout, exercise swap, a
 
 Nutrition exists as backend data and target settings, but the current product surface does not yet provide the desired photo-based food capture flow where a snack or meal photo updates daily calories/macros and coaching context.
 
+Food photo privacy is explicitly backend-first: raw photos are discarded after extraction by default, normal API responses and backups must not expose raw image bytes or raw model traces, and the current non-UI contract is recorded in `docs/FOOD_PHOTO_PRIVACY.md`.
+
 ## AI Coach State
 
 The AI coach is intentionally constrained. The deterministic Python engine generates and owns the plan. LM Studio is used for:

@@ -3204,6 +3204,13 @@ def add_nutrition():
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MEAL_INTAKE_STUB_MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6 MB
+_FOOD_PHOTO_RETENTION = {
+    "policy": "discard_after_extraction",
+    "raw_photo_retained": False,
+    "raw_model_trace_retained": False,
+    "backup_includes_raw_photo": False,
+    "message": "Food photos are discarded after extraction; only the final estimate and safe correction metadata are kept.",
+}
 _MEAL_INTAKE_STUB_AMBIGUOUS_WORDS = (
     "popcorn", "movie", "shared", "leftover", "leftovers", "snacks",
     "buffet", "potluck", "?", "guessing", "guess",
@@ -3220,6 +3227,12 @@ _MEAL_INTAKE_STUB_DEFAULT = dict(
     item_name="Meal", meal_type="snack", calories=400, protein_g=22,
     carbs_g=40, fat_g=15, sodium_mg=560, fiber_g=4,
 )
+
+
+def _food_photo_retention_payload(has_image: bool = False) -> dict:
+    payload = dict(_FOOD_PHOTO_RETENTION)
+    payload["image_received"] = bool(has_image)
+    return payload
 
 
 def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
@@ -3264,6 +3277,7 @@ def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
             "sodium_mg": preset.get("sodium_mg"),
             "fiber_g": preset.get("fiber_g"),
             "confidence": round(base_confidence, 2),
+            "from_image": bool(has_image),
             # FIT-61: surface ambiguity inside the estimate dict so the
             # meal-log policy sees the same signal as the text-parser path.
             # Without this, "shared movie popcorn" with a photo would land
@@ -3475,6 +3489,7 @@ def meal_intake_stub():
         "status": status,
         "estimate": estimate,
         "food_log": food_log,
+        "photo_retention": _food_photo_retention_payload(has_image),
         **response_extras,
     })
 
@@ -3517,7 +3532,12 @@ def meal_intake_accept_stub(client_id: str):
         has_image=bool(estimate.get("from_image")),
         text_hint=text_hint or None,
     )
-    return jsonify({"status": "logged", "food_log": food_log, "stub": True})
+    return jsonify({
+        "status": "logged",
+        "food_log": food_log,
+        "photo_retention": _food_photo_retention_payload(bool(estimate.get("from_image"))),
+        "stub": True,
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
