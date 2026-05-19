@@ -3582,21 +3582,195 @@ def nutrition_today():
     })
 
 
+def _nutrition_history_breakdown(date_s: str, entries):
+    """FIT-13: per-day rollup with confidence + correction-state context.
+
+    Extends ``_summarize_nutrition_entries_for_date`` with:
+
+      * ``pending_count`` — entries awaiting review (excluded from totals).
+      * ``manual_count`` — user-typed entries (no AI estimate).
+      * ``corrected_count`` — accepted estimates the user edited
+        (correction_state == "corrected").
+      * ``estimated_count`` — accepted AI estimates the user did NOT edit.
+      * ``confidence_avg`` — mean confidence over accepted entries with
+        a numeric confidence value; ``None`` when no entries qualify.
+      * ``high_sodium`` / ``late_meal`` — same flags the next-day
+        coaching context uses, so the body view can interpret scale
+        movements honestly instead of bare-attributing them.
+
+    Mirrors the ``uses_only_accepted_entries`` rule from FIT-8:
+    pending entries do not contribute to totals or confidence.
+    """
+    totals = {
+        "calories": 0,
+        "protein_g": 0.0,
+        "carbs_g": 0.0,
+        "fat_g": 0.0,
+        "sodium_mg": 0,
+        "entries_count": 0,
+        "pending_count": 0,
+        "manual_count": 0,
+        "corrected_count": 0,
+        "estimated_count": 0,
+        "confidence_avg": None,
+        "high_sodium": False,
+        "late_meal": False,
+    }
+    confidence_sum = 0.0
+    confidence_n = 0
+    for entry in entries or []:
+        if _nutrition_entry_day(entry) != date_s:
+            continue
+        if _nutrition_entry_pending_review(entry):
+            totals["pending_count"] += 1
+            continue
+        totals["calories"] += int(entry.get("calories") or 0)
+        totals["protein_g"] += float(entry.get("protein_g") or 0)
+        totals["carbs_g"] += float(entry.get("carbs_g") or 0)
+        totals["fat_g"] += float(entry.get("fat_g") or 0)
+        totals["sodium_mg"] += int(entry.get("sodium_mg") or 0)
+        totals["entries_count"] += 1
+        # Correction-state breakdown: "manual" / "corrected" /
+        # "accepted" (the AI estimate the user didn't edit).
+        #
+        # Legacy /api/add-nutrition entries may omit correction_state
+        # entirely. add_food_log defaults those to "manual" when there's
+        # no AI estimate metadata. Match that here so manual legacy
+        # entries don't get mislabeled as AI-estimated on the Body
+        # trend's reliability badge.
+        state = str(entry.get("correction_state") or "").strip().lower()
+        has_ai_signal = bool(
+            entry.get("original_estimate")
+            or entry.get("original_estimate_json")
+            or entry.get("confidence")
+            or str(entry.get("source") or "").startswith(("ai_", "stub_"))
+        )
+        if state == "manual":
+            totals["manual_count"] += 1
+        elif state == "corrected":
+            totals["corrected_count"] += 1
+        elif state == "accepted" or has_ai_signal:
+            totals["estimated_count"] += 1
+        else:
+            # No correction_state, no AI signal → manual legacy entry.
+            totals["manual_count"] += 1
+        # Confidence average over entries that report a value.
+        conf = entry.get("confidence")
+        if isinstance(conf, (int, float)):
+            confidence_sum += float(conf)
+            confidence_n += 1
+        # Late-meal flag: hour >= LATE_MEAL_CONTEXT_HOUR.
+        hour = _nutrition_entry_logged_hour(entry)
+        if hour is not None and hour >= LATE_MEAL_CONTEXT_HOUR:
+            totals["late_meal"] = True
+    if confidence_n > 0:
+        totals["confidence_avg"] = round(confidence_sum / confidence_n, 3)
+    totals["high_sodium"] = totals["sodium_mg"] >= SODIUM_NEXT_DAY_CONTEXT_MG
+    return totals
+
+
 @app.route('/api/nutrition-history')
 def nutrition_history():
-    """Return last 14 days of nutrition totals."""
+    """Return last 14 days of nutrition totals.
+
+    Each day now includes confidence + correction-state context (FIT-13)
+    so the Body tab can interpret scale movements honestly: a recent
+    high-sodium / late-meal day surfaces as context rather than being
+    mis-attributed to fat gain, and estimated-vs-corrected entries are
+    distinguished from each other.
+
+    Merges entries from BOTH the legacy ``NUTRITION_DATA`` JSON store
+    AND the canonical ``food_logs`` SQLite table — the active meal
+    composer (FIT-60/59/61) persists via ``add_food_log`` into
+    food_logs, and these new entries would otherwise be invisible in
+    history. Matches the merge ``/api/nutrition-today`` already
+    performs via ``_food_log_entries_for_context``.
+    """
     today = datetime.now().date()
+    calories_target = USER_SETTINGS.get("daily_calorie_target")
+    protein_target = USER_SETTINGS.get("daily_protein_target_g")
+    earliest = (today - timedelta(days=13)).strftime("%Y-%m-%d")
+    food_log_entries = list(_food_log_entries_for_context(since=earliest) or [])
+    legacy_entries = list(NUTRITION_DATA or [])
+    # Dedupe by client_id, not by day. /api/add-nutrition writes the
+    # same entry to BOTH stores with the same client_id, so naïve
+    # concat double-counts. But "prefer food_logs per day" wrongly
+    # drops legitimate same-day entries that only exist in NUTRITION_DATA
+    # (e.g. a legacy breakfast + a meal-composer dinner). Per-entry
+    # dedupe handles both cases:
+    #   * dual-write: skip the legacy copy when food_logs has the same client_id
+    #   * mixed-source same-day: keep both since their client_ids differ
+    #   * legacy without client_id: kept as-is (no risk of dual-write
+    #     because that path always sets one)
+    food_log_client_ids = {
+        str(entry.get("client_id"))
+        for entry in food_log_entries
+        if entry.get("client_id")
+    }
+
+    def _content_signature(entry):
+        """Stable dedup key for entries without a client_id.
+
+        /api/add-nutrition without a client_id appends the same meal
+        to both stores. The legacy NUTRITION_DATA entry is built from
+        a smaller dict that ONLY carries date + macros (logged_at and
+        item_name are passed to add_food_log but not appended to the
+        legacy entry — see app.py:3110-3149). So the signature must
+        only use fields both stores definitely have: the date and the
+        macro tuple. Anything else (logged_at, item_name) is missing
+        on one side and would prevent the match.
+        """
+        return (
+            _nutrition_entry_day(entry),
+            entry.get("calories"),
+            entry.get("protein_g"),
+            entry.get("carbs_g"),
+            entry.get("fat_g"),
+            entry.get("sodium_mg"),
+        )
+
+    food_log_content_keys = {
+        _content_signature(entry)
+        for entry in food_log_entries
+        if not entry.get("client_id")
+    }
+
+    deduped_legacy = []
+    for entry in legacy_entries:
+        cid = entry.get("client_id")
+        if cid and str(cid) in food_log_client_ids:
+            continue  # dual-write with explicit client_id — skip the legacy copy.
+        if not cid and _content_signature(entry) in food_log_content_keys:
+            continue  # dual-write without client_id — skip the content-match copy.
+        deduped_legacy.append(entry)
+    merged_entries = food_log_entries + deduped_legacy
     days = []
     for i in range(13, -1, -1):
         d = today - timedelta(days=i)
         date_s = d.strftime("%Y-%m-%d")
-        totals = _summarize_nutrition_for_date(date_s)
+        totals = _nutrition_history_breakdown(date_s, merged_entries)
+        cals = totals["calories"]
+        protein = totals["protein_g"]
         days.append({
             "date": date_s,
-            "calories": totals["calories"],
-            "protein_g": round(totals["protein_g"], 1),
+            "calories": cals,
+            "protein_g": round(protein, 1),
             "carbs_g": round(totals["carbs_g"], 1),
             "fat_g": round(totals["fat_g"], 1),
+            "sodium_mg": totals["sodium_mg"],
+            # FIT-13 additions:
+            "entries_count": totals["entries_count"],
+            "pending_count": totals["pending_count"],
+            "manual_count": totals["manual_count"],
+            "corrected_count": totals["corrected_count"],
+            "estimated_count": totals["estimated_count"],
+            "confidence_avg": totals["confidence_avg"],
+            "calories_target": calories_target,
+            "protein_target_g": protein_target,
+            "calories_pct": round(100 * cals / calories_target) if calories_target else None,
+            "protein_pct": round(100 * protein / protein_target) if protein_target else None,
+            "high_sodium": totals["high_sodium"],
+            "late_meal": totals["late_meal"],
         })
     return jsonify({"history": days})
 

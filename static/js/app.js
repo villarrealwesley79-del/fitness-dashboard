@@ -1712,6 +1712,207 @@
             grid.appendChild(row);
         });
         if (latest && latest.date) $('measurements-date').textContent = fmtDate(latest.date);
+
+        // FIT-13: nutrition-history-driven interpretation + recomp +
+        // 14-day nutrition trend. Each runs independently and is
+        // tolerant of endpoint failure — the existing body charts
+        // above must keep rendering even when nutrition history
+        // is unavailable.
+        renderBodyInterpretationAndNutritionTrend();
+        renderBodyRecompTargetProgress();
+    }
+
+    // FIT-13: layered interpretation of recent scale variance using
+    // accepted food context. Surfaces high-sodium + late-meal flags and
+    // confidence/correction reliability — never says "fat gain" or
+    // "fat loss"; the user reads the data, the UI is non-prescriptive.
+    async function renderBodyInterpretationAndNutritionTrend() {
+        const card = $('body-interpretation-card');
+        const list = $('body-interpretation-notes');
+        const nutCard = $('body-nutrition-card');
+        const nutRows = $('body-nutrition-rows');
+        const nutSub = $('body-nutrition-sub');
+        if (!card || !list) return;
+
+        let history = null;
+        try {
+            const payload = await api('/api/nutrition-history');
+            history = (payload && payload.history) || [];
+        } catch {
+            card.hidden = true;
+            if (nutCard) nutCard.hidden = true;
+            return;
+        }
+        if (!history || !history.length) {
+            card.hidden = true;
+            if (nutCard) nutCard.hidden = true;
+            return;
+        }
+
+        // --- Interpretation notes ---------------------------------
+        // Each note is composed from the same accepted-entries view
+        // the macro card uses, so the body view can't claim something
+        // the food log doesn't actually show.
+        const notes = [];
+        const recent3 = history.slice(-3); // last 3 days
+        const recent7 = history.slice(-7); // last 7 days
+
+        const highSodiumDays = recent3.filter((d) => d.high_sodium).map((d) => d.date);
+        if (highSodiumDays.length) {
+            const label = highSodiumDays.length === 1
+                ? `Sodium was high on ${fmtDate(highSodiumDays[0])}.`
+                : `Sodium was high on ${highSodiumDays.length} of the last 3 days.`;
+            notes.push(`${label} High-sodium days can temporarily inflate scale weight from water retention; this isn't fat gain.`);
+        }
+        const lateMealDays = recent3.filter((d) => d.late_meal).map((d) => d.date);
+        if (lateMealDays.length) {
+            notes.push(`Late meals on ${lateMealDays.length} of the last 3 days. Eating late can shift the next-morning weigh-in.`);
+        }
+        const estimatedCount7 = recent7.reduce((s, d) => s + (d.estimated_count || 0), 0);
+        const correctedCount7 = recent7.reduce((s, d) => s + (d.corrected_count || 0), 0);
+        const manualCount7 = recent7.reduce((s, d) => s + (d.manual_count || 0), 0);
+        const totalAccepted7 = estimatedCount7 + correctedCount7 + manualCount7;
+        if (totalAccepted7 > 0) {
+            const firmPct = Math.round(100 * (correctedCount7 + manualCount7) / totalAccepted7);
+            if (firmPct < 50) {
+                notes.push(`Most of the last 7 days' nutrition is AI-estimated rather than user-corrected. Trends are directional, not exact.`);
+            }
+        }
+        const pendingCount = recent3.reduce((s, d) => s + (d.pending_count || 0), 0);
+        if (pendingCount > 0) {
+            notes.push(`${pendingCount} pending estimate${pendingCount === 1 ? '' : 's'} in the last 3 days — accept or discard them to make the trend more accurate.`);
+        }
+
+        if (notes.length) {
+            list.innerHTML = notes.map((n) =>
+                `<li class="body-interpretation-note">${escapeHtml(n)}</li>`
+            ).join('');
+            card.hidden = false;
+        } else {
+            list.innerHTML = '';
+            card.hidden = true;
+        }
+
+        // --- Nutrition trend table (14 days, newest first) --------
+        if (!nutCard || !nutRows) return;
+        const dataDays = history.filter((d) => (d.entries_count || 0) > 0).reverse();
+        if (!dataDays.length) {
+            nutCard.hidden = true;
+            return;
+        }
+        nutCard.hidden = false;
+        if (nutSub) {
+            nutSub.textContent = `${dataDays.length} day${dataDays.length === 1 ? '' : 's'} logged`;
+        }
+        nutRows.innerHTML = dataDays.slice(0, 14).map((d) => {
+            const calPct = d.calories_pct;
+            const proPct = d.protein_pct;
+            const calClass = calPct == null ? 'pct-unknown'
+                : (calPct >= 110 ? 'pct-over' : calPct >= 90 ? 'pct-ok' : 'pct-under');
+            const proClass = proPct == null ? 'pct-unknown'
+                : (proPct >= 90 ? 'pct-ok' : 'pct-under');
+            // Reliability badge: distinguish estimated-only days from
+            // ones the user corrected / manually entered.
+            const totalAccepted = (d.estimated_count || 0)
+                + (d.corrected_count || 0) + (d.manual_count || 0);
+            let reliability;
+            if (!totalAccepted) {
+                reliability = '<span class="trend-reliability trend-rel-none">no data</span>';
+            } else if ((d.corrected_count || 0) + (d.manual_count || 0) >= totalAccepted / 2) {
+                reliability = '<span class="trend-reliability trend-rel-firm">corrected</span>';
+            } else {
+                reliability = '<span class="trend-reliability trend-rel-estimated">estimated</span>';
+            }
+            const ctxFlags = [];
+            if (d.high_sodium) ctxFlags.push('high sodium');
+            if (d.late_meal) ctxFlags.push('late meal');
+            const ctxText = ctxFlags.length
+                ? `<span class="trend-context">${escapeHtml(ctxFlags.join(' · '))}</span>`
+                : '';
+            return `
+                <div class="body-nutrition-row">
+                    <span class="trend-date">${escapeHtml(fmtDate(d.date))}</span>
+                    <span class="trend-cal ${calClass}">${d.calories || 0}<small>${calPct != null ? ` (${calPct}%)` : ''}</small></span>
+                    <span class="trend-protein ${proClass}">${d.protein_g || 0}g<small>${proPct != null ? ` (${proPct}%)` : ''}</small></span>
+                    <span class="trend-sodium">${(d.sodium_mg || 0).toLocaleString()}mg</span>
+                    ${reliability}
+                    ${ctxText}
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function renderBodyRecompTargetProgress() {
+        const card = $('body-recomp-card');
+        const rows = $('body-recomp-rows');
+        if (!card || !rows) return;
+        let recomp = null;
+        try {
+            recomp = await api('/api/body-recomp');
+        } catch {
+            card.hidden = true;
+            return;
+        }
+        const summary = recomp && recomp.summary;
+        const latest = summary && summary.latest;
+        if (!summary || !latest) {
+            card.hidden = true;
+            return;
+        }
+        const targetWeight = summary.target_weight_lbs;
+        const targetBf = summary.target_body_fat_pct;
+        const currentWeight = latest.weight_lbs;
+        const currentBf = latest.body_fat_pct;
+        const eta = summary.eta_weeks;
+
+        const items = [];
+        if (targetWeight != null && currentWeight != null) {
+            const diff = Number(currentWeight) - Number(targetWeight);
+            const direction = diff > 0 ? 'above' : diff < 0 ? 'below' : 'at';
+            items.push({
+                label: 'Target weight',
+                value: `${Number(targetWeight).toFixed(1)} lb`,
+                sub: `${Math.abs(diff).toFixed(1)} lb ${direction} target`,
+            });
+        }
+        if (targetBf != null && currentBf != null) {
+            const diff = Number(currentBf) - Number(targetBf);
+            const direction = diff > 0 ? 'above' : diff < 0 ? 'below' : 'at';
+            items.push({
+                label: 'Target body fat',
+                value: `${Number(targetBf).toFixed(1)}%`,
+                sub: `${Math.abs(diff).toFixed(1)}% ${direction} target`,
+            });
+        }
+        // ETA can be negative when the current weight trend is moving
+        // AWAY from the target (e.g., target 175lb, currently 180lb,
+        // weight is still going up). Rendering "-3.4 weeks" is
+        // nonsense — surface honest copy instead so the body view
+        // doesn't lie about reachability.
+        if (eta != null && Number.isFinite(Number(eta))) {
+            const etaNum = Number(eta);
+            if (etaNum < 0) {
+                items.push({
+                    label: 'ETA at current pace',
+                    value: 'Not on track',
+                    sub: 'current trend is moving away from target',
+                });
+            } else {
+                items.push({
+                    label: 'ETA at current pace',
+                    value: `${etaNum.toFixed(1)} weeks`,
+                    sub: 'based on 14-day weight velocity',
+                });
+            }
+        }
+        if (!items.length) {
+            card.hidden = true;
+            return;
+        }
+        rows.innerHTML = items.map((m) =>
+            `<div class="m-row"><div><span class="m-label">${escapeHtml(m.label)}</span><span class="m-sub">${escapeHtml(m.sub)}</span></div><span class="m-val">${escapeHtml(m.value)}</span></div>`
+        ).join('');
+        card.hidden = false;
     }
 
     // --- Stats ---------------------------------------------------
