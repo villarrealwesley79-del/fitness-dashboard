@@ -590,7 +590,10 @@ def upsert_personal_vocab_entry(
                     WHEN excluded.accept_count > 0 THEN personal_vocab.accept_count + 1
                     ELSE 0
                 END,
-                correct_count = personal_vocab.correct_count + excluded.correct_count,
+                correct_count = CASE
+                    WHEN excluded.accept_count > 0 THEN 0
+                    ELSE personal_vocab.correct_count + excluded.correct_count
+                END,
                 confidence_boost = CASE
                     WHEN excluded.accept_count > 0 THEN MIN(0.2, (personal_vocab.accept_count + 1) * 0.03)
                     ELSE 0

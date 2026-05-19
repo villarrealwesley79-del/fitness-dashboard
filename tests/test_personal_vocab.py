@@ -62,6 +62,26 @@ def test_personal_vocab_correction_resets_mapping(tmp_path, monkeypatch):
     assert entry["correct_count"] == 1
 
 
+def test_personal_vocab_correction_can_recover_after_new_accepts(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    for _ in range(3):
+        personal_vocab.record_accept(1, "chip usual", _estimate())
+    personal_vocab.record_correct(1, "chip usual", _estimate(item_name="Chipotle bowl"))
+
+    corrected = _estimate(item_name="Chipotle bowl", calories=680)
+    for _ in range(3):
+        personal_vocab.record_accept(1, "chip usual", corrected)
+
+    result = personal_vocab.lookup("chip usual", user_id=1)
+    entry = data_store.get_personal_vocab_entry(1, "chip usual")
+    assert entry["correct_count"] == 0
+    assert result["item_name"] == "Chipotle bowl"
+    assert result["calories"] == 680
+
+
 def test_personal_vocab_fuzzy_match_after_one_confirmed_mapping(tmp_path, monkeypatch):
     import data_store
 
@@ -78,7 +98,7 @@ def test_personal_vocab_fuzzy_match_after_one_confirmed_mapping(tmp_path, monkey
 def test_parse_meal_text_consults_personal_vocab_before_branded_lookup(monkeypatch):
     parser = importlib.import_module("meal_text_parser")
     personal = _estimate(source="personal_vocab", confidence=0.9)
-    monkeypatch.setattr(parser.personal_vocab, "lookup", lambda text: personal)
+    monkeypatch.setattr(parser.personal_vocab, "lookup", lambda text, **_kw: personal)
     monkeypatch.setattr(
         parser.branded_food_lookup,
         "lookup",
@@ -87,6 +107,29 @@ def test_parse_meal_text_consults_personal_vocab_before_branded_lookup(monkeypat
 
     result = parser.parse_meal_text("chip usual")
 
+    assert result == {"estimate": personal, "fallback_used": False}
+
+
+def test_parse_meal_text_scopes_personal_vocab_to_user_id(monkeypatch):
+    parser = importlib.import_module("meal_text_parser")
+    personal = _estimate(source="personal_vocab", confidence=0.9)
+    seen = {}
+
+    def fake_lookup(text, **kwargs):
+        seen["text"] = text
+        seen["user_id"] = kwargs.get("user_id")
+        return personal if kwargs.get("user_id") == 2 else None
+
+    monkeypatch.setattr(parser.personal_vocab, "lookup", fake_lookup)
+    monkeypatch.setattr(
+        parser.branded_food_lookup,
+        "lookup",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("branded lookup must not run")),
+    )
+
+    result = parser.parse_meal_text("chip usual", user_id=2)
+
+    assert seen == {"text": "chip usual", "user_id": 2}
     assert result == {"estimate": personal, "fallback_used": False}
 
 

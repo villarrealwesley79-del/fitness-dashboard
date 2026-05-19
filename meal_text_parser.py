@@ -335,6 +335,7 @@ def parse_meal_text(
     text: str,
     *,
     timestamp: Optional[str] = None,  # noqa: ARG001 — accepted for forward-compat
+    user_id: int = 1,
 ) -> dict:
     """Convert free-form meal text into a sanitized food estimate.
 
@@ -370,7 +371,7 @@ def parse_meal_text(
         }
 
     try:
-        personal_estimate = personal_vocab.lookup(cleaned)
+        personal_estimate = personal_vocab.lookup(cleaned, user_id=user_id)
     except Exception:
         personal_estimate = None
     if personal_estimate:
