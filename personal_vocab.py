@@ -55,7 +55,12 @@ def lookup(phrase: str | None, *, user_id: int = 1) -> dict | None:
         return _estimate_from_entry(exact)
 
     entries = data_store.list_personal_vocab_entries(user_id)
-    trusted = [entry for entry in entries if _trusted(entry, minimum_accepts=MIN_ACCEPTS_FOR_FUZZY)]
+    trusted = [
+        entry
+        for entry in entries
+        if entry.get("normalized_input") != normalized
+        and _trusted(entry, minimum_accepts=MIN_ACCEPTS_FOR_FUZZY)
+    ]
     candidates = {entry["normalized_input"]: entry for entry in trusted}
     matches = get_close_matches(normalized, candidates.keys(), n=1, cutoff=FUZZY_CUTOFF)
     if matches:
