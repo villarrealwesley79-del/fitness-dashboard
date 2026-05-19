@@ -51,8 +51,10 @@ def lookup(phrase: str | None, *, user_id: int = 1) -> dict | None:
     if not normalized:
         return None
     exact = data_store.get_personal_vocab_entry(user_id, normalized)
-    if exact and _trusted(exact, minimum_accepts=MIN_ACCEPTS_FOR_EXACT):
-        return _estimate_from_entry(exact)
+    if exact:
+        if _trusted(exact, minimum_accepts=MIN_ACCEPTS_FOR_EXACT):
+            return _estimate_from_entry(exact)
+        return None
 
     entries = data_store.list_personal_vocab_entries(user_id)
     trusted = [

@@ -55,6 +55,17 @@ def test_personal_vocab_exact_match_waits_for_accept_threshold(tmp_path, monkeyp
     assert personal_vocab.lookup("chip ckn bur", user_id=1) is None
 
 
+def test_personal_vocab_untrusted_exact_match_blocks_fuzzy_substitution(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    personal_vocab.record_accept(1, "chipotle chicken bowl", _estimate(item_name="Chipotle chicken bowl"))
+    personal_vocab.record_accept(1, "chipotle chicken burrito", _estimate(item_name="Chipotle chicken burrito"))
+
+    assert personal_vocab.lookup("chipotle chicken bowl", user_id=1) is None
+
+
 def test_personal_vocab_correction_resets_mapping(tmp_path, monkeypatch):
     import data_store
 
