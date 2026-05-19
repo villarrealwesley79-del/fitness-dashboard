@@ -49,6 +49,8 @@ FOOD_ESTIMATE_FIELDS = {
     "sodium_mg",
     "fiber_g",
     "confidence",
+    "ambiguous",
+    "uncertainty_notes",
     "source",
     "logged_at",
     "date",
