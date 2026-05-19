@@ -7,6 +7,7 @@ from pathlib import Path
 import urllib.request
 
 import branded_food_lookup
+from meal_log_policy import evaluate_meal_log
 
 
 def test_snapshot_lookup_works_without_network_or_api_keys(monkeypatch):
@@ -20,6 +21,17 @@ def test_snapshot_lookup_works_without_network_or_api_keys(monkeypatch):
     assert result["item_name"] == "Banana, raw"
     assert result["calories"] == 89
     assert result["external_food_id"] == "173944"
+
+
+def test_unquantified_snapshot_hit_requires_review():
+    result = branded_food_lookup.lookup("oatmeal", source_priority=("snapshot",))
+    decision = evaluate_meal_log(result)
+
+    assert result["source"] == "offline_snapshot"
+    assert result["ambiguous"] is True
+    assert result["confidence"] < 0.75
+    assert "reference portion" in result["uncertainty_notes"][0]
+    assert decision["status"] == "pending_review"
 
 
 def test_snapshot_file_is_small_and_documents_license():
