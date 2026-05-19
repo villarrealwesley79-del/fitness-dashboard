@@ -53,6 +53,8 @@ from meal_estimate_schema import (
     manual_review_estimate,
     sanitize_meal_estimate,
 )
+import branded_food_lookup
+import vision_estimator
 from meal_text_parser import parse_meal_text
 from meal_log_policy import (
     CORRECTION_STATE_ACCEPTED,
@@ -3229,6 +3231,10 @@ _MEAL_INTAKE_STUB_DEFAULT = dict(
 )
 
 
+def _source_indicates_image(source: str | None) -> bool:
+    return str(source or "").startswith("vision_")
+
+
 def _food_photo_retention_payload(has_image: bool = False) -> dict:
     payload = dict(_FOOD_PHOTO_RETENTION)
     payload["image_received"] = bool(has_image)
@@ -3286,6 +3292,64 @@ def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
             "uncertainty_notes": uncertainty_notes,
         },
     }
+
+
+def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype: str) -> dict:
+    vision = vision_estimator.describe(
+        image_bytes,
+        context_text=text_raw or None,
+        media_type=mimetype or "image/jpeg",
+    )
+    description = vision["item_description"]
+    lookup_text = " ".join(part for part in (description, vision.get("portion_hint")) if part)
+    lookup = branded_food_lookup.lookup(lookup_text)
+    provider = vision.get("provider") or vision_estimator.configured_provider()
+    if lookup:
+        estimate = dict(lookup)
+        estimate["underlying_source"] = lookup.get("source")
+        estimate["source"] = f"vision_{provider}+{lookup.get('source')}"
+        estimate["vision_description"] = description
+        estimate["vision_provider"] = provider
+        estimate["vision_confidence"] = vision.get("confidence")
+        if vision.get("portion_hint") and not estimate.get("portion_description"):
+            estimate["portion_description"] = vision.get("portion_hint")
+        if vision.get("ambiguous"):
+            estimate["ambiguous"] = True
+            estimate["confidence"] = min(float(estimate.get("confidence") or 0), float(vision.get("confidence") or 0))
+            estimate.setdefault("uncertainty_notes", [])
+            estimate["uncertainty_notes"].extend(vision.get("uncertainty_notes") or [])
+        return estimate
+
+    macro_estimate = vision.get("macro_estimate")
+    if isinstance(macro_estimate, dict):
+        raw = {
+            "item_name": description,
+            "portion_description": vision.get("portion_hint"),
+            "meal_type": macro_estimate.get("meal_type") or "snack",
+            "calories": macro_estimate.get("calories"),
+            "protein_g": macro_estimate.get("protein_g"),
+            "carbs_g": macro_estimate.get("carbs_g"),
+            "fat_g": macro_estimate.get("fat_g"),
+            "sodium_mg": macro_estimate.get("sodium_mg", 0),
+            "fiber_g": macro_estimate.get("fiber_g", 0),
+            "confidence": min(float(vision.get("confidence") or 0), 0.65),
+            "ambiguous": bool(vision.get("ambiguous", True)),
+            "uncertainty_notes": vision.get("uncertainty_notes") or [
+                "Vision model estimated macros without a verified nutrition source."
+            ],
+            "source": f"vision_{provider}_estimate",
+        }
+        estimate = sanitize_meal_estimate(raw, plausible_ranges=True)
+    else:
+        estimate = manual_review_estimate(text=description, source=f"vision_{provider}_estimate")
+        estimate["confidence"] = min(float(vision.get("confidence") or 0), 0.45)
+        estimate["uncertainty_notes"] = vision.get("uncertainty_notes") or [
+            "Vision identified the food but no verified nutrition source matched."
+        ]
+    estimate["vision_description"] = description
+    estimate["vision_provider"] = provider
+    estimate["vision_confidence"] = vision.get("confidence")
+    return estimate
 
 
 # FIT-61: human-readable copy for each stable policy reason code. Kept
@@ -3405,10 +3469,13 @@ def meal_intake_stub():
 
     image_file = request.files.get("image")
     has_image = False
+    image_bytes = b""
+    image_mimetype = "image/jpeg"
     if image_file is not None and image_file.filename:
         mimetype = (image_file.mimetype or "").lower()
         if not mimetype.startswith("image/"):
             return jsonify({"error": {"message": "image must be image/*"}}), 400
+        image_mimetype = mimetype
         image_file.stream.seek(0, os.SEEK_END)
         size = image_file.stream.tell()
         image_file.stream.seek(0)
@@ -3416,24 +3483,44 @@ def meal_intake_stub():
             return jsonify({"error": {"message": "image exceeds 6 MB limit"}}), 413
         if size <= 0:
             return jsonify({"error": {"message": "image is empty"}}), 400
-        # FIT-60 stub: image bytes are discarded after size validation; the real
-        # implementation (FIT-5) will pass them to the vision model. We never
-        # echo image data back, persist it, or log it — matches FIT-9 privacy.
+        image_bytes = image_file.read()
+        image_file.stream.seek(0)
         has_image = True
 
     if not text_raw and not has_image:
         return jsonify({"error": {"message": "provide a meal description or photo"}}), 400
 
-    # FIT-59: text-only input flows through the real meal_text_parser
-    # (LM Studio primary + deterministic fallback). Image-bearing input
-    # stays on the FIT-60 stub until FIT-5 ships the vision estimator.
     response_extras: dict = {}
     if has_image:
-        result = _meal_intake_stub_estimate(text_raw, has_image)
-        estimate = sanitize_meal_estimate(result["estimate"], source="stub_vision_estimate")
-        source = "stub_vision_estimate"
-        estimate["source"] = source
-        response_extras["stub"] = True
+        try:
+            estimate = _meal_intake_vision_estimate(
+                image_bytes,
+                text_raw=text_raw,
+                mimetype=image_mimetype,
+            )
+            source = estimate["source"]
+            response_extras["vision"] = {
+                "provider": estimate.get("vision_provider") or vision_estimator.configured_provider(),
+                "confidence": estimate.get("vision_confidence"),
+            }
+        except vision_estimator.VisionEstimatorError as exc:
+            if not text_raw:
+                return jsonify({
+                    "error": {
+                        "message": "Photo estimate failed. Add a meal description and try again.",
+                        "reason": str(exc),
+                    },
+                    "photo_retention": _food_photo_retention_payload(has_image),
+                }), 503
+            parsed = parse_meal_text(text_raw, timestamp=local_timestamp)
+            try:
+                estimate = sanitize_meal_estimate(parsed["estimate"])
+            except MealEstimateValidationError:
+                estimate = manual_review_estimate(text=text_raw, source="manual_text_review")
+                parsed = {"fallback_used": True}
+            source = estimate["source"]
+            response_extras["fallback_used"] = parsed["fallback_used"]
+            response_extras["vision_error"] = str(exc)
     else:
         parsed = parse_meal_text(text_raw, timestamp=local_timestamp)
         try:
@@ -3529,13 +3616,13 @@ def meal_intake_accept_stub(client_id: str):
         client_id,
         estimate,
         source=estimate.get("source") or "stub_text_estimate",
-        has_image=bool(estimate.get("from_image")),
+        has_image=_source_indicates_image(estimate.get("source")),
         text_hint=text_hint or None,
     )
     return jsonify({
         "status": "logged",
         "food_log": food_log,
-        "photo_retention": _food_photo_retention_payload(bool(estimate.get("from_image"))),
+        "photo_retention": _food_photo_retention_payload(_source_indicates_image(estimate.get("source"))),
         "stub": True,
     })
 

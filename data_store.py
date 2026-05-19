@@ -62,6 +62,9 @@ FOOD_ESTIMATE_FIELDS = {
     "brand_id",
     "underlying_source",
     "off_attribution",
+    "vision_description",
+    "vision_provider",
+    "vision_confidence",
 }
 
 

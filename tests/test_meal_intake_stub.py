@@ -4,13 +4,8 @@ These cover the wire-up the UI relies on (logged vs pending_review vs
 validation errors), the undo endpoint, and the accept endpoint.
 
 Text-only input is routed through the real FIT-59 parser
-(meal_text_parser.parse_meal_text); image-bearing input still hits the
-FIT-60 stub until FIT-5 ships the vision estimator. Both paths share the
-same response shape and the same auto-log threshold (confidence >= 0.65
-and not ambiguous).
-
-This module is scheduled for removal in FIT-65 once the real text +
-vision intake pipeline replaces the stub entirely.
+(meal_text_parser.parse_meal_text); image-bearing input is routed through
+the real vision-estimator seam and the same meal-log policy.
 """
 from __future__ import annotations
 
@@ -42,6 +37,38 @@ def _stub_parser(monkeypatch, module, *, estimate, source="ai_text_estimate", fa
         return {"estimate": e, "fallback_used": fallback_used}
 
     monkeypatch.setattr(module, "parse_meal_text", fake)
+
+
+_DEFAULT_LOOKUP = object()
+
+
+def _stub_vision(monkeypatch, module, *, vision=None, lookup=_DEFAULT_LOOKUP):
+    vision = vision or {
+        "provider": "claude",
+        "item_description": "protein shake",
+        "portion_hint": "1 shake",
+        "confidence": 0.86,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    }
+    if lookup is _DEFAULT_LOOKUP:
+        lookup = {
+            "item_name": "Protein shake",
+            "portion_description": "1 shake",
+            "meal_type": "snack",
+            "calories": 210,
+            "protein_g": 30,
+            "carbs_g": 14,
+            "fat_g": 4,
+            "sodium_mg": 180,
+            "fiber_g": 2,
+            "confidence": 0.86,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "source": "nutritionix",
+        }
+    monkeypatch.setattr(module.vision_estimator, "describe", lambda *_a, **_kw: dict(vision))
+    monkeypatch.setattr(module.branded_food_lookup, "lookup", lambda *_a, **_kw: dict(lookup) if lookup else None)
 
 
 def test_meal_intake_text_only_auto_logs_when_parser_is_confident(monkeypatch):
@@ -303,6 +330,7 @@ def test_meal_intake_requires_client_id(monkeypatch):
 def test_meal_intake_image_only_auto_logs(monkeypatch):
     module = _client(monkeypatch)
     captured = {}
+    _stub_vision(monkeypatch, module)
 
     def fake_add_food_log(_user_id, record):
         captured["source"] = record["source"]
@@ -329,7 +357,7 @@ def test_meal_intake_image_only_auto_logs(monkeypatch):
     assert body["photo_retention"]["backup_includes_raw_photo"] is False
     assert "image_bytes" not in str(body)
     assert "plate.png" not in str(body)
-    assert captured["source"] == "stub_vision_estimate"
+    assert captured["source"] == "vision_claude+nutritionix"
     assert captured["context_note"] is None
 
 
@@ -364,6 +392,69 @@ def test_meal_intake_rejects_non_image_upload(monkeypatch):
     )
     assert res.status_code == 400
     assert "image/" in res.get_json()["error"]["message"]
+
+
+def test_meal_intake_image_provider_failure_uses_text_fallback(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(
+        module.vision_estimator,
+        "describe",
+        lambda *_a, **_kw: (_ for _ in ()).throw(module.vision_estimator.VisionEstimatorError("provider down")),
+    )
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Protein shake",
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.86,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: {"client_id": r["client_id"], **r})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "protein shake",
+            "client_id": "meal-vision-fallback-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "logged"
+    assert body["estimate"]["source"] == "ai_text_estimate"
+    assert body["vision_error"] == "provider down"
+
+
+def test_meal_intake_image_provider_failure_without_text_returns_clear_error(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(
+        module.vision_estimator,
+        "describe",
+        lambda *_a, **_kw: (_ for _ in ()).throw(module.vision_estimator.VisionEstimatorError("provider down")),
+    )
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-vision-error-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 503
+    body = res.get_json()
+    assert "Add a meal description" in body["error"]["message"]
+    assert body["photo_retention"]["image_received"] is True
 
 
 def test_meal_intake_undo_calls_delete_helper(monkeypatch):
@@ -1022,6 +1113,29 @@ def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
     """
     module = _client(monkeypatch)
     persisted = []
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "claude",
+            "item_description": "shared movie popcorn",
+            "portion_hint": "shared tub",
+            "confidence": 0.45,
+            "ambiguous": True,
+            "uncertainty_notes": ["Portion is unclear."],
+            "macro_estimate": {
+                "item_name": "Shared popcorn",
+                "meal_type": "snack",
+                "calories": 300,
+                "protein_g": 5,
+                "carbs_g": 36,
+                "fat_g": 18,
+                "sodium_mg": 520,
+                "fiber_g": 6,
+            },
+        },
+        lookup=None,
+    )
     monkeypatch.setattr(module, "add_food_log", lambda _u, r: (persisted.append(r), r)[1])
 
     image_bytes = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
