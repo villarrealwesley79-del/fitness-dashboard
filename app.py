@@ -4210,7 +4210,10 @@ def analyze_workout():
             ],
         })
 
-    progression_all = calculate_progression_status(WORKOUTS)
+    try:
+        progression_all = calculate_progression_status(WORKOUTS)
+    except Exception:
+        progression_all = {}
     progression_subset = {
         name: {
             "current_e1rm": data_.get("current_e1rm"),

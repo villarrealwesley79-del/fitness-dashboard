@@ -109,3 +109,31 @@ def test_analyze_returns_deterministic_fallback_when_model_fails(fitness_app, mo
     assert any("soreness" in concern.lower() or "struggle" in concern.lower() for concern in payload["analysis"]["concerns"])
     assert metrics
     assert metrics[0][0][0] == "fallback"
+
+
+def test_analyze_adapter_missing_survives_legacy_workout_shapes(fitness_app, monkeypatch):
+    legacy_workouts = [
+        {
+            "id": "legacy-workout",
+            "date": "2026-05-18",
+            "session_type": "legacy",
+            "exercises": [
+                {
+                    "exercise": "Chest Press",
+                    "muscle_group": "chest",
+                    "sets": [{"weight_lbs": "not-a-number", "reps": 10, "notes": "legacy notes"}],
+                }
+            ],
+        }
+    ]
+    monkeypatch.setattr(fitness_app, "WORKOUTS", legacy_workouts)
+    monkeypatch.setattr(fitness_app, "_lm_studio", None)
+    monkeypatch.setattr(fitness_app, "_ai_metric_log", lambda *args, **kwargs: None)
+
+    response = fitness_app.app.test_client().post("/api/workout/analyze", json={"latest": True})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "fallback"
+    assert payload["analysis"]["summary"]
+    assert payload["analysis"]["next_session_cue"]
