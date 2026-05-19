@@ -661,6 +661,7 @@ def delete_user_data(user_id: int) -> None:
     with _get_db() as conn:
         for table in tables:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM branded_lookup_cache")
         conn.commit()
 
 

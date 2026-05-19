@@ -68,7 +68,7 @@ _SODIUM_MAX = SODIUM_MG_MAX
 # to avoid false positives like "fish" / "rice dish" / "rabbit" matching short
 # approximation markers.
 _AMBIGUOUS_TOKENS = (
-    "popcorn", "movie", "shared", "leftover", "leftovers", "snacks",
+    "popcorn", "movie", "shared", "leftover", "leftovers", "snacks", "half",
     "buffet", "potluck", "?", "guessing", "guess", "some food", "a bit",
     "a few",
 )
@@ -373,6 +373,7 @@ def parse_meal_text(
     except Exception:
         branded_estimate = None
     if branded_estimate:
+        branded_estimate = _post_process(branded_estimate, source_text=cleaned)
         return {
             "estimate": branded_estimate,
             "fallback_used": False,

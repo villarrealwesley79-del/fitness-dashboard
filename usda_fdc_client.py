@@ -24,8 +24,9 @@ def search_foods(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, A
         "dataType": ",".join(PREFERRED_DATA_TYPES),
     }
     api_key = os.environ.get("USDA_FDC_API_KEY")
-    if api_key:
-        params["api_key"] = api_key
+    if not api_key:
+        return None
+    params["api_key"] = api_key
     url = f"{FDC_SEARCH_URL}?{parse.urlencode(params)}"
     req = request.Request(url, headers={"Accept": "application/json"})
     try:

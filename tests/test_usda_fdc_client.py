@@ -21,26 +21,14 @@ class _Response:
         return json.dumps(self.payload).encode("utf-8")
 
 
-def test_usda_search_uses_public_endpoint_without_key(monkeypatch):
+def test_usda_search_skips_network_without_key(monkeypatch):
     monkeypatch.delenv("USDA_FDC_API_KEY", raising=False)
-    captured = {}
 
-    def fake_urlopen(req, timeout):
-        captured["timeout"] = timeout
-        captured["url"] = req.full_url
-        return _Response({"foods": [{"description": "BANANAS,RAW"}]})
+    def fail_urlopen(*_args, **_kwargs):
+        raise AssertionError("USDA lookup must not call the network without a key")
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    result = usda_fdc_client.search_foods("banana")
-    parsed = urllib.parse.urlparse(captured["url"])
-    params = urllib.parse.parse_qs(parsed.query)
-
-    assert result["foods"][0]["description"] == "BANANAS,RAW"
-    assert parsed.scheme == "https"
-    assert params["query"] == ["banana"]
-    assert params["dataType"] == ["Foundation,SR Legacy"]
-    assert "api_key" not in params
-    assert captured["timeout"] == usda_fdc_client.TIMEOUT_SECONDS
+    monkeypatch.setattr(urllib.request, "urlopen", fail_urlopen)
+    assert usda_fdc_client.search_foods("banana") is None
 
 
 def test_usda_search_adds_optional_api_key(monkeypatch):
@@ -59,6 +47,8 @@ def test_usda_search_adds_optional_api_key(monkeypatch):
     usda_fdc_client.search_foods("oatmeal")
     params = urllib.parse.parse_qs(urllib.parse.urlparse(captured["url"]).query)
     assert params["api_key"] == ["fdc-key"]
+    assert params["query"] == ["oatmeal"]
+    assert params["dataType"] == ["Foundation,SR Legacy"]
 
 
 def test_usda_handles_network_errors(monkeypatch):

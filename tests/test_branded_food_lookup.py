@@ -185,6 +185,35 @@ def test_parse_meal_text_uses_branded_lookup_before_lm(monkeypatch):
     assert result == {"estimate": branded_estimate, "fallback_used": False}
 
 
+def test_parse_meal_text_applies_review_modifiers_to_branded_lookup(monkeypatch):
+    parser = importlib.import_module("meal_text_parser")
+    branded_estimate = {
+        "item_name": "Chipotle chicken burrito",
+        "portion_description": "1 burrito",
+        "meal_type": "lunch",
+        "calories": 1075,
+        "protein_g": 51,
+        "carbs_g": 116,
+        "fat_g": 41,
+        "sodium_mg": 2310,
+        "fiber_g": 13,
+        "confidence": 0.85,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "nutritionix",
+    }
+    monkeypatch.setattr(parser.branded_food_lookup, "lookup", lambda text: dict(branded_estimate))
+    monkeypatch.setattr(parser, "_completion_json", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("LM must not run")))
+
+    result = parser.parse_meal_text("half Chipotle chicken burrito")
+
+    assert result["fallback_used"] is False
+    assert result["estimate"]["source"] == "nutritionix"
+    assert result["estimate"]["ambiguous"] is True
+    assert result["estimate"]["confidence"] == 0.55
+    assert "confirm before it counts" in result["estimate"]["uncertainty_notes"][0]
+
+
 def test_data_store_cache_round_trip(tmp_path, monkeypatch):
     import data_store
 
@@ -212,3 +241,6 @@ def test_data_store_cache_round_trip(tmp_path, monkeypatch):
     assert row["source"] == "usda_fdc"
     assert row["response_json"] == response
     assert row["fetched_at"]
+
+    data_store.delete_user_data(1)
+    assert data_store.get_branded_lookup_cache("banana") is None
