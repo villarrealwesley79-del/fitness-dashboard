@@ -40,6 +40,13 @@ from oura_client import (
 )
 from data_store import init_data_db, add_food_log, get_food_logs, delete_food_log_by_client_id
 from meal_text_parser import parse_meal_text
+from meal_log_policy import (
+    CORRECTION_STATE_ACCEPTED,
+    CORRECTION_STATE_PENDING_REVIEW,
+    STATUS_LOGGED,
+    STATUS_PENDING_REVIEW,
+    evaluate_meal_log,
+)
 
 app = Flask(__name__)
 
@@ -3169,8 +3176,23 @@ def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
     }
 
 
-def _meal_intake_stub_persist(client_id, estimate, *, source, has_image, text_hint, local_timestamp=None):
-    """Persist an accepted estimate via the canonical food_logs path.
+def _meal_intake_stub_persist(
+    client_id,
+    estimate,
+    *,
+    source,
+    has_image,
+    text_hint,
+    local_timestamp=None,
+    correction_state=CORRECTION_STATE_ACCEPTED,
+):
+    """Persist a food estimate via the canonical food_logs path.
+
+    ``correction_state`` (FIT-61) controls whether the row counts toward
+    daily totals: ``"accepted"`` for auto-logged entries, ``"pending_review"``
+    for entries that the meal-log policy held back for explicit user
+    confirmation. ``_nutrition_entry_accepted`` filters pending rows out
+    of nutrition totals and coaching context (see app.py:999).
 
     ``local_timestamp`` (FIT-59) is the client-supplied ISO timestamp from
     the composer. When present we use it for both ``logged_at`` and
@@ -3203,7 +3225,7 @@ def _meal_intake_stub_persist(client_id, estimate, *, source, has_image, text_hi
         "fiber_g": estimate.get("fiber_g"),
         "confidence": estimate.get("confidence"),
         "source": source,
-        "correction_state": "accepted",
+        "correction_state": correction_state,
         "original_estimate": {k: v for k, v in estimate.items() if k != "uncertainty_notes"},
     }
     return add_food_log(_current_data_user_id(), record)
@@ -3260,7 +3282,6 @@ def meal_intake_stub():
     if has_image:
         result = _meal_intake_stub_estimate(text_raw, has_image)
         estimate = result["estimate"]
-        status = result["status"]
         source = "stub_vision_estimate"
         response_extras["stub"] = True
     else:
@@ -3270,21 +3291,29 @@ def meal_intake_stub():
         # the pending-review accept handler (which reads
         # estimate.get("source") to label the persisted food_log).
         source = estimate["source"]
-        # Same threshold as the FIT-60 stub: ambiguous input or confidence
-        # below 0.65 falls through to pending review.
-        status = (
-            "pending_review"
-            if estimate["ambiguous"] or estimate["confidence"] < 0.65
-            else "logged"
-        )
         response_extras["fallback_used"] = parsed["fallback_used"]
 
-    food_log = None
-    if status == "logged":
-        food_log = _meal_intake_stub_persist(
-            client_id, estimate, source=source, has_image=has_image,
-            text_hint=text_raw or None, local_timestamp=local_timestamp,
-        )
+    # FIT-61: the meal-log policy is the single source of truth for
+    # auto-log vs pending-review. Confidence bands, ambiguous-input
+    # detection, and macro plausibility gates all live in
+    # ``meal_log_policy.evaluate_meal_log`` so both the text-parser and
+    # image-stub paths share the same decision and reason copy.
+    decision = evaluate_meal_log(estimate)
+    status = decision["status"]
+    response_extras["policy"] = {
+        "confidence_band": decision["confidence_band"],
+        "reasons": decision["reasons"],
+    }
+
+    # FIT-61: persist pending entries too (correction_state="pending_review")
+    # so the dashboard freshness path and accept-handler upsert have a
+    # canonical row to act on. _nutrition_entry_accepted() filters pending
+    # rows out of daily totals and coaching context — see app.py:999.
+    food_log = _meal_intake_stub_persist(
+        client_id, estimate, source=source, has_image=has_image,
+        text_hint=text_raw or None, local_timestamp=local_timestamp,
+        correction_state=decision["correction_state"],
+    )
 
     return jsonify({
         "status": status,
