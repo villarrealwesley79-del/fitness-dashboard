@@ -3171,6 +3171,11 @@ def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
             "sodium_mg": preset.get("sodium_mg"),
             "fiber_g": preset.get("fiber_g"),
             "confidence": round(base_confidence, 2),
+            # FIT-61: surface ambiguity inside the estimate dict so the
+            # meal-log policy sees the same signal as the text-parser path.
+            # Without this, "shared movie popcorn" with a photo would land
+            # in the policy's high-confidence band and auto-log.
+            "ambiguous": ambiguous,
             "uncertainty_notes": uncertainty_notes,
         },
     }

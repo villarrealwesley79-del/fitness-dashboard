@@ -3596,9 +3596,25 @@
         return row;
     }
 
-    function discardMealPending(clientId) {
+    async function discardMealPending(clientId) {
+        // FIT-61: pending estimates now persist server-side with
+        // correction_state="pending_review" so the dashboard freshness
+        // path can surface them. Discarding must therefore call the
+        // DELETE endpoint to remove the row — otherwise it lingers in
+        // pending_review_count forever.
         mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
         renderMealPendingList();
+        try {
+            await api(`/api/meal-intake/${encodeURIComponent(clientId)}`, { method: 'DELETE' });
+        } catch (err) {
+            // Network/server error: surface the failure but don't
+            // re-add the entry to the local list — the user already
+            // chose to discard. The orphaned row will be cleaned up on
+            // next sync / manual retry.
+            console.warn('[meal-composer] discard DELETE failed:', err);
+            toast('Estimate discarded locally — server cleanup will retry', 'warn');
+            return;
+        }
         toast('Estimate discarded', 'ok');
     }
 

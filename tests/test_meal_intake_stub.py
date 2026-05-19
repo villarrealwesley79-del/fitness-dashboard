@@ -933,6 +933,64 @@ def test_nutrition_today_excludes_pending_review_entries_from_totals(monkeypatch
     assert body["protein_g"] == 35  # 25 + 10
 
 
+def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
+    """Regression for Codex audit round 1, finding 1: ``_meal_intake_stub_estimate``
+    detected ambiguity for image+text submissions (e.g. "shared movie popcorn"
+    with a photo) but only exposed it via result["status"] and uncertainty_notes.
+    Since FIT-61 evaluates only ``estimate``, the ``ambiguous`` flag must live
+    inside the estimate dict so the policy sees it and routes to pending review.
+    """
+    module = _client(monkeypatch)
+    persisted = []
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: (persisted.append(r), r)[1])
+
+    image_bytes = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "shared movie popcorn",
+            "client_id": "meal-ambig-img-1",
+            "image": (io.BytesIO(image_bytes), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["status"] == "pending_review", (
+        "ambiguous photo+text submissions must be held for review"
+    )
+    assert body["estimate"]["ambiguous"] is True
+    assert "ambiguous_input" in body["policy"]["reasons"]
+    assert persisted[0]["correction_state"] == "pending_review"
+
+
+def test_meal_intake_delete_removes_persisted_pending_row(monkeypatch):
+    """Regression for Codex audit round 1, finding 2: the JS discard
+    flow calls DELETE /api/meal-intake/<client_id>. The endpoint must
+    remove the persisted pending row so it stops counting toward
+    pending_review_count.
+
+    This test verifies the server-side contract; the JS change to
+    actually call the endpoint on discard lives in static/js/app.js.
+    """
+    module = _client(monkeypatch)
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    seen = {}
+
+    def fake_delete(user_id, client_id):
+        seen["user_id"] = user_id
+        seen["client_id"] = client_id
+        return True
+
+    monkeypatch.setattr(module, "delete_food_log_by_client_id", fake_delete)
+
+    res = module.app.test_client().delete("/api/meal-intake/meal-pending-discard-1")
+    assert res.status_code == 200
+    assert res.get_json() == {"status": "ok", "removed": True}
+    assert seen == {"user_id": 1, "client_id": "meal-pending-discard-1"}
+
+
 def test_nutrition_today_surfaces_pending_review_count(monkeypatch):
     """Pending entries must be counted separately so freshness UI can
     surface them ("3 meals awaiting review")."""
