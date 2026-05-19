@@ -165,6 +165,45 @@ def test_nutrition_history_flags_high_sodium_and_late_meal(fitness_app):
 # Sanity: existing fields preserved
 # ──────────────────────────────────────────────────────────────────
 
+def test_nutrition_history_merges_food_logs_with_legacy_nutrition_data(fitness_app, monkeypatch):
+    """Regression for Codex audit round 1: the active meal composer
+    (FIT-60/59/61) persists accepted entries via ``add_food_log`` into
+    SQLite ``food_logs`` — NOT the legacy NUTRITION_DATA JSON. The
+    endpoint must merge both so the Body tab's interpretation and
+    14-day trend reflect the actual logged meals.
+
+    Mirrors what /api/nutrition-today does via
+    _food_log_entries_for_context.
+    """
+    # Legacy entry in NUTRITION_DATA.
+    _seed_nutrition(fitness_app, [
+        {"date": _today(), "calories": 500, "protein_g": 30,
+         "carbs_g": 0, "fat_g": 0, "sodium_mg": 0,
+         "correction_state": "accepted"},
+    ])
+    # Modern entry in food_logs (simulated via monkeypatched fetcher).
+    food_log_row = {
+        "id": 1, "client_id": "fit13-test-1",
+        "date": _today(), "logged_at": f"{_today()}T19:00:00",
+        "calories": 700, "protein_g": 40, "carbs_g": 60, "fat_g": 25,
+        "sodium_mg": 1200, "confidence": 0.85,
+        "correction_state": "accepted", "source": "ai_text_estimate",
+    }
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [food_log_row],
+    )
+    today = next(d for d in fitness_app.app.test_client()
+                 .get("/api/nutrition-history").get_json()["history"]
+                 if d["date"] == _today())
+    assert today["calories"] == 1200, (
+        "history must include both legacy + food_logs sources "
+        f"(got {today['calories']}, expected 500+700=1200)"
+    )
+    assert today["entries_count"] == 2
+    assert today["sodium_mg"] == 1200
+
+
 def test_nutrition_history_still_exposes_legacy_macro_keys(fitness_app):
     """The Body charts and existing consumers still read the original
     calories / protein / carbs / fat keys. Locking in that the FIT-13

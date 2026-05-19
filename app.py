@@ -3592,15 +3592,25 @@ def nutrition_history():
     high-sodium / late-meal day surfaces as context rather than being
     mis-attributed to fat gain, and estimated-vs-corrected entries are
     distinguished from each other.
+
+    Merges entries from BOTH the legacy ``NUTRITION_DATA`` JSON store
+    AND the canonical ``food_logs`` SQLite table — the active meal
+    composer (FIT-60/59/61) persists via ``add_food_log`` into
+    food_logs, and these new entries would otherwise be invisible in
+    history. Matches the merge ``/api/nutrition-today`` already
+    performs via ``_food_log_entries_for_context``.
     """
     today = datetime.now().date()
     calories_target = USER_SETTINGS.get("daily_calorie_target")
     protein_target = USER_SETTINGS.get("daily_protein_target_g")
+    earliest = (today - timedelta(days=13)).strftime("%Y-%m-%d")
+    food_log_entries = _food_log_entries_for_context(since=earliest)
+    merged_entries = list(NUTRITION_DATA or []) + list(food_log_entries)
     days = []
     for i in range(13, -1, -1):
         d = today - timedelta(days=i)
         date_s = d.strftime("%Y-%m-%d")
-        totals = _nutrition_history_breakdown(date_s, NUTRITION_DATA or [])
+        totals = _nutrition_history_breakdown(date_s, merged_entries)
         cals = totals["calories"]
         protein = totals["protein_g"]
         days.append({
