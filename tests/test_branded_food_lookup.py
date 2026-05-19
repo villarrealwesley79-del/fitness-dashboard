@@ -252,6 +252,70 @@ def test_stale_cache_falls_through_to_usda(monkeypatch):
     assert estimate["external_food_id"] == "173944"
 
 
+def test_branded_usda_fallback_without_verified_brand_is_pending_review(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a: {
+            "foods": [
+                {
+                    "fdcId": 12345,
+                    "description": "BURRITO WITH CHICKEN",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "value": 250},
+                        {"nutrientName": "Protein", "value": 12},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 32},
+                        {"nutrientName": "Total lipid (fat)", "value": 8},
+                    ],
+                }
+            ]
+        },
+    )
+
+    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
+
+    assert estimate["source"] == "usda_fdc"
+    assert estimate["confidence"] == 0.55
+    assert estimate["ambiguous"] is True
+    assert estimate.get("brand_id") is None
+    assert any("did not verify" in note for note in estimate["uncertainty_notes"])
+
+
+def test_branded_usda_fallback_with_verified_brand_can_stay_high_confidence(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a: {
+            "foods": [
+                {
+                    "fdcId": 67890,
+                    "description": "CHICKEN BURRITO",
+                    "brandOwner": "Chipotle Mexican Grill",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "value": 1075},
+                        {"nutrientName": "Protein", "value": 51},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 116},
+                        {"nutrientName": "Total lipid (fat)", "value": 41},
+                    ],
+                }
+            ]
+        },
+    )
+
+    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
+
+    assert estimate["source"] == "usda_fdc"
+    assert estimate["confidence"] == 0.85
+    assert estimate["ambiguous"] is False
+    assert estimate["brand_id"] == "chipotle"
+
+
 def test_parse_meal_text_uses_branded_lookup_before_lm(monkeypatch):
     parser = importlib.import_module("meal_text_parser")
     branded_estimate = {

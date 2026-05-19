@@ -174,7 +174,7 @@ def _nutritionix_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     return _sanitize_with_provenance(estimate)
 
 
-def _usda_lookup(text: str, _normalized: str) -> dict[str, Any] | None:
+def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     payload = usda_fdc_client.search_foods(text)
     foods = payload.get("foods") if isinstance(payload, dict) else None
     if not foods:
@@ -182,6 +182,18 @@ def _usda_lookup(text: str, _normalized: str) -> dict[str, Any] | None:
     food = foods[0]
     nutrients = {n.get("nutrientName"): n.get("value") for n in food.get("foodNutrients", []) if isinstance(n, dict)}
     fdc_id = food.get("fdcId")
+    requested_brand = _brand_from_text(normalized)
+    source_brand = _matching_usda_source_brand(food, requested_brand)
+    ambiguous = _needs_modifier_review(normalized)
+    notes = []
+    if ambiguous:
+        notes.append("Customizable item is missing protein or modifier details.")
+    if requested_brand and not source_brand:
+        ambiguous = True
+        notes.append("USDA FDC did not verify the requested brand; review before logging.")
+    if _requested_item_mismatch(normalized, [food]):
+        ambiguous = True
+        notes.append("USDA FDC returned a different item category; review before logging.")
     estimate = {
         "item_name": food.get("description") or "Food",
         "portion_description": "100 g",
@@ -192,14 +204,15 @@ def _usda_lookup(text: str, _normalized: str) -> dict[str, Any] | None:
         "fat_g": nutrients.get("Total lipid (fat)"),
         "sodium_mg": nutrients.get("Sodium, Na") if nutrients.get("Sodium, Na") is not None else 0,
         "fiber_g": nutrients.get("Fiber, total dietary") if nutrients.get("Fiber, total dietary") is not None else 0,
-        "confidence": 0.85,
-        "ambiguous": False,
-        "uncertainty_notes": [],
+        "confidence": 0.55 if ambiguous else 0.85,
+        "ambiguous": ambiguous,
+        "uncertainty_notes": notes,
         "source": "usda_fdc",
         "external_food_id": str(fdc_id) if fdc_id is not None else None,
         "verified_source_url": f"https://fdc.nal.usda.gov/fdc-app.html#/food-details/{fdc_id}/nutrients" if fdc_id else "https://fdc.nal.usda.gov/",
         "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
         "portion_basis": "100 g USDA FoodData Central reference portion",
+        "brand_id": _brand_from_text(normalize_meal_text(source_brand or "")),
     }
     return _sanitize_with_provenance(estimate)
 
@@ -283,9 +296,27 @@ def _requested_item_mismatch(normalized: str, foods: list[dict[str, Any]]) -> bo
     requested_items = set(normalized.split()) & CUSTOMIZABLE_ITEM_TOKENS
     if not requested_items:
         return False
-    returned_text = " ".join(str(food.get("food_name") or "") for food in foods)
+    returned_text = " ".join(str(food.get("food_name") or food.get("description") or "") for food in foods)
     returned_items = set(normalize_meal_text(returned_text).split()) & CUSTOMIZABLE_ITEM_TOKENS
     return bool(returned_items) and not bool(requested_items & returned_items)
+
+
+def _matching_usda_source_brand(food: dict[str, Any], requested_brand: str | None) -> str | None:
+    source_parts = [
+        str(food.get("brandOwner") or "").strip(),
+        str(food.get("brandName") or "").strip(),
+        str(food.get("brand_name") or "").strip(),
+    ]
+    source_brands = [brand for brand in source_parts if brand]
+    if not source_brands:
+        return None
+    first_brand = source_brands[0]
+    if not requested_brand:
+        return first_brand
+    for brand in source_brands:
+        if _brand_from_text(normalize_meal_text(brand)) == requested_brand:
+            return brand
+    return None
 
 
 def _needs_modifier_review(normalized: str) -> bool:
