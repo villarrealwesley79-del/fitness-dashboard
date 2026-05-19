@@ -77,7 +77,8 @@ def lookup(
     user_id: int = 1,
 ) -> dict[str, Any] | None:
     """Return a sanitized estimate from cache/Nutritionix/USDA, or None."""
-    normalized = normalize_meal_text(f"{brand_hint or ''} {text}".strip())
+    lookup_text = _text_with_brand_hint(text, brand_hint)
+    normalized = normalize_meal_text(lookup_text)
     if not normalized:
         return None
     priorities = tuple(source_priority or SOURCE_PRIORITY)
@@ -87,16 +88,27 @@ def lookup(
         if cached:
             return cached
     if "nutritionix" in priorities:
-        nutritionix = _nutritionix_lookup(text, normalized)
+        nutritionix = _nutritionix_lookup(lookup_text, normalized)
         if nutritionix:
             data_store.save_branded_lookup_cache(normalized, nutritionix["source"], nutritionix, user_id=user_id)
             return nutritionix
     if "usda_fdc" in priorities:
-        usda = _usda_lookup(text, normalized)
+        usda = _usda_lookup(lookup_text, normalized)
         if usda:
             data_store.save_branded_lookup_cache(normalized, usda["source"], usda, user_id=user_id)
             return usda
     return None
+
+
+def _text_with_brand_hint(text: str, brand_hint: str | None) -> str:
+    cleaned = (text or "").strip()
+    normalized_text = normalize_meal_text(cleaned)
+    hint = normalize_meal_text(brand_hint or "")
+    if not hint:
+        return cleaned
+    if any(token in KNOWN_BRANDS for token in normalized_text.split()):
+        return cleaned
+    return f"{hint} {cleaned}".strip()
 
 
 def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) -> bool:
@@ -227,7 +239,6 @@ def _sanitize_with_provenance(estimate: dict[str, Any]) -> dict[str, Any]:
         "portion_basis",
         "brand_id",
         "underlying_source",
-        "off_attribution",
     ):
         if estimate.get(key) is not None:
             sanitized[key] = estimate[key]

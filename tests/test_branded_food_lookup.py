@@ -71,6 +71,38 @@ def test_lookup_uses_nutritionix_and_records_provenance(monkeypatch):
     assert saved["user_id"] == 1
 
 
+def test_lookup_uses_brand_hint_in_source_query(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: captured.update({"query": query}) or _nutritionix_payload(),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    branded_food_lookup.lookup("foil wrapped burrito", brand_hint="chipotle")
+
+    assert captured["query"] == "chipotle foil wrapped burrito"
+
+
+def test_lookup_does_not_duplicate_existing_brand_hint(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: captured.update({"query": query}) or _nutritionix_payload(),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    branded_food_lookup.lookup("Chipotle chicken burrito", brand_hint="chipotle")
+
+    assert captured["query"] == "Chipotle chicken burrito"
+
+
 def test_customizable_item_without_modifier_goes_pending_review(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
@@ -317,6 +349,34 @@ def test_branded_usda_fallback_with_verified_brand_can_stay_high_confidence(monk
     assert estimate["confidence"] == 0.85
     assert estimate["ambiguous"] is False
     assert estimate["brand_id"] == "chipotle"
+
+
+def test_sanitize_with_provenance_keeps_safe_attribution_only():
+    estimate = branded_food_lookup._sanitize_with_provenance({
+        "item_name": "Imported biscuit",
+        "portion_description": "100 g",
+        "meal_type": "snack",
+        "calories": 250,
+        "protein_g": 6,
+        "carbs_g": 40,
+        "fat_g": 8,
+        "sodium_mg": 400,
+        "fiber_g": 2,
+        "confidence": 0.75,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "open_food_facts",
+        "off_attribution": {
+            "source": "Open Food Facts",
+            "url": "https://world.openfoodfacts.org/product/example",
+            "raw": {"barcode": "secret"},
+        },
+    })
+
+    assert estimate["off_attribution"] == {
+        "source": "Open Food Facts",
+        "url": "https://world.openfoodfacts.org/product/example",
+    }
 
 
 def test_parse_meal_text_uses_branded_lookup_before_lm(monkeypatch):
