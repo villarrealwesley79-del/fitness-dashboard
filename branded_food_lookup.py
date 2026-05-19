@@ -132,34 +132,41 @@ def _nutritionix_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     foods = payload.get("foods") if isinstance(payload, dict) else None
     if not foods:
         return None
-    food = foods[0]
-    if not isinstance(food, dict):
+    food_items = [food for food in foods if isinstance(food, dict)]
+    if not food_items:
         return None
+    food = food_items[0]
     ambiguous = _needs_modifier_review(normalized)
     notes = []
     if ambiguous:
         notes.append("Customizable item is missing protein or modifier details.")
-    brand = food.get("brand_name") or _brand_from_text(normalized)
-    item_name = " ".join(str(part).strip() for part in (brand, food.get("food_name")) if part).strip()
+    requested_brand = _brand_from_text(normalized)
+    source_brand = _matching_source_brand(food_items, requested_brand)
+    if requested_brand and not source_brand:
+        ambiguous = True
+        notes.append("Nutritionix did not verify the requested brand; review before logging.")
+    if len(food_items) > 1:
+        notes.append("Nutritionix returned multiple foods; macros were summed from all returned items.")
+    item_name = _nutritionix_item_name(food_items, source_brand)
     estimate = {
         "item_name": item_name or str(food.get("food_name") or "Meal"),
-        "portion_description": _portion_from_nutritionix(food),
+        "portion_description": _portion_from_nutritionix_items(food_items),
         "meal_type": "snack",
-        "calories": food.get("nf_calories"),
-        "protein_g": food.get("nf_protein"),
-        "carbs_g": food.get("nf_total_carbohydrate"),
-        "fat_g": food.get("nf_total_fat"),
-        "sodium_mg": food.get("nf_sodium") if food.get("nf_sodium") is not None else 0,
-        "fiber_g": food.get("nf_dietary_fiber") if food.get("nf_dietary_fiber") is not None else 0,
+        "calories": _sum_nutritionix(food_items, "nf_calories"),
+        "protein_g": _sum_nutritionix(food_items, "nf_protein"),
+        "carbs_g": _sum_nutritionix(food_items, "nf_total_carbohydrate"),
+        "fat_g": _sum_nutritionix(food_items, "nf_total_fat"),
+        "sodium_mg": _sum_nutritionix(food_items, "nf_sodium"),
+        "fiber_g": _sum_nutritionix(food_items, "nf_dietary_fiber"),
         "confidence": 0.55 if ambiguous else 0.85,
         "ambiguous": ambiguous,
         "uncertainty_notes": notes,
         "source": "nutritionix",
-        "external_food_id": food.get("nix_item_id") or food.get("tag_id") or food.get("food_name"),
+        "external_food_id": _nutritionix_external_id(food_items),
         "verified_source_url": "https://www.nutritionix.com/",
         "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
-        "portion_basis": _portion_from_nutritionix(food),
-        "brand_id": _brand_from_text(normalized),
+        "portion_basis": _portion_from_nutritionix_items(food_items),
+        "brand_id": _brand_from_text(normalize_meal_text(source_brand or "")),
     }
     return _sanitize_with_provenance(estimate)
 
@@ -218,6 +225,55 @@ def _portion_from_nutritionix(food: dict[str, Any]) -> str | None:
     if weight:
         return f"{pieces} ({weight:g} g)" if pieces else f"{weight:g} g"
     return pieces or None
+
+
+def _portion_from_nutritionix_items(foods: list[dict[str, Any]]) -> str | None:
+    portions = [_portion_from_nutritionix(food) for food in foods]
+    portions = [portion for portion in portions if portion]
+    if len(portions) == 1:
+        return portions[0]
+    if portions:
+        return "; ".join(portions)
+    return f"{len(foods)} items" if len(foods) > 1 else None
+
+
+def _sum_nutritionix(foods: list[dict[str, Any]], key: str) -> float:
+    total = 0.0
+    for food in foods:
+        value = food.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            total += float(value)
+    return total
+
+
+def _nutritionix_external_id(foods: list[dict[str, Any]]) -> str | None:
+    ids = [
+        str(food.get("nix_item_id") or food.get("tag_id") or food.get("food_name") or "").strip()
+        for food in foods
+    ]
+    ids = [external_id for external_id in ids if external_id]
+    return ",".join(ids) or None
+
+
+def _nutritionix_item_name(foods: list[dict[str, Any]], source_brand: str | None) -> str:
+    names = [str(food.get("food_name") or "").strip() for food in foods]
+    names = [name for name in names if name]
+    item = ", ".join(names)
+    return " ".join(part for part in (source_brand, item) if part).strip()
+
+
+def _matching_source_brand(foods: list[dict[str, Any]], requested_brand: str | None) -> str | None:
+    source_brands = [str(food.get("brand_name") or "").strip() for food in foods]
+    source_brands = [brand for brand in source_brands if brand]
+    if not source_brands:
+        return None
+    first_brand = source_brands[0]
+    if not requested_brand:
+        return first_brand
+    for brand in source_brands:
+        if _brand_from_text(normalize_meal_text(brand)) == requested_brand:
+            return brand
+    return None
 
 
 def _needs_modifier_review(normalized: str) -> bool:
