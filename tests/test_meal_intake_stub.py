@@ -431,6 +431,148 @@ def test_meal_intake_accept_requires_calories(monkeypatch):
     assert "calories" in res.get_json()["error"]["message"]
 
 
+def test_meal_intake_text_preserves_client_local_timestamp(monkeypatch):
+    """Regression for Codex audit round 2: the composer already sends
+    `local_timestamp` (static/js/app.js); the endpoint must honor it as
+    `logged_at`/`source_timestamp` rather than stamping server time.
+    FIT-59 acceptance: optional local timestamp.
+    """
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Protein shake",
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.85,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    captured = {}
+
+    def fake_add_food_log(_user_id, record):
+        captured.update(record)
+        return {
+            "client_id": record["client_id"],
+            "logged_at": record["logged_at"],
+            "source_timestamp": record["source_timestamp"],
+            "date": record["date"],
+        }
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+
+    local_ts = "2026-05-18T23:55:30.000Z"
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "protein shake",
+            "client_id": "meal-ts-1",
+            "local_timestamp": local_ts,
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200, res.get_data(as_text=True)
+    assert captured["logged_at"] == local_ts
+    assert captured["source_timestamp"] == local_ts
+    assert captured["date"] == "2026-05-18", "date must derive from local_timestamp"
+
+
+def test_meal_intake_text_falls_back_to_server_time_when_local_timestamp_absent(monkeypatch):
+    """When the client does not send a local_timestamp, persistence
+    should fall back to server now (existing behavior preserved)."""
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Protein shake",
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.85,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    captured = {}
+
+    def fake_add_food_log(_user_id, record):
+        captured.update(record)
+        return {"client_id": record["client_id"], "logged_at": record["logged_at"]}
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "protein shake", "client_id": "meal-ts-noop"},
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200
+    assert captured["logged_at"]  # server-stamped, non-empty
+    # logged_at should not be empty and should match source_timestamp
+    assert captured["source_timestamp"] == captured["logged_at"]
+
+
+def test_meal_intake_text_rejects_oversize_local_timestamp(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "yogurt",
+            "client_id": "meal-ts-big",
+            "local_timestamp": "x" * 65,
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 400
+    assert "local_timestamp" in res.get_json()["error"]["message"]
+
+
+def test_meal_intake_text_passes_local_timestamp_through_to_parser(monkeypatch):
+    """The parser receives ``timestamp=`` so it can future-use the signal
+    (e.g. meal-type inference). FIT-59 acceptance.
+    """
+    module = _client(monkeypatch)
+    seen = {}
+
+    def fake_parse(text, *, timestamp=None):
+        seen["text"] = text
+        seen["timestamp"] = timestamp
+        return {
+            "estimate": {
+                "item_name": "Yogurt", "portion_description": None,
+                "meal_type": "snack", "calories": 180, "protein_g": 14,
+                "carbs_g": 22, "fat_g": 4, "sodium_mg": 90, "fiber_g": 1,
+                "confidence": 0.8, "ambiguous": False, "uncertainty_notes": [],
+                "source": "ai_text_estimate",
+            },
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parse)
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {"client_id": "meal-ts-3"})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "yogurt",
+            "client_id": "meal-ts-3",
+            "local_timestamp": "2026-05-19T08:15:00",
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200
+    assert seen["text"] == "yogurt"
+    assert seen["timestamp"] == "2026-05-19T08:15:00"
+
+
 def test_meal_intake_accept_persists_parser_source_when_present(monkeypatch):
     """Regression for Codex audit round 1, finding 3: when a pending-review
     estimate originated from the FIT-59 parser (text path), the accept

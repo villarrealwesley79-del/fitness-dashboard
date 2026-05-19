@@ -3119,14 +3119,29 @@ def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
     }
 
 
-def _meal_intake_stub_persist(client_id, estimate, *, source, has_image, text_hint):
-    """Persist an accepted estimate via the canonical food_logs path."""
+def _meal_intake_stub_persist(client_id, estimate, *, source, has_image, text_hint, local_timestamp=None):
+    """Persist an accepted estimate via the canonical food_logs path.
+
+    ``local_timestamp`` (FIT-59) is the client-supplied ISO timestamp from
+    the composer. When present we use it for both ``logged_at`` and
+    ``source_timestamp`` and derive ``date`` from its YYYY-MM-DD prefix so
+    meals logged near midnight or from a saved draft land on the correct
+    day. Server time is the fallback.
+    """
     now_iso = datetime.now().isoformat(timespec="seconds")
+    logged_at_iso = local_timestamp or now_iso
+    # Derive date from local_timestamp's YYYY-MM-DD prefix when possible;
+    # fall back to server today on any non-conforming value.
+    date_str = _today_str()
+    if local_timestamp and len(local_timestamp) >= 10 and local_timestamp[4] == "-" and local_timestamp[7] == "-":
+        candidate = local_timestamp[:10]
+        if candidate[:4].isdigit() and candidate[5:7].isdigit() and candidate[8:10].isdigit():
+            date_str = candidate
     record = {
         "client_id": client_id,
-        "date": _today_str(),
-        "logged_at": now_iso,
-        "source_timestamp": now_iso,
+        "date": date_str,
+        "logged_at": logged_at_iso,
+        "source_timestamp": logged_at_iso,
         "meal_type": estimate.get("meal_type"),
         "item_name": estimate.get("item_name"),
         "portion_description": estimate.get("portion_description"),
@@ -3163,6 +3178,10 @@ def meal_intake_stub():
     client_id = (request.form.get("client_id") or "").strip()
     if not client_id or len(client_id) > 128:
         return jsonify({"error": {"message": "client_id required (<=128 chars)"}}), 400
+    local_timestamp_raw = (request.form.get("local_timestamp") or "").strip()
+    if len(local_timestamp_raw) > 64:
+        return jsonify({"error": {"message": "local_timestamp too long (max 64 chars)"}}), 400
+    local_timestamp = local_timestamp_raw or None
 
     image_file = request.files.get("image")
     has_image = False
@@ -3196,7 +3215,7 @@ def meal_intake_stub():
         source = "stub_vision_estimate"
         response_extras["stub"] = True
     else:
-        parsed = parse_meal_text(text_raw)
+        parsed = parse_meal_text(text_raw, timestamp=local_timestamp)
         estimate = parsed["estimate"]
         # ``source`` lives inside the estimate so it round-trips through
         # the pending-review accept handler (which reads
@@ -3214,7 +3233,8 @@ def meal_intake_stub():
     food_log = None
     if status == "logged":
         food_log = _meal_intake_stub_persist(
-            client_id, estimate, source=source, has_image=has_image, text_hint=text_raw or None,
+            client_id, estimate, source=source, has_image=has_image,
+            text_hint=text_raw or None, local_timestamp=local_timestamp,
         )
 
     return jsonify({
