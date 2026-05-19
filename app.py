@@ -39,7 +39,15 @@ from oura_client import (
     get_oura_daily_range,
     compute_hrv_trend,
 )
-from data_store import init_data_db, add_food_log, get_food_logs, delete_food_log_by_client_id
+from data_store import (
+    init_data_db,
+    add_food_log,
+    get_food_logs,
+    delete_food_log_by_client_id,
+    list_push_subscriptions,
+    revoke_push_subscription,
+    save_push_subscription,
+)
 from meal_estimate_schema import (
     MealEstimateValidationError,
     manual_review_estimate,
@@ -6187,6 +6195,90 @@ def _compute_data_freshness(now=None):
             **food_targets,
         },
     }
+
+
+def _push_alert_preview(now=None):
+    """Deterministic, non-sending alert contract for FIT-39."""
+    freshness = _compute_data_freshness(now=now)
+    alerts = []
+    for source_key, label in (("oura", "Oura"), ("apple_health", "Apple Health")):
+        source = freshness.get(source_key) or {}
+        if source.get("status") in {"aging", "stale", "missing"}:
+            alerts.append({
+                "type": "stale_wearable_data",
+                "source": source_key,
+                "title": f"{label} data needs attention",
+                "body": "Open the app to refresh wearable data before trusting today's recommendation.",
+                "severity": "warning" if source.get("status") == "stale" else "info",
+                "status": source.get("status"),
+                "last_data_point": source.get("last_data_point"),
+                "last_sync_attempt": source.get("last_sync_attempt"),
+                "safety_critical": False,
+            })
+    food = freshness.get("food") or {}
+    if food.get("pending_review"):
+        alerts.append({
+            "type": "pending_food_estimate_review",
+            "source": "food",
+            "title": "Meal estimate needs review",
+            "body": "Open the app to accept or correct the pending food estimate before it counts.",
+            "severity": "info",
+            "status": "pending_review",
+            "safety_critical": False,
+        })
+    return {"generated_at": (now or datetime.now()).isoformat(timespec="seconds"), "alerts": alerts}
+
+
+@app.route("/api/push/subscriptions", methods=["GET", "POST"])
+def push_subscriptions():
+    user_id = _current_data_user_id()
+    if request.method == "GET":
+        include_revoked = (request.args.get("include_revoked") or "").lower() == "true"
+        return jsonify({"subscriptions": list_push_subscriptions(user_id, include_revoked=include_revoked)})
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+    subscription = data.get("subscription") or data
+    metadata = {
+        "permission_state": data.get("permission_state"),
+        "pwa_installed": data.get("pwa_installed"),
+        "user_agent": request.headers.get("User-Agent"),
+    }
+    try:
+        saved = save_push_subscription(user_id, subscription, metadata=metadata)
+    except ValueError as exc:
+        return api_error(str(exc), status=400, code="invalid_push_subscription")
+    return jsonify({"status": "saved", "subscription": saved})
+
+
+@app.route("/api/push/subscriptions/<endpoint_hash>", methods=["DELETE"])
+def push_subscription_revoke(endpoint_hash: str):
+    endpoint_hash = (endpoint_hash or "").strip()
+    if not re.fullmatch(r"[a-f0-9]{64}", endpoint_hash):
+        return api_error("invalid endpoint_hash", status=400, code="invalid_field")
+    removed = revoke_push_subscription(_current_data_user_id(), endpoint_hash)
+    return jsonify({"status": "revoked" if removed else "not_found", "revoked": removed})
+
+
+@app.route("/api/push/reminders/preview")
+def push_reminders_preview():
+    subscriptions = list_push_subscriptions(_current_data_user_id())
+    support_state = "ready" if subscriptions else "no_subscription"
+    if any(sub.get("permission_state") == "denied" for sub in subscriptions):
+        support_state = "permission_denied"
+    elif any(sub.get("pwa_installed") is False for sub in subscriptions):
+        support_state = "not_installed"
+    if request.args.get("permission") == "denied":
+        support_state = "permission_denied"
+    elif request.args.get("pwa_installed") == "false":
+        support_state = "not_installed"
+    return jsonify({
+        **_push_alert_preview(),
+        "support_state": support_state,
+        "subscription_count": len(subscriptions),
+        "delivery": "preview_only",
+        "safety_critical": False,
+    })
 
 
 def _confidence_level_from(effective_readiness, freshness):
