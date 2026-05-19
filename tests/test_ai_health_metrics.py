@@ -193,12 +193,15 @@ def test_ai_metrics_computes_fallback_pct(monkeypatch, tmp_path):
     assert body["avg_latency_ms"] == 200
 
 
-def test_ai_metrics_warning_threshold_triggers_above_twenty_pct(monkeypatch, tmp_path):
-    """Locks in the boundary the FIT-15 Settings card and FIT-20's
-    Apply Adjustment warning both flip on at. The endpoint just reports
-    fallback_pct; the threshold lives in the JS as
-    ``AI_COACH_FALLBACK_PCT_WARNING = 20.0``. This test pins the
-    response shape so the JS check stays stable.
+def test_ai_metrics_pct_at_threshold_boundary(monkeypatch, tmp_path):
+    """The FIT-15 Settings card and FIT-20 Apply Adjustment button share
+    the same threshold constant ``AI_COACH_FALLBACK_PCT_WARNING = 20.0``
+    with a strict-greater comparison. At exactly 20.0% neither surface
+    warns; the warning trips only when ``fallback_pct > 20``.
+
+    This test pins the endpoint's response shape at the boundary so a
+    future change to rounding / aggregation can't quietly drift the
+    JS-side trigger point.
     """
     module = _client(monkeypatch)
     db_path = tmp_path / "adjust_cache.db"
@@ -215,6 +218,75 @@ def test_ai_metrics_warning_threshold_triggers_above_twenty_pct(monkeypatch, tmp
     body = module.app.test_client().get("/api/ai/metrics").get_json()
     assert body["fallback_pct"] == 20.0
     assert isinstance(body["fallback_pct"], float)
+
+
+def test_ai_metrics_hours_1_narrows_window_for_button_warning(monkeypatch, tmp_path):
+    """FIT-20: the Apply Adjustment button reads the 1-hour rollup,
+    not the 24-hour one. Two rows logged 30 and 90 minutes ago — only
+    the recent one should fall inside ?hours=1.
+
+    Locks in that the endpoint actually filters by the requested
+    window, which is what makes a tight 1h signal useful at the
+    action point vs the broader 24h Settings card.
+    """
+    module = _client(monkeypatch)
+    db_path = tmp_path / "adjust_cache.db"
+    _seed_adjust_metrics(db_path, [
+        (_iso_minutes_ago(90), "ok", 200, None),       # outside 1h window
+        (_iso_minutes_ago(30), "fallback", 0, "timeout"),  # inside 1h window
+    ])
+    monkeypatch.setattr(module, "_ADJUST_CACHE_DB", str(db_path), raising=False)
+
+    body = module.app.test_client().get("/api/ai/metrics?hours=1").get_json()
+    assert body["window_hours"] == 1
+    assert body["adjust_requests"] == 1, "only the 30-minute-old row falls in the 1h window"
+    assert body["fallbacks"] == 1
+    assert body["fallback_pct"] == 100.0
+    # And confirm the 24h window still sees both rows for the Settings card.
+    body24 = module.app.test_client().get("/api/ai/metrics").get_json()
+    assert body24["adjust_requests"] == 2
+    assert body24["fallback_pct"] == 50.0
+
+
+def test_ai_metrics_threshold_uses_strict_greater_than(monkeypatch, tmp_path):
+    """FIT-20 spec says ``fallback_pct > 20`` — strictly greater. At
+    exactly 20.0% the button must not warn. This test pins the endpoint
+    response shape; the JS comparison is locked to the same operator.
+
+    1 fallback out of 5 → 20.0% exactly. The Apply Adjustment button
+    keeps the .btn-primary look. Drift this to a 4/5 split (no, that's
+    25%) — actually we need 21+% to trip. Below: 2 fallback out of 9
+    → 22.2%, which should trip.
+    """
+    module = _client(monkeypatch)
+    db_path = tmp_path / "adjust_cache.db"
+    # First case: exactly 20.0% — must NOT trip the warning.
+    _seed_adjust_metrics(db_path, [
+        (_iso_minutes_ago(15), "ok", 200, None),
+        (_iso_minutes_ago(20), "ok", 200, None),
+        (_iso_minutes_ago(25), "ok", 200, None),
+        (_iso_minutes_ago(30), "ok", 200, None),
+        (_iso_minutes_ago(35), "fallback", 0, "timeout"),
+    ])
+    monkeypatch.setattr(module, "_ADJUST_CACHE_DB", str(db_path), raising=False)
+    body = module.app.test_client().get("/api/ai/metrics?hours=1").get_json()
+    assert body["fallback_pct"] == 20.0  # boundary — JS uses strict >, so no warning
+
+    # Second case: just over 20% — warning trips. 2 fallback out of 9 ≈ 22.2%.
+    _seed_adjust_metrics(db_path, [
+        (_iso_minutes_ago(5), "ok", 200, None),
+        (_iso_minutes_ago(10), "ok", 200, None),
+        (_iso_minutes_ago(15), "ok", 200, None),
+        (_iso_minutes_ago(20), "ok", 200, None),
+        (_iso_minutes_ago(25), "ok", 200, None),
+        (_iso_minutes_ago(30), "ok", 200, None),
+        (_iso_minutes_ago(35), "ok", 200, None),
+        (_iso_minutes_ago(40), "fallback", 0, "timeout"),
+        (_iso_minutes_ago(45), "fallback", 0, "timeout"),
+    ])
+    body = module.app.test_client().get("/api/ai/metrics?hours=1").get_json()
+    assert body["fallback_pct"] > 20.0, "above threshold should trip JS strict-greater check"
+    assert body["fallback_pct"] == 22.2
 
 
 def test_ai_metrics_recent_does_not_include_prompt_or_completion(monkeypatch, tmp_path):

@@ -2036,12 +2036,29 @@
         startAiCoachHealthRefresh();
     }
 
-    // ── FIT-15: AI Coach health + metrics ─────────────────────────
-    // Threshold matches FIT-20's planned "Apply Adjustment" warning so
-    // both surfaces flip on/off together when the local model is flaky.
+    // ── FIT-15 / FIT-20: AI Coach health + metrics ───────────────
+    // One shared threshold so the Settings card (FIT-15) and the
+    // Adjust Plan submit button (FIT-20) flip on/off together when
+    // the local model is flaky.
+    //
+    // FIT-15 surfaces a 24-hour rollup in Settings. FIT-20 wants a
+    // tighter 1-hour signal at the action point so the user sees
+    // *right now* whether the AI coach is misbehaving. Both use the
+    // same fallback_pct field from /api/ai/metrics and the same
+    // strict > comparison.
     const AI_COACH_FALLBACK_PCT_WARNING = 20.0;
     const AI_COACH_REFRESH_MS = 30000;
+    const AI_COACH_BUTTON_WINDOW_HOURS = 1;
     let _aiCoachRefreshTimer = null;
+    let _aiAdjustButtonRefreshTimer = null;
+
+    function _aiCoachFallbackExceedsThreshold(fallbackPct, totalRequests) {
+        // Need at least one request to take the percentage seriously —
+        // 0/0 is reported as 0.0 by the endpoint, but a single fallback
+        // with no successful baseline would otherwise read 100%.
+        return fallbackPct !== null && totalRequests > 0
+            && fallbackPct > AI_COACH_FALLBACK_PCT_WARNING;
+    }
 
     function startAiCoachHealthRefresh() {
         // Avoid stacking intervals if renderSettings is called repeatedly.
@@ -2140,7 +2157,7 @@
                 metricsPct.className = 'state-chip unknown';
             } else {
                 metricsPct.textContent = `${fallbackPct.toFixed(1)}% fallback`;
-                metricsPct.className = 'state-chip ' + (fallbackPct >= AI_COACH_FALLBACK_PCT_WARNING ? 'stale' : 'ok');
+                metricsPct.className = 'state-chip ' + (_aiCoachFallbackExceedsThreshold(fallbackPct, total) ? 'stale' : 'ok');
             }
         }
         if (metricsDetail) {
@@ -2154,7 +2171,7 @@
             }
         }
         if (warnRow && warnPct) {
-            const shouldWarn = fallbackPct !== null && fallbackPct >= AI_COACH_FALLBACK_PCT_WARNING && total > 0;
+            const shouldWarn = _aiCoachFallbackExceedsThreshold(fallbackPct, total);
             warnRow.hidden = !shouldWarn;
             if (shouldWarn) warnPct.textContent = `${fallbackPct.toFixed(1)}%`;
         }
@@ -2199,6 +2216,76 @@
             // fails after a previous refresh exposed a high fallback rate.
             if (warnRow) warnRow.hidden = true;
         }
+    }
+
+    // ── FIT-20: Apply Adjustment button warning ──────────────────
+    // Fetches the 1-hour rollup from /api/ai/metrics and toggles the
+    // amber warning state on the Adjust Plan submit button plus the
+    // inline banner inside the modal. Auto-recovers when the rate
+    // drops back below the threshold.
+    async function updateApplyAdjustmentAiWarning() {
+        const btn = $('btn-adjust-submit');
+        const banner = $('adjust-ai-warning');
+        const pctEl = $('adjust-ai-warning-pct');
+        if (!btn || !banner) return;
+
+        let metrics = null;
+        try {
+            metrics = await api(`/api/ai/metrics?hours=${AI_COACH_BUTTON_WINDOW_HOURS}`);
+        } catch (err) {
+            // Endpoint unreachable — clear any prior warning so the
+            // user isn't left looking at a stale alert. Keep the
+            // default button style; don't claim "AI is fine" because
+            // we don't actually know.
+            _clearApplyAdjustmentAiWarning();
+            return;
+        }
+
+        const total = (metrics && metrics.adjust_requests) || 0;
+        const fallbackPct = metrics && typeof metrics.fallback_pct === 'number'
+            ? metrics.fallback_pct : null;
+
+        if (_aiCoachFallbackExceedsThreshold(fallbackPct, total)) {
+            // Replace .btn-primary with .btn-warn (and preserve any other
+            // utility classes the markup already carries).
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-warn');
+            btn.setAttribute(
+                'title',
+                `AI coach has been flaky — ${fallbackPct.toFixed(1)}% fallback rate in the last hour. `
+                + 'Deterministic plan remains the source of truth.'
+            );
+            if (pctEl) pctEl.textContent = `${fallbackPct.toFixed(1)}%`;
+            banner.hidden = false;
+        } else {
+            _clearApplyAdjustmentAiWarning();
+        }
+    }
+
+    function _clearApplyAdjustmentAiWarning() {
+        const btn = $('btn-adjust-submit');
+        const banner = $('adjust-ai-warning');
+        if (btn) {
+            btn.classList.remove('btn-warn');
+            if (!btn.classList.contains('btn-primary')) btn.classList.add('btn-primary');
+            btn.removeAttribute('title');
+        }
+        if (banner) banner.hidden = true;
+    }
+
+    function startApplyAdjustmentAiWarningRefresh() {
+        if (_aiAdjustButtonRefreshTimer) clearInterval(_aiAdjustButtonRefreshTimer);
+        _aiAdjustButtonRefreshTimer = setInterval(() => {
+            // Self-clean: if the user closed the Adjust Plan modal we
+            // can stop polling. The next openAdjust() restarts the timer.
+            const modal = $('modal-adjust');
+            if (!modal || modal.hidden) {
+                clearInterval(_aiAdjustButtonRefreshTimer);
+                _aiAdjustButtonRefreshTimer = null;
+                return;
+            }
+            updateApplyAdjustmentAiWarning();
+        }, AI_COACH_REFRESH_MS);
     }
 
     async function updateSetting(patch) {
@@ -3116,6 +3203,13 @@
         }
         modal.hidden = false;
         setTimeout(() => textarea && textarea.focus(), 60);
+
+        // FIT-20: refresh AI-flakiness warning on the Apply Adjustment
+        // button so the user sees the current 1h fallback rate before
+        // they commit to a new adjustment. Polling continues while the
+        // modal is open and self-stops when the user closes it.
+        updateApplyAdjustmentAiWarning();
+        startApplyAdjustmentAiWarningRefresh();
     }
 
     function discardSavedAdjust() {
@@ -3415,6 +3509,10 @@
         } finally {
             btn.disabled = false;
             btn.textContent = finalBtnLabel;
+            // FIT-20: a fresh attempt was just logged in adjust_metrics
+            // (success, cache hit, or fallback). Refresh the 1h-window
+            // warning so the user sees the updated state immediately.
+            updateApplyAdjustmentAiWarning();
         }
     }
 

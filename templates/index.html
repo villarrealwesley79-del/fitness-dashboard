@@ -760,6 +760,15 @@
                 </div>
                 <textarea id="adjust-constraint" class="adjust-textarea" placeholder="e.g. left knee tweaky, avoid squats" rows="3"></textarea>
                 <div id="adjust-state" class="adjust-state"></div>
+                <div id="adjust-ai-warning" class="adjust-ai-warning" role="status" aria-live="polite" hidden>
+                    <span class="adjust-ai-warning-icon" aria-hidden="true">⚠</span>
+                    <span class="adjust-ai-warning-text">
+                        <strong>AI coach has been flaky</strong> — over
+                        <span id="adjust-ai-warning-pct">—</span>
+                        fallback rate in the last hour.
+                        The deterministic plan remains the source of truth.
+                    </span>
+                </div>
                 <div class="adjust-actions">
                     <button id="btn-adjust-submit" class="btn btn-primary btn-block" type="button">Apply Adjustment</button>
                 </div>
@@ -937,6 +946,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260519-fit15-ai-health-1"></script>
+    <script src="/static/js/app.js?v=20260519-fit20-adjust-warn-1"></script>
 </body>
 </html>
