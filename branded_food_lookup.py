@@ -197,7 +197,7 @@ def _usda_lookup(text: str, _normalized: str) -> dict[str, Any] | None:
 
 
 def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
-    payload = open_food_facts_client.search_products(text)
+    payload = open_food_facts_client.search_products(text, product_filter=_off_candidate_usable)
     products = payload.get("products") if isinstance(payload, dict) else None
     if not products:
         return None
@@ -209,6 +209,16 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
         except (TypeError, ValueError, OverflowError):
             continue
     return None
+
+
+def _off_candidate_usable(product: dict[str, Any]) -> bool:
+    if not _off_quality_ok(product):
+        return False
+    try:
+        _open_food_facts_estimate(product)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return True
 
 
 def _open_food_facts_estimate(product: dict[str, Any]) -> dict[str, Any]:

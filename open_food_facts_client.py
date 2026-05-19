@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 from urllib import error, parse, request
 
@@ -28,7 +29,12 @@ PRODUCT_QUERY_ALIASES = {
 }
 
 
-def search_products(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any] | None:
+def search_products(
+    query: str,
+    *,
+    timeout: float = TIMEOUT_SECONDS,
+    product_filter: Callable[[dict[str, Any]], bool] | None = None,
+) -> dict[str, Any] | None:
     cleaned = (query or "").strip()
     if not cleaned:
         return None
@@ -41,7 +47,12 @@ def search_products(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str
         last_payload = payload
         products = payload.get("products")
         if isinstance(products, list):
-            combined_products.extend(product for product in products if isinstance(product, dict))
+            dict_products = [product for product in products if isinstance(product, dict)]
+            combined_products.extend(dict_products)
+            if dict_products and (product_filter is None or any(product_filter(product) for product in dict_products)):
+                result = dict(last_payload or {})
+                result["products"] = combined_products
+                return result
     if combined_products:
         result = dict(last_payload or {})
         result["products"] = combined_products

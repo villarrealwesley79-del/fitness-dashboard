@@ -80,6 +80,25 @@ def test_open_food_facts_client_retries_without_locale_word(monkeypatch):
     assert result["products"][0]["product_name"] == "Tim Tam"
 
 
+def test_open_food_facts_client_stops_after_usable_variant(monkeypatch):
+    seen_terms = []
+
+    def fake_urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        seen_terms.append(params["search_terms"][0])
+        return _Response({"products": [_product("Tim Tam")]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = open_food_facts_client.search_products(
+        "Australian Tim Tams",
+        product_filter=lambda product: product["product_name"] == "Tim Tam",
+    )
+
+    assert seen_terms == ["Australian Tim Tams"]
+    assert result["products"][0]["product_name"] == "Tim Tam"
+
+
 def test_open_food_facts_lookup_uses_later_usable_variant(monkeypatch):
     seen_terms = []
     bad = _product("Noisy Tim Tams", code="bad")
@@ -116,7 +135,7 @@ def test_open_food_facts_tier_runs_after_usda(monkeypatch):
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "search_products",
-        lambda *_a: {"products": [_product("Walkers Crisps", code="500032837")]}
+        lambda *_a, **_kw: {"products": [_product("Walkers Crisps", code="500032837")]}
     )
 
     estimate = branded_food_lookup.lookup("UK Walkers crisps")
@@ -134,7 +153,7 @@ def test_open_food_facts_filters_bad_quality(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
-    monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "search_products", lambda *_a: {"products": [bad]})
+    monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "search_products", lambda *_a, **_kw: {"products": [bad]})
 
     assert branded_food_lookup.lookup("bad product") is None
 
@@ -149,7 +168,7 @@ def test_open_food_facts_accepts_complete_untagged_rows(monkeypatch):
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "search_products",
-        lambda *_a: {"products": [product]},
+        lambda *_a, **_kw: {"products": [product]},
     )
 
     estimate = branded_food_lookup.lookup("non us packaged food")
@@ -172,7 +191,7 @@ def test_open_food_facts_skips_nutrition_mismatch_warnings(monkeypatch):
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "search_products",
-        lambda *_a: {"products": [bad, good]},
+        lambda *_a, **_kw: {"products": [bad, good]},
     )
 
     estimate = branded_food_lookup.lookup("non us packaged food")
@@ -197,7 +216,7 @@ def test_open_food_facts_skips_salt_quality_warnings(monkeypatch):
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "search_products",
-        lambda *_a: {"products": [bad, good]},
+        lambda *_a, **_kw: {"products": [bad, good]},
     )
 
     estimate = branded_food_lookup.lookup("non us salty snack")
@@ -218,7 +237,7 @@ def test_open_food_facts_defaults_malformed_optional_nutrients(monkeypatch):
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "search_products",
-        lambda *_a: {"products": [product]},
+        lambda *_a, **_kw: {"products": [product]},
     )
 
     estimate = branded_food_lookup.lookup("optional fields product")
@@ -240,7 +259,7 @@ def test_open_food_facts_skips_schema_invalid_candidates(monkeypatch):
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "search_products",
-        lambda *_a: {"products": [bad, good]},
+        lambda *_a, **_kw: {"products": [bad, good]},
     )
 
     estimate = branded_food_lookup.lookup("non us packaged food")
@@ -267,7 +286,7 @@ def test_open_food_facts_non_us_cases_are_appendable(monkeypatch):
         monkeypatch.setattr(
             branded_food_lookup.open_food_facts_client,
             "search_products",
-            lambda *_a, name=name, country=country: {"products": [_product(name, country=country)]},
+            lambda *_a, name=name, country=country, **_kw: {"products": [_product(name, country=country)]},
         )
         estimate = branded_food_lookup.lookup(query)
         assert estimate["source"] == "open_food_facts"
