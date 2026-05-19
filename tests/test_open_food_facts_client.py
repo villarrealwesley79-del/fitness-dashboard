@@ -79,6 +79,34 @@ def test_open_food_facts_client_retries_without_locale_word(monkeypatch):
     assert result["products"][0]["product_name"] == "Tim Tam"
 
 
+def test_open_food_facts_lookup_uses_later_usable_variant(monkeypatch):
+    seen_terms = []
+    bad = _product("Noisy Tim Tams", code="bad")
+    bad["nutriments"]["proteins_100g"] = None
+    good = _product("Tim Tam", code="good", country="en:australia")
+
+    def fake_urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        seen_terms.append(params["search_terms"][0])
+        if len(seen_terms) == 1:
+            return _Response({"products": [bad]})
+        if len(seen_terms) == 2:
+            return _Response({"products": []})
+        return _Response({"products": [good]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+
+    estimate = branded_food_lookup.lookup("Australian Tim Tams")
+
+    assert seen_terms == ["Australian Tim Tams", "Tim Tams", "Tim Tam"]
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["external_food_id"] == "good"
+
+
 def test_open_food_facts_tier_runs_after_usda(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)

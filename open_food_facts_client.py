@@ -32,11 +32,21 @@ def search_products(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str
     cleaned = (query or "").strip()
     if not cleaned:
         return None
+    combined_products: list[dict[str, Any]] = []
+    last_payload: dict[str, Any] | None = None
     for search_terms in _search_variants(cleaned):
         payload = _search_products_once(search_terms, timeout=timeout)
-        if payload and payload.get("products"):
-            return payload
-    return payload if "payload" in locals() else None
+        if not payload:
+            continue
+        last_payload = payload
+        products = payload.get("products")
+        if isinstance(products, list):
+            combined_products.extend(product for product in products if isinstance(product, dict))
+    if combined_products:
+        result = dict(last_payload or {})
+        result["products"] = combined_products
+        return result
+    return last_payload
 
 
 def _search_variants(query: str) -> list[str]:
