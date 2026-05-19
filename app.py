@@ -3379,6 +3379,7 @@ def meal_intake_stub():
         result = _meal_intake_stub_estimate(text_raw, has_image)
         estimate = result["estimate"]
         source = "stub_vision_estimate"
+        estimate["source"] = source
         response_extras["stub"] = True
     else:
         parsed = parse_meal_text(text_raw, timestamp=local_timestamp)
