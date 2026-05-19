@@ -2030,6 +2030,175 @@
                 $('weather-state').className = 'state-chip ok';
             }
         } catch {}
+
+        // FIT-15: AI Coach health + 24h metrics card.
+        renderAiCoachHealth();
+        startAiCoachHealthRefresh();
+    }
+
+    // ── FIT-15: AI Coach health + metrics ─────────────────────────
+    // Threshold matches FIT-20's planned "Apply Adjustment" warning so
+    // both surfaces flip on/off together when the local model is flaky.
+    const AI_COACH_FALLBACK_PCT_WARNING = 20.0;
+    const AI_COACH_REFRESH_MS = 30000;
+    let _aiCoachRefreshTimer = null;
+
+    function startAiCoachHealthRefresh() {
+        // Avoid stacking intervals if renderSettings is called repeatedly.
+        if (_aiCoachRefreshTimer) clearInterval(_aiCoachRefreshTimer);
+        _aiCoachRefreshTimer = setInterval(() => {
+            // Pause refresh when the user is on a different tab — saves
+            // network and keeps the tab quiet. The next tab activation
+            // calls renderSettings -> renderAiCoachHealth anyway.
+            if (state.currentTab !== 'tab-settings') return;
+            renderAiCoachHealth();
+        }, AI_COACH_REFRESH_MS);
+    }
+
+    function _setAiCoachUnavailable(message) {
+        // Degraded mode: the rest of Settings keeps working. Acceptance
+        // criterion: "Metrics refresh periodically without breaking the
+        // app if the route is unavailable."
+        const primaryState = $('ai-primary-state');
+        const fallbackState = $('ai-fallback-state');
+        const metricsPct = $('ai-metrics-fallback-pct');
+        const metricsDetail = $('ai-metrics-detail');
+        const primaryDetail = $('ai-primary-detail');
+        const fallbackDetail = $('ai-fallback-detail');
+        const warnRow = $('ai-coach-warning-row');
+        const primaryDot = $('ai-primary-dot');
+        const fallbackDot = $('ai-fallback-dot');
+        if (primaryState) { primaryState.textContent = 'Unavailable'; primaryState.className = 'state-chip unknown'; }
+        if (fallbackState) { fallbackState.textContent = 'Unavailable'; fallbackState.className = 'state-chip unknown'; }
+        if (metricsPct) { metricsPct.textContent = '—'; metricsPct.className = 'state-chip unknown'; }
+        if (primaryDetail) primaryDetail.textContent = message || 'Health endpoint unreachable';
+        if (fallbackDetail) fallbackDetail.textContent = '';
+        if (metricsDetail) metricsDetail.textContent = 'Metrics unavailable';
+        if (warnRow) warnRow.hidden = true;
+        if (primaryDot) primaryDot.className = 'int-dot';
+        if (fallbackDot) fallbackDot.className = 'int-dot';
+    }
+
+    function _aiCheckLabel(check) {
+        if (!check) return { text: 'Not configured', cls: 'state-chip unknown' };
+        if (!check.reachable) return { text: 'Unreachable', cls: 'state-chip stale' };
+        if (!check.model_loaded) return { text: 'Model not loaded', cls: 'state-chip warn' };
+        return { text: 'Ready', cls: 'state-chip ok' };
+    }
+
+    function _renderAiHealthFields(health) {
+        const primary = (health && health.primary) || null;
+        const fallback = (health && health.fallback) || null;
+        const activeRole = (health && health.active_role) || null;
+
+        const primaryState = $('ai-primary-state');
+        const fallbackState = $('ai-fallback-state');
+        const primaryDetail = $('ai-primary-detail');
+        const fallbackDetail = $('ai-fallback-detail');
+        const primaryDot = $('ai-primary-dot');
+        const fallbackDot = $('ai-fallback-dot');
+
+        const pLabel = _aiCheckLabel(primary);
+        const fLabel = fallback ? _aiCheckLabel(fallback) : { text: 'Same as primary', cls: 'state-chip unknown' };
+
+        if (primaryState) {
+            primaryState.textContent = pLabel.text + (activeRole === 'primary' ? ' · active' : '');
+            primaryState.className = pLabel.cls;
+        }
+        if (fallbackState) {
+            fallbackState.textContent = fLabel.text + (activeRole === 'fallback' ? ' · active' : '');
+            fallbackState.className = fLabel.cls;
+        }
+        if (primaryDetail) {
+            // Model identity is fine to surface; raw model traces and
+            // prompt content are explicitly NOT in the health payload.
+            primaryDetail.textContent = (primary && (primary.model || primary.url)) || 'Not configured';
+        }
+        if (fallbackDetail) {
+            fallbackDetail.textContent = fallback
+                ? (fallback.model || fallback.url || '')
+                : 'No distinct fallback endpoint';
+        }
+        if (primaryDot) primaryDot.className = 'int-dot' + (primary && primary.reachable && primary.model_loaded ? ' int-dot-on' : '');
+        if (fallbackDot) fallbackDot.className = 'int-dot' + (fallback && fallback.reachable && fallback.model_loaded ? ' int-dot-on' : '');
+    }
+
+    function _renderAiMetricsFields(metrics) {
+        const metricsPct = $('ai-metrics-fallback-pct');
+        const metricsDetail = $('ai-metrics-detail');
+        const warnRow = $('ai-coach-warning-row');
+        const warnPct = $('ai-coach-warning-pct');
+
+        const total = (metrics && metrics.adjust_requests) || 0;
+        const fallbackPct = metrics && typeof metrics.fallback_pct === 'number' ? metrics.fallback_pct : null;
+        const cachePct = metrics && typeof metrics.cache_hit_pct === 'number' ? metrics.cache_hit_pct : null;
+        const avgLatencyMs = metrics && typeof metrics.avg_latency_ms === 'number' ? metrics.avg_latency_ms : null;
+
+        if (metricsPct) {
+            if (total === 0 || fallbackPct === null) {
+                metricsPct.textContent = 'No data';
+                metricsPct.className = 'state-chip unknown';
+            } else {
+                metricsPct.textContent = `${fallbackPct.toFixed(1)}% fallback`;
+                metricsPct.className = 'state-chip ' + (fallbackPct >= AI_COACH_FALLBACK_PCT_WARNING ? 'stale' : 'ok');
+            }
+        }
+        if (metricsDetail) {
+            if (total === 0) {
+                metricsDetail.textContent = 'No AI requests in the last 24h';
+            } else {
+                const parts = [`${total} request${total === 1 ? '' : 's'}`];
+                if (cachePct !== null) parts.push(`${cachePct.toFixed(1)}% cache hit`);
+                if (avgLatencyMs !== null) parts.push(`${avgLatencyMs}ms avg`);
+                metricsDetail.textContent = parts.join(' · ');
+            }
+        }
+        if (warnRow && warnPct) {
+            const shouldWarn = fallbackPct !== null && fallbackPct >= AI_COACH_FALLBACK_PCT_WARNING && total > 0;
+            warnRow.hidden = !shouldWarn;
+            if (shouldWarn) warnPct.textContent = `${fallbackPct.toFixed(1)}%`;
+        }
+    }
+
+    async function renderAiCoachHealth() {
+        // Both calls in parallel; either failing means the UI degrades
+        // gracefully without breaking the rest of Settings.
+        const healthPromise = api('/api/ai/health').catch(() => null);
+        const metricsPromise = api('/api/ai/metrics').catch(() => null);
+        const [health, metrics] = await Promise.all([healthPromise, metricsPromise]);
+        if (!health && !metrics) {
+            _setAiCoachUnavailable('Health & metrics endpoints unreachable');
+            return;
+        }
+        if (health) {
+            // Degraded payload when the adapter failed to import:
+            // {reachable: false, error: "adapter not loaded"} with no
+            // primary/fallback. Treat that the same as a 5xx so the UI
+            // doesn't render "Primary: Not configured / Fallback: Same
+            // as primary" instead of showing the real error.
+            if (health.reachable === false && !health.primary) {
+                _setAiCoachUnavailable(health.error || 'AI adapter unavailable');
+            } else {
+                _renderAiHealthFields(health);
+            }
+        } else {
+            const primaryState = $('ai-primary-state');
+            const fallbackState = $('ai-fallback-state');
+            if (primaryState) { primaryState.textContent = 'Unavailable'; primaryState.className = 'state-chip unknown'; }
+            if (fallbackState) { fallbackState.textContent = 'Unavailable'; fallbackState.className = 'state-chip unknown'; }
+        }
+        if (metrics) {
+            _renderAiMetricsFields(metrics);
+        } else {
+            const metricsPct = $('ai-metrics-fallback-pct');
+            const metricsDetail = $('ai-metrics-detail');
+            const warnRow = $('ai-coach-warning-row');
+            if (metricsPct) { metricsPct.textContent = '—'; metricsPct.className = 'state-chip unknown'; }
+            if (metricsDetail) metricsDetail.textContent = 'Metrics unavailable';
+            // Don't leave a stale "flaky" warning on screen if /api/ai/metrics
+            // fails after a previous refresh exposed a high fallback rate.
+            if (warnRow) warnRow.hidden = true;
+        }
     }
 
     async function updateSetting(patch) {
@@ -2988,7 +3157,7 @@
                 body: JSON.stringify(request || { latest: true }),
             });
 
-            if (payload.status === 'fallback') {
+            if (payload.status === 'fallback' && !payload.analysis) {
                 loading.hidden = true;
                 errEl.hidden = false;
                 errEl.textContent = `AI coach unavailable — ${payload.reason || 'try again later'}.`;
@@ -3044,10 +3213,12 @@
                 }
             }
             const contextBits = [];
+            if (payload.status === 'fallback') contextBits.push('fallback analysis');
             if (ctx.recent_session_count) contextBits.push(`${ctx.recent_session_count} recent sessions`);
             if (ctx.readiness_available) contextBits.push('readiness');
             if (noteBits.length) contextBits.push('notes reviewed');
             contextBits.push(m.model_version || m.model || 'local model');
+            if (m.fallback_reason) contextBits.push(m.fallback_reason);
             if (m.elapsed_ms) contextBits.push(`${m.elapsed_ms}ms`);
             if (payload.cache_hit) contextBits.push('cached');
             $('analyze-meta').textContent = contextBits.join(' · ');
