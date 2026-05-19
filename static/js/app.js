@@ -1929,20 +1929,24 @@
 
     // --- Settings ------------------------------------------------
     async function renderSettings() {
-        // FIT-16: fetch the dashboard freshness block alongside the
-        // settings/Oura payloads so the integration chips AND the new
-        // detail panels share the same MAX(record_date)-derived signal.
-        // Without this, the chip could read green ("Synced today" from a
-        // recent attempt that didn't insert) while the panel correctly
-        // shows "stale" — or vice versa.
-        const [st, oura, freshness] = await Promise.all([
-            getSettings(),
-            getOuraStatus(true, true),
-            api('/api/dashboard').then((d) => {
-                state.dashboard = d;
-                return (d && d.freshness) || null;
-            }).catch(() => null),
-        ]);
+        // FIT-16: settings + Oura first. Oura refresh upserts today's
+        // row, so the dashboard freshness block (which we use below to
+        // drive the integration chips + detail panels) must be read
+        // AFTER that upsert lands — parallel fetches race and can show
+        // "Cached · stale" right after a successful live refresh.
+        const [st, oura] = await Promise.all([getSettings(), getOuraStatus(true, true)]);
+        // Fetch freshness via a local variable — DO NOT replace
+        // state.dashboard. /api/dashboard generates a fresh next_workout
+        // and updates the server-side recommendation state; if Settings
+        // overwrote state.dashboard the user's adjusted/swapped plan
+        // on the Workout tab would silently get replaced.
+        let freshness = null;
+        try {
+            const dash = await api('/api/dashboard');
+            freshness = (dash && dash.freshness) || null;
+        } catch {
+            freshness = null;
+        }
         const ouraFreshness = freshness && freshness.oura;
         const appleFreshness = freshness && freshness.apple_health;
         const host = $('settings-goals');
@@ -2312,6 +2316,10 @@
         _setDetail('oura-detail-daily', dailyParts.length ? dailyParts.join(' — ') : 'No daily row');
 
         // Latest sleep: duration formatted as Xh Ym + score if present.
+        // When today's row is missing but freshness reports a historical
+        // record_date, surface that fact (with a pointer to Vitals which
+        // owns the historical detail view) instead of misleading
+        // "No sleep row" copy that ignores the cached evidence.
         const sleepParts = [];
         if (oura && oura.sleep_duration_min != null) {
             const h = Math.floor(oura.sleep_duration_min / 60);
@@ -2319,7 +2327,11 @@
             sleepParts.push(`${h}h ${m}m`);
         }
         if (oura && oura.sleep_score != null) sleepParts.push(`score ${oura.sleep_score}`);
-        _setDetail('oura-detail-sleep', sleepParts.length ? sleepParts.join(' · ') : 'No sleep row');
+        let sleepText;
+        if (sleepParts.length) sleepText = sleepParts.join(' · ');
+        else if (hasFreshness) sleepText = `Cached through ${freshness.last_data_point} — see Vitals for detail`;
+        else sleepText = 'No sleep row';
+        _setDetail('oura-detail-sleep', sleepText);
 
         // Source: distinguish a real API pull from a cached DB read.
         // ``api`` == fresh live fetch; ``db`` == served from local cache.
