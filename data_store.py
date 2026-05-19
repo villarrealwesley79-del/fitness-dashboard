@@ -323,6 +323,19 @@ def clear_food_logs(user_id: int) -> None:
         conn.commit()
 
 
+def delete_food_log_by_client_id(user_id: int, client_id: str) -> bool:
+    """Delete a single food log by user-scoped client_id. Returns True if removed."""
+    if not client_id:
+        return False
+    with _get_db() as conn:
+        cursor = conn.execute(
+            "DELETE FROM food_logs WHERE user_id = ? AND client_id = ?",
+            (user_id, client_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
 def add_food_log(user_id: int, record: dict) -> dict:
     """Persist one accepted food entry with sanitized estimate/correction metadata."""
     now_iso = datetime.now().isoformat(timespec="seconds")

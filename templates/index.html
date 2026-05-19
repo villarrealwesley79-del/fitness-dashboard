@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260518-fit47-food-context-1">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260518-fit60-meal-composer-1">
 </head>
 <body>
     <div class="app-shell">
@@ -120,6 +120,40 @@
                 </div>
                 <div id="food-context-chips" class="food-context-chips" hidden></div>
                 <div id="food-context-nextday" class="food-context-nextday" hidden></div>
+
+                <!-- FIT-60: Universal meal composer (text or photo → AI auto-log) -->
+                <form class="meal-composer" id="meal-composer" autocomplete="off" novalidate>
+                    <div class="meal-composer-head">
+                        <span class="meal-composer-label">Log a meal</span>
+                        <span class="meal-composer-status" id="meal-composer-status" hidden></span>
+                    </div>
+                    <div class="meal-composer-row">
+                        <label class="meal-composer-camera" for="meal-composer-image" title="Attach a photo">
+                            <span aria-hidden="true">📷</span>
+                            <span class="visually-hidden">Attach a photo of the meal</span>
+                            <input type="file" id="meal-composer-image" accept="image/*" capture="environment" hidden>
+                        </label>
+                        <input
+                            type="text"
+                            class="meal-composer-input"
+                            id="meal-composer-text"
+                            placeholder="What did you eat?"
+                            maxlength="500"
+                            aria-label="Describe the meal"
+                            inputmode="text"
+                            enterkeyhint="send"
+                        >
+                        <button type="submit" class="meal-composer-submit" id="meal-composer-submit" disabled>Log</button>
+                    </div>
+                    <div class="meal-composer-preview" id="meal-composer-preview" hidden>
+                        <img id="meal-composer-preview-img" alt="" />
+                        <button type="button" class="meal-composer-preview-clear" id="meal-composer-preview-clear" aria-label="Remove photo">✕</button>
+                    </div>
+                    <div class="meal-composer-error" id="meal-composer-error" hidden aria-live="polite"></div>
+                </form>
+
+                <!-- FIT-60: Inline pending-review row (one or more) -->
+                <div class="meal-pending-list" id="meal-pending-list" aria-live="polite"></div>
             </div>
 
             <div class="section-title">TODAY AT A GLANCE</div>
@@ -937,6 +971,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260519-fit15-ai-health-1"></script>
+    <script src="/static/js/app.js?v=20260519-fit60-stack-1"></script>
 </body>
 </html>
