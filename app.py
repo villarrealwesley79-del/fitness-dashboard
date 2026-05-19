@@ -39,6 +39,7 @@ from oura_client import (
     compute_hrv_trend,
 )
 from data_store import init_data_db, add_food_log, get_food_logs, delete_food_log_by_client_id
+from meal_text_parser import parse_meal_text
 
 app = Flask(__name__)
 
@@ -3184,10 +3185,28 @@ def meal_intake_stub():
     if not text_raw and not has_image:
         return jsonify({"error": {"message": "provide a meal description or photo"}}), 400
 
-    result = _meal_intake_stub_estimate(text_raw, has_image)
-    estimate = result["estimate"]
-    status = result["status"]
-    source = "stub_vision_estimate" if has_image else "stub_text_estimate"
+    # FIT-59: text-only input flows through the real meal_text_parser
+    # (LM Studio primary + deterministic fallback). Image-bearing input
+    # stays on the FIT-60 stub until FIT-5 ships the vision estimator.
+    response_extras: dict = {}
+    if has_image:
+        result = _meal_intake_stub_estimate(text_raw, has_image)
+        estimate = result["estimate"]
+        status = result["status"]
+        source = "stub_vision_estimate"
+        response_extras["stub"] = True
+    else:
+        parsed = parse_meal_text(text_raw)
+        estimate = parsed["estimate"]
+        source = parsed["source"]
+        # Same threshold as the FIT-60 stub: ambiguous input or confidence
+        # below 0.65 falls through to pending review.
+        status = (
+            "pending_review"
+            if estimate["ambiguous"] or estimate["confidence"] < 0.65
+            else "logged"
+        )
+        response_extras["fallback_used"] = parsed["fallback_used"]
 
     food_log = None
     if status == "logged":
@@ -3199,7 +3218,7 @@ def meal_intake_stub():
         "status": status,
         "estimate": estimate,
         "food_log": food_log,
-        "stub": True,
+        **response_extras,
     })
 
 

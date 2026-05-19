@@ -1,9 +1,16 @@
-"""Tests for the FIT-60 meal-intake stub.
+"""Tests for the /api/meal-intake endpoint.
 
-These cover the canned-response surface that the UI relies on (logged vs
-pending_review vs validation errors), the undo endpoint, and the accept
-endpoint. Remove this module once the real intake pipeline (FIT-57/59/5)
-replaces the stub.
+These cover the wire-up the UI relies on (logged vs pending_review vs
+validation errors), the undo endpoint, and the accept endpoint.
+
+Text-only input is routed through the real FIT-59 parser
+(meal_text_parser.parse_meal_text); image-bearing input still hits the
+FIT-60 stub until FIT-5 ships the vision estimator. Both paths share the
+same response shape and the same auto-log threshold (confidence >= 0.65
+and not ambiguous).
+
+This module is scheduled for removal in FIT-65 once the real text +
+vision intake pipeline replaces the stub entirely.
 """
 from __future__ import annotations
 
@@ -21,8 +28,33 @@ def _client(monkeypatch):
     return module
 
 
-def test_meal_intake_text_only_auto_logs_simple_meal(monkeypatch):
+def _stub_parser(monkeypatch, module, *, estimate, source="ai_text_estimate", fallback_used=False):
+    """Replace meal_text_parser.parse_meal_text with a deterministic stub
+    so endpoint tests exercise the wiring, not the parser internals.
+    """
+    def fake(_text, **_kw):
+        return {"estimate": dict(estimate), "source": source, "fallback_used": fallback_used}
+
+    monkeypatch.setattr(module, "parse_meal_text", fake)
+
+
+def test_meal_intake_text_only_auto_logs_when_parser_is_confident(monkeypatch):
     module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Eggs and toast",
+        "portion_description": None,
+        "meal_type": "breakfast",
+        "calories": 420,
+        "protein_g": 24,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 520,
+        "fiber_g": 4,
+        "confidence": 0.82,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+
     persisted = {}
 
     def fake_add_food_log(_user_id, record):
@@ -46,16 +78,32 @@ def test_meal_intake_text_only_auto_logs_simple_meal(monkeypatch):
     assert res.status_code == 200, res.get_data(as_text=True)
     body = res.get_json()
     assert body["status"] == "logged"
-    assert body["stub"] is True
     assert body["estimate"]["item_name"] == "Eggs and toast"
     assert body["estimate"]["calories"] > 0
     assert body["food_log"]["client_id"] == "meal-abc-1"
+    assert body["fallback_used"] is False
+    assert "stub" not in body, "real text path must not advertise stub: true"
     assert persisted["correction_state"] == "accepted"
-    assert persisted["source"].startswith("stub_text_estimate")
+    assert persisted["source"] == "ai_text_estimate"
 
 
-def test_meal_intake_ambiguous_text_returns_pending_review(monkeypatch):
+def test_meal_intake_text_pending_review_when_parser_ambiguous(monkeypatch):
     module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Popcorn",
+        "portion_description": "approx half portion",
+        "meal_type": "snack",
+        "calories": 150,
+        "protein_g": 3,
+        "carbs_g": 18,
+        "fat_g": 9,
+        "sodium_mg": 260,
+        "fiber_g": 3,
+        "confidence": 0.45,
+        "ambiguous": True,
+        "uncertainty_notes": ["Portion unclear — confirm before it counts."],
+    })
+
     called = {"count": 0}
 
     def fake_add_food_log(*_a, **_kw):
@@ -73,9 +121,144 @@ def test_meal_intake_ambiguous_text_returns_pending_review(monkeypatch):
     body = res.get_json()
     assert body["status"] == "pending_review"
     assert body["food_log"] is None
-    assert body["estimate"]["item_name"] == "Popcorn" or body["estimate"]["item_name"] == "Meal"
-    assert body["estimate"]["uncertainty_notes"], "stub should flag uncertainty"
+    assert body["estimate"]["item_name"] == "Popcorn"
+    assert body["estimate"]["uncertainty_notes"], "ambiguous estimates must surface notes"
     assert called["count"] == 0, "pending estimates must not auto-persist"
+
+
+def test_meal_intake_text_pending_review_when_parser_falls_back(monkeypatch):
+    """When LM Studio is unavailable the parser returns a fallback
+    estimate; the endpoint must not auto-log it because the fallback
+    confidence is intentionally below the auto-log threshold."""
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Eggs and toast",
+        "portion_description": None,
+        "meal_type": "breakfast",
+        "calories": 420,
+        "protein_g": 24,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 520,
+        "fiber_g": 4,
+        "confidence": 0.60,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    }, source="fallback_text_estimate", fallback_used=True)
+
+    persisted = {"count": 0}
+
+    def fake_add_food_log(*_a, **_kw):
+        persisted["count"] += 1
+        return {}
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "two eggs and toast", "client_id": "meal-fb-1"},
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["fallback_used"] is True
+    assert body["food_log"] is None
+    assert persisted["count"] == 0, "fallback estimates must not auto-persist by default"
+
+
+def test_meal_intake_text_idempotent_for_same_client_id(monkeypatch):
+    """Two POSTs with the same client_id must persist exactly once.
+
+    The endpoint relies on data_store.add_food_log's UNIQUE(user_id, client_id)
+    upsert (see FIT-44 for the planned ON CONFLICT hardening). This test
+    asserts the contract from the parser path's perspective: same client_id
+    + same text returns the same logged shape both times.
+    """
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Protein shake",
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.85,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+
+    seen = []
+
+    def fake_add_food_log(_user_id, record):
+        seen.append(record["client_id"])
+        return {
+            "id": 1,
+            "client_id": record["client_id"],
+            "item_name": record["item_name"],
+            "calories": record["calories"],
+            "correction_state": record["correction_state"],
+            "source": record["source"],
+        }
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+
+    client = module.app.test_client()
+    first = client.post(
+        "/api/meal-intake",
+        data={"text": "protein shake", "client_id": "meal-idem-1"},
+        content_type="multipart/form-data",
+    )
+    second = client.post(
+        "/api/meal-intake",
+        data={"text": "protein shake", "client_id": "meal-idem-1"},
+        content_type="multipart/form-data",
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.get_json()["food_log"]["client_id"] == "meal-idem-1"
+    assert second.get_json()["food_log"]["client_id"] == "meal-idem-1"
+    # add_food_log handles UPSERT semantics; we just verify same client_id
+    # reached the persistence layer both times.
+    assert seen == ["meal-idem-1", "meal-idem-1"]
+
+
+def test_meal_intake_text_response_omits_meta_and_traces(monkeypatch):
+    """No _meta, raw model output, or chain of thought may appear in the
+    response shape exposed to the client.
+    """
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Protein shake",
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.85,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {
+        "client_id": "meal-clean-1", "id": 1,
+    })
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "protein shake", "client_id": "meal-clean-1"},
+        content_type="multipart/form-data",
+    )
+    body = res.get_json()
+    estimate = body["estimate"]
+    for forbidden in ("_meta", "raw", "trace", "prompt", "chain_of_thought"):
+        assert forbidden not in estimate, f"{forbidden} leaked into estimate"
+        assert forbidden not in body, f"{forbidden} leaked into response"
 
 
 def test_meal_intake_rejects_empty_submission(monkeypatch):
