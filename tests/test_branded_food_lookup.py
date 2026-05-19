@@ -430,6 +430,13 @@ def test_parse_meal_text_applies_review_modifiers_to_branded_lookup(monkeypatch)
     assert result["estimate"]["source"] == "nutritionix"
     assert result["estimate"]["ambiguous"] is True
     assert result["estimate"]["confidence"] == 0.55
+    assert result["estimate"]["portion_description"] == "approx half portion"
+    assert result["estimate"]["calories"] == 537
+    assert result["estimate"]["protein_g"] == 25
+    assert result["estimate"]["carbs_g"] == 58
+    assert result["estimate"]["fat_g"] == 20
+    assert result["estimate"]["sodium_mg"] == 1155
+    assert result["estimate"]["fiber_g"] == 6
     assert "confirm before it counts" in result["estimate"]["uncertainty_notes"][0]
 
 

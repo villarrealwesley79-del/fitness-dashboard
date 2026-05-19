@@ -271,12 +271,7 @@ def _fallback_estimate(text: str) -> dict:
             matched = True
             break
     if "half" in norm:
-        for key in ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g"):
-            value = estimate.get(key)
-            if isinstance(value, float):
-                estimate[key] = round(value / 2, 1)
-            elif isinstance(value, int):
-                estimate[key] = value // 2
+        _scale_estimate_macros(estimate, 0.5)
         portion_description = "approx half portion"
 
     ambiguous = any(token in norm for token in _AMBIGUOUS_TOKENS)
@@ -313,6 +308,15 @@ def _fallback_estimate(text: str) -> dict:
     }
 
 
+def _scale_estimate_macros(estimate: dict, factor: float) -> None:
+    for key in ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g"):
+        value = estimate.get(key)
+        if isinstance(value, float):
+            estimate[key] = round(value * factor, 1)
+        elif isinstance(value, int):
+            estimate[key] = int(value * factor)
+
+
 def _post_process(estimate: dict, *, source_text: str) -> dict:
     """Apply local heuristics on top of the model output.
 
@@ -321,6 +325,9 @@ def _post_process(estimate: dict, *, source_text: str) -> dict:
     to pending review for the same inputs as the FIT-60 stub used to.
     """
     norm = (source_text or "").lower()
+    if "half" in norm:
+        _scale_estimate_macros(estimate, 0.5)
+        estimate["portion_description"] = "approx half portion"
     if any(token in norm for token in _AMBIGUOUS_TOKENS):
         estimate["ambiguous"] = True
         estimate["confidence"] = min(float(estimate["confidence"]), 0.55)
