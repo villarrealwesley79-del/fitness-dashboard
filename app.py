@@ -8,6 +8,7 @@ from flask import Flask, render_template, jsonify, request, Response
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 from enum import Enum
+import copy
 import json
 import os
 import socket
@@ -265,16 +266,22 @@ DEFAULT_SETTINGS = {
     "daily_protein_target_g": 148,
     "fatigue_threshold": 72,
     "equipment_preference": "machines_only",
+    "preferred_equipment_brands": ["Hoist", "Nautilus"],
+    "excluded_exercises": ["Preacher Curl"],
     "volume_landmarks": {
         "default": {"mv": 6, "mev": 9, "mav_min": 12, "mav_max": 18, "mrv": 22}
     }
 }
 
+
+def _settings_with_defaults(settings):
+    merged = copy.deepcopy(DEFAULT_SETTINGS)
+    merged.update(settings or {})
+    return merged
+
+
 # Load user settings from file (or use defaults)
-USER_SETTINGS = load_json(SETTINGS_FILE, DEFAULT_SETTINGS.copy())
-for _k, _v in DEFAULT_SETTINGS.items():
-    if _k not in USER_SETTINGS:
-        USER_SETTINGS[_k] = _v
+USER_SETTINGS = _settings_with_defaults(load_json(SETTINGS_FILE, DEFAULT_SETTINGS.copy()))
 
 # Time options for workouts (in minutes)
 TIME_OPTIONS = [
@@ -385,52 +392,57 @@ CARDIO_RECOMMENDATIONS = {
 
 EXERCISE_LIBRARY = [
     # Chest
-    {"name": "Chest Press", "muscle": "chest", "compound": True, "baseline": 100, "equipment": "machine"},
-    {"name": "Incline Press", "muscle": "chest", "compound": True, "baseline": 95, "equipment": "machine"},
+    {"name": "Chest Press", "muscle": "chest", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
+    {"name": "Incline Press", "muscle": "chest", "compound": True, "baseline": 95, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Cable Crossover", "muscle": "chest", "compound": False, "baseline": 40, "equipment": "cable"},
-    {"name": "Pec Fly", "muscle": "chest", "compound": False, "baseline": 50, "equipment": "machine"},
+    {"name": "Pec Fly", "muscle": "chest", "compound": False, "baseline": 50, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Dips", "muscle": "chest", "compound": True, "baseline": 50, "equipment": "bodyweight"},
     # Back
-    {"name": "Lat Pulldown", "muscle": "back", "compound": True, "baseline": 100, "equipment": "machine"},
-    {"name": "Seated Row", "muscle": "back", "compound": True, "baseline": 90, "equipment": "machine"},
-    {"name": "Mid Row", "muscle": "back", "compound": True, "baseline": 80, "equipment": "machine"},
+    {"name": "Lat Pulldown", "muscle": "back", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
+    {"name": "Seated Row", "muscle": "back", "compound": True, "baseline": 90, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
+    {"name": "Mid Row", "muscle": "back", "compound": True, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Cable Row", "muscle": "back", "compound": False, "baseline": 70, "equipment": "cable"},
     {"name": "Face Pulls", "muscle": "back", "compound": False, "baseline": 35, "equipment": "cable"},
     {"name": "Pullups", "muscle": "back", "compound": True, "baseline": 50, "equipment": "bodyweight"},
     # Shoulders
-    {"name": "Shoulder Press", "muscle": "shoulders", "compound": True, "baseline": 60, "equipment": "machine"},
+    {"name": "Shoulder Press", "muscle": "shoulders", "compound": True, "baseline": 60, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Arnold Press", "muscle": "shoulders", "compound": False, "baseline": 50, "equipment": "free_weight"},
     {"name": "Lateral Raise", "muscle": "shoulders", "compound": False, "baseline": 20, "equipment": "cable"},
     {"name": "Front Raise", "muscle": "shoulders", "compound": False, "baseline": 20, "equipment": "cable"},
     {"name": "Deltoid Fly", "muscle": "shoulders", "compound": False, "baseline": 30, "equipment": "cable"},
     {"name": "Rear Delt Fly", "muscle": "shoulders", "compound": False, "baseline": 25, "equipment": "cable"},
     # Legs
-    {"name": "Leg Press", "muscle": "quads", "compound": True, "baseline": 180, "equipment": "machine"},
+    {"name": "Leg Press", "muscle": "quads", "compound": True, "baseline": 180, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Hack Squat", "muscle": "quads", "compound": True, "baseline": 135, "equipment": "machine"},
     {"name": "Bulgarian Split Squat", "muscle": "quads", "compound": True, "baseline": 40, "equipment": "free_weight"},
-    {"name": "Leg Extension", "muscle": "quads", "compound": False, "baseline": 80, "equipment": "machine"},
+    {"name": "Leg Extension", "muscle": "quads", "compound": False, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Romanian Deadlift", "muscle": "hamstrings", "compound": True, "baseline": 135, "equipment": "free_weight"},
-    {"name": "Leg Curl", "muscle": "hamstrings", "compound": False, "baseline": 80, "equipment": "machine"},
+    {"name": "Leg Curl", "muscle": "hamstrings", "compound": False, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Calf Raise", "muscle": "calves", "compound": False, "baseline": 120, "equipment": "machine"},
     {"name": "Calf Raise (Seated)", "muscle": "calves", "compound": False, "baseline": 90, "equipment": "machine"},
     {"name": "Hip Abductor", "muscle": "glutes", "compound": False, "baseline": 100, "equipment": "machine"},
     {"name": "Hip Adductor", "muscle": "adductors", "compound": False, "baseline": 100, "equipment": "machine"},
     # Arms
-    {"name": "Biceps Curl", "muscle": "biceps", "compound": False, "baseline": 50, "equipment": "cable"},
+    {"name": "Biceps Curl", "muscle": "biceps", "compound": False, "baseline": 50, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "aliases": ["Hoist Biceps Curl", "Hoist Roc-It Biceps Curl", "Nautilus Biceps Curl", "Nautilus ONE Biceps Curl"]},
+    {"name": "Cable Biceps Curl", "muscle": "biceps", "compound": False, "baseline": 45, "equipment": "cable"},
     {"name": "Hammer Curl", "muscle": "biceps", "compound": False, "baseline": 40, "equipment": "free_weight"},
-    {"name": "Preacher Curl", "muscle": "biceps", "compound": False, "baseline": 45, "equipment": "machine"},
-    {"name": "Seated Dip", "muscle": "triceps", "compound": True, "baseline": 100, "equipment": "machine"},
+    {"name": "Preacher Curl", "muscle": "biceps", "compound": False, "baseline": 45, "equipment": "machine", "disabled_by_default": True, "avoid_reason": "User does not perform preacher curls"},
+    {"name": "Seated Dip", "muscle": "triceps", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Tricep Pushdown", "muscle": "triceps", "compound": False, "baseline": 50, "equipment": "cable"},
     {"name": "Cable Pushdown", "muscle": "triceps", "compound": False, "baseline": 55, "equipment": "cable"},
     {"name": "Overhead Tricep Extension", "muscle": "triceps", "compound": False, "baseline": 45, "equipment": "cable"},
     # Core
-    {"name": "Crunch Machine", "muscle": "core", "compound": False, "baseline": 60, "equipment": "machine"},
+    {"name": "Crunch Machine", "muscle": "core", "compound": False, "baseline": 60, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Cable Crunch", "muscle": "core", "compound": False, "baseline": 55, "equipment": "cable"},
     {"name": "Hanging Leg Raise", "muscle": "core", "compound": True, "baseline": 40, "equipment": "bodyweight"},
     {"name": "Plank", "muscle": "core", "compound": False, "baseline": 0, "equipment": "bodyweight"},
 ]
 
-EXERCISE_LOOKUP = {ex["name"]: ex for ex in EXERCISE_LIBRARY}
+EXERCISE_LOOKUP = {}
+for _exercise in EXERCISE_LIBRARY:
+    EXERCISE_LOOKUP[_exercise["name"]] = _exercise
+    for _alias in _exercise.get("aliases", []):
+        EXERCISE_LOOKUP[_alias] = _exercise
 
 
 class ProgressionStatus(Enum):
@@ -1382,8 +1394,50 @@ def _equipment_allowed(exercise, preference: str):
     return True
 
 
+def _exercise_user_allowed(exercise, settings=None):
+    settings = settings or USER_SETTINGS
+    excluded = {
+        str(name).strip().lower()
+        for name in settings.get("excluded_exercises", [])
+        if str(name).strip()
+    }
+    name = (exercise.get("name") or "").strip().lower()
+    if name in excluded:
+        return False
+    return True
+
+
+def _exercise_brand_preference_rank(exercise, settings=None):
+    settings = settings or USER_SETTINGS
+    preferred = {
+        str(brand).strip().lower()
+        for brand in settings.get("preferred_equipment_brands", [])
+        if str(brand).strip()
+    }
+    if not preferred:
+        return 0
+    brands = {
+        str(brand).strip().lower()
+        for brand in exercise.get("equipment_brands", [])
+        if str(brand).strip()
+    }
+    return 0 if preferred.intersection(brands) else 1
+
+
 def _filtered_exercise_library(preference: str):
-    return [ex for ex in EXERCISE_LIBRARY if _equipment_allowed(ex, preference)]
+    matches = [
+        ex
+        for ex in EXERCISE_LIBRARY
+        if _equipment_allowed(ex, preference) and _exercise_user_allowed(ex)
+    ]
+    return sorted(
+        matches,
+        key=lambda ex: (
+            _exercise_brand_preference_rank(ex),
+            not bool(ex.get("compound")),
+            ex.get("name", ""),
+        ),
+    )
 
 
 def _build_exercise_entry(
@@ -3175,13 +3229,28 @@ def add_recovery():
 def api_exercises():
     """Exercise dropdown options for manual logging."""
     options = []
+    include_excluded = request.args.get("include_excluded") in ("1", "true", "yes")
+    excluded = {
+        str(name).strip().lower()
+        for name in USER_SETTINGS.get("excluded_exercises", [])
+        if str(name).strip()
+    }
     for ex in EXERCISE_LIBRARY:
+        name = ex.get("name")
+        is_excluded = (name or "").strip().lower() in excluded
+        if is_excluded and not include_excluded:
+            continue
         options.append({
-            "name": ex.get("name"),
+            "name": name,
             "muscle": ex.get("muscle"),
             "equipment": ex.get("equipment"),
+            "equipment_brands": ex.get("equipment_brands", []),
+            "aliases": ex.get("aliases", []),
             "compound": ex.get("compound"),
             "baseline": ex.get("baseline"),
+            "disabled_by_default": bool(ex.get("disabled_by_default")),
+            "excluded": is_excluded,
+            "avoid_reason": ex.get("avoid_reason"),
         })
     options.sort(key=lambda x: ((x.get("muscle") or ""), (x.get("name") or "")))
     return jsonify({"exercises": options})
@@ -3324,6 +3393,8 @@ def settings():
             "daily_protein_target_g": USER_SETTINGS.get("daily_protein_target_g", 148),
             "fatigue_threshold": USER_SETTINGS.get("fatigue_threshold", 72),
             "equipment_preference": USER_SETTINGS.get("equipment_preference", "machines_only"),
+            "preferred_equipment_brands": USER_SETTINGS.get("preferred_equipment_brands", []),
+            "excluded_exercises": USER_SETTINGS.get("excluded_exercises", []),
             "volume_landmarks": USER_SETTINGS.get("volume_landmarks", DEFAULT_SETTINGS["volume_landmarks"]),
             "available_goals": [
                 {"value": g, "name": p["name"], "description": p["description"]}
@@ -3398,6 +3469,34 @@ def settings():
             if pref not in ("machines_only", "machines_and_cables", "all"):
                 return api_error("Invalid equipment_preference", 400, code="invalid_field")
             USER_SETTINGS["equipment_preference"] = pref
+        if "preferred_equipment_brands" in data:
+            brands = data.get("preferred_equipment_brands")
+            if not isinstance(brands, list) or not all(isinstance(b, str) for b in brands):
+                return api_error("preferred_equipment_brands must be a list of strings", 400, code="invalid_field")
+            normalized_brands = []
+            seen_brands = set()
+            for brand in brands:
+                cleaned = brand.strip()
+                key = cleaned.lower()
+                if cleaned and key not in seen_brands:
+                    normalized_brands.append(cleaned)
+                    seen_brands.add(key)
+            USER_SETTINGS["preferred_equipment_brands"] = normalized_brands[:20]
+        if "excluded_exercises" in data:
+            excluded = data.get("excluded_exercises")
+            if not isinstance(excluded, list) or not all(isinstance(e, str) for e in excluded):
+                return api_error("excluded_exercises must be a list of strings", 400, code="invalid_field")
+            known = {ex["name"].strip().lower(): ex["name"] for ex in EXERCISE_LIBRARY}
+            normalized = []
+            for name in excluded:
+                display_name = name.strip()
+                cleaned = display_name.lower()
+                if cleaned and cleaned not in known:
+                    return api_error(f"Unknown excluded exercise: {display_name}", 400, code="invalid_field")
+                canonical = known.get(cleaned)
+                if canonical and canonical not in normalized:
+                    normalized.append(canonical)
+            USER_SETTINGS["excluded_exercises"] = normalized
 
         save_json(SETTINGS_FILE, USER_SETTINGS)  # Persist to file
         return jsonify({"status": "success", "settings": USER_SETTINGS})
@@ -3431,12 +3530,13 @@ def exercise_alternatives(muscle_group):
             "name": ex["name"],
             "muscle": ex["muscle"],
             "equipment": ex.get("equipment"),
+            "equipment_brands": ex.get("equipment_brands", []),
+            "aliases": ex.get("aliases", []),
             "compound": ex.get("compound"),
         }
         for ex in _filtered_exercise_library(equipment_pref)
         if ex.get("muscle") == muscle
     ]
-    options.sort(key=lambda x: x["name"])
     return jsonify({"muscle": muscle, "equipment_preference": equipment_pref, "alternatives": options})
 
 
@@ -3480,6 +3580,8 @@ def swap_workout_exercise():
     equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
     if not _equipment_allowed(new_ex, equipment_pref):
         return api_error("New exercise is not allowed by the current equipment preference", 400, code="invalid_field")
+    if not _exercise_user_allowed(new_ex):
+        return api_error("New exercise is excluded by current exercise preferences", 400, code="invalid_field")
 
     goal = recommendation.get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
     goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
@@ -3585,8 +3687,22 @@ def _ai_metric_log(outcome, latency_ms=0, constraint_len=0, model_version="", re
 
 def _exercise_library_hash(preference: str) -> str:
     import hashlib
-    names = sorted(ex.get("name", "") for ex in _filtered_exercise_library(preference))
-    return hashlib.sha1(("|".join(names)).encode()).hexdigest()[:12]
+    settings_fp = {
+        "equipment_preference": preference,
+        "preferred_equipment_brands": USER_SETTINGS.get("preferred_equipment_brands", []),
+        "excluded_exercises": USER_SETTINGS.get("excluded_exercises", []),
+        "exercises": [
+            {
+                "name": ex.get("name", ""),
+                "equipment": ex.get("equipment", ""),
+                "equipment_brands": ex.get("equipment_brands", []),
+                "compound": bool(ex.get("compound")),
+            }
+            for ex in _filtered_exercise_library(preference)
+        ],
+    }
+    payload = json.dumps(settings_fp, sort_keys=True, default=str)
+    return hashlib.sha1(payload.encode()).hexdigest()[:12]
 
 
 def _ai_cache_key(recommendation, constraint, readiness_date, model_version, equipment_pref):
@@ -3745,8 +3861,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         if not library:
             notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment")
             continue
-        # Prefer compound, then alphabetical stability
-        library.sort(key=lambda e: (not e.get("compound"), e.get("name", "")))
+        # _filtered_exercise_library already applies brand, compound, and name ranking.
         # Avoid picking something already in the plan
         already = {(ex.get("exercise") or "").lower() for ex in exercises}
         picked = next((e for e in library if e["name"].lower() not in already), library[0])
@@ -6329,7 +6444,7 @@ def import_backup():
 
         if "settings" in data:
             USER_SETTINGS.clear()
-            USER_SETTINGS.update(data["settings"])
+            USER_SETTINGS.update(_settings_with_defaults(data["settings"]))
             save_json(SETTINGS_FILE, USER_SETTINGS)
 
         if "baselines" in data:
