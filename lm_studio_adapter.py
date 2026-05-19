@@ -54,6 +54,12 @@ def _model_version(model: str) -> str:
     return (model or "").split("/")[-1]
 
 
+def model_version_for(candidate: dict | None) -> str:
+    if not candidate:
+        return LM_STUDIO_MODEL_VERSION
+    return _model_version(candidate.get("model") or "")
+
+
 def _lm_candidates() -> list[dict]:
     candidates = [
         {
@@ -103,6 +109,53 @@ def _preflight_candidate(candidate: dict) -> None:
         raise LmStudioError(f"preflight failed: {type(exc).__name__}") from exc
     if not _target_loaded(loaded, candidate["model"]):
         raise LmStudioError(f"model not loaded: {candidate['model']}")
+
+
+def _payload_for_candidate(payload: dict, candidate: dict) -> dict:
+    candidate_payload = dict(payload or {})
+    candidate_payload["model"] = candidate["model"]
+    return candidate_payload
+
+
+def _same_candidate(left: dict | None, right: dict | None) -> bool:
+    return bool(left and right and left.get("url") == right.get("url") and left.get("model") == right.get("model"))
+
+
+def _candidate_attempt_order(preferred_candidate: dict | None = None) -> list[dict]:
+    candidates = _lm_candidates()
+    if not preferred_candidate:
+        return candidates
+    remaining = [candidate for candidate in candidates if not _same_candidate(candidate, preferred_candidate)]
+    return [preferred_candidate, *remaining]
+
+
+def model_versions_after(candidate: dict | None) -> list[str]:
+    if not candidate:
+        return []
+    return [model_version_for(candidate) for candidate in _candidate_attempt_order(candidate)[1:]]
+
+
+def fallback_model_versions() -> list[str]:
+    return [model_version_for(candidate) for candidate in _lm_candidates()[1:]]
+
+
+def active_candidate() -> dict | None:
+    """Return the first currently usable candidate.
+
+    Routes use this before cache lookup so a fallback-active setup does not
+    store or read Adjust Plan responses under the missing primary model.
+    """
+    for candidate in _lm_candidates():
+        try:
+            _preflight_candidate(candidate)
+            return candidate
+        except LmStudioError:
+            continue
+    return None
+
+
+def active_model_version() -> str:
+    return model_version_for(active_candidate())
 
 
 def health() -> dict:
@@ -184,7 +237,7 @@ def _post_json(path: str, payload: dict, timeout: float) -> dict:
     for candidate in _lm_candidates():
         try:
             _preflight_candidate(candidate)
-            resp = _post_json_to(candidate, path, payload, timeout)
+            resp = _post_json_to(candidate, path, _payload_for_candidate(payload, candidate), timeout)
             resp["_lm_candidate"] = candidate
             return resp
         except LmStudioError as exc:
@@ -192,7 +245,7 @@ def _post_json(path: str, payload: dict, timeout: float) -> dict:
     raise LmStudioError("all endpoints failed: " + "; ".join(errors))
 
 
-def _completion_json(path: str, payload: dict, timeout: float, validate, clean=None) -> dict:
+def _completion_json(path: str, payload: dict, timeout: float, validate, clean=None, preflighted_candidate=None) -> dict:
     """Call candidates in priority order and return validated JSON content.
 
     Network failures, malformed envelopes, empty/invalid model JSON, and schema
@@ -201,10 +254,11 @@ def _completion_json(path: str, payload: dict, timeout: float, validate, clean=N
     """
     start = time.time()
     errors = []
-    for candidate in _lm_candidates():
+    for candidate in _candidate_attempt_order(preflighted_candidate):
         try:
-            _preflight_candidate(candidate)
-            resp = _post_json_to(candidate, path, payload, timeout)
+            if not _same_candidate(candidate, preflighted_candidate):
+                _preflight_candidate(candidate)
+            resp = _post_json_to(candidate, path, _payload_for_candidate(payload, candidate), timeout)
             try:
                 message = resp["choices"][0]["message"]
                 content = message.get("content") or message.get("reasoning_content") or ""
@@ -317,7 +371,13 @@ _ADJUST_SYSTEM = (
 )
 
 
-def adjust_plan(current_plan: dict, constraint: str, readiness: dict | None = None, timeout: float | None = None) -> dict:
+def adjust_plan(
+    current_plan: dict,
+    constraint: str,
+    readiness: dict | None = None,
+    timeout: float | None = None,
+    preflighted_candidate: dict | None = None,
+) -> dict:
     """Ask the LLM for an intent patch based on the user's constraint.
 
     Returns the parsed JSON patch on success. Raises LmStudioError on any failure
@@ -381,7 +441,13 @@ def adjust_plan(current_plan: dict, constraint: str, readiness: dict | None = No
 
     start = time.time()
     try:
-        parsed = _completion_json("/v1/chat/completions", payload, timeout=timeout, validate=_validate_adjust_intent)
+        parsed = _completion_json(
+            "/v1/chat/completions",
+            payload,
+            timeout=timeout,
+            validate=_validate_adjust_intent,
+            preflighted_candidate=preflighted_candidate,
+        )
     finally:
         _INFERENCE_LOCK.release()
     parsed["_meta"]["elapsed_ms"] = int((time.time() - start) * 1000)

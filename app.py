@@ -4474,23 +4474,49 @@ def adjust_workout():
     equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
 
     readiness_date = _today_str()
-    cache_key = _ai_cache_key(
-        recommendation,
-        constraint,
-        readiness_date,
-        _lm_studio.LM_STUDIO_MODEL_VERSION,
-        equipment_pref,
-    )
-    cached = _ai_cache_get(cache_key)
-    if cached:
-        cached["cache_hit"] = True
-        _ai_metric_log("cache_hit", latency_ms=0, constraint_len=len(constraint), model_version=_lm_studio.LM_STUDIO_MODEL_VERSION)
-        # Keep server-side canonical plan in sync with what the client sees,
-        # so a follow-up Adjust or Swap operates on the patched plan, not the
-        # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
-        if cached.get("recommendation"):
-            LAST_WORKOUT_RECOMMENDATION = cached["recommendation"]
-        return jsonify(cached)
+    route_candidate = _lm_studio.active_candidate()
+    route_model_version = _lm_studio.model_version_for(route_candidate)
+    cache_key = None
+    cache_probe_versions = [route_model_version]
+    if route_candidate and route_candidate.get("role") == "primary":
+        cache_probe_versions.extend(_lm_studio.model_versions_after(route_candidate))
+    elif route_candidate is None:
+        cache_probe_versions.extend(_lm_studio.fallback_model_versions())
+    for probe_model_version in dict.fromkeys(cache_probe_versions):
+        probe_cache_key = _ai_cache_key(
+            recommendation,
+            constraint,
+            readiness_date,
+            probe_model_version,
+            equipment_pref,
+        )
+        if probe_model_version == route_model_version:
+            cache_key = probe_cache_key
+        cached = _ai_cache_get(probe_cache_key)
+        if cached:
+            cached["cache_hit"] = True
+            _ai_metric_log("cache_hit", latency_ms=0, constraint_len=len(constraint), model_version=probe_model_version)
+            # Keep server-side canonical plan in sync with what the client sees,
+            # so a follow-up Adjust or Swap operates on the patched plan, not the
+            # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
+            if cached.get("recommendation"):
+                LAST_WORKOUT_RECOMMENDATION = cached["recommendation"]
+            return jsonify(cached)
+
+    if route_candidate is None:
+        _ai_metric_log(
+            "fallback",
+            constraint_len=len(constraint),
+            model_version=route_model_version,
+            reason="preflight: all endpoints unavailable",
+        )
+        return jsonify({
+            "status": "fallback",
+            "reason": "LM Studio: all endpoints unavailable",
+            "recommendation": recommendation,
+            "summary": None,
+            "applied_notes": [],
+        })
 
     # Send readiness context the LLM can reason about.
     readiness_ctx = {
@@ -4500,13 +4526,18 @@ def adjust_workout():
     }
 
     try:
-        raw_patch = _lm_studio.adjust_plan(recommendation, constraint, readiness=readiness_ctx)
+        raw_patch = _lm_studio.adjust_plan(
+            recommendation,
+            constraint,
+            readiness=readiness_ctx,
+            preflighted_candidate=route_candidate,
+        )
     except _lm_studio.LmStudioError as exc:
         reason_code = "timeout" if "timeout" in str(exc).lower() else "unreachable" if "unreachable" in str(exc).lower() else "invalid_json" if "json" in str(exc).lower() else "error"
         _ai_metric_log(
             "fallback",
             constraint_len=len(constraint),
-            model_version=_lm_studio.LM_STUDIO_MODEL_VERSION,
+            model_version=route_model_version,
             reason=f"{reason_code}: {exc}",
         )
         return jsonify({
@@ -4519,6 +4550,8 @@ def adjust_workout():
 
     intent = raw_patch.get("intent") or {}
     summary = raw_patch.get("summary") or ""
+    raw_meta = raw_patch.get("_meta") or {}
+    actual_model_version = raw_meta.get("model_version") or route_model_version
 
     # Deep-copy the recommendation so the in-memory canonical isn't mutated
     # if the user re-opens without applying.
@@ -4535,7 +4568,7 @@ def adjust_workout():
         _ai_metric_log(
             "fallback",
             constraint_len=len(constraint),
-            model_version=_lm_studio.LM_STUDIO_MODEL_VERSION,
+            model_version=actual_model_version,
             reason=f"apply_patch_error: {type(exc).__name__}: {str(exc)[:80]}",
         )
         return jsonify({
@@ -4569,16 +4602,27 @@ def adjust_workout():
         "summary": summary,
         "applied_notes": applied_notes,
         "constraint": constraint,
-        "meta": raw_patch.get("_meta", {}),
+        "meta": raw_meta,
         "cache_hit": False,
     }
-    _ai_cache_put(cache_key, payload)
+    cache_write_key = (
+        cache_key
+        if actual_model_version == route_model_version
+        else _ai_cache_key(
+            recommendation,
+            constraint,
+            readiness_date,
+            actual_model_version,
+            equipment_pref,
+        )
+    )
+    _ai_cache_put(cache_write_key, payload)
     LAST_WORKOUT_RECOMMENDATION = patched
     _ai_metric_log(
         "ok",
-        latency_ms=(raw_patch.get("_meta") or {}).get("elapsed_ms", 0),
+        latency_ms=raw_meta.get("elapsed_ms", 0),
         constraint_len=len(constraint),
-        model_version=_lm_studio.LM_STUDIO_MODEL_VERSION,
+        model_version=actual_model_version,
     )
     return jsonify(payload)
 
