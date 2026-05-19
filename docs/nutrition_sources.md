@@ -71,7 +71,7 @@ Source: the FDC API Guide page, sections "Sample Calls," "Gaining Access," "Rate
   - **`DEMO_KEY`** — global demo key with much lower rate limits. Dev-only. Do not use in production.
 
 ### Rate limits
-- **Standard `FDC_API_KEY`:** 1,000 requests per hour per IP address. (No documented daily cap on this page.) Exceeding the hourly limit triggers a **temporary 1-hour block** on the offending IP.
+- **Standard data.gov API key** (`USDA_FDC_API_KEY` in this repo): 1,000 requests per hour per IP address. (No documented daily cap on this page.) Exceeding the hourly limit triggers a **temporary 1-hour block** on the offending IP.
 - **`DEMO_KEY`:** "much lower rate limits" — exact numbers not documented on the FDC API Guide page; per data.gov's standard DEMO_KEY policy these are commonly ~30 req/hr and ~50 req/day, but the FDC page does not specify. Treat DEMO_KEY as **dev-only with assume-the-worst quotas.**
 
 ### Data types available
