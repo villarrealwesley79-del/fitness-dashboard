@@ -225,7 +225,7 @@ def test_accept_endpoint_records_edited_pending_estimate_as_correction(monkeypat
     )
 
     assert res.status_code == 200
-    assert calls == {"accept": 0, "correct": 1}
+    assert calls == {"accept": 1, "correct": 0}
     assert captured["correction_state"] == "corrected"
     assert captured["original_estimate"]["calories"] == 1075
     assert captured["calories"] == 900
@@ -249,6 +249,32 @@ def test_accept_endpoint_vocab_learning_is_idempotent_by_client_id(monkeypatch, 
     assert second.status_code == 200
     entry = data_store.get_personal_vocab_entry(1, "chip ckn bur")
     assert entry["accept_count"] == 1
+
+
+def test_repeated_edited_accepts_become_trusted_personal_vocab(monkeypatch, tmp_path):
+    import app
+    import data_store
+
+    monkeypatch.setenv("SECRET_KEY", "fit74-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    app.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(app, "_current_data_user_id", lambda: 1)
+    original = _estimate(item_name="Chipotle chicken bowl", calories=700)
+    edited = _estimate(item_name="Chipotle chicken burrito", calories=1075)
+    client = app.app.test_client()
+
+    for idx in range(3):
+        res = client.post(
+            f"/api/meal-intake/meal-vocab-corrected-{idx}/accept",
+            json={"estimate": edited, "original_estimate": original, "text": "chip ckn bur"},
+        )
+        assert res.status_code == 200
+
+    result = personal_vocab.lookup("chip ckn bur", user_id=1)
+    assert result["source"] == "personal_vocab"
+    assert result["item_name"] == "Chipotle chicken burrito"
+    assert result["calories"] == 1075
 
 
 def test_meal_intake_preserves_personal_vocab_provenance(monkeypatch, tmp_path):
