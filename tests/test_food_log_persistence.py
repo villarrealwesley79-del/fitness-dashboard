@@ -123,6 +123,18 @@ def test_food_log_blank_client_id_is_not_idempotency_key(isolated_store):
     assert [row["client_id"] for row in rows] == [None, None]
 
 
+def test_food_log_vocab_learning_claim_is_one_time(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+    store.add_food_log(
+        user_id=1,
+        record={"client_id": "claim-once", "date": "2026-05-18", "calories": 500, "protein_g": 30},
+    )
+
+    assert store.claim_food_log_vocab_learning(1, "claim-once") is True
+    assert store.claim_food_log_vocab_learning(1, "claim-once") is False
+
+
 def test_clear_food_logs_removes_only_target_user_logs(isolated_store):
     store, _ = isolated_store
     store.init_data_db()

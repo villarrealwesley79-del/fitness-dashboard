@@ -43,7 +43,9 @@ from data_store import (
     init_data_db,
     add_food_log,
     get_food_logs,
-    food_log_exists_by_client_id,
+    claim_food_log_vocab_learning,
+    import_personal_vocab_entry,
+    list_personal_vocab_entries,
     delete_food_log_by_client_id,
     list_push_subscriptions,
     revoke_push_subscription,
@@ -3336,6 +3338,7 @@ def _meal_intake_stub_persist(
     text_hint,
     local_timestamp=None,
     correction_state=CORRECTION_STATE_ACCEPTED,
+    original_estimate=None,
 ):
     """Persist a food estimate via the canonical food_logs path.
 
@@ -3377,7 +3380,7 @@ def _meal_intake_stub_persist(
         "confidence": estimate.get("confidence"),
         "source": source,
         "correction_state": correction_state,
-        "original_estimate": dict(estimate),
+        "original_estimate": dict(original_estimate) if isinstance(original_estimate, dict) else dict(estimate),
     }
     return add_food_log(_current_data_user_id(), record)
 
@@ -3560,7 +3563,7 @@ def meal_intake_accept_stub(client_id: str):
         or _meal_accept_was_corrected(estimate, data.get("original_estimate"))
     )
     correction_state = "corrected" if corrected else CORRECTION_STATE_ACCEPTED
-    is_new_food_log = not food_log_exists_by_client_id(_current_data_user_id(), client_id)
+    original_for_log = data.get("original_estimate") if isinstance(data.get("original_estimate"), dict) else estimate
     food_log = _meal_intake_stub_persist(
         client_id,
         estimate,
@@ -3568,8 +3571,9 @@ def meal_intake_accept_stub(client_id: str):
         has_image=bool(estimate.get("from_image")),
         text_hint=text_hint or None,
         correction_state=correction_state,
+        original_estimate=original_for_log,
     )
-    if is_new_food_log:
+    if claim_food_log_vocab_learning(_current_data_user_id(), client_id):
         if corrected:
             personal_vocab.record_correct(_current_data_user_id(), text_hint or None, estimate)
         else:
@@ -7414,7 +7418,8 @@ def export_backup():
             "body": BODY_DATA,
             "sleep": SLEEP_DATA,
             "nutrition": NUTRITION_DATA,
-            "food_logs": get_food_logs(user_id)
+            "food_logs": get_food_logs(user_id),
+            "personal_vocab": list_personal_vocab_entries(user_id),
         }
     }
 
@@ -7495,6 +7500,12 @@ def import_backup():
                 if isinstance(food_log, dict):
                     add_food_log(user_id, _food_log_import_record(food_log))
 
+        if "personal_vocab" in data:
+            user_id = _current_data_user_id()
+            for vocab_entry in data["personal_vocab"]:
+                if isinstance(vocab_entry, dict):
+                    import_personal_vocab_entry(user_id, vocab_entry)
+
         return jsonify({
             "status": "success",
             "message": "Backup restored successfully",
@@ -7508,7 +7519,8 @@ def import_backup():
                 "body": len(data.get("body", [])),
                 "sleep": len(data.get("sleep", [])),
                 "nutrition": len(data.get("nutrition", [])),
-                "food_logs": len(data.get("food_logs", []))
+                "food_logs": len(data.get("food_logs", [])),
+                "personal_vocab": len(data.get("personal_vocab", [])),
             }
         })
     except Exception as e:

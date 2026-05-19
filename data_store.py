@@ -256,6 +256,7 @@ def init_data_db():
                 source                 TEXT,
                 correction_state       TEXT,
                 original_estimate_json TEXT,
+                vocab_learned_at       TEXT,
                 created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
                 updated_at             TEXT    NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(user_id, client_id)
@@ -336,6 +337,7 @@ def init_data_db():
             "source": "TEXT",
             "correction_state": "TEXT",
             "original_estimate_json": "TEXT",
+            "vocab_learned_at": "TEXT",
             "created_at": "TEXT",
             "updated_at": "TEXT",
         }
@@ -557,6 +559,61 @@ def list_personal_vocab_entries(user_id: int) -> list[dict]:
     return entries
 
 
+def import_personal_vocab_entry(user_id: int, entry: dict) -> dict | None:
+    """Restore one exported personal vocabulary row for a user."""
+    if not isinstance(entry, dict):
+        return None
+    normalized = (entry.get("normalized_input") or "").strip()
+    canonical = entry.get("canonical_resolution")
+    if not normalized or not isinstance(canonical, dict):
+        return None
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    phrase = (entry.get("phrase") or normalized).strip()[:500]
+    accept_count = max(0, int(entry.get("accept_count") or 0))
+    correct_count = max(0, int(entry.get("correct_count") or 0))
+    confidence_boost = max(0.0, min(0.2, float(entry.get("confidence_boost") or 0)))
+    last_used = (entry.get("last_used") or now_iso)
+    created_at = (entry.get("created_at") or now_iso)
+    updated_at = (entry.get("updated_at") or now_iso)
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO personal_vocab (
+                user_id, normalized_input, phrase, canonical_resolution,
+                accept_count, correct_count, confidence_boost, last_used, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, normalized_input) DO UPDATE SET
+                phrase = excluded.phrase,
+                canonical_resolution = excluded.canonical_resolution,
+                accept_count = excluded.accept_count,
+                correct_count = excluded.correct_count,
+                confidence_boost = excluded.confidence_boost,
+                last_used = excluded.last_used,
+                created_at = personal_vocab.created_at,
+                updated_at = excluded.updated_at
+            RETURNING *
+            """,
+            (
+                user_id,
+                normalized,
+                phrase,
+                _json_dumps_or_none(canonical),
+                accept_count,
+                correct_count,
+                confidence_boost,
+                last_used,
+                created_at,
+                updated_at,
+            ),
+        ).fetchone()
+        conn.commit()
+    result = dict(row)
+    result["canonical_resolution"] = _json_loads_or_none(result.get("canonical_resolution"))
+    return result
+
+
 def upsert_personal_vocab_entry(
     user_id: int,
     *,
@@ -637,6 +694,28 @@ def food_log_exists_by_client_id(user_id: int, client_id: str) -> bool:
             "SELECT 1 FROM food_logs WHERE user_id = ? AND client_id = ? LIMIT 1",
             (user_id, client_id),
         ).fetchone()
+    return bool(row)
+
+
+def claim_food_log_vocab_learning(user_id: int, client_id: str) -> bool:
+    """Atomically claim vocabulary learning for a persisted food log."""
+    if not client_id:
+        return False
+    init_data_db()
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    with _get_db() as conn:
+        row = conn.execute(
+            """
+            UPDATE food_logs
+               SET vocab_learned_at = ?
+             WHERE user_id = ?
+               AND client_id = ?
+               AND vocab_learned_at IS NULL
+            RETURNING 1
+            """,
+            (now_iso, user_id, client_id),
+        ).fetchone()
+        conn.commit()
     return bool(row)
 
 

@@ -189,7 +189,6 @@ def test_accept_endpoint_records_personal_vocab(monkeypatch, tmp_path):
     data_store.init_data_db()
     app.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     monkeypatch.setattr(app, "_current_data_user_id", lambda: 1)
-    monkeypatch.setattr(app, "add_food_log", lambda _uid, record: {"client_id": record["client_id"], **record})
 
     res = app.app.test_client().post(
         "/api/meal-intake/meal-vocab-1/accept",
@@ -213,6 +212,7 @@ def test_accept_endpoint_records_edited_pending_estimate_as_correction(monkeypat
     monkeypatch.setattr(app, "_current_data_user_id", lambda: 1)
     captured = {}
     monkeypatch.setattr(app, "add_food_log", lambda _uid, record: (captured.update(record), {"client_id": record["client_id"], **record})[1])
+    monkeypatch.setattr(app, "claim_food_log_vocab_learning", lambda *_a, **_kw: True)
     calls = {"accept": 0, "correct": 0}
     monkeypatch.setattr(app.personal_vocab, "record_accept", lambda *_a, **_kw: calls.__setitem__("accept", calls["accept"] + 1))
     monkeypatch.setattr(app.personal_vocab, "record_correct", lambda *_a, **_kw: calls.__setitem__("correct", calls["correct"] + 1))
@@ -227,6 +227,8 @@ def test_accept_endpoint_records_edited_pending_estimate_as_correction(monkeypat
     assert res.status_code == 200
     assert calls == {"accept": 0, "correct": 1}
     assert captured["correction_state"] == "corrected"
+    assert captured["original_estimate"]["calories"] == 1075
+    assert captured["calories"] == 900
 
 
 def test_accept_endpoint_vocab_learning_is_idempotent_by_client_id(monkeypatch, tmp_path):
