@@ -448,6 +448,32 @@ EXERCISE_LIBRARY = [
 
 EXERCISE_LOOKUP = {}
 for _exercise in EXERCISE_LIBRARY:
+    _name = _exercise["name"].lower()
+    _muscle = _exercise["muscle"]
+    _joints = {
+        "chest": ["shoulder", "elbow"],
+        "back": ["shoulder", "elbow"],
+        "shoulders": ["shoulder", "elbow"],
+        "quads": ["knee", "hip"],
+        "hamstrings": ["hip", "knee"],
+        "calves": ["ankle"],
+        "glutes": ["hip"],
+        "adductors": ["hip"],
+        "biceps": ["elbow", "wrist"],
+        "triceps": ["elbow", "shoulder"],
+        "core": ["spine", "hip"],
+    }.get(_muscle, [])
+    if ("raise" in _name and _muscle == "shoulders") or "fly" in _name or "crossover" in _name:
+        _joints = ["shoulder"]
+    if "romanian deadlift" in _name:
+        _joints = ["hip", "knee", "spine"]
+    if "curl" in _name and _muscle == "biceps":
+        _joints = ["elbow", "wrist"]
+    if "leg extension" in _name or "leg curl" in _name:
+        _joints = ["knee"]
+    if "calf" in _name:
+        _joints = ["ankle"]
+    _exercise.setdefault("joints_loaded", _joints)
     EXERCISE_LOOKUP[_exercise["name"]] = _exercise
     for _alias in _exercise.get("aliases", []):
         EXERCISE_LOOKUP[_alias] = _exercise
@@ -4007,6 +4033,7 @@ def swap_workout_exercise():
 # - Cache by workout_id + constraint + readiness_date + model_version + library_hash.
 
 _ADJUST_CACHE_DB = os.path.join(DATA_DIR, "ai_coach_cache.sqlite3")
+_ADJUST_CACHE_VERSION = "fit21-joint-taxonomy-v1"
 
 
 def _ai_cache_init():
@@ -4073,6 +4100,7 @@ def _exercise_library_hash(preference: str) -> str:
                 "equipment": ex.get("equipment", ""),
                 "equipment_brands": ex.get("equipment_brands", []),
                 "compound": bool(ex.get("compound")),
+                "joints_loaded": ex.get("joints_loaded", []),
             }
             for ex in _filtered_exercise_library(preference)
         ],
@@ -4105,6 +4133,7 @@ def _ai_cache_key(recommendation, constraint, readiness_date, model_version, equ
         "cardio_type": (recommendation.get("cardio") or {}).get("type"),
     }, default=str, sort_keys=True)
     parts = [
+        _ADJUST_CACHE_VERSION,
         str(recommendation.get("id") or ""),
         hashlib.sha1(content_fp.encode()).hexdigest()[:16],
         (constraint or "").strip().lower(),
@@ -4150,6 +4179,34 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     notes = []
     exercises = list(recommendation.get("exercises") or [])
 
+    def _normalize_avoid_joints(raw_items):
+        normalized = []
+        for item in raw_items or []:
+            if isinstance(item, str):
+                parts = item.lower().replace("_", " ").split()
+                side = next((p for p in parts if p in {"left", "right", "both"}), "both")
+                joint = next((p for p in parts if p in {"shoulder", "elbow", "wrist", "hip", "knee", "ankle", "spine"}), "")
+            elif isinstance(item, dict):
+                side = str(item.get("side") or "both").strip().lower()
+                joint = str(item.get("joint") or "").strip().lower()
+            else:
+                continue
+            if side not in {"left", "right", "both"}:
+                side = "both"
+            if joint in {"low_back", "lower_back", "back"}:
+                joint = "spine"
+            if joint in {"shoulder", "elbow", "wrist", "hip", "knee", "ankle", "spine"}:
+                normalized.append({"side": side, "joint": joint})
+        return normalized
+
+    def _exercise_loads_avoided_joint(exercise_name, avoid_joints):
+        if not avoid_joints:
+            return None
+        library_entry = EXERCISE_LOOKUP.get(exercise_name)
+        loaded = set((library_entry or {}).get("joints_loaded") or [])
+        hit = next((item for item in avoid_joints if item["joint"] in loaded), None)
+        return hit
+
     # ── 1) Respect deload: skip rpe_delta / sets_delta_pct entirely on deload.
     deload_active = bool((meso_plan.get("name") == "Deload"))
 
@@ -4169,8 +4226,9 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     if deload_active or (oura_readiness is not None and oura_readiness < 60):
         sets_delta = min(0.0, sets_delta)
 
-    # ── 4) Hard blacklist avoid_muscles using current soreness data.
+    # ── 4) Hard blacklist avoid_muscles / avoid_joints using current soreness data.
     avoid_muscles = {m.strip().lower() for m in (intent.get("avoid_muscles") or []) if isinstance(m, str)}
+    avoid_joints = _normalize_avoid_joints(intent.get("avoid_joints") or [])
     recent_soreness = filter_recent_soreness(SORENESS_DATA, hours=48)
     sore_map = {}
     for s in recent_soreness:
@@ -4201,6 +4259,27 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                 kept.append(ex)
         exercises = kept
 
+    swap_requests = intent.get("swap") or []
+    joint_swap_sources = {
+        (sw.get("replace_exercise") or "").strip().lower()
+        for sw in swap_requests
+        if isinstance(sw, dict) and (sw.get("replace_exercise") or "").strip()
+    }
+
+    if avoid_joints:
+        kept = []
+        for ex in exercises:
+            ex_name = ex.get("exercise") or ex.get("name") or ex.get("machine") or "exercise"
+            avoided = _exercise_loads_avoided_joint(ex_name, avoid_joints)
+            if avoided:
+                if any(src in ex_name.lower() for src in joint_swap_sources):
+                    kept.append(ex)
+                    continue
+                notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
+            else:
+                kept.append(ex)
+        exercises = kept
+
     # ── 5) Apply swaps. LLM names the muscle; Python picks the exercise.
     volume_data = calculate_volume(WORKOUTS, weeks=4)
     progression = calculate_progression_status(WORKOUTS)
@@ -4209,7 +4288,6 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     if oura_readiness is not None and oura_readiness < 60:
         volume_multiplier *= 0.8
 
-    swap_requests = intent.get("swap") or []
     for sw in swap_requests:
         if not isinstance(sw, dict):
             continue
@@ -4233,9 +4311,13 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
 
         # Pick a new exercise for target_muscle from the equipment-filtered library,
         # preferring compound movements and rotating off recently-trained exercises.
-        library = [ex for ex in _filtered_exercise_library(equipment_pref) if ex.get("muscle") == target_muscle]
+        library = [
+            ex for ex in _filtered_exercise_library(equipment_pref)
+            if ex.get("muscle") == target_muscle
+            and not _exercise_loads_avoided_joint(ex.get("name"), avoid_joints)
+        ]
         if not library:
-            notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment")
+            notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment/joint constraints")
             continue
         # _filtered_exercise_library already applies brand, compound, and name ranking.
         # Avoid picking something already in the plan
@@ -4262,6 +4344,17 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         exercises[idx] = new_entry
         reason_suffix = f" — {reason}" if reason else ""
         notes.append(f"Swapped: {old_name} → {picked['name']}{reason_suffix}")
+
+    if avoid_joints:
+        kept = []
+        for ex in exercises:
+            ex_name = ex.get("exercise") or ex.get("name") or ex.get("machine") or "exercise"
+            avoided = _exercise_loads_avoided_joint(ex_name, avoid_joints)
+            if avoided:
+                notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
+            else:
+                kept.append(ex)
+        exercises = kept
 
     # ── 6) Apply rpe_delta and sets_delta_pct to each exercise, enforcing caps.
     if rpe_delta != 0 or sets_delta != 0:
@@ -4437,6 +4530,7 @@ def adjust_workout():
 
     intent_is_empty = (
         not intent.get("avoid_muscles")
+        and not intent.get("avoid_joints")
         and not intent.get("swap")
         and not intent.get("rpe_delta")
         and not intent.get("sets_delta_pct")
