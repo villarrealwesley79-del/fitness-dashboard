@@ -53,6 +53,7 @@ from meal_estimate_schema import (
     manual_review_estimate,
     sanitize_meal_estimate,
 )
+import personal_vocab
 from meal_text_parser import parse_meal_text
 from meal_log_policy import (
     CORRECTION_STATE_ACCEPTED,
@@ -3484,6 +3485,7 @@ def meal_intake_stub():
             text_hint=text_raw or None, local_timestamp=local_timestamp,
             correction_state=CORRECTION_STATE_ACCEPTED,
         )
+        personal_vocab.record_accept(_current_data_user_id(), text_raw or None, estimate)
 
     return jsonify({
         "status": status,
@@ -3532,6 +3534,10 @@ def meal_intake_accept_stub(client_id: str):
         has_image=bool(estimate.get("from_image")),
         text_hint=text_hint or None,
     )
+    if data.get("corrected") or data.get("correction_state") == "corrected":
+        personal_vocab.record_correct(_current_data_user_id(), text_hint or None, estimate)
+    else:
+        personal_vocab.record_accept(_current_data_user_id(), text_hint or None, estimate)
     return jsonify({
         "status": "logged",
         "food_log": food_log,
