@@ -343,6 +343,50 @@ def test_cache_hit_returns_local_cache_without_network(monkeypatch):
     assert estimate["external_food_id"] == "chipotle-burrito"
 
 
+def test_malformed_cache_row_is_treated_as_miss(monkeypatch):
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "get_branded_lookup_cache",
+        lambda *_a, **_kw: {
+            "source": "nutritionix",
+            "response_json": {"item_name": "Bad cached row", "source": "nutritionix"},
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
+
+    assert estimate["source"] == "nutritionix"
+    assert estimate["item_name"] == "Chipotle chicken burrito"
+
+
+def test_cache_write_failure_does_not_drop_valid_source_result(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+
+    def fail_save(*_args, **_kwargs):
+        raise RuntimeError("cache unavailable")
+
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", fail_save)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
+
+    assert estimate["source"] == "nutritionix"
+    assert estimate["item_name"] == "Chipotle chicken burrito"
+
+
 def test_stale_cache_falls_through_to_usda(monkeypatch):
     stale_at = (datetime.now() - timedelta(days=181)).isoformat(timespec="seconds")
     monkeypatch.setattr(

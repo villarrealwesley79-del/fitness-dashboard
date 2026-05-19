@@ -88,18 +88,21 @@ def lookup(
 
     for source in priorities:
         if source == "cache":
-            cached = _cache_lookup(normalized, user_id=user_id)
+            try:
+                cached = _cache_lookup(normalized, user_id=user_id)
+            except Exception:
+                cached = None
             if cached:
                 return cached
         elif source == "nutritionix":
             nutritionix = _nutritionix_lookup(lookup_text, normalized)
             if nutritionix:
-                data_store.save_branded_lookup_cache(normalized, nutritionix["source"], nutritionix, user_id=user_id)
+                _save_cache_best_effort(normalized, nutritionix["source"], nutritionix, user_id=user_id)
                 return nutritionix
         elif source == "usda_fdc":
             usda = _usda_lookup(lookup_text, normalized)
             if usda:
-                data_store.save_branded_lookup_cache(normalized, usda["source"], usda, user_id=user_id)
+                _save_cache_best_effort(normalized, usda["source"], usda, user_id=user_id)
                 return usda
     return None
 
@@ -144,6 +147,13 @@ def _cache_lookup(normalized: str, *, user_id: int = 1) -> dict[str, Any] | None
     estimate["source"] = "local_cache"
     estimate.setdefault("underlying_source", row.get("source"))
     return _sanitize_with_provenance(estimate)
+
+
+def _save_cache_best_effort(normalized: str, source: str, estimate: dict[str, Any], *, user_id: int) -> None:
+    try:
+        data_store.save_branded_lookup_cache(normalized, source, estimate, user_id=user_id)
+    except Exception:
+        return
 
 
 def _nutritionix_lookup(text: str, normalized: str) -> dict[str, Any] | None:
