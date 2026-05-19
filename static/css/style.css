@@ -1216,6 +1216,49 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
 .settings-row-control { display: flex; align-items: center; gap: 10px; color: var(--fg-dim); }
 .settings-row-val { font-weight: 700; color: var(--fg-0); min-width: 2ch; text-align: right; }
 
+/* FIT-16: wearable freshness evidence panels — slotted between
+   integration rows in the Settings INTEGRATIONS card. Always-visible
+   key/value rows so the owner can inspect real sync state without
+   opening a modal or reading SQLite. */
+.integration-detail {
+    padding: 6px 14px 10px 28px;
+    border-top: 1px solid rgba(51,65,85,0.35);
+    background: rgba(15,23,42,0.35);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.integration-detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 11px;
+    line-height: 1.35;
+}
+.integration-detail-row .detail-label {
+    color: var(--fg-dimmer);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-size: 10px;
+}
+.integration-detail-row .detail-value {
+    color: var(--fg-1);
+    font-weight: 500;
+    text-align: right;
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: break-word;
+}
+.integration-detail-row.integration-detail-warn {
+    color: var(--accent-amber);
+}
+.integration-detail-row.integration-detail-warn .detail-label,
+.integration-detail-row.integration-detail-warn .detail-value {
+    color: #fde68a;
+}
+
 .select-inline {
     background: var(--bg-0);
     border: 1px solid var(--border-2);
