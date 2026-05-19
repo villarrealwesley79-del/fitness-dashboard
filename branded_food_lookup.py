@@ -42,6 +42,14 @@ PLURALS = {
 }
 CUSTOMIZABLE_CHAIN_TOKENS = {"chipotle"}
 CUSTOMIZABLE_ITEM_TOKENS = {"burrito", "bowl", "taco", "tacos", "salad"}
+NUTRITIONIX_REQUIRED_NUTRIENTS = (
+    "nf_calories",
+    "nf_protein",
+    "nf_total_carbohydrate",
+    "nf_total_fat",
+    "nf_sodium",
+    "nf_dietary_fiber",
+)
 BREAKFAST_TOKENS = {"oat", "oatmeal", "egg", "eggs", "toast", "yogurt", "coffee", "cereal"}
 LUNCH_DINNER_TOKENS = {"burrito", "bowl", "taco", "tacos", "salad", "sandwich", "wrap", "burger"}
 PROTEIN_TOKENS = {
@@ -173,6 +181,8 @@ def _nutritionix_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     food_items = [food for food in foods if isinstance(food, dict)]
     if not food_items:
         return None
+    if not _nutritionix_items_have_required_nutrients(food_items):
+        return None
     food = food_items[0]
     ambiguous = _needs_modifier_review(normalized)
     notes = []
@@ -300,6 +310,15 @@ def _sum_nutritionix(foods: list[dict[str, Any]], key: str) -> float:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             total += float(value)
     return total
+
+
+def _nutritionix_items_have_required_nutrients(foods: list[dict[str, Any]]) -> bool:
+    for food in foods:
+        for key in NUTRITIONIX_REQUIRED_NUTRIENTS:
+            value = food.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return False
+    return True
 
 
 def _nutritionix_external_id(foods: list[dict[str, Any]]) -> str | None:

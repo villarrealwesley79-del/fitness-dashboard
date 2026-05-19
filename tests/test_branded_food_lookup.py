@@ -450,6 +450,52 @@ def test_malformed_nutritionix_result_falls_through_to_usda(monkeypatch):
     assert estimate["item_name"] == "BANANAS,RAW"
 
 
+def test_incomplete_nutritionix_result_is_a_miss(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: {"foods": [{"food_name": "mystery bar", "brand_name": "Starbucks"}]},
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    assert branded_food_lookup.lookup("Starbucks mystery bar") is None
+
+
+def test_incomplete_nutritionix_result_falls_through_to_usda(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(nf_protein=None),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a: {
+            "foods": [
+                {
+                    "fdcId": 173944,
+                    "description": "BANANAS,RAW",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "value": 89},
+                        {"nutrientName": "Protein", "value": 1.1},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 22.8},
+                        {"nutrientName": "Total lipid (fat)", "value": 0.3},
+                    ],
+                }
+            ]
+        },
+    )
+
+    estimate = branded_food_lookup.lookup("banana")
+
+    assert estimate["source"] == "usda_fdc"
+    assert estimate["item_name"] == "BANANAS,RAW"
+
+
 def test_malformed_external_results_return_none(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
