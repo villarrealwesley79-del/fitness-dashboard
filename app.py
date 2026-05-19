@@ -3181,6 +3181,43 @@ def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
     }
 
 
+# FIT-61: human-readable copy for each stable policy reason code. Kept
+# next to the endpoint (not in meal_log_policy) so the policy module
+# stays pure and free of UI strings — i18n can swap this map later.
+_POLICY_REASON_NOTES = {
+    "low_confidence": "AI is unsure about this estimate — confirm before it counts.",
+    "medium_confidence": "Confidence is moderate — a quick double-check is recommended.",
+    "ambiguous_input": "Portion or items are unclear — confirm before it counts.",
+    "implausible_calories": "Calorie estimate looks off — please review.",
+    "implausible_macros": "Macros look unusually high — please review.",
+    "implausible_sodium": "Sodium estimate looks unusually high — please review.",
+    "missing_calories": "Calories are missing from the estimate — please enter manually.",
+}
+
+
+def _merge_policy_reasons_into_uncertainty_notes(estimate: dict, reasons: list) -> None:
+    """Append human-readable notes for each policy reason to estimate.uncertainty_notes.
+
+    The composer's pending-review card renders estimate.uncertainty_notes
+    directly (it doesn't yet know about the sibling policy.reasons block),
+    so policy-only pending decisions (e.g. medium_confidence, implausible
+    macros) would otherwise show a review card with no explanation. This
+    keeps the existing UI contract working while the JS catches up.
+
+    De-duplicates against existing notes (case-insensitive) so the same
+    message isn't shown twice when the parser already added it.
+    """
+    if not reasons:
+        return
+    existing = estimate.setdefault("uncertainty_notes", [])
+    existing_lower = {str(n).strip().lower() for n in existing if isinstance(n, str)}
+    for code in reasons:
+        note = _POLICY_REASON_NOTES.get(code)
+        if note and note.strip().lower() not in existing_lower:
+            existing.append(note)
+            existing_lower.add(note.strip().lower())
+
+
 def _meal_intake_stub_persist(
     client_id,
     estimate,
@@ -3309,6 +3346,13 @@ def meal_intake_stub():
         "confidence_band": decision["confidence_band"],
         "reasons": decision["reasons"],
     }
+    # Translate stable policy reason codes into the existing
+    # ``uncertainty_notes`` list so the composer's pending-review card
+    # (which reads ``estimate.uncertainty_notes``) shows the user why
+    # their entry was held back, even when the reason is policy-only
+    # (e.g. medium_confidence, implausible_macros). Without this, a
+    # pending entry from the new MEDIUM band has no explanation surface.
+    _merge_policy_reasons_into_uncertainty_notes(estimate, decision["reasons"])
 
     # FIT-61: only auto-logged entries are persisted server-side. Pending
     # entries live in the composer's JS state until the user explicitly

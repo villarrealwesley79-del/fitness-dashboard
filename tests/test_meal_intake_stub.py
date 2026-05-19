@@ -933,6 +933,81 @@ def test_nutrition_today_excludes_pending_review_entries_from_totals(monkeypatch
     assert body["protein_g"] == 35  # 25 + 10
 
 
+def test_meal_intake_pending_response_surfaces_policy_reasons_as_notes(monkeypatch):
+    """Regression for Codex audit round 2 (FIT-61): the composer reads
+    ``estimate.uncertainty_notes`` for the pending-review card. Policy-only
+    pending decisions (medium_confidence, implausible_macros, etc.) must
+    be translated into human-readable notes so the user sees an
+    explanation — not just an empty card with no rationale.
+    """
+    module = _client(monkeypatch)
+    # Estimate that the parser would consider clean — confidence 0.60
+    # lands in the new MEDIUM band, where uncertainty_notes from the
+    # parser is empty. The policy must add a note so the UI can render it.
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Eggs and toast",
+        "portion_description": None,
+        "meal_type": "breakfast",
+        "calories": 420,
+        "protein_g": 24,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 520,
+        "fiber_g": 4,
+        "confidence": 0.60,
+        "ambiguous": False,
+        "uncertainty_notes": [],  # parser sees no ambiguity
+    }, source="fallback_text_estimate", fallback_used=True)
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "eggs and toast", "client_id": "meal-policy-notes-1"},
+        content_type="multipart/form-data",
+    )
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert "medium_confidence" in body["policy"]["reasons"]
+    notes = body["estimate"]["uncertainty_notes"]
+    assert notes, "policy reasons must be translated into uncertainty_notes for the UI"
+    # The note text should reference confidence so the user understands.
+    assert any("confidence" in note.lower() or "double-check" in note.lower() for note in notes)
+
+
+def test_meal_intake_policy_notes_do_not_duplicate_existing_uncertainty(monkeypatch):
+    """When the parser already surfaced an ambiguity note, the policy's
+    translated note for the same code must not be duplicated.
+    """
+    module = _client(monkeypatch)
+    existing_note = "Portion or items are unclear — confirm before it counts."
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Popcorn",
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 200,
+        "protein_g": 4,
+        "carbs_g": 24,
+        "fat_g": 12,
+        "sodium_mg": 300,
+        "fiber_g": 4,
+        "confidence": 0.50,
+        "ambiguous": True,
+        "uncertainty_notes": [existing_note],
+    })
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "shared movie popcorn", "client_id": "meal-policy-dedup-1"},
+        content_type="multipart/form-data",
+    )
+    notes = res.get_json()["estimate"]["uncertainty_notes"]
+    lowered = [n.lower().strip() for n in notes]
+    # The parser's "unclear" note and the policy's "unclear" note share
+    # the same content; assert only one copy.
+    assert lowered.count(existing_note.lower().strip()) == 1
+
+
 def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
     """Regression for Codex audit round 1, finding 1: ``_meal_intake_stub_estimate``
     detected ambiguity for image+text submissions (e.g. "shared movie popcorn"
