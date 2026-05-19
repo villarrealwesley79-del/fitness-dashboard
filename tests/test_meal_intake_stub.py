@@ -110,11 +110,11 @@ def test_meal_intake_text_pending_review_when_parser_ambiguous(monkeypatch):
         "uncertainty_notes": ["Portion unclear — confirm before it counts."],
     })
 
-    called = {"count": 0}
+    persisted = []
 
-    def fake_add_food_log(*_a, **_kw):
-        called["count"] += 1
-        return {}
+    def fake_add_food_log(_user_id, record):
+        persisted.append(record)
+        return {"client_id": record["client_id"], "correction_state": record["correction_state"]}
 
     monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
 
@@ -126,10 +126,15 @@ def test_meal_intake_text_pending_review_when_parser_ambiguous(monkeypatch):
     assert res.status_code == 200
     body = res.get_json()
     assert body["status"] == "pending_review"
-    assert body["food_log"] is None
     assert body["estimate"]["item_name"] == "Popcorn"
     assert body["estimate"]["uncertainty_notes"], "ambiguous estimates must surface notes"
-    assert called["count"] == 0, "pending estimates must not auto-persist"
+    # FIT-61: pending entries are NOT persisted server-side. They live
+    # in the composer's JS state until the user accepts (which goes
+    # through /api/meal-intake/<client_id>/accept) or discards. See
+    # FIT-67 for durable cross-reload pending resolution.
+    assert persisted == [], "pending estimates must not auto-persist"
+    assert body["food_log"] is None
+    assert body["policy"]["reasons"], "pending response must surface policy reasons"
 
 
 def test_meal_intake_text_pending_review_when_parser_falls_back(monkeypatch):
@@ -152,11 +157,11 @@ def test_meal_intake_text_pending_review_when_parser_falls_back(monkeypatch):
         "uncertainty_notes": [],
     }, source="fallback_text_estimate", fallback_used=True)
 
-    persisted = {"count": 0}
+    persisted = []
 
-    def fake_add_food_log(*_a, **_kw):
-        persisted["count"] += 1
-        return {}
+    def fake_add_food_log(_user_id, record):
+        persisted.append(record)
+        return {"client_id": record["client_id"], "correction_state": record["correction_state"]}
 
     monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
 
@@ -169,8 +174,9 @@ def test_meal_intake_text_pending_review_when_parser_falls_back(monkeypatch):
     body = res.get_json()
     assert body["status"] == "pending_review"
     assert body["fallback_used"] is True
+    # FIT-61: pending entries are not persisted; user must explicitly accept.
+    assert persisted == [], "fallback estimates must not auto-persist"
     assert body["food_log"] is None
-    assert persisted["count"] == 0, "fallback estimates must not auto-persist by default"
 
 
 def test_meal_intake_text_idempotent_for_same_client_id(monkeypatch):
@@ -736,4 +742,324 @@ def test_meal_intake_accept_persists_parser_source_when_present(monkeypatch):
     assert res.status_code == 200
     assert captured["source"] == "ai_text_estimate", (
         "accept handler must honor parser-assigned source, not default to stub"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
+# FIT-61: meal-log policy integration
+# ──────────────────────────────────────────────────────────────────
+
+def test_meal_intake_response_surfaces_policy_band_and_reasons(monkeypatch):
+    """The response must include policy.confidence_band and policy.reasons
+    so the UI can explain auto-log vs pending review decisions.
+    """
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Eggs and toast",
+        "portion_description": None,
+        "meal_type": "breakfast",
+        "calories": 420,
+        "protein_g": 24,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 520,
+        "fiber_g": 4,
+        "confidence": 0.85,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {
+        "client_id": "meal-policy-1", "correction_state": "accepted",
+    })
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "eggs and toast", "client_id": "meal-policy-1"},
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "logged"
+    assert body["policy"]["confidence_band"] == "high"
+    assert body["policy"]["reasons"] == [], "high-confidence auto-log has no policy reasons"
+
+
+def test_meal_intake_implausible_macros_force_pending_review(monkeypatch):
+    """Even at high confidence, macro-out-of-range estimates must be held
+    for review. FIT-61 policy: backend enforces, not UI copy.
+    """
+    module = _client(monkeypatch)
+    # Parser returns plausible-looking confidence but absurd calories.
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Mystery dish",
+        "portion_description": None,
+        "meal_type": "dinner",
+        "calories": 9999,  # implausible — > 5000 cap
+        "protein_g": 30,
+        "carbs_g": 50,
+        "fat_g": 25,
+        "sodium_mg": 600,
+        "fiber_g": 5,
+        "confidence": 0.85,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    persisted = []
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: (persisted.append(r), r)[1])
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "huge dinner", "client_id": "meal-implausible-1"},
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert "implausible_calories" in body["policy"]["reasons"]
+    assert persisted == [], "pending estimates must not auto-persist"
+    assert body["food_log"] is None
+
+
+def test_meal_intake_medium_confidence_falls_to_pending(monkeypatch):
+    """Confidence 0.6 (the FIT-59 deterministic-fallback ceiling) must
+    fall to pending review under FIT-61's 0.75 auto-log threshold."""
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Eggs and toast",
+        "portion_description": None,
+        "meal_type": "breakfast",
+        "calories": 420,
+        "protein_g": 24,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 520,
+        "fiber_g": 4,
+        "confidence": 0.60,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    }, source="fallback_text_estimate", fallback_used=True)
+    persisted = []
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: (persisted.append(r), r)[1])
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "eggs and toast", "client_id": "meal-medium-1"},
+        content_type="multipart/form-data",
+    )
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["policy"]["confidence_band"] == "medium"
+    assert "medium_confidence" in body["policy"]["reasons"]
+    assert persisted == [], "medium-confidence estimates must not auto-persist"
+    assert body["food_log"] is None
+
+
+def test_meal_intake_auto_log_persists_with_accepted_state(monkeypatch):
+    """The end-to-end auto-log path must persist correction_state="accepted"."""
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Protein shake",
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.90,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    persisted = []
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: (persisted.append(r), r)[1])
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "protein shake", "client_id": "meal-accept-1"},
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200
+    assert res.get_json()["status"] == "logged"
+    assert persisted[0]["correction_state"] == "accepted"
+
+
+# ──────────────────────────────────────────────────────────────────
+# FIT-61: coaching context excludes pending entries
+# ──────────────────────────────────────────────────────────────────
+
+def test_nutrition_today_excludes_pending_review_entries_from_totals(monkeypatch):
+    """The /api/nutrition-today totals must reflect only accepted entries.
+    Pending entries (correction_state="pending_review") are tracked in
+    pending_review_count but never roll into calories/protein/etc.
+    This is what makes "save as pending review" actually safe.
+    """
+    module = _client(monkeypatch)
+    today = module._today_str()
+    # Mix: one accepted (counts), one pending (doesn't), one legacy (counts).
+    fake_logs = [
+        {
+            "id": 1, "client_id": "accepted-1", "date": today,
+            "logged_at": f"{today}T08:00:00",
+            "calories": 400, "protein_g": 25, "carbs_g": 40, "fat_g": 15,
+            "sodium_mg": 500, "fiber_g": 4,
+            "correction_state": "accepted",
+        },
+        {
+            "id": 2, "client_id": "pending-1", "date": today,
+            "logged_at": f"{today}T12:00:00",
+            "calories": 800, "protein_g": 30, "carbs_g": 90, "fat_g": 25,
+            "sodium_mg": 1200, "fiber_g": 8,
+            "correction_state": "pending_review",
+        },
+        {
+            "id": 3, "client_id": "legacy-1", "date": today,
+            "logged_at": f"{today}T15:00:00",
+            "calories": 200, "protein_g": 10, "carbs_g": 20, "fat_g": 8,
+            "sodium_mg": 200, "fiber_g": 2,
+            "correction_state": "manual",
+        },
+    ]
+    monkeypatch.setattr(module, "get_food_logs",
+                        lambda _u, limit=None, since=None: list(fake_logs))
+
+    res = module.app.test_client().get("/api/nutrition-today")
+    assert res.status_code == 200
+    body = res.get_json()
+    # Accepted (400) + manual (200) = 600. Pending (800) must NOT count.
+    assert body["calories"] == 600, (
+        f"pending entries leaked into totals: got {body['calories']}, expected 600"
+    )
+    assert body["protein_g"] == 35  # 25 + 10
+
+
+def test_meal_intake_pending_response_surfaces_policy_reasons_as_notes(monkeypatch):
+    """Regression for Codex audit round 2 (FIT-61): the composer reads
+    ``estimate.uncertainty_notes`` for the pending-review card. Policy-only
+    pending decisions (medium_confidence, implausible_macros, etc.) must
+    be translated into human-readable notes so the user sees an
+    explanation — not just an empty card with no rationale.
+    """
+    module = _client(monkeypatch)
+    # Estimate that the parser would consider clean — confidence 0.60
+    # lands in the new MEDIUM band, where uncertainty_notes from the
+    # parser is empty. The policy must add a note so the UI can render it.
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Eggs and toast",
+        "portion_description": None,
+        "meal_type": "breakfast",
+        "calories": 420,
+        "protein_g": 24,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 520,
+        "fiber_g": 4,
+        "confidence": 0.60,
+        "ambiguous": False,
+        "uncertainty_notes": [],  # parser sees no ambiguity
+    }, source="fallback_text_estimate", fallback_used=True)
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "eggs and toast", "client_id": "meal-policy-notes-1"},
+        content_type="multipart/form-data",
+    )
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert "medium_confidence" in body["policy"]["reasons"]
+    notes = body["estimate"]["uncertainty_notes"]
+    assert notes, "policy reasons must be translated into uncertainty_notes for the UI"
+    # The note text should reference confidence so the user understands.
+    assert any("confidence" in note.lower() or "double-check" in note.lower() for note in notes)
+
+
+def test_meal_intake_policy_notes_do_not_duplicate_existing_uncertainty(monkeypatch):
+    """When the parser already surfaced an ambiguity note, the policy's
+    translated note for the same code must not be duplicated.
+    """
+    module = _client(monkeypatch)
+    existing_note = "Portion or items are unclear — confirm before it counts."
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Popcorn",
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 200,
+        "protein_g": 4,
+        "carbs_g": 24,
+        "fat_g": 12,
+        "sodium_mg": 300,
+        "fiber_g": 4,
+        "confidence": 0.50,
+        "ambiguous": True,
+        "uncertainty_notes": [existing_note],
+    })
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "shared movie popcorn", "client_id": "meal-policy-dedup-1"},
+        content_type="multipart/form-data",
+    )
+    notes = res.get_json()["estimate"]["uncertainty_notes"]
+    lowered = [n.lower().strip() for n in notes]
+    # The parser's "unclear" note and the policy's "unclear" note share
+    # the same content; assert only one copy.
+    assert lowered.count(existing_note.lower().strip()) == 1
+
+
+def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
+    """Regression for Codex audit round 1, finding 1: ``_meal_intake_stub_estimate``
+    detected ambiguity for image+text submissions (e.g. "shared movie popcorn"
+    with a photo) but only exposed it via result["status"] and uncertainty_notes.
+    Since FIT-61 evaluates only ``estimate``, the ``ambiguous`` flag must live
+    inside the estimate dict so the policy sees it and routes to pending review.
+    """
+    module = _client(monkeypatch)
+    persisted = []
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: (persisted.append(r), r)[1])
+
+    image_bytes = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "shared movie popcorn",
+            "client_id": "meal-ambig-img-1",
+            "image": (io.BytesIO(image_bytes), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["status"] == "pending_review", (
+        "ambiguous photo+text submissions must be held for review"
+    )
+    assert body["estimate"]["ambiguous"] is True
+    assert "ambiguous_input" in body["policy"]["reasons"]
+    assert persisted == [], "ambiguous estimates must not auto-persist"
+    assert body["food_log"] is None
+
+
+def test_nutrition_today_surfaces_pending_review_count(monkeypatch):
+    """Pending entries must be counted separately so freshness UI can
+    surface them ("3 meals awaiting review")."""
+    module = _client(monkeypatch)
+    today = module._today_str()
+    fake_logs = [
+        {"id": 1, "client_id": "a", "date": today, "logged_at": f"{today}T08:00:00",
+         "calories": 400, "protein_g": 25, "correction_state": "accepted"},
+        {"id": 2, "client_id": "b", "date": today, "logged_at": f"{today}T12:00:00",
+         "calories": 800, "protein_g": 30, "correction_state": "pending_review"},
+        {"id": 3, "client_id": "c", "date": today, "logged_at": f"{today}T13:00:00",
+         "calories": 100, "protein_g": 5, "correction_state": "pending_review"},
+    ]
+    monkeypatch.setattr(module, "get_food_logs",
+                        lambda _u, limit=None, since=None: list(fake_logs))
+
+    res = module.app.test_client().get("/api/nutrition-today")
+    body = res.get_json()
+    # The coaching_context block exposes pending_review_count.
+    ctx = body.get("coaching_context") or {}
+    assert ctx.get("pending_review_count") == 2, (
+        f"expected 2 pending entries, got {ctx.get('pending_review_count')}"
     )

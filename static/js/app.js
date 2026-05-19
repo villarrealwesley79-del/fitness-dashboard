@@ -3597,6 +3597,10 @@
     }
 
     function discardMealPending(clientId) {
+        // Pending estimates live in this composer's local state until
+        // the user accepts or discards. No server-side row exists for
+        // them under FIT-61 (see FIT-67 for the durable resolution),
+        // so discard is a pure local-state clear.
         mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
         renderMealPendingList();
         toast('Estimate discarded', 'ok');

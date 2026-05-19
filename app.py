@@ -40,6 +40,13 @@ from oura_client import (
 )
 from data_store import init_data_db, add_food_log, get_food_logs, delete_food_log_by_client_id
 from meal_text_parser import parse_meal_text
+from meal_log_policy import (
+    CORRECTION_STATE_ACCEPTED,
+    CORRECTION_STATE_PENDING_REVIEW,
+    STATUS_LOGGED,
+    STATUS_PENDING_REVIEW,
+    evaluate_meal_log,
+)
 
 app = Flask(__name__)
 
@@ -3164,13 +3171,70 @@ def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
             "sodium_mg": preset.get("sodium_mg"),
             "fiber_g": preset.get("fiber_g"),
             "confidence": round(base_confidence, 2),
+            # FIT-61: surface ambiguity inside the estimate dict so the
+            # meal-log policy sees the same signal as the text-parser path.
+            # Without this, "shared movie popcorn" with a photo would land
+            # in the policy's high-confidence band and auto-log.
+            "ambiguous": ambiguous,
             "uncertainty_notes": uncertainty_notes,
         },
     }
 
 
-def _meal_intake_stub_persist(client_id, estimate, *, source, has_image, text_hint, local_timestamp=None):
-    """Persist an accepted estimate via the canonical food_logs path.
+# FIT-61: human-readable copy for each stable policy reason code. Kept
+# next to the endpoint (not in meal_log_policy) so the policy module
+# stays pure and free of UI strings — i18n can swap this map later.
+_POLICY_REASON_NOTES = {
+    "low_confidence": "AI is unsure about this estimate — confirm before it counts.",
+    "medium_confidence": "Confidence is moderate — a quick double-check is recommended.",
+    "ambiguous_input": "Portion or items are unclear — confirm before it counts.",
+    "implausible_calories": "Calorie estimate looks off — please review.",
+    "implausible_macros": "Macros look unusually high — please review.",
+    "implausible_sodium": "Sodium estimate looks unusually high — please review.",
+    "missing_calories": "Calories are missing from the estimate — please enter manually.",
+}
+
+
+def _merge_policy_reasons_into_uncertainty_notes(estimate: dict, reasons: list) -> None:
+    """Append human-readable notes for each policy reason to estimate.uncertainty_notes.
+
+    The composer's pending-review card renders estimate.uncertainty_notes
+    directly (it doesn't yet know about the sibling policy.reasons block),
+    so policy-only pending decisions (e.g. medium_confidence, implausible
+    macros) would otherwise show a review card with no explanation. This
+    keeps the existing UI contract working while the JS catches up.
+
+    De-duplicates against existing notes (case-insensitive) so the same
+    message isn't shown twice when the parser already added it.
+    """
+    if not reasons:
+        return
+    existing = estimate.setdefault("uncertainty_notes", [])
+    existing_lower = {str(n).strip().lower() for n in existing if isinstance(n, str)}
+    for code in reasons:
+        note = _POLICY_REASON_NOTES.get(code)
+        if note and note.strip().lower() not in existing_lower:
+            existing.append(note)
+            existing_lower.add(note.strip().lower())
+
+
+def _meal_intake_stub_persist(
+    client_id,
+    estimate,
+    *,
+    source,
+    has_image,
+    text_hint,
+    local_timestamp=None,
+    correction_state=CORRECTION_STATE_ACCEPTED,
+):
+    """Persist a food estimate via the canonical food_logs path.
+
+    ``correction_state`` (FIT-61) controls whether the row counts toward
+    daily totals: ``"accepted"`` for auto-logged entries, ``"pending_review"``
+    for entries that the meal-log policy held back for explicit user
+    confirmation. ``_nutrition_entry_accepted`` filters pending rows out
+    of nutrition totals and coaching context (see app.py:999).
 
     ``local_timestamp`` (FIT-59) is the client-supplied ISO timestamp from
     the composer. When present we use it for both ``logged_at`` and
@@ -3203,7 +3267,7 @@ def _meal_intake_stub_persist(client_id, estimate, *, source, has_image, text_hi
         "fiber_g": estimate.get("fiber_g"),
         "confidence": estimate.get("confidence"),
         "source": source,
-        "correction_state": "accepted",
+        "correction_state": correction_state,
         "original_estimate": {k: v for k, v in estimate.items() if k != "uncertainty_notes"},
     }
     return add_food_log(_current_data_user_id(), record)
@@ -3260,7 +3324,6 @@ def meal_intake_stub():
     if has_image:
         result = _meal_intake_stub_estimate(text_raw, has_image)
         estimate = result["estimate"]
-        status = result["status"]
         source = "stub_vision_estimate"
         response_extras["stub"] = True
     else:
@@ -3270,20 +3333,44 @@ def meal_intake_stub():
         # the pending-review accept handler (which reads
         # estimate.get("source") to label the persisted food_log).
         source = estimate["source"]
-        # Same threshold as the FIT-60 stub: ambiguous input or confidence
-        # below 0.65 falls through to pending review.
-        status = (
-            "pending_review"
-            if estimate["ambiguous"] or estimate["confidence"] < 0.65
-            else "logged"
-        )
         response_extras["fallback_used"] = parsed["fallback_used"]
 
+    # FIT-61: the meal-log policy is the single source of truth for
+    # auto-log vs pending-review. Confidence bands, ambiguous-input
+    # detection, and macro plausibility gates all live in
+    # ``meal_log_policy.evaluate_meal_log`` so both the text-parser and
+    # image-stub paths share the same decision and reason copy.
+    decision = evaluate_meal_log(estimate)
+    status = decision["status"]
+    response_extras["policy"] = {
+        "confidence_band": decision["confidence_band"],
+        "reasons": decision["reasons"],
+    }
+    # Translate stable policy reason codes into the existing
+    # ``uncertainty_notes`` list so the composer's pending-review card
+    # (which reads ``estimate.uncertainty_notes``) shows the user why
+    # their entry was held back, even when the reason is policy-only
+    # (e.g. medium_confidence, implausible_macros). Without this, a
+    # pending entry from the new MEDIUM band has no explanation surface.
+    _merge_policy_reasons_into_uncertainty_notes(estimate, decision["reasons"])
+
+    # FIT-61: only auto-logged entries are persisted server-side. Pending
+    # entries live in the composer's JS state until the user explicitly
+    # accepts (which goes through /api/meal-intake/<client_id>/accept and
+    # persists with correction_state="accepted") or discards.
+    #
+    # We deliberately do NOT persist pending estimates here. An earlier
+    # iteration tried this so the dashboard freshness path could surface a
+    # pending_review_count, but it created orphaned rows whenever the user
+    # refreshed, closed the tab, or switched devices before accepting or
+    # discarding — no list endpoint or cross-device reconciliation exists
+    # yet. See FIT-67 for the durable resolution.
     food_log = None
-    if status == "logged":
+    if decision["correction_state"] == CORRECTION_STATE_ACCEPTED:
         food_log = _meal_intake_stub_persist(
             client_id, estimate, source=source, has_image=has_image,
             text_hint=text_raw or None, local_timestamp=local_timestamp,
+            correction_state=CORRECTION_STATE_ACCEPTED,
         )
 
     return jsonify({
