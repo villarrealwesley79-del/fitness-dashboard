@@ -14,6 +14,7 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 CACHE_TTL_DAYS = 180
 SOURCE_PRIORITY = ("cache", "nutritionix", "usda_fdc")
+MULTI_ITEM_TOKENS = {"and", "with", "plus", "&", "+", "combo", "meal", "plate"}
 KNOWN_BRANDS = {
     "chipotle",
     "starbucks",
@@ -95,6 +96,19 @@ def lookup(
             data_store.save_branded_lookup_cache(normalized, usda["source"], usda)
             return usda
     return None
+
+
+def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) -> bool:
+    """Return True when text is safe to satisfy from a single external hit."""
+    normalized = normalize_meal_text(f"{brand_hint or ''} {text}".strip())
+    tokens = normalized.split()
+    if not tokens:
+        return False
+    if any(token in tokens for token in MULTI_ITEM_TOKENS):
+        return False
+    if brand_hint or _brand_from_text(normalized):
+        return True
+    return len(tokens) == 1
 
 
 def _cache_lookup(normalized: str) -> dict[str, Any] | None:

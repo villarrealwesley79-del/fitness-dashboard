@@ -31,6 +31,13 @@ def test_normalize_plural_and_brand_typos():
     assert branded_food_lookup.normalize_meal_text("mcdonals sandwiches") == "mcdonalds sandwich"
 
 
+def test_direct_lookup_gate_blocks_multi_item_generic_text():
+    assert branded_food_lookup.should_attempt_direct_lookup("Chipotle chicken burrito") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("banana") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("two eggs and toast") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("chicken with rice") is False
+
+
 def test_lookup_uses_nutritionix_and_records_provenance(monkeypatch):
     saved = {}
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
@@ -212,6 +219,35 @@ def test_parse_meal_text_applies_review_modifiers_to_branded_lookup(monkeypatch)
     assert result["estimate"]["ambiguous"] is True
     assert result["estimate"]["confidence"] == 0.55
     assert "confirm before it counts" in result["estimate"]["uncertainty_notes"][0]
+
+
+def test_parse_meal_text_does_not_direct_lookup_multi_item_text(monkeypatch):
+    parser = importlib.import_module("meal_text_parser")
+
+    monkeypatch.setattr(
+        parser.branded_food_lookup,
+        "lookup",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("branded lookup must not run")),
+    )
+    monkeypatch.setattr(parser, "_completion_json", lambda *_a, **_kw: {
+        "item_name": "Eggs and toast",
+        "portion_description": "1 plate",
+        "meal_type": "breakfast",
+        "calories": 420,
+        "protein_g": 24,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 600,
+        "fiber_g": 4,
+        "confidence": 0.82,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+
+    result = parser.parse_meal_text("two eggs and toast")
+
+    assert result["fallback_used"] is False
+    assert result["estimate"]["source"] == "ai_text_estimate"
 
 
 def test_data_store_cache_round_trip(tmp_path, monkeypatch):

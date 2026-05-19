@@ -368,10 +368,12 @@ def parse_meal_text(
             "fallback_used": True,
         }
 
-    try:
-        branded_estimate = branded_food_lookup.lookup(cleaned)
-    except Exception:
-        branded_estimate = None
+    branded_estimate = None
+    if branded_food_lookup.should_attempt_direct_lookup(cleaned):
+        try:
+            branded_estimate = branded_food_lookup.lookup(cleaned)
+        except Exception:
+            branded_estimate = None
     if branded_estimate:
         branded_estimate = _post_process(branded_estimate, source_text=cleaned)
         return {
