@@ -604,13 +604,19 @@
         return { cls: 'unknown', label };
     }
 
-    function renderFreshnessChips(freshness) {
+    const DASHBOARD_FRESHNESS_SLOTS = [
+        { id: 'reco-fresh-oura',  key: 'oura',         render: formatOuraChip  },
+        { id: 'reco-fresh-apple', key: 'apple_health', render: formatAppleChip },
+        { id: 'reco-fresh-food',  key: 'food',         render: formatFoodChip  },
+    ];
+    const SETTINGS_FRESHNESS_SLOTS = [
+        { id: 'oura-connect-state',  key: 'oura',         render: formatOuraChip  },
+        { id: 'apple-connect-state', key: 'apple_health', render: formatAppleChip },
+    ];
+
+    function renderFreshnessChips(freshness, slots) {
+        slots = slots || DASHBOARD_FRESHNESS_SLOTS;
         const ago = (window.__dashHelpers && window.__dashHelpers.ago) || function (s) { return s || ''; };
-        const slots = [
-            { id: 'reco-fresh-oura',  key: 'oura',         render: formatOuraChip  },
-            { id: 'reco-fresh-apple', key: 'apple_health', render: formatAppleChip },
-            { id: 'reco-fresh-food',  key: 'food',         render: formatFoodChip  },
-        ];
         slots.forEach(function (slot) {
             const el = $(slot.id);
             if (!el) return;
@@ -2313,33 +2319,10 @@
         });
         eqSel.onchange = () => updateEquipment(eqSel.value);
 
-        // integration state
-        // FIT-16: chip honors the dashboard freshness block too, so a
-        // stale-cached integration (no today-row, but historical
-        // last_data_point) reads as "Cached · stale" instead of
-        // contradicting the new detail panel below.
-        const ouraState = $('oura-connect-state');
-        const ouraFreshnessStatus = ouraFreshness && ouraFreshness.status;
-        if (oura && oura.source) {
-            const stale = ouraFreshnessStatus === 'stale';
-            ouraState.textContent = stale ? 'Cached · stale'
-                : oura.source === 'api' ? 'Connected' : 'Cached';
-            ouraState.className = 'state-chip ' + (
-                stale ? 'stale' : (oura.source === 'api' ? 'ok' : 'warn')
-            );
-        } else if (ouraFreshness && ouraFreshness.last_data_point) {
-            // No today-row but historical record exists — surface as
-            // cached with the freshness status so the chip agrees with
-            // the panel below it.
-            ouraState.textContent = `Cached · ${ouraFreshnessStatus || 'unknown'}`;
-            ouraState.className = 'state-chip ' + (
-                ouraFreshnessStatus === 'stale' ? 'stale' : 'warn'
-            );
-        } else {
-            ouraState.textContent = 'Not connected';
-            ouraState.className = 'state-chip';
-        }
-        // FIT-16: latest daily / latest sleep rows + cached/live state.
+        // Integration chips: routed through the shared formatters so Settings
+        // matches the dashboard reco-card exactly. Detail panels below each
+        // chip carry the richer cached/live + sync nuance.
+        renderFreshnessChips(freshness, SETTINGS_FRESHNESS_SLOTS);
         renderOuraFreshnessDetail(oura, ouraFreshness);
 
         // Apple Health — prefer the real sync-status endpoint over
@@ -2361,26 +2344,9 @@
             const dataIsMissing = ahFreshnessStatus === 'missing';
             const connected = last && ageDays <= 3 && !dataIsStale && !dataIsMissing;
             const setupConfigured = Boolean(ah && ah.setup_configured);
-            const chip = $('apple-connect-state');
             const detail = $('apple-last-export');
-            if (connected) {
-                chip.textContent = `Synced ${ageDays === 0 ? 'today' : ageDays + 'd ago'}`;
-                chip.className = 'state-chip ' + (ahFreshnessStatus === 'fresh' ? 'ok' : 'warn');
-                $('apple-int-dot').className = 'int-dot int-dot-on';
-            } else if (dataIsStale) {
-                const through = appleFreshness.last_data_point;
-                chip.textContent = through ? `Stale · through ${through}` : 'Stale data';
-                chip.className = 'state-chip stale';
-                $('apple-int-dot').className = 'int-dot int-dot-on';
-            } else if (setupConfigured) {
-                chip.textContent = last ? `Setup · last sync ${ageDays}d ago` : 'Setup · waiting for export';
-                chip.className = 'state-chip warn';
-                $('apple-int-dot').className = 'int-dot int-dot-on';
-            } else {
-                chip.textContent = last ? `Last sync ${ageDays}d ago` : 'Not connected';
-                chip.className = 'state-chip';
-                $('apple-int-dot').className = 'int-dot';
-            }
+            const dotOn = connected || dataIsStale || setupConfigured;
+            $('apple-int-dot').className = dotOn ? 'int-dot int-dot-on' : 'int-dot';
             if (detail) {
                 detail.textContent = last
                     ? `Last export ${fmtDateTime(lastSyncRaw)} · ${ah.total_records || 0} records`
@@ -2392,7 +2358,6 @@
             // the chip above uses.
             renderAppleHealthFreshnessDetail(ah, appleFreshness);
         } catch {
-            $('apple-connect-state').textContent = 'Not connected';
             $('apple-int-dot').className = 'int-dot';
             const detail = $('apple-last-export');
             if (detail) detail.textContent = 'Export status unavailable';
