@@ -348,6 +348,82 @@ def test_nutrition_history_classifies_legacy_entry_with_ai_signal_as_estimated(f
     assert today["manual_count"] == 0
 
 
+def test_nutrition_history_dedupes_clientless_dual_write_entries(fitness_app, monkeypatch):
+    """Regression for Codex audit round 4: /api/add-nutrition appends
+    to BOTH NUTRITION_DATA and food_logs. When called without a
+    client_id (which the endpoint allows), there's no shared key to
+    dedupe on. The round-3 client_id filter kept all legacy entries
+    with null client_id → double count.
+
+    Per-entry content signature (date, logged_at, calories, protein,
+    item_name) catches these clientless duplicates without breaking
+    the legitimate mixed-source same-day case (different content
+    on the same date).
+    """
+    same_meal_logged_at = f"{_today()}T13:00:00"
+    # Same meal in both stores, no client_id.
+    legacy_dup = {
+        "date": _today(), "logged_at": same_meal_logged_at,
+        "calories": 600, "protein_g": 35, "carbs_g": 50, "fat_g": 20,
+        "sodium_mg": 800, "item_name": "Chicken bowl",
+        "correction_state": "manual",
+    }
+    food_log_dup = {
+        "id": 1, "client_id": None,
+        "date": _today(), "logged_at": same_meal_logged_at,
+        "calories": 600, "protein_g": 35, "carbs_g": 50, "fat_g": 20,
+        "sodium_mg": 800, "item_name": "Chicken bowl",
+        "correction_state": "manual",
+    }
+    _seed_nutrition(fitness_app, [legacy_dup])
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [food_log_dup],
+    )
+    today = next(d for d in fitness_app.app.test_client()
+                 .get("/api/nutrition-history").get_json()["history"]
+                 if d["date"] == _today())
+    assert today["calories"] == 600, (
+        "clientless dual-write entries must count once, not twice "
+        f"(got {today['calories']}, expected 600)"
+    )
+    assert today["entries_count"] == 1
+
+
+def test_nutrition_history_keeps_distinct_clientless_entries_with_different_content(fitness_app, monkeypatch):
+    """Counter-test: clientless entries with DIFFERENT content (e.g.
+    a legacy breakfast and a food_log lunch, both lacking client_id
+    but distinguishable by logged_at + calories) must both count.
+    The content dedupe must not collapse legitimate distinct meals.
+    """
+    legacy_breakfast = {
+        "date": _today(), "logged_at": f"{_today()}T07:30:00",
+        "calories": 350, "protein_g": 20, "carbs_g": 40, "fat_g": 10,
+        "sodium_mg": 250, "item_name": "Oatmeal",
+        "correction_state": "manual",
+    }
+    food_log_lunch = {
+        "id": 1, "client_id": None,
+        "date": _today(), "logged_at": f"{_today()}T12:30:00",
+        "calories": 650, "protein_g": 40, "carbs_g": 60, "fat_g": 22,
+        "sodium_mg": 900, "item_name": "Salad bowl",
+        "correction_state": "manual",
+    }
+    _seed_nutrition(fitness_app, [legacy_breakfast])
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [food_log_lunch],
+    )
+    today = next(d for d in fitness_app.app.test_client()
+                 .get("/api/nutrition-history").get_json()["history"]
+                 if d["date"] == _today())
+    assert today["calories"] == 1000, (
+        "distinct clientless entries must both count "
+        f"(got {today['calories']}, expected 350+650=1000)"
+    )
+    assert today["entries_count"] == 2
+
+
 def test_nutrition_history_still_exposes_legacy_macro_keys(fitness_app):
     """The Body charts and existing consumers still read the original
     calories / protein / carbs / fat keys. Locking in that the FIT-13

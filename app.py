@@ -3635,11 +3635,38 @@ def nutrition_history():
         for entry in food_log_entries
         if entry.get("client_id")
     }
-    deduped_legacy = [
-        entry for entry in legacy_entries
+
+    def _content_signature(entry):
+        """Stable dedup key for entries without a client_id.
+
+        /api/add-nutrition without a client_id appends the same meal
+        to both stores with no shared key, so the only way to avoid
+        double-counting is a content tuple. Choosing the fields the
+        dual-write path always copies verbatim: day, logged_at,
+        calories, protein, and item_name.
+        """
+        return (
+            _nutrition_entry_day(entry),
+            entry.get("logged_at"),
+            entry.get("calories"),
+            entry.get("protein_g"),
+            entry.get("item_name"),
+        )
+
+    food_log_content_keys = {
+        _content_signature(entry)
+        for entry in food_log_entries
         if not entry.get("client_id")
-        or str(entry["client_id"]) not in food_log_client_ids
-    ]
+    }
+
+    deduped_legacy = []
+    for entry in legacy_entries:
+        cid = entry.get("client_id")
+        if cid and str(cid) in food_log_client_ids:
+            continue  # dual-write with explicit client_id — skip the legacy copy.
+        if not cid and _content_signature(entry) in food_log_content_keys:
+            continue  # dual-write without client_id — skip the content-match copy.
+        deduped_legacy.append(entry)
     merged_entries = food_log_entries + deduped_legacy
     days = []
     for i in range(13, -1, -1):
