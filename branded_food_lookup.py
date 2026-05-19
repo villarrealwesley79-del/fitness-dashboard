@@ -220,7 +220,7 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
         "carbs_g": nutriments.get("carbohydrates_100g"),
         "fat_g": nutriments.get("fat_100g"),
         "sodium_mg": _off_sodium_mg(nutriments),
-        "fiber_g": nutriments.get("fiber_100g") if nutriments.get("fiber_100g") is not None else 0,
+        "fiber_g": _off_optional_number(nutriments.get("fiber_100g")),
         "confidence": 0.72,
         "ambiguous": False,
         "uncertainty_notes": [],
@@ -281,11 +281,18 @@ def _off_macros_plausible(nutriments: dict[str, Any]) -> bool:
     return 0 < calories <= 900 and all(0 <= value <= 100 for value in (protein, carbs, fat))
 
 
+def _off_optional_number(value: Any, default: float = 0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _off_sodium_mg(nutriments: dict[str, Any]) -> int:
     if nutriments.get("sodium_100g") is not None:
-        return int(round(float(nutriments["sodium_100g"]) * 1000))
+        return int(round(_off_optional_number(nutriments["sodium_100g"]) * 1000))
     if nutriments.get("salt_100g") is not None:
-        return int(round(float(nutriments["salt_100g"]) * 393.4))
+        return int(round(_off_optional_number(nutriments["salt_100g"]) * 393.4))
     return 0
 
 
