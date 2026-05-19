@@ -325,9 +325,6 @@ def _post_process(estimate: dict, *, source_text: str) -> dict:
     to pending review for the same inputs as the FIT-60 stub used to.
     """
     norm = (source_text or "").lower()
-    if "half" in norm:
-        _scale_estimate_macros(estimate, 0.5)
-        estimate["portion_description"] = "approx half portion"
     if any(token in norm for token in _AMBIGUOUS_TOKENS):
         estimate["ambiguous"] = True
         estimate["confidence"] = min(float(estimate["confidence"]), 0.55)

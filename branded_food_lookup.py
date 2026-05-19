@@ -15,6 +15,7 @@ from meal_estimate_schema import sanitize_meal_estimate
 CACHE_TTL_DAYS = 180
 SOURCE_PRIORITY = ("cache", "nutritionix", "usda_fdc")
 MULTI_ITEM_TOKENS = {"and", "with", "plus", "&", "+", "combo", "meal", "plate"}
+PORTION_MODIFIER_TOKENS = {"half"}
 KNOWN_BRANDS = {
     "chipotle",
     "starbucks",
@@ -83,20 +84,21 @@ def lookup(
         return None
     priorities = tuple(source_priority or SOURCE_PRIORITY)
 
-    if "cache" in priorities:
-        cached = _cache_lookup(normalized, user_id=user_id)
-        if cached:
-            return cached
-    if "nutritionix" in priorities:
-        nutritionix = _nutritionix_lookup(lookup_text, normalized)
-        if nutritionix:
-            data_store.save_branded_lookup_cache(normalized, nutritionix["source"], nutritionix, user_id=user_id)
-            return nutritionix
-    if "usda_fdc" in priorities:
-        usda = _usda_lookup(lookup_text, normalized)
-        if usda:
-            data_store.save_branded_lookup_cache(normalized, usda["source"], usda, user_id=user_id)
-            return usda
+    for source in priorities:
+        if source == "cache":
+            cached = _cache_lookup(normalized, user_id=user_id)
+            if cached:
+                return cached
+        elif source == "nutritionix":
+            nutritionix = _nutritionix_lookup(lookup_text, normalized)
+            if nutritionix:
+                data_store.save_branded_lookup_cache(normalized, nutritionix["source"], nutritionix, user_id=user_id)
+                return nutritionix
+        elif source == "usda_fdc":
+            usda = _usda_lookup(lookup_text, normalized)
+            if usda:
+                data_store.save_branded_lookup_cache(normalized, usda["source"], usda, user_id=user_id)
+                return usda
     return None
 
 
@@ -116,6 +118,8 @@ def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) ->
     normalized = normalize_meal_text(f"{brand_hint or ''} {text}".strip())
     tokens = normalized.split()
     if not tokens:
+        return False
+    if any(token in tokens for token in PORTION_MODIFIER_TOKENS):
         return False
     if any(token in tokens for token in MULTI_ITEM_TOKENS):
         return False

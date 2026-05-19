@@ -38,6 +38,7 @@ def test_direct_lookup_gate_blocks_multi_item_generic_text():
     assert branded_food_lookup.should_attempt_direct_lookup("banana") is True
     assert branded_food_lookup.should_attempt_direct_lookup("two eggs and toast") is False
     assert branded_food_lookup.should_attempt_direct_lookup("chicken with rice") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("half Chipotle chicken burrito") is False
 
 
 def test_lookup_uses_nutritionix_and_records_provenance(monkeypatch):
@@ -85,6 +86,40 @@ def test_lookup_uses_brand_hint_in_source_query(monkeypatch):
     branded_food_lookup.lookup("foil wrapped burrito", brand_hint="chipotle")
 
     assert captured["query"] == "chipotle foil wrapped burrito"
+
+
+def test_lookup_honors_source_priority_order(monkeypatch):
+    calls = []
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: calls.append("nutritionix") or _nutritionix_payload(),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda query: calls.append("usda_fdc") or {
+            "foods": [
+                {
+                    "fdcId": 173944,
+                    "description": "BANANAS,RAW",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "value": 89},
+                        {"nutrientName": "Protein", "value": 1.1},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 22.8},
+                        {"nutrientName": "Total lipid (fat)", "value": 0.3},
+                    ],
+                }
+            ]
+        },
+    )
+
+    estimate = branded_food_lookup.lookup("banana", source_priority=("usda_fdc", "nutritionix"))
+
+    assert estimate["source"] == "usda_fdc"
+    assert calls == ["usda_fdc"]
 
 
 def test_lookup_does_not_duplicate_existing_brand_hint(monkeypatch):
@@ -404,7 +439,7 @@ def test_parse_meal_text_uses_branded_lookup_before_lm(monkeypatch):
     assert result == {"estimate": branded_estimate, "fallback_used": False}
 
 
-def test_parse_meal_text_applies_review_modifiers_to_branded_lookup(monkeypatch):
+def test_parse_meal_text_skips_direct_lookup_for_half_portions(monkeypatch):
     parser = importlib.import_module("meal_text_parser")
     branded_estimate = {
         "item_name": "Chipotle chicken burrito",
@@ -421,22 +456,21 @@ def test_parse_meal_text_applies_review_modifiers_to_branded_lookup(monkeypatch)
         "uncertainty_notes": [],
         "source": "nutritionix",
     }
-    monkeypatch.setattr(parser.branded_food_lookup, "lookup", lambda text, **_kw: dict(branded_estimate))
-    monkeypatch.setattr(parser, "_completion_json", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("LM must not run")))
+    monkeypatch.setattr(
+        parser.branded_food_lookup,
+        "lookup",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("branded lookup must not run")),
+    )
+    monkeypatch.setattr(parser, "_completion_json", lambda *_a, **_kw: dict(branded_estimate, calories=537, portion_description="approx half portion"))
 
     result = parser.parse_meal_text("half Chipotle chicken burrito")
 
     assert result["fallback_used"] is False
-    assert result["estimate"]["source"] == "nutritionix"
+    assert result["estimate"]["source"] == "ai_text_estimate"
     assert result["estimate"]["ambiguous"] is True
     assert result["estimate"]["confidence"] == 0.55
     assert result["estimate"]["portion_description"] == "approx half portion"
     assert result["estimate"]["calories"] == 537
-    assert result["estimate"]["protein_g"] == 25
-    assert result["estimate"]["carbs_g"] == 58
-    assert result["estimate"]["fat_g"] == 20
-    assert result["estimate"]["sodium_mg"] == 1155
-    assert result["estimate"]["fiber_g"] == 6
     assert "confirm before it counts" in result["estimate"]["uncertainty_notes"][0]
 
 
