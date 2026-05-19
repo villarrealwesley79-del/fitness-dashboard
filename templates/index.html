@@ -633,6 +633,52 @@
                 </div>
             </div>
 
+            <div class="section-title">AI COACH</div>
+            <div class="card">
+                <div class="settings-row" id="ai-coach-warning-row" hidden>
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">⚠ AI coach is flaky</span>
+                        <span id="ai-coach-warning-detail" class="settings-row-detail">Deterministic plan remains the source of truth.</span>
+                    </div>
+                    <div class="settings-row-control">
+                        <span id="ai-coach-warning-pct" class="state-chip warn">—</span>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">
+                            <span class="int-dot" id="ai-primary-dot"></span>
+                            Primary
+                        </span>
+                        <span id="ai-primary-detail" class="settings-row-detail">—</span>
+                    </div>
+                    <div class="settings-row-control">
+                        <span id="ai-primary-state" class="state-chip">—</span>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">
+                            <span class="int-dot" id="ai-fallback-dot"></span>
+                            Fallback
+                        </span>
+                        <span id="ai-fallback-detail" class="settings-row-detail">—</span>
+                    </div>
+                    <div class="settings-row-control">
+                        <span id="ai-fallback-state" class="state-chip">—</span>
+                    </div>
+                </div>
+                <div class="settings-row">
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">24h activity</span>
+                        <span id="ai-metrics-detail" class="settings-row-detail">—</span>
+                    </div>
+                    <div class="settings-row-control">
+                        <span id="ai-metrics-fallback-pct" class="state-chip">—</span>
+                    </div>
+                </div>
+            </div>
+
             <div class="section-title">DATA &amp; BACKUP</div>
             <div class="card">
                 <div class="settings-row">
@@ -891,6 +937,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260518-fit47-food-context-1"></script>
+    <script src="/static/js/app.js?v=20260519-fit15-ai-health-1"></script>
 </body>
 </html>
