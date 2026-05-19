@@ -3310,15 +3310,24 @@ def meal_intake_stub():
         "reasons": decision["reasons"],
     }
 
-    # FIT-61: persist pending entries too (correction_state="pending_review")
-    # so the dashboard freshness path and accept-handler upsert have a
-    # canonical row to act on. _nutrition_entry_accepted() filters pending
-    # rows out of daily totals and coaching context — see app.py:999.
-    food_log = _meal_intake_stub_persist(
-        client_id, estimate, source=source, has_image=has_image,
-        text_hint=text_raw or None, local_timestamp=local_timestamp,
-        correction_state=decision["correction_state"],
-    )
+    # FIT-61: only auto-logged entries are persisted server-side. Pending
+    # entries live in the composer's JS state until the user explicitly
+    # accepts (which goes through /api/meal-intake/<client_id>/accept and
+    # persists with correction_state="accepted") or discards.
+    #
+    # We deliberately do NOT persist pending estimates here. An earlier
+    # iteration tried this so the dashboard freshness path could surface a
+    # pending_review_count, but it created orphaned rows whenever the user
+    # refreshed, closed the tab, or switched devices before accepting or
+    # discarding — no list endpoint or cross-device reconciliation exists
+    # yet. See FIT-67 for the durable resolution.
+    food_log = None
+    if decision["correction_state"] == CORRECTION_STATE_ACCEPTED:
+        food_log = _meal_intake_stub_persist(
+            client_id, estimate, source=source, has_image=has_image,
+            text_hint=text_raw or None, local_timestamp=local_timestamp,
+            correction_state=CORRECTION_STATE_ACCEPTED,
+        )
 
     return jsonify({
         "status": status,

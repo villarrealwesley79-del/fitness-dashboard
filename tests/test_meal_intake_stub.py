@@ -128,12 +128,12 @@ def test_meal_intake_text_pending_review_when_parser_ambiguous(monkeypatch):
     assert body["status"] == "pending_review"
     assert body["estimate"]["item_name"] == "Popcorn"
     assert body["estimate"]["uncertainty_notes"], "ambiguous estimates must surface notes"
-    # FIT-61: pending entries persist with correction_state="pending_review"
-    # so the dashboard freshness path can surface them.
-    # _nutrition_entry_accepted filters them out of daily totals/coaching.
-    assert len(persisted) == 1, "pending entries must persist (FIT-61)"
-    assert persisted[0]["correction_state"] == "pending_review"
-    assert body["food_log"]["correction_state"] == "pending_review"
+    # FIT-61: pending entries are NOT persisted server-side. They live
+    # in the composer's JS state until the user accepts (which goes
+    # through /api/meal-intake/<client_id>/accept) or discards. See
+    # FIT-67 for durable cross-reload pending resolution.
+    assert persisted == [], "pending estimates must not auto-persist"
+    assert body["food_log"] is None
     assert body["policy"]["reasons"], "pending response must surface policy reasons"
 
 
@@ -174,11 +174,9 @@ def test_meal_intake_text_pending_review_when_parser_falls_back(monkeypatch):
     body = res.get_json()
     assert body["status"] == "pending_review"
     assert body["fallback_used"] is True
-    # FIT-61: pending entries persist for freshness surfacing, but with
-    # correction_state="pending_review" so coaching context excludes them.
-    assert len(persisted) == 1
-    assert persisted[0]["correction_state"] == "pending_review"
-    assert body["food_log"]["correction_state"] == "pending_review"
+    # FIT-61: pending entries are not persisted; user must explicitly accept.
+    assert persisted == [], "fallback estimates must not auto-persist"
+    assert body["food_log"] is None
 
 
 def test_meal_intake_text_idempotent_for_same_client_id(monkeypatch):
@@ -818,7 +816,8 @@ def test_meal_intake_implausible_macros_force_pending_review(monkeypatch):
     body = res.get_json()
     assert body["status"] == "pending_review"
     assert "implausible_calories" in body["policy"]["reasons"]
-    assert persisted[0]["correction_state"] == "pending_review"
+    assert persisted == [], "pending estimates must not auto-persist"
+    assert body["food_log"] is None
 
 
 def test_meal_intake_medium_confidence_falls_to_pending(monkeypatch):
@@ -851,7 +850,8 @@ def test_meal_intake_medium_confidence_falls_to_pending(monkeypatch):
     assert body["status"] == "pending_review"
     assert body["policy"]["confidence_band"] == "medium"
     assert "medium_confidence" in body["policy"]["reasons"]
-    assert persisted[0]["correction_state"] == "pending_review"
+    assert persisted == [], "medium-confidence estimates must not auto-persist"
+    assert body["food_log"] is None
 
 
 def test_meal_intake_auto_log_persists_with_accepted_state(monkeypatch):
@@ -961,34 +961,8 @@ def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
     )
     assert body["estimate"]["ambiguous"] is True
     assert "ambiguous_input" in body["policy"]["reasons"]
-    assert persisted[0]["correction_state"] == "pending_review"
-
-
-def test_meal_intake_delete_removes_persisted_pending_row(monkeypatch):
-    """Regression for Codex audit round 1, finding 2: the JS discard
-    flow calls DELETE /api/meal-intake/<client_id>. The endpoint must
-    remove the persisted pending row so it stops counting toward
-    pending_review_count.
-
-    This test verifies the server-side contract; the JS change to
-    actually call the endpoint on discard lives in static/js/app.js.
-    """
-    module = _client(monkeypatch)
-    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
-
-    seen = {}
-
-    def fake_delete(user_id, client_id):
-        seen["user_id"] = user_id
-        seen["client_id"] = client_id
-        return True
-
-    monkeypatch.setattr(module, "delete_food_log_by_client_id", fake_delete)
-
-    res = module.app.test_client().delete("/api/meal-intake/meal-pending-discard-1")
-    assert res.status_code == 200
-    assert res.get_json() == {"status": "ok", "removed": True}
-    assert seen == {"user_id": 1, "client_id": "meal-pending-discard-1"}
+    assert persisted == [], "ambiguous estimates must not auto-persist"
+    assert body["food_log"] is None
 
 
 def test_nutrition_today_surfaces_pending_review_count(monkeypatch):
