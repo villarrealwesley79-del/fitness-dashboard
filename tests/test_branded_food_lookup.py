@@ -176,6 +176,37 @@ def test_lookup_respects_explicit_source_priority_order(monkeypatch):
     assert estimate["confidence"] == 0.85
 
 
+def test_default_lookup_prefers_live_nutritionix_over_snapshot(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(food_name="banana", brand_name="Fresh Provider"),
+    )
+
+    estimate = branded_food_lookup.lookup("banana")
+
+    assert estimate["source"] == "nutritionix"
+    assert estimate["item_name"] == "Fresh Provider banana"
+
+
+def test_default_lookup_uses_snapshot_before_usda_without_usda_key(monkeypatch):
+    monkeypatch.delenv("USDA_FDC_API_KEY", raising=False)
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("USDA must not run before no-key snapshot")),
+    )
+
+    estimate = branded_food_lookup.lookup("banana")
+
+    assert estimate["source"] == "offline_snapshot"
+    assert estimate["external_food_id"] == "173944"
+
+
 def test_parse_meal_text_uses_branded_lookup_before_lm(monkeypatch):
     parser = importlib.import_module("meal_text_parser")
     branded_estimate = {

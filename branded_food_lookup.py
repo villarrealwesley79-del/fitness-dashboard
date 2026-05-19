@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from difflib import get_close_matches
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,8 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 
 CACHE_TTL_DAYS = 180
-SOURCE_PRIORITY = ("cache", "snapshot", "nutritionix", "usda_fdc")
+SOURCE_PRIORITY = ("cache", "nutritionix", "usda_fdc", "snapshot")
+NO_KEY_SOURCE_PRIORITY = ("cache", "nutritionix", "snapshot", "usda_fdc")
 SNAPSHOT_PATH = Path(__file__).resolve().parent / "data" / "nutrition_snapshot.json"
 _SNAPSHOT_CACHE: dict[str, dict[str, Any]] | None = None
 KNOWN_BRANDS = {
@@ -86,7 +88,7 @@ def lookup(
     normalized = normalize_meal_text(f"{brand_hint or ''} {text}".strip())
     if not normalized:
         return None
-    priorities = tuple(source_priority or SOURCE_PRIORITY)
+    priorities = tuple(source_priority) if source_priority else _default_source_priority()
 
     for source in priorities:
         if source == "cache":
@@ -108,6 +110,12 @@ def lookup(
                 data_store.save_branded_lookup_cache(normalized, usda["source"], usda)
                 return usda
     return None
+
+
+def _default_source_priority() -> tuple[str, ...]:
+    if os.environ.get("USDA_FDC_API_KEY"):
+        return SOURCE_PRIORITY
+    return NO_KEY_SOURCE_PRIORITY
 
 
 def snapshot_lookup(normalized_text: str) -> dict[str, Any] | None:
