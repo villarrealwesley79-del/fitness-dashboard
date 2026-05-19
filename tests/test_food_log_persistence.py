@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import sqlite3
 
@@ -85,6 +86,31 @@ def test_food_log_client_id_is_idempotent(isolated_store):
     assert rows[0]["protein_g"] == 35
 
 
+def test_food_log_parallel_client_id_retries_upsert_single_row(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+
+    def write_retry(calories):
+        return store.add_food_log(
+            user_id=1,
+            record={
+                "client_id": "parallel-entry",
+                "date": "2026-05-18",
+                "calories": calories,
+                "protein_g": 30,
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(write_retry, [500, 550]))
+
+    rows = store.get_food_logs(user_id=1)
+    assert len(rows) == 1
+    assert rows[0]["client_id"] == "parallel-entry"
+    assert rows[0]["calories"] in {500, 550}
+    assert {result["client_id"] for result in results} == {"parallel-entry"}
+
+
 def test_food_log_blank_client_id_is_not_idempotency_key(isolated_store):
     store, _ = isolated_store
     store.init_data_db()
@@ -135,6 +161,36 @@ def test_init_data_db_adds_food_log_columns_to_pre_existing_table(isolated_store
     assert "original_estimate_json" in cols
     assert "correction_state" in cols
     assert "source_timestamp" in cols
+
+
+def test_init_data_db_adds_food_log_upsert_conflict_target_to_pre_existing_table(isolated_store):
+    store, db_path = isolated_store
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE food_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                logged_at TEXT NOT NULL,
+                calories INTEGER,
+                protein_g REAL,
+                carbs_g REAL,
+                fat_g REAL
+            )
+            """
+        )
+        conn.commit()
+
+    store.init_data_db()
+
+    store.add_food_log(user_id=1, record={"client_id": "migrated", "date": "2026-05-18", "calories": 500})
+    store.add_food_log(user_id=1, record={"client_id": "migrated", "date": "2026-05-18", "calories": 550})
+
+    rows = store.get_food_logs(user_id=1)
+    assert len(rows) == 1
+    assert rows[0]["client_id"] == "migrated"
+    assert rows[0]["calories"] == 550
 
 
 def test_original_estimate_json_does_not_include_raw_trace(isolated_store):
