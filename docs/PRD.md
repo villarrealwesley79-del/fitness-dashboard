@@ -268,7 +268,7 @@ Platform basis:
 - Maintain the hybrid PWA plus webhook-bridge app surface decision.
 - Clean up legacy files and stale docs.
 - Add repeatable authenticated smoke testing.
-- Document release and rollback procedure.
+- Maintain `docs/RELEASE_RUNBOOK.md` and `docs/REPO_HYGIENE.md` as the release/rollback and artifact policy source of truth.
 - Keep native HealthKit helper work behind the documented bridge freshness SLA trigger.
 
 ## 11. Open Product Questions
