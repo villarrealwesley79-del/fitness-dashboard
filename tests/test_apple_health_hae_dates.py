@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 import sqlite3
 import sys
@@ -173,3 +174,187 @@ def test_sync_status_initializes_runtime_db_env_after_app_import(monkeypatch):
 
     assert response.status_code == 200
     assert response.get_json()["total_records"] == 0
+
+
+def test_sleep_duration_falls_back_to_phase_sum_during_hae_normalization(monkeypatch):
+    module = _app_module(monkeypatch)
+
+    response = module.app.test_client().post(
+        "/api/apple-health/sync?token=fit29-health-token",
+        json={
+            "data": {
+                "metrics": [
+                    {
+                        "name": "sleep_analysis",
+                        "data": [
+                            {
+                                "date": "2026-04-22",
+                                "deep": 1.25,
+                                "rem": 1.5,
+                                "core": 4.75,
+                                "awake": 0.25,
+                                "inBed": 8.0,
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    rows = _record_dates(TEST_DB_PATH)
+    assert [(row[0], row[1]) for row in rows] == [("sleep", "2026-04-22")]
+    stored = json.loads(rows[0][2])
+    assert stored["duration_minutes"] == 450.0
+    assert stored["duration_minutes_source"] == "computed_phase_sum"
+    assert stored["deep_minutes"] == 75.0
+    assert stored["rem_minutes"] == 90.0
+    assert stored["core_minutes"] == 285.0
+
+
+def test_sleep_phase_sum_reingest_updates_existing_daily_sleep_row(monkeypatch):
+    module = _app_module(monkeypatch)
+    client = module.app.test_client()
+
+    first = client.post(
+        "/api/apple-health/sync?token=fit29-health-token",
+        json={
+            "data": {
+                "metrics": [
+                    {
+                        "name": "sleep_analysis",
+                        "data": [{"date": "2026-04-22", "awake": 0.25, "inBed": 8.0}],
+                    }
+                ]
+            }
+        },
+    )
+    assert first.status_code == 200
+    stored = json.loads(_record_dates(TEST_DB_PATH)[0][2])
+    assert stored["duration_minutes"] is None
+
+    second = client.post(
+        "/api/apple-health/sync?token=fit29-health-token",
+        json={
+            "data": {
+                "metrics": [
+                    {
+                        "name": "sleep_analysis",
+                        "data": [
+                            {
+                                "date": "2026-04-22",
+                                "deep": 1.25,
+                                "rem": 1.5,
+                                "core": 4.75,
+                                "awake": 0.25,
+                                "inBed": 8.0,
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+
+    assert second.status_code == 200
+    rows = _record_dates(TEST_DB_PATH)
+    assert len(rows) == 1
+    stored = json.loads(rows[0][2])
+    assert stored["duration_minutes"] == 450.0
+    assert stored["duration_minutes_source"] == "computed_phase_sum"
+
+
+def test_sleep_reingest_does_not_erase_existing_duration_with_partial_row(monkeypatch):
+    module = _app_module(monkeypatch)
+    client = module.app.test_client()
+
+    first = client.post(
+        "/api/apple-health/sync?token=fit29-health-token",
+        json={
+            "data": {
+                "metrics": [
+                    {
+                        "name": "sleep_analysis",
+                        "data": [
+                            {
+                                "date": "2026-04-22",
+                                "deep": 1.25,
+                                "rem": 1.5,
+                                "core": 4.75,
+                                "awake": 0.25,
+                                "inBed": 8.0,
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/apple-health/sync?token=fit29-health-token",
+        json={
+            "data": {
+                "metrics": [
+                    {
+                        "name": "sleep_analysis",
+                        "data": [{"date": "2026-04-22", "awake": 0.25, "inBed": 8.0}],
+                    }
+                ]
+            }
+        },
+    )
+
+    assert second.status_code == 200
+    rows = _record_dates(TEST_DB_PATH)
+    assert len(rows) == 1
+    stored = json.loads(rows[0][2])
+    assert stored["duration_minutes"] == 450.0
+    assert stored["duration_minutes_source"] == "computed_phase_sum"
+    assert stored["deep_minutes"] == 75.0
+
+
+def test_sleep_reingest_preserves_legacy_duration_fields_and_updates_timestamp(monkeypatch):
+    module = _app_module(monkeypatch)
+    with sqlite3.connect(TEST_DB_PATH) as conn:
+        conn.execute(
+            """INSERT INTO ah_sync_log
+               (source, record_type, record_date, record_key, data_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                "health_auto_export",
+                "sleep",
+                "2026-04-22",
+                "",
+                json.dumps({"date": "2026-04-22", "hours": 7.5, "duration_hours": 7.5}),
+                "2026-01-01 00:00:00",
+            ),
+        )
+        conn.commit()
+
+    response = module.app.test_client().post(
+        "/api/apple-health/sync?token=fit29-health-token",
+        json={
+            "data": {
+                "metrics": [
+                    {
+                        "name": "sleep_analysis",
+                        "data": [{"date": "2026-04-22", "awake": 0.25, "inBed": 8.0}],
+                    }
+                ]
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    with sqlite3.connect(TEST_DB_PATH) as conn:
+        data_json, created_at = conn.execute(
+            "SELECT data_json, created_at FROM ah_sync_log WHERE record_type = 'sleep'"
+        ).fetchone()
+    stored = json.loads(data_json)
+    assert stored["hours"] == 7.5
+    assert stored["duration_hours"] == 7.5
+    assert stored["duration_minutes"] is None
+    assert created_at != "2026-01-01 00:00:00"

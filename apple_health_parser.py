@@ -550,6 +550,37 @@ def register_apple_health_routes(flask_app):
             return f"{activity}:{duration}"
         return ""
 
+    def _merge_existing_sleep_record(conn, rec_date, rec_key, incoming):
+        """Preserve richer already-synced sleep data when a partial resend arrives."""
+        row = conn.execute(
+            """SELECT data_json FROM ah_sync_log
+               WHERE source = ? AND record_type = ? AND record_date = ? AND record_key = ?""",
+            ("health_auto_export", "sleep", rec_date, rec_key),
+        ).fetchone()
+        if not row:
+            return incoming
+        try:
+            existing = json.loads(row[0]) or {}
+        except (TypeError, json.JSONDecodeError):
+            return incoming
+        merged = dict(existing)
+        for key, value in incoming.items():
+            if value is not None or key not in merged:
+                merged[key] = value
+        if existing.get("duration_minutes") is not None and (
+            merged.get("duration_minutes") is None
+            or (
+                existing.get("duration_minutes_source") == "hae_asleep"
+                and merged.get("duration_minutes_source") == "computed_phase_sum"
+            )
+        ):
+            merged["duration_minutes"] = existing.get("duration_minutes")
+            merged["duration_minutes_source"] = existing.get("duration_minutes_source")
+        for key in ("deep_minutes", "rem_minutes", "core_minutes", "awake_minutes", "in_bed_minutes"):
+            if merged.get(key) is None and existing.get(key) is not None:
+                merged[key] = existing.get(key)
+        return merged
+
     _init_ah_sync_db()
 
     # Auto-provision HEALTH_SYNC_TOKEN so the sync endpoint works out of the box.
@@ -685,12 +716,28 @@ def register_apple_health_routes(flask_app):
                         # sleeps > 24 hr/phase). Anything larger is already minutes.
                         return round(val * 60, 1) if 0 < val <= 24 else round(val, 1)
 
+                    deep_minutes = _hrs_to_min(pt.get("deep"))
+                    rem_minutes = _hrs_to_min(pt.get("rem"))
+                    core_minutes = _hrs_to_min(pt.get("core"))
+                    asleep_minutes = _hrs_to_min(pt.get("asleep"))
+                    duration_source = "hae_asleep" if asleep_minutes is not None else None
+                    if asleep_minutes is None:
+                        phase_minutes = [
+                            value for value in (deep_minutes, rem_minutes, core_minutes)
+                            if value is not None
+                        ]
+                        phase_sum = round(sum(phase_minutes), 1) if phase_minutes else None
+                        if phase_sum and phase_sum > 0:
+                            asleep_minutes = phase_sum
+                            duration_source = "computed_phase_sum"
+
                     out["sleep"].append({
                         "date": rec_date,
-                        "duration_minutes": _hrs_to_min(pt.get("asleep")),
-                        "deep_minutes": _hrs_to_min(pt.get("deep")),
-                        "rem_minutes": _hrs_to_min(pt.get("rem")),
-                        "core_minutes": _hrs_to_min(pt.get("core")),
+                        "duration_minutes": asleep_minutes,
+                        "duration_minutes_source": duration_source,
+                        "deep_minutes": deep_minutes,
+                        "rem_minutes": rem_minutes,
+                        "core_minutes": core_minutes,
                         "awake_minutes": _hrs_to_min(pt.get("awake")),
                         "in_bed_minutes": _hrs_to_min(pt.get("inBed")),
                     })
@@ -756,12 +803,23 @@ def register_apple_health_routes(flask_app):
                     stored_rec = dict(rec)
                     stored_rec["date"] = rec_date
                     rec_key = _record_key(record_type, stored_rec)
+                    if record_type == "sleep":
+                        stored_rec = _merge_existing_sleep_record(conn, rec_date, rec_key, stored_rec)
                     cur = conn.execute(
-                        "INSERT OR IGNORE INTO ah_sync_log (source, record_type, record_date, record_key, data_json) VALUES (?, ?, ?, ?, ?)",
+                        """
+                        INSERT INTO ah_sync_log
+                            (source, record_type, record_date, record_key, data_json)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(source, record_type, record_date, record_key)
+                        DO UPDATE SET
+                            data_json = excluded.data_json,
+                            created_at = datetime('now')
+                        WHERE ah_sync_log.data_json IS NOT excluded.data_json
+                        """,
                         ("health_auto_export", record_type, rec_date, rec_key, json.dumps(stored_rec, default=str))
                     )
-                    # cursor.rowcount is 1 on insert, 0 when IGNORE suppressed a
-                    # duplicate — report the truth so Manual Export doesn't lie.
+                    # cursor.rowcount is 1 on insert/update, 0 when an exact
+                    # duplicate resend made no data change.
                     if cur.rowcount and cur.rowcount > 0:
                         inserted += 1
                     else:
