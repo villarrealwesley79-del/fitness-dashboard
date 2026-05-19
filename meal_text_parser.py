@@ -26,10 +26,8 @@ from lm_studio_adapter import (
     _completion_json,
     _INFERENCE_LOCK,
 )
+from meal_estimate_schema import ALLOWED_MEAL_TYPES, CALORIE_MAX, MACRO_GRAM_MAX, SODIUM_MG_MAX
 
-
-# Allowed meal types from FIT-5 estimate schema.
-ALLOWED_MEAL_TYPES = ("breakfast", "lunch", "dinner", "snack")
 
 # Estimate keys we accept from the model. Anything else is dropped before
 # validation so the model can't smuggle raw prompt, image refs, or trace fields
@@ -58,9 +56,9 @@ _PARSER_CONTROLLED_KEYS = frozenset({"source"})
 
 # Plausible-range guards. Anything outside these ranges is treated as model
 # error and falls through to the deterministic fallback.
-_CALORIE_MAX = 5000
-_MACRO_MAX = 500  # grams of any single macro per meal — generous upper bound.
-_SODIUM_MAX = 12000  # 12 g sodium per meal is already a red flag.
+_CALORIE_MAX = CALORIE_MAX
+_MACRO_MAX = MACRO_GRAM_MAX
+_SODIUM_MAX = SODIUM_MG_MAX
 
 
 # Tokens that should pull confidence down even when the LLM is bullish.

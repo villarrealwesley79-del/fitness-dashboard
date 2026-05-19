@@ -40,6 +40,11 @@ from oura_client import (
     compute_hrv_trend,
 )
 from data_store import init_data_db, add_food_log, get_food_logs, delete_food_log_by_client_id
+from meal_estimate_schema import (
+    MealEstimateValidationError,
+    manual_review_estimate,
+    sanitize_meal_estimate,
+)
 from meal_text_parser import parse_meal_text
 from meal_log_policy import (
     CORRECTION_STATE_ACCEPTED,
@@ -3322,7 +3327,7 @@ def _meal_intake_stub_persist(
         "confidence": estimate.get("confidence"),
         "source": source,
         "correction_state": correction_state,
-        "original_estimate": {k: v for k, v in estimate.items() if k != "uncertainty_notes"},
+        "original_estimate": dict(estimate),
     }
     return add_food_log(_current_data_user_id(), record)
 
@@ -3377,12 +3382,16 @@ def meal_intake_stub():
     response_extras: dict = {}
     if has_image:
         result = _meal_intake_stub_estimate(text_raw, has_image)
-        estimate = result["estimate"]
+        estimate = sanitize_meal_estimate(result["estimate"], source="stub_vision_estimate")
         source = "stub_vision_estimate"
         response_extras["stub"] = True
     else:
         parsed = parse_meal_text(text_raw, timestamp=local_timestamp)
-        estimate = parsed["estimate"]
+        try:
+            estimate = sanitize_meal_estimate(parsed["estimate"])
+        except MealEstimateValidationError:
+            estimate = manual_review_estimate(text=text_raw, source="manual_text_review")
+            parsed = {"fallback_used": True}
         # ``source`` lives inside the estimate so it round-trips through
         # the pending-review accept handler (which reads
         # estimate.get("source") to label the persisted food_log).
@@ -3455,8 +3464,16 @@ def meal_intake_accept_stub(client_id: str):
     if err:
         return err
     estimate = data.get("estimate") or {}
-    if not isinstance(estimate, dict) or estimate.get("calories") is None:
-        return jsonify({"error": {"message": "estimate.calories required"}}), 400
+    source_hint = estimate.get("source") if isinstance(estimate, dict) else None
+    try:
+        estimate = sanitize_meal_estimate(
+            estimate,
+            source=source_hint or "stub_text_estimate",
+            legacy_defaults=True,
+            plausible_ranges=True,
+        )
+    except MealEstimateValidationError as exc:
+        return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
     text_hint, _ = _coerce_str(data.get("text"), "text", required=False, max_len=500)
     food_log = _meal_intake_stub_persist(
         client_id,
