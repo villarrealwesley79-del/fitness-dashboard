@@ -57,6 +57,26 @@ PROTEIN_TOKENS = {
     "beef",
     "pork",
 }
+SNAPSHOT_PREFIX_TOKENS = {
+    "a",
+    "an",
+    "the",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "half",
+    "whole",
+    "small",
+    "medium",
+    "large",
+}
 
 
 def normalize_meal_text(text: str) -> str:
@@ -156,9 +176,18 @@ def _snapshot_item(snapshot: dict[str, dict[str, Any]], key: str) -> dict[str, A
     tokens = key.split()
     for snapshot_key in sorted(snapshot, key=lambda candidate: len(candidate.split()), reverse=True):
         candidate_tokens = snapshot_key.split()
-        if len(tokens) > len(candidate_tokens) and tokens[-len(candidate_tokens):] == candidate_tokens:
+        prefix_tokens = tokens[: -len(candidate_tokens)]
+        if (
+            prefix_tokens
+            and tokens[-len(candidate_tokens):] == candidate_tokens
+            and all(_is_snapshot_prefix_token(token) for token in prefix_tokens)
+        ):
             return snapshot[snapshot_key]
     return None
+
+
+def _is_snapshot_prefix_token(token: str) -> bool:
+    return token in SNAPSHOT_PREFIX_TOKENS or token.replace(".", "", 1).isdigit()
 
 
 def _load_snapshot() -> dict[str, dict[str, Any]]:

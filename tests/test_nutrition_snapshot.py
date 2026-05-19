@@ -44,6 +44,13 @@ def test_snapshot_plural_variants_hit_bundled_foods():
     assert branded_food_lookup.lookup("one sweet potato", source_priority=("snapshot",))["external_food_id"] == "168482"
 
 
+def test_snapshot_suffix_match_ignores_compound_foods():
+    assert branded_food_lookup.lookup("toast and banana", source_priority=("snapshot",)) is None
+    assert branded_food_lookup.lookup("oatmeal and banana", source_priority=("snapshot",)) is None
+    assert branded_food_lookup.lookup("banana and oatmeal", source_priority=("snapshot",)) is None
+    assert branded_food_lookup.lookup("yogurt banana", source_priority=("snapshot",)) is None
+
+
 def test_snapshot_file_is_small_and_documents_license():
     path = Path("data/nutrition_snapshot.json")
     payload = json.loads(path.read_text())
