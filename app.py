@@ -3559,15 +3559,29 @@ def _nutrition_history_breakdown(date_s: str, entries):
         totals["sodium_mg"] += int(entry.get("sodium_mg") or 0)
         totals["entries_count"] += 1
         # Correction-state breakdown: "manual" / "corrected" /
-        # "accepted" (the AI estimate the user didn't edit). Anything
-        # else falls into estimated_count as a conservative default.
+        # "accepted" (the AI estimate the user didn't edit).
+        #
+        # Legacy /api/add-nutrition entries may omit correction_state
+        # entirely. add_food_log defaults those to "manual" when there's
+        # no AI estimate metadata. Match that here so manual legacy
+        # entries don't get mislabeled as AI-estimated on the Body
+        # trend's reliability badge.
         state = str(entry.get("correction_state") or "").strip().lower()
+        has_ai_signal = bool(
+            entry.get("original_estimate")
+            or entry.get("original_estimate_json")
+            or entry.get("confidence")
+            or str(entry.get("source") or "").startswith(("ai_", "stub_"))
+        )
         if state == "manual":
             totals["manual_count"] += 1
         elif state == "corrected":
             totals["corrected_count"] += 1
-        else:
+        elif state == "accepted" or has_ai_signal:
             totals["estimated_count"] += 1
+        else:
+            # No correction_state, no AI signal → manual legacy entry.
+            totals["manual_count"] += 1
         # Confidence average over entries that report a value.
         conf = entry.get("confidence")
         if isinstance(conf, (int, float)):
@@ -3606,20 +3620,32 @@ def nutrition_history():
     earliest = (today - timedelta(days=13)).strftime("%Y-%m-%d")
     food_log_entries = list(_food_log_entries_for_context(since=earliest) or [])
     legacy_entries = list(NUTRITION_DATA or [])
-    # Avoid double-counting entries on the dual-write path:
-    # /api/add-nutrition appends to BOTH stores with the same client_id,
-    # so concatenating them naively would inflate every day's totals.
-    # Per-day, prefer food_logs when any entries exist for that date
-    # (matches the rule _nutrition_context_for_date already uses for
-    # /api/nutrition-today). Days with no food_logs fall back to legacy
-    # NUTRITION_DATA so historical data pre-dating food_logs still shows.
-    food_log_dates = {_nutrition_entry_day(e) for e in food_log_entries}
+    # Dedupe by client_id, not by day. /api/add-nutrition writes the
+    # same entry to BOTH stores with the same client_id, so naïve
+    # concat double-counts. But "prefer food_logs per day" wrongly
+    # drops legitimate same-day entries that only exist in NUTRITION_DATA
+    # (e.g. a legacy breakfast + a meal-composer dinner). Per-entry
+    # dedupe handles both cases:
+    #   * dual-write: skip the legacy copy when food_logs has the same client_id
+    #   * mixed-source same-day: keep both since their client_ids differ
+    #   * legacy without client_id: kept as-is (no risk of dual-write
+    #     because that path always sets one)
+    food_log_client_ids = {
+        str(entry.get("client_id"))
+        for entry in food_log_entries
+        if entry.get("client_id")
+    }
+    deduped_legacy = [
+        entry for entry in legacy_entries
+        if not entry.get("client_id")
+        or str(entry["client_id"]) not in food_log_client_ids
+    ]
+    merged_entries = food_log_entries + deduped_legacy
     days = []
     for i in range(13, -1, -1):
         d = today - timedelta(days=i)
         date_s = d.strftime("%Y-%m-%d")
-        entries_for_day = food_log_entries if date_s in food_log_dates else legacy_entries
-        totals = _nutrition_history_breakdown(date_s, entries_for_day)
+        totals = _nutrition_history_breakdown(date_s, merged_entries)
         cals = totals["calories"]
         protein = totals["protein_g"]
         days.append({

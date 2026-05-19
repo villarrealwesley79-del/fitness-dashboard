@@ -261,6 +261,93 @@ def test_nutrition_history_falls_back_to_legacy_on_days_without_food_logs(fitnes
     assert target["entries_count"] == 1
 
 
+def test_nutrition_history_merges_mixed_source_same_day_entries(fitness_app, monkeypatch):
+    """Regression for Codex audit round 3 finding 1: per-day source
+    selection wrongly dropped legacy entries on days that ALSO had a
+    food_logs entry. E.g. a legacy /api/add-nutrition breakfast plus
+    a meal-composer dinner — both should count.
+
+    Dedupe is now per-entry by client_id, so distinct entries on the
+    same day are preserved regardless of which store they live in.
+    """
+    legacy_breakfast = {
+        "date": _today(), "calories": 400, "protein_g": 25,
+        "carbs_g": 40, "fat_g": 15, "sodium_mg": 300,
+        "client_id": "legacy-breakfast-1",
+        "correction_state": "manual",
+    }
+    food_log_dinner = {
+        "id": 1, "client_id": "modern-dinner-1",
+        "date": _today(), "logged_at": f"{_today()}T19:00:00",
+        "calories": 800, "protein_g": 45, "carbs_g": 80, "fat_g": 30,
+        "sodium_mg": 1100, "confidence": 0.85,
+        "correction_state": "accepted",
+    }
+    _seed_nutrition(fitness_app, [legacy_breakfast])
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [food_log_dinner],
+    )
+    today = next(d for d in fitness_app.app.test_client()
+                 .get("/api/nutrition-history").get_json()["history"]
+                 if d["date"] == _today())
+    assert today["calories"] == 1200, (
+        "mixed-source same-day entries must both count "
+        f"(got {today['calories']}, expected 400+800=1200)"
+    )
+    assert today["entries_count"] == 2
+    assert today["manual_count"] == 1
+    assert today["estimated_count"] == 1
+
+
+def test_nutrition_history_classifies_legacy_manual_without_state_as_manual(fitness_app, monkeypatch):
+    """Regression for Codex audit round 3 finding 2: legacy
+    /api/add-nutrition entries may omit ``correction_state``. The
+    Body trend's reliability badge would otherwise mislabel those
+    as AI-estimated. When there's no AI signal (no original_estimate,
+    no confidence, no ai_*/stub_* source), treat as manual.
+    """
+    _seed_nutrition(fitness_app, [
+        # Legacy entry with NO correction_state and NO AI signal.
+        {"date": _today(), "calories": 500, "protein_g": 30,
+         "carbs_g": 50, "fat_g": 20, "sodium_mg": 400},
+    ])
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [],
+    )
+    today = next(d for d in fitness_app.app.test_client()
+                 .get("/api/nutrition-history").get_json()["history"]
+                 if d["date"] == _today())
+    assert today["manual_count"] == 1, (
+        "legacy entries without correction_state or AI signal must be "
+        "classified as manual, not estimated"
+    )
+    assert today["estimated_count"] == 0
+
+
+def test_nutrition_history_classifies_legacy_entry_with_ai_signal_as_estimated(fitness_app, monkeypatch):
+    """Counter-test: a legacy entry WITHOUT correction_state but WITH
+    AI metadata (e.g., confidence > 0 or an AI source label) must
+    still be classified as estimated — the missing-state default only
+    flips to manual when there's no AI signal whatsoever.
+    """
+    _seed_nutrition(fitness_app, [
+        {"date": _today(), "calories": 500, "protein_g": 30,
+         "carbs_g": 50, "fat_g": 20, "sodium_mg": 400,
+         "confidence": 0.7, "source": "ai_text_estimate"},
+    ])
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [],
+    )
+    today = next(d for d in fitness_app.app.test_client()
+                 .get("/api/nutrition-history").get_json()["history"]
+                 if d["date"] == _today())
+    assert today["estimated_count"] == 1
+    assert today["manual_count"] == 0
+
+
 def test_nutrition_history_still_exposes_legacy_macro_keys(fitness_app):
     """The Body charts and existing consumers still read the original
     calories / protein / carbs / fat keys. Locking in that the FIT-13
