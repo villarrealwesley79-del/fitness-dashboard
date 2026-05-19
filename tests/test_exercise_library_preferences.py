@@ -4,6 +4,7 @@ import copy
 import importlib
 
 import pytest
+import lm_studio_adapter
 
 
 @pytest.fixture()
@@ -209,6 +210,111 @@ def test_ai_adjust_swap_preserves_preferred_brand_order(fitness_app):
     assert patched["exercises"][0]["exercise"] == "Leg Press"
 
 
+def test_exercise_library_has_joint_loading_metadata(fitness_app):
+    missing = [ex["name"] for ex in fitness_app.EXERCISE_LIBRARY if not ex.get("joints_loaded")]
+
+    assert missing == []
+    chest_press = fitness_app.EXERCISE_LOOKUP["Chest Press"]
+    leg_extension = fitness_app.EXERCISE_LOOKUP["Leg Extension"]
+    biceps_curl = fitness_app.EXERCISE_LOOKUP["Biceps Curl"]
+    romanian_deadlift = fitness_app.EXERCISE_LOOKUP["Romanian Deadlift"]
+    hanging_leg_raise = fitness_app.EXERCISE_LOOKUP["Hanging Leg Raise"]
+    assert set(chest_press["joints_loaded"]) == {"shoulder", "elbow"}
+    assert leg_extension["joints_loaded"] == ["knee"]
+    assert set(biceps_curl["joints_loaded"]) == {"elbow", "wrist"}
+    assert set(romanian_deadlift["joints_loaded"]) == {"hip", "knee", "spine"}
+    assert set(hanging_leg_raise["joints_loaded"]) == {"spine", "hip"}
+
+
+def test_ai_adjust_removes_exercises_loading_side_specific_avoided_joint(fitness_app):
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {"exercise": "Chest Press", "muscle": "chest", "target_sets": 3, "target_reps": 10},
+            {"exercise": "Leg Extension", "muscle": "quads", "target_sets": 3, "target_reps": 10},
+        ],
+    }
+    intent = {
+        "avoid_joints": [{"side": "left", "joint": "shoulder"}],
+        "avoid_muscles": [],
+        "swap": [],
+    }
+
+    patched, notes = fitness_app._apply_intent_patch(
+        recommendation,
+        intent,
+        fitness_app.GOAL_PARAMETERS[fitness_app.TrainingGoal.HYPERTROPHY.value],
+        1,
+        fitness_app.MESOCYCLE_PLAN[1],
+        None,
+        "machines_only",
+    )
+
+    assert [ex["exercise"] for ex in patched["exercises"]] == ["Leg Extension"]
+    assert any("left shoulder" in note for note in notes)
+
+
+def test_ai_adjust_swap_respects_avoided_joint_when_picking_replacement(fitness_app):
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {"exercise": "Shoulder Press", "muscle": "shoulders", "target_sets": 3, "target_reps": 10},
+        ],
+    }
+    intent = {
+        "avoid_joints": [{"side": "right", "joint": "knee"}],
+        "avoid_muscles": [],
+        "swap": [{"replace_exercise": "Shoulder Press", "target_muscle": "quads", "reason": "test"}],
+    }
+
+    patched, notes = fitness_app._apply_intent_patch(
+        recommendation,
+        intent,
+        fitness_app.GOAL_PARAMETERS[fitness_app.TrainingGoal.HYPERTROPHY.value],
+        1,
+        fitness_app.MESOCYCLE_PLAN[1],
+        None,
+        "machines_only",
+    )
+
+    assert patched["exercises"][0]["exercise"] == "Shoulder Press"
+    assert any("joint constraints" in note for note in notes)
+
+
+def test_ai_adjust_swap_runs_before_joint_removal_for_same_source(fitness_app):
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {"exercise": "Chest Press", "muscle": "chest", "target_sets": 3, "target_reps": 10},
+            {"exercise": "Leg Extension", "muscle": "quads", "target_sets": 3, "target_reps": 10},
+        ],
+    }
+    intent = {
+        "avoid_joints": [{"side": "left", "joint": "shoulder"}],
+        "avoid_muscles": [],
+        "swap": [{"replace_exercise": "Chest Press", "target_muscle": "biceps", "reason": "left shoulder sore"}],
+    }
+
+    patched, notes = fitness_app._apply_intent_patch(
+        recommendation,
+        intent,
+        fitness_app.GOAL_PARAMETERS[fitness_app.TrainingGoal.HYPERTROPHY.value],
+        1,
+        fitness_app.MESOCYCLE_PLAN[1],
+        None,
+        "machines_only",
+    )
+
+    exercise_names = [ex["exercise"] for ex in patched["exercises"]]
+    assert "Chest Press" not in exercise_names
+    assert "Biceps Curl" in exercise_names
+    assert "Leg Extension" in exercise_names
+    assert any("Swapped: Chest Press" in note for note in notes)
+
+
 def test_import_backup_reapplies_new_equipment_defaults(fitness_app):
     response = fitness_app.app.test_client().post(
         "/api/import-backup",
@@ -264,3 +370,63 @@ def test_ai_adjust_cache_key_changes_when_brand_preferences_change(fitness_app):
     )
 
     assert hoist_key != nautilus_key
+
+
+def test_ai_adjust_cache_key_changes_when_joint_taxonomy_changes(fitness_app, monkeypatch):
+    recommendation = {
+        "id": "fit-21-cache",
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "estimated_minutes": 60,
+        "exercises": [
+            {
+                "exercise": "Shoulder Press",
+                "muscle": "shoulders",
+                "target_sets": 3,
+                "target_reps": 10,
+                "target_weight": 60,
+                "rpe_target": 8,
+            }
+        ],
+    }
+
+    original_key = fitness_app._ai_cache_key(
+        recommendation,
+        "left shoulder sore",
+        "2026-05-18",
+        "test-model",
+        "machines_only",
+    )
+    modified_library = copy.deepcopy(fitness_app.EXERCISE_LIBRARY)
+    for exercise in modified_library:
+        if exercise["name"] == "Shoulder Press":
+            exercise["joints_loaded"] = ["shoulder", "elbow", "spine"]
+            break
+    monkeypatch.setattr(fitness_app, "EXERCISE_LIBRARY", modified_library)
+
+    changed_key = fitness_app._ai_cache_key(
+        recommendation,
+        "left shoulder sore",
+        "2026-05-18",
+        "test-model",
+        "machines_only",
+    )
+
+    assert changed_key != original_key
+
+
+def test_adjust_intent_schema_accepts_side_specific_avoid_joints():
+    schema_props = lm_studio_adapter.ADJUST_SCHEMA["properties"]["intent"]["properties"]
+
+    assert "avoid_joints" in schema_props
+    lm_studio_adapter._validate_adjust_intent({
+        "summary": "Avoid the sore left shoulder.",
+        "intent": {
+            "avoid_muscles": [],
+            "avoid_joints": [{"side": "left", "joint": "shoulder"}],
+            "swap": [],
+            "rpe_delta": 0,
+            "sets_delta_pct": 0,
+            "duration_cap_min": 0,
+            "drop_cardio": False,
+        },
+    })

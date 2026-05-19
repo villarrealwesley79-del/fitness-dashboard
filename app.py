@@ -39,7 +39,20 @@ from oura_client import (
     get_oura_daily_range,
     compute_hrv_trend,
 )
-from data_store import init_data_db, add_food_log, get_food_logs, delete_food_log_by_client_id
+from data_store import (
+    init_data_db,
+    add_food_log,
+    get_food_logs,
+    delete_food_log_by_client_id,
+    list_push_subscriptions,
+    revoke_push_subscription,
+    save_push_subscription,
+)
+from meal_estimate_schema import (
+    MealEstimateValidationError,
+    manual_review_estimate,
+    sanitize_meal_estimate,
+)
 from meal_text_parser import parse_meal_text
 from meal_log_policy import (
     CORRECTION_STATE_ACCEPTED,
@@ -448,6 +461,32 @@ EXERCISE_LIBRARY = [
 
 EXERCISE_LOOKUP = {}
 for _exercise in EXERCISE_LIBRARY:
+    _name = _exercise["name"].lower()
+    _muscle = _exercise["muscle"]
+    _joints = {
+        "chest": ["shoulder", "elbow"],
+        "back": ["shoulder", "elbow"],
+        "shoulders": ["shoulder", "elbow"],
+        "quads": ["knee", "hip"],
+        "hamstrings": ["hip", "knee"],
+        "calves": ["ankle"],
+        "glutes": ["hip"],
+        "adductors": ["hip"],
+        "biceps": ["elbow", "wrist"],
+        "triceps": ["elbow", "shoulder"],
+        "core": ["spine", "hip"],
+    }.get(_muscle, [])
+    if ("raise" in _name and _muscle == "shoulders") or "fly" in _name or "crossover" in _name:
+        _joints = ["shoulder"]
+    if "romanian deadlift" in _name:
+        _joints = ["hip", "knee", "spine"]
+    if "curl" in _name and _muscle == "biceps":
+        _joints = ["elbow", "wrist"]
+    if "leg extension" in _name or "leg curl" in _name:
+        _joints = ["knee"]
+    if "calf" in _name:
+        _joints = ["ankle"]
+    _exercise.setdefault("joints_loaded", _joints)
     EXERCISE_LOOKUP[_exercise["name"]] = _exercise
     for _alias in _exercise.get("aliases", []):
         EXERCISE_LOOKUP[_alias] = _exercise
@@ -3165,6 +3204,13 @@ def add_nutrition():
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MEAL_INTAKE_STUB_MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6 MB
+_FOOD_PHOTO_RETENTION = {
+    "policy": "discard_after_extraction",
+    "raw_photo_retained": False,
+    "raw_model_trace_retained": False,
+    "backup_includes_raw_photo": False,
+    "message": "Food photos are discarded after extraction; only the final estimate and safe correction metadata are kept.",
+}
 _MEAL_INTAKE_STUB_AMBIGUOUS_WORDS = (
     "popcorn", "movie", "shared", "leftover", "leftovers", "snacks",
     "buffet", "potluck", "?", "guessing", "guess",
@@ -3181,6 +3227,12 @@ _MEAL_INTAKE_STUB_DEFAULT = dict(
     item_name="Meal", meal_type="snack", calories=400, protein_g=22,
     carbs_g=40, fat_g=15, sodium_mg=560, fiber_g=4,
 )
+
+
+def _food_photo_retention_payload(has_image: bool = False) -> dict:
+    payload = dict(_FOOD_PHOTO_RETENTION)
+    payload["image_received"] = bool(has_image)
+    return payload
 
 
 def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
@@ -3225,6 +3277,7 @@ def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
             "sodium_mg": preset.get("sodium_mg"),
             "fiber_g": preset.get("fiber_g"),
             "confidence": round(base_confidence, 2),
+            "from_image": bool(has_image),
             # FIT-61: surface ambiguity inside the estimate dict so the
             # meal-log policy sees the same signal as the text-parser path.
             # Without this, "shared movie popcorn" with a photo would land
@@ -3322,7 +3375,7 @@ def _meal_intake_stub_persist(
         "confidence": estimate.get("confidence"),
         "source": source,
         "correction_state": correction_state,
-        "original_estimate": {k: v for k, v in estimate.items() if k != "uncertainty_notes"},
+        "original_estimate": dict(estimate),
     }
     return add_food_log(_current_data_user_id(), record)
 
@@ -3377,12 +3430,17 @@ def meal_intake_stub():
     response_extras: dict = {}
     if has_image:
         result = _meal_intake_stub_estimate(text_raw, has_image)
-        estimate = result["estimate"]
+        estimate = sanitize_meal_estimate(result["estimate"], source="stub_vision_estimate")
         source = "stub_vision_estimate"
+        estimate["source"] = source
         response_extras["stub"] = True
     else:
         parsed = parse_meal_text(text_raw, timestamp=local_timestamp)
-        estimate = parsed["estimate"]
+        try:
+            estimate = sanitize_meal_estimate(parsed["estimate"])
+        except MealEstimateValidationError:
+            estimate = manual_review_estimate(text=text_raw, source="manual_text_review")
+            parsed = {"fallback_used": True}
         # ``source`` lives inside the estimate so it round-trips through
         # the pending-review accept handler (which reads
         # estimate.get("source") to label the persisted food_log).
@@ -3431,6 +3489,7 @@ def meal_intake_stub():
         "status": status,
         "estimate": estimate,
         "food_log": food_log,
+        "photo_retention": _food_photo_retention_payload(has_image),
         **response_extras,
     })
 
@@ -3455,8 +3514,16 @@ def meal_intake_accept_stub(client_id: str):
     if err:
         return err
     estimate = data.get("estimate") or {}
-    if not isinstance(estimate, dict) or estimate.get("calories") is None:
-        return jsonify({"error": {"message": "estimate.calories required"}}), 400
+    source_hint = estimate.get("source") if isinstance(estimate, dict) else None
+    try:
+        estimate = sanitize_meal_estimate(
+            estimate,
+            source=source_hint or "stub_text_estimate",
+            legacy_defaults=True,
+            plausible_ranges=True,
+        )
+    except MealEstimateValidationError as exc:
+        return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
     text_hint, _ = _coerce_str(data.get("text"), "text", required=False, max_len=500)
     food_log = _meal_intake_stub_persist(
         client_id,
@@ -3465,7 +3532,12 @@ def meal_intake_accept_stub(client_id: str):
         has_image=bool(estimate.get("from_image")),
         text_hint=text_hint or None,
     )
-    return jsonify({"status": "logged", "food_log": food_log, "stub": True})
+    return jsonify({
+        "status": "logged",
+        "food_log": food_log,
+        "photo_retention": _food_photo_retention_payload(bool(estimate.get("from_image"))),
+        "stub": True,
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3510,21 +3582,195 @@ def nutrition_today():
     })
 
 
+def _nutrition_history_breakdown(date_s: str, entries):
+    """FIT-13: per-day rollup with confidence + correction-state context.
+
+    Extends ``_summarize_nutrition_entries_for_date`` with:
+
+      * ``pending_count`` — entries awaiting review (excluded from totals).
+      * ``manual_count`` — user-typed entries (no AI estimate).
+      * ``corrected_count`` — accepted estimates the user edited
+        (correction_state == "corrected").
+      * ``estimated_count`` — accepted AI estimates the user did NOT edit.
+      * ``confidence_avg`` — mean confidence over accepted entries with
+        a numeric confidence value; ``None`` when no entries qualify.
+      * ``high_sodium`` / ``late_meal`` — same flags the next-day
+        coaching context uses, so the body view can interpret scale
+        movements honestly instead of bare-attributing them.
+
+    Mirrors the ``uses_only_accepted_entries`` rule from FIT-8:
+    pending entries do not contribute to totals or confidence.
+    """
+    totals = {
+        "calories": 0,
+        "protein_g": 0.0,
+        "carbs_g": 0.0,
+        "fat_g": 0.0,
+        "sodium_mg": 0,
+        "entries_count": 0,
+        "pending_count": 0,
+        "manual_count": 0,
+        "corrected_count": 0,
+        "estimated_count": 0,
+        "confidence_avg": None,
+        "high_sodium": False,
+        "late_meal": False,
+    }
+    confidence_sum = 0.0
+    confidence_n = 0
+    for entry in entries or []:
+        if _nutrition_entry_day(entry) != date_s:
+            continue
+        if _nutrition_entry_pending_review(entry):
+            totals["pending_count"] += 1
+            continue
+        totals["calories"] += int(entry.get("calories") or 0)
+        totals["protein_g"] += float(entry.get("protein_g") or 0)
+        totals["carbs_g"] += float(entry.get("carbs_g") or 0)
+        totals["fat_g"] += float(entry.get("fat_g") or 0)
+        totals["sodium_mg"] += int(entry.get("sodium_mg") or 0)
+        totals["entries_count"] += 1
+        # Correction-state breakdown: "manual" / "corrected" /
+        # "accepted" (the AI estimate the user didn't edit).
+        #
+        # Legacy /api/add-nutrition entries may omit correction_state
+        # entirely. add_food_log defaults those to "manual" when there's
+        # no AI estimate metadata. Match that here so manual legacy
+        # entries don't get mislabeled as AI-estimated on the Body
+        # trend's reliability badge.
+        state = str(entry.get("correction_state") or "").strip().lower()
+        has_ai_signal = bool(
+            entry.get("original_estimate")
+            or entry.get("original_estimate_json")
+            or entry.get("confidence")
+            or str(entry.get("source") or "").startswith(("ai_", "stub_"))
+        )
+        if state == "manual":
+            totals["manual_count"] += 1
+        elif state == "corrected":
+            totals["corrected_count"] += 1
+        elif state == "accepted" or has_ai_signal:
+            totals["estimated_count"] += 1
+        else:
+            # No correction_state, no AI signal → manual legacy entry.
+            totals["manual_count"] += 1
+        # Confidence average over entries that report a value.
+        conf = entry.get("confidence")
+        if isinstance(conf, (int, float)):
+            confidence_sum += float(conf)
+            confidence_n += 1
+        # Late-meal flag: hour >= LATE_MEAL_CONTEXT_HOUR.
+        hour = _nutrition_entry_logged_hour(entry)
+        if hour is not None and hour >= LATE_MEAL_CONTEXT_HOUR:
+            totals["late_meal"] = True
+    if confidence_n > 0:
+        totals["confidence_avg"] = round(confidence_sum / confidence_n, 3)
+    totals["high_sodium"] = totals["sodium_mg"] >= SODIUM_NEXT_DAY_CONTEXT_MG
+    return totals
+
+
 @app.route('/api/nutrition-history')
 def nutrition_history():
-    """Return last 14 days of nutrition totals."""
+    """Return last 14 days of nutrition totals.
+
+    Each day now includes confidence + correction-state context (FIT-13)
+    so the Body tab can interpret scale movements honestly: a recent
+    high-sodium / late-meal day surfaces as context rather than being
+    mis-attributed to fat gain, and estimated-vs-corrected entries are
+    distinguished from each other.
+
+    Merges entries from BOTH the legacy ``NUTRITION_DATA`` JSON store
+    AND the canonical ``food_logs`` SQLite table — the active meal
+    composer (FIT-60/59/61) persists via ``add_food_log`` into
+    food_logs, and these new entries would otherwise be invisible in
+    history. Matches the merge ``/api/nutrition-today`` already
+    performs via ``_food_log_entries_for_context``.
+    """
     today = datetime.now().date()
+    calories_target = USER_SETTINGS.get("daily_calorie_target")
+    protein_target = USER_SETTINGS.get("daily_protein_target_g")
+    earliest = (today - timedelta(days=13)).strftime("%Y-%m-%d")
+    food_log_entries = list(_food_log_entries_for_context(since=earliest) or [])
+    legacy_entries = list(NUTRITION_DATA or [])
+    # Dedupe by client_id, not by day. /api/add-nutrition writes the
+    # same entry to BOTH stores with the same client_id, so naïve
+    # concat double-counts. But "prefer food_logs per day" wrongly
+    # drops legitimate same-day entries that only exist in NUTRITION_DATA
+    # (e.g. a legacy breakfast + a meal-composer dinner). Per-entry
+    # dedupe handles both cases:
+    #   * dual-write: skip the legacy copy when food_logs has the same client_id
+    #   * mixed-source same-day: keep both since their client_ids differ
+    #   * legacy without client_id: kept as-is (no risk of dual-write
+    #     because that path always sets one)
+    food_log_client_ids = {
+        str(entry.get("client_id"))
+        for entry in food_log_entries
+        if entry.get("client_id")
+    }
+
+    def _content_signature(entry):
+        """Stable dedup key for entries without a client_id.
+
+        /api/add-nutrition without a client_id appends the same meal
+        to both stores. The legacy NUTRITION_DATA entry is built from
+        a smaller dict that ONLY carries date + macros (logged_at and
+        item_name are passed to add_food_log but not appended to the
+        legacy entry — see app.py:3110-3149). So the signature must
+        only use fields both stores definitely have: the date and the
+        macro tuple. Anything else (logged_at, item_name) is missing
+        on one side and would prevent the match.
+        """
+        return (
+            _nutrition_entry_day(entry),
+            entry.get("calories"),
+            entry.get("protein_g"),
+            entry.get("carbs_g"),
+            entry.get("fat_g"),
+            entry.get("sodium_mg"),
+        )
+
+    food_log_content_keys = {
+        _content_signature(entry)
+        for entry in food_log_entries
+        if not entry.get("client_id")
+    }
+
+    deduped_legacy = []
+    for entry in legacy_entries:
+        cid = entry.get("client_id")
+        if cid and str(cid) in food_log_client_ids:
+            continue  # dual-write with explicit client_id — skip the legacy copy.
+        if not cid and _content_signature(entry) in food_log_content_keys:
+            continue  # dual-write without client_id — skip the content-match copy.
+        deduped_legacy.append(entry)
+    merged_entries = food_log_entries + deduped_legacy
     days = []
     for i in range(13, -1, -1):
         d = today - timedelta(days=i)
         date_s = d.strftime("%Y-%m-%d")
-        totals = _summarize_nutrition_for_date(date_s)
+        totals = _nutrition_history_breakdown(date_s, merged_entries)
+        cals = totals["calories"]
+        protein = totals["protein_g"]
         days.append({
             "date": date_s,
-            "calories": totals["calories"],
-            "protein_g": round(totals["protein_g"], 1),
+            "calories": cals,
+            "protein_g": round(protein, 1),
             "carbs_g": round(totals["carbs_g"], 1),
             "fat_g": round(totals["fat_g"], 1),
+            "sodium_mg": totals["sodium_mg"],
+            # FIT-13 additions:
+            "entries_count": totals["entries_count"],
+            "pending_count": totals["pending_count"],
+            "manual_count": totals["manual_count"],
+            "corrected_count": totals["corrected_count"],
+            "estimated_count": totals["estimated_count"],
+            "confidence_avg": totals["confidence_avg"],
+            "calories_target": calories_target,
+            "protein_target_g": protein_target,
+            "calories_pct": round(100 * cals / calories_target) if calories_target else None,
+            "protein_pct": round(100 * protein / protein_target) if protein_target else None,
+            "high_sodium": totals["high_sodium"],
+            "late_meal": totals["late_meal"],
         })
     return jsonify({"history": days})
 
@@ -4007,6 +4253,7 @@ def swap_workout_exercise():
 # - Cache by workout_id + constraint + readiness_date + model_version + library_hash.
 
 _ADJUST_CACHE_DB = os.path.join(DATA_DIR, "ai_coach_cache.sqlite3")
+_ADJUST_CACHE_VERSION = "fit21-joint-taxonomy-v1"
 
 
 def _ai_cache_init():
@@ -4073,6 +4320,7 @@ def _exercise_library_hash(preference: str) -> str:
                 "equipment": ex.get("equipment", ""),
                 "equipment_brands": ex.get("equipment_brands", []),
                 "compound": bool(ex.get("compound")),
+                "joints_loaded": ex.get("joints_loaded", []),
             }
             for ex in _filtered_exercise_library(preference)
         ],
@@ -4105,6 +4353,7 @@ def _ai_cache_key(recommendation, constraint, readiness_date, model_version, equ
         "cardio_type": (recommendation.get("cardio") or {}).get("type"),
     }, default=str, sort_keys=True)
     parts = [
+        _ADJUST_CACHE_VERSION,
         str(recommendation.get("id") or ""),
         hashlib.sha1(content_fp.encode()).hexdigest()[:16],
         (constraint or "").strip().lower(),
@@ -4150,6 +4399,34 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     notes = []
     exercises = list(recommendation.get("exercises") or [])
 
+    def _normalize_avoid_joints(raw_items):
+        normalized = []
+        for item in raw_items or []:
+            if isinstance(item, str):
+                parts = item.lower().replace("_", " ").split()
+                side = next((p for p in parts if p in {"left", "right", "both"}), "both")
+                joint = next((p for p in parts if p in {"shoulder", "elbow", "wrist", "hip", "knee", "ankle", "spine"}), "")
+            elif isinstance(item, dict):
+                side = str(item.get("side") or "both").strip().lower()
+                joint = str(item.get("joint") or "").strip().lower()
+            else:
+                continue
+            if side not in {"left", "right", "both"}:
+                side = "both"
+            if joint in {"low_back", "lower_back", "back"}:
+                joint = "spine"
+            if joint in {"shoulder", "elbow", "wrist", "hip", "knee", "ankle", "spine"}:
+                normalized.append({"side": side, "joint": joint})
+        return normalized
+
+    def _exercise_loads_avoided_joint(exercise_name, avoid_joints):
+        if not avoid_joints:
+            return None
+        library_entry = EXERCISE_LOOKUP.get(exercise_name)
+        loaded = set((library_entry or {}).get("joints_loaded") or [])
+        hit = next((item for item in avoid_joints if item["joint"] in loaded), None)
+        return hit
+
     # ── 1) Respect deload: skip rpe_delta / sets_delta_pct entirely on deload.
     deload_active = bool((meso_plan.get("name") == "Deload"))
 
@@ -4169,8 +4446,9 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     if deload_active or (oura_readiness is not None and oura_readiness < 60):
         sets_delta = min(0.0, sets_delta)
 
-    # ── 4) Hard blacklist avoid_muscles using current soreness data.
+    # ── 4) Hard blacklist avoid_muscles / avoid_joints using current soreness data.
     avoid_muscles = {m.strip().lower() for m in (intent.get("avoid_muscles") or []) if isinstance(m, str)}
+    avoid_joints = _normalize_avoid_joints(intent.get("avoid_joints") or [])
     recent_soreness = filter_recent_soreness(SORENESS_DATA, hours=48)
     sore_map = {}
     for s in recent_soreness:
@@ -4201,6 +4479,27 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                 kept.append(ex)
         exercises = kept
 
+    swap_requests = intent.get("swap") or []
+    joint_swap_sources = {
+        (sw.get("replace_exercise") or "").strip().lower()
+        for sw in swap_requests
+        if isinstance(sw, dict) and (sw.get("replace_exercise") or "").strip()
+    }
+
+    if avoid_joints:
+        kept = []
+        for ex in exercises:
+            ex_name = ex.get("exercise") or ex.get("name") or ex.get("machine") or "exercise"
+            avoided = _exercise_loads_avoided_joint(ex_name, avoid_joints)
+            if avoided:
+                if any(src in ex_name.lower() for src in joint_swap_sources):
+                    kept.append(ex)
+                    continue
+                notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
+            else:
+                kept.append(ex)
+        exercises = kept
+
     # ── 5) Apply swaps. LLM names the muscle; Python picks the exercise.
     volume_data = calculate_volume(WORKOUTS, weeks=4)
     progression = calculate_progression_status(WORKOUTS)
@@ -4209,7 +4508,6 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     if oura_readiness is not None and oura_readiness < 60:
         volume_multiplier *= 0.8
 
-    swap_requests = intent.get("swap") or []
     for sw in swap_requests:
         if not isinstance(sw, dict):
             continue
@@ -4233,9 +4531,13 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
 
         # Pick a new exercise for target_muscle from the equipment-filtered library,
         # preferring compound movements and rotating off recently-trained exercises.
-        library = [ex for ex in _filtered_exercise_library(equipment_pref) if ex.get("muscle") == target_muscle]
+        library = [
+            ex for ex in _filtered_exercise_library(equipment_pref)
+            if ex.get("muscle") == target_muscle
+            and not _exercise_loads_avoided_joint(ex.get("name"), avoid_joints)
+        ]
         if not library:
-            notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment")
+            notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment/joint constraints")
             continue
         # _filtered_exercise_library already applies brand, compound, and name ranking.
         # Avoid picking something already in the plan
@@ -4262,6 +4564,17 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         exercises[idx] = new_entry
         reason_suffix = f" — {reason}" if reason else ""
         notes.append(f"Swapped: {old_name} → {picked['name']}{reason_suffix}")
+
+    if avoid_joints:
+        kept = []
+        for ex in exercises:
+            ex_name = ex.get("exercise") or ex.get("name") or ex.get("machine") or "exercise"
+            avoided = _exercise_loads_avoided_joint(ex_name, avoid_joints)
+            if avoided:
+                notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
+            else:
+                kept.append(ex)
+        exercises = kept
 
     # ── 6) Apply rpe_delta and sets_delta_pct to each exercise, enforcing caps.
     if rpe_delta != 0 or sets_delta != 0:
@@ -4437,6 +4750,7 @@ def adjust_workout():
 
     intent_is_empty = (
         not intent.get("avoid_muscles")
+        and not intent.get("avoid_joints")
         and not intent.get("swap")
         and not intent.get("rpe_delta")
         and not intent.get("sets_delta_pct")
@@ -6023,6 +6337,20 @@ def _oura_source_label(last_sync_attempt_iso, now=None):
     return "live" if age_h < 1.0 else "cached"
 
 
+@app.route('/api/freshness')
+def freshness_only():
+    """FIT-16: side-effect-free freshness block for the Settings panel.
+
+    /api/dashboard also returns freshness but as part of regenerating the
+    next-workout recommendation (it writes LAST_WORKOUT_RECOMMENDATION).
+    Hitting that endpoint from Settings would silently reset the server-
+    canonical plan a user adjusted/swapped on the Workout tab. This
+    endpoint just exposes the same freshness dict without any of the
+    recommendation-state mutations.
+    """
+    return jsonify({"freshness": _compute_data_freshness()})
+
+
 def _compute_data_freshness(now=None):
     """Per-source freshness for Oura, Apple Health, and food.
 
@@ -6061,6 +6389,90 @@ def _compute_data_freshness(now=None):
             **food_targets,
         },
     }
+
+
+def _push_alert_preview(now=None):
+    """Deterministic, non-sending alert contract for FIT-39."""
+    freshness = _compute_data_freshness(now=now)
+    alerts = []
+    for source_key, label in (("oura", "Oura"), ("apple_health", "Apple Health")):
+        source = freshness.get(source_key) or {}
+        if source.get("status") in {"aging", "stale", "missing"}:
+            alerts.append({
+                "type": "stale_wearable_data",
+                "source": source_key,
+                "title": f"{label} data needs attention",
+                "body": "Open the app to refresh wearable data before trusting today's recommendation.",
+                "severity": "warning" if source.get("status") == "stale" else "info",
+                "status": source.get("status"),
+                "last_data_point": source.get("last_data_point"),
+                "last_sync_attempt": source.get("last_sync_attempt"),
+                "safety_critical": False,
+            })
+    food = freshness.get("food") or {}
+    if food.get("pending_review"):
+        alerts.append({
+            "type": "pending_food_estimate_review",
+            "source": "food",
+            "title": "Meal estimate needs review",
+            "body": "Open the app to accept or correct the pending food estimate before it counts.",
+            "severity": "info",
+            "status": "pending_review",
+            "safety_critical": False,
+        })
+    return {"generated_at": (now or datetime.now()).isoformat(timespec="seconds"), "alerts": alerts}
+
+
+@app.route("/api/push/subscriptions", methods=["GET", "POST"])
+def push_subscriptions():
+    user_id = _current_data_user_id()
+    if request.method == "GET":
+        include_revoked = (request.args.get("include_revoked") or "").lower() == "true"
+        return jsonify({"subscriptions": list_push_subscriptions(user_id, include_revoked=include_revoked)})
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+    subscription = data.get("subscription") or data
+    metadata = {
+        "permission_state": data.get("permission_state"),
+        "pwa_installed": data.get("pwa_installed"),
+        "user_agent": request.headers.get("User-Agent"),
+    }
+    try:
+        saved = save_push_subscription(user_id, subscription, metadata=metadata)
+    except ValueError as exc:
+        return api_error(str(exc), status=400, code="invalid_push_subscription")
+    return jsonify({"status": "saved", "subscription": saved})
+
+
+@app.route("/api/push/subscriptions/<endpoint_hash>", methods=["DELETE"])
+def push_subscription_revoke(endpoint_hash: str):
+    endpoint_hash = (endpoint_hash or "").strip()
+    if not re.fullmatch(r"[a-f0-9]{64}", endpoint_hash):
+        return api_error("invalid endpoint_hash", status=400, code="invalid_field")
+    removed = revoke_push_subscription(_current_data_user_id(), endpoint_hash)
+    return jsonify({"status": "revoked" if removed else "not_found", "revoked": removed})
+
+
+@app.route("/api/push/reminders/preview")
+def push_reminders_preview():
+    subscriptions = list_push_subscriptions(_current_data_user_id())
+    support_state = "ready" if subscriptions else "no_subscription"
+    if any(sub.get("permission_state") == "denied" for sub in subscriptions):
+        support_state = "permission_denied"
+    elif any(sub.get("pwa_installed") is False for sub in subscriptions):
+        support_state = "not_installed"
+    if request.args.get("permission") == "denied":
+        support_state = "permission_denied"
+    elif request.args.get("pwa_installed") == "false":
+        support_state = "not_installed"
+    return jsonify({
+        **_push_alert_preview(),
+        "support_state": support_state,
+        "subscription_count": len(subscriptions),
+        "delivery": "preview_only",
+        "safety_critical": False,
+    })
 
 
 def _confidence_level_from(effective_readiness, freshness):

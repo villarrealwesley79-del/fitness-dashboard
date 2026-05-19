@@ -1,0 +1,152 @@
+"""Canonical meal estimate schema and validation helpers (FIT-5).
+
+The meal intake endpoint accepts text and photo estimates from different
+producers, but they must share one public contract before policy or
+persistence sees them. This module keeps that contract pure and reusable:
+no Flask imports, no database calls, and no raw prompt/image fields.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+ALLOWED_MEAL_TYPES = ("breakfast", "lunch", "dinner", "snack")
+
+PUBLIC_ESTIMATE_FIELDS = (
+    "item_name",
+    "portion_description",
+    "meal_type",
+    "calories",
+    "protein_g",
+    "carbs_g",
+    "fat_g",
+    "sodium_mg",
+    "fiber_g",
+    "confidence",
+    "ambiguous",
+    "uncertainty_notes",
+    "source",
+)
+
+CALORIE_MAX = 5000
+MACRO_GRAM_MAX = 500
+SODIUM_MG_MAX = 12000
+
+
+class MealEstimateValidationError(ValueError):
+    """Raised when an estimate cannot satisfy the FIT-5 public schema."""
+
+
+def _number(value: Any, field: str, *, maximum: float | None = None) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise MealEstimateValidationError(f"{field} must be numeric")
+    numeric = float(value)
+    if numeric < 0 or (maximum is not None and numeric > maximum):
+        raise MealEstimateValidationError(f"{field} outside plausible range")
+    return numeric
+
+
+def _string_or_none(value: Any, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise MealEstimateValidationError(f"{field} must be string or null")
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def sanitize_meal_estimate(
+    raw: dict,
+    *,
+    source: str | None = None,
+    legacy_defaults: bool = False,
+    plausible_ranges: bool = False,
+) -> dict:
+    """Validate and return an API-safe meal estimate.
+
+    Unknown keys are dropped so model traces, raw prompts, image paths, and
+    image bytes cannot leak into responses or food-log snapshots.
+    """
+    if not isinstance(raw, dict):
+        raise MealEstimateValidationError("estimate must be an object")
+    if legacy_defaults:
+        raw = {
+            "portion_description": None,
+            "meal_type": "snack",
+            "sodium_mg": 0,
+            "fiber_g": 0,
+            "confidence": 0.0,
+            "ambiguous": True,
+            "uncertainty_notes": [],
+            **raw,
+        }
+
+    item_name = raw.get("item_name")
+    if not isinstance(item_name, str) or not item_name.strip():
+        raise MealEstimateValidationError("item_name is required")
+
+    meal_type = raw.get("meal_type") or "snack"
+    if meal_type not in ALLOWED_MEAL_TYPES:
+        raise MealEstimateValidationError("invalid meal_type")
+
+    notes = raw.get("uncertainty_notes", [])
+    if notes is None:
+        notes = []
+    if not isinstance(notes, list) or any(not isinstance(note, str) for note in notes):
+        raise MealEstimateValidationError("uncertainty_notes must be strings")
+    if not isinstance(raw.get("ambiguous"), bool):
+        raise MealEstimateValidationError("ambiguous must be boolean")
+
+    confidence = _number(raw.get("confidence"), "confidence", maximum=1.0)
+    estimate_source = source or raw.get("source")
+    if not isinstance(estimate_source, str) or not estimate_source.strip():
+        raise MealEstimateValidationError("source is required")
+
+    return {
+        "item_name": item_name.strip(),
+        "portion_description": _string_or_none(raw.get("portion_description"), "portion_description"),
+        "meal_type": meal_type,
+        "calories": int(round(_number(
+            raw.get("calories"), "calories", maximum=CALORIE_MAX if plausible_ranges else None
+        ))),
+        "protein_g": round(_number(
+            raw.get("protein_g"), "protein_g", maximum=MACRO_GRAM_MAX if plausible_ranges else None
+        ), 1),
+        "carbs_g": round(_number(
+            raw.get("carbs_g"), "carbs_g", maximum=MACRO_GRAM_MAX if plausible_ranges else None
+        ), 1),
+        "fat_g": round(_number(
+            raw.get("fat_g"), "fat_g", maximum=MACRO_GRAM_MAX if plausible_ranges else None
+        ), 1),
+        "sodium_mg": int(round(_number(
+            raw.get("sodium_mg"), "sodium_mg", maximum=SODIUM_MG_MAX if plausible_ranges else None
+        ))),
+        "fiber_g": round(_number(
+            raw.get("fiber_g"), "fiber_g", maximum=MACRO_GRAM_MAX if plausible_ranges else None
+        ), 1),
+        "confidence": round(confidence, 2),
+        "ambiguous": raw["ambiguous"],
+        "uncertainty_notes": [note.strip() for note in notes if note.strip()],
+        "source": estimate_source.strip(),
+    }
+
+
+def manual_review_estimate(*, text: str = "", source: str = "manual_review_estimate") -> dict:
+    """Low-confidence fallback used when an estimator response is unusable."""
+    item = (text or "").strip()[:80] or "Meal"
+    return {
+        "item_name": item,
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 0,
+        "protein_g": 0.0,
+        "carbs_g": 0.0,
+        "fat_g": 0.0,
+        "sodium_mg": 0,
+        "fiber_g": 0.0,
+        "confidence": 0.0,
+        "ambiguous": True,
+        "uncertainty_notes": ["Estimate unavailable — enter or accept manually before it counts."],
+        "source": source,
+    }

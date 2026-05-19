@@ -248,6 +248,18 @@ ADJUST_SCHEMA = {
             "additionalProperties": False,
             "properties": {
                 "avoid_muscles": {"type": "array", "items": {"type": "string"}},
+                "avoid_joints": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "side": {"type": "string", "enum": ["left", "right", "both"]},
+                            "joint": {"type": "string", "enum": ["shoulder", "elbow", "wrist", "hip", "knee", "ankle", "spine"]},
+                        },
+                        "required": ["side", "joint"],
+                    },
+                },
                 "swap": {
                     "type": "array",
                     "items": {
@@ -268,6 +280,7 @@ ADJUST_SCHEMA = {
             },
             "required": [
                 "avoid_muscles",
+                "avoid_joints",
                 "swap",
                 "rpe_delta",
                 "sets_delta_pct",
@@ -290,6 +303,9 @@ _ADJUST_SYSTEM = (
     "- NEVER prescribe specific exercises, weights, or sets — only intent.\n"
     "- Use avoid_muscles to express 'don't train X' (translate movement cues "
     "like 'no overhead press' into the relevant muscle — shoulders here).\n"
+    "- Use avoid_joints for side-specific pain/soreness like 'left shoulder hurts' "
+    "or 'right knee sore'. Do not convert those to a whole-muscle avoid unless "
+    "the athlete says the full muscle group is sore.\n"
     "- Use swap to say 'the algorithm picked exercise X for muscle M; replace the "
     "target muscle with Y for reason Z'. Python re-picks the actual exercise.\n"
     "- rpe_delta: -1.0 to +1.0 — never more. 0 if unsure.\n"
@@ -388,6 +404,16 @@ def _validate_adjust_intent(parsed):
         raise LmStudioError("intent.avoid_muscles must be a list")
     if not all(isinstance(m, str) for m in intent["avoid_muscles"]):
         raise LmStudioError("intent.avoid_muscles entries must be strings")
+    avoid_joints = intent.get("avoid_joints")
+    if not isinstance(avoid_joints, list):
+        raise LmStudioError("intent.avoid_joints must be a list")
+    for item in avoid_joints:
+        if not isinstance(item, dict):
+            raise LmStudioError("intent.avoid_joints entries must be objects")
+        if item.get("side") not in {"left", "right", "both"}:
+            raise LmStudioError("intent.avoid_joints[*].side is invalid")
+        if item.get("joint") not in {"shoulder", "elbow", "wrist", "hip", "knee", "ankle", "spine"}:
+            raise LmStudioError("intent.avoid_joints[*].joint is invalid")
     swap = intent.get("swap")
     if not isinstance(swap, list):
         raise LmStudioError("intent.swap must be a list")

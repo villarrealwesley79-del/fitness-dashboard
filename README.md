@@ -40,6 +40,8 @@ Excluded:
 - `docs/VISION.md` describes the target product direction and ideal end state.
 - `docs/PRD.md` defines the product requirements and roadmap.
 - `docs/CURRENT_STATE.md` captures the current app state, risks, and known gaps.
+- `docs/RELEASE_RUNBOOK.md` documents release, restart, rollback, cache-bust, and Apple Health bridge checks.
+- `docs/REPO_HYGIENE.md` documents which stale/runtime/generated artifacts stay out of Git.
 
 ## Running Locally
 
@@ -72,6 +74,10 @@ already have a session cookie and do not want the script to log in, pass
 checks authenticated dashboard, settings, history, Oura, Apple Health sync
 status, smart recommendation, AI health, a safe rejected workout write path, and
 the existing file-descriptor leak regression.
+
+The smoke script creates per-run temporary cookie/body files and removes them on
+success, failure, or signal. `COOKIE_JAR` and `BODY_FILE` can still override the
+paths for debugging, but the script owns and removes those files during cleanup.
 
 Optional integrations use environment variables such as:
 

@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260519-fit14-history-detail-1">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260519-fit14-history-detail-2">
 </head>
 <body>
     <div class="app-shell">
@@ -501,6 +501,24 @@
                 </div>
             </div>
 
+            <!-- FIT-13: honest interpretation of recent scale movements
+                 with food context (high sodium / late meals / pending
+                 estimates). Hidden by default; revealed only when there
+                 IS context to share so the body view doesn't get noisy
+                 on quiet days. -->
+            <div class="card body-interpretation-card" id="body-interpretation-card" hidden>
+                <div class="card-head"><div class="card-label">INTERPRETATION</div></div>
+                <ul id="body-interpretation-notes" class="body-interpretation-list"></ul>
+            </div>
+
+            <!-- FIT-13: target progress against settings goals. Surfaces
+                 the recomp signal the /api/body-recomp summary already
+                 computes (current vs target weight/BF, weeks-to-target). -->
+            <div class="card body-recomp-card" id="body-recomp-card" hidden>
+                <div class="card-head"><div class="card-label">TARGET PROGRESS</div></div>
+                <div id="body-recomp-rows" class="body-recomp-rows"></div>
+            </div>
+
             <div class="card">
                 <div class="card-head"><div class="card-label">WEIGHT TREND (90 DAYS)</div></div>
                 <div class="chart-holder chart-tall" id="chart-weight"></div>
@@ -514,6 +532,18 @@
             <div class="card">
                 <div class="card-head"><div class="card-label">COMPOSITION</div><div class="card-sub" id="measurements-date">—</div></div>
                 <div id="measurements-grid" class="measurement-grid"></div>
+            </div>
+
+            <!-- FIT-13: 14-day nutrition trend rolled up from /api/nutrition-history.
+                 Surfaces target adherence per day plus distinguishes estimated
+                 vs corrected entries so the user can see which days' totals
+                 are firm vs AI-guessed. -->
+            <div class="card body-nutrition-card" id="body-nutrition-card" hidden>
+                <div class="card-head">
+                    <div class="card-label">NUTRITION TREND (14D)</div>
+                    <div class="card-sub" id="body-nutrition-sub">—</div>
+                </div>
+                <div id="body-nutrition-rows" class="body-nutrition-rows"></div>
             </div>
 
             <div class="card">
@@ -643,6 +673,27 @@
                         <button id="btn-sync-oura" class="btn btn-ghost btn-sm" type="button">Sync</button>
                     </div>
                 </div>
+                <!-- FIT-16: Oura freshness evidence — latest daily/sleep rows
+                     and cached/live source. Lets the owner inspect real sync
+                     state without poking SQLite. -->
+                <div class="integration-detail" id="oura-detail">
+                    <div class="integration-detail-row">
+                        <span class="detail-label">Latest daily</span>
+                        <span class="detail-value" id="oura-detail-daily">—</span>
+                    </div>
+                    <div class="integration-detail-row">
+                        <span class="detail-label">Latest sleep</span>
+                        <span class="detail-value" id="oura-detail-sleep">—</span>
+                    </div>
+                    <div class="integration-detail-row">
+                        <span class="detail-label">Source</span>
+                        <span class="detail-value" id="oura-detail-source">—</span>
+                    </div>
+                    <div class="integration-detail-row" id="oura-detail-sync-row" hidden>
+                        <span class="detail-label">Last sync</span>
+                        <span class="detail-value" id="oura-detail-sync-result">—</span>
+                    </div>
+                </div>
                 <div class="settings-row">
                     <div class="settings-row-label settings-row-label-stack">
                         <span class="settings-row-label-main">
@@ -654,6 +705,40 @@
                     <div class="settings-row-control">
                         <span id="apple-connect-state" class="state-chip">—</span>
                         <button id="btn-apple-setup" class="btn btn-ghost btn-sm" type="button">Setup</button>
+                    </div>
+                </div>
+                <!-- FIT-16: Apple Health freshness evidence — distinguishes
+                     last accepted (records actually inserted) from last
+                     attempt (raw HAE webhook hits), surfaces total record
+                     counts, and documents the expected daily cadence. -->
+                <div class="integration-detail" id="apple-detail">
+                    <div class="integration-detail-row">
+                        <span class="detail-label">Last accepted</span>
+                        <span class="detail-value" id="apple-detail-last-sync">—</span>
+                    </div>
+                    <div class="integration-detail-row" id="apple-detail-attempt-row" hidden>
+                        <span class="detail-label">Last attempt</span>
+                        <span class="detail-value" id="apple-detail-last-attempt">—</span>
+                    </div>
+                    <!-- "Data through" is the most recent record_date the
+                         server has — distinct from "Last accepted" (insertion
+                         timestamp) so an HAE replay of an old export can't
+                         masquerade as fresh data. -->
+                    <div class="integration-detail-row">
+                        <span class="detail-label">Data through</span>
+                        <span class="detail-value" id="apple-detail-data-through">—</span>
+                    </div>
+                    <div class="integration-detail-row">
+                        <span class="detail-label">Records</span>
+                        <span class="detail-value" id="apple-detail-records">—</span>
+                    </div>
+                    <div class="integration-detail-row">
+                        <span class="detail-label">Expected</span>
+                        <span class="detail-value">Daily via Health Auto Export</span>
+                    </div>
+                    <div class="integration-detail-row integration-detail-warn" id="apple-detail-stale-row" hidden>
+                        <span class="detail-label">⚠ Stale</span>
+                        <span class="detail-value" id="apple-detail-stale-text">No accepted export in the last 48 hours.</span>
                     </div>
                 </div>
                 <div class="settings-row">
@@ -971,6 +1056,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260519-fit14-history-detail-1"></script>
+    <script src="/static/js/app.js?v=20260519-fit14-history-detail-2"></script>
 </body>
 </html>

@@ -66,6 +66,8 @@ Modals and interactive states currently include active workout, exercise swap, a
 
 Nutrition exists as backend data and target settings, but the current product surface does not yet provide the desired photo-based food capture flow where a snack or meal photo updates daily calories/macros and coaching context.
 
+Food photo privacy is explicitly backend-first: raw photos are discarded after extraction by default, normal API responses and backups must not expose raw image bytes or raw model traces, and the current non-UI contract is recorded in `docs/FOOD_PHOTO_PRIVACY.md`.
+
 ## AI Coach State
 
 The AI coach is intentionally constrained. The deterministic Python engine generates and owns the plan. LM Studio is used for:
@@ -113,7 +115,8 @@ The repo documents a primary ASUS GX10 LM Studio route and a Mac mini fallback r
 
 - The repo has many untracked and modified files, including runtime databases, generated caches, audit bundles, backup files, and source files.
 - Authenticated smoke testing requires a valid session cookie.
-- Some older docs are stale relative to the newer Health Auto Export token-gated sync model.
+- Release, restart, rollback, cache-bust, and Apple Health bridge checks are documented in `docs/RELEASE_RUNBOOK.md`.
+- Runtime/stale artifact policy is documented in `docs/REPO_HYGIENE.md`; do not delete runtime data during cleanup without explicit approval.
 - The app is single-owner by design; public multi-user mode would require per-user data stores.
 - Apple Health Health Auto Export ingest derives `record_date` from the ISO timestamp's own timezone offset rather than slicing the first 10 characters.
 - If older Apple Health synced rows look misdated after travel, backfill by deleting the affected `health_auto_export` rows for the wrong `record_date` range from `apple_health_sync.db` and replaying the original HAE export payload; the widened `(source, record_type, record_date, record_key)` uniqueness will reinsert them under the corrected local day.

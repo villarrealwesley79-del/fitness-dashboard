@@ -1,0 +1,1016 @@
+{
+  "benchmark": {
+    "candidate_passed": false,
+    "case_count": 40,
+    "latency_gates": {
+      "vision": {
+        "latency_limit_ms": 20000,
+        "latency_ms_avg": null,
+        "latency_passed": false
+      }
+    },
+    "latency_limit_ms": 20000,
+    "latency_ms_avg": null,
+    "latency_passed": false,
+    "missing_image_count": 40,
+    "model": "no-local-vlm-loaded",
+    "model_run_count": 0,
+    "quality_pass_count": 0,
+    "quality_pass_rate": 0.0,
+    "results": [
+      {
+        "ambiguous": null,
+        "case_id": "photo-001",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "chicken rice",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-002",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "burger",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-003",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "eggs toast",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-004",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "pasta",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-005",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "salad",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-006",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "tacos",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-007",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "steak potatoes",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-008",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "sushi",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-009",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "pizza",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-010",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "shake",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-011",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "oatmeal",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-012",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "sandwich",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-013",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "burrito bowl",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-014",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "pancakes",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-015",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "fish",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-016",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "rice beans",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-017",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "soup",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-018",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "fries",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-019",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "wings",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "photo-020",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "leftovers",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "pkg-001",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "protein bar",
+        "has_image": false,
+        "input_type": "packaged_photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "pkg-002",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "chips",
+        "has_image": false,
+        "input_type": "packaged_photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "pkg-003",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "yogurt",
+        "has_image": false,
+        "input_type": "packaged_photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "pkg-004",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "frozen meal",
+        "has_image": false,
+        "input_type": "packaged_photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "pkg-005",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "cereal",
+        "has_image": false,
+        "input_type": "packaged_photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "pkg-006",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "sports drink",
+        "has_image": false,
+        "input_type": "packaged_photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "pkg-007",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "milk",
+        "has_image": false,
+        "input_type": "packaged_photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "pkg-008",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "trail mix",
+        "has_image": false,
+        "input_type": "packaged_photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "pkg-009",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "soup",
+        "has_image": false,
+        "input_type": "packaged_photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "pkg-010",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "fast food",
+        "has_image": false,
+        "input_type": "packaged_photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "amb-001",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "burger fries",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "amb-002",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "buffet",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "amb-003",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "snacks",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "amb-004",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "pasta",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "amb-005",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "partial plate",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "amb-006",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "shared meal",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "amb-007",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "restaurant meal",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "amb-008",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "restaurant meal",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "amb-009",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "drink",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      },
+      {
+        "ambiguous": null,
+        "case_id": "amb-010",
+        "confidence": null,
+        "estimate": null,
+        "expected_item_hint": "leftovers",
+        "has_image": false,
+        "input_type": "photo",
+        "latency_ms": null,
+        "model": "no-local-vlm-loaded",
+        "quality": {
+          "calories_within_band": false,
+          "confidence_calibrated": false,
+          "item_hint_match": false,
+          "macro_energy_consistent": false,
+          "passed": false,
+          "raw_trace_free": false
+        },
+        "ran_model": false,
+        "schema_errors": [
+          "missing_image_mapping"
+        ],
+        "schema_valid": false
+      }
+    ],
+    "schema_valid_count": 0,
+    "schema_valid_rate": 0.0
+  },
+  "case_counts": {
+    "ambiguous": 10,
+    "image_capable": 40,
+    "packaged_photo": 10,
+    "photo": 20,
+    "text": 20,
+    "total": 60
+  },
+  "hardware": {
+    "machine": "arm64",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O",
+    "system_profiler": "Model Name: Mac mini\nChip: Apple M4 Pro\nTotal Number of Cores: 12 (8 Performance and 4 Efficiency)\nMemory: 48 GB"
+  },
+  "lm_studio": {
+    "latency_ms": 45,
+    "models": [
+      "google/gemma-4-31b",
+      "qwen/qwen3.6-35b-a3b",
+      "text-embedding-nomic-embed-text-v1.5"
+    ],
+    "reachable": true
+  },
+  "routing_recommendation": {
+    "auto_log_threshold": "confidence >= 0.75, unambiguous, plausible macros",
+    "candidate_text_model": "qwen/qwen3.6-35b-a3b",
+    "candidate_vision_model": "Qwen2.5-VL 7B on ASUS GX10 first; Qwen2.5-VL 32B only if latency and memory fit",
+    "fallback": "deterministic parser fallback with pending_review; cloud disabled by default",
+    "pending_review_threshold": "confidence < 0.75 or ambiguous/impossible nutrition",
+    "production_text_route": "deterministic parser fallback with pending_review until a benchmark passes",
+    "production_vision_route": "manual pending-review fallback until a local VLM benchmark passes"
+  }
+}
