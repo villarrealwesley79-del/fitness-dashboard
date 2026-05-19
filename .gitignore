@@ -15,8 +15,11 @@ venv/
 .venv/
 
 *.db
+*.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 auth.db*
 fitness.db
 fitness_data.db
@@ -29,7 +32,9 @@ data_*.json
 *_snapshot.json
 *_proof-output.json
 audit-bundles/
+backup-bundles/
 visual-review/
+generated-smoke-test-*.json
 
 static/**/*.bak*
 templates/**/*.bak*
