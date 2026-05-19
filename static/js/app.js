@@ -2595,6 +2595,7 @@
         prompt:           { text: 'Off',              cls: ''        },
         granted_active:   { text: 'On',               cls: 'ok'      },
         granted_inactive: { text: 'Pending',          cls: 'warn'    },
+        revoked:          { text: 'Revoked',          cls: 'warn'    },
         denied:           { text: 'Blocked',          cls: 'stale'   },
     };
 
@@ -2626,10 +2627,16 @@
         // iOS only delivers push when installed to Home Screen.
         if (_pushIsIOS() && !_pushIsStandalone()) return { name: 'needs_install', subs: [] };
         const perm = Notification.permission;
-        if (perm === 'denied') return { name: 'denied', subs: [] };
-        if (perm === 'default') return { name: 'prompt', subs: [] };
-        // perm === 'granted'
         const subs = await _pushSubscriptionsFromServer();
+        if (perm === 'denied') return { name: 'denied', subs };
+        if (perm === 'default') {
+            // If the server still has a subscription record, the user
+            // previously enabled and has since revoked permission at the
+            // browser/OS level. Distinct from the first-time `prompt` state.
+            if (subs.length > 0) return { name: 'revoked', subs };
+            return { name: 'prompt', subs: [] };
+        }
+        // perm === 'granted'
         if (subs.length > 0) return { name: 'granted_active', subs };
         return { name: 'granted_inactive', subs: [] };
     }
@@ -2648,9 +2655,11 @@
         const disableBtn = $('btn-push-disable');
         if (!enableBtn || !disableBtn) return;
         // Enable is offered when the user can grant permission or re-subscribe.
-        const showEnable = stateName === 'prompt' || stateName === 'granted_inactive';
-        // Disable is offered when an active subscription exists.
-        const showDisable = stateName === 'granted_active';
+        const showEnable = stateName === 'prompt' || stateName === 'granted_inactive' || stateName === 'revoked';
+        // Disable is offered when there's something to clean up — either an
+        // active subscription or a stale server-side record from a revoked
+        // permission.
+        const showDisable = stateName === 'granted_active' || stateName === 'revoked';
         enableBtn.hidden = !showEnable;
         disableBtn.hidden = !showDisable;
     }
@@ -2660,9 +2669,11 @@
         // exactly the ones relevant to the current state.
         const installRow = $('push-install-row');
         const blockedRow = $('push-blocked-row');
+        const revokedRow = $('push-revoked-row');
         const vapidRow = $('push-vapid-row');
         if (installRow) installRow.hidden = stateName !== 'needs_install';
         if (blockedRow) blockedRow.hidden = stateName !== 'denied';
+        if (revokedRow) revokedRow.hidden = stateName !== 'revoked';
         if (vapidRow) vapidRow.hidden = stateName !== 'granted_inactive';
     }
 
@@ -2754,38 +2765,51 @@
         const enableBtn = $('btn-push-enable');
         if (enableBtn) enableBtn.disabled = true;
         try {
-            const perm = await Notification.requestPermission();
-            if (perm !== 'granted') {
-                await renderPushSection();
-                return;
-            }
-            const reg = await navigator.serviceWorker.ready;
-            const vapid = await _pushGetVapidKey();
-            const opts = { userVisibleOnly: true };
-            if (vapid) opts.applicationServerKey = _pushUrlBase64ToUint8(vapid);
-            let subscription = null;
             try {
-                subscription = await reg.pushManager.subscribe(opts);
-            } catch (err) {
-                // Chrome rejects subscribe without applicationServerKey. We
-                // surface this as the "granted_inactive" state — permission
-                // is granted but server delivery isn't configured.
-                console.warn('pushManager.subscribe failed:', err);
-            }
-            if (subscription) {
+                const perm = await Notification.requestPermission();
+                if (perm !== 'granted') return;
+                const reg = await navigator.serviceWorker.ready;
+                const vapid = await _pushGetVapidKey();
+                const opts = { userVisibleOnly: true };
+                if (vapid) opts.applicationServerKey = _pushUrlBase64ToUint8(vapid);
+                let subscription = null;
                 try {
-                    await api('/api/push/subscriptions', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            subscription: subscription.toJSON ? subscription.toJSON() : subscription,
-                            permission_state: 'granted',
-                            pwa_installed: _pushIsStandalone(),
-                        }),
-                    });
+                    subscription = await reg.pushManager.subscribe(opts);
                 } catch (err) {
-                    console.warn('POST /api/push/subscriptions failed:', err);
+                    // Chrome rejects subscribe without applicationServerKey. We
+                    // surface this as the "granted_inactive" state — permission
+                    // is granted but server delivery isn't configured.
+                    console.warn('pushManager.subscribe failed:', err);
                 }
+                if (subscription) {
+                    let serverSaved = false;
+                    try {
+                        await api('/api/push/subscriptions', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                subscription: subscription.toJSON ? subscription.toJSON() : subscription,
+                                permission_state: 'granted',
+                                pwa_installed: _pushIsStandalone(),
+                            }),
+                        });
+                        serverSaved = true;
+                    } catch (err) {
+                        console.warn('POST /api/push/subscriptions failed:', err);
+                    }
+                    // If the server save failed, tear down the browser-side
+                    // subscription so we don't leave a dangling push channel
+                    // that the user can't see or disable in this UI.
+                    if (!serverSaved) {
+                        try { await subscription.unsubscribe(); }
+                        catch (err) { console.warn('rollback unsubscribe failed:', err); }
+                    }
+                }
+            } catch (err) {
+                // Outer catch covers requestPermission rejection, the
+                // serviceWorker.ready promise, VAPID-key decoding, and any
+                // other unexpected throw before the inner try blocks.
+                console.warn('enablePush failed:', err);
             }
             await renderPushSection();
         } finally {
