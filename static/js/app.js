@@ -2650,16 +2650,25 @@
         if (info.cls) chip.classList.add(info.cls);
     }
 
-    function _pushApplyButtons(stateName) {
+    function _pushApplyButtons(state) {
         const enableBtn = $('btn-push-enable');
         const disableBtn = $('btn-push-disable');
         if (!enableBtn || !disableBtn) return;
+        const stateName = state.name;
+        const subCount = (state.subs && state.subs.length) || 0;
         // Enable is offered when the user can grant permission or re-subscribe.
+        // Hidden in `denied` because requestPermission() is silently rejected
+        // when the browser already remembers a deny.
         const showEnable = stateName === 'prompt' || stateName === 'granted_inactive' || stateName === 'revoked';
-        // Disable is offered when there's something to clean up — either an
-        // active subscription or a stale server-side record from a revoked
-        // permission.
-        const showDisable = stateName === 'granted_active' || stateName === 'revoked';
+        // Disable is offered when there's something to clean up — an active
+        // subscription, a stale server record from a revoked permission, or
+        // an orphan server record from a previous Enable that the user later
+        // denied at the OS level.
+        const showDisable = (
+            stateName === 'granted_active'
+            || stateName === 'revoked'
+            || (stateName === 'denied' && subCount > 0)
+        );
         enableBtn.hidden = !showEnable;
         disableBtn.hidden = !showDisable;
     }
@@ -2714,7 +2723,7 @@
         if (!card) return;
         const state = await _pushDetectState();
         _pushApplyChip(state.name);
-        _pushApplyButtons(state.name);
+        _pushApplyButtons(state);
         _pushApplyHintRows(state.name);
         _pushApplyDot(state.name);
         _wirePushButtons();
