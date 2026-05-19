@@ -216,3 +216,39 @@ def test_original_estimate_json_does_not_include_raw_trace(isolated_store):
         raw = conn.execute("SELECT original_estimate_json FROM food_logs").fetchone()[0]
     persisted = json.loads(raw)
     assert persisted == {"item_name": "snack", "calories": 410}
+
+
+def test_original_estimate_json_preserves_lookup_provenance(isolated_store):
+    store, db_path = isolated_store
+    store.init_data_db()
+
+    store.add_food_log(
+        user_id=1,
+        record={
+            "client_id": "provenance-1",
+            "date": "2026-05-19",
+            "calories": 1075,
+            "protein_g": 51,
+            "source": "nutritionix",
+            "original_estimate": {
+                "item_name": "Chipotle chicken burrito",
+                "calories": 1075,
+                "protein_g": 51,
+                "source": "nutritionix",
+                "external_food_id": "chipotle-burrito",
+                "verified_source_url": "https://www.nutritionix.com/",
+                "data_fetched_at": "2026-05-19T10:00:00",
+                "portion_basis": "1 burrito",
+                "raw_model_trace": "drop me",
+            },
+        },
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        raw = conn.execute("SELECT original_estimate_json FROM food_logs").fetchone()[0]
+    payload = json.loads(raw)
+    assert payload["external_food_id"] == "chipotle-burrito"
+    assert payload["verified_source_url"] == "https://www.nutritionix.com/"
+    assert payload["data_fetched_at"] == "2026-05-19T10:00:00"
+    assert payload["portion_basis"] == "1 burrito"
+    assert "raw_model_trace" not in payload

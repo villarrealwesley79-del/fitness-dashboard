@@ -55,6 +55,13 @@ FOOD_ESTIMATE_FIELDS = {
     "source",
     "logged_at",
     "date",
+    "external_food_id",
+    "verified_source_url",
+    "data_fetched_at",
+    "portion_basis",
+    "brand_id",
+    "underlying_source",
+    "off_attribution",
 }
 
 
@@ -251,6 +258,13 @@ def init_data_db():
                 created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
                 updated_at             TEXT    NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(user_id, client_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS branded_lookup_cache (
+                normalized_text TEXT PRIMARY KEY,
+                source          TEXT NOT NULL,
+                response_json   TEXT NOT NULL,
+                fetched_at      TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS recovery_data (
@@ -454,6 +468,46 @@ def get_food_logs(user_id: int, limit: Optional[int] = None, since: Optional[str
     with _get_db() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [_food_log_row_to_dict(r) for r in rows]
+
+
+def get_branded_lookup_cache(normalized_text: str) -> Optional[dict]:
+    """Return a cached branded-food lookup payload by normalized text."""
+    key = (normalized_text or "").strip()
+    if not key:
+        return None
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT normalized_text, source, response_json, fetched_at FROM branded_lookup_cache WHERE normalized_text = ?",
+            (key,),
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["response_json"] = _json_loads_or_none(result.get("response_json"))
+    return result
+
+
+def save_branded_lookup_cache(normalized_text: str, source: str, response: dict) -> None:
+    """Persist a source response for cache-first meal lookup."""
+    key = (normalized_text or "").strip()
+    if not key or not isinstance(response, dict):
+        return
+    init_data_db()
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    with _get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO branded_lookup_cache (normalized_text, source, response_json, fetched_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(normalized_text) DO UPDATE SET
+                source = excluded.source,
+                response_json = excluded.response_json,
+                fetched_at = excluded.fetched_at
+            """,
+            (key, source, _json_dumps_or_none(response), now_iso),
+        )
+        conn.commit()
 
 
 def clear_food_logs(user_id: int) -> None:

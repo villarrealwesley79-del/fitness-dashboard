@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
+import branded_food_lookup
 from lm_studio_adapter import (
     LM_STUDIO_ANALYZE_TIMEOUT_SEC,
     LmStudioError,
@@ -365,6 +366,16 @@ def parse_meal_text(
         return {
             "estimate": _fallback_estimate(""),
             "fallback_used": True,
+        }
+
+    try:
+        branded_estimate = branded_food_lookup.lookup(cleaned)
+    except Exception:
+        branded_estimate = None
+    if branded_estimate:
+        return {
+            "estimate": branded_estimate,
+            "fallback_used": False,
         }
 
     payload = {
