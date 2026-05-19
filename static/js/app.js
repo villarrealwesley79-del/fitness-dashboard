@@ -1980,6 +1980,10 @@
             ouraState.textContent = oura.source === 'api' ? 'Connected' : 'Cached';
             ouraState.className = 'state-chip ' + (oura.source === 'api' ? 'ok' : 'warn');
         } else { ouraState.textContent = 'Not connected'; ouraState.className = 'state-chip'; }
+        // FIT-16: Oura freshness evidence — latest daily / latest sleep
+        // rows + cached vs live state. Lets the owner see what was
+        // actually pulled without poking SQLite.
+        renderOuraFreshnessDetail(oura);
 
         // Apple Health — prefer the real sync-status endpoint over
         // the file-existence probe, and only claim "connected" when a
@@ -2011,11 +2015,17 @@
                     ? `Last export ${fmtDateTime(lastExportRaw)} · ${ah.total_records || 0} records`
                     : 'No accepted export yet';
             }
+            // FIT-16: Apple Health freshness evidence — distinguishes
+            // last accepted (records actually inserted) from last
+            // attempt (raw HAE webhook hits), surfaces total record
+            // counts, and reveals a stale warning past 48h.
+            renderAppleHealthFreshnessDetail(ah);
         } catch {
             $('apple-connect-state').textContent = 'Not connected';
             $('apple-int-dot').className = 'int-dot';
             const detail = $('apple-last-export');
             if (detail) detail.textContent = 'Export status unavailable';
+            renderAppleHealthFreshnessDetail(null);
         }
         const setupBtn = $('btn-apple-setup');
         if (setupBtn && !setupBtn.dataset.wired) {
@@ -2198,6 +2208,157 @@
             // Don't leave a stale "flaky" warning on screen if /api/ai/metrics
             // fails after a previous refresh exposed a high fallback rate.
             if (warnRow) warnRow.hidden = true;
+        }
+    }
+
+    // ── FIT-16: Wearable freshness evidence panels ────────────────
+    // Both renderers tolerate null / partial payloads — the Settings
+    // page must keep rendering even when an upstream endpoint is down.
+
+    function _fmtAgo(date) {
+        if (!date) return null;
+        const ageMs = Date.now() - date.getTime();
+        if (ageMs < 0) return 'just now';
+        const ageHours = Math.floor(ageMs / 3600000);
+        if (ageHours < 1) {
+            const m = Math.max(1, Math.floor(ageMs / 60000));
+            return `${m}m ago`;
+        }
+        if (ageHours < 48) return `${ageHours}h ago`;
+        const days = Math.floor(ageHours / 24);
+        return `${days}d ago`;
+    }
+
+    function _setDetail(id, text) {
+        const el = $(id);
+        if (el) el.textContent = text;
+    }
+
+    function renderOuraFreshnessDetail(oura) {
+        const detail = $('oura-detail');
+        if (!detail) return;
+        if (!oura || !oura.source) {
+            _setDetail('oura-detail-daily', 'Not connected');
+            _setDetail('oura-detail-sleep', '—');
+            _setDetail('oura-detail-source', '—');
+            return;
+        }
+        // Latest daily: combine date + the headline readiness/HRV pair.
+        const dailyParts = [];
+        if (oura.date) dailyParts.push(oura.date);
+        const dailyStats = [];
+        if (oura.readiness != null) dailyStats.push(`readiness ${oura.readiness}`);
+        if (oura.hrv != null) dailyStats.push(`HRV ${oura.hrv}`);
+        if (oura.resting_hr != null) dailyStats.push(`RHR ${oura.resting_hr}`);
+        if (dailyStats.length) dailyParts.push(dailyStats.join(' · '));
+        _setDetail('oura-detail-daily', dailyParts.length ? dailyParts.join(' — ') : 'No daily row');
+
+        // Latest sleep: duration formatted as Xh Ym + score if present.
+        const sleepParts = [];
+        if (oura.sleep_duration_min != null) {
+            const h = Math.floor(oura.sleep_duration_min / 60);
+            const m = oura.sleep_duration_min % 60;
+            sleepParts.push(`${h}h ${m}m`);
+        }
+        if (oura.sleep_score != null) sleepParts.push(`score ${oura.sleep_score}`);
+        _setDetail('oura-detail-sleep', sleepParts.length ? sleepParts.join(' · ') : 'No sleep row');
+
+        // Source: distinguish a real API pull from a cached DB read.
+        // ``api`` == fresh live fetch; ``db`` == served from local cache.
+        const sourceText = oura.source === 'api'
+            ? 'Live (fresh API pull)'
+            : oura.source === 'db'
+                ? 'Cached (local SQLite)'
+                : oura.source || '—';
+        _setDetail('oura-detail-source', sourceText
+            + (oura.warning ? ` · ${oura.warning}` : ''));
+    }
+
+    function renderAppleHealthFreshnessDetail(ah) {
+        const detail = $('apple-detail');
+        if (!detail) return;
+        const staleRow = $('apple-detail-stale-row');
+        const attemptRow = $('apple-detail-attempt-row');
+
+        if (!ah) {
+            _setDetail('apple-detail-last-sync', 'Status endpoint unavailable');
+            _setDetail('apple-detail-records', '—');
+            if (attemptRow) attemptRow.hidden = true;
+            if (staleRow) staleRow.hidden = true;
+            return;
+        }
+
+        const lastSyncDt = parseServerDateTime(ah.last_sync);
+        const lastAttemptDt = parseServerDateTime(ah.last_attempt);
+
+        // Last accepted: the timestamp of the most recent inserted row
+        // (not just a webhook hit). This is the field that actually
+        // tells the owner whether data is landing.
+        if (lastSyncDt) {
+            const ago = _fmtAgo(lastSyncDt);
+            _setDetail('apple-detail-last-sync',
+                `${fmtDateTime(ah.last_sync)} · ${ago}`);
+        } else {
+            _setDetail('apple-detail-last-sync',
+                ah.setup_configured ? 'Configured, no accepted export yet' : 'Never');
+        }
+
+        // Last attempt: only surface separately when it diverges from
+        // last_sync — that's the signal that HAE *tried* but nothing
+        // got inserted (auth issue, schema drift, etc.). When they
+        // match, the row is redundant.
+        if (attemptRow) {
+            const sameAsSync = lastAttemptDt && lastSyncDt
+                && Math.abs(lastAttemptDt.getTime() - lastSyncDt.getTime()) < 5000;
+            if (!lastAttemptDt || sameAsSync) {
+                attemptRow.hidden = true;
+            } else {
+                attemptRow.hidden = false;
+                const lastEvent = ah.last_event || {};
+                const ago = _fmtAgo(lastAttemptDt);
+                const parts = [`${fmtDateTime(ah.last_attempt)} · ${ago}`];
+                if (typeof lastEvent.inserted === 'number'
+                    || typeof lastEvent.skipped === 'number') {
+                    parts.push(`${lastEvent.inserted || 0} inserted, ${lastEvent.skipped || 0} skipped`);
+                }
+                _setDetail('apple-detail-last-attempt', parts.join(' · '));
+            }
+        }
+
+        // Records: total + small per-type breakdown so the owner can
+        // see whether the categories they care about (workouts, HRV,
+        // sleep) are actually landing.
+        const total = Number(ah.total_records || 0);
+        const byType = ah.by_type || {};
+        const recordParts = [`${total.toLocaleString()} total`];
+        const interesting = ['workouts', 'steps', 'heart_rate', 'hrv', 'sleep', 'active_energy'];
+        const typeSummary = interesting
+            .filter((k) => byType[k])
+            .map((k) => `${k.replace('_', ' ')} ${Number(byType[k]).toLocaleString()}`)
+            .slice(0, 3);
+        if (typeSummary.length) recordParts.push(typeSummary.join(' · '));
+        _setDetail('apple-detail-records', recordParts.join(' — '));
+
+        // Stale warning: ≥ 48h since last accepted export. Matches the
+        // server's _FRESHNESS_STALE_HOURS = 48 so freshness chips and
+        // this panel agree.
+        if (staleRow) {
+            if (lastSyncDt) {
+                const ageH = (Date.now() - lastSyncDt.getTime()) / 3600000;
+                if (ageH >= 48) {
+                    staleRow.hidden = false;
+                    _setDetail('apple-detail-stale-text',
+                        `Last accepted export was ${_fmtAgo(lastSyncDt)}. Expected daily.`);
+                } else {
+                    staleRow.hidden = true;
+                }
+            } else if (ah.setup_configured) {
+                staleRow.hidden = false;
+                _setDetail('apple-detail-stale-text',
+                    'Webhook configured but Health Auto Export has not posted any data yet.');
+            } else {
+                staleRow.hidden = true;
+            }
         }
     }
 
