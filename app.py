@@ -3306,16 +3306,16 @@ def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype:
     provider = vision.get("provider") or vision_estimator.configured_provider()
     if lookup:
         estimate = dict(lookup)
-        estimate["underlying_source"] = lookup.get("source")
+        estimate.setdefault("underlying_source", lookup.get("source"))
         estimate["source"] = f"vision_{provider}+{lookup.get('source')}"
         estimate["vision_description"] = description
         estimate["vision_provider"] = provider
         estimate["vision_confidence"] = vision.get("confidence")
+        estimate["confidence"] = min(float(estimate.get("confidence") or 0), float(vision.get("confidence") or 0))
         if vision.get("portion_hint") and not estimate.get("portion_description"):
             estimate["portion_description"] = vision.get("portion_hint")
         if vision.get("ambiguous"):
             estimate["ambiguous"] = True
-            estimate["confidence"] = min(float(estimate.get("confidence") or 0), float(vision.get("confidence") or 0))
             estimate.setdefault("uncertainty_notes", [])
             estimate["uncertainty_notes"].extend(vision.get("uncertainty_notes") or [])
         return estimate
@@ -3339,7 +3339,14 @@ def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype:
             ],
             "source": f"vision_{provider}_estimate",
         }
-        estimate = sanitize_meal_estimate(raw, plausible_ranges=True)
+        try:
+            estimate = sanitize_meal_estimate(raw, plausible_ranges=True)
+        except MealEstimateValidationError:
+            estimate = manual_review_estimate(text=description, source=f"vision_{provider}_estimate")
+            estimate["confidence"] = min(float(vision.get("confidence") or 0), 0.45)
+            estimate["uncertainty_notes"] = vision.get("uncertainty_notes") or [
+                "Vision model returned incomplete nutrition details; review before logging."
+            ]
     else:
         estimate = manual_review_estimate(text=description, source=f"vision_{provider}_estimate")
         estimate["confidence"] = min(float(vision.get("confidence") or 0), 0.45)
