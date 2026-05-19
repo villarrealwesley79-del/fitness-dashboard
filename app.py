@@ -6406,7 +6406,11 @@ def workout_history():
             "exercises": w.get("exercises", []),
             "total_sets": total_sets,
             "total_volume": round(total_volume),
-            "notes": w.get("notes", "")
+            "notes": w.get("notes", ""),
+            # FIT-14: expose adherence so the detail modal can label
+            # exercises as planned vs added vs skipped, and surface the
+            # adherence summary inline.
+            "adherence": w.get("adherence", {"followed": True, "skipped": [], "modified": [], "added": []}),
         })
     return jsonify({"workouts": workouts_list, "count": len(workouts_list)})
 
@@ -6432,7 +6436,9 @@ def all_history():
             "exercises": w.get("exercises", []),
             "total_sets": total_sets,
             "total_volume": round(total_volume),
-            "notes": w.get("notes", "")
+            "notes": w.get("notes", ""),
+            # FIT-14: see /api/history.
+            "adherence": w.get("adherence", {"followed": True, "skipped": [], "modified": [], "added": []}),
         })
 
     # Process cardio (sorted by date descending)

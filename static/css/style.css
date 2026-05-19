@@ -1797,6 +1797,87 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     padding: 7px 9px;
     line-height: 1.45;
 }
+/* FIT-14: per-exercise source badge in the history detail modal.
+   "Planned" stays muted so the eye doesn't snag on it; "Added" /
+   "Modified" pop a little so the off-plan exercises are scannable. */
+.exercise-source-tag {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 999px;
+    margin-left: 8px;
+    vertical-align: middle;
+    border: 1px solid transparent;
+}
+.exercise-source-planned {
+    color: var(--fg-dimmer);
+    background: rgba(51,65,85,0.35);
+    border-color: var(--border-2);
+}
+.exercise-source-added {
+    color: #6ee7b7;
+    background: rgba(34,197,94,0.12);
+    border-color: rgba(34,197,94,0.4);
+}
+.exercise-source-modified {
+    color: #fde68a;
+    background: rgba(251,191,36,0.12);
+    border-color: rgba(251,191,36,0.4);
+}
+.workout-detail-adherence {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    background: rgba(15,23,42,0.5);
+    border: 1px solid var(--border-1);
+    font-size: 12px;
+}
+.workout-detail-adherence .adherence-label {
+    color: var(--fg-dimmer);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-size: 10px;
+}
+.workout-detail-adherence .adherence-summary {
+    color: var(--fg-1);
+    flex: 1;
+    min-width: 0;
+}
+.workout-detail-adherence .adherence-flag {
+    color: var(--accent-amber);
+    background: rgba(251,191,36,0.12);
+    border: 1px solid rgba(251,191,36,0.4);
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.workout-detail-actions {
+    margin-bottom: 12px;
+}
+.workout-detail-skipped {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.workout-detail-skipped .skipped-exercise {
+    background: rgba(51,65,85,0.45);
+    border: 1px dashed rgba(148,163,184,0.45);
+    color: var(--fg-dim);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    text-decoration: line-through;
+}
 .setup-steps {
     padding-left: 20px;
     color: var(--fg-1);
@@ -2204,6 +2285,21 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     color: var(--fg-dim);
     font-size: 13px;
 }
+/* FIT-14: richer empty / filtered-empty states with a title + hint and
+   optional CTA button (Clear filter, etc.). Reuses .empty as the wrapper
+   so existing call sites keep their padding/color. */
+.empty .empty-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--fg-1);
+    margin-bottom: 4px;
+}
+.empty .empty-hint {
+    font-size: 12px;
+    color: var(--fg-dim);
+    margin-bottom: 10px;
+}
+.empty .btn { margin-top: 4px; }
 
 /* ======================= UTIL ======================= */
 
