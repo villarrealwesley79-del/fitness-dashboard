@@ -628,6 +628,18 @@ def clear_food_logs(user_id: int) -> None:
         conn.commit()
 
 
+def food_log_exists_by_client_id(user_id: int, client_id: str) -> bool:
+    """Return whether a user-scoped client_id already has a food-log row."""
+    if not client_id:
+        return False
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM food_logs WHERE user_id = ? AND client_id = ? LIMIT 1",
+            (user_id, client_id),
+        ).fetchone()
+    return bool(row)
+
+
 def delete_food_log_by_client_id(user_id: int, client_id: str) -> bool:
     """Delete a single food log by user-scoped client_id. Returns True if removed."""
     if not client_id:

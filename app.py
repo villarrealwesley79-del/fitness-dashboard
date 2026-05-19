@@ -43,6 +43,7 @@ from data_store import (
     init_data_db,
     add_food_log,
     get_food_logs,
+    food_log_exists_by_client_id,
     delete_food_log_by_client_id,
     list_push_subscriptions,
     revoke_push_subscription,
@@ -3507,12 +3508,14 @@ def meal_intake_stub():
     # yet. See FIT-67 for the durable resolution.
     food_log = None
     if decision["correction_state"] == CORRECTION_STATE_ACCEPTED:
+        is_new_food_log = not food_log_exists_by_client_id(_current_data_user_id(), client_id)
         food_log = _meal_intake_stub_persist(
             client_id, estimate, source=source, has_image=has_image,
             text_hint=text_raw or None, local_timestamp=local_timestamp,
             correction_state=CORRECTION_STATE_ACCEPTED,
         )
-        personal_vocab.record_accept(_current_data_user_id(), text_raw or None, estimate)
+        if is_new_food_log:
+            personal_vocab.record_accept(_current_data_user_id(), text_raw or None, estimate)
 
     return jsonify({
         "status": status,
@@ -3554,22 +3557,26 @@ def meal_intake_accept_stub(client_id: str):
     except MealEstimateValidationError as exc:
         return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
     text_hint, _ = _coerce_str(data.get("text"), "text", required=False, max_len=500)
+    corrected = (
+        bool(data.get("corrected"))
+        or data.get("correction_state") == "corrected"
+        or _meal_accept_was_corrected(estimate, data.get("original_estimate"))
+    )
+    correction_state = "corrected" if corrected else CORRECTION_STATE_ACCEPTED
+    is_new_food_log = not food_log_exists_by_client_id(_current_data_user_id(), client_id)
     food_log = _meal_intake_stub_persist(
         client_id,
         estimate,
         source=estimate.get("source") or "stub_text_estimate",
         has_image=bool(estimate.get("from_image")),
         text_hint=text_hint or None,
+        correction_state=correction_state,
     )
-    corrected = (
-        bool(data.get("corrected"))
-        or data.get("correction_state") == "corrected"
-        or _meal_accept_was_corrected(estimate, data.get("original_estimate"))
-    )
-    if corrected:
-        personal_vocab.record_correct(_current_data_user_id(), text_hint or None, estimate)
-    else:
-        personal_vocab.record_accept(_current_data_user_id(), text_hint or None, estimate)
+    if is_new_food_log:
+        if corrected:
+            personal_vocab.record_correct(_current_data_user_id(), text_hint or None, estimate)
+        else:
+            personal_vocab.record_accept(_current_data_user_id(), text_hint or None, estimate)
     return jsonify({
         "status": "logged",
         "food_log": food_log,

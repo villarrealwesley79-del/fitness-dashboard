@@ -211,7 +211,8 @@ def test_accept_endpoint_records_edited_pending_estimate_as_correction(monkeypat
     data_store.init_data_db()
     app.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     monkeypatch.setattr(app, "_current_data_user_id", lambda: 1)
-    monkeypatch.setattr(app, "add_food_log", lambda _uid, record: {"client_id": record["client_id"], **record})
+    captured = {}
+    monkeypatch.setattr(app, "add_food_log", lambda _uid, record: (captured.update(record), {"client_id": record["client_id"], **record})[1])
     calls = {"accept": 0, "correct": 0}
     monkeypatch.setattr(app.personal_vocab, "record_accept", lambda *_a, **_kw: calls.__setitem__("accept", calls["accept"] + 1))
     monkeypatch.setattr(app.personal_vocab, "record_correct", lambda *_a, **_kw: calls.__setitem__("correct", calls["correct"] + 1))
@@ -225,6 +226,27 @@ def test_accept_endpoint_records_edited_pending_estimate_as_correction(monkeypat
 
     assert res.status_code == 200
     assert calls == {"accept": 0, "correct": 1}
+    assert captured["correction_state"] == "corrected"
+
+
+def test_accept_endpoint_vocab_learning_is_idempotent_by_client_id(monkeypatch, tmp_path):
+    import app
+    import data_store
+
+    monkeypatch.setenv("SECRET_KEY", "fit74-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    app.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(app, "_current_data_user_id", lambda: 1)
+    payload = {"estimate": _estimate(), "text": "chip ckn bur"}
+
+    first = app.app.test_client().post("/api/meal-intake/meal-vocab-retry/accept", json=payload)
+    second = app.app.test_client().post("/api/meal-intake/meal-vocab-retry/accept", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    entry = data_store.get_personal_vocab_entry(1, "chip ckn bur")
+    assert entry["accept_count"] == 1
 
 
 def test_meal_intake_preserves_personal_vocab_provenance(monkeypatch, tmp_path):
