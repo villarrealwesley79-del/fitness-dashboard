@@ -808,6 +808,31 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
 }
 .btn-danger:hover { background: rgba(239,68,68,0.22); border-color: var(--accent-red); color: #fee2e2; }
 .btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
+/* FIT-20: amber warning variant for the Adjust Plan submit button when
+   AI fallback rate exceeds the threshold. Mirrors .state-chip.warn tones. */
+.btn-warn {
+    background: rgba(251,191,36,0.14);
+    border-color: rgba(251,191,36,0.4);
+    color: #fde68a;
+}
+.btn-warn:hover { background: rgba(251,191,36,0.22); border-color: var(--accent-amber); color: #fef3c7; }
+.btn-warn:disabled { opacity: 0.6; cursor: not-allowed; }
+/* Inline AI-coach warning banner above the Apply Adjustment button. */
+.adjust-ai-warning {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 10px 12px;
+    margin: 8px 0;
+    border-radius: var(--radius-card);
+    background: rgba(251,191,36,0.08);
+    border: 1px solid rgba(251,191,36,0.3);
+    color: #fde68a;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.adjust-ai-warning-icon { flex: 0 0 auto; font-size: 14px; }
+.adjust-ai-warning-text { flex: 1; }
 .btn-block { width: 100%; }
 .btn-sm { padding: 8px 14px; font-size: 13px; border-radius: 10px; }
 .btn-lg { padding: 14px 20px; font-size: 16px; border-radius: 14px; }
