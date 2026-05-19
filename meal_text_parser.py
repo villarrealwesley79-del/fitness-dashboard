@@ -77,41 +77,56 @@ _AMBIGUOUS_TOKENS = (
 # unparseable JSON, or fails schema validation. Shapes intentionally match
 # the FIT-60 stub presets so the swap is behavior-compatible for the common
 # cases the existing UI tests rely on.
-_FALLBACK_PRESETS: tuple[tuple[tuple[str, ...], dict], ...] = (
-    (("shake", "smoothie"),
+_FALLBACK_PRESETS: tuple[tuple[tuple[str, ...], tuple[str, ...], dict], ...] = (
+    (("shake",), (),
      dict(item_name="Protein shake", meal_type="snack",
           calories=210, protein_g=30, carbs_g=14, fat_g=4, sodium_mg=180, fiber_g=2)),
-    (("egg", "toast"),
+    (("smoothie",), (),
+     dict(item_name="Protein shake", meal_type="snack",
+          calories=210, protein_g=30, carbs_g=14, fat_g=4, sodium_mg=180, fiber_g=2)),
+    (("egg",), (),
      dict(item_name="Eggs and toast", meal_type="breakfast",
           calories=420, protein_g=24, carbs_g=36, fat_g=18, sodium_mg=520, fiber_g=4)),
-    (("bowl", "chipotle"),
+    (("toast",), (),
+     dict(item_name="Eggs and toast", meal_type="breakfast",
+          calories=420, protein_g=24, carbs_g=36, fat_g=18, sodium_mg=520, fiber_g=4)),
+    (("chipotle", "burrito"), ("bowl",),
+     dict(item_name="Chipotle chicken burrito", meal_type="lunch",
+          calories=1075, protein_g=51, carbs_g=116, fat_g=41, sodium_mg=2310, fiber_g=13)),
+    (("chipotle", "bowl"), (),
      dict(item_name="Chipotle bowl", meal_type="lunch",
           calories=680, protein_g=42, carbs_g=72, fat_g=22, sodium_mg=1450, fiber_g=10)),
-    (("salad",),
+    (("salad",), (),
      dict(item_name="Salad", meal_type="lunch",
           calories=320, protein_g=18, carbs_g=22, fat_g=18, sodium_mg=460, fiber_g=6)),
-    (("chicken", "rice"),
+    (("chicken",), (),
      dict(item_name="Chicken and rice", meal_type="dinner",
           calories=560, protein_g=40, carbs_g=58, fat_g=14, sodium_mg=720, fiber_g=4)),
-    (("yogurt",),
+    (("rice",), (),
+     dict(item_name="Chicken and rice", meal_type="dinner",
+          calories=560, protein_g=40, carbs_g=58, fat_g=14, sodium_mg=720, fiber_g=4)),
+    (("yogurt",), (),
      dict(item_name="Yogurt", meal_type="snack",
           calories=180, protein_g=14, carbs_g=22, fat_g=4, sodium_mg=90, fiber_g=1)),
-    (("coffee",),
+    (("coffee",), (),
      dict(item_name="Coffee", meal_type="snack",
           calories=5, protein_g=0, carbs_g=0, fat_g=0, sodium_mg=5, fiber_g=0)),
-    (("banana",),
+    (("banana",), (),
      dict(item_name="Banana", meal_type="snack",
           calories=105, protein_g=1, carbs_g=27, fat_g=0, sodium_mg=1, fiber_g=3)),
-    (("oatmeal", "oats"),
+    (("oatmeal",), (),
      dict(item_name="Oatmeal", meal_type="breakfast",
           calories=300, protein_g=10, carbs_g=54, fat_g=6, sodium_mg=180, fiber_g=8)),
-    (("pasta",),
+    (("oats",), (),
+     dict(item_name="Oatmeal", meal_type="breakfast",
+          calories=300, protein_g=10, carbs_g=54, fat_g=6, sodium_mg=180, fiber_g=8)),
+    (("pasta",), (),
      dict(item_name="Pasta", meal_type="dinner",
           calories=520, protein_g=18, carbs_g=78, fat_g=14, sodium_mg=720, fiber_g=4)),
-    (("popcorn",),
+    (("popcorn",), (),
      dict(item_name="Popcorn", meal_type="snack",
           calories=300, protein_g=5, carbs_g=36, fat_g=18, sodium_mg=520, fiber_g=6)),
-    (("sandwich",),
+    (("sandwich",), (),
      dict(item_name="Sandwich", meal_type="lunch",
           calories=480, protein_g=24, carbs_g=48, fat_g=20, sodium_mg=920, fiber_g=4)),
 )
@@ -152,6 +167,9 @@ Rules:
 - meal_type defaults to "snack" for between-meal items, "breakfast" for
   morning items, "lunch" or "dinner" for full meals.
 - Never invent specifics not implied by the text. Prefer common-sense averages.
+- Brand notes: keep Chipotle menu categories distinct. A Chipotle burrito,
+  bowl, salad, quesadilla, and tacos are different items; do not convert one
+  category into another unless the user text says so.
 - Output JSON only."""
 
 
@@ -244,8 +262,10 @@ def _fallback_estimate(text: str) -> dict:
     estimate: dict = dict(_FALLBACK_DEFAULT)
     portion_description: Optional[str] = None
     matched = False
-    for keywords, preset in _FALLBACK_PRESETS:
-        if any(k in norm for k in keywords):
+    for must_include, must_exclude, preset in _FALLBACK_PRESETS:
+        includes_match = all(k in norm for k in must_include)
+        excludes_match = any(k in norm for k in must_exclude)
+        if includes_match and not excludes_match:
             estimate = dict(preset)
             matched = True
             break
