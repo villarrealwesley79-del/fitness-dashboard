@@ -213,11 +213,10 @@ def test_open_food_facts_filters_bad_quality(monkeypatch):
     assert branded_food_lookup.lookup("bad product") is None
 
 
-def test_open_food_facts_accepts_complete_untagged_rows(monkeypatch):
+def test_open_food_facts_rejects_rows_without_complete_quality_tag(monkeypatch):
     product = _product("Untagged Product", code="untagged")
     product["data_quality_tags"] = []
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
@@ -228,8 +227,7 @@ def test_open_food_facts_accepts_complete_untagged_rows(monkeypatch):
 
     estimate = branded_food_lookup.lookup("non us packaged food")
 
-    assert estimate["source"] == "open_food_facts"
-    assert estimate["external_food_id"] == "untagged"
+    assert estimate is None
 
 
 def test_open_food_facts_skips_nutrition_mismatch_warnings(monkeypatch):

@@ -286,6 +286,8 @@ def _open_food_facts_estimate(product: dict[str, Any]) -> dict[str, Any]:
         "verified_source_url": product.get("url") or "https://world.openfoodfacts.org/",
         "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
         "portion_basis": "100 g Open Food Facts packaged-food reference",
+        # The visible attribution surface is tracked separately in FIT-80; this
+        # backend slice keeps the CC-BY-SA provenance attached to every estimate.
         "off_attribution": "Source: Open Food Facts, licensed under CC-BY-SA.",
     }
     return _sanitize_with_provenance(estimate)
@@ -312,6 +314,8 @@ def _off_quality_ok(product: dict[str, Any]) -> bool:
         return False
     tags = product.get("data_quality_tags") or []
     lowered_tags = [str(tag).lower() for tag in tags]
+    if "en:nutrition-data-complete" not in lowered_tags:
+        return False
     if any("error" in tag for tag in lowered_tags):
         return False
     if any(fragment in tag for tag in lowered_tags for fragment in OFF_REJECT_QUALITY_TAG_FRAGMENTS):
