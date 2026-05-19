@@ -99,6 +99,28 @@ def test_open_food_facts_client_stops_after_usable_variant(monkeypatch):
     assert result["products"][0]["product_name"] == "Tim Tam"
 
 
+def test_open_food_facts_client_bounds_variant_retry_time(monkeypatch):
+    seen_terms = []
+    timeouts = []
+    clock = [0.0]
+
+    def fake_urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        seen_terms.append(params["search_terms"][0])
+        timeouts.append(timeout)
+        clock[0] += timeout
+        return _Response({"products": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(open_food_facts_client.time, "monotonic", lambda: clock[0])
+
+    result = open_food_facts_client.search_products("Australian Tim Tams")
+
+    assert result["products"] == []
+    assert seen_terms == ["Australian Tim Tams", "Tim Tams"]
+    assert timeouts == [5.0, 1.0]
+
+
 def test_open_food_facts_lookup_uses_later_usable_variant(monkeypatch):
     seen_terms = []
     bad = _product("Noisy Tim Tams", code="bad")
@@ -125,6 +147,39 @@ def test_open_food_facts_lookup_uses_later_usable_variant(monkeypatch):
     assert seen_terms == ["Australian Tim Tams", "Tim Tams", "Tim Tam"]
     assert estimate["source"] == "open_food_facts"
     assert estimate["external_food_id"] == "good"
+
+
+def test_open_food_facts_prefers_requested_country(monkeypatch):
+    wrong_country = _product("Tim Tam US", code="wrong", country="en:united-states")
+    australia = _product("Tim Tam", code="right", country="en:australia")
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": [wrong_country, australia]},
+    )
+
+    estimate = branded_food_lookup.lookup("Australian Tim Tams")
+
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["external_food_id"] == "right"
+
+
+def test_open_food_facts_rejects_wrong_country_for_locale(monkeypatch):
+    wrong_country = _product("Tim Tam US", code="wrong", country="en:united-states")
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": [wrong_country]},
+    )
+
+    assert branded_food_lookup.lookup("Australian Tim Tams") is None
 
 
 def test_open_food_facts_tier_runs_after_usda(monkeypatch):

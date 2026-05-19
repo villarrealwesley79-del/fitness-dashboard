@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from typing import Any
 from urllib import error, parse, request
@@ -10,6 +11,7 @@ from urllib import error, parse, request
 
 OFF_SEARCH_URL = "https://world.openfoodfacts.org/cgi/search.pl"
 TIMEOUT_SECONDS = 5.0
+TOTAL_TIMEOUT_SECONDS = 6.0
 USER_AGENT = "FitnessDashboard/1.0 (https://github.com/villarrealwesley79-del/fitness-dashboard)"
 LOCALE_QUERY_TOKENS = {
     "australian",
@@ -33,6 +35,7 @@ def search_products(
     query: str,
     *,
     timeout: float = TIMEOUT_SECONDS,
+    total_timeout: float = TOTAL_TIMEOUT_SECONDS,
     product_filter: Callable[[dict[str, Any]], bool] | None = None,
 ) -> dict[str, Any] | None:
     cleaned = (query or "").strip()
@@ -40,8 +43,12 @@ def search_products(
         return None
     combined_products: list[dict[str, Any]] = []
     last_payload: dict[str, Any] | None = None
+    deadline = time.monotonic() + total_timeout
     for search_terms in _search_variants(cleaned):
-        payload = _search_products_once(search_terms, timeout=timeout)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        payload = _search_products_once(search_terms, timeout=min(timeout, remaining))
         if not payload:
             continue
         last_payload = payload

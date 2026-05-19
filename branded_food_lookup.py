@@ -58,6 +58,16 @@ OFF_REJECT_QUALITY_TAG_FRAGMENTS = (
     "nutrition-packaging-as-sold-100g-value-under-0-01-g-salt",
     "nutrition-value-very-low-for-category-salt",
 )
+OFF_LOCALE_COUNTRY_TAGS = {
+    "australian": "en:australia",
+    "canadian": "en:canada",
+    "french": "en:france",
+    "german": "en:germany",
+    "irish": "en:ireland",
+    "japanese": "en:japan",
+    "uk": "en:united-kingdom",
+    "u.k.": "en:united-kingdom",
+}
 
 
 def normalize_meal_text(text: str) -> str:
@@ -197,12 +207,16 @@ def _usda_lookup(text: str, _normalized: str) -> dict[str, Any] | None:
 
 
 def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
-    payload = open_food_facts_client.search_products(text, product_filter=_off_candidate_usable)
+    expected_country_tag = _off_expected_country_tag(text)
+    payload = open_food_facts_client.search_products(
+        text,
+        product_filter=lambda product: _off_candidate_usable(product, expected_country_tag=expected_country_tag),
+    )
     products = payload.get("products") if isinstance(payload, dict) else None
     if not products:
         return None
     for product in products:
-        if not _off_quality_ok(product):
+        if not _off_candidate_usable(product, expected_country_tag=expected_country_tag):
             continue
         try:
             return _open_food_facts_estimate(product)
@@ -211,7 +225,9 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _off_candidate_usable(product: dict[str, Any]) -> bool:
+def _off_candidate_usable(product: dict[str, Any], *, expected_country_tag: str | None = None) -> bool:
+    if not _off_country_ok(product, expected_country_tag):
+        return False
     if not _off_quality_ok(product):
         return False
     try:
@@ -219,6 +235,30 @@ def _off_candidate_usable(product: dict[str, Any]) -> bool:
     except (TypeError, ValueError, OverflowError):
         return False
     return True
+
+
+def _off_expected_country_tag(text: str) -> str | None:
+    tokens = {
+        raw.strip(".,!?;:()[]{}\"'").lower()
+        for raw in (text or "").split()
+        if raw.strip(".,!?;:()[]{}\"'")
+    }
+    if {"united", "kingdom"}.issubset(tokens):
+        return "en:united-kingdom"
+    for token in tokens:
+        country_tag = OFF_LOCALE_COUNTRY_TAGS.get(token)
+        if country_tag:
+            return country_tag
+    return None
+
+
+def _off_country_ok(product: dict[str, Any], expected_country_tag: str | None) -> bool:
+    if not expected_country_tag:
+        return True
+    countries = product.get("countries_tags") or []
+    if not isinstance(countries, list):
+        return False
+    return expected_country_tag in {str(country).lower() for country in countries}
 
 
 def _open_food_facts_estimate(product: dict[str, Any]) -> dict[str, Any]:
