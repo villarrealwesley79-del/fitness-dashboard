@@ -3510,21 +3510,119 @@ def nutrition_today():
     })
 
 
+def _nutrition_history_breakdown(date_s: str, entries):
+    """FIT-13: per-day rollup with confidence + correction-state context.
+
+    Extends ``_summarize_nutrition_entries_for_date`` with:
+
+      * ``pending_count`` — entries awaiting review (excluded from totals).
+      * ``manual_count`` — user-typed entries (no AI estimate).
+      * ``corrected_count`` — accepted estimates the user edited
+        (correction_state == "corrected").
+      * ``estimated_count`` — accepted AI estimates the user did NOT edit.
+      * ``confidence_avg`` — mean confidence over accepted entries with
+        a numeric confidence value; ``None`` when no entries qualify.
+      * ``high_sodium`` / ``late_meal`` — same flags the next-day
+        coaching context uses, so the body view can interpret scale
+        movements honestly instead of bare-attributing them.
+
+    Mirrors the ``uses_only_accepted_entries`` rule from FIT-8:
+    pending entries do not contribute to totals or confidence.
+    """
+    totals = {
+        "calories": 0,
+        "protein_g": 0.0,
+        "carbs_g": 0.0,
+        "fat_g": 0.0,
+        "sodium_mg": 0,
+        "entries_count": 0,
+        "pending_count": 0,
+        "manual_count": 0,
+        "corrected_count": 0,
+        "estimated_count": 0,
+        "confidence_avg": None,
+        "high_sodium": False,
+        "late_meal": False,
+    }
+    confidence_sum = 0.0
+    confidence_n = 0
+    for entry in entries or []:
+        if _nutrition_entry_day(entry) != date_s:
+            continue
+        if _nutrition_entry_pending_review(entry):
+            totals["pending_count"] += 1
+            continue
+        totals["calories"] += int(entry.get("calories") or 0)
+        totals["protein_g"] += float(entry.get("protein_g") or 0)
+        totals["carbs_g"] += float(entry.get("carbs_g") or 0)
+        totals["fat_g"] += float(entry.get("fat_g") or 0)
+        totals["sodium_mg"] += int(entry.get("sodium_mg") or 0)
+        totals["entries_count"] += 1
+        # Correction-state breakdown: "manual" / "corrected" /
+        # "accepted" (the AI estimate the user didn't edit). Anything
+        # else falls into estimated_count as a conservative default.
+        state = str(entry.get("correction_state") or "").strip().lower()
+        if state == "manual":
+            totals["manual_count"] += 1
+        elif state == "corrected":
+            totals["corrected_count"] += 1
+        else:
+            totals["estimated_count"] += 1
+        # Confidence average over entries that report a value.
+        conf = entry.get("confidence")
+        if isinstance(conf, (int, float)):
+            confidence_sum += float(conf)
+            confidence_n += 1
+        # Late-meal flag: hour >= LATE_MEAL_CONTEXT_HOUR.
+        hour = _nutrition_entry_logged_hour(entry)
+        if hour is not None and hour >= LATE_MEAL_CONTEXT_HOUR:
+            totals["late_meal"] = True
+    if confidence_n > 0:
+        totals["confidence_avg"] = round(confidence_sum / confidence_n, 3)
+    totals["high_sodium"] = totals["sodium_mg"] >= SODIUM_NEXT_DAY_CONTEXT_MG
+    return totals
+
+
 @app.route('/api/nutrition-history')
 def nutrition_history():
-    """Return last 14 days of nutrition totals."""
+    """Return last 14 days of nutrition totals.
+
+    Each day now includes confidence + correction-state context (FIT-13)
+    so the Body tab can interpret scale movements honestly: a recent
+    high-sodium / late-meal day surfaces as context rather than being
+    mis-attributed to fat gain, and estimated-vs-corrected entries are
+    distinguished from each other.
+    """
     today = datetime.now().date()
+    calories_target = USER_SETTINGS.get("daily_calorie_target")
+    protein_target = USER_SETTINGS.get("daily_protein_target_g")
     days = []
     for i in range(13, -1, -1):
         d = today - timedelta(days=i)
         date_s = d.strftime("%Y-%m-%d")
-        totals = _summarize_nutrition_for_date(date_s)
+        totals = _nutrition_history_breakdown(date_s, NUTRITION_DATA or [])
+        cals = totals["calories"]
+        protein = totals["protein_g"]
         days.append({
             "date": date_s,
-            "calories": totals["calories"],
-            "protein_g": round(totals["protein_g"], 1),
+            "calories": cals,
+            "protein_g": round(protein, 1),
             "carbs_g": round(totals["carbs_g"], 1),
             "fat_g": round(totals["fat_g"], 1),
+            "sodium_mg": totals["sodium_mg"],
+            # FIT-13 additions:
+            "entries_count": totals["entries_count"],
+            "pending_count": totals["pending_count"],
+            "manual_count": totals["manual_count"],
+            "corrected_count": totals["corrected_count"],
+            "estimated_count": totals["estimated_count"],
+            "confidence_avg": totals["confidence_avg"],
+            "calories_target": calories_target,
+            "protein_target_g": protein_target,
+            "calories_pct": round(100 * cals / calories_target) if calories_target else None,
+            "protein_pct": round(100 * protein / protein_target) if protein_target else None,
+            "high_sodium": totals["high_sodium"],
+            "late_meal": totals["late_meal"],
         })
     return jsonify({"history": days})
 

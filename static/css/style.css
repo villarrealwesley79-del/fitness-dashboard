@@ -2248,6 +2248,100 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     font-size: 13px;
 }
 
+/* FIT-13: body view — honest interpretation of scale variance with
+   accepted food context (high sodium / late meals / pending /
+   estimated-vs-corrected ratio). Non-prescriptive — surfaces context
+   so the user can interpret the trend, never says "fat gain". */
+.body-interpretation-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.body-interpretation-note {
+    padding: 8px 10px;
+    background: rgba(15,23,42,0.55);
+    border-left: 3px solid rgba(96,165,250,0.55);
+    border-radius: 0 8px 8px 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--fg-1);
+}
+
+/* FIT-13: target progress reuses the m-row pattern. */
+.body-recomp-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* FIT-13: 14-day nutrition trend — compact one-line-per-day with
+   target adherence percentages + a reliability badge so the user can
+   tell at a glance which days' totals are corrected vs estimated. */
+.body-nutrition-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.body-nutrition-row {
+    display: grid;
+    grid-template-columns: minmax(60px, 1fr) minmax(70px, 1fr) minmax(70px, 1fr) minmax(60px, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 4px;
+    font-size: 12px;
+    border-top: 1px solid rgba(51,65,85,0.4);
+    color: var(--fg-1);
+}
+.body-nutrition-row:first-child { border-top: 0; }
+.body-nutrition-row > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.body-nutrition-row .trend-date { color: var(--fg-dim); font-size: 11px; }
+.body-nutrition-row small { color: var(--fg-dimmer); font-size: 10px; margin-left: 2px; }
+.body-nutrition-row .pct-ok { color: #6ee7b7; }
+.body-nutrition-row .pct-over { color: #f87171; }
+.body-nutrition-row .pct-under { color: var(--accent-amber); }
+.body-nutrition-row .pct-unknown { color: var(--fg-dimmer); }
+.trend-reliability {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+}
+.trend-rel-firm {
+    color: #6ee7b7;
+    background: rgba(34,197,94,0.12);
+    border-color: rgba(34,197,94,0.4);
+}
+.trend-rel-estimated {
+    color: var(--fg-dim);
+    background: rgba(51,65,85,0.4);
+    border-color: rgba(51,65,85,0.6);
+}
+.trend-rel-none {
+    color: var(--fg-dimmer);
+    background: transparent;
+    border-color: rgba(51,65,85,0.4);
+    font-style: italic;
+}
+.trend-context {
+    grid-column: 1 / -1;
+    font-size: 10px;
+    color: var(--accent-amber);
+    font-style: italic;
+    margin-left: 60px;
+}
+@media (max-width: 480px) {
+    .body-nutrition-row {
+        grid-template-columns: minmax(56px, 1fr) minmax(64px, 1fr) minmax(58px, 1fr) auto;
+    }
+    .body-nutrition-row .trend-sodium { display: none; }
+}
+
 /* ======================= UTIL ======================= */
 
 .hidden { display: none !important; }
