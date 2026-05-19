@@ -10,6 +10,7 @@ __pycache__/
 .flask-secret
 .health-sync-token
 .apple-health-first-sync
+.vapid_keys.json
 .claude/
 venv/
 .venv/
