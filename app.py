@@ -5732,9 +5732,12 @@ def oura_sleep_summary():
 # "Connected" never means "current" — the freshness object is what the dashboard
 # uses to drop confidence and swap the brief to lower-confidence copy.
 
-APPLE_HEALTH_SYNC_DB_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "apple_health_sync.db"
-)
+def _apple_health_sync_db_file():
+    return (
+        os.environ.get("APPLE_HEALTH_SYNC_DB")
+        or os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple_health_sync.db")
+    )
+
 
 _FRESHNESS_AGING_HOURS = 24
 _FRESHNESS_STALE_HOURS = 48
@@ -5774,7 +5777,7 @@ def _latest_oura_freshness(now=None):
 
 def _latest_apple_health_freshness(now=None):
     try:
-        conn = sqlite3.connect(APPLE_HEALTH_SYNC_DB_FILE)
+        conn = sqlite3.connect(_apple_health_sync_db_file())
         try:
             data_row = conn.execute("SELECT MAX(record_date) FROM ah_sync_log").fetchone()
             sync_row = conn.execute("SELECT MAX(created_at) FROM ah_sync_events").fetchone()
