@@ -64,12 +64,39 @@ def test_lookup_uses_nutritionix_and_records_provenance(monkeypatch):
     assert estimate["item_name"] == "Chipotle chicken burrito"
     assert estimate["calories"] == 1075
     assert estimate["protein_g"] == 51.0
+    assert estimate["meal_type"] == "lunch"
     assert estimate["external_food_id"] == "chipotle-burrito"
     assert estimate["verified_source_url"] == "https://www.nutritionix.com/"
     assert estimate["portion_basis"] == "1 burrito (440 g)"
     assert saved["normalized"] == "chipotle chicken burrito"
     assert saved["source"] == "nutritionix"
     assert saved["user_id"] == 1
+
+
+def test_lookup_infers_breakfast_meal_type_for_external_result(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(
+            food_name="oatmeal",
+            brand_name=None,
+            serving_unit="bowl",
+            nf_calories=210,
+            nf_protein=6,
+            nf_total_carbohydrate=36,
+            nf_total_fat=4,
+            nf_sodium=120,
+            nf_dietary_fiber=5,
+        ),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    estimate = branded_food_lookup.lookup("oatmeal")
+
+    assert estimate["source"] == "nutritionix"
+    assert estimate["meal_type"] == "breakfast"
 
 
 def test_lookup_uses_brand_hint_in_source_query(monkeypatch):
@@ -319,7 +346,10 @@ def test_stale_cache_falls_through_to_usda(monkeypatch):
 
     assert estimate["source"] == "usda_fdc"
     assert estimate["item_name"] == "BANANAS,RAW"
+    assert estimate["confidence"] == 0.55
+    assert estimate["ambiguous"] is True
     assert estimate["external_food_id"] == "173944"
+    assert any("100 g reference portion" in note for note in estimate["uncertainty_notes"])
 
 
 def test_branded_usda_fallback_without_verified_brand_is_pending_review(monkeypatch):
@@ -354,7 +384,7 @@ def test_branded_usda_fallback_without_verified_brand_is_pending_review(monkeypa
     assert any("did not verify" in note for note in estimate["uncertainty_notes"])
 
 
-def test_branded_usda_fallback_with_verified_brand_can_stay_high_confidence(monkeypatch):
+def test_branded_usda_fallback_with_verified_brand_stays_pending_review(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
@@ -381,9 +411,11 @@ def test_branded_usda_fallback_with_verified_brand_can_stay_high_confidence(monk
     estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
 
     assert estimate["source"] == "usda_fdc"
-    assert estimate["confidence"] == 0.85
-    assert estimate["ambiguous"] is False
+    assert estimate["confidence"] == 0.55
+    assert estimate["ambiguous"] is True
+    assert estimate["meal_type"] == "lunch"
     assert estimate["brand_id"] == "chipotle"
+    assert any("100 g reference portion" in note for note in estimate["uncertainty_notes"])
 
 
 def test_sanitize_with_provenance_keeps_safe_attribution_only():

@@ -39,6 +39,8 @@ PLURALS = {
 }
 CUSTOMIZABLE_CHAIN_TOKENS = {"chipotle"}
 CUSTOMIZABLE_ITEM_TOKENS = {"burrito", "bowl", "taco", "tacos", "salad"}
+BREAKFAST_TOKENS = {"oat", "oatmeal", "egg", "eggs", "toast", "yogurt", "coffee", "cereal"}
+LUNCH_DINNER_TOKENS = {"burrito", "bowl", "taco", "tacos", "salad", "sandwich", "wrap", "burger"}
 PROTEIN_TOKENS = {
     "chicken",
     "steak",
@@ -171,7 +173,7 @@ def _nutritionix_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     estimate = {
         "item_name": item_name or str(food.get("food_name") or "Meal"),
         "portion_description": _portion_from_nutritionix_items(food_items),
-        "meal_type": "snack",
+        "meal_type": _infer_meal_type(normalized),
         "calories": _sum_nutritionix(food_items, "nf_calories"),
         "protein_g": _sum_nutritionix(food_items, "nf_protein"),
         "carbs_g": _sum_nutritionix(food_items, "nf_total_carbohydrate"),
@@ -201,9 +203,9 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     fdc_id = food.get("fdcId")
     requested_brand = _brand_from_text(normalized)
     source_brand = _matching_usda_source_brand(food, requested_brand)
-    ambiguous = _needs_modifier_review(normalized)
-    notes = []
-    if ambiguous:
+    ambiguous = True
+    notes = ["USDA FDC uses a 100 g reference portion; confirm serving size before logging."]
+    if _needs_modifier_review(normalized):
         notes.append("Customizable item is missing protein or modifier details.")
     if requested_brand and not source_brand:
         ambiguous = True
@@ -214,14 +216,14 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     estimate = {
         "item_name": food.get("description") or "Food",
         "portion_description": "100 g",
-        "meal_type": "snack",
+        "meal_type": _infer_meal_type(normalized),
         "calories": nutrients.get("Energy") or nutrients.get("Energy (Atwater General Factors)"),
         "protein_g": nutrients.get("Protein"),
         "carbs_g": nutrients.get("Carbohydrate, by difference"),
         "fat_g": nutrients.get("Total lipid (fat)"),
         "sodium_mg": nutrients.get("Sodium, Na") if nutrients.get("Sodium, Na") is not None else 0,
         "fiber_g": nutrients.get("Fiber, total dietary") if nutrients.get("Fiber, total dietary") is not None else 0,
-        "confidence": 0.55 if ambiguous else 0.85,
+        "confidence": 0.55,
         "ambiguous": ambiguous,
         "uncertainty_notes": notes,
         "source": "usda_fdc",
@@ -349,6 +351,15 @@ def _brand_from_text(normalized: str) -> str | None:
         if token in KNOWN_BRANDS:
             return token
     return None
+
+
+def _infer_meal_type(normalized: str) -> str:
+    tokens = set((normalized or "").split())
+    if tokens & BREAKFAST_TOKENS:
+        return "breakfast"
+    if tokens & LUNCH_DINNER_TOKENS:
+        return "lunch"
+    return "snack"
 
 
 def _parse_iso(value: str | None) -> datetime | None:
