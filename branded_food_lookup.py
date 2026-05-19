@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from difflib import get_close_matches
+import json
+from pathlib import Path
 from typing import Any
 
 import data_store
@@ -13,7 +15,9 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 
 CACHE_TTL_DAYS = 180
-SOURCE_PRIORITY = ("cache", "nutritionix", "usda_fdc")
+SOURCE_PRIORITY = ("cache", "snapshot", "nutritionix", "usda_fdc")
+SNAPSHOT_PATH = Path(__file__).resolve().parent / "data" / "nutrition_snapshot.json"
+_SNAPSHOT_CACHE: dict[str, dict[str, Any]] | None = None
 KNOWN_BRANDS = {
     "chipotle",
     "starbucks",
@@ -34,6 +38,7 @@ PLURALS = {
     "sandwiches": "sandwich",
     "salads": "salad",
     "bowls": "bowl",
+    "bananas": "banana",
 }
 CUSTOMIZABLE_CHAIN_TOKENS = {"chipotle"}
 CUSTOMIZABLE_ITEM_TOKENS = {"burrito", "bowl", "taco", "tacos", "salad"}
@@ -84,6 +89,10 @@ def lookup(
         cached = _cache_lookup(normalized)
         if cached:
             return cached
+    if "snapshot" in priorities:
+        snapshot = snapshot_lookup(normalized)
+        if snapshot:
+            return snapshot
     if "nutritionix" in priorities:
         nutritionix = _nutritionix_lookup(text, normalized)
         if nutritionix:
@@ -95,6 +104,62 @@ def lookup(
             data_store.save_branded_lookup_cache(normalized, usda["source"], usda)
             return usda
     return None
+
+
+def snapshot_lookup(normalized_text: str) -> dict[str, Any] | None:
+    """Return an offline snapshot estimate by normalized text."""
+    key = normalize_meal_text(normalized_text)
+    if not key:
+        return None
+    snapshot = _load_snapshot()
+    item = snapshot.get(key)
+    if not item:
+        return None
+    estimate = {
+        "item_name": item.get("item_name"),
+        "portion_description": item.get("portion_description"),
+        "meal_type": item.get("meal_type") or "snack",
+        "calories": item.get("calories"),
+        "protein_g": item.get("protein_g"),
+        "carbs_g": item.get("carbs_g"),
+        "fat_g": item.get("fat_g"),
+        "sodium_mg": item.get("sodium_mg", 0),
+        "fiber_g": item.get("fiber_g", 0),
+        "confidence": 0.82,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "offline_snapshot",
+        "external_food_id": item.get("external_food_id"),
+        "verified_source_url": item.get("verified_source_url"),
+        "data_fetched_at": item.get("data_fetched_at") or _snapshot_version(),
+        "portion_basis": item.get("portion_basis"),
+    }
+    return _sanitize_with_provenance(estimate)
+
+
+def _load_snapshot() -> dict[str, dict[str, Any]]:
+    global _SNAPSHOT_CACHE
+    if _SNAPSHOT_CACHE is not None:
+        return _SNAPSHOT_CACHE
+    try:
+        raw = json.loads(SNAPSHOT_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        _SNAPSHOT_CACHE = {}
+        return _SNAPSHOT_CACHE
+    _SNAPSHOT_CACHE = {
+        normalize_meal_text(item.get("normalized_text") or item.get("item_name") or ""): item
+        for item in raw.get("items", [])
+        if isinstance(item, dict)
+    }
+    return _SNAPSHOT_CACHE
+
+
+def _snapshot_version() -> str:
+    try:
+        raw = json.loads(SNAPSHOT_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return "offline_snapshot"
+    return str(raw.get("version") or raw.get("generated_at") or "offline_snapshot")
 
 
 def _cache_lookup(normalized: str) -> dict[str, Any] | None:

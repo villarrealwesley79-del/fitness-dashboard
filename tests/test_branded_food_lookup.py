@@ -153,7 +153,7 @@ def test_stale_cache_falls_through_to_usda(monkeypatch):
         },
     )
 
-    estimate = branded_food_lookup.lookup("banana")
+    estimate = branded_food_lookup.lookup("banana", source_priority=("cache", "nutritionix", "usda_fdc"))
 
     assert estimate["source"] == "usda_fdc"
     assert estimate["item_name"] == "BANANAS,RAW"
