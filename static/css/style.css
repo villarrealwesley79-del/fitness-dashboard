@@ -2349,12 +2349,17 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 .active-empty { margin-bottom: 14px; }
 .set-row {
     display: grid;
-    grid-template-columns: 28px 1fr 1fr 36px;
+    /* FIT-108: 4th column widened from 36px → 56px so the Done tap target
+       (now the whole .set-done-cell label) meets the 44pt mobile guideline. */
+    grid-template-columns: 28px 1fr 1fr 56px;
     gap: 6px;
     align-items: center;
     margin-bottom: 6px;
+    padding: 2px 0;
+    border-radius: 8px;
+    transition: background-color 160ms ease;
 }
-.set-row label { font-size: 11px; color: var(--fg-dim); }
+.set-row > label { font-size: 11px; color: var(--fg-dim); }
 .set-row input[type="number"],
 .set-row input[type="text"],
 .active-cardio-grid input,
@@ -2371,7 +2376,44 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 .set-row .set-notes {
     grid-column: 2 / -1;
 }
-.set-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent-green); }
+.set-row input[type="checkbox"] { width: 28px; height: 28px; accent-color: var(--accent-green); }
+/* FIT-108: enlarged Done tap target — the whole 4th-column cell is the
+   hit area, satisfying ≥44×44 pt even on the smallest mobile width. */
+.set-done-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px;
+    cursor: pointer;
+    border-radius: 8px;
+}
+.set-done-cell:hover { background: rgba(51,65,85,0.25); }
+.set-done-cell input[type="checkbox"] { cursor: pointer; }
+/* FIT-108: highlight the next-incomplete set so the user's next action
+   is visually obvious during a real set. */
+.set-row-next {
+    background: rgba(99,102,241,0.10);
+    box-shadow: inset 3px 0 0 var(--accent-blue);
+    padding-left: 6px;
+}
+/* FIT-108: sticky progress header inside the active-workout modal body.
+   Pattern mirrors the FIT-107 food-log section title — top: -16px
+   counters .modal-body's top padding so the chip sits flush. */
+.active-workout-progress {
+    position: sticky;
+    top: -16px;
+    margin: -16px -18px 12px;
+    padding: 10px 18px 8px;
+    background: linear-gradient(180deg, #131f3a 0%, #131f3a 80%, rgba(19,31,58,0) 100%);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--fg-1);
+    font-variant-numeric: tabular-nums;
+    z-index: 2;
+}
 .active-cardio-meta {
     color: var(--fg-dim);
     font-size: 12px;

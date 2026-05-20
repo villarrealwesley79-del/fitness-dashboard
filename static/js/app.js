@@ -4017,6 +4017,7 @@
         const setIdx = Number(row.dataset.set);
         const ex = state.activeWorkout && state.activeWorkout.exercises && state.activeWorkout.exercises[exIdx];
         if (!ex || !ex.logged_sets || !ex.logged_sets[setIdx]) return;
+        const wasDone = !!ex.logged_sets[setIdx].done;
         ex.logged_sets[setIdx] = {
             weight: qs('input[data-field="weight"]', row).value,
             reps: qs('input[data-field="reps"]', row).value,
@@ -4024,6 +4025,63 @@
             notes: qs('input[data-field="notes"]', row).value,
         };
         state.activeWorkout.dirty = true;
+        // FIT-108: keep the sticky progress header in sync after every input
+        // change. Also re-target the "next incomplete" highlight and, when
+        // the user just flipped a set to done, scroll the next incomplete
+        // row into view so the focus follows the workout.
+        const body = $('active-workout-body');
+        if (body) {
+            const progress = countActiveWorkoutProgress();
+            const header = $('active-workout-progress');
+            if (header) header.textContent = formatActiveWorkoutProgress(progress);
+            qsa('.set-row.set-row-next', body).forEach((r) => r.classList.remove('set-row-next'));
+            if (progress.nextIncomplete) {
+                const sel = `.set-row[data-ex="${progress.nextIncomplete.exIdx}"][data-set="${progress.nextIncomplete.setIdx}"]`;
+                const next = body.querySelector(sel);
+                if (next) {
+                    next.classList.add('set-row-next');
+                    const justCompleted = !wasDone && ex.logged_sets[setIdx].done;
+                    if (justCompleted && next !== row) {
+                        next.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                }
+            }
+        }
+    }
+
+    // FIT-108: count completed / total sets across every exercise and find
+    // the first incomplete set so the sticky header + next-row highlight
+    // can stay accurate as the user logs sets. Returns 0/0 when there is
+    // no active workout so the caller can render a neutral state.
+    function countActiveWorkoutProgress() {
+        const aw = state.activeWorkout;
+        const out = { setsDone: 0, setsTotal: 0, exercisesWithIncomplete: 0, nextIncomplete: null };
+        if (!aw || !Array.isArray(aw.exercises)) return out;
+        aw.exercises.forEach((ex, exIdx) => {
+            if (!ex || !Array.isArray(ex.logged_sets) || !ex.logged_sets.length) return;
+            let incompleteInEx = false;
+            ex.logged_sets.forEach((set, setIdx) => {
+                out.setsTotal += 1;
+                if (set && set.done) {
+                    out.setsDone += 1;
+                } else {
+                    if (!incompleteInEx) incompleteInEx = true;
+                    if (!out.nextIncomplete) out.nextIncomplete = { exIdx, setIdx };
+                }
+            });
+            if (incompleteInEx) out.exercisesWithIncomplete += 1;
+        });
+        return out;
+    }
+
+    function formatActiveWorkoutProgress(p) {
+        if (!p || !p.setsTotal) return 'No sets yet';
+        const setN = Math.min(p.setsDone + 1, p.setsTotal);
+        const exLeft = p.exercisesWithIncomplete;
+        if (p.setsDone >= p.setsTotal) {
+            return `All ${p.setsTotal} sets complete`;
+        }
+        return `Set ${setN} of ${p.setsTotal} · ${exLeft} ${exLeft === 1 ? 'exercise' : 'exercises'} left`;
     }
 
     function updateActiveCardio() {
@@ -4042,6 +4100,16 @@
         $('active-workout-title').textContent = (state.activeWorkout.focus + ' Workout').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
         const body = $('active-workout-body');
         body.innerHTML = '';
+        // FIT-108: sticky progress header pinned to the top of the
+        // scrollable modal body so the user always sees "Set N of M ·
+        // X exercises left" while logging. Updated by
+        // updateLoggedSetFromRow on every change.
+        const progress = countActiveWorkoutProgress();
+        const progressEl = document.createElement('div');
+        progressEl.className = 'active-workout-progress';
+        progressEl.id = 'active-workout-progress';
+        progressEl.textContent = formatActiveWorkoutProgress(progress);
+        body.appendChild(progressEl);
         state.activeWorkout.exercises.forEach((ex, i) => {
             const card = document.createElement('div');
             card.className = 'active-ex';
@@ -4052,12 +4120,19 @@
             const target = `${sets} × ${reps} RPE ${rpe}`;
             let rowsHtml = '';
             ex.logged_sets.forEach((set, sidx) => {
+                // FIT-108: flag the first incomplete set across the whole
+                // workout so the user's next action is visually obvious.
+                const isNext = progress.nextIncomplete
+                    && progress.nextIncomplete.exIdx === i
+                    && progress.nextIncomplete.setIdx === sidx;
                 rowsHtml += `
-                    <div class="set-row" data-ex="${i}" data-set="${sidx}">
+                    <div class="set-row${isNext ? ' set-row-next' : ''}" data-ex="${i}" data-set="${sidx}">
                         <label>${sidx + 1}</label>
                         <input type="number" placeholder="Weight" data-field="weight" inputmode="decimal" value="${escapeHtml(set.weight)}">
                         <input type="number" placeholder="Reps" data-field="reps" inputmode="numeric" value="${escapeHtml(set.reps)}">
-                        <input type="checkbox" data-field="done" aria-label="done"${set.done ? ' checked' : ''}>
+                        <label class="set-done-cell" aria-label="mark set done">
+                            <input type="checkbox" data-field="done"${set.done ? ' checked' : ''}>
+                        </label>
                         <input class="set-notes" type="text" placeholder="Set notes" data-field="notes" value="${escapeHtml(set.notes)}">
                     </div>
                 `;
