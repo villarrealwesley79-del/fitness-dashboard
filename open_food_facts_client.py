@@ -36,6 +36,7 @@ def search_products(
     *,
     timeout: float = TIMEOUT_SECONDS,
     total_timeout: float = TOTAL_TIMEOUT_SECONDS,
+    country_tag: str | None = None,
     product_filter: Callable[[dict[str, Any]], bool] | None = None,
 ) -> dict[str, Any] | None:
     cleaned = (query or "").strip()
@@ -48,7 +49,7 @@ def search_products(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        payload = _search_products_once(search_terms, timeout=min(timeout, remaining))
+        payload = _search_products_once(search_terms, timeout=min(timeout, remaining), country_tag=country_tag)
         if not payload:
             continue
         last_payload = payload
@@ -68,13 +69,14 @@ def search_products(
 
 
 def _search_variants(query: str) -> list[str]:
-    variants = [query]
+    variants = []
     product_only = _strip_locale_words(query)
     if product_only and product_only.lower() != query.lower():
         variants.append(product_only)
+    variants.append(query)
     alias = PRODUCT_QUERY_ALIASES.get(product_only.lower())
     if alias and alias.lower() not in {variant.lower() for variant in variants}:
-        variants.append(alias)
+        variants.insert(1 if variants else 0, alias)
     return variants
 
 
@@ -82,13 +84,18 @@ def _strip_locale_words(query: str) -> str:
     return " ".join(part for part in query.split() if part.lower() not in LOCALE_QUERY_TOKENS)
 
 
-def _search_products_once(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any] | None:
+def _search_products_once(
+    query: str,
+    *,
+    timeout: float = TIMEOUT_SECONDS,
+    country_tag: str | None = None,
+) -> dict[str, Any] | None:
     params = {
         "search_terms": query,
         "search_simple": "1",
         "action": "process",
         "json": "1",
-        "page_size": "5",
+        "page_size": "25",
         "fields": ",".join(
             [
                 "code",
@@ -101,6 +108,12 @@ def _search_products_once(query: str, *, timeout: float = TIMEOUT_SECONDS) -> di
             ]
         ),
     }
+    if country_tag:
+        params.update({
+            "tagtype_0": "countries",
+            "tag_contains_0": "contains",
+            "tag_0": country_tag,
+        })
     req = request.Request(
         f"{OFF_SEARCH_URL}?{parse.urlencode(params)}",
         headers={

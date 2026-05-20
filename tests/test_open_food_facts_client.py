@@ -57,6 +57,7 @@ def test_open_food_facts_client_searches_keyless_endpoint(monkeypatch):
     assert result["products"][0]["product_name"] == "Walkers Crisps"
     assert params["search_terms"] == ["Walkers crisps"]
     assert params["json"] == ["1"]
+    assert params["page_size"] == ["25"]
     assert captured["timeout"] == open_food_facts_client.TIMEOUT_SECONDS
     assert open_food_facts_client.TIMEOUT_SECONDS >= 5
     assert captured["ua"] == open_food_facts_client.USER_AGENT
@@ -76,7 +77,7 @@ def test_open_food_facts_client_retries_without_locale_word(monkeypatch):
 
     result = open_food_facts_client.search_products("Australian Tim Tams")
 
-    assert seen_terms == ["Australian Tim Tams", "Tim Tams", "Tim Tam"]
+    assert seen_terms == ["Tim Tams", "Tim Tam", "Australian Tim Tams"]
     assert result["products"][0]["product_name"] == "Tim Tam"
 
 
@@ -95,7 +96,7 @@ def test_open_food_facts_client_stops_after_usable_variant(monkeypatch):
         product_filter=lambda product: product["product_name"] == "Tim Tam",
     )
 
-    assert seen_terms == ["Australian Tim Tams"]
+    assert seen_terms == ["Tim Tams"]
     assert result["products"][0]["product_name"] == "Tim Tam"
 
 
@@ -117,8 +118,25 @@ def test_open_food_facts_client_bounds_variant_retry_time(monkeypatch):
     result = open_food_facts_client.search_products("Australian Tim Tams")
 
     assert result["products"] == []
-    assert seen_terms == ["Australian Tim Tams", "Tim Tams"]
+    assert seen_terms == ["Tim Tams", "Tim Tam"]
     assert timeouts == [5.0, 1.0]
+
+
+def test_open_food_facts_client_passes_country_filter(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        return _Response({"products": [_product("Walkers Crisps")]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    open_food_facts_client.search_products("UK Walkers crisps", country_tag="en:united-kingdom")
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(captured["url"]).query)
+
+    assert params["search_terms"] == ["Walkers crisps"]
+    assert params["tagtype_0"] == ["countries"]
+    assert params["tag_contains_0"] == ["contains"]
+    assert params["tag_0"] == ["en:united-kingdom"]
 
 
 def test_open_food_facts_lookup_uses_later_usable_variant(monkeypatch):
@@ -144,7 +162,7 @@ def test_open_food_facts_lookup_uses_later_usable_variant(monkeypatch):
 
     estimate = branded_food_lookup.lookup("Australian Tim Tams")
 
-    assert seen_terms == ["Australian Tim Tams", "Tim Tams", "Tim Tam"]
+    assert seen_terms == ["Tim Tams", "Tim Tam", "Australian Tim Tams"]
     assert estimate["source"] == "open_food_facts"
     assert estimate["external_food_id"] == "good"
 

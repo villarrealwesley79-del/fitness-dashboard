@@ -216,6 +216,7 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
     expected_country_tag = _off_expected_country_tag(text)
     payload = open_food_facts_client.search_products(
         text,
+        country_tag=expected_country_tag,
         product_filter=lambda product: _off_candidate_usable(product, expected_country_tag=expected_country_tag),
     )
     products = payload.get("products") if isinstance(payload, dict) else None
