@@ -249,7 +249,9 @@ def test_original_estimate_json_does_not_include_raw_trace(isolated_store):
             "original_estimate": {
                 "item_name": "snack",
                 "calories": 410,
+                "from_image": True,
                 "model_response": {"raw": True},
+                "image_bytes": "drop raw image bytes",
                 "trace": "hidden",
             },
         },
@@ -258,7 +260,7 @@ def test_original_estimate_json_does_not_include_raw_trace(isolated_store):
     with sqlite3.connect(db_path) as conn:
         raw = conn.execute("SELECT original_estimate_json FROM food_logs").fetchone()[0]
     persisted = json.loads(raw)
-    assert persisted == {"item_name": "snack", "calories": 410}
+    assert persisted == {"item_name": "snack", "calories": 410, "from_image": True}
 
 
 def test_original_estimate_json_preserves_lookup_provenance(isolated_store):

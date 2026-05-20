@@ -13,6 +13,8 @@ import importlib
 import io
 from pathlib import Path
 
+import data_store
+
 
 def _client(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit60-stub-secret")
@@ -451,6 +453,8 @@ def test_meal_intake_image_only_auto_logs(monkeypatch):
 
 def test_meal_intake_image_text_is_preserved_as_brand_hint(monkeypatch):
     module = _client(monkeypatch)
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 42)
+    monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [])
     captured = {}
     vision = {
         "provider": "claude",
@@ -480,6 +484,7 @@ def test_meal_intake_image_text_is_preserved_as_brand_hint(monkeypatch):
     def fake_lookup(text, **kwargs):
         captured["text"] = text
         captured["brand_hint"] = kwargs.get("brand_hint")
+        captured["user_id"] = kwargs.get("user_id")
         return dict(lookup)
 
     monkeypatch.setattr(module.branded_food_lookup, "lookup", fake_lookup)
@@ -499,8 +504,44 @@ def test_meal_intake_image_text_is_preserved_as_brand_hint(monkeypatch):
     assert captured == {
         "text": "Chipotle chicken burrito burrito 1 burrito",
         "brand_hint": None,
+        "user_id": 42,
     }
     assert res.get_json()["estimate"]["item_name"] == "Chipotle chicken burrito"
+
+
+def test_meal_intake_image_text_respects_direct_lookup_guard(monkeypatch):
+    module = _client(monkeypatch)
+    vision = {
+        "provider": "claude",
+        "item_description": "Chipotle chicken burrito",
+        "portion_hint": "1 burrito",
+        "confidence": 0.86,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    }
+    monkeypatch.setattr(module.vision_estimator, "describe", lambda *_a, **_kw: dict(vision))
+    monkeypatch.setattr(
+        module.branded_food_lookup,
+        "lookup",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("unsafe image text must not direct lookup")),
+    )
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "half Chipotle chicken burrito",
+            "client_id": "meal-img-half-guard-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["estimate"]["source"] == "vision_claude_estimate"
+    assert body["estimate"]["from_image"] is True
 
 
 def test_meal_intake_image_lookup_confidence_is_capped_by_vision(monkeypatch):
@@ -798,6 +839,74 @@ def test_meal_intake_image_provider_failure_uses_text_fallback(monkeypatch):
     assert body["vision_error"] == "provider down"
 
 
+def test_meal_intake_image_provider_failure_preserves_photo_origin_after_pending_reload(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(
+        module.vision_estimator,
+        "describe",
+        lambda *_a, **_kw: (_ for _ in ()).throw(module.vision_estimator.VisionEstimatorError("provider down")),
+    )
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Shared popcorn",
+        "portion_description": "shared tub",
+        "meal_type": "snack",
+        "calories": 300,
+        "protein_g": 5,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 520,
+        "fiber_g": 6,
+        "confidence": 0.45,
+        "ambiguous": True,
+        "uncertainty_notes": ["Portion is unclear."],
+    })
+    persisted_rows = []
+
+    def fake_add_food_log(_user_id, record):
+        row = dict(record)
+        row["original_estimate"] = data_store.sanitize_food_estimate(record.get("original_estimate"))
+        persisted_rows[:] = [row]
+        return {
+            "client_id": record["client_id"],
+            "correction_state": record["correction_state"],
+            "source": record["source"],
+            "original_estimate": row["original_estimate"],
+        }
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+    monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: list(persisted_rows))
+    monkeypatch.setattr(module, "delete_food_log_by_client_id", lambda *_a, **_kw: False)
+
+    client = module.app.test_client()
+    res = client.post(
+        "/api/meal-intake",
+        data={
+            "text": "shared movie popcorn",
+            "client_id": "meal-vision-fallback-pending-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert persisted_rows[0]["source"] == "ai_text_estimate"
+    assert persisted_rows[0]["original_estimate"]["from_image"] is True
+
+    pending = client.get("/api/meal-intake/pending")
+    assert pending.status_code == 200
+    pending_estimate = pending.get_json()["pending"][0]["estimate"]
+    assert pending_estimate["from_image"] is True
+
+    accept = client.post(
+        "/api/meal-intake/meal-vision-fallback-pending-1/accept",
+        json={"estimate": pending_estimate, "text": "shared movie popcorn"},
+    )
+    assert accept.status_code == 200
+    assert accept.get_json()["photo_retention"]["image_received"] is True
+
+
 def test_meal_intake_image_provider_failure_without_text_returns_clear_error(monkeypatch):
     module = _client(monkeypatch)
     monkeypatch.setattr(
@@ -819,6 +928,59 @@ def test_meal_intake_image_provider_failure_without_text_returns_clear_error(mon
     body = res.get_json()
     assert "Add a meal description" in body["error"]["message"]
     assert body["photo_retention"]["image_received"] is True
+
+
+def test_meal_intake_accept_sanitizes_original_estimate_before_persist(monkeypatch):
+    module = _client(monkeypatch)
+    persisted = {}
+
+    def fake_add_food_log(_user_id, record):
+        persisted.update(record)
+        return {"client_id": record["client_id"], "original_estimate": record["original_estimate"]}
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+    monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: False)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/meal-accept-sanitize-1/accept",
+        json={
+            "estimate": {
+                "item_name": "Shared popcorn",
+                "portion_description": "shared tub",
+                "meal_type": "snack",
+                "calories": 300,
+                "protein_g": 5,
+                "carbs_g": 36,
+                "fat_g": 18,
+                "sodium_mg": 520,
+                "fiber_g": 6,
+                "confidence": 0.45,
+                "ambiguous": True,
+                "uncertainty_notes": ["Portion is unclear."],
+                "source": "ai_text_estimate",
+                "from_image": True,
+            },
+            "original_estimate": {
+                "item_name": "Shared popcorn",
+                "calories": "300",
+                "protein_g": 5,
+                "carbs_g": 36,
+                "fat_g": 18,
+                "confidence": 0.45,
+                "ambiguous": True,
+                "uncertainty_notes": ["Portion is unclear."],
+                "source": "ai_text_estimate",
+                "from_image": True,
+                "image_bytes": "drop me",
+            },
+            "text": "shared movie popcorn",
+        },
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    assert persisted["original_estimate"]["calories"] == 300
+    assert persisted["original_estimate"]["from_image"] is True
+    assert "image_bytes" not in persisted["original_estimate"]
 
 
 def test_meal_intake_undo_calls_delete_helper(monkeypatch):

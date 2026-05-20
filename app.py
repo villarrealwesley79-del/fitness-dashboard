@@ -3478,7 +3478,7 @@ def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
     }
 
 
-def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype: str) -> dict:
+def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype: str, user_id: int) -> dict:
     vision = vision_estimator.describe(
         image_bytes,
         context_text=text_raw or None,
@@ -3486,10 +3486,16 @@ def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype:
     )
     description = vision["item_description"]
     lookup_text = " ".join(part for part in (text_raw, description, vision.get("portion_hint")) if part)
+    lookup = None
     try:
-        lookup = branded_food_lookup.lookup(lookup_text)
+        lookup_allowed = not text_raw or branded_food_lookup.should_attempt_direct_lookup(text_raw)
     except Exception:
-        lookup = None
+        lookup_allowed = False
+    if lookup_allowed:
+        try:
+            lookup = branded_food_lookup.lookup(lookup_text, user_id=user_id)
+        except Exception:
+            lookup = None
     provider = vision.get("provider") or vision_estimator.configured_provider()
     if lookup:
         estimate = dict(lookup)
@@ -3780,6 +3786,25 @@ def _meal_accept_was_corrected(submitted: dict, original: dict | None) -> bool:
     return any(sanitized_original.get(field) != submitted.get(field) for field in compare_fields)
 
 
+def _sanitize_original_estimate_for_log(original: dict | None, accepted: dict) -> dict:
+    if not isinstance(original, dict):
+        return dict(accepted)
+    original_source = original.get("source") if isinstance(original.get("source"), str) else None
+    try:
+        sanitized = sanitize_meal_estimate(
+            original,
+            source=original_source or accepted.get("source") or "stub_text_estimate",
+            legacy_defaults=True,
+            plausible_ranges=True,
+        )
+        _preserve_safe_estimate_metadata(sanitized, original)
+    except MealEstimateValidationError:
+        return dict(accepted)
+    if bool(original.get("from_image")) or bool(accepted.get("from_image")) or _source_indicates_image(sanitized.get("source")):
+        sanitized["from_image"] = True
+    return sanitized
+
+
 @app.route("/api/meal-intake", methods=["POST"])
 def meal_intake_stub():
     """FIT-60 stub — accept text and/or image, return a canned estimate.
@@ -3836,6 +3861,7 @@ def meal_intake_stub():
     if not text_raw and not has_image:
         return jsonify({"error": {"message": "provide a meal description or photo"}}), 400
 
+    user_id = _current_data_user_id()
     response_extras: dict = {}
     if has_image:
         try:
@@ -3843,6 +3869,7 @@ def meal_intake_stub():
                 image_bytes,
                 text_raw=text_raw,
                 mimetype=image_mimetype,
+                user_id=user_id,
             )
             source = estimate["source"]
             response_extras["vision"] = {
@@ -3861,7 +3888,7 @@ def meal_intake_stub():
             parsed = parse_meal_text(
                 text_raw,
                 timestamp=local_iso or local_timestamp,
-                user_id=_current_data_user_id(),
+                user_id=user_id,
             )
             try:
                 raw_estimate = parsed["estimate"]
@@ -3878,7 +3905,7 @@ def meal_intake_stub():
         parsed = parse_meal_text(
             text_raw,
             timestamp=local_iso or local_timestamp,
-            user_id=_current_data_user_id(),
+            user_id=user_id,
         )
         raw_estimate = parsed["estimate"]
         try:
@@ -3912,7 +3939,6 @@ def meal_intake_stub():
     # pending entry from the new MEDIUM band has no explanation surface.
     _merge_policy_reasons_into_uncertainty_notes(estimate, decision["reasons"])
 
-    user_id = _current_data_user_id()
     food_log = None
     existing_food_log = _food_log_by_client_id(user_id, client_id)
     if (
@@ -4022,7 +4048,7 @@ def meal_intake_accept_stub(client_id: str):
         or _meal_accept_was_corrected(estimate, data.get("original_estimate"))
     )
     correction_state = "corrected" if corrected else CORRECTION_STATE_ACCEPTED
-    original_for_log = data.get("original_estimate") if isinstance(data.get("original_estimate"), dict) else estimate
+    original_for_log = _sanitize_original_estimate_for_log(data.get("original_estimate"), estimate)
     food_log = _meal_intake_stub_persist(
         client_id,
         estimate,

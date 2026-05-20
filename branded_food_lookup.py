@@ -221,6 +221,9 @@ def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) ->
         return False
     if any(token in tokens for token in MULTI_ITEM_TOKENS):
         return False
+    expected_country_tag = _off_expected_country_tag(normalized)
+    if _off_lookup_allowed(normalized, expected_country_tag):
+        return True
     if brand_hint or _brand_from_text(normalized):
         return bool([token for token in tokens if token not in KNOWN_BRANDS])
     return len(tokens) == 1
