@@ -3574,7 +3574,10 @@ def meal_intake_accept_stub(client_id: str):
         original_estimate=original_for_log,
     )
     if claim_food_log_vocab_learning(_current_data_user_id(), client_id):
-        personal_vocab.record_accept(_current_data_user_id(), text_hint or None, estimate)
+        if corrected:
+            personal_vocab.record_correct(_current_data_user_id(), text_hint or None, estimate)
+        else:
+            personal_vocab.record_accept(_current_data_user_id(), text_hint or None, estimate)
     return jsonify({
         "status": "logged",
         "food_log": food_log,
