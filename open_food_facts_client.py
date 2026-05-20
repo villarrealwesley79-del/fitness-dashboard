@@ -30,6 +30,15 @@ PRODUCT_QUERY_ALIASES = {
     "petit ecolier": "Petit Écolier",
     "tim tams": "Tim Tam",
 }
+COUNTRY_SEARCH_TAGS = {
+    "en:australia": "Australia",
+    "en:canada": "Canada",
+    "en:france": "France",
+    "en:germany": "Germany",
+    "en:ireland": "Ireland",
+    "en:japan": "Japan",
+    "en:united-kingdom": "United Kingdom",
+}
 
 
 def search_products(
@@ -113,11 +122,12 @@ def _search_products_once(
             ]
         ),
     }
-    if country_tag:
+    country_filter = COUNTRY_SEARCH_TAGS.get(country_tag or "")
+    if country_filter:
         params.update({
             "tagtype_0": "countries",
             "tag_contains_0": "contains",
-            "tag_0": country_tag,
+            "tag_0": country_filter,
         })
     req = request.Request(
         f"{OFF_SEARCH_URL}?{parse.urlencode(params)}",

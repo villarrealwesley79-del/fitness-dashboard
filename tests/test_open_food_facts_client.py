@@ -169,7 +169,7 @@ def test_open_food_facts_client_passes_country_filter(monkeypatch):
     assert params["search_terms"] == ["Walkers crisps"]
     assert params["tagtype_0"] == ["countries"]
     assert params["tag_contains_0"] == ["contains"]
-    assert params["tag_0"] == ["en:united-kingdom"]
+    assert params["tag_0"] == ["United Kingdom"]
 
 
 def test_open_food_facts_lookup_uses_later_usable_variant(monkeypatch):
