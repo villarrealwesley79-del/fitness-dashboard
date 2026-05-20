@@ -28,7 +28,7 @@ def _load_rows(path: Path) -> list[dict]:
 
 
 def _row_key(kind: str, row: dict, index: int) -> str:
-    return str(row.get("id") or row.get("client_id") or f"{kind}:{index}")
+    return str(row.get("id") or row.get("client_id") or index)
 
 
 def _summarize(kind: str, row: dict, index: int) -> str:

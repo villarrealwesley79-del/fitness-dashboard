@@ -64,6 +64,30 @@ def test_cleanup_script_removes_only_explicit_runtime_rows(tmp_path):
     assert sum(row["total_volume"] for row in remaining) == 7000
 
 
+def test_cleanup_script_removes_index_keyed_rows(tmp_path):
+    rows = [
+        {"date": "2026-04-12", "session_type": "push", "total_volume": 1000},
+        {"date": "2026-04-20", "session_type": "pull", "total_volume": 2000},
+    ]
+    (tmp_path / "data_workouts.json").write_text(json.dumps(rows))
+    (tmp_path / "data_cardio.json").write_text("[]")
+    (tmp_path / "data_recovery.json").write_text("[]")
+
+    applied = _run([
+        "--data-dir",
+        str(tmp_path),
+        "--remove",
+        "workout:0",
+        "--expect-count",
+        "1",
+        "--apply",
+    ])
+
+    assert applied.returncode == 0, applied.stderr
+    remaining = json.loads((tmp_path / "data_workouts.json").read_text())
+    assert remaining == [rows[1]]
+
+
 def test_no_tracked_runtime_fixture_rows_for_apr_12_14():
     tracked = subprocess.run(
         ["git", "ls-files"],
