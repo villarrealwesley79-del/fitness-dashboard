@@ -4607,18 +4607,47 @@
         };
     }
 
+    // FIT-6: derive the FIT-66 three-field timestamp from a naive
+    // server-local logged_at string (FIT-59 convention:
+    // "YYYY-MM-DDTHH:MM:SS" without offset). Used when an entry came
+    // from /api/meal-intake/pending (FIT-67 hydration), which today
+    // only returns logged_at — without this, local_date / local_iso
+    // would stay null and Retry's fallback to browserLocalMealTime()
+    // would misdate a cross-midnight pending meal to today. Returns
+    // null when logged_at can't be parsed (the caller falls back to
+    // its own browserLocalMealTime()).
+    function deriveLocalTimeFromLoggedAt(loggedAt) {
+        if (!loggedAt || typeof loggedAt !== 'string') return null;
+        const parsed = new Date(loggedAt);
+        if (Number.isNaN(parsed.getTime())) return null;
+        return browserLocalMealTime(parsed);
+    }
+
     function mealPendingEntryFromPayload(entry, fallback = {}) {
         if (!entry) return null;
         const clientId = entry.client_id || fallback.client_id;
         if (!clientId) return null;
+        // FIT-6: if the source payload omitted local_date / local_iso
+        // (the /api/meal-intake/pending hydration path does — see the
+        // docstring on deriveLocalTimeFromLoggedAt), reconstruct them
+        // from logged_at so Retry never falls back to "today" for a
+        // pending meal the user submitted on a different calendar day.
+        // local_timestamp keeps its original FIT-67 fallback chain
+        // (entry → fallback → logged_at) so the FIT-67 source-guard
+        // test still passes.
+        const needsDerive = !(entry.local_date || fallback.local_date)
+            || !(entry.local_iso || fallback.local_iso);
+        const derived = needsDerive
+            ? deriveLocalTimeFromLoggedAt(entry.logged_at || fallback.logged_at)
+            : null;
         return {
             client_id: clientId,
             estimate: entry.estimate || fallback.estimate || {},
             text: entry.text_hint || fallback.text || '',
             logged_at: entry.logged_at || fallback.logged_at || null,
             local_timestamp: entry.local_timestamp || fallback.local_timestamp || entry.logged_at || fallback.logged_at || null,
-            local_date: entry.local_date || fallback.local_date || null,
-            local_iso: entry.local_iso || fallback.local_iso || null,
+            local_date: entry.local_date || fallback.local_date || (derived && derived.local_date) || null,
+            local_iso: entry.local_iso || fallback.local_iso || (derived && derived.local_iso) || null,
             policy: entry.policy || fallback.policy || null,
             // FIT-6: carry the original File reference so Retry (AC4) can
             // re-submit the same image without prompting the user to pick
