@@ -27,6 +27,8 @@ PUBLIC_ESTIMATE_FIELDS = (
     "ambiguous",
     "uncertainty_notes",
     "source",
+    "brand_hint",
+    "brand_hint_confidence",
 )
 
 CALORIE_MAX = 5000
@@ -103,7 +105,7 @@ def sanitize_meal_estimate(
     if not isinstance(estimate_source, str) or not estimate_source.strip():
         raise MealEstimateValidationError("source is required")
 
-    return {
+    estimate = {
         "item_name": item_name.strip(),
         "portion_description": _string_or_none(raw.get("portion_description"), "portion_description"),
         "meal_type": meal_type,
@@ -130,6 +132,15 @@ def sanitize_meal_estimate(
         "uncertainty_notes": [note.strip() for note in notes if note.strip()],
         "source": estimate_source.strip(),
     }
+    brand_hint = _string_or_none(raw.get("brand_hint"), "brand_hint")
+    if brand_hint:
+        estimate["brand_hint"] = brand_hint
+        if raw.get("brand_hint_confidence") is not None:
+            estimate["brand_hint_confidence"] = round(
+                _number(raw.get("brand_hint_confidence"), "brand_hint_confidence", maximum=1.0),
+                2,
+            )
+    return estimate
 
 
 def manual_review_estimate(*, text: str = "", source: str = "manual_review_estimate") -> dict:

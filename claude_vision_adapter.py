@@ -34,8 +34,11 @@ def describe_food_photo(
 
     prompt = (
         "Identify the food in this image for a fitness food log. Return JSON only "
-        "with item_description, portion_hint, confidence, ambiguous, uncertainty_notes, "
-        "and optional macro_estimate using calories/protein_g/carbs_g/fat_g/sodium_mg/fiber_g. "
+        "with item_description, portion_hint, brand_hint, brand_hint_confidence, "
+        "confidence, ambiguous, uncertainty_notes, and optional macro_estimate using "
+        "calories/protein_g/carbs_g/fat_g/sodium_mg/fiber_g. "
+        "Use brand_hint only when packaging/logo/context clearly identifies a food brand; "
+        "otherwise return null. "
         "Do not include raw image data or chain of thought."
     )
     if context_text:

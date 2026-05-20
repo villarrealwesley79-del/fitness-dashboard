@@ -52,10 +52,48 @@ def test_vision_estimator_cleans_claude_response(monkeypatch):
         "provider": "claude",
         "item_description": "chicken burrito with white rice",
         "portion_hint": "1 large burrito",
+        "brand_hint": None,
+        "brand_hint_confidence": 0.0,
         "confidence": 0.82,
         "ambiguous": False,
         "uncertainty_notes": ["wrapper partially visible"],
     }
+
+
+def test_vision_estimator_keeps_confident_brand_hint(monkeypatch):
+    monkeypatch.setenv("VISION_ESTIMATOR_PROVIDER", "claude")
+    monkeypatch.setattr(vision_estimator.claude_vision_adapter, "describe_food_photo", lambda *_a, **_kw: {
+        "item_description": "foil wrapped burrito",
+        "portion_hint": "1 burrito",
+        "brand_hint": "Chipotle",
+        "brand_hint_confidence": 0.88,
+        "confidence": 0.8,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+
+    result = vision_estimator.describe(b"fake-image")
+
+    assert result["brand_hint"] == "chipotle"
+    assert result["brand_hint_confidence"] == 0.88
+
+
+def test_vision_estimator_drops_low_confidence_brand_hint(monkeypatch):
+    monkeypatch.setenv("VISION_ESTIMATOR_PROVIDER", "claude")
+    monkeypatch.setattr(vision_estimator.claude_vision_adapter, "describe_food_photo", lambda *_a, **_kw: {
+        "item_description": "homemade pasta",
+        "portion_hint": "1 bowl",
+        "brand_hint": "Starbucks",
+        "brand_hint_confidence": 0.4,
+        "confidence": 0.8,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+
+    result = vision_estimator.describe(b"fake-image")
+
+    assert result["brand_hint"] is None
+    assert result["brand_hint_confidence"] == 0.4
 
 
 def test_vision_estimator_rejects_unsupported_provider(monkeypatch):

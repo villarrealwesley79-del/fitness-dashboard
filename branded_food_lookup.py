@@ -22,6 +22,15 @@ KNOWN_BRANDS = {
     "chick-fil-a",
     "chickfila",
 }
+KNOWN_BRAND_PHRASES = {
+    "burger king",
+    "chick fil a",
+    "dunkin donuts",
+    "panda express",
+    "taco bell",
+    "wendys",
+}
+KNOWN_BRAND_TOKENS_THAT_CAN_BE_FLAVORS = {"chipotle"}
 BRAND_TYPOS = {
     "mcdonalds": {"mcdonals", "mcdonlds", "mcdonald"},
     "starbucks": {"starbuks", "starbukcs"},
@@ -75,9 +84,12 @@ def lookup(
     source_priority: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Return a sanitized estimate from cache/Nutritionix/USDA, or None."""
-    normalized = normalize_meal_text(f"{brand_hint or ''} {text}".strip())
+    cleaned_text = (text or "").strip()
+    lookup_text = _text_with_brand_hint(text, brand_hint)
+    normalized = normalize_meal_text(lookup_text)
     if not normalized:
         return None
+    generic_normalized = normalize_meal_text(cleaned_text)
     priorities = tuple(source_priority or SOURCE_PRIORITY)
 
     if "cache" in priorities:
@@ -85,16 +97,47 @@ def lookup(
         if cached:
             return cached
     if "nutritionix" in priorities:
-        nutritionix = _nutritionix_lookup(text, normalized)
+        nutritionix = _nutritionix_lookup(lookup_text, normalized)
         if nutritionix:
             data_store.save_branded_lookup_cache(normalized, nutritionix["source"], nutritionix)
             return nutritionix
     if "usda_fdc" in priorities:
-        usda = _usda_lookup(text, normalized)
+        usda_text = cleaned_text or lookup_text
+        usda_normalized = generic_normalized or normalized
+        if "cache" in priorities and usda_normalized != normalized:
+            generic_cached = _cache_lookup(usda_normalized)
+            if generic_cached:
+                return generic_cached
+        usda = _usda_lookup(usda_text, usda_normalized)
         if usda:
-            data_store.save_branded_lookup_cache(normalized, usda["source"], usda)
+            data_store.save_branded_lookup_cache(usda_normalized, usda["source"], usda)
             return usda
     return None
+
+
+def _text_with_brand_hint(text: str, brand_hint: str | None) -> str:
+    cleaned = (text or "").strip()
+    normalized_text = normalize_meal_text(cleaned)
+    hint = normalize_meal_text(brand_hint or "")
+    if not hint:
+        return cleaned
+    if _text_has_explicit_brand(normalized_text, hint):
+        return cleaned
+    return f"{hint} {cleaned}".strip()
+
+
+def _text_has_explicit_brand(normalized_text: str, hint: str) -> bool:
+    tokens = set(normalized_text.split())
+    brand_tokens = tokens & KNOWN_BRANDS
+    if brand_tokens and (
+        hint in brand_tokens
+        or any(token not in KNOWN_BRAND_TOKENS_THAT_CAN_BE_FLAVORS for token in brand_tokens)
+    ):
+        return True
+    padded = f" {normalized_text} "
+    if hint and f" {hint} " in padded:
+        return True
+    return any(f" {phrase} " in padded for phrase in KNOWN_BRAND_PHRASES)
 
 
 def _cache_lookup(normalized: str) -> dict[str, Any] | None:
