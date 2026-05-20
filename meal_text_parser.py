@@ -18,8 +18,10 @@ review based on the returned ``confidence`` and ``ambiguous`` flag.
 
 from __future__ import annotations
 
+import re
 from typing import Iterable, Optional
 
+import branded_food_lookup
 from lm_studio_adapter import (
     LM_STUDIO_ANALYZE_TIMEOUT_SEC,
     LmStudioError,
@@ -67,7 +69,7 @@ _SODIUM_MAX = SODIUM_MG_MAX
 # to avoid false positives like "fish" / "rice dish" / "rabbit" matching short
 # approximation markers.
 _AMBIGUOUS_TOKENS = (
-    "popcorn", "movie", "shared", "leftover", "leftovers", "snacks",
+    "popcorn", "movie", "shared", "leftover", "leftovers", "snacks", "half",
     "buffet", "potluck", "?", "guessing", "guess", "some food", "a bit",
     "a few",
 )
@@ -77,41 +79,59 @@ _AMBIGUOUS_TOKENS = (
 # unparseable JSON, or fails schema validation. Shapes intentionally match
 # the FIT-60 stub presets so the swap is behavior-compatible for the common
 # cases the existing UI tests rely on.
-_FALLBACK_PRESETS: tuple[tuple[tuple[str, ...], dict], ...] = (
-    (("shake", "smoothie"),
+_FALLBACK_PRESETS: tuple[tuple[tuple[str, ...], tuple[str, ...], dict], ...] = (
+    (("shake",), (),
      dict(item_name="Protein shake", meal_type="snack",
           calories=210, protein_g=30, carbs_g=14, fat_g=4, sodium_mg=180, fiber_g=2)),
-    (("egg", "toast"),
+    (("smoothie",), (),
+     dict(item_name="Protein shake", meal_type="snack",
+          calories=210, protein_g=30, carbs_g=14, fat_g=4, sodium_mg=180, fiber_g=2)),
+    (("egg",), (),
      dict(item_name="Eggs and toast", meal_type="breakfast",
           calories=420, protein_g=24, carbs_g=36, fat_g=18, sodium_mg=520, fiber_g=4)),
-    (("bowl", "chipotle"),
+    (("toast",), (),
+     dict(item_name="Eggs and toast", meal_type="breakfast",
+          calories=420, protein_g=24, carbs_g=36, fat_g=18, sodium_mg=520, fiber_g=4)),
+    (("chipotle", "chicken", "burrito"), ("bowl",),
+     dict(item_name="Chipotle chicken burrito", meal_type="lunch",
+          calories=1075, protein_g=51, carbs_g=116, fat_g=41, sodium_mg=2310, fiber_g=13)),
+    (("chipotle", "burrito"), ("bowl",),
+     dict(item_name="Chipotle burrito", meal_type="lunch",
+          calories=1075, protein_g=51, carbs_g=116, fat_g=41, sodium_mg=2310, fiber_g=13)),
+    (("chipotle", "bowl"), (),
      dict(item_name="Chipotle bowl", meal_type="lunch",
           calories=680, protein_g=42, carbs_g=72, fat_g=22, sodium_mg=1450, fiber_g=10)),
-    (("salad",),
+    (("salad",), (),
      dict(item_name="Salad", meal_type="lunch",
           calories=320, protein_g=18, carbs_g=22, fat_g=18, sodium_mg=460, fiber_g=6)),
-    (("chicken", "rice"),
+    (("chicken",), (),
      dict(item_name="Chicken and rice", meal_type="dinner",
           calories=560, protein_g=40, carbs_g=58, fat_g=14, sodium_mg=720, fiber_g=4)),
-    (("yogurt",),
+    (("rice",), (),
+     dict(item_name="Chicken and rice", meal_type="dinner",
+          calories=560, protein_g=40, carbs_g=58, fat_g=14, sodium_mg=720, fiber_g=4)),
+    (("yogurt",), (),
      dict(item_name="Yogurt", meal_type="snack",
           calories=180, protein_g=14, carbs_g=22, fat_g=4, sodium_mg=90, fiber_g=1)),
-    (("coffee",),
+    (("coffee",), (),
      dict(item_name="Coffee", meal_type="snack",
           calories=5, protein_g=0, carbs_g=0, fat_g=0, sodium_mg=5, fiber_g=0)),
-    (("banana",),
+    (("banana",), (),
      dict(item_name="Banana", meal_type="snack",
           calories=105, protein_g=1, carbs_g=27, fat_g=0, sodium_mg=1, fiber_g=3)),
-    (("oatmeal", "oats"),
+    (("oatmeal",), (),
      dict(item_name="Oatmeal", meal_type="breakfast",
           calories=300, protein_g=10, carbs_g=54, fat_g=6, sodium_mg=180, fiber_g=8)),
-    (("pasta",),
+    (("oats",), (),
+     dict(item_name="Oatmeal", meal_type="breakfast",
+          calories=300, protein_g=10, carbs_g=54, fat_g=6, sodium_mg=180, fiber_g=8)),
+    (("pasta",), (),
      dict(item_name="Pasta", meal_type="dinner",
           calories=520, protein_g=18, carbs_g=78, fat_g=14, sodium_mg=720, fiber_g=4)),
-    (("popcorn",),
+    (("popcorn",), (),
      dict(item_name="Popcorn", meal_type="snack",
           calories=300, protein_g=5, carbs_g=36, fat_g=18, sodium_mg=520, fiber_g=6)),
-    (("sandwich",),
+    (("sandwich",), (),
      dict(item_name="Sandwich", meal_type="lunch",
           calories=480, protein_g=24, carbs_g=48, fat_g=20, sodium_mg=920, fiber_g=4)),
 )
@@ -120,6 +140,32 @@ _FALLBACK_DEFAULT = dict(
     item_name="Meal", meal_type="snack", calories=400, protein_g=22,
     carbs_g=40, fat_g=15, sodium_mg=560, fiber_g=4,
 )
+
+_FALLBACK_TOKEN_ALIASES = {
+    "chipotole": "chipotle",
+    "chipoltle": "chipotle",
+    "chiptole": "chipotle",
+}
+
+
+def _fallback_tokens(text: str) -> set[str]:
+    raw_tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
+    tokens = set(raw_tokens)
+    for token in raw_tokens:
+        alias = _FALLBACK_TOKEN_ALIASES.get(token)
+        if alias:
+            tokens.add(alias)
+    return tokens
+
+
+def _has_fallback_token(tokens: set[str], term: str) -> bool:
+    if term in tokens:
+        return True
+    if f"{term}s" in tokens:
+        return True
+    if f"{term}es" in tokens:
+        return True
+    return False
 
 
 _PARSER_SYSTEM_PROMPT = """You are a precise nutrition estimator for a fitness app.
@@ -152,6 +198,9 @@ Rules:
 - meal_type defaults to "snack" for between-meal items, "breakfast" for
   morning items, "lunch" or "dinner" for full meals.
 - Never invent specifics not implied by the text. Prefer common-sense averages.
+- Brand notes: keep Chipotle menu categories distinct. A Chipotle burrito,
+  bowl, salad, quesadilla, and tacos are different items; do not convert one
+  category into another unless the user text says so.
 - Output JSON only."""
 
 
@@ -241,21 +290,19 @@ def _fallback_estimate(text: str) -> dict:
     pending-review accept flow.
     """
     norm = (text or "").lower().strip()
+    tokens = _fallback_tokens(norm)
     estimate: dict = dict(_FALLBACK_DEFAULT)
     portion_description: Optional[str] = None
     matched = False
-    for keywords, preset in _FALLBACK_PRESETS:
-        if any(k in norm for k in keywords):
+    for must_include, must_exclude, preset in _FALLBACK_PRESETS:
+        includes_match = all(_has_fallback_token(tokens, k) for k in must_include)
+        excludes_match = any(_has_fallback_token(tokens, k) for k in must_exclude)
+        if includes_match and not excludes_match:
             estimate = dict(preset)
             matched = True
             break
     if "half" in norm:
-        for key in ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g"):
-            value = estimate.get(key)
-            if isinstance(value, float):
-                estimate[key] = round(value / 2, 1)
-            elif isinstance(value, int):
-                estimate[key] = value // 2
+        _scale_estimate_macros(estimate, 0.5)
         portion_description = "approx half portion"
 
     ambiguous = any(token in norm for token in _AMBIGUOUS_TOKENS)
@@ -274,6 +321,8 @@ def _fallback_estimate(text: str) -> dict:
         notes.append("Portion or items are unclear — confirm before it counts toward today.")
     if not matched and norm:
         notes.append("Estimated from a generic meal profile; review macros if accuracy matters.")
+    if matched and "chipotle" in tokens:
+        notes.append("Local Chipotle fallback uses a typical menu profile; verify modifiers if exact macros matter.")
 
     return {
         "item_name": estimate["item_name"],
@@ -290,6 +339,15 @@ def _fallback_estimate(text: str) -> dict:
         "uncertainty_notes": notes,
         "source": "fallback_text_estimate",
     }
+
+
+def _scale_estimate_macros(estimate: dict, factor: float) -> None:
+    for key in ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g"):
+        value = estimate.get(key)
+        if isinstance(value, float):
+            estimate[key] = round(value * factor, 1)
+        elif isinstance(value, int):
+            estimate[key] = int(value * factor)
 
 
 def _post_process(estimate: dict, *, source_text: str) -> dict:
@@ -313,6 +371,7 @@ def parse_meal_text(
     text: str,
     *,
     timestamp: Optional[str] = None,  # noqa: ARG001 — accepted for forward-compat
+    user_id: int = 1,
 ) -> dict:
     """Convert free-form meal text into a sanitized food estimate.
 
@@ -345,6 +404,19 @@ def parse_meal_text(
         return {
             "estimate": _fallback_estimate(""),
             "fallback_used": True,
+        }
+
+    branded_estimate = None
+    if branded_food_lookup.should_attempt_direct_lookup(cleaned):
+        try:
+            branded_estimate = branded_food_lookup.lookup(cleaned, user_id=user_id)
+        except Exception:
+            branded_estimate = None
+    if branded_estimate:
+        branded_estimate = _post_process(branded_estimate, source_text=cleaned)
+        return {
+            "estimate": branded_estimate,
+            "fallback_used": False,
         }
 
     payload = {

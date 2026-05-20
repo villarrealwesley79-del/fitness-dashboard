@@ -54,6 +54,33 @@ def test_sanitize_meal_estimate_returns_public_schema_only():
     assert "chain_of_thought" not in sanitized
 
 
+def test_sanitize_meal_estimate_preserves_lookup_provenance():
+    sanitized = sanitize_meal_estimate(_valid_estimate(
+        external_food_id="chipotle-burrito",
+        verified_source_url="https://www.nutritionix.com/",
+        data_fetched_at="2026-05-19T10:00:00",
+        portion_basis="1 burrito",
+        brand_id="chipotle",
+        underlying_source="nutritionix",
+        off_attribution={
+            "name": "Open Food Facts",
+            "url": "https://world.openfoodfacts.org/",
+            "raw": {"drop": "nested"},
+        },
+    ))
+
+    assert sanitized["external_food_id"] == "chipotle-burrito"
+    assert sanitized["verified_source_url"] == "https://www.nutritionix.com/"
+    assert sanitized["data_fetched_at"] == "2026-05-19T10:00:00"
+    assert sanitized["portion_basis"] == "1 burrito"
+    assert sanitized["brand_id"] == "chipotle"
+    assert sanitized["underlying_source"] == "nutritionix"
+    assert sanitized["off_attribution"] == {
+        "name": "Open Food Facts",
+        "url": "https://world.openfoodfacts.org/",
+    }
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

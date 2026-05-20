@@ -166,6 +166,106 @@ def test_parse_text_falls_back_when_lm_studio_unreachable(monkeypatch):
     assert result["estimate"]["confidence"] < 0.65
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Chipotle chicken burrito",
+        "Chipotle chicken burritos",
+        "Chipotole chicken burrito",
+        "Chipoltle chicken burrito",
+        "Chiptole chicken burrito",
+    ],
+)
+def test_fallback_preserves_chipotle_burrito_category(text, monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    def boom(*_a, **_kw):
+        raise adapter.LmStudioError("unreachable: connection refused")
+
+    _patch_completion(monkeypatch, boom)
+    result = parser.parse_meal_text(text)
+    item_name = result["estimate"]["item_name"].lower()
+    assert result["fallback_used"] is True
+    assert "burrito" in item_name
+    assert "bowl" not in item_name
+    assert result["estimate"]["calories"] == 1075
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Chipotle burrito",
+        "Chipotle steak burrito",
+        "Chipotle veggie burrito",
+        "Chipotole burrito",
+    ],
+)
+def test_fallback_does_not_invent_chicken_for_generic_chipotle_burrito(text, monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    def boom(*_a, **_kw):
+        raise adapter.LmStudioError("unreachable: connection refused")
+
+    _patch_completion(monkeypatch, boom)
+    result = parser.parse_meal_text(text)
+    item_name = result["estimate"]["item_name"].lower()
+    assert result["fallback_used"] is True
+    assert "chipotle" in item_name
+    assert "burrito" in item_name
+    assert "bowl" not in item_name
+    assert "chicken" not in item_name
+
+
+def test_fallback_still_matches_chipotle_bowl_when_bowl_is_explicit(monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    def boom(*_a, **_kw):
+        raise adapter.LmStudioError("unreachable: connection refused")
+
+    _patch_completion(monkeypatch, boom)
+    result = parser.parse_meal_text("Chipotle chicken bowl")
+    assert result["fallback_used"] is True
+    assert "bowl" in result["estimate"]["item_name"].lower()
+
+
+def test_fallback_chipotle_without_item_does_not_default_to_bowl(monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    def boom(*_a, **_kw):
+        raise adapter.LmStudioError("unreachable: connection refused")
+
+    _patch_completion(monkeypatch, boom)
+    result = parser.parse_meal_text("Chipotle")
+    assert result["fallback_used"] is True
+    assert result["estimate"]["item_name"] == "Meal"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("oats", "Oatmeal"),
+        ("egg toast", "Eggs and toast"),
+        ("egg", "Eggs and toast"),
+        ("toast", "Eggs and toast"),
+    ],
+)
+def test_fallback_refactor_preserves_single_token_presets(text, expected, monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    def boom(*_a, **_kw):
+        raise adapter.LmStudioError("unreachable: connection refused")
+
+    _patch_completion(monkeypatch, boom)
+    result = parser.parse_meal_text(text)
+    assert result["fallback_used"] is True
+    assert result["estimate"]["item_name"] == expected
+
+
 def test_parse_text_falls_back_when_lm_studio_returns_invalid_schema(monkeypatch):
     parser = _import_parser()
     adapter = importlib.import_module("lm_studio_adapter")
