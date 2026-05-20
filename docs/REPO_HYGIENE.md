@@ -54,6 +54,10 @@ Auto Export or Shortcuts-style webhook sync. Any older instruction that implies
 a public untokened webhook, a hardcoded personal Tailscale hostname, or browser
 direct HealthKit access should be updated rather than copied forward.
 
+Native HealthKit work stays behind `docs/APPLE_HEALTH_HELPER_SLA.md`; do not add
+Swift, HealthKit permissions, or native targets unless that trigger is met and
+approved.
+
 ## Current Ignored Coverage
 
 The repo already ignores the main private/runtime classes:
