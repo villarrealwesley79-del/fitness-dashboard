@@ -9,9 +9,9 @@ set -u
 
 LOG_DIR="/tmp"
 LOG_FILE="${LOG_DIR}/apple-health-staleness.log"
-FIRST_SEEN_FILE="${HOME}/.openclaw/workspace/projects/fitness-dashboard/.apple-health-first-sync"
+FIRST_SEEN_FILE="${APPLE_HEALTH_FIRST_SEEN_FILE:-${HOME}/.openclaw/workspace/projects/fitness-dashboard/.apple-health-first-sync}"
 STALE_AFTER_HOURS="${STALE_AFTER_HOURS:-36}"
-DB_FILE="${HOME}/.openclaw/workspace/projects/fitness-dashboard/apple_health_sync.db"
+DB_FILE="${APPLE_HEALTH_SYNC_DB:-${HOME}/.openclaw/workspace/projects/fitness-dashboard/apple_health_sync.db}"
 
 timestamp() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log() { echo "[$(timestamp)] $*" >> "${LOG_FILE}"; }
