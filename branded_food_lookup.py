@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from difflib import get_close_matches
+import json
+import os
+from pathlib import Path
 from typing import Any
 
 import data_store
@@ -14,7 +17,10 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 
 CACHE_TTL_DAYS = 180
-SOURCE_PRIORITY = ("cache", "nutritionix", "usda_fdc", "open_food_facts")
+SOURCE_PRIORITY = ("cache", "nutritionix", "usda_fdc", "snapshot", "open_food_facts")
+NO_KEY_SOURCE_PRIORITY = ("cache", "nutritionix", "snapshot", "usda_fdc", "open_food_facts")
+SNAPSHOT_PATH = Path(__file__).resolve().parent / "data" / "nutrition_snapshot.json"
+_SNAPSHOT_CACHE: dict[str, dict[str, Any]] | None = None
 MULTI_ITEM_TOKENS = {"and", "with", "plus", "&", "+", "combo", "meal", "plate"}
 PORTION_MODIFIER_TOKENS = {"half"}
 KNOWN_BRANDS = {
@@ -40,6 +46,10 @@ PLURALS = {
     "sandwiches": "sandwich",
     "salads": "salad",
     "bowls": "bowl",
+    "bananas": "banana",
+    "eggs": "egg",
+    "almonds": "almond",
+    "potatoes": "potato",
     "quesadillas": "quesadilla",
 }
 CUSTOMIZABLE_CHAIN_TOKENS = {"chipotle"}
@@ -73,6 +83,26 @@ PROTEIN_TOKENS = {
     "tofu",
     "beef",
     "pork",
+}
+SNAPSHOT_PREFIX_TOKENS = {
+    "a",
+    "an",
+    "the",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "half",
+    "whole",
+    "small",
+    "medium",
+    "large",
 }
 OFF_REJECT_QUALITY_TAG_FRAGMENTS = (
     "nutrition-data-error",
@@ -163,7 +193,7 @@ def lookup(
     normalized = normalize_meal_text(lookup_text)
     if not normalized:
         return None
-    priorities = tuple(source_priority or SOURCE_PRIORITY)
+    priorities = tuple(source_priority) if source_priority else _default_source_priority()
 
     for source in priorities:
         if source == "cache":
@@ -173,6 +203,13 @@ def lookup(
                 cached = None
             if cached:
                 return cached
+        elif source == "snapshot":
+            try:
+                snapshot = snapshot_lookup(normalized)
+            except Exception:
+                snapshot = None
+            if snapshot:
+                return snapshot
         elif source == "nutritionix":
             try:
                 nutritionix = _nutritionix_lookup(lookup_text, normalized)
@@ -200,6 +237,12 @@ def lookup(
     return None
 
 
+def _default_source_priority() -> tuple[str, ...]:
+    if os.environ.get("USDA_FDC_API_KEY"):
+        return SOURCE_PRIORITY
+    return NO_KEY_SOURCE_PRIORITY
+
+
 def _text_with_brand_hint(text: str, brand_hint: str | None) -> str:
     cleaned = (text or "").strip()
     normalized_text = normalize_meal_text(cleaned)
@@ -223,7 +266,86 @@ def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) ->
         return False
     if brand_hint or _brand_from_text(normalized):
         return bool([token for token in tokens if token not in KNOWN_BRANDS])
+    if len(tokens) > 1 and _snapshot_item(_load_snapshot(), normalized):
+        return True
     return len(tokens) == 1
+
+
+def snapshot_lookup(normalized_text: str) -> dict[str, Any] | None:
+    """Return an offline snapshot estimate by normalized text."""
+    key = normalize_meal_text(normalized_text)
+    if not key:
+        return None
+    snapshot = _load_snapshot()
+    item = _snapshot_item(snapshot, key)
+    if not item:
+        return None
+    estimate = {
+        "item_name": item.get("item_name"),
+        "portion_description": item.get("portion_description"),
+        "meal_type": item.get("meal_type") or "snack",
+        "calories": item.get("calories"),
+        "protein_g": item.get("protein_g"),
+        "carbs_g": item.get("carbs_g"),
+        "fat_g": item.get("fat_g"),
+        "sodium_mg": item.get("sodium_mg", 0),
+        "fiber_g": item.get("fiber_g", 0),
+        "confidence": 0.62,
+        "ambiguous": True,
+        "uncertainty_notes": ["Offline snapshot uses a reference portion; confirm serving size before logging."],
+        "source": "offline_snapshot",
+        "external_food_id": item.get("external_food_id"),
+        "verified_source_url": item.get("verified_source_url"),
+        "data_fetched_at": item.get("data_fetched_at") or _snapshot_version(),
+        "portion_basis": item.get("portion_basis"),
+    }
+    return _sanitize_with_provenance(estimate)
+
+
+def _snapshot_item(snapshot: dict[str, dict[str, Any]], key: str) -> dict[str, Any] | None:
+    item = snapshot.get(key)
+    if item:
+        return item
+    tokens = key.split()
+    for snapshot_key in sorted(snapshot, key=lambda candidate: len(candidate.split()), reverse=True):
+        candidate_tokens = snapshot_key.split()
+        prefix_tokens = tokens[: -len(candidate_tokens)]
+        if (
+            prefix_tokens
+            and tokens[-len(candidate_tokens):] == candidate_tokens
+            and all(_is_snapshot_prefix_token(token) for token in prefix_tokens)
+        ):
+            return snapshot[snapshot_key]
+    return None
+
+
+def _is_snapshot_prefix_token(token: str) -> bool:
+    return token in SNAPSHOT_PREFIX_TOKENS or token.replace(".", "", 1).isdigit()
+
+
+def _load_snapshot() -> dict[str, dict[str, Any]]:
+    global _SNAPSHOT_CACHE
+    if _SNAPSHOT_CACHE is not None:
+        return _SNAPSHOT_CACHE
+    try:
+        raw = json.loads(SNAPSHOT_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        _SNAPSHOT_CACHE = {}
+        return _SNAPSHOT_CACHE
+    _SNAPSHOT_CACHE = {
+        normalize_meal_text(item.get("normalized_text") or item.get("item_name") or ""): item
+        for item in raw.get("items", [])
+        if isinstance(item, dict)
+    }
+    return _SNAPSHOT_CACHE
+
+
+def _snapshot_version() -> str:
+    try:
+        raw = json.loads(SNAPSHOT_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return "offline_snapshot"
+    return str(raw.get("version") or raw.get("generated_at") or "offline_snapshot")
 
 
 def _cache_lookup(normalized: str, *, user_id: int = 1) -> dict[str, Any] | None:

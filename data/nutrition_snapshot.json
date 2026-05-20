@@ -1,0 +1,95 @@
+{
+  "version": "2026-05-19-usda-starter",
+  "license": "USDA FoodData Central data is public domain. No Nutritionix-derived data is redistributed in this starter snapshot.",
+  "generated_at": "2026-05-19T00:00:00",
+  "data_sources": [
+    {
+      "name": "USDA FoodData Central",
+      "url": "https://fdc.nal.usda.gov/",
+      "license": "U.S. public domain"
+    }
+  ],
+  "nutritionix_redistribution_status": "blocked_pending_tos_review; no Nutritionix-derived data included",
+  "coverage": {
+    "profile": "starter_usda_generic_only",
+    "seed_queries": ["banana", "oatmeal", "egg", "sweet potato", "almond"],
+    "full_curation_status": "deferred; FIT-75 marks actual snapshot data content as a separate curation pass"
+  },
+  "items": [
+    {
+      "normalized_text": "banana",
+      "item_name": "Banana, raw",
+      "portion_description": "100 g",
+      "meal_type": "snack",
+      "calories": 89,
+      "protein_g": 1.1,
+      "carbs_g": 22.8,
+      "fat_g": 0.3,
+      "sodium_mg": 1,
+      "fiber_g": 2.6,
+      "external_food_id": "173944",
+      "verified_source_url": "https://fdc.nal.usda.gov/fdc-app.html#/food-details/173944/nutrients",
+      "portion_basis": "100 g USDA FoodData Central reference portion"
+    },
+    {
+      "normalized_text": "oatmeal",
+      "item_name": "Oats, regular and quick, unenriched, cooked with water",
+      "portion_description": "100 g",
+      "meal_type": "breakfast",
+      "calories": 71,
+      "protein_g": 2.5,
+      "carbs_g": 12,
+      "fat_g": 1.5,
+      "sodium_mg": 4,
+      "fiber_g": 1.7,
+      "external_food_id": "173905",
+      "verified_source_url": "https://fdc.nal.usda.gov/fdc-app.html#/food-details/173905/nutrients",
+      "portion_basis": "100 g USDA FoodData Central reference portion"
+    },
+    {
+      "normalized_text": "egg",
+      "item_name": "Egg, whole, cooked, hard-boiled",
+      "portion_description": "1 large egg",
+      "meal_type": "breakfast",
+      "calories": 78,
+      "protein_g": 6.3,
+      "carbs_g": 0.6,
+      "fat_g": 5.3,
+      "sodium_mg": 62,
+      "fiber_g": 0,
+      "external_food_id": "173424",
+      "verified_source_url": "https://fdc.nal.usda.gov/fdc-app.html#/food-details/173424/nutrients",
+      "portion_basis": "1 large USDA FoodData Central reference portion"
+    },
+    {
+      "normalized_text": "sweet potato",
+      "item_name": "Sweet potato, cooked, baked in skin",
+      "portion_description": "100 g",
+      "meal_type": "snack",
+      "calories": 90,
+      "protein_g": 2,
+      "carbs_g": 20.7,
+      "fat_g": 0.2,
+      "sodium_mg": 36,
+      "fiber_g": 3.3,
+      "external_food_id": "168482",
+      "verified_source_url": "https://fdc.nal.usda.gov/fdc-app.html#/food-details/168482/nutrients",
+      "portion_basis": "100 g USDA FoodData Central reference portion"
+    },
+    {
+      "normalized_text": "almond",
+      "item_name": "Almonds",
+      "portion_description": "100 g",
+      "meal_type": "snack",
+      "calories": 579,
+      "protein_g": 21.2,
+      "carbs_g": 21.6,
+      "fat_g": 49.9,
+      "sodium_mg": 1,
+      "fiber_g": 12.5,
+      "external_food_id": "170567",
+      "verified_source_url": "https://fdc.nal.usda.gov/fdc-app.html#/food-details/170567/nutrients",
+      "portion_basis": "100 g USDA FoodData Central reference portion"
+    }
+  ]
+}

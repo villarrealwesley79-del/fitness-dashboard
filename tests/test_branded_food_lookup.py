@@ -36,6 +36,9 @@ def test_direct_lookup_gate_blocks_multi_item_generic_text():
     assert branded_food_lookup.should_attempt_direct_lookup("Chipotle") is False
     assert branded_food_lookup.should_attempt_direct_lookup("Starbucks") is False
     assert branded_food_lookup.should_attempt_direct_lookup("banana") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("a banana") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("2 eggs") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("one sweet potato") is True
     assert branded_food_lookup.should_attempt_direct_lookup("two eggs and toast") is False
     assert branded_food_lookup.should_attempt_direct_lookup("chicken with rice") is False
     assert branded_food_lookup.should_attempt_direct_lookup("half Chipotle chicken burrito") is False
@@ -508,7 +511,7 @@ def test_malformed_nutritionix_result_falls_through_to_usda(monkeypatch):
         },
     )
 
-    estimate = branded_food_lookup.lookup("banana")
+    estimate = branded_food_lookup.lookup("banana", source_priority=("nutritionix", "usda_fdc"))
 
     assert estimate["source"] == "usda_fdc"
     assert estimate["item_name"] == "BANANAS,RAW"
@@ -554,7 +557,7 @@ def test_incomplete_nutritionix_result_falls_through_to_usda(monkeypatch):
         },
     )
 
-    estimate = branded_food_lookup.lookup("banana")
+    estimate = branded_food_lookup.lookup("banana", source_priority=("nutritionix", "usda_fdc"))
 
     assert estimate["source"] == "usda_fdc"
     assert estimate["item_name"] == "BANANAS,RAW"
@@ -623,7 +626,7 @@ def test_stale_cache_falls_through_to_usda(monkeypatch):
         },
     )
 
-    estimate = branded_food_lookup.lookup("banana")
+    estimate = branded_food_lookup.lookup("banana", source_priority=("cache", "nutritionix", "usda_fdc"))
 
     assert estimate["source"] == "usda_fdc"
     assert estimate["item_name"] == "BANANAS,RAW"
@@ -755,6 +758,53 @@ def test_sanitize_with_provenance_keeps_safe_attribution_only():
         "source": "Open Food Facts",
         "url": "https://world.openfoodfacts.org/product/example",
     }
+
+
+def test_lookup_respects_explicit_source_priority_order(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(food_name="banana", brand_name="Fresh Provider"),
+    )
+
+    estimate = branded_food_lookup.lookup("banana", source_priority=("nutritionix", "snapshot"))
+
+    assert estimate["source"] == "nutritionix"
+    assert estimate["item_name"] == "Fresh Provider banana"
+    assert estimate["confidence"] == 0.85
+
+
+def test_default_lookup_prefers_live_nutritionix_over_snapshot(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(food_name="banana", brand_name="Fresh Provider"),
+    )
+
+    estimate = branded_food_lookup.lookup("banana")
+
+    assert estimate["source"] == "nutritionix"
+    assert estimate["item_name"] == "Fresh Provider banana"
+
+
+def test_default_lookup_uses_snapshot_before_usda_without_usda_key(monkeypatch):
+    monkeypatch.delenv("USDA_FDC_API_KEY", raising=False)
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("USDA must not run before no-key snapshot")),
+    )
+
+    estimate = branded_food_lookup.lookup("banana")
+
+    assert estimate["source"] == "offline_snapshot"
+    assert estimate["external_food_id"] == "173944"
 
 
 def test_parse_meal_text_uses_branded_lookup_before_lm(monkeypatch):
