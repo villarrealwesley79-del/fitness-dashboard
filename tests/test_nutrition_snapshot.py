@@ -129,6 +129,28 @@ def test_refresh_script_maps_atwater_energy_names():
     assert item["protein_g"] == 8.9
 
 
+def test_refresh_preserves_existing_snapshot_meal_type(monkeypatch):
+    def fake_fetch_usda_food(query, *, existing_item=None):
+        return refresh_nutrition_snapshot.food_to_snapshot_item(
+            query,
+            {
+                "fdcId": 173905,
+                "description": "Oats, cooked",
+                "foodNutrients": [{"nutrientName": "Energy", "value": 71}],
+            },
+            existing_item=existing_item,
+        )
+
+    monkeypatch.setattr(refresh_nutrition_snapshot, "fetch_usda_food", fake_fetch_usda_food)
+
+    snapshot = refresh_nutrition_snapshot.build_snapshot(
+        ["oatmeal"],
+        existing_snapshot={"items": [{"normalized_text": "oatmeal", "meal_type": "breakfast"}]},
+    )
+
+    assert snapshot["items"][0]["meal_type"] == "breakfast"
+
+
 def test_refresh_script_dry_run_does_not_write():
     path = Path("data/nutrition_snapshot.json")
     before = path.read_text()
@@ -168,7 +190,7 @@ def test_refresh_script_write_without_usda_key_explains_requirement(monkeypatch,
 
 def test_refresh_script_refuses_partial_writes(monkeypatch, tmp_path):
     monkeypatch.setenv("USDA_FDC_API_KEY", "test-key")
-    monkeypatch.setattr(refresh_nutrition_snapshot, "fetch_usda_food", lambda query: None)
+    monkeypatch.setattr(refresh_nutrition_snapshot, "fetch_usda_food", lambda query, **_kwargs: None)
 
     snapshot = refresh_nutrition_snapshot.build_snapshot(["banana"])
     error = refresh_nutrition_snapshot.refresh_completeness_error(snapshot, ["banana"])

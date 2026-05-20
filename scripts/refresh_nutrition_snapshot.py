@@ -57,7 +57,7 @@ def main() -> int:
         return 2
 
     seed_queries = USDA_SEED_QUERIES[: max(args.limit, 0)]
-    refreshed = build_snapshot(seed_queries)
+    refreshed = build_snapshot(seed_queries, existing_snapshot=snapshot)
     completeness_error = refresh_completeness_error(refreshed, seed_queries)
     if completeness_error:
         print(json.dumps(completeness_error, sort_keys=True))
@@ -68,10 +68,12 @@ def main() -> int:
     return 0
 
 
-def build_snapshot(seed_queries: tuple[str, ...] | list[str]) -> dict:
+def build_snapshot(seed_queries: tuple[str, ...] | list[str], *, existing_snapshot: dict | None = None) -> dict:
+    existing_items = _existing_snapshot_items(existing_snapshot)
     items = []
     for query in seed_queries:
-        food = fetch_usda_food(query)
+        existing_item = existing_items.get(str(query).strip().lower())
+        food = fetch_usda_food(query, existing_item=existing_item)
         if food:
             items.append(food)
     now = datetime.now(UTC).replace(microsecond=0)
@@ -108,7 +110,7 @@ def refresh_completeness_error(snapshot: dict, seed_queries: tuple[str, ...] | l
     }
 
 
-def fetch_usda_food(query: str, *, timeout: float = 10.0) -> dict | None:
+def fetch_usda_food(query: str, *, timeout: float = 10.0, existing_item: dict | None = None) -> dict | None:
     params = {
         "query": query,
         "pageSize": "1",
@@ -126,17 +128,17 @@ def fetch_usda_food(query: str, *, timeout: float = 10.0) -> dict | None:
     foods = payload.get("foods") if isinstance(payload, dict) else None
     if not foods:
         return None
-    return food_to_snapshot_item(query, foods[0])
+    return food_to_snapshot_item(query, foods[0], existing_item=existing_item)
 
 
-def food_to_snapshot_item(query: str, food: dict) -> dict:
+def food_to_snapshot_item(query: str, food: dict, *, existing_item: dict | None = None) -> dict:
     nutrients = _nutrient_map(food.get("foodNutrients") or [])
     fdc_id = str(food.get("fdcId") or "")
     return {
         "normalized_text": query,
         "item_name": food.get("description") or query.title(),
         "portion_description": _portion_description(food),
-        "meal_type": "snack",
+        "meal_type": _meal_type_for_snapshot_item(query, existing_item),
         "calories": nutrients.get("calories", 0),
         "protein_g": nutrients.get("protein_g", 0),
         "carbs_g": nutrients.get("carbs_g", 0),
@@ -147,6 +149,29 @@ def food_to_snapshot_item(query: str, food: dict) -> dict:
         "verified_source_url": f"https://fdc.nal.usda.gov/fdc-app.html#/food-details/{fdc_id}/nutrients",
         "portion_basis": _portion_description(food) + " USDA FoodData Central reference portion",
     }
+
+
+def _existing_snapshot_items(snapshot: dict | None) -> dict[str, dict]:
+    items = snapshot.get("items") if isinstance(snapshot, dict) else None
+    if not isinstance(items, list):
+        return {}
+    indexed: dict[str, dict] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("normalized_text") or "").strip().lower()
+        if key:
+            indexed[key] = item
+    return indexed
+
+
+def _meal_type_for_snapshot_item(query: str, existing_item: dict | None) -> str:
+    meal_type = str((existing_item or {}).get("meal_type") or "").strip().lower()
+    if meal_type in {"breakfast", "lunch", "dinner", "snack"}:
+        return meal_type
+    if query.strip().lower() in {"oatmeal", "egg"}:
+        return "breakfast"
+    return "snack"
 
 
 def _nutrient_map(food_nutrients: list[dict]) -> dict[str, float]:
