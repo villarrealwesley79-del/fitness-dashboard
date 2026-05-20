@@ -3425,6 +3425,20 @@ def _preserve_safe_estimate_metadata(estimate: dict, raw: dict) -> dict:
     return estimate
 
 
+def _vision_lookup_allowed_for_text(text_raw: str, vision: dict) -> bool:
+    if not text_raw:
+        return True
+    try:
+        if branded_food_lookup.should_attempt_direct_lookup(text_raw):
+            return True
+    except Exception:
+        return False
+    if vision.get("ambiguous"):
+        return True
+    portion_hint = str(vision.get("portion_hint") or "").lower()
+    return "half" in text_raw.lower() and "half" in portion_hint
+
+
 def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
     """Deterministic canned estimate for the FIT-60 UI stub.
 
@@ -3487,11 +3501,7 @@ def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype:
     description = vision["item_description"]
     lookup_text = " ".join(part for part in (text_raw, description, vision.get("portion_hint")) if part)
     lookup = None
-    try:
-        lookup_allowed = not text_raw or branded_food_lookup.should_attempt_direct_lookup(text_raw)
-    except Exception:
-        lookup_allowed = False
-    if lookup_allowed:
+    if _vision_lookup_allowed_for_text(text_raw, vision):
         try:
             lookup = branded_food_lookup.lookup(lookup_text, user_id=user_id)
         except Exception:
