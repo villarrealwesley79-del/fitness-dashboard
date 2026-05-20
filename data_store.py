@@ -90,7 +90,11 @@ def sanitize_food_estimate(estimate: Optional[dict]) -> Optional[dict]:
         return None
     safe = {k: estimate.get(k) for k in FOOD_ESTIMATE_FIELDS if k in estimate and k != "off_attribution"}
     off_attribution = estimate.get("off_attribution")
-    if isinstance(off_attribution, dict):
+    if isinstance(off_attribution, str):
+        cleaned_text = off_attribution.strip()
+        if cleaned_text:
+            safe["off_attribution"] = cleaned_text
+    elif isinstance(off_attribution, dict):
         cleaned = {
             key: value
             for key, value in off_attribution.items()
