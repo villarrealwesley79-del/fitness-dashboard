@@ -43,6 +43,9 @@ from data_store import (
     init_data_db,
     add_food_log,
     get_food_logs,
+    claim_food_log_vocab_learning,
+    import_personal_vocab_entry,
+    list_personal_vocab_entries,
     delete_food_log_by_client_id,
     list_push_subscriptions,
     revoke_push_subscription,
@@ -53,6 +56,9 @@ from meal_estimate_schema import (
     manual_review_estimate,
     sanitize_meal_estimate,
 )
+import branded_food_lookup
+import personal_vocab
+import vision_estimator
 from meal_text_parser import parse_meal_text
 from meal_log_policy import (
     CORRECTION_STATE_ACCEPTED,
@@ -3362,6 +3368,19 @@ def add_nutrition():
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MEAL_INTAKE_STUB_MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6 MB
+_MEAL_INTAKE_SUPPORTED_IMAGE_MIMETYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+_MEAL_ESTIMATE_SAFE_METADATA_FIELDS = (
+    "external_food_id",
+    "verified_source_url",
+    "data_fetched_at",
+    "portion_basis",
+    "brand_id",
+    "underlying_source",
+    "off_attribution",
+    "vision_description",
+    "vision_provider",
+    "vision_confidence",
+)
 _FOOD_PHOTO_RETENTION = {
     "policy": "discard_after_extraction",
     "raw_photo_retained": False,
@@ -3388,10 +3407,22 @@ _MEAL_INTAKE_STUB_DEFAULT = dict(
 )
 
 
+def _source_indicates_image(source: str | None) -> bool:
+    source_name = str(source or "")
+    return source_name == "stub_vision_estimate" or source_name.startswith("vision_")
+
+
 def _food_photo_retention_payload(has_image: bool = False) -> dict:
     payload = dict(_FOOD_PHOTO_RETENTION)
     payload["image_received"] = bool(has_image)
     return payload
+
+
+def _preserve_safe_estimate_metadata(estimate: dict, raw: dict) -> dict:
+    for key in _MEAL_ESTIMATE_SAFE_METADATA_FIELDS:
+        if raw.get(key) is not None:
+            estimate[key] = raw[key]
+    return estimate
 
 
 def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
@@ -3445,6 +3476,74 @@ def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
             "uncertainty_notes": uncertainty_notes,
         },
     }
+
+
+def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype: str) -> dict:
+    vision = vision_estimator.describe(
+        image_bytes,
+        context_text=text_raw or None,
+        media_type=mimetype or "image/jpeg",
+    )
+    description = vision["item_description"]
+    lookup_text = " ".join(part for part in (text_raw, description, vision.get("portion_hint")) if part)
+    try:
+        lookup = branded_food_lookup.lookup(lookup_text)
+    except Exception:
+        lookup = None
+    provider = vision.get("provider") or vision_estimator.configured_provider()
+    if lookup:
+        estimate = dict(lookup)
+        estimate.setdefault("underlying_source", lookup.get("source"))
+        estimate["source"] = f"vision_{provider}+{lookup.get('source')}"
+        estimate["vision_description"] = description
+        estimate["vision_provider"] = provider
+        estimate["vision_confidence"] = vision.get("confidence")
+        estimate["confidence"] = min(float(estimate.get("confidence") or 0), float(vision.get("confidence") or 0))
+        if vision.get("portion_hint") and not estimate.get("portion_description"):
+            estimate["portion_description"] = vision.get("portion_hint")
+        if vision.get("ambiguous"):
+            estimate["ambiguous"] = True
+            estimate.setdefault("uncertainty_notes", [])
+            estimate["uncertainty_notes"].extend(vision.get("uncertainty_notes") or [])
+        return estimate
+
+    macro_estimate = vision.get("macro_estimate")
+    if isinstance(macro_estimate, dict):
+        raw = {
+            "item_name": description,
+            "portion_description": vision.get("portion_hint"),
+            "meal_type": macro_estimate.get("meal_type") or "snack",
+            "calories": macro_estimate.get("calories"),
+            "protein_g": macro_estimate.get("protein_g"),
+            "carbs_g": macro_estimate.get("carbs_g"),
+            "fat_g": macro_estimate.get("fat_g"),
+            "sodium_mg": macro_estimate.get("sodium_mg", 0),
+            "fiber_g": macro_estimate.get("fiber_g", 0),
+            "confidence": min(float(vision.get("confidence") or 0), 0.65),
+            "ambiguous": bool(vision.get("ambiguous", True)),
+            "uncertainty_notes": vision.get("uncertainty_notes") or [
+                "Vision model estimated macros without a verified nutrition source."
+            ],
+            "source": f"vision_{provider}_estimate",
+        }
+        try:
+            estimate = sanitize_meal_estimate(raw, plausible_ranges=True)
+        except MealEstimateValidationError:
+            estimate = manual_review_estimate(text=description, source=f"vision_{provider}_estimate")
+            estimate["confidence"] = min(float(vision.get("confidence") or 0), 0.45)
+            estimate["uncertainty_notes"] = vision.get("uncertainty_notes") or [
+                "Vision model returned incomplete nutrition details; review before logging."
+            ]
+    else:
+        estimate = manual_review_estimate(text=description, source=f"vision_{provider}_estimate")
+        estimate["confidence"] = min(float(vision.get("confidence") or 0), 0.45)
+        estimate["uncertainty_notes"] = vision.get("uncertainty_notes") or [
+            "Vision identified the food but no verified nutrition source matched."
+        ]
+    estimate["vision_description"] = description
+    estimate["vision_provider"] = provider
+    estimate["vision_confidence"] = vision.get("confidence")
+    return estimate
 
 
 # FIT-61: human-readable copy for each stable policy reason code. Kept
@@ -3548,7 +3647,7 @@ def _meal_pending_review_payload(entry: dict) -> dict:
             "source": entry.get("source"),
             "uncertainty_notes": [],
         }
-    if entry.get("source") == "stub_vision_estimate":
+    if _source_indicates_image(entry.get("source")):
         estimate["from_image"] = True
     try:
         decision = evaluate_meal_log(estimate)
@@ -3579,6 +3678,7 @@ def _meal_intake_stub_persist(
     local_date=None,
     local_iso=None,
     correction_state=CORRECTION_STATE_ACCEPTED,
+    original_estimate=None,
 ):
     """Persist a food estimate via the canonical food_logs path.
 
@@ -3626,9 +3726,36 @@ def _meal_intake_stub_persist(
         "confidence": estimate.get("confidence"),
         "source": source,
         "correction_state": correction_state,
-        "original_estimate": dict(estimate),
+        "original_estimate": dict(original_estimate) if isinstance(original_estimate, dict) else dict(estimate),
     }
     return add_food_log(_current_data_user_id(), record)
+
+
+def _meal_accept_was_corrected(submitted: dict, original: dict | None) -> bool:
+    if not isinstance(original, dict):
+        return False
+    try:
+        original_source = original.get("source") if isinstance(original, dict) else None
+        sanitized_original = sanitize_meal_estimate(
+            original,
+            source=original_source or submitted.get("source") or "stub_text_estimate",
+            legacy_defaults=True,
+            plausible_ranges=True,
+        )
+    except MealEstimateValidationError:
+        return True
+    compare_fields = (
+        "item_name",
+        "portion_description",
+        "meal_type",
+        "calories",
+        "protein_g",
+        "carbs_g",
+        "fat_g",
+        "sodium_mg",
+        "fiber_g",
+    )
+    return any(sanitized_original.get(field) != submitted.get(field) for field in compare_fields)
 
 
 @app.route("/api/meal-intake", methods=["POST"])
@@ -3664,10 +3791,15 @@ def meal_intake_stub():
 
     image_file = request.files.get("image")
     has_image = False
+    image_bytes = b""
+    image_mimetype = "image/jpeg"
     if image_file is not None and image_file.filename:
         mimetype = (image_file.mimetype or "").lower()
         if not mimetype.startswith("image/"):
             return jsonify({"error": {"message": "image must be image/*"}}), 400
+        if mimetype not in _MEAL_INTAKE_SUPPORTED_IMAGE_MIMETYPES:
+            return jsonify({"error": {"message": "unsupported image type; use JPEG, PNG, WebP, or GIF"}}), 415
+        image_mimetype = mimetype
         image_file.stream.seek(0, os.SEEK_END)
         size = image_file.stream.tell()
         image_file.stream.seek(0)
@@ -3675,27 +3807,49 @@ def meal_intake_stub():
             return jsonify({"error": {"message": "image exceeds 6 MB limit"}}), 413
         if size <= 0:
             return jsonify({"error": {"message": "image is empty"}}), 400
-        # FIT-60 stub: image bytes are discarded after size validation; the real
-        # implementation (FIT-5) will pass them to the vision model. We never
-        # echo image data back, persist it, or log it — matches FIT-9 privacy.
+        image_bytes = image_file.read()
+        image_file.stream.seek(0)
         has_image = True
 
     if not text_raw and not has_image:
         return jsonify({"error": {"message": "provide a meal description or photo"}}), 400
 
-    # FIT-59: text-only input flows through the real meal_text_parser
-    # (LM Studio primary + deterministic fallback). Image-bearing input
-    # stays on the FIT-60 stub until FIT-5 ships the vision estimator.
     response_extras: dict = {}
     if has_image:
-        result = _meal_intake_stub_estimate(text_raw, has_image)
-        estimate = sanitize_meal_estimate(result["estimate"], source="stub_vision_estimate")
-        source = "stub_vision_estimate"
-        estimate["source"] = source
-        # Safe non-image metadata: lets pending photo estimates preserve
-        # photo_retention.image_received when the user accepts them later.
+        try:
+            estimate = _meal_intake_vision_estimate(
+                image_bytes,
+                text_raw=text_raw,
+                mimetype=image_mimetype,
+            )
+            source = estimate["source"]
+            response_extras["vision"] = {
+                "provider": estimate.get("vision_provider") or vision_estimator.configured_provider(),
+                "confidence": estimate.get("vision_confidence"),
+            }
+        except vision_estimator.VisionEstimatorError as exc:
+            if not text_raw:
+                return jsonify({
+                    "error": {
+                        "message": "Photo estimate failed. Add a meal description and try again.",
+                        "reason": str(exc),
+                    },
+                    "photo_retention": _food_photo_retention_payload(has_image),
+                }), 503
+            parsed = parse_meal_text(
+                text_raw,
+                timestamp=local_iso or local_timestamp,
+                user_id=_current_data_user_id(),
+            )
+            try:
+                estimate = sanitize_meal_estimate(parsed["estimate"])
+            except MealEstimateValidationError:
+                estimate = manual_review_estimate(text=text_raw, source="manual_text_review")
+                parsed = {"fallback_used": True}
+            source = estimate["source"]
+            response_extras["fallback_used"] = parsed["fallback_used"]
+            response_extras["vision_error"] = str(exc)
         estimate["from_image"] = True
-        response_extras["stub"] = True
     else:
         parsed = parse_meal_text(
             text_raw,
@@ -3804,16 +3958,22 @@ def meal_intake_accept_stub(client_id: str):
     data, err = get_json_body(required=True)
     if err:
         return err
-    estimate = data.get("estimate") or {}
-    originated_from_image = bool(estimate.get("from_image")) if isinstance(estimate, dict) else False
-    source_hint = estimate.get("source") if isinstance(estimate, dict) else None
+    raw_estimate = data.get("estimate") or {}
+    source_hint = raw_estimate.get("source") if isinstance(raw_estimate, dict) else None
+    originated_from_image = (
+        bool(raw_estimate.get("from_image")) or _source_indicates_image(source_hint)
+        if isinstance(raw_estimate, dict)
+        else False
+    )
     try:
         estimate = sanitize_meal_estimate(
-            estimate,
+            raw_estimate,
             source=source_hint or "stub_text_estimate",
             legacy_defaults=True,
             plausible_ranges=True,
         )
+        if isinstance(raw_estimate, dict):
+            _preserve_safe_estimate_metadata(estimate, raw_estimate)
     except MealEstimateValidationError as exc:
         return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
     if originated_from_image:
@@ -3830,6 +3990,13 @@ def meal_intake_accept_stub(client_id: str):
     local_iso, err = _coerce_str(data.get("local_iso"), "local_iso", required=False, max_len=64)
     if err:
         return err
+    corrected = (
+        bool(data.get("corrected"))
+        or data.get("correction_state") == "corrected"
+        or _meal_accept_was_corrected(estimate, data.get("original_estimate"))
+    )
+    correction_state = "corrected" if corrected else CORRECTION_STATE_ACCEPTED
+    original_for_log = data.get("original_estimate") if isinstance(data.get("original_estimate"), dict) else estimate
     food_log = _meal_intake_stub_persist(
         client_id,
         estimate,
@@ -3839,7 +4006,14 @@ def meal_intake_accept_stub(client_id: str):
         local_timestamp=local_timestamp or None,
         local_date=local_date or None,
         local_iso=local_iso or None,
+        correction_state=correction_state,
+        original_estimate=original_for_log,
     )
+    if claim_food_log_vocab_learning(_current_data_user_id(), client_id):
+        if corrected:
+            personal_vocab.record_correct(_current_data_user_id(), text_hint or None, estimate)
+        else:
+            personal_vocab.record_accept(_current_data_user_id(), text_hint or None, estimate)
     return jsonify({
         "status": "logged",
         "food_log": food_log,
@@ -7718,7 +7892,8 @@ def export_backup():
             "body": BODY_DATA,
             "sleep": SLEEP_DATA,
             "nutrition": NUTRITION_DATA,
-            "food_logs": get_food_logs(user_id)
+            "food_logs": get_food_logs(user_id),
+            "personal_vocab": list_personal_vocab_entries(user_id),
         }
     }
 
@@ -7799,6 +7974,12 @@ def import_backup():
                 if isinstance(food_log, dict):
                     add_food_log(user_id, _food_log_import_record(food_log))
 
+        if "personal_vocab" in data:
+            user_id = _current_data_user_id()
+            for vocab_entry in data["personal_vocab"]:
+                if isinstance(vocab_entry, dict):
+                    import_personal_vocab_entry(user_id, vocab_entry)
+
         return jsonify({
             "status": "success",
             "message": "Backup restored successfully",
@@ -7812,7 +7993,8 @@ def import_backup():
                 "body": len(data.get("body", [])),
                 "sleep": len(data.get("sleep", [])),
                 "nutrition": len(data.get("nutrition", [])),
-                "food_logs": len(data.get("food_logs", []))
+                "food_logs": len(data.get("food_logs", [])),
+                "personal_vocab": len(data.get("personal_vocab", [])),
             }
         })
     except Exception as e:

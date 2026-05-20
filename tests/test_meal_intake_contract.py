@@ -85,6 +85,29 @@ def test_zero_context_text_request_returns_contract_shape_and_uses_client_id(mon
 def test_zero_context_image_request_uses_same_estimate_shape_without_raw_image_echo(monkeypatch):
     module = _module(monkeypatch)
     persisted = {}
+    monkeypatch.setattr(module.vision_estimator, "describe", lambda *_a, **_kw: {
+        "provider": "claude",
+        "item_description": "protein shake",
+        "portion_hint": "1 shake",
+        "confidence": 0.86,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    monkeypatch.setattr(module.branded_food_lookup, "lookup", lambda *_a, **_kw: {
+        "item_name": "Protein shake",
+        "portion_description": "1 shake",
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.86,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "nutritionix",
+    })
 
     def fake_add_food_log(_user_id, record):
         persisted.update(record)

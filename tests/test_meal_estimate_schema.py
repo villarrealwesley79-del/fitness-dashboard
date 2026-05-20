@@ -111,6 +111,29 @@ def test_image_meal_intake_uses_public_schema_and_drops_private_fields(monkeypat
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+    monkeypatch.setattr(module.vision_estimator, "describe", lambda *_a, **_kw: {
+        "provider": "claude",
+        "item_description": "burger",
+        "portion_hint": "1 burger",
+        "confidence": 0.82,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    monkeypatch.setattr(module.branded_food_lookup, "lookup", lambda *_a, **_kw: {
+        "item_name": "Burger",
+        "portion_description": "one sandwich",
+        "meal_type": "lunch",
+        "calories": 540,
+        "protein_g": 28,
+        "carbs_g": 42,
+        "fat_g": 30,
+        "sodium_mg": 980,
+        "fiber_g": 3,
+        "confidence": 0.82,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "nutritionix",
+    })
     monkeypatch.setattr(module, "add_food_log", lambda _uid, record: {
         "client_id": record["client_id"],
         "source": record["source"],
@@ -128,8 +151,8 @@ def test_image_meal_intake_uses_public_schema_and_drops_private_fields(monkeypat
 
     assert res.status_code == 200, res.get_data(as_text=True)
     body = res.get_json()
-    assert body["estimate"]["source"] == "stub_vision_estimate"
-    assert set(body["estimate"]) == {
+    assert body["estimate"]["source"] == "vision_claude+nutritionix"
+    assert {
         "item_name",
         "portion_description",
         "meal_type",
@@ -144,8 +167,10 @@ def test_image_meal_intake_uses_public_schema_and_drops_private_fields(monkeypat
         "uncertainty_notes",
         "source",
         "from_image",
-    }
+    }.issubset(body["estimate"])
     assert body["estimate"]["from_image"] is True
+    assert "image_bytes" not in str(body)
+    assert "chain_of_thought" not in str(body)
 
 
 def test_accept_rejects_non_object_estimate(monkeypatch):

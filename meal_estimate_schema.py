@@ -34,6 +34,18 @@ PUBLIC_ESTIMATE_FIELDS = (
     "brand_id",
     "underlying_source",
     "off_attribution",
+    "personal_vocab_phrase",
+)
+
+PUBLIC_PROVENANCE_FIELDS = (
+    "external_food_id",
+    "verified_source_url",
+    "data_fetched_at",
+    "portion_basis",
+    "brand_id",
+    "underlying_source",
+    "off_attribution",
+    "personal_vocab_phrase",
 )
 
 CALORIE_MAX = 5000
@@ -163,6 +175,9 @@ def sanitize_meal_estimate(
     off_attribution = _provenance_dict(raw.get("off_attribution"), "off_attribution")
     if off_attribution is not None:
         estimate["off_attribution"] = off_attribution
+    personal_vocab_phrase = _string_or_none(raw.get("personal_vocab_phrase"), "personal_vocab_phrase")
+    if personal_vocab_phrase is not None:
+        estimate["personal_vocab_phrase"] = personal_vocab_phrase
     return estimate
 
 
