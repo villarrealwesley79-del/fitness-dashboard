@@ -332,11 +332,23 @@ def _load_snapshot() -> dict[str, dict[str, Any]]:
     except (OSError, json.JSONDecodeError):
         _SNAPSHOT_CACHE = {}
         return _SNAPSHOT_CACHE
-    _SNAPSHOT_CACHE = {
-        normalize_meal_text(item.get("normalized_text") or item.get("item_name") or ""): item
-        for item in raw.get("items", [])
-        if isinstance(item, dict)
-    }
+    items = [item for item in raw.get("items", []) if isinstance(item, dict)]
+    indexed: dict[str, dict[str, Any]] = {}
+    for item in items:
+        primary = normalize_meal_text(item.get("normalized_text") or item.get("item_name") or "")
+        if primary:
+            indexed[primary] = item
+    for item in items:
+        aliases = item.get("aliases")
+        if not isinstance(aliases, list):
+            continue
+        for alias in aliases:
+            if not isinstance(alias, str):
+                continue
+            normalized = normalize_meal_text(alias)
+            if normalized:
+                indexed.setdefault(normalized, item)
+    _SNAPSHOT_CACHE = indexed
     return _SNAPSHOT_CACHE
 
 
