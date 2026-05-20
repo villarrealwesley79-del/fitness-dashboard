@@ -1432,17 +1432,20 @@ def filter_recent_soreness(soreness_data, hours=24):
 
 
 def _parse_workout_completion_timestamp(workout):
-    """Best-effort parse of when a workout was completed.
+    """Best-effort parse of when a workout was completed, in server-local time.
 
     Prefers `created_at` (precise ISO timestamp) so multiple workouts on the same
-    day still sort correctly. Falls back to `date` at noon local.
+    day still sort correctly. Delegates to `_parse_iso_to_local_datetime` so a
+    `Z`/offset timestamp from sync/import is converted to local before we strip
+    tzinfo — otherwise `hours_ago` could be off by the server's UTC offset and
+    flip recent completions in/out of the window incorrectly. Falls back to
+    `date` at noon local.
     """
     ts = workout.get("created_at")
     if ts:
-        try:
-            return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).replace(tzinfo=None)
-        except Exception:
-            pass
+        dt = _parse_iso_to_local_datetime(str(ts))
+        if dt is not None:
+            return dt
     d = workout.get("date")
     if d:
         try:
@@ -7410,6 +7413,7 @@ def _workout_already_synced_response(existing: dict, client_workout_id: str, rec
 @app.route('/api/complete-workout', methods=['POST'])
 def complete_workout():
     """Complete a workout and track adherence to recommendations."""
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -7525,15 +7529,27 @@ def complete_workout():
                 "source": "completed_workout",
             }
 
-    # Find the recommendation
+    # Find the recommendation. The live recommendation path only writes
+    # `LAST_WORKOUT_RECOMMENDATION`, not the `WORKOUT_RECOMMENDATIONS` history
+    # list — checking both keeps adherence honest on the real codepath.
     recommendation = None
-    for rec in WORKOUT_RECOMMENDATIONS:
-        if rec.get("id") == recommendation_id:
-            recommendation = rec
-            break
+    if recommendation_id:
+        for rec in WORKOUT_RECOMMENDATIONS:
+            if rec.get("id") == recommendation_id:
+                recommendation = rec
+                break
+        if recommendation is None and LAST_WORKOUT_RECOMMENDATION:
+            if LAST_WORKOUT_RECOMMENDATION.get("id") == recommendation_id:
+                recommendation = LAST_WORKOUT_RECOMMENDATION
 
-    # Calculate adherence if recommendation found
-    adherence = {"followed": True, "skipped": [], "modified": [], "added": []}
+    # Calculate adherence: default `followed: True` only when no plan was
+    # supposed to be followed (no `recommendation_id`). When a plan was named
+    # but we cannot resolve it, mark `followed: None` so the adherence
+    # endpoint doesn't falsely credit the user with following an unknown plan.
+    if recommendation_id and not recommendation:
+        adherence = {"followed": None, "skipped": [], "modified": [], "added": []}
+    else:
+        adherence = {"followed": True, "skipped": [], "modified": [], "added": []}
     if recommendation:
         recommended_exercises = {e["exercise"] for e in recommendation.get("exercises", [])}
         actual_exercise_names = {e["machine"] for e in actual_exercises}
@@ -7670,7 +7686,6 @@ def complete_workout():
         save_json(CARDIO_FILE, CARDIO_DATA)
     # Drop the cached plan so the next swap/adjust/recommendation regenerates
     # against the freshly-completed session, not the one we just executed.
-    global LAST_WORKOUT_RECOMMENDATION
     LAST_WORKOUT_RECOMMENDATION = None
     _notify_workout_logged(workout_entry)
 
@@ -7975,12 +7990,14 @@ def workout_adherence():
     """Stats on how well recommendations were followed.
 
     Denominator is completed workouts tied to a recommendation (the only ones
-    where adherence is meaningful) — `WORKOUT_RECOMMENDATIONS` is a stale
-    side-store that isn't populated on the live recommendation path.
+    where adherence is meaningful). `WORKOUTS` is the persisted authoritative
+    list — `COMPLETED_WORKOUTS` is a session-local convenience that starts
+    empty on each boot, so reading from it would silently hide history after
+    the first completion of the day.
     """
-    completions = COMPLETED_WORKOUTS or WORKOUTS
+    completions = WORKOUTS
     linked = [w for w in completions if w.get("recommendation_id")]
-    followed = sum(1 for w in linked if w.get("adherence", {}).get("followed", False))
+    followed = sum(1 for w in linked if w.get("adherence", {}).get("followed") is True)
 
     skipped_exercises = {}
     for w in linked:

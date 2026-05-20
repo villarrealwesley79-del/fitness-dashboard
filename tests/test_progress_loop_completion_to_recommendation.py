@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import importlib
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -150,6 +150,27 @@ def test_summarize_recent_completion_picks_most_recent(fitness_app):
     assert summary["overall_fatigue"] == 7
 
 
+def test_summarize_recent_completion_handles_utc_z_timestamp(fitness_app):
+    """A `Z`-suffixed UTC timestamp from sync/import must be converted to
+    local time, not stripped of tzinfo with the UTC clock intact — otherwise
+    `hours_ago` is off by the server's UTC offset and a fresh workout can
+    fall outside the recent-completion window."""
+    # ISO UTC pinned to ~1 hour ago in local time.
+    utc_now = datetime.now().astimezone(timezone.utc) - timedelta(hours=1)
+    workout = {
+        "id": "utc-import",
+        "created_at": utc_now.isoformat().replace("+00:00", "Z"),
+        "date": utc_now.date().isoformat(),
+        "exercises": [{"muscle_group": "chest", "sets": [{"weight_lbs": 100, "reps": 8}] * 3}],
+        "overall_fatigue": 6,
+    }
+    summary = fitness_app.summarize_recent_completion([workout], hours=24)
+    assert summary is not None
+    # ~1h ago within a generous tolerance for clock drift between the test
+    # process and the parsed timestamp.
+    assert 0.5 <= summary["hours_ago"] <= 1.5, summary
+
+
 # ──────────────────────────────────────────────────────────────────
 # /api/complete-workout side-effects
 # ──────────────────────────────────────────────────────────────────
@@ -267,6 +288,98 @@ def test_analyze_after_completion_does_not_resurrect_stale_plan(fitness_app, mon
 # ──────────────────────────────────────────────────────────────────
 # /api/adherence uses completed-with-recommendation as denominator
 # ──────────────────────────────────────────────────────────────────
+
+def test_complete_workout_resolves_adherence_against_last_recommendation(fitness_app):
+    """Live recommendation path writes `LAST_WORKOUT_RECOMMENDATION`, not the
+    history-only `WORKOUT_RECOMMENDATIONS` list. complete_workout must look
+    there too, otherwise every UI-driven completion would store the default
+    `followed: True` regardless of what the user actually did."""
+    fitness_app.LAST_WORKOUT_RECOMMENDATION = {
+        "id": "rec-live-1",
+        "exercises": [
+            {"exercise": "Chest Press", "target_weight": 100},
+            {"exercise": "Tricep Pushdown", "target_weight": 50},
+        ],
+    }
+    payload = _workout_payload(recommendation_id="rec-live-1", machine="Chest Press")
+    res = fitness_app.app.test_client().post(
+        "/api/complete-workout",
+        data=json.dumps(payload),
+        content_type="application/json",
+    )
+    assert res.status_code == 200
+    stored = fitness_app.WORKOUTS[-1]
+    # Recommendation matched → adherence reflects the real comparison
+    # (Tricep Pushdown was on the plan, missing from the session, so
+    # followed=False with that exercise on the skipped list).
+    assert stored["adherence"]["followed"] is False
+    assert "Tricep Pushdown" in stored["adherence"]["skipped"]
+
+
+def test_complete_workout_marks_unresolved_recommendation_as_untracked(fitness_app):
+    """When recommendation_id is set but neither WORKOUT_RECOMMENDATIONS nor
+    LAST_WORKOUT_RECOMMENDATION contains it (e.g. the cache was cleared by
+    a prior completion), adherence is `followed: None` so /api/adherence
+    doesn't falsely credit the user with following an unknown plan."""
+    fitness_app.LAST_WORKOUT_RECOMMENDATION = None
+    payload = _workout_payload(recommendation_id="rec-missing")
+    res = fitness_app.app.test_client().post(
+        "/api/complete-workout",
+        data=json.dumps(payload),
+        content_type="application/json",
+    )
+    assert res.status_code == 200
+    stored = fitness_app.WORKOUTS[-1]
+    assert stored["adherence"]["followed"] is None
+
+    # And /api/adherence must NOT count an unresolved completion as followed.
+    payload = fitness_app.app.test_client().get("/api/adherence").get_json()
+    assert payload["linked_completions"] == 1
+    assert payload["followed_count"] == 0
+    assert payload["adherence_rate"] == 0
+
+
+def test_adherence_uses_persisted_workouts_after_first_completion(fitness_app):
+    """/api/adherence must read from the persisted WORKOUTS list, not the
+    session-local COMPLETED_WORKOUTS — otherwise the first completion after
+    boot would replace the entire history view with just that one session."""
+    # Pre-seed historical workouts (as if loaded from disk on app boot) —
+    # COMPLETED_WORKOUTS stays empty because it isn't persisted across boots.
+    historical = [
+        {
+            "id": "hist-1",
+            "date": "2026-05-15",
+            "created_at": "2026-05-15T10:00:00",
+            "recommendation_id": "rec-hist-A",
+            "adherence": {"followed": True, "skipped": [], "modified": [], "added": []},
+            "exercises": [],
+        },
+        {
+            "id": "hist-2",
+            "date": "2026-05-16",
+            "created_at": "2026-05-16T10:00:00",
+            "recommendation_id": "rec-hist-B",
+            "adherence": {"followed": False, "skipped": ["Skipped"], "modified": [], "added": []},
+            "exercises": [],
+        },
+    ]
+    fitness_app.WORKOUTS.extend(historical)
+    assert fitness_app.COMPLETED_WORKOUTS == []  # cold-boot shape
+
+    # New session: COMPLETED_WORKOUTS gets the new row; the historical
+    # adherence must still be visible.
+    fitness_app.app.test_client().post(
+        "/api/complete-workout",
+        data=json.dumps(_workout_payload(recommendation_id="rec-new")),
+        content_type="application/json",
+    )
+
+    payload = fitness_app.app.test_client().get("/api/adherence").get_json()
+    assert payload["total_completed"] == 3, payload
+    assert payload["linked_completions"] == 3, payload
+    # 1 (hist-1) + 0 (hist-2) + 0 (new is untracked, rec-new unresolved) = 1
+    assert payload["followed_count"] == 1, payload
+
 
 def test_adherence_counts_completions_with_recommendation_id(fitness_app):
     """AC1: adherence rate should reflect completed workouts that had a
