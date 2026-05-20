@@ -129,10 +129,13 @@
                         <span class="meal-composer-status" id="meal-composer-status" hidden></span>
                     </div>
                     <div class="meal-composer-row">
-                        <label class="meal-composer-camera" for="meal-composer-image" title="Attach a photo">
+                        <label class="meal-composer-camera" for="meal-composer-image" title="Attach a photo or take one">
                             <span aria-hidden="true">📷</span>
-                            <span class="visually-hidden">Attach a photo of the meal</span>
-                            <input type="file" id="meal-composer-image" accept="image/*" capture="environment" hidden>
+                            <span class="visually-hidden">Attach a photo of the meal or take a new one</span>
+                            <!-- FIT-91: no `capture` attribute so iOS/Android shows the native
+                                 "Take Photo / Photo Library" action sheet instead of forcing
+                                 live capture. `accept="image/*"` keeps non-image files filtered. -->
+                            <input type="file" id="meal-composer-image" accept="image/*" hidden>
                         </label>
                         <input
                             type="text"
