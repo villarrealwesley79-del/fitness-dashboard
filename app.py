@@ -422,6 +422,181 @@ CARDIO_RECOMMENDATIONS = {
     }
 }
 
+CARDIO_MODALITY_POOLS = {
+    TrainingGoal.ENDURANCE.value: [
+        "Outdoor run",
+        "Treadmill run",
+        "Bike",
+        "Rower",
+        "Stairmaster",
+    ],
+    TrainingGoal.WEIGHT_LOSS.value: [
+        "Stairmaster",
+        "Treadmill incline walk",
+        "Bike",
+        "Elliptical",
+        "Rower",
+    ],
+    TrainingGoal.TONING.value: [
+        "Treadmill incline walk",
+        "Elliptical",
+        "Bike",
+        "Stairmaster",
+    ],
+    TrainingGoal.HYBRID_HYPERTROPHY_ENDURANCE.value: [
+        "Stairmaster",
+        "Bike",
+        "Rower",
+        "Treadmill incline walk",
+        "Elliptical",
+    ],
+    TrainingGoal.HYBRID_WEIGHT_LOSS_TONING.value: [
+        "Stairmaster",
+        "Treadmill incline walk",
+        "Bike",
+        "Elliptical",
+        "Rower",
+    ],
+}
+
+CARDIO_RECOVERY_MODALITIES = [
+    "Treadmill incline walk",
+    "Bike",
+    "Elliptical",
+    "Outdoor walk",
+]
+
+OUTDOOR_CARDIO_MODALITIES = {"outdoor run", "outdoor walk"}
+
+CARDIO_TECHNIQUE_BY_MODALITY = {
+    "bike": "Smooth cadence, light grip, keep hips steady",
+    "elliptical": "Tall posture, even foot pressure, steady handles",
+    "outdoor run": "Relax shoulders, quick cadence, keep effort controlled",
+    "outdoor walk": "Brisk pace, relaxed shoulders, consistent stride",
+    "rower": "Legs-drive first, neutral spine, smooth recovery",
+    "stairmaster": "Full steps, engage glutes, maintain upright posture",
+    "treadmill incline walk": "Upright posture, steady stride, hands relaxed",
+    "treadmill run": "Quick cadence, relaxed shoulders, controlled foot strike",
+}
+
+CARDIO_ROTATION_CURSOR = {}
+
+
+def _normalize_cardio_type(value):
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def _recent_cardio_types(cardio_data, limit=3):
+    rows = sorted(cardio_data or [], key=lambda row: row.get("date", ""), reverse=True)
+    recent = []
+    for row in rows:
+        cardio_type = row.get("activity_type") or row.get("type")
+        if cardio_type:
+            recent.append(str(cardio_type))
+        if len(recent) >= limit:
+            break
+    return recent
+
+
+def _next_cardio_rotation_index(goal, pool):
+    if not pool:
+        return 0
+    current = CARDIO_ROTATION_CURSOR.get(goal, -1) + 1
+    CARDIO_ROTATION_CURSOR[goal] = current % len(pool)
+    return CARDIO_ROTATION_CURSOR[goal]
+
+
+def _filter_cardio_pool_for_equipment(pool, equipment_preference):
+    if equipment_preference == "all":
+        return pool
+    machine_safe = [
+        option
+        for option in pool
+        if _normalize_cardio_type(option) not in OUTDOOR_CARDIO_MODALITIES
+    ]
+    return machine_safe or pool
+
+
+def _choose_dynamic_cardio_recommendation(
+    goal,
+    base_rec,
+    oura_readiness=None,
+    training_recommendation=None,
+    consume_rotation=True,
+    equipment_preference=None,
+):
+    if not base_rec.get("include_cardio"):
+        return base_rec
+
+    pool = list(CARDIO_MODALITY_POOLS.get(goal) or [base_rec.get("type") or "Cardio"])
+    pool = _filter_cardio_pool_for_equipment(pool, equipment_preference)
+    recent_types = _recent_cardio_types(CARDIO_DATA)
+    recent_normalized = [_normalize_cardio_type(t) for t in recent_types]
+    repeated_recent = {
+        recent_type
+        for recent_type in set(recent_normalized)
+        if recent_type and recent_normalized.count(recent_type) >= 2
+    }
+    if repeated_recent and len(pool) > 1:
+        pool = [p for p in pool if _normalize_cardio_type(p) not in repeated_recent] or pool
+
+    intensity_day = training_recommendation == "intensity"
+    recovery_day = training_recommendation == "recovery" or (
+        training_recommendation is None and oura_readiness is not None and oura_readiness < 70
+    )
+
+    selected_type = None
+    if recovery_day:
+        recovery_pool = _filter_cardio_pool_for_equipment(CARDIO_RECOVERY_MODALITIES, equipment_preference)
+        for option in recovery_pool:
+            if any(_normalize_cardio_type(option) == _normalize_cardio_type(p) for p in pool):
+                selected_type = option
+                break
+        if selected_type is None:
+            selected_type = pool[0]
+    else:
+        if consume_rotation:
+            selected_type = pool[_next_cardio_rotation_index(goal, pool)]
+        else:
+            seed = f"{goal}:{_today_str()}:{len(WORKOUTS)}:{len(CARDIO_DATA)}"
+            next_index = sum(ord(char) for char in seed) % len(pool)
+            selected_type = pool[next_index]
+
+    rec = dict(base_rec)
+    rec["type"] = selected_type
+    if recovery_day:
+        rec.update({
+            "duration_minutes": min(30, max(20, int(base_rec.get("duration_minutes") or 20))),
+            "zone": "Zone 2",
+            "zone_description": "Fat Burning / Recovery",
+            "heart_rate_range": "114-133 BPM",
+            "intensity": "Easy conversational pace; leave fresher than you started",
+            "technique": "Smooth cadence, nasal-breathing pace, no hard intervals",
+        })
+    elif intensity_day:
+        rec.update({
+            "duration_minutes": min(20, max(12, int(base_rec.get("duration_minutes") or 15))),
+            "zone": "Zone 4",
+            "zone_description": "Threshold / Performance",
+            "heart_rate_range": "152-171 BPM",
+            "intensity": "Intervals: hard efforts with full easy recoveries",
+            "technique": "Keep reps crisp; stop intervals if form or breathing falls apart",
+        })
+    else:
+        rec.update({
+            "zone": "Zone 3",
+            "zone_description": "Aerobic",
+            "heart_rate_range": "133-152 BPM",
+            "intensity": "Steady state with controlled breathing",
+            "technique": CARDIO_TECHNIQUE_BY_MODALITY.get(
+                _normalize_cardio_type(selected_type),
+                "Keep posture tall and effort controlled",
+            ),
+        })
+    return rec
+
 # ==================== EXERCISE LIBRARY ====================
 
 EXERCISE_LIBRARY = [
@@ -1430,6 +1605,13 @@ def get_cardio_muscle_impact(cardio_data, muscle, days=2):
         "rowing": {"back": 2, "biceps": 1.5, "core": 1.5, "quads": 1},
         "swimming": {"back": 1.5, "shoulders": 1.5, "core": 1, "triceps": 1}
     }
+    CARDIO_ACTIVITY_ALIASES = {
+        "bike": "cycling",
+        "rower": "rowing",
+        "treadmill incline walk": "treadmill",
+        "treadmill run": "treadmill",
+        "outdoor run": "running",
+    }
 
     cutoff = datetime.now() - timedelta(days=days)
     total_impact = 0
@@ -1440,7 +1622,8 @@ def get_cardio_muscle_impact(cardio_data, muscle, days=2):
             if session_date < cutoff:
                 continue
 
-            activity = session.get("activity_type", "").lower()
+            activity = session.get("activity_type", "").strip().lower()
+            activity = CARDIO_ACTIVITY_ALIASES.get(activity, activity)
             duration = session.get("duration_minutes", 0)
             intensity = session.get("intensity", 5)
 
@@ -1963,7 +2146,15 @@ def _apply_progressive_overload(base_weight, base_reps, target_rpe, is_compound,
     return base_weight, base_reps, "Maintain load"
 
 
-def generate_next_workout(workouts, soreness_data, goal=None, available_time=None, persist=False):
+def generate_next_workout(
+    workouts,
+    soreness_data,
+    goal=None,
+    available_time=None,
+    persist=False,
+    training_recommendation=None,
+    consume_cardio_rotation=True,
+):
     """Generate optimal workout prescription based on training goal and available time.
 
     Args:
@@ -2092,7 +2283,15 @@ def generate_next_workout(workouts, soreness_data, goal=None, available_time=Non
     total_time = total_exercise_time + 10  # Add warmup/cooldown
 
     # Get cardio recommendation for this goal
-    cardio_rec = CARDIO_RECOMMENDATIONS.get(goal, CARDIO_RECOMMENDATIONS[TrainingGoal.HYPERTROPHY.value])
+    base_cardio_rec = CARDIO_RECOMMENDATIONS.get(goal, CARDIO_RECOMMENDATIONS[TrainingGoal.HYPERTROPHY.value])
+    cardio_rec = _choose_dynamic_cardio_recommendation(
+        goal,
+        base_cardio_rec,
+        oura_readiness=oura_readiness,
+        training_recommendation=training_recommendation,
+        consume_rotation=consume_cardio_rotation,
+        equipment_preference=equipment_pref,
+    )
     cardio_data = None
 
     # Calculate remaining time for cardio (ensure we don't exceed available time)
@@ -2868,6 +3067,14 @@ def api_dashboard():
     acwr = calculate_acwr(WORKOUTS)
     sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
     recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
+    hrv_trend = "unknown"
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=6)
+        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
+    except Exception:
+        pass
 
     # Body stats
     body_stats = {}
@@ -2937,7 +3144,29 @@ def api_dashboard():
     else:
         reason_bits.append("No soreness logged in last 24h")
 
-    next_workout = generate_next_workout(WORKOUTS, SORENESS_DATA)
+    last_completed = summarize_recent_completion(WORKOUTS, hours=24)
+    last_hours_ago = last_completed.get("hours_ago") if last_completed else None
+    weather = _cached_wttr(_WEATHER_CACHE.get("location") or "San_Antonio")
+    dashboard_training_recommendation, _ = _training_recommendation_from_factors(
+        readiness_val,
+        recovery_bonus=recovery_bonus,
+        hrv_trend=hrv_trend,
+        sleep_debt=sleep_debt,
+        acwr_data=acwr,
+        last_completed=last_completed,
+        last_hours_ago=last_hours_ago,
+        weather=weather,
+    )
+    if signal == "RECOVER" and max_soreness >= 7:
+        dashboard_training_recommendation = "recovery"
+    next_workout = generate_next_workout(
+        WORKOUTS,
+        SORENESS_DATA,
+        training_recommendation=dashboard_training_recommendation,
+        consume_cardio_rotation=False,
+    )
+    global LAST_WORKOUT_RECOMMENDATION
+    LAST_WORKOUT_RECOMMENDATION = next_workout
     food_log_entries = _food_log_entries_for_context(since=today_s)
     nutrition_context = _nutrition_context_for_date(
         today_s,
@@ -2945,9 +3174,6 @@ def api_dashboard():
         food_log_entries=food_log_entries,
     )
     nutrition_today_payload = _nutrition_today_public_payload(today_s, nutrition_context)
-    global LAST_WORKOUT_RECOMMENDATION
-    LAST_WORKOUT_RECOMMENDATION = next_workout
-
     return jsonify({
         "headline": {
             "total_sets": total_sets,
@@ -6097,12 +6323,7 @@ def ai_metrics():
 
 # ==================== WEATHER (wttr.in) ====================
 
-def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
-    """Fetch current weather from wttr.in (best-effort).
-
-    Returns dict:
-      {available, location, temp_f, humidity_pct, condition, feelslike_f, raw}
-    """
+def _cached_wttr(location: str = "San_Antonio", max_age_s: int = 600):
     now = int(time.time())
     if (
         _WEATHER_CACHE.get("data")
@@ -6110,6 +6331,19 @@ def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
         and (now - int(_WEATHER_CACHE.get("ts") or 0)) <= max_age_s
     ):
         return {"available": True, "location": location, **_WEATHER_CACHE["data"], "source": "cache"}
+    return None
+
+
+def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
+    """Fetch current weather from wttr.in (best-effort).
+
+    Returns dict:
+      {available, location, temp_f, humidity_pct, condition, feelslike_f, raw}
+    """
+    now = int(time.time())
+    cached = _cached_wttr(location, max_age_s=max_age_s)
+    if cached:
+        return cached
 
     url = f"https://wttr.in/{location}?format=j1"
     try:
@@ -7505,6 +7739,79 @@ def _confidence_level_from(effective_readiness, freshness):
     return "low"
 
 
+def _effective_readiness_from(readiness, recovery_bonus):
+    if readiness is None:
+        return None
+    try:
+        effective = float(readiness) + float((recovery_bonus or {}).get("bonus_points") or 0)
+        return max(0.0, min(100.0, effective))
+    except Exception:
+        return float(readiness)
+
+
+def _downgrade_training_recommendation_once(recommendation):
+    if recommendation == "intensity":
+        return "moderate"
+    if recommendation == "moderate":
+        return "recovery"
+    return recommendation
+
+
+def _training_recommendation_from_factors(
+    readiness,
+    recovery_bonus=None,
+    hrv_trend="unknown",
+    sleep_debt=None,
+    acwr_data=None,
+    last_completed=None,
+    last_hours_ago=None,
+    weather=None,
+):
+    effective_readiness = _effective_readiness_from(readiness, recovery_bonus)
+    recommendation = "moderate"
+    if effective_readiness is not None:
+        if effective_readiness < 70:
+            recommendation = "recovery"
+        elif effective_readiness > 85:
+            recommendation = "intensity"
+
+    if hrv_trend == "declining":
+        recommendation = _downgrade_training_recommendation_once(recommendation)
+
+    if ((sleep_debt or {}).get("debt_minutes") or 0) > 300:
+        recommendation = _downgrade_training_recommendation_once(recommendation)
+
+    acwr_v = (acwr_data or {}).get("acwr")
+    try:
+        acwr_f = float(acwr_v)
+    except Exception:
+        acwr_f = None
+    if acwr_f is not None:
+        if acwr_f > 1.5:
+            recommendation = "recovery"
+        elif acwr_f >= 1.3:
+            recommendation = _downgrade_training_recommendation_once(recommendation)
+
+    if (
+        last_completed
+        and last_hours_ago is not None
+        and last_hours_ago < 18
+        and (last_completed.get("overall_fatigue") or 0) >= 8
+    ):
+        recommendation = _downgrade_training_recommendation_once(recommendation)
+
+    if (weather or {}).get("available"):
+        temp = weather.get("feelslike_f") if weather.get("feelslike_f") is not None else weather.get("temp_f")
+        hum = weather.get("humidity_pct")
+        if temp is not None:
+            if temp >= 95 or (temp >= 90 and (hum or 0) >= 75):
+                recommendation = _downgrade_training_recommendation_once(recommendation)
+            elif temp <= 40 and recommendation == "intensity":
+                recommendation = "moderate"
+
+    return recommendation, effective_readiness
+
+
 @app.route('/api/recommendation/smart')
 def smart_recommendation_api():
     """Smart recommendation factoring Oura readiness + HRV trend + recent soreness."""
@@ -7580,64 +7887,7 @@ def smart_recommendation_api():
     sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
     recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
 
-    effective_readiness = None
-    if readiness is not None:
-        try:
-            effective_readiness = float(readiness) + float(recovery_bonus.get("bonus_points") or 0)
-            effective_readiness = max(0.0, min(100.0, effective_readiness))
-        except Exception:
-            effective_readiness = float(readiness)
-
-    def _downgrade_once(rec: str) -> str:
-        if rec == "intensity":
-            return "moderate"
-        if rec == "moderate":
-            return "recovery"
-        return rec
-
-    # Determine base intensity from (effective) readiness
-    recommendation = "moderate"
-    if effective_readiness is not None:
-        if effective_readiness < 70:
-            recommendation = "recovery"
-        elif effective_readiness > 85:
-            recommendation = "intensity"
-
-    # HRV trend adjustment
-    if hrv_trend == "declining":
-        if recommendation == "intensity":
-            recommendation = "moderate"
-        elif recommendation == "moderate":
-            recommendation = "recovery"
-
-    # Sleep debt adjustment
-    if (sleep_debt.get("debt_minutes") or 0) > 300:
-        recommendation = _downgrade_once(recommendation)
-
-    # ACWR adjustments
-    acwr_v = acwr_data.get("acwr")
-    try:
-        acwr_f = float(acwr_v)
-    except Exception:
-        acwr_f = None
-
-    if acwr_f is not None:
-        if acwr_f > 1.5:
-            recommendation = "recovery"
-        elif acwr_f >= 1.3:
-            recommendation = _downgrade_once(recommendation)
-
-    # Post-workout fatigue: a high-fatigue session in the last ~18h dampens
-    # the next recommendation by one notch. Reads `overall_fatigue` written
-    # at /api/complete-workout so the user's RPE rating actually moves the
-    # plan forward.
-    if (
-        last_completed
-        and last_hours_ago is not None
-        and last_hours_ago < 18
-        and (last_completed.get("overall_fatigue") or 0) >= 8
-    ):
-        recommendation = _downgrade_once(recommendation)
+    effective_readiness = _effective_readiness_from(readiness, recovery_bonus)
 
     upper = {"chest", "back", "shoulders", "biceps", "triceps"}
     lower = {"quads", "hamstrings", "glutes", "calves", "adductors"}
@@ -7703,17 +7953,22 @@ def smart_recommendation_api():
                 # Extreme heat: reduce intensity
                 if temp >= 95 or (temp >= 90 and (hum or 0) >= 75):
                     reason_bits.append(f"Weather {temp}F feels-like (hot)")
-                    if recommendation == "intensity":
-                        recommendation = "moderate"
-                    elif recommendation == "moderate":
-                        recommendation = "recovery"
                 # Extreme cold: be conservative
                 elif temp <= 40:
                     reason_bits.append(f"Weather {temp}F feels-like (cold)")
-                    if recommendation == "intensity":
-                        recommendation = "moderate"
     except Exception:
         weather = None
+
+    recommendation, effective_readiness = _training_recommendation_from_factors(
+        readiness,
+        recovery_bonus=recovery_bonus,
+        hrv_trend=hrv_trend,
+        sleep_debt=sleep_debt,
+        acwr_data=acwr_data,
+        last_completed=last_completed,
+        last_hours_ago=last_hours_ago,
+        weather=weather,
+    )
 
     # Time-of-day hint
     hour = datetime.now().hour
@@ -7745,7 +8000,12 @@ def smart_recommendation_api():
     except Exception:
         history_context = []
 
-    next_workout = generate_next_workout(WORKOUTS, SORENESS_DATA)
+    next_workout = generate_next_workout(
+        WORKOUTS,
+        SORENESS_DATA,
+        training_recommendation=recommendation,
+        consume_cardio_rotation=False,
+    )
     freshness = _compute_data_freshness()
     nutrition_context = _nutrition_context_for_date(
         today,
