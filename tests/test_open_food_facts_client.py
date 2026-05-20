@@ -233,6 +233,25 @@ def test_open_food_facts_rejects_wrong_country_for_locale(monkeypatch):
     assert branded_food_lookup.lookup("Australian Tim Tams") is None
 
 
+def test_open_food_facts_rejects_us_only_for_non_us_query(monkeypatch):
+    us_only = _product("Smarties US", code="us-only", country="en:united-states")
+    canada = _product("Smarties Canada", code="canada", country="en:canada")
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": [us_only, canada]},
+    )
+
+    estimate = branded_food_lookup.lookup("non-US packaged Smarties")
+
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["external_food_id"] == "canada"
+
+
 def test_open_food_facts_tier_runs_after_usda(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)

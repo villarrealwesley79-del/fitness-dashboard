@@ -246,16 +246,25 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
     expected_country_tag = _off_expected_country_tag(text)
     if not _off_lookup_allowed(text, expected_country_tag):
         return None
+    reject_us_only = _off_non_us_requested(text) and expected_country_tag is None
     payload = open_food_facts_client.search_products(
         text,
         country_tag=expected_country_tag,
-        product_filter=lambda product: _off_candidate_usable(product, expected_country_tag=expected_country_tag),
+        product_filter=lambda product: _off_candidate_usable(
+            product,
+            expected_country_tag=expected_country_tag,
+            reject_us_only=reject_us_only,
+        ),
     )
     products = payload.get("products") if isinstance(payload, dict) else None
     if not products:
         return None
     for product in products:
-        if not _off_candidate_usable(product, expected_country_tag=expected_country_tag):
+        if not _off_candidate_usable(
+            product,
+            expected_country_tag=expected_country_tag,
+            reject_us_only=reject_us_only,
+        ):
             continue
         try:
             return _open_food_facts_estimate(product)
@@ -264,8 +273,13 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _off_candidate_usable(product: dict[str, Any], *, expected_country_tag: str | None = None) -> bool:
-    if not _off_country_ok(product, expected_country_tag):
+def _off_candidate_usable(
+    product: dict[str, Any],
+    *,
+    expected_country_tag: str | None = None,
+    reject_us_only: bool = False,
+) -> bool:
+    if not _off_country_ok(product, expected_country_tag, reject_us_only=reject_us_only):
         return False
     if not _off_quality_ok(product):
         return False
@@ -290,7 +304,7 @@ def _off_expected_country_tag(text: str) -> str | None:
 def _off_lookup_allowed(text: str, expected_country_tag: str | None) -> bool:
     tokens = _off_query_tokens(text)
     has_packaged_context = bool(
-        OFF_PACKAGED_QUERY_TOKENS.intersection(tokens) or {"non", "us"}.issubset(tokens)
+        OFF_PACKAGED_QUERY_TOKENS.intersection(tokens) or _off_non_us_requested(text)
     )
     if has_packaged_context:
         return True
@@ -321,13 +335,26 @@ def _off_query_token_list(text: str) -> list[str]:
     ]
 
 
-def _off_country_ok(product: dict[str, Any], expected_country_tag: str | None) -> bool:
-    if not expected_country_tag:
-        return True
+def _off_non_us_requested(text: str) -> bool:
+    tokens = _off_query_tokens(text)
+    return "non-us" in tokens or {"non", "us"}.issubset(tokens)
+
+
+def _off_country_ok(
+    product: dict[str, Any],
+    expected_country_tag: str | None,
+    *,
+    reject_us_only: bool = False,
+) -> bool:
     countries = product.get("countries_tags") or []
     if not isinstance(countries, list):
+        return False if expected_country_tag else True
+    normalized_countries = {str(country).lower() for country in countries}
+    if reject_us_only and normalized_countries and normalized_countries <= {"en:united-states"}:
         return False
-    return expected_country_tag in {str(country).lower() for country in countries}
+    if not expected_country_tag:
+        return True
+    return expected_country_tag in normalized_countries
 
 
 def _open_food_facts_estimate(product: dict[str, Any]) -> dict[str, Any]:
