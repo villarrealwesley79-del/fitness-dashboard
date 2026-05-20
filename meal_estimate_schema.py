@@ -63,11 +63,14 @@ def _string_or_none(value: Any, field: str) -> str | None:
     return cleaned or None
 
 
-def _provenance_dict(value: Any, field: str) -> dict | None:
+def _provenance_dict(value: Any, field: str) -> dict | str | None:
     if value is None:
         return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
     if not isinstance(value, dict):
-        raise MealEstimateValidationError(f"{field} must be object or null")
+        raise MealEstimateValidationError(f"{field} must be object, string, or null")
     safe = {}
     for key, item in value.items():
         if isinstance(key, str) and (item is None or isinstance(item, (str, int, float, bool))):
