@@ -761,6 +761,56 @@ def _local_iso_from_iso(iso_str):
     return dt.isoformat(timespec="seconds") if dt is not None else None
 
 
+def _browser_local_date_from_value(local_date):
+    """Return a YYYY-MM-DD browser-local date string, or None.
+
+    FIT-66 adds an explicit browser-local calendar date so meal dates do
+    not depend on the Flask server's timezone. Keep this strict: callers
+    fall back to older timestamp behavior when the client omits it.
+    """
+    if not local_date:
+        return None
+    s = str(local_date).strip()
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return None
+
+
+def _browser_local_datetime_from_iso(local_iso):
+    """Parse browser-local ISO and drop tzinfo without server conversion.
+
+    ``local_iso`` carries the user's wall-clock time plus browser offset
+    (for example ``2026-05-18T22:00:00-05:00``). The offset is evidence,
+    not an instruction to convert through the server timezone. Persist the
+    wall-clock portion so date and hour match what the user submitted.
+    """
+    if not local_iso:
+        return None
+    s = str(local_iso).strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=None)
+
+
+def _browser_local_iso_from_iso(local_iso):
+    dt = _browser_local_datetime_from_iso(local_iso)
+    return dt.isoformat(timespec="seconds") if dt is not None else None
+
+
+def _browser_local_date_from_iso(local_iso):
+    dt = _browser_local_datetime_from_iso(local_iso)
+    return dt.date().isoformat() if dt is not None else None
+
+
 def _current_data_user_id():
     try:
         from flask_login import current_user
@@ -3333,6 +3383,8 @@ def _meal_intake_stub_persist(
     has_image,
     text_hint,
     local_timestamp=None,
+    local_date=None,
+    local_iso=None,
     correction_state=CORRECTION_STATE_ACCEPTED,
 ):
     """Persist a food estimate via the canonical food_logs path.
@@ -3343,20 +3395,26 @@ def _meal_intake_stub_persist(
     confirmation. ``_nutrition_entry_accepted`` filters pending rows out
     of nutrition totals and coaching context (see app.py:999).
 
-    ``local_timestamp`` (FIT-59) is the client-supplied ISO timestamp from
-    the composer. When present we use it for both ``logged_at`` and
-    ``source_timestamp`` and derive ``date`` from its YYYY-MM-DD prefix so
-    meals logged near midnight or from a saved draft land on the correct
-    day. Server time is the fallback.
+    ``local_date`` and ``local_iso`` (FIT-66) are browser-local values
+    from the composer. They take precedence over the older UTC
+    ``local_timestamp`` so persistence is independent of the Flask
+    server's timezone. Server time is the fallback.
     """
     now_iso = datetime.now().isoformat(timespec="seconds")
-    # Store ``logged_at`` as naive server-local ISO. The composer sends
-    # UTC (new Date().toISOString()) and downstream ``.hour`` reads in
-    # _nutrition_entry_logged_hour are not TZ-aware, so storing the raw
-    # UTC string misreports late-meal hour. Convert to local first.
-    logged_at_iso = _local_iso_from_iso(local_timestamp) or now_iso
-    # Derive ``date`` from the same TZ-converted server-local calendar day.
-    date_str = _local_date_from_iso(local_timestamp) or _today_str()
+    # Store browser-local wall-clock time when provided. Do not convert
+    # ``local_iso`` through the server timezone; downstream readers use
+    # naive ``.hour`` and ``date`` fields as the user's local meal time.
+    logged_at_iso = (
+        _browser_local_iso_from_iso(local_iso)
+        or _local_iso_from_iso(local_timestamp)
+        or now_iso
+    )
+    date_str = (
+        _browser_local_date_from_value(local_date)
+        or _browser_local_date_from_iso(local_iso)
+        or _local_date_from_iso(local_timestamp)
+        or _today_str()
+    )
     record = {
         "client_id": client_id,
         "date": date_str,
@@ -3402,6 +3460,14 @@ def meal_intake_stub():
     if len(local_timestamp_raw) > 64:
         return jsonify({"error": {"message": "local_timestamp too long (max 64 chars)"}}), 400
     local_timestamp = local_timestamp_raw or None
+    local_date_raw = (request.form.get("local_date") or "").strip()
+    if len(local_date_raw) > 10:
+        return jsonify({"error": {"message": "local_date too long (max 10 chars)"}}), 400
+    local_date = local_date_raw or None
+    local_iso_raw = (request.form.get("local_iso") or "").strip()
+    if len(local_iso_raw) > 64:
+        return jsonify({"error": {"message": "local_iso too long (max 64 chars)"}}), 400
+    local_iso = local_iso_raw or None
 
     image_file = request.files.get("image")
     has_image = False
@@ -3438,7 +3504,11 @@ def meal_intake_stub():
         estimate["from_image"] = True
         response_extras["stub"] = True
     else:
-        parsed = parse_meal_text(text_raw, timestamp=local_timestamp, user_id=_current_data_user_id())
+        parsed = parse_meal_text(
+            text_raw,
+            timestamp=local_iso or local_timestamp,
+            user_id=_current_data_user_id(),
+        )
         try:
             estimate = sanitize_meal_estimate(parsed["estimate"])
         except MealEstimateValidationError:
@@ -3485,6 +3555,7 @@ def meal_intake_stub():
         food_log = _meal_intake_stub_persist(
             client_id, estimate, source=source, has_image=has_image,
             text_hint=text_raw or None, local_timestamp=local_timestamp,
+            local_date=local_date, local_iso=local_iso,
             correction_state=CORRECTION_STATE_ACCEPTED,
         )
 
@@ -3493,6 +3564,9 @@ def meal_intake_stub():
         "estimate": estimate,
         "food_log": food_log,
         "photo_retention": _food_photo_retention_payload(has_image),
+        "local_timestamp": local_timestamp,
+        "local_date": local_date,
+        "local_iso": local_iso,
         **response_extras,
     })
 
@@ -3531,12 +3605,26 @@ def meal_intake_accept_stub(client_id: str):
     if originated_from_image:
         estimate["from_image"] = True
     text_hint, _ = _coerce_str(data.get("text"), "text", required=False, max_len=500)
+    local_timestamp, err = _coerce_str(
+        data.get("local_timestamp"), "local_timestamp", required=False, max_len=64
+    )
+    if err:
+        return err
+    local_date, err = _coerce_str(data.get("local_date"), "local_date", required=False, max_len=10)
+    if err:
+        return err
+    local_iso, err = _coerce_str(data.get("local_iso"), "local_iso", required=False, max_len=64)
+    if err:
+        return err
     food_log = _meal_intake_stub_persist(
         client_id,
         estimate,
         source=estimate.get("source") or "stub_text_estimate",
         has_image=originated_from_image,
         text_hint=text_hint or None,
+        local_timestamp=local_timestamp or None,
+        local_date=local_date or None,
+        local_iso=local_iso or None,
     )
     return jsonify({
         "status": "logged",

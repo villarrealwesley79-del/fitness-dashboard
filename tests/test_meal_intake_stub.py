@@ -474,6 +474,25 @@ def test_local_iso_from_iso_returns_none_for_invalid():
     assert module._local_iso_from_iso("not a date") is None
 
 
+def test_browser_local_iso_preserves_wall_clock_without_server_tz_conversion():
+    module = importlib.import_module("app")
+    assert (
+        module._browser_local_iso_from_iso("2026-05-18T22:00:00-05:00")
+        == "2026-05-18T22:00:00"
+    )
+    assert (
+        module._browser_local_date_from_iso("2026-05-18T22:00:00-05:00")
+        == "2026-05-18"
+    )
+
+
+def test_browser_local_date_rejects_invalid_values():
+    module = importlib.import_module("app")
+    assert module._browser_local_date_from_value("2026-05-18") == "2026-05-18"
+    assert module._browser_local_date_from_value("2026-99-99") is None
+    assert module._browser_local_date_from_value("not-a-date") is None
+
+
 def test_meal_intake_text_stores_logged_at_as_naive_local(monkeypatch):
     """End-to-end check: a UTC local_timestamp submitted via the endpoint
     is persisted as a naive ISO (no offset) so downstream local-hour
@@ -616,6 +635,48 @@ def test_meal_intake_text_preserves_client_local_timestamp(monkeypatch):
     assert parsed_logged_at.tzinfo is None
     assert captured["source_timestamp"] == captured["logged_at"]
     assert captured["date"] == "2026-05-18", "date must derive from local_timestamp"
+
+
+def test_meal_intake_prefers_browser_local_date_and_iso_over_utc_timestamp(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Late protein shake",
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.85,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    captured = {}
+
+    def fake_add_food_log(_user_id, record):
+        captured.update(record)
+        return {"client_id": record["client_id"], "logged_at": record["logged_at"]}
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "protein shake",
+            "client_id": "meal-browser-local-1",
+            "local_timestamp": "2026-05-19T03:00:00.000Z",
+            "local_date": "2026-05-18",
+            "local_iso": "2026-05-18T22:00:00-05:00",
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200, res.get_data(as_text=True)
+    assert captured["date"] == "2026-05-18"
+    assert captured["logged_at"] == "2026-05-18T22:00:00"
+    assert captured["source_timestamp"] == "2026-05-18T22:00:00"
+    assert module._nutrition_entry_logged_hour(captured) == 22
 
 
 def test_meal_intake_text_falls_back_to_server_time_when_local_timestamp_absent(monkeypatch):
@@ -859,6 +920,90 @@ def test_meal_intake_medium_confidence_falls_to_pending(monkeypatch):
     assert "medium_confidence" in body["policy"]["reasons"]
     assert persisted == [], "medium-confidence estimates must not auto-persist"
     assert body["food_log"] is None
+
+
+def test_meal_intake_pending_response_round_trips_browser_local_time(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Eggs and toast",
+        "portion_description": None,
+        "meal_type": "breakfast",
+        "calories": 420,
+        "protein_g": 24,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 520,
+        "fiber_g": 4,
+        "confidence": 0.60,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    }, source="fallback_text_estimate", fallback_used=True)
+    persisted = []
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: (persisted.append(r), r)[1])
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "eggs and toast",
+            "client_id": "meal-pending-time-1",
+            "local_timestamp": "2026-05-19T04:55:00.000Z",
+            "local_date": "2026-05-18",
+            "local_iso": "2026-05-18T23:55:00-05:00",
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["local_timestamp"] == "2026-05-19T04:55:00.000Z"
+    assert body["local_date"] == "2026-05-18"
+    assert body["local_iso"] == "2026-05-18T23:55:00-05:00"
+    assert persisted == [], "pending estimates must not auto-persist"
+
+
+def test_meal_intake_accept_honors_pending_submission_browser_local_time(monkeypatch):
+    module = _client(monkeypatch)
+    captured = {}
+
+    def fake_add_food_log(_user_id, record):
+        captured.update(record)
+        return {
+            "client_id": record["client_id"],
+            "logged_at": record["logged_at"],
+            "date": record["date"],
+        }
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/meal-accept-browser-local/accept",
+        json={
+            "estimate": {
+                "item_name": "Eggs and toast",
+                "portion_description": None,
+                "meal_type": "breakfast",
+                "calories": 420,
+                "protein_g": 24,
+                "carbs_g": 36,
+                "fat_g": 18,
+                "sodium_mg": 520,
+                "fiber_g": 4,
+                "confidence": 0.60,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+                "source": "fallback_text_estimate",
+            },
+            "text": "eggs and toast",
+            "local_timestamp": "2026-05-19T04:55:00.000Z",
+            "local_date": "2026-05-18",
+            "local_iso": "2026-05-18T23:55:00-05:00",
+        },
+    )
+    assert res.status_code == 200, res.get_data(as_text=True)
+    assert captured["date"] == "2026-05-18"
+    assert captured["logged_at"] == "2026-05-18T23:55:00"
+    assert captured["source_timestamp"] == "2026-05-18T23:55:00"
+    assert module._nutrition_entry_logged_hour(captured) == 23
 
 
 def test_meal_intake_auto_log_persists_with_accepted_state(monkeypatch):
