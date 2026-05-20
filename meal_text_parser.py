@@ -18,6 +18,7 @@ review based on the returned ``confidence`` and ``ambiguous`` flag.
 
 from __future__ import annotations
 
+import re
 from typing import Iterable, Optional
 
 from lm_studio_adapter import (
@@ -90,8 +91,11 @@ _FALLBACK_PRESETS: tuple[tuple[tuple[str, ...], tuple[str, ...], dict], ...] = (
     (("toast",), (),
      dict(item_name="Eggs and toast", meal_type="breakfast",
           calories=420, protein_g=24, carbs_g=36, fat_g=18, sodium_mg=520, fiber_g=4)),
-    (("chipotle", "burrito"), ("bowl",),
+    (("chipotle", "chicken", "burrito"), ("bowl",),
      dict(item_name="Chipotle chicken burrito", meal_type="lunch",
+          calories=1075, protein_g=51, carbs_g=116, fat_g=41, sodium_mg=2310, fiber_g=13)),
+    (("chipotle", "burrito"), ("bowl",),
+     dict(item_name="Chipotle burrito", meal_type="lunch",
           calories=1075, protein_g=51, carbs_g=116, fat_g=41, sodium_mg=2310, fiber_g=13)),
     (("chipotle", "bowl"), (),
      dict(item_name="Chipotle bowl", meal_type="lunch",
@@ -135,6 +139,20 @@ _FALLBACK_DEFAULT = dict(
     item_name="Meal", meal_type="snack", calories=400, protein_g=22,
     carbs_g=40, fat_g=15, sodium_mg=560, fiber_g=4,
 )
+
+
+def _fallback_tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _has_fallback_token(tokens: set[str], term: str) -> bool:
+    if term in tokens:
+        return True
+    if f"{term}s" in tokens:
+        return True
+    if f"{term}es" in tokens:
+        return True
+    return False
 
 
 _PARSER_SYSTEM_PROMPT = """You are a precise nutrition estimator for a fitness app.
@@ -259,12 +277,13 @@ def _fallback_estimate(text: str) -> dict:
     pending-review accept flow.
     """
     norm = (text or "").lower().strip()
+    tokens = _fallback_tokens(norm)
     estimate: dict = dict(_FALLBACK_DEFAULT)
     portion_description: Optional[str] = None
     matched = False
     for must_include, must_exclude, preset in _FALLBACK_PRESETS:
-        includes_match = all(k in norm for k in must_include)
-        excludes_match = any(k in norm for k in must_exclude)
+        includes_match = all(_has_fallback_token(tokens, k) for k in must_include)
+        excludes_match = any(_has_fallback_token(tokens, k) for k in must_exclude)
         if includes_match and not excludes_match:
             estimate = dict(preset)
             matched = True
