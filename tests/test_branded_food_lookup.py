@@ -331,6 +331,70 @@ def test_requested_item_category_missing_is_pending_review(monkeypatch):
     assert any("different item category" in note for note in estimate["uncertainty_notes"])
 
 
+def test_requested_quesadilla_category_mismatch_is_pending_review(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(food_name="chicken burrito"),
+    )
+
+    estimate = branded_food_lookup.lookup("Chipotle chicken quesadilla")
+
+    assert estimate["item_name"] == "Chipotle chicken burrito"
+    assert estimate["confidence"] == 0.55
+    assert estimate["ambiguous"] is True
+    assert any("different item category" in note for note in estimate["uncertainty_notes"])
+
+
+def test_mixed_brand_nutritionix_multi_item_is_pending_review(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: {
+            "foods": [
+                {
+                    "food_name": "burger",
+                    "brand_name": "McDonalds",
+                    "serving_qty": 1,
+                    "serving_unit": "burger",
+                    "nf_calories": 500,
+                    "nf_protein": 25,
+                    "nf_total_carbohydrate": 40,
+                    "nf_total_fat": 25,
+                    "nf_sodium": 900,
+                    "nf_dietary_fiber": 2,
+                    "nix_item_id": "burger-id",
+                },
+                {
+                    "food_name": "fries",
+                    "brand_name": "Generic Diner",
+                    "serving_qty": 1,
+                    "serving_unit": "serving",
+                    "nf_calories": 300,
+                    "nf_protein": 4,
+                    "nf_total_carbohydrate": 45,
+                    "nf_total_fat": 15,
+                    "nf_sodium": 250,
+                    "nf_dietary_fiber": 4,
+                    "nix_item_id": "fries-id",
+                },
+            ]
+        },
+    )
+
+    estimate = branded_food_lookup.lookup("McDonalds burger fries")
+
+    assert estimate["item_name"] == "burger, fries"
+    assert estimate["confidence"] == 0.55
+    assert estimate["ambiguous"] is True
+    assert estimate.get("brand_id") is None
+    assert any("did not verify" in note for note in estimate["uncertainty_notes"])
+
+
 def test_cache_hit_returns_local_cache_without_network(monkeypatch):
     fetched_at = datetime.now().isoformat(timespec="seconds")
     cached = _nutritionix_payload()["foods"][0]

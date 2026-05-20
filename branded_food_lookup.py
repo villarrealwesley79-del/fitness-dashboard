@@ -39,9 +39,10 @@ PLURALS = {
     "sandwiches": "sandwich",
     "salads": "salad",
     "bowls": "bowl",
+    "quesadillas": "quesadilla",
 }
 CUSTOMIZABLE_CHAIN_TOKENS = {"chipotle"}
-CUSTOMIZABLE_ITEM_TOKENS = {"burrito", "bowl", "taco", "tacos", "salad"}
+CUSTOMIZABLE_ITEM_TOKENS = {"burrito", "bowl", "taco", "tacos", "salad", "quesadilla"}
 NUTRITIONIX_REQUIRED_NUTRIENTS = (
     "nf_calories",
     "nf_protein",
@@ -51,7 +52,17 @@ NUTRITIONIX_REQUIRED_NUTRIENTS = (
     "nf_dietary_fiber",
 )
 BREAKFAST_TOKENS = {"oat", "oatmeal", "egg", "eggs", "toast", "yogurt", "coffee", "cereal"}
-LUNCH_DINNER_TOKENS = {"burrito", "bowl", "taco", "tacos", "salad", "sandwich", "wrap", "burger"}
+LUNCH_DINNER_TOKENS = {
+    "burrito",
+    "bowl",
+    "taco",
+    "tacos",
+    "salad",
+    "quesadilla",
+    "sandwich",
+    "wrap",
+    "burger",
+}
 PROTEIN_TOKENS = {
     "chicken",
     "steak",
@@ -339,16 +350,18 @@ def _nutritionix_item_name(foods: list[dict[str, Any]], source_brand: str | None
 
 def _matching_source_brand(foods: list[dict[str, Any]], requested_brand: str | None) -> str | None:
     source_brands = [str(food.get("brand_name") or "").strip() for food in foods]
-    source_brands = [brand for brand in source_brands if brand]
     if not source_brands:
         return None
-    first_brand = source_brands[0]
     if not requested_brand:
-        return first_brand
-    for brand in source_brands:
-        if _brand_from_text(normalize_meal_text(brand)) == requested_brand:
-            return brand
-    return None
+        return next((brand for brand in source_brands if brand), None)
+    matched_brands = [
+        brand
+        for brand in source_brands
+        if brand and _brand_from_text(normalize_meal_text(brand)) == requested_brand
+    ]
+    if len(matched_brands) != len(source_brands):
+        return None
+    return matched_brands[0] if matched_brands else None
 
 
 def _requested_item_mismatch(normalized: str, foods: list[dict[str, Any]]) -> bool:
