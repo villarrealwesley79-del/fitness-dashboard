@@ -2215,7 +2215,137 @@
             });
         }
 
+        // FIT-100: edit/correct flow. Default to view mode each open so a
+        // previous edit session doesn't leak.
+        setMealDetailMode('view');
+        const editBtn = $('btn-meal-detail-edit');
+        if (editBtn) {
+            const fresh = editBtn.cloneNode(true);
+            editBtn.parentNode.replaceChild(fresh, editBtn);
+            // Correct only makes sense when the entry has a client_id —
+            // /api/add-nutrition upserts by client_id. Disable otherwise.
+            fresh.disabled = !entry.client_id;
+            fresh.addEventListener('click', () => {
+                prefillMealEditForm(entry);
+                setMealDetailMode('edit');
+            });
+        }
+        const cancelBtn = $('btn-meal-edit-cancel');
+        if (cancelBtn) {
+            const fresh = cancelBtn.cloneNode(true);
+            cancelBtn.parentNode.replaceChild(fresh, cancelBtn);
+            fresh.addEventListener('click', () => setMealDetailMode('view'));
+        }
+        const saveBtn = $('btn-meal-edit-save');
+        if (saveBtn) {
+            const fresh = saveBtn.cloneNode(true);
+            saveBtn.parentNode.replaceChild(fresh, saveBtn);
+            fresh.addEventListener('click', () => saveMealCorrection(entry, modal, fresh));
+        }
+
         modal.hidden = false;
+    }
+
+    function setMealDetailMode(mode) {
+        const view = $('meal-detail-view');
+        const edit = $('meal-detail-edit');
+        const footView = $('meal-detail-foot-view');
+        const footEdit = $('meal-detail-foot-edit');
+        const stubNotice = $('meal-detail-stub-notice');
+        const errBox = $('meal-detail-edit-error');
+        const editing = mode === 'edit';
+        if (view) view.hidden = editing;
+        if (edit) edit.hidden = !editing;
+        if (footView) footView.hidden = editing;
+        if (footEdit) footEdit.hidden = !editing;
+        // Stub notice stays in view mode; hide while editing to keep focus
+        // on the form fields.
+        if (stubNotice && editing) stubNotice.hidden = true;
+        if (errBox) { errBox.hidden = true; errBox.textContent = ''; }
+    }
+
+    function prefillMealEditForm(entry) {
+        const fields = [
+            ['meal-edit-item', entry.item_name || ''],
+            ['meal-edit-portion', entry.portion_description || ''],
+            ['meal-edit-cal', entry.calories != null ? entry.calories : ''],
+            ['meal-edit-pro', entry.protein_g != null ? entry.protein_g : ''],
+            ['meal-edit-carb', entry.carbs_g != null ? entry.carbs_g : ''],
+            ['meal-edit-fat', entry.fat_g != null ? entry.fat_g : ''],
+            ['meal-edit-sodium', entry.sodium_mg != null ? entry.sodium_mg : ''],
+        ];
+        fields.forEach(([id, val]) => {
+            const el = $(id);
+            if (el) el.value = val;
+        });
+    }
+
+    async function saveMealCorrection(entry, modal, saveBtn) {
+        const errBox = $('meal-detail-edit-error');
+        const showError = (msg) => {
+            if (!errBox) return;
+            errBox.textContent = msg;
+            errBox.hidden = false;
+        };
+        if (errBox) { errBox.hidden = true; errBox.textContent = ''; }
+        if (!entry.client_id) {
+            showError('This entry has no client_id and can\'t be corrected here.');
+            return;
+        }
+        const itemName = ($('meal-edit-item').value || '').trim();
+        if (!itemName) {
+            showError('Item name is required.');
+            return;
+        }
+        const parseNumOrNull = (id, allowNull = true) => {
+            const raw = ($(id).value || '').trim();
+            if (raw === '') return allowNull ? null : NaN;
+            const n = Number(raw);
+            if (!Number.isFinite(n) || n < 0) return NaN;
+            return n;
+        };
+        const calories = parseNumOrNull('meal-edit-cal', false);
+        const protein = parseNumOrNull('meal-edit-pro', false);
+        const carbs = parseNumOrNull('meal-edit-carb');
+        const fat = parseNumOrNull('meal-edit-fat');
+        const sodium = parseNumOrNull('meal-edit-sodium');
+        if ([calories, protein, carbs, fat, sodium].some((v) => Number.isNaN(v))) {
+            showError('Calories and macros must be non-negative numbers.');
+            return;
+        }
+        saveBtn.disabled = true;
+        const payload = {
+            client_id: entry.client_id,
+            // Preserve original date / logged_at / source so the corrected
+            // entry stays anchored to when the meal actually happened.
+            date: entry.logged_at ? entry.logged_at.slice(0, 10) : undefined,
+            logged_at: entry.logged_at || undefined,
+            source: entry.source || undefined,
+            // Mark the correction explicitly so /api/adherence and history
+            // surfaces distinguish corrected entries from estimated ones.
+            correction_state: 'corrected',
+            item_name: itemName,
+            portion_description: ($('meal-edit-portion').value || '').trim() || undefined,
+            calories: Math.round(calories),
+            protein_g: protein,
+            carbs_g: carbs,
+            fat_g: fat,
+            sodium_mg: sodium != null ? Math.round(sodium) : null,
+        };
+        try {
+            await api('/api/add-nutrition', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            modal.hidden = true;
+            toast('Correction saved', 'ok');
+            renderBodyInterpretationAndNutritionTrend();
+        } catch (err) {
+            console.error(err);
+            showError(apiErrorMessage(err, 'Save failed'));
+            saveBtn.disabled = false;
+        }
     }
 
     async function renderBodyRecompTargetProgress() {

@@ -2516,6 +2516,58 @@ button.body-nutrition-meal-tap:focus-visible {
     color: var(--accent-amber);
     font-size: 12px;
 }
+/* FIT-100: Correct/edit form inside the meal-detail modal. */
+.meal-detail-edit-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+/* FIT-100: the modal toggles between view + edit sections via the
+   `hidden` attribute. Without these rules, the explicit
+   `display: grid` / `display: flex` declarations on the grid + foot
+   row would override the user-agent's `[hidden] { display: none }`. */
+.meal-detail-grid[hidden],
+.meal-detail-edit-form[hidden],
+.modal-foot-row[hidden] {
+    display: none;
+}
+.meal-detail-edit-form .form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.meal-detail-edit-form .form-field label {
+    color: var(--fg-dim);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.meal-detail-edit-form .form-field input {
+    background: rgba(15,23,42,0.5);
+    border: 1px solid rgba(51,65,85,0.6);
+    color: var(--fg-1);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 14px;
+    font-family: inherit;
+}
+.meal-detail-edit-form .form-field input:focus {
+    outline: 2px solid rgba(99,102,241,0.5);
+    outline-offset: 1px;
+}
+.meal-detail-edit-form .form-row-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+.meal-detail-edit-error {
+    color: #fca5a5;
+    background: rgba(248,113,113,0.08);
+    border: 1px solid rgba(248,113,113,0.3);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+}
 .meal-state {
     font-size: 9px;
     font-weight: 700;
