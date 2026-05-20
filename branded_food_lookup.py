@@ -96,6 +96,13 @@ OFF_PACKAGED_QUERY_TOKENS = {
     "packaged",
     "product",
 }
+OFF_GENERIC_LOCALE_MEAL_PHRASES = {
+    "bacon",
+    "chocolate cake",
+    "curry",
+    "stew",
+    "toast",
+}
 
 
 def normalize_meal_text(text: str) -> str:
@@ -286,21 +293,31 @@ def _off_lookup_allowed(text: str, expected_country_tag: str | None) -> bool:
     )
     if has_packaged_context:
         return True
+    if not expected_country_tag:
+        return False
     if {"united", "kingdom"}.issubset(tokens):
         return True
     explicit_country_tokens = tokens - OFF_LOCALE_ADJECTIVE_TOKENS
-    return bool(
-        {"uk", "u.k", "u.k."}.intersection(tokens)
-        or any(token in OFF_LOCALE_COUNTRY_TAGS for token in explicit_country_tokens)
+    if {"uk", "u.k", "u.k."}.intersection(tokens):
+        return True
+    if any(token in OFF_LOCALE_COUNTRY_TAGS for token in explicit_country_tokens):
+        return True
+    product_phrase = " ".join(
+        token for token in _off_query_token_list(text) if token not in OFF_LOCALE_COUNTRY_TAGS
     )
+    return product_phrase not in OFF_GENERIC_LOCALE_MEAL_PHRASES
 
 
 def _off_query_tokens(text: str) -> set[str]:
-    return {
+    return set(_off_query_token_list(text))
+
+
+def _off_query_token_list(text: str) -> list[str]:
+    return [
         raw.strip(".,!?;:()[]{}\"'").lower()
         for raw in (text or "").split()
         if raw.strip(".,!?;:()[]{}\"'")
-    }
+    ]
 
 
 def _off_country_ok(product: dict[str, Any], expected_country_tag: str | None) -> bool:

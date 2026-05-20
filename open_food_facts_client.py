@@ -14,12 +14,18 @@ TIMEOUT_SECONDS = 5.0
 TOTAL_TIMEOUT_SECONDS = 6.0
 USER_AGENT = "FitnessDashboard/1.0 (https://github.com/villarrealwesley79-del/fitness-dashboard)"
 LOCALE_QUERY_TOKENS = {
+    "australia",
     "australian",
+    "canada",
     "canadian",
+    "france",
     "french",
+    "germany",
     "german",
     "imported",
+    "ireland",
     "irish",
+    "japan",
     "japanese",
     "kingdom",
     "uk",
