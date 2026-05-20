@@ -96,12 +96,13 @@ OFF_PACKAGED_QUERY_TOKENS = {
     "packaged",
     "product",
 }
-OFF_GENERIC_LOCALE_MEAL_PHRASES = {
-    "bacon",
-    "chocolate cake",
-    "curry",
-    "stew",
-    "toast",
+OFF_KNOWN_PACKAGED_PRODUCT_PHRASES = {
+    "goldbaren",
+    "haribo goldbaren",
+    "petit ecolier",
+    "pocky",
+    "smarties",
+    "tim tams",
 }
 
 
@@ -305,7 +306,7 @@ def _off_lookup_allowed(text: str, expected_country_tag: str | None) -> bool:
     product_phrase = " ".join(
         token for token in _off_query_token_list(text) if token not in OFF_LOCALE_COUNTRY_TAGS
     )
-    return product_phrase not in OFF_GENERIC_LOCALE_MEAL_PHRASES
+    return product_phrase in OFF_KNOWN_PACKAGED_PRODUCT_PHRASES
 
 
 def _off_query_tokens(text: str) -> set[str]:

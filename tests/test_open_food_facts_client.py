@@ -266,6 +266,9 @@ def test_open_food_facts_skips_generic_meal_text(monkeypatch):
     assert branded_food_lookup.lookup("eggs and toast") is None
     assert branded_food_lookup.lookup("French toast") is None
     assert branded_food_lookup.lookup("German chocolate cake") is None
+    assert branded_food_lookup.lookup("French fries") is None
+    assert branded_food_lookup.lookup("French bread") is None
+    assert branded_food_lookup.lookup("German sausage") is None
 
 
 def test_open_food_facts_client_strips_country_noun_variants(monkeypatch):
