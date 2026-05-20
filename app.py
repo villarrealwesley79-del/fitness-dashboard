@@ -619,6 +619,7 @@ EXERCISE_LIBRARY = [
     {"name": "Lateral Raise", "muscle": "shoulders", "compound": False, "baseline": 20, "equipment": "cable"},
     {"name": "Front Raise", "muscle": "shoulders", "compound": False, "baseline": 20, "equipment": "cable"},
     {"name": "Deltoid Fly", "muscle": "shoulders", "compound": False, "baseline": 30, "equipment": "cable"},
+    {"name": "Machine Deltoid Raise", "muscle": "shoulders", "compound": False, "baseline": 30, "equipment": "machine", "aliases": ["Deltoid Raise", "Rear Delt Raise"]},
     {"name": "Rear Delt Fly", "muscle": "shoulders", "compound": False, "baseline": 25, "equipment": "cable"},
     # Legs
     {"name": "Leg Press", "muscle": "quads", "compound": True, "baseline": 180, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
@@ -769,6 +770,18 @@ def _lookup_by_exercise_name(mapping, exercise_name):
     return None, None
 
 
+def _resolve_exercise_definition(exercise_name):
+    _, exercise = _lookup_by_exercise_name(EXERCISE_LOOKUP, exercise_name)
+    if not exercise:
+        return None
+    return exercise
+
+
+def _canonical_exercise_name(exercise_name):
+    exercise = _resolve_exercise_definition(exercise_name)
+    return exercise.get("name") if exercise else str(exercise_name or "")
+
+
 def _positive_float(value):
     try:
         number = float(value)
@@ -777,10 +790,103 @@ def _positive_float(value):
     return number if number > 0 else None
 
 
-def _select_recommendation_e1rm(exercise_name, ex_progression):
+def _exercise_name_tokens(name):
+    tokens = {
+        token
+        for token in re.split(r"[^a-z0-9]+", str(name or "").lower())
+        if token and token not in {"machine", "cable", "seated", "standing"}
+    }
+    return tokens
+
+
+def _similar_exercise_load_source(exercise_name, progression):
+    target_ex = _resolve_exercise_definition(exercise_name)
+    if not target_ex or not isinstance(progression, dict):
+        return None
+
+    target_baseline = _positive_float(target_ex.get("baseline"))
+    if target_baseline is None:
+        return None
+    target_tokens = _exercise_name_tokens(target_ex.get("name"))
+    candidates = []
+    for source_name, source_progression in progression.items():
+        source_e1rm = _positive_float((source_progression or {}).get("current_e1rm"))
+        if source_e1rm is None:
+            continue
+        source_ex = _resolve_exercise_definition(source_name)
+        if not source_ex or source_ex is target_ex:
+            continue
+        if source_ex.get("muscle") != target_ex.get("muscle"):
+            continue
+        source_baseline = _positive_float(source_ex.get("baseline"))
+        if source_baseline is None:
+            continue
+
+        source_tokens = _exercise_name_tokens(source_ex.get("name"))
+        shared_tokens = sorted(target_tokens.intersection(source_tokens))
+        if not shared_tokens:
+            continue
+        score = len(shared_tokens) * 2
+        if source_ex.get("compound") == target_ex.get("compound"):
+            score += 3
+        if source_ex.get("equipment") == target_ex.get("equipment"):
+            score += 2
+        if not source_ex.get("compound") and not target_ex.get("compound"):
+            score += 1
+        if score <= 0:
+            continue
+
+        scaled_e1rm = source_e1rm * (target_baseline / source_baseline)
+        candidates.append({
+            "source_name": source_ex.get("name") or source_name,
+            "source_e1rm": source_e1rm,
+            "estimated_e1rm": scaled_e1rm,
+            "score": score,
+            "shared_tokens": shared_tokens,
+        })
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (-item["score"], -item["source_e1rm"], item["source_name"]))
+    best = candidates[0]
+    return {
+        "e1rm": best["estimated_e1rm"],
+        "status": "Similar History",
+        "source": "similar_history",
+        "detail": (
+            f"similar_history:{best['source_name']}->{target_ex.get('name')}; "
+            f"scaled {round(best['source_e1rm'], 1)} e1RM by baseline ratio"
+        ),
+        "inferred_from": best["source_name"],
+        "inference_confidence": "medium" if best["score"] >= 5 else "low",
+    }
+
+
+def _has_direct_exercise_progression(exercise_name, progression):
+    if not isinstance(progression, dict):
+        return False
+    wanted = _normalize_exercise_name(_canonical_exercise_name(exercise_name))
+    for key, value in progression.items():
+        if _positive_float((value or {}).get("current_e1rm")) is None:
+            continue
+        if _normalize_exercise_name(_canonical_exercise_name(key)) == wanted:
+            return True
+    return False
+
+
+def _select_recommendation_e1rm(exercise_name, ex_progression, progression=None):
     """Pick the load source for a recommendation and expose why it won."""
     if not isinstance(ex_progression, dict):
         ex_progression = {}
+    progression_key = exercise_name
+    if not ex_progression and isinstance(progression, dict):
+        wanted = _normalize_exercise_name(_canonical_exercise_name(exercise_name))
+        for key, value in progression.items():
+            if _normalize_exercise_name(_canonical_exercise_name(key)) == wanted:
+                progression_key = key
+                ex_progression = value if isinstance(value, dict) else {}
+                break
 
     progression_e1rm = _positive_float(ex_progression.get("current_e1rm"))
     progression_status = ex_progression.get("status", "On Track")
@@ -807,7 +913,7 @@ def _select_recommendation_e1rm(exercise_name, ex_progression):
             "e1rm": progression_e1rm,
             "status": progression_status,
             "source": "progression",
-            "detail": f"progression:{exercise_name}",
+            "detail": f"progression:{progression_key}",
         }
 
     if baseline_e1rm is not None:
@@ -817,6 +923,10 @@ def _select_recommendation_e1rm(exercise_name, ex_progression):
             "source": "baseline_json",
             "detail": f"baseline_json:{baseline_key}",
         }
+
+    similar_source = _similar_exercise_load_source(exercise_name, progression or {})
+    if similar_source:
+        return similar_source
 
     return {
         "e1rm": hardcoded_e1rm if hardcoded_e1rm is not None else 100,
@@ -1475,15 +1585,27 @@ def calculate_progression_status(workouts):
     for workout in workouts:
         for exercise in workout.get("exercises", []):
             sets = exercise.get("sets", [])
-            if sets:
-                best_e1rm = max(calculate_e1rm(s["weight_lbs"], s["reps"]) for s in sets)
-                machine = exercise["machine"]
-                if machine not in exercise_history:
-                    exercise_history[machine] = []
-                exercise_history[machine].append({
-                    "date": workout["date"],
-                    "e1rm": best_e1rm
-                })
+            if not sets:
+                continue
+            machine = exercise.get("machine") or exercise.get("exercise") or exercise.get("name")
+            if not machine:
+                continue
+            valid_e1rms = []
+            for s in sets:
+                weight = _positive_float((s or {}).get("weight_lbs"))
+                reps = _positive_float((s or {}).get("reps"))
+                if weight is None or reps is None:
+                    continue
+                valid_e1rms.append(calculate_e1rm(weight, reps))
+            if not valid_e1rms:
+                continue
+            best_e1rm = max(valid_e1rms)
+            if machine not in exercise_history:
+                exercise_history[machine] = []
+            exercise_history[machine].append({
+                "date": workout.get("date") or "",
+                "e1rm": best_e1rm
+            })
 
     results = {}
     for exercise, history in exercise_history.items():
@@ -1939,7 +2061,7 @@ def _build_exercise_entry(
         muscle, soreness_data, volume_data, oura_readiness
     )
 
-    load_source = _select_recommendation_e1rm(exercise_name, ex_progression)
+    load_source = _select_recommendation_e1rm(exercise_name, ex_progression, progression)
     current_e1rm = load_source["e1rm"]
     status = load_source["status"]
 
@@ -1950,6 +2072,11 @@ def _build_exercise_entry(
     elif status == "Calibrated Baseline":
         target_weight = round(current_e1rm * intensity_pct, 0)
         rationale = f"{goal_params['name']}: Calibrated from saved baseline"
+        sets = target_sets
+    elif status == "Similar History":
+        target_weight = round(current_e1rm * intensity_pct * 0.9, 0)
+        source_name = load_source.get("inferred_from") or "similar history"
+        rationale = f"{goal_params['name']}: Conservative estimate from {source_name}"
         sets = target_sets
     elif status == "On Track":
         target_weight = round(current_e1rm * intensity_pct + 5, 0)
@@ -1980,7 +2107,7 @@ def _build_exercise_entry(
         rationale = f"{goal_params['name']}: Timed core stability"
 
     rest_label = "3-4 min" if is_compound else "60-90 sec"
-    return {
+    entry = {
         "exercise": exercise_name,
         "muscle": muscle,
         "is_compound": is_compound,
@@ -1999,6 +2126,13 @@ def _build_exercise_entry(
         "load_e1rm": round(current_e1rm, 1),
         "load_source_detail": load_source["detail"],
     }
+    if load_source.get("inferred_from"):
+        entry["load_inference"] = {
+            "source_exercise": load_source["inferred_from"],
+            "confidence": load_source.get("inference_confidence", "low"),
+            "message": f"Estimated from {load_source['inferred_from']} history; adjust after first set.",
+        }
+    return entry
 
 
 def _get_latest_soreness_for_muscle(muscle, soreness_data, hours=72):
@@ -5300,6 +5434,7 @@ def exercise_alternatives(muscle_group):
     if not muscle:
         return api_error("Invalid muscle group", 400, code="invalid_field")
     equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
+    progression = calculate_progression_status(WORKOUTS)
     options = [
         {
             "name": ex["name"],
@@ -5308,6 +5443,7 @@ def exercise_alternatives(muscle_group):
             "equipment_brands": ex.get("equipment_brands", []),
             "aliases": ex.get("aliases", []),
             "compound": ex.get("compound"),
+            "load_hint": None if _has_direct_exercise_progression(ex["name"], progression) else _similar_exercise_load_source(ex["name"], progression),
         }
         for ex in _filtered_exercise_library(equipment_pref)
         if ex.get("muscle") == muscle
@@ -5403,10 +5539,10 @@ def swap_workout_exercise():
 # - RPE delta max ±1.0; sets delta max ±20%; weight cap +10% over recent e1RM.
 # - Hard blacklist soreness/readiness-flagged muscles. Never override deload.
 # - Timeout 8s. One concurrent request. Deterministic fallback on any failure.
-# - Cache by workout_id + constraint + readiness_date + model_version + library_hash.
+# - Cache by workout_id + constraint + readiness_date + model_version + schema/library hash.
 
 _ADJUST_CACHE_DB = os.path.join(DATA_DIR, "ai_coach_cache.sqlite3")
-_ADJUST_CACHE_VERSION = "fit21-joint-taxonomy-v1"
+_ADJUST_CACHE_VERSION = "fit103-target-exercise-v1"
 
 
 def _ai_cache_init():
@@ -5682,6 +5818,8 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
             continue
 
+        requested_exercise = _resolve_exercise_definition(sw.get("target_exercise"))
+
         # Pick a new exercise for target_muscle from the equipment-filtered library,
         # preferring compound movements and rotating off recently-trained exercises.
         library = [
@@ -5695,7 +5833,10 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         # _filtered_exercise_library already applies brand, compound, and name ranking.
         # Avoid picking something already in the plan
         already = {(ex.get("exercise") or "").lower() for ex in exercises}
-        picked = next((e for e in library if e["name"].lower() not in already), library[0])
+        if requested_exercise and requested_exercise in library and requested_exercise["name"].lower() not in already:
+            picked = requested_exercise
+        else:
+            picked = next((e for e in library if e["name"].lower() not in already), library[0])
 
         new_entry = _build_exercise_entry(
             exercise_name=picked["name"],
@@ -8629,7 +8770,7 @@ def complete_workout():
     # Auto-fill muscle_group from machine name if missing
     _MACHINE_TO_MUSCLE = {
         "Chest Press": "chest", "Lat Pulldown": "back", "Mid Row": "back",
-        "Shoulder Press": "shoulders", "Deltoid Fly": "shoulders", "Rear Delt Fly": "shoulders",
+        "Shoulder Press": "shoulders", "Deltoid Fly": "shoulders", "Machine Deltoid Raise": "shoulders", "Rear Delt Fly": "shoulders",
         "Leg Press": "quads", "Seated Leg Press": "quads", "Leg Extension": "quads",
         "Leg Curl": "hamstrings", "Seated Leg Curl": "hamstrings",
         "Seated Dip": "triceps", "Tricep Pushdown": "triceps",
@@ -8641,7 +8782,12 @@ def complete_workout():
     }
     for ex in actual_exercises:
         if not ex.get("muscle_group") or ex["muscle_group"] == "unknown":
-            ex["muscle_group"] = _MACHINE_TO_MUSCLE.get(ex.get("machine", ""), "unknown")
+            machine = ex.get("machine", "")
+            exercise_def = _resolve_exercise_definition(machine)
+            ex["muscle_group"] = _MACHINE_TO_MUSCLE.get(
+                machine,
+                (exercise_def or {}).get("muscle", "unknown"),
+            )
 
     total_sets = sum(len(e.get("sets", [])) for e in actual_exercises)
     total_volume = sum(

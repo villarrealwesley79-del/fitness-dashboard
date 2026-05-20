@@ -696,6 +696,65 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
     margin-top: 4px;
     font-style: italic;
 }
+.ex-load-hint,
+.active-load-hint,
+.swap-load-hint {
+    color: var(--accent-amber);
+}
+.swap-load-hint {
+    display: block;
+    margin-top: 3px;
+    font-size: 11px;
+    font-weight: 600;
+}
+/* FIT-105: load-hint layout — text on the left, confidence chip on the
+   right. Wraps cleanly on narrow viewports because the wrapper is
+   flex with `flex-wrap: wrap` and the chip can break to a second line. */
+.ex-load-hint,
+.active-load-hint {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    row-gap: 2px;
+}
+.load-hint-text {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+/* FIT-105: confidence chip styling mirrors the existing reliability /
+   meal-state chip pattern for visual consistency. Distinct hues so a
+   user scanning the card can tell LOW (verify!) from HIGH (likely fine)
+   at a glance without reading the prose. */
+.load-conf-chip {
+    flex: 0 0 auto;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    line-height: 1.35;
+    /* `.ex-why` is italic; override so the chip matches the existing
+       .meal-state / .trend-reliability chip pattern (Codex audit). */
+    font-style: normal;
+}
+.load-conf-low {
+    color: #fca5a5;
+    background: rgba(248,113,113,0.12);
+    border-color: rgba(248,113,113,0.4);
+}
+.load-conf-med {
+    color: var(--accent-amber);
+    background: rgba(251,191,36,0.12);
+    border-color: rgba(251,191,36,0.4);
+}
+.load-conf-high {
+    color: #6ee7b7;
+    background: rgba(34,197,94,0.12);
+    border-color: rgba(34,197,94,0.4);
+}
 .ex-swap-btn {
     background: rgba(51,65,85,0.45);
     border: 1px solid var(--border-2);
@@ -2219,6 +2278,7 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 
 .active-ex { margin-bottom: 14px; padding: 12px; border-radius: 12px; background: rgba(15,23,42,0.7); border: 1px solid var(--border-1); }
 .active-ex-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.active-load-hint { margin: -2px 0 10px; }
 .active-ex-main { display: flex; align-items: center; flex: 1; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .active-ex-head h4 { font-size: 15px; font-weight: 700; color: var(--fg-0); margin: 0; flex: 1 1 140px; min-width: 0; }
 .active-ex-target { flex-shrink: 0; font-size: 11px; color: var(--fg-dim); white-space: nowrap; }

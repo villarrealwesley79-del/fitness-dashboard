@@ -322,9 +322,10 @@ ADJUST_SCHEMA = {
                         "properties": {
                             "replace_exercise": {"type": "string"},
                             "target_muscle": {"type": "string"},
+                            "target_exercise": {"type": ["string", "null"]},
                             "reason": {"type": "string"},
                         },
-                        "required": ["replace_exercise", "target_muscle", "reason"],
+                        "required": ["replace_exercise", "target_muscle", "target_exercise", "reason"],
                     },
                 },
                 "rpe_delta": {"type": "number"},
@@ -354,14 +355,15 @@ _ADJUST_SYSTEM = (
     "\n"
     "Rules:\n"
     "- Return ONLY JSON matching the provided schema. No prose, no markdown.\n"
-    "- NEVER prescribe specific exercises, weights, or sets — only intent.\n"
+    "- NEVER prescribe weights or sets — only intent.\n"
     "- Use avoid_muscles to express 'don't train X' (translate movement cues "
     "like 'no overhead press' into the relevant muscle — shoulders here).\n"
     "- Use avoid_joints for side-specific pain/soreness like 'left shoulder hurts' "
     "or 'right knee sore'. Do not convert those to a whole-muscle avoid unless "
     "the athlete says the full muscle group is sore.\n"
     "- Use swap to say 'the algorithm picked exercise X for muscle M; replace the "
-    "target muscle with Y for reason Z'. Python re-picks the actual exercise.\n"
+    "target muscle for reason Z'. If the athlete explicitly names a replacement "
+    "machine, put that name in target_exercise; otherwise set target_exercise to null. Python validates it and infers load.\n"
     "- rpe_delta: -1.0 to +1.0 — never more. 0 if unsure.\n"
     "- sets_delta_pct: -20 to +20 — never more. 0 if unsure.\n"
     "- duration_cap_min: cap if user gave a tight time box. 0 if no cap.\n"
@@ -489,6 +491,8 @@ def _validate_adjust_intent(parsed):
         for key in ("replace_exercise", "target_muscle", "reason"):
             if not isinstance(s.get(key), str):
                 raise LmStudioError(f"intent.swap[*].{key} must be a string")
+        if s.get("target_exercise") is not None and not isinstance(s.get("target_exercise"), str):
+            raise LmStudioError("intent.swap[*].target_exercise must be a string or null")
     for key in ("rpe_delta", "sets_delta_pct", "duration_cap_min"):
         val = intent.get(key)
         if not isinstance(val, (int, float)) or isinstance(val, bool):
