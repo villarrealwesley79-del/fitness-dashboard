@@ -430,6 +430,63 @@ def test_meal_intake_accept_persists_estimate(monkeypatch):
     assert captured["context_note"] == "movie theater popcorn"
 
 
+def test_meal_intake_accept_preserves_offline_snapshot_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    captured = {}
+    snapshot_estimate = {
+        "item_name": "Banana, raw",
+        "portion_description": "100 g",
+        "meal_type": "snack",
+        "calories": 89,
+        "protein_g": 1.1,
+        "carbs_g": 22.8,
+        "fat_g": 0.3,
+        "sodium_mg": 1,
+        "fiber_g": 2.6,
+        "confidence": 0.62,
+        "ambiguous": True,
+        "uncertainty_notes": ["Offline snapshot uses a reference portion."],
+        "source": "offline_snapshot",
+        "external_food_id": "173944",
+        "verified_source_url": "https://fdc.nal.usda.gov/fdc-app.html#/food-details/173944/nutrients",
+        "data_fetched_at": "2026-05-19T00:00:00",
+        "portion_basis": "100 g USDA FoodData Central reference portion",
+    }
+
+    def fake_add_food_log(_user_id, record):
+        captured.update(record)
+        return {"client_id": record["client_id"], **record}
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=snapshot_estimate,
+        source="offline_snapshot",
+    )
+
+    pending = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "banana", "client_id": "meal-snapshot-pending"},
+        content_type="multipart/form-data",
+    )
+    assert pending.status_code == 200
+    pending_estimate = pending.get_json()["estimate"]
+    assert pending.get_json()["status"] == "pending_review"
+    assert pending_estimate["external_food_id"] == "173944"
+    assert pending_estimate["portion_basis"] == "100 g USDA FoodData Central reference portion"
+
+    accepted = module.app.test_client().post(
+        "/api/meal-intake/meal-snapshot-pending/accept",
+        json={"estimate": pending_estimate, "text": "banana"},
+    )
+    assert accepted.status_code == 200
+    assert captured["original_estimate"]["external_food_id"] == "173944"
+    assert captured["original_estimate"]["verified_source_url"].endswith("/173944/nutrients")
+    assert captured["original_estimate"]["data_fetched_at"] == "2026-05-19T00:00:00"
+    assert captured["original_estimate"]["portion_basis"] == "100 g USDA FoodData Central reference portion"
+
+
 def test_meal_intake_accept_requires_calories(monkeypatch):
     module = _client(monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
