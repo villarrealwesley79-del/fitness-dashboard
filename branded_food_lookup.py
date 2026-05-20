@@ -266,6 +266,8 @@ def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) ->
         return False
     if brand_hint or _brand_from_text(normalized):
         return bool([token for token in tokens if token not in KNOWN_BRANDS])
+    if len(tokens) > 1 and _snapshot_item(_load_snapshot(), normalized):
+        return True
     return len(tokens) == 1
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,22 @@ def test_snapshot_lookup_works_without_network_or_api_keys(monkeypatch):
     assert result["item_name"] == "Banana, raw"
     assert result["calories"] == 89
     assert result["external_food_id"] == "173944"
+
+
+def test_parse_meal_text_reaches_snapshot_for_prefixed_food(monkeypatch):
+    parser = importlib.import_module("meal_text_parser")
+    monkeypatch.delenv("NUTRITIONIX_APP_ID", raising=False)
+    monkeypatch.delenv("NUTRITIONIX_APP_KEY", raising=False)
+    monkeypatch.delenv("USDA_FDC_API_KEY", raising=False)
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a, **_kw: None)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("network blocked")))
+
+    result = parser.parse_meal_text("a banana")
+
+    assert result["fallback_used"] is False
+    assert result["estimate"]["source"] == "offline_snapshot"
+    assert result["estimate"]["external_food_id"] == "173944"
 
 
 def test_unquantified_snapshot_hit_requires_review():

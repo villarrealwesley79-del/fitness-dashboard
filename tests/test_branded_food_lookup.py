@@ -36,6 +36,9 @@ def test_direct_lookup_gate_blocks_multi_item_generic_text():
     assert branded_food_lookup.should_attempt_direct_lookup("Chipotle") is False
     assert branded_food_lookup.should_attempt_direct_lookup("Starbucks") is False
     assert branded_food_lookup.should_attempt_direct_lookup("banana") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("a banana") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("2 eggs") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("one sweet potato") is True
     assert branded_food_lookup.should_attempt_direct_lookup("two eggs and toast") is False
     assert branded_food_lookup.should_attempt_direct_lookup("chicken with rice") is False
     assert branded_food_lookup.should_attempt_direct_lookup("half Chipotle chicken burrito") is False
