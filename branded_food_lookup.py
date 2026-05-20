@@ -59,15 +59,29 @@ OFF_REJECT_QUALITY_TAG_FRAGMENTS = (
     "nutrition-value-very-low-for-category-salt",
 )
 OFF_LOCALE_COUNTRY_TAGS = {
+    "australia": "en:australia",
     "australian": "en:australia",
+    "canada": "en:canada",
     "canadian": "en:canada",
+    "france": "en:france",
     "french": "en:france",
+    "germany": "en:germany",
     "german": "en:germany",
+    "ireland": "en:ireland",
     "irish": "en:ireland",
+    "japan": "en:japan",
     "japanese": "en:japan",
     "uk": "en:united-kingdom",
     "u.k": "en:united-kingdom",
     "u.k.": "en:united-kingdom",
+}
+OFF_LOCALE_ADJECTIVE_TOKENS = {
+    "australian",
+    "canadian",
+    "french",
+    "german",
+    "irish",
+    "japanese",
 }
 
 OFF_COMPLETE_QUALITY_TAGS = {
@@ -255,11 +269,7 @@ def _off_candidate_usable(product: dict[str, Any], *, expected_country_tag: str 
 
 
 def _off_expected_country_tag(text: str) -> str | None:
-    tokens = {
-        raw.strip(".,!?;:()[]{}\"'").lower()
-        for raw in (text or "").split()
-        if raw.strip(".,!?;:()[]{}\"'")
-    }
+    tokens = _off_query_tokens(text)
     if {"united", "kingdom"}.issubset(tokens):
         return "en:united-kingdom"
     for token in tokens:
@@ -270,14 +280,27 @@ def _off_expected_country_tag(text: str) -> str | None:
 
 
 def _off_lookup_allowed(text: str, expected_country_tag: str | None) -> bool:
-    if expected_country_tag:
+    tokens = _off_query_tokens(text)
+    has_packaged_context = bool(
+        OFF_PACKAGED_QUERY_TOKENS.intersection(tokens) or {"non", "us"}.issubset(tokens)
+    )
+    if has_packaged_context:
         return True
-    tokens = {
+    if {"united", "kingdom"}.issubset(tokens):
+        return True
+    explicit_country_tokens = tokens - OFF_LOCALE_ADJECTIVE_TOKENS
+    return bool(
+        {"uk", "u.k", "u.k."}.intersection(tokens)
+        or any(token in OFF_LOCALE_COUNTRY_TAGS for token in explicit_country_tokens)
+    )
+
+
+def _off_query_tokens(text: str) -> set[str]:
+    return {
         raw.strip(".,!?;:()[]{}\"'").lower()
         for raw in (text or "").split()
         if raw.strip(".,!?;:()[]{}\"'")
     }
-    return bool(OFF_PACKAGED_QUERY_TOKENS.intersection(tokens) or {"non", "us"}.issubset(tokens))
 
 
 def _off_country_ok(product: dict[str, Any], expected_country_tag: str | None) -> bool:

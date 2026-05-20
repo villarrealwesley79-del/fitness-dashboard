@@ -193,9 +193,9 @@ def test_open_food_facts_lookup_uses_later_usable_variant(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
 
-    estimate = branded_food_lookup.lookup("Australian Tim Tams")
+    estimate = branded_food_lookup.lookup("imported Australian Tim Tams")
 
-    assert seen_terms == ["Tim Tams", "Tim Tam", "Australian Tim Tams"]
+    assert seen_terms == ["Tim Tams", "Tim Tam", "imported Australian Tim Tams"]
     assert estimate["source"] == "open_food_facts"
     assert estimate["external_food_id"] == "good"
 
@@ -213,7 +213,7 @@ def test_open_food_facts_prefers_requested_country(monkeypatch):
         lambda *_a, **_kw: {"products": [wrong_country, australia]},
     )
 
-    estimate = branded_food_lookup.lookup("Australian Tim Tams")
+    estimate = branded_food_lookup.lookup("imported Australian Tim Tams")
 
     assert estimate["source"] == "open_food_facts"
     assert estimate["external_food_id"] == "right"
@@ -264,6 +264,8 @@ def test_open_food_facts_skips_generic_meal_text(monkeypatch):
     )
 
     assert branded_food_lookup.lookup("eggs and toast") is None
+    assert branded_food_lookup.lookup("French toast") is None
+    assert branded_food_lookup.lookup("German chocolate cake") is None
 
 
 def test_open_food_facts_accepts_zero_calorie_products(monkeypatch):
@@ -477,10 +479,10 @@ def test_open_food_facts_skips_schema_invalid_candidates(monkeypatch):
 def test_open_food_facts_non_us_cases_are_appendable(monkeypatch):
     cases = [
         ("UK Walkers crisps", "Walkers Crisps", "en:united-kingdom"),
-        ("Australian Tim Tams", "Tim Tam", "en:australia"),
-        ("French Petit Ecolier", "Petit Ecolier", "en:france"),
-        ("Japanese Pocky", "Pocky", "en:japan"),
-        ("German Haribo Goldbaren", "Haribo Goldbaren", "en:germany"),
+        ("imported Australian Tim Tams", "Tim Tam", "en:australia"),
+        ("imported French Petit Ecolier", "Petit Ecolier", "en:france"),
+        ("Japan Pocky", "Pocky", "en:japan"),
+        ("imported German Haribo Goldbaren", "Haribo Goldbaren", "en:germany"),
     ]
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)

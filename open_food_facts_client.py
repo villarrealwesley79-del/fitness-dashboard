@@ -18,6 +18,7 @@ LOCALE_QUERY_TOKENS = {
     "canadian",
     "french",
     "german",
+    "imported",
     "irish",
     "japanese",
     "kingdom",
