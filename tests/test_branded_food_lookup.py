@@ -36,6 +36,11 @@ def test_direct_lookup_gate_blocks_multi_item_generic_text():
     assert branded_food_lookup.should_attempt_direct_lookup("Chipotle") is False
     assert branded_food_lookup.should_attempt_direct_lookup("Starbucks") is False
     assert branded_food_lookup.should_attempt_direct_lookup("banana") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("UK Walkers crisps") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("non-US packaged Smarties") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("non-US packaged") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("packaged product") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("UK") is False
     assert branded_food_lookup.should_attempt_direct_lookup("two eggs and toast") is False
     assert branded_food_lookup.should_attempt_direct_lookup("chicken with rice") is False
     assert branded_food_lookup.should_attempt_direct_lookup("half Chipotle chicken burrito") is False
@@ -780,6 +785,42 @@ def test_parse_meal_text_uses_branded_lookup_before_lm(monkeypatch):
     result = parser.parse_meal_text("Chipotle chicken burrito")
 
     assert result == {"estimate": branded_estimate, "fallback_used": False}
+
+
+def test_parse_meal_text_directly_looks_up_non_us_packaged_food(monkeypatch):
+    parser = importlib.import_module("meal_text_parser")
+    captured = {}
+    branded_estimate = {
+        "item_name": "Walkers Crisps",
+        "portion_description": "100 g",
+        "meal_type": "snack",
+        "calories": 500,
+        "protein_g": 6,
+        "carbs_g": 60,
+        "fat_g": 25,
+        "sodium_mg": 400,
+        "fiber_g": 3,
+        "confidence": 0.82,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "open_food_facts",
+        "verified_source_url": "https://world.openfoodfacts.org/product/500032837",
+    }
+
+    def fake_lookup(text, **kwargs):
+        captured["text"] = text
+        captured["user_id"] = kwargs.get("user_id")
+        return dict(branded_estimate)
+
+    monkeypatch.setattr(parser.branded_food_lookup, "lookup", fake_lookup)
+    monkeypatch.setattr(parser, "_completion_json", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("LM must not run")))
+
+    result = parser.parse_meal_text("UK Walkers crisps", user_id=42)
+
+    assert captured == {"text": "UK Walkers crisps", "user_id": 42}
+    assert result["fallback_used"] is False
+    assert result["estimate"]["source"] == "open_food_facts"
+    assert result["estimate"]["verified_source_url"] == "https://world.openfoodfacts.org/product/500032837"
 
 
 def test_parse_meal_text_skips_direct_lookup_for_half_portions(monkeypatch):

@@ -34,6 +34,18 @@ PUBLIC_ESTIMATE_FIELDS = (
     "brand_id",
     "underlying_source",
     "off_attribution",
+    "personal_vocab_phrase",
+)
+
+PUBLIC_PROVENANCE_FIELDS = (
+    "external_food_id",
+    "verified_source_url",
+    "data_fetched_at",
+    "portion_basis",
+    "brand_id",
+    "underlying_source",
+    "off_attribution",
+    "personal_vocab_phrase",
 )
 
 CALORIE_MAX = 5000
@@ -63,11 +75,14 @@ def _string_or_none(value: Any, field: str) -> str | None:
     return cleaned or None
 
 
-def _provenance_dict(value: Any, field: str) -> dict | None:
+def _provenance_dict(value: Any, field: str) -> dict | str | None:
     if value is None:
         return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
     if not isinstance(value, dict):
-        raise MealEstimateValidationError(f"{field} must be object or null")
+        raise MealEstimateValidationError(f"{field} must be object, string, or null")
     safe = {}
     for key, item in value.items():
         if isinstance(key, str) and (item is None or isinstance(item, (str, int, float, bool))):
@@ -163,6 +178,9 @@ def sanitize_meal_estimate(
     off_attribution = _provenance_dict(raw.get("off_attribution"), "off_attribution")
     if off_attribution is not None:
         estimate["off_attribution"] = off_attribution
+    personal_vocab_phrase = _string_or_none(raw.get("personal_vocab_phrase"), "personal_vocab_phrase")
+    if personal_vocab_phrase is not None:
+        estimate["personal_vocab_phrase"] = personal_vocab_phrase
     return estimate
 
 

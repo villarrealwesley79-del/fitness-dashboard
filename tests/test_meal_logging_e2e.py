@@ -39,6 +39,7 @@ def meal_e2e(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "NUTRITION_DATA", [])
     monkeypatch.setattr(module, "save_json", lambda *_a, **_kw: None)
     monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+    _stub_vision_pipeline(monkeypatch, module)
 
     return MealE2EHarness(
         module=module,
@@ -85,6 +86,61 @@ def _stub_text_parser(monkeypatch, module, estimate, *, fallback_used=False):
         return {"estimate": dict(estimate), "fallback_used": fallback_used}
 
     monkeypatch.setattr(module, "parse_meal_text", fake)
+
+
+def _stub_vision_pipeline(monkeypatch, module):
+    def fake_describe(_image_bytes, *, context_text=None, media_type=None):
+        text = (context_text or "").lower()
+        if "shared" in text or "popcorn" in text:
+            return {
+                "provider": "claude",
+                "item_description": "shared movie popcorn",
+                "portion_hint": "shared tub",
+                "confidence": 0.45,
+                "ambiguous": True,
+                "uncertainty_notes": ["Portion is unclear."],
+            }
+        return {
+            "provider": "claude",
+            "item_description": "chipotle chicken burrito",
+            "portion_hint": "approx half portion" if "half" in text else "1 burrito",
+            "confidence": 0.84,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+        }
+
+    def fake_lookup(text, **_kw):
+        norm = (text or "").lower()
+        if "shared" in norm or "popcorn" in norm:
+            return _estimate(
+                item_name="Shared movie popcorn",
+                portion_description="shared tub",
+                meal_type="snack",
+                calories=300,
+                protein_g=5,
+                carbs_g=36,
+                fat_g=18,
+                sodium_mg=520,
+                fiber_g=6,
+                confidence=0.45,
+                ambiguous=True,
+                uncertainty_notes=["Portion is unclear."],
+                source="nutritionix",
+            )
+        if "half" in norm:
+            return _estimate(
+                portion_description="approx half portion",
+                calories=340,
+                protein_g=21,
+                carbs_g=41,
+                fat_g=12,
+                confidence=0.84,
+                source="nutritionix",
+            )
+        return _estimate(portion_description="1 burrito", confidence=0.84, source="nutritionix")
+
+    monkeypatch.setattr(module.vision_estimator, "describe", fake_describe)
+    monkeypatch.setattr(module.branded_food_lookup, "lookup", fake_lookup)
 
 
 def _post_text(harness, *, client_id, text, local_timestamp=None, local_date=None, local_iso=None):
@@ -205,17 +261,17 @@ def test_text_only_ambiguous_food_persists_pending_review(meal_e2e, monkeypatch)
     assert row["correction_state"] == "pending_review"
 
 
-def test_photo_only_auto_log_uses_current_stub_and_drops_raw_image(meal_e2e):
+def test_photo_only_auto_log_uses_vision_pipeline_and_drops_raw_image(meal_e2e):
     body = _post_photo(meal_e2e, client_id="fit83-photo-auto-1")
 
     assert body["status"] == "logged"
     assert body["estimate"]["from_image"] is True
-    assert body["estimate"]["source"] == "stub_vision_estimate"
+    assert body["estimate"]["source"] == "vision_claude+nutritionix"
     assert body["estimate"]["item_name"]
     assert body["photo_retention"]["image_received"] is True
     assert body["photo_retention"]["raw_photo_retained"] is False
     row = _log_by_client_id(meal_e2e, "fit83-photo-auto-1")
-    assert row["source"] == "stub_vision_estimate"
+    assert row["source"] == "vision_claude+nutritionix"
     assert PHOTO_BYTE_PROBE not in meal_e2e.db_path.read_bytes()
 
 
@@ -408,4 +464,4 @@ def test_pending_photo_accept_round_trips_retention_metadata(meal_e2e):
     assert accepted["photo_retention"]["image_received"] is True
     row = _log_by_client_id(meal_e2e, "fit83-photo-retention-1")
     assert row["correction_state"] == "accepted"
-    assert row["source"] == "stub_vision_estimate"
+    assert row["source"] == "vision_claude+nutritionix"

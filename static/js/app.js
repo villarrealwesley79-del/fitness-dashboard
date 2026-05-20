@@ -5095,6 +5095,7 @@
         try {
             const body = {
                 estimate: edited,
+                original_estimate: entry.estimate || null,
                 text: entry.text || '',
                 local_timestamp: entry.local_timestamp || null,
                 local_date: entry.local_date || null,

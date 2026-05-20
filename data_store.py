@@ -62,6 +62,11 @@ FOOD_ESTIMATE_FIELDS = {
     "brand_id",
     "underlying_source",
     "off_attribution",
+    "from_image",
+    "personal_vocab_phrase",
+    "vision_description",
+    "vision_provider",
+    "vision_confidence",
 }
 
 
@@ -86,7 +91,11 @@ def sanitize_food_estimate(estimate: Optional[dict]) -> Optional[dict]:
         return None
     safe = {k: estimate.get(k) for k in FOOD_ESTIMATE_FIELDS if k in estimate and k != "off_attribution"}
     off_attribution = estimate.get("off_attribution")
-    if isinstance(off_attribution, dict):
+    if isinstance(off_attribution, str):
+        cleaned_text = off_attribution.strip()
+        if cleaned_text:
+            safe["off_attribution"] = cleaned_text
+    elif isinstance(off_attribution, dict):
         cleaned = {
             key: value
             for key, value in off_attribution.items()
@@ -264,6 +273,7 @@ def init_data_db():
                 source                 TEXT,
                 correction_state       TEXT,
                 original_estimate_json TEXT,
+                vocab_learned_at       TEXT,
                 created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
                 updated_at             TEXT    NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(user_id, client_id)
@@ -276,6 +286,20 @@ def init_data_db():
                 response_json   TEXT NOT NULL,
                 fetched_at      TEXT NOT NULL,
                 PRIMARY KEY(user_id, normalized_text)
+            );
+
+            CREATE TABLE IF NOT EXISTS personal_vocab (
+                user_id              INTEGER NOT NULL,
+                normalized_input     TEXT    NOT NULL,
+                phrase               TEXT    NOT NULL,
+                canonical_resolution TEXT    NOT NULL,
+                accept_count         INTEGER NOT NULL DEFAULT 0,
+                correct_count        INTEGER NOT NULL DEFAULT 0,
+                confidence_boost     REAL    NOT NULL DEFAULT 0,
+                last_used            TEXT    NOT NULL,
+                created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
+                updated_at           TEXT    NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(user_id, normalized_input)
             );
 
             CREATE TABLE IF NOT EXISTS recovery_data (
@@ -332,6 +356,7 @@ def init_data_db():
             "source": "TEXT",
             "correction_state": "TEXT",
             "original_estimate_json": "TEXT",
+            "vocab_learned_at": "TEXT",
             "created_at": "TEXT",
             "updated_at": "TEXT",
         }
@@ -544,11 +569,196 @@ def save_branded_lookup_cache(normalized_text: str, source: str, response: dict,
         conn.commit()
 
 
+def get_personal_vocab_entry(user_id: int, normalized_input: str) -> Optional[dict]:
+    key = (normalized_input or "").strip()
+    if not key:
+        return None
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM personal_vocab WHERE user_id = ? AND normalized_input = ?",
+            (user_id, key),
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["canonical_resolution"] = _json_loads_or_none(result.get("canonical_resolution"))
+    return result
+
+
+def list_personal_vocab_entries(user_id: int) -> list[dict]:
+    init_data_db()
+    with _get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM personal_vocab WHERE user_id = ? ORDER BY last_used DESC, phrase ASC",
+            (user_id,),
+        ).fetchall()
+    entries = []
+    for row in rows:
+        item = dict(row)
+        item["canonical_resolution"] = _json_loads_or_none(item.get("canonical_resolution"))
+        entries.append(item)
+    return entries
+
+
+def import_personal_vocab_entry(user_id: int, entry: dict) -> dict | None:
+    """Restore one exported personal vocabulary row for a user."""
+    if not isinstance(entry, dict):
+        return None
+    normalized = (entry.get("normalized_input") or "").strip()
+    canonical = entry.get("canonical_resolution")
+    if not normalized or not isinstance(canonical, dict):
+        return None
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    phrase = (entry.get("phrase") or normalized).strip()[:500]
+    accept_count = max(0, int(entry.get("accept_count") or 0))
+    correct_count = max(0, int(entry.get("correct_count") or 0))
+    confidence_boost = max(0.0, min(0.2, float(entry.get("confidence_boost") or 0)))
+    last_used = (entry.get("last_used") or now_iso)
+    created_at = (entry.get("created_at") or now_iso)
+    updated_at = (entry.get("updated_at") or now_iso)
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO personal_vocab (
+                user_id, normalized_input, phrase, canonical_resolution,
+                accept_count, correct_count, confidence_boost, last_used, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, normalized_input) DO UPDATE SET
+                phrase = excluded.phrase,
+                canonical_resolution = excluded.canonical_resolution,
+                accept_count = excluded.accept_count,
+                correct_count = excluded.correct_count,
+                confidence_boost = excluded.confidence_boost,
+                last_used = excluded.last_used,
+                created_at = personal_vocab.created_at,
+                updated_at = excluded.updated_at
+            RETURNING *
+            """,
+            (
+                user_id,
+                normalized,
+                phrase,
+                _json_dumps_or_none(canonical),
+                accept_count,
+                correct_count,
+                confidence_boost,
+                last_used,
+                created_at,
+                updated_at,
+            ),
+        ).fetchone()
+        conn.commit()
+    result = dict(row)
+    result["canonical_resolution"] = _json_loads_or_none(result.get("canonical_resolution"))
+    return result
+
+
+def upsert_personal_vocab_entry(
+    user_id: int,
+    *,
+    normalized_input: str,
+    phrase: str,
+    canonical_resolution: dict,
+    accepted: bool,
+) -> dict:
+    key = (normalized_input or "").strip()
+    if not key or not isinstance(canonical_resolution, dict):
+        raise ValueError("normalized_input and canonical_resolution are required")
+    init_data_db()
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    accept_delta = 1 if accepted else 0
+    correct_delta = 0 if accepted else 1
+    with _get_db() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO personal_vocab (
+                user_id, normalized_input, phrase, canonical_resolution,
+                accept_count, correct_count, confidence_boost, last_used, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, normalized_input) DO UPDATE SET
+                phrase = excluded.phrase,
+                canonical_resolution = CASE
+                    WHEN excluded.accept_count > 0 THEN excluded.canonical_resolution
+                    ELSE personal_vocab.canonical_resolution
+                END,
+                accept_count = CASE
+                    WHEN excluded.accept_count > 0 THEN personal_vocab.accept_count + 1
+                    ELSE 0
+                END,
+                correct_count = CASE
+                    WHEN excluded.accept_count > 0 THEN 0
+                    ELSE personal_vocab.correct_count + excluded.correct_count
+                END,
+                confidence_boost = CASE
+                    WHEN excluded.accept_count > 0 THEN MIN(0.2, (personal_vocab.accept_count + 1) * 0.03)
+                    ELSE 0
+                END,
+                last_used = excluded.last_used,
+                updated_at = excluded.updated_at
+            RETURNING *
+            """,
+            (
+                user_id,
+                key,
+                phrase.strip()[:500],
+                _json_dumps_or_none(canonical_resolution),
+                accept_delta,
+                correct_delta,
+                min(0.2, accept_delta * 0.03),
+                now_iso,
+                now_iso,
+                now_iso,
+            ),
+        ).fetchone()
+        conn.commit()
+    result = dict(row)
+    result["canonical_resolution"] = _json_loads_or_none(result.get("canonical_resolution"))
+    return result
+
+
 def clear_food_logs(user_id: int) -> None:
     """Delete accepted food logs for a user before a full backup restore."""
     with _get_db() as conn:
         conn.execute("DELETE FROM food_logs WHERE user_id = ?", (user_id,))
         conn.commit()
+
+
+def food_log_exists_by_client_id(user_id: int, client_id: str) -> bool:
+    """Return whether a user-scoped client_id already has a food-log row."""
+    if not client_id:
+        return False
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM food_logs WHERE user_id = ? AND client_id = ? LIMIT 1",
+            (user_id, client_id),
+        ).fetchone()
+    return bool(row)
+
+
+def claim_food_log_vocab_learning(user_id: int, client_id: str) -> bool:
+    """Atomically claim vocabulary learning for a persisted food log."""
+    if not client_id:
+        return False
+    init_data_db()
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    with _get_db() as conn:
+        row = conn.execute(
+            """
+            UPDATE food_logs
+               SET vocab_learned_at = ?
+             WHERE user_id = ?
+               AND client_id = ?
+               AND vocab_learned_at IS NULL
+            RETURNING 1
+            """,
+            (now_iso, user_id, client_id),
+        ).fetchone()
+        conn.commit()
+    return bool(row)
 
 
 def delete_food_log_by_client_id(user_id: int, client_id: str) -> bool:
@@ -691,7 +901,15 @@ def upsert_settings(user_id: int, settings: dict) -> None:
 # ── Account Management ────────────────────────────────────────────────────────
 def delete_user_data(user_id: int) -> None:
     """Permanently delete all data for a user (GDPR / account deletion)."""
-    tables = ["body_data", "cardio_data", "nutrition_data", "food_logs", "recovery_data", "user_settings"]
+    tables = [
+        "body_data",
+        "cardio_data",
+        "nutrition_data",
+        "food_logs",
+        "personal_vocab",
+        "recovery_data",
+        "user_settings",
+    ]
     with _get_db() as conn:
         for table in tables:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
@@ -701,7 +919,7 @@ def delete_user_data(user_id: int) -> None:
 
 def get_user_data_summary(user_id: int) -> dict:
     """Return record counts per table for a user (useful for admin/debugging)."""
-    tables = ["body_data", "cardio_data", "nutrition_data", "food_logs", "recovery_data"]
+    tables = ["body_data", "cardio_data", "nutrition_data", "food_logs", "personal_vocab", "recovery_data"]
     summary = {}
     with _get_db() as conn:
         for table in tables:

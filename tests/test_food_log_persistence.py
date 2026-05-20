@@ -123,6 +123,18 @@ def test_food_log_blank_client_id_is_not_idempotency_key(isolated_store):
     assert [row["client_id"] for row in rows] == [None, None]
 
 
+def test_food_log_vocab_learning_claim_is_one_time(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+    store.add_food_log(
+        user_id=1,
+        record={"client_id": "claim-once", "date": "2026-05-18", "calories": 500, "protein_g": 30},
+    )
+
+    assert store.claim_food_log_vocab_learning(1, "claim-once") is True
+    assert store.claim_food_log_vocab_learning(1, "claim-once") is False
+
+
 def test_clear_food_logs_removes_only_target_user_logs(isolated_store):
     store, _ = isolated_store
     store.init_data_db()
@@ -133,6 +145,37 @@ def test_clear_food_logs_removes_only_target_user_logs(isolated_store):
 
     assert store.get_food_logs(user_id=1) == []
     assert len(store.get_food_logs(user_id=2)) == 1
+
+
+def test_delete_user_data_removes_personal_vocab_rows(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+    canonical = {
+        "item_name": "Chipotle chicken burrito",
+        "calories": 1075,
+        "protein_g": 51,
+        "source": "nutritionix",
+    }
+    store.upsert_personal_vocab_entry(
+        1,
+        normalized_input="chip ckn bur",
+        phrase="chip ckn bur",
+        canonical_resolution=canonical,
+        accepted=True,
+    )
+    store.upsert_personal_vocab_entry(
+        2,
+        normalized_input="chip ckn bur",
+        phrase="chip ckn bur",
+        canonical_resolution=canonical,
+        accepted=True,
+    )
+
+    store.delete_user_data(user_id=1)
+
+    assert store.get_personal_vocab_entry(1, "chip ckn bur") is None
+    assert store.get_personal_vocab_entry(2, "chip ckn bur") is not None
+    assert store.get_user_data_summary(1)["personal_vocab"] == 0
 
 
 def test_init_data_db_adds_food_log_columns_to_pre_existing_table(isolated_store):
@@ -206,7 +249,9 @@ def test_original_estimate_json_does_not_include_raw_trace(isolated_store):
             "original_estimate": {
                 "item_name": "snack",
                 "calories": 410,
+                "from_image": True,
                 "model_response": {"raw": True},
+                "image_bytes": "drop raw image bytes",
                 "trace": "hidden",
             },
         },
@@ -215,7 +260,7 @@ def test_original_estimate_json_does_not_include_raw_trace(isolated_store):
     with sqlite3.connect(db_path) as conn:
         raw = conn.execute("SELECT original_estimate_json FROM food_logs").fetchone()[0]
     persisted = json.loads(raw)
-    assert persisted == {"item_name": "snack", "calories": 410}
+    assert persisted == {"item_name": "snack", "calories": 410, "from_image": True}
 
 
 def test_original_estimate_json_preserves_lookup_provenance(isolated_store):

@@ -39,6 +39,12 @@ def _import_parser():
     return importlib.import_module("meal_text_parser")
 
 
+@pytest.fixture(autouse=True)
+def _disable_personal_vocab_for_parser_unit_tests(monkeypatch):
+    parser = importlib.import_module("meal_text_parser")
+    monkeypatch.setattr(parser.personal_vocab, "lookup", lambda *_a, **_kw: None)
+
+
 # ──────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────
