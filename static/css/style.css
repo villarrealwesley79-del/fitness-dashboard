@@ -2470,6 +2470,52 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     color: var(--fg-dim);
     font-variant-numeric: tabular-nums;
 }
+/* FIT-97: meal row is now a button that opens the inspect/delete modal.
+   Strip default button chrome and keep the existing card look. */
+button.body-nutrition-meal-tap {
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    color: inherit;
+    font: inherit;
+}
+button.body-nutrition-meal-tap:hover {
+    background: rgba(30,41,59,0.5);
+    border-color: rgba(99,102,241,0.4);
+}
+button.body-nutrition-meal-tap:focus-visible {
+    outline: 2px solid rgba(99,102,241,0.6);
+    outline-offset: 2px;
+}
+/* FIT-97: meal-detail modal definition list layout. */
+.meal-detail-grid {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 6px 12px;
+    margin: 0;
+    font-size: 13px;
+}
+.meal-detail-grid dt {
+    color: var(--fg-dim);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    align-self: center;
+}
+.meal-detail-grid dd {
+    margin: 0;
+    color: var(--fg-1);
+    word-break: break-word;
+}
+#meal-detail-stub-notice {
+    margin-top: 12px;
+    padding: 8px 10px;
+    background: rgba(251,191,36,0.08);
+    border: 1px solid rgba(251,191,36,0.3);
+    border-radius: 6px;
+    color: var(--accent-amber);
+    font-size: 12px;
+}
 .meal-state {
     font-size: 9px;
     font-weight: 700;

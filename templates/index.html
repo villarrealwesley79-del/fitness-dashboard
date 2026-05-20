@@ -1008,6 +1008,41 @@
         </div>
     </div>
 
+    <!-- FIT-97: inspect/delete a logged meal entry. Reuses the existing
+         modal pattern. Body is populated dynamically from the food_log
+         entry the user tapped in the Body tab's nutrition-trend
+         expansion. -->
+    <div id="modal-meal-detail" class="modal" hidden>
+        <div class="modal-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title" id="meal-detail-title">Meal details</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body">
+                <dl class="meal-detail-grid">
+                    <dt>Item</dt><dd id="meal-detail-item">—</dd>
+                    <dt>Portion</dt><dd id="meal-detail-portion">—</dd>
+                    <dt>Logged</dt><dd id="meal-detail-time">—</dd>
+                    <dt>Source</dt><dd id="meal-detail-source">—</dd>
+                    <dt>Confidence</dt><dd id="meal-detail-confidence">—</dd>
+                    <dt>From photo</dt><dd id="meal-detail-from-image">—</dd>
+                    <dt>Calories</dt><dd id="meal-detail-cal">—</dd>
+                    <dt>Protein</dt><dd id="meal-detail-pro">—</dd>
+                    <dt>Carbs</dt><dd id="meal-detail-carb">—</dd>
+                    <dt>Fat</dt><dd id="meal-detail-fat">—</dd>
+                    <dt>Sodium</dt><dd id="meal-detail-sodium">—</dd>
+                </dl>
+                <p class="dim" id="meal-detail-stub-notice" hidden>
+                    The photo path is currently a stub (FIT-90 — vision pipeline not yet on main). Numbers shown were the canned response, not a real AI read of the photo. Once FIT-90 lands, this detail view will reflect the actual LLM/branded-lookup result.
+                </p>
+            </div>
+            <div class="modal-foot modal-foot-row">
+                <button class="btn btn-ghost" data-close-modal type="button">Close</button>
+                <button id="btn-meal-detail-delete" class="btn btn-danger" type="button">Delete entry</button>
+            </div>
+        </div>
+    </div>
+
     <div id="modal-delete-confirm" class="modal" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
