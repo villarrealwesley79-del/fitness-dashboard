@@ -27,6 +27,14 @@ PUBLIC_ESTIMATE_FIELDS = (
     "ambiguous",
     "uncertainty_notes",
     "source",
+    "external_food_id",
+    "verified_source_url",
+    "data_fetched_at",
+    "portion_basis",
+    "brand_id",
+    "underlying_source",
+    "off_attribution",
+    "personal_vocab_phrase",
 )
 
 PUBLIC_PROVENANCE_FIELDS = (
@@ -65,6 +73,18 @@ def _string_or_none(value: Any, field: str) -> str | None:
         raise MealEstimateValidationError(f"{field} must be string or null")
     cleaned = value.strip()
     return cleaned or None
+
+
+def _provenance_dict(value: Any, field: str) -> dict | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise MealEstimateValidationError(f"{field} must be object or null")
+    safe = {}
+    for key, item in value.items():
+        if isinstance(key, str) and (item is None or isinstance(item, (str, int, float, bool))):
+            safe[key] = item
+    return safe or None
 
 
 def sanitize_meal_estimate(
@@ -114,7 +134,7 @@ def sanitize_meal_estimate(
     if not isinstance(estimate_source, str) or not estimate_source.strip():
         raise MealEstimateValidationError("source is required")
 
-    sanitized = {
+    estimate = {
         "item_name": item_name.strip(),
         "portion_description": _string_or_none(raw.get("portion_description"), "portion_description"),
         "meal_type": meal_type,
@@ -141,10 +161,24 @@ def sanitize_meal_estimate(
         "uncertainty_notes": [note.strip() for note in notes if note.strip()],
         "source": estimate_source.strip(),
     }
-    for field in PUBLIC_PROVENANCE_FIELDS:
-        if raw.get(field) is not None:
-            sanitized[field] = raw[field]
-    return sanitized
+    for key in (
+        "external_food_id",
+        "verified_source_url",
+        "data_fetched_at",
+        "portion_basis",
+        "brand_id",
+        "underlying_source",
+    ):
+        value = _string_or_none(raw.get(key), key)
+        if value is not None:
+            estimate[key] = value
+    off_attribution = _provenance_dict(raw.get("off_attribution"), "off_attribution")
+    if off_attribution is not None:
+        estimate["off_attribution"] = off_attribution
+    personal_vocab_phrase = _string_or_none(raw.get("personal_vocab_phrase"), "personal_vocab_phrase")
+    if personal_vocab_phrase is not None:
+        estimate["personal_vocab_phrase"] = personal_vocab_phrase
+    return estimate
 
 
 def manual_review_estimate(*, text: str = "", source: str = "manual_review_estimate") -> dict:

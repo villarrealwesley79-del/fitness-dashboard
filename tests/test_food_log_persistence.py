@@ -282,6 +282,11 @@ def test_original_estimate_json_preserves_lookup_provenance(isolated_store):
                 "verified_source_url": "https://www.nutritionix.com/",
                 "data_fetched_at": "2026-05-19T10:00:00",
                 "portion_basis": "1 burrito",
+                "off_attribution": {
+                    "name": "Open Food Facts",
+                    "url": "https://world.openfoodfacts.org/",
+                    "raw": {"drop": True},
+                },
                 "raw_model_trace": "drop me",
             },
         },
@@ -294,4 +299,8 @@ def test_original_estimate_json_preserves_lookup_provenance(isolated_store):
     assert payload["verified_source_url"] == "https://www.nutritionix.com/"
     assert payload["data_fetched_at"] == "2026-05-19T10:00:00"
     assert payload["portion_basis"] == "1 burrito"
+    assert payload["off_attribution"] == {
+        "name": "Open Food Facts",
+        "url": "https://world.openfoodfacts.org/",
+    }
     assert "raw_model_trace" not in payload
