@@ -4583,6 +4583,73 @@
         mealComposerState.pending.forEach((entry) => pendingList.appendChild(buildMealPendingRow(entry)));
     }
 
+    function padMealDatePart(value) {
+        return String(value).padStart(2, '0');
+    }
+
+    function browserLocalMealTime(date = new Date()) {
+        const year = date.getFullYear();
+        const month = padMealDatePart(date.getMonth() + 1);
+        const day = padMealDatePart(date.getDate());
+        const hours = padMealDatePart(date.getHours());
+        const minutes = padMealDatePart(date.getMinutes());
+        const seconds = padMealDatePart(date.getSeconds());
+        const offsetMinutes = -date.getTimezoneOffset();
+        const sign = offsetMinutes >= 0 ? '+' : '-';
+        const absOffset = Math.abs(offsetMinutes);
+        const offsetHours = padMealDatePart(Math.floor(absOffset / 60));
+        const offsetRemainder = padMealDatePart(absOffset % 60);
+        const localDate = `${year}-${month}-${day}`;
+        return {
+            local_timestamp: date.toISOString(),
+            local_date: localDate,
+            local_iso: `${localDate}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetRemainder}`,
+        };
+    }
+
+    function mealPendingEntryFromPayload(entry, fallback = {}) {
+        if (!entry) return null;
+        const clientId = entry.client_id || fallback.client_id;
+        if (!clientId) return null;
+        return {
+            client_id: clientId,
+            estimate: entry.estimate || fallback.estimate || {},
+            text: entry.text_hint || fallback.text || '',
+            logged_at: entry.logged_at || fallback.logged_at || null,
+            local_timestamp: entry.local_timestamp || fallback.local_timestamp || entry.logged_at || fallback.logged_at || null,
+            local_date: entry.local_date || fallback.local_date || null,
+            local_iso: entry.local_iso || fallback.local_iso || null,
+            policy: entry.policy || fallback.policy || null,
+            // FIT-6: carry the original File reference so Retry (AC4) can
+            // re-submit the same image without prompting the user to pick
+            // it again. Server-hydrated entries (from
+            // /api/meal-intake/pending) have no File handle and end up
+            // with imageFile=null — Retry degrades to text-only on those
+            // (still better than no retry at all).
+            imageFile: entry.imageFile || fallback.imageFile || null,
+        };
+    }
+
+    function upsertMealPendingEntry(entry) {
+        const normalized = mealPendingEntryFromPayload(entry);
+        if (!normalized) return;
+        const index = mealComposerState.pending.findIndex((p) => p.client_id === normalized.client_id);
+        if (index >= 0) mealComposerState.pending[index] = normalized;
+        else mealComposerState.pending.push(normalized);
+    }
+
+    async function hydrateMealPending() {
+        try {
+            const payload = await api('/api/meal-intake/pending');
+            const pending = Array.isArray(payload.pending) ? payload.pending : [];
+            pending.forEach((entry) => upsertMealPendingEntry(entry));
+            renderMealPendingList();
+        } catch (e) {
+            console.error(e);
+            toast('Couldn’t refresh pending meals', 'err');
+        }
+    }
+
     // FIT-6: human-readable copy for each stable policy reason code.
     // Mirrors app.py's _POLICY_REASON_NOTES so the per-reason chip on
     // the review card stays in lock-step with the backend's policy
@@ -4761,14 +4828,20 @@
         return row;
     }
 
-    function discardMealPending(clientId) {
-        // Pending estimates live in this composer's local state until
-        // the user accepts or discards. No server-side row exists for
-        // them under FIT-61 (see FIT-67 for the durable resolution),
-        // so discard is a pure local-state clear.
-        mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
-        renderMealPendingList();
-        toast('Estimate discarded', 'ok');
+    async function discardMealPending(clientId) {
+        const entry = mealComposerState.pending.find((p) => p.client_id === clientId);
+        if (!entry) return;
+        try {
+            const result = await api(`/api/meal-intake/${encodeURIComponent(clientId)}?correction_state=pending_review`, { method: 'DELETE' });
+            if (!result || result.removed !== true) throw new Error('pending meal was not removed');
+            mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
+            renderMealPendingList();
+            toast('Estimate discarded', 'ok');
+            refreshMacroCard();
+        } catch (e) {
+            console.error(e);
+            toast('Discard failed — retry when connected', 'err');
+        }
     }
 
     // FIT-6 AC3: collect edited values from the row's inputs. Returns
@@ -4832,10 +4905,17 @@
             return;
         }
         try {
+            const body = {
+                estimate: edited,
+                text: entry.text || '',
+                local_timestamp: entry.local_timestamp || null,
+                local_date: entry.local_date || null,
+                local_iso: entry.local_iso || null,
+            };
             await api(`/api/meal-intake/${encodeURIComponent(clientId)}/accept`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ estimate: edited, text: entry.text || '' }),
+                body: JSON.stringify(body),
             });
             mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
             renderMealPendingList();
@@ -4850,11 +4930,12 @@
     // FIT-6 AC4: Retry re-runs the original meal-intake request so the
     // user can ask the estimator for a fresh answer when the first
     // estimate looked wrong. The retry submits the captured text (and
-    // image, if present) under a NEW client_id; the old pending entry
-    // is removed regardless of whether the new submission returns
-    // pending_review or logged. If the new submission errors (network,
-    // backend unavailable), the old entry stays in place so the user
-    // doesn't lose their review surface.
+    // image, if present) under a NEW client_id, then deletes the old
+    // server-side pending row (FIT-67 now persists pending entries, so
+    // a local-only cleanup would leave an orphan that re-hydrates on
+    // next page load). If the new submission errors (network, backend
+    // unavailable), the old entry stays in place — the user doesn't
+    // lose their review surface.
     async function retryMealPending(clientId, rowEl) {
         const entry = mealComposerState.pending.find((p) => p.client_id === clientId);
         if (!entry) return;
@@ -4881,11 +4962,18 @@
         if (text) form.append('text', text);
         if (file) form.append('image', file, file.name || 'meal.jpg');
         form.append('client_id', newClientId);
-        // FIT-6: preserve the original submission timestamp so a retry
-        // across midnight doesn't relocate the meal to today. Falls
-        // back to the current time only if the original wasn't captured
-        // (e.g. older pending entries that pre-date this commit).
-        form.append('local_timestamp', entry.localTimestamp || new Date().toISOString());
+        // FIT-6 + FIT-66: preserve the original three-field browser-local
+        // timestamp so a retry across midnight doesn't relocate the meal
+        // to today. Falls back to the current time only if the original
+        // wasn't captured (e.g. server-hydrated entries pre-FIT-67 that
+        // never had these fields).
+        const fallbackTime = browserLocalMealTime();
+        const originalLocalTimestamp = entry.local_timestamp || fallbackTime.local_timestamp;
+        const originalLocalDate = entry.local_date || fallbackTime.local_date;
+        const originalLocalIso = entry.local_iso || fallbackTime.local_iso;
+        form.append('local_timestamp', originalLocalTimestamp);
+        form.append('local_date', originalLocalDate);
+        form.append('local_iso', originalLocalIso);
         let cleanedUp = false;
         try {
             const res = await fetch('/api/meal-intake', {
@@ -4906,9 +4994,23 @@
                 toast(msg, 'err');
                 return;
             }
-            // Remove the OLD pending entry up front; the new payload
-            // either replaces it (pending_review) or completes the flow
-            // outright (logged). Either way the old client_id is dead.
+            // FIT-6 + FIT-67: the new submission persisted under
+            // newClientId. Now clean up the OLD pending row server-side
+            // — best-effort, because the OLD row is durable post-FIT-67
+            // and would otherwise re-hydrate on the next refresh. If
+            // the DELETE fails (network, race), surface a toast so the
+            // user can manually discard the duplicate later. Either
+            // way, drop the OLD entry from local state — the retry
+            // response is authoritative.
+            try {
+                await api(
+                    `/api/meal-intake/${encodeURIComponent(clientId)}?correction_state=pending_review`,
+                    { method: 'DELETE' },
+                );
+            } catch (deleteErr) {
+                console.warn('Retry cleanup DELETE failed:', deleteErr);
+                toast('Retried, but couldn’t clean up the old pending row — discard it manually if it reappears.', 'warn');
+            }
             mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
             cleanedUp = true;
             if (payload && payload.status === 'logged') {
@@ -4926,18 +5028,25 @@
                 return;
             }
             if (payload && payload.status === 'pending_review') {
-                mealComposerState.pending.push({
+                // FIT-6 + FIT-67: hydrate the new pending entry from
+                // the response. Carry the original three-field
+                // timestamp forward so chained retries (retry → retry
+                // → ...) never lose the original meal day even if the
+                // server response omits them.
+                upsertMealPendingEntry({
                     client_id: newClientId,
                     estimate: payload.estimate || {},
                     text,
-                    imageFile: file,
+                    text_hint: text,
+                    local_timestamp: payload.local_timestamp || originalLocalTimestamp,
+                    local_date: payload.local_date || originalLocalDate,
+                    local_iso: payload.local_iso || originalLocalIso,
+                    logged_at: payload.food_log && payload.food_log.logged_at,
                     policy: payload.policy || null,
-                    // FIT-6: carry the original submission timestamp
-                    // forward so chained retries (retry → retry → ...)
-                    // never lose the original meal day.
-                    localTimestamp: entry.localTimestamp || null,
+                    imageFile: file,
                 });
                 renderMealPendingList();
+                refreshMacroCard();
                 toast('New estimate — review before it counts.', 'warn');
                 return;
             }
@@ -4972,17 +5081,20 @@
         refreshMealSubmitState();
 
         const clientId = newMealClientId();
-        // FIT-6: capture the original submission timestamp so Retry can
-        // reuse it. Without this, retrying a pending entry created
-        // before midnight would misdate the meal — the backend derives
-        // food_log.date and logged_at from local_timestamp, so a stale
-        // pending entry retried "today" would lose its original day.
-        const localTimestamp = new Date().toISOString();
+        // FIT-6 + FIT-66: capture the original submission's three-field
+        // browser-local timestamp so Retry can reuse it. Without this,
+        // retrying a pending entry created before midnight would misdate
+        // the meal — the backend derives food_log.date / logged_at /
+        // local_iso from these fields, so a stale pending entry retried
+        // "today" would lose its original day.
+        const localTime = browserLocalMealTime();
         const form = new FormData();
         if (textValue) form.append('text', textValue);
         if (file) form.append('image', file, file.name || 'meal.jpg');
         form.append('client_id', clientId);
-        form.append('local_timestamp', localTimestamp);
+        form.append('local_timestamp', localTime.local_timestamp);
+        form.append('local_date', localTime.local_date);
+        form.append('local_iso', localTime.local_iso);
 
         try {
             const res = await fetch('/api/meal-intake', {
@@ -5004,10 +5116,13 @@
                 setMealComposerError(msg);
                 return;
             }
-            // FIT-6: pass imageFile + localTimestamp through so the
-            // pending entry can power Retry without needing the file
-            // picker again AND without losing the original day.
-            handleMealIntakeResponse(payload, { textValue, clientId, imageFile: file, localTimestamp });
+            // FIT-6 + FIT-66/FIT-67: pass imageFile + the captured
+            // three-field localTime through so the pending entry can
+            // power Retry without needing the file picker again AND
+            // without losing the original day. localTime is the
+            // fallback when payload doesn't echo back the timestamp
+            // fields (older /api/meal-intake responses).
+            handleMealIntakeResponse(payload, { textValue, clientId, imageFile: file, localTime });
         } catch (e) {
             console.error(e);
             saveMealDraft();
@@ -5029,25 +5144,33 @@
             return;
         }
         if (status === 'pending_review') {
-            // FIT-6: capture the policy block (confidence_band + reason
-            // codes), the original imageFile, AND the original
-            // localTimestamp alongside the estimate. The policy block
-            // powers reason chips (AC2). The imageFile + localTimestamp
-            // power Retry (AC4); without persisting the timestamp here
-            // a retry across midnight would misdate the meal (the
-            // backend derives food_log.date from local_timestamp).
-            mealComposerState.pending.push({
+            // FIT-6 + FIT-67: hydrate the local pending entry from the
+            // server response (FIT-67's durable persistence already
+            // wrote the row server-side, so the response carries
+            // canonical local_timestamp/local_date/local_iso). Fall
+            // back to ctx.localTime when the payload omits a field so
+            // Retry can still preserve the original meal day even on
+            // older meal-intake responses. The imageFile + policy
+            // fields are FIT-6 additions: imageFile powers Retry (AC4)
+            // and policy powers the per-reason chips (AC2).
+            const localTime = ctx.localTime || {};
+            upsertMealPendingEntry({
                 client_id: ctx.clientId,
                 estimate: payload.estimate || {},
                 text: ctx.textValue || '',
-                imageFile: ctx.imageFile || null,
+                text_hint: ctx.textValue || '',
+                local_timestamp: payload.local_timestamp || localTime.local_timestamp || null,
+                local_date: payload.local_date || localTime.local_date || null,
+                local_iso: payload.local_iso || localTime.local_iso || null,
+                logged_at: payload.food_log && payload.food_log.logged_at,
                 policy: payload.policy || null,
-                localTimestamp: ctx.localTimestamp || null,
+                imageFile: ctx.imageFile || null,
             });
             clearMealComposerInputs();
             clearMealDraft();
             renderMealPendingList();
             toast('Review the estimate before it counts toward today.', 'warn');
+            refreshMacroCard();
             return;
         }
         setMealComposerError('Couldn’t parse that meal — try a clearer description.');
@@ -5064,6 +5187,7 @@
         const { form, text, image, previewClear } = mealComposerEls();
         if (!form) return;
         loadMealDraft();
+        hydrateMealPending();
         form.addEventListener('submit', submitMealComposer);
         if (text) {
             text.addEventListener('input', () => { refreshMealSubmitState(); saveMealDraft(); });

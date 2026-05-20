@@ -62,7 +62,7 @@ Success response:
 - `logged`: the estimate was accepted immediately and persisted through the canonical `food_logs` path.
 - `pending_review`: the estimate was returned for user review and must not affect coaching totals until explicitly accepted.
 
-When `status` is `pending_review`, `food_log` is `null`. The client may accept later with `POST /api/meal-intake/{client_id}/accept` or discard locally.
+When `status` is `pending_review`, `food_log` is persisted with `correction_state: "pending_review"` and remains excluded from nutrition totals. The client can hydrate unresolved estimates with `GET /api/meal-intake/pending`, accept later with `POST /api/meal-intake/{client_id}/accept`, or discard with `DELETE /api/meal-intake/{client_id}`. Pending review rows older than 7 days are removed during pending-list hydration.
 
 Accept request:
 
@@ -100,7 +100,7 @@ The backend policy is the source of truth:
 
 ## Persistence and Idempotency
 
-Accepted meals persist through existing `food_logs` storage via the same path used by `/api/add-nutrition`. The `client_id` key prevents duplicate accepted meals for mobile retries.
+Accepted and pending-review meals persist through existing `food_logs` storage via the same path used by `/api/add-nutrition`. The `client_id` key prevents duplicate meals for mobile retries and lets a later accept update the same pending row to `correction_state: "accepted"`.
 
 Legacy `NUTRITION_DATA` JSON remains a compatibility surface, but `food_logs` is the canonical accepted meal log for this endpoint.
 

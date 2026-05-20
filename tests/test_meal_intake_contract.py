@@ -113,7 +113,7 @@ def test_zero_context_image_request_uses_same_estimate_shape_without_raw_image_e
     assert persisted["client_id"] == "fit57-photo-1"
 
 
-def test_pending_review_response_does_not_persist_or_change_coaching_context(monkeypatch):
+def test_pending_review_response_persists_as_non_counting_review_row(monkeypatch):
     module = _module(monkeypatch)
     pending_estimate = _good_estimate()
     pending_estimate.update(
@@ -136,7 +136,15 @@ def test_pending_review_response_does_not_persist_or_change_coaching_context(mon
         lambda *_a, **_kw: {"estimate": pending_estimate, "fallback_used": False},
     )
     persisted = []
-    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: persisted.append(_kw) or {})
+
+    def fake_add_food_log(_user_id, record):
+        persisted.append(record)
+        return {
+            "client_id": record["client_id"],
+            "correction_state": record["correction_state"],
+        }
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
 
     response = module.app.test_client().post(
         "/api/meal-intake",
@@ -147,6 +155,7 @@ def test_pending_review_response_does_not_persist_or_change_coaching_context(mon
     assert response.status_code == 200
     body = response.get_json()
     assert body["status"] == "pending_review"
-    assert body["food_log"] is None
+    assert body["food_log"]["client_id"] == "fit57-pending-1"
+    assert body["food_log"]["correction_state"] == "pending_review"
     assert "ambiguous_input" in body["policy"]["reasons"]
-    assert persisted == []
+    assert persisted[0]["correction_state"] == "pending_review"
