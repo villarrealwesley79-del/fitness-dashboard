@@ -48,6 +48,7 @@ from data_store import (
     revoke_push_subscription,
     save_push_subscription,
 )
+from vapid_keys import get_vapid_public_key
 from meal_estimate_schema import (
     MealEstimateValidationError,
     manual_review_estimate,
@@ -6493,6 +6494,12 @@ def push_subscriptions():
     except ValueError as exc:
         return api_error(str(exc), status=400, code="invalid_push_subscription")
     return jsonify({"status": "saved", "subscription": saved})
+
+
+@app.route("/api/push/vapid-public-key")
+def push_vapid_public_key():
+    _current_data_user_id()
+    return jsonify({"public_key": get_vapid_public_key()})
 
 
 @app.route("/api/push/subscriptions/<endpoint_hash>", methods=["DELETE"])
