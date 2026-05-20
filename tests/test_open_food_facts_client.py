@@ -271,7 +271,8 @@ def test_open_food_facts_tier_runs_after_usda(monkeypatch):
     assert estimate["item_name"] == "Brand Walkers Crisps"
     assert estimate["external_food_id"] == "500032837"
     assert estimate["sodium_mg"] == 400
-    assert "CC-BY-SA" in estimate["off_attribution"]
+    assert "CC BY-SA" in estimate["off_attribution"]
+    assert "ODbL/DbCL data" in estimate["off_attribution"]
 
 
 def test_open_food_facts_skips_generic_meal_text(monkeypatch):

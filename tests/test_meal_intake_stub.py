@@ -141,7 +141,7 @@ def test_meal_intake_preserves_open_food_facts_attribution(monkeypatch):
         "external_food_id": "500032837",
         "verified_source_url": "https://world.openfoodfacts.org/product/500032837",
         "portion_basis": "100 g Open Food Facts packaged-food reference",
-        "off_attribution": "Source: Open Food Facts, licensed under CC-BY-SA.",
+        "off_attribution": "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)",
     }, source="open_food_facts")
 
     persisted = {}
@@ -168,9 +168,11 @@ def test_meal_intake_preserves_open_food_facts_attribution(monkeypatch):
     body = res.get_json()
     assert body["estimate"]["source"] == "open_food_facts"
     assert body["estimate"]["verified_source_url"] == "https://world.openfoodfacts.org/product/500032837"
-    assert "CC-BY-SA" in body["estimate"]["off_attribution"]
+    assert "CC BY-SA" in body["estimate"]["off_attribution"]
+    assert "ODbL/DbCL data" in body["estimate"]["off_attribution"]
     assert persisted["original_estimate"]["verified_source_url"] == "https://world.openfoodfacts.org/product/500032837"
-    assert "CC-BY-SA" in persisted["original_estimate"]["off_attribution"]
+    assert "CC BY-SA" in persisted["original_estimate"]["off_attribution"]
+    assert "ODbL/DbCL data" in persisted["original_estimate"]["off_attribution"]
 
 
 def test_meal_intake_text_pending_review_when_parser_ambiguous(monkeypatch):

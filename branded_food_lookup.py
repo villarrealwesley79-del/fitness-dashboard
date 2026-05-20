@@ -510,8 +510,8 @@ def _open_food_facts_estimate(product: dict[str, Any]) -> dict[str, Any]:
         "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
         "portion_basis": "100 g Open Food Facts packaged-food reference",
         # The visible attribution surface is tracked separately in FIT-80; this
-        # backend slice keeps the CC-BY-SA provenance attached to every estimate.
-        "off_attribution": "Source: Open Food Facts, licensed under CC-BY-SA.",
+        # backend slice keeps the database and product-image licenses attached.
+        "off_attribution": "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)",
     }
     return _sanitize_with_provenance(estimate)
 
