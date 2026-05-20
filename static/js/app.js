@@ -4583,6 +4583,30 @@
         mealComposerState.pending.forEach((entry) => pendingList.appendChild(buildMealPendingRow(entry)));
     }
 
+    function padMealDatePart(value) {
+        return String(value).padStart(2, '0');
+    }
+
+    function browserLocalMealTime(date = new Date()) {
+        const year = date.getFullYear();
+        const month = padMealDatePart(date.getMonth() + 1);
+        const day = padMealDatePart(date.getDate());
+        const hours = padMealDatePart(date.getHours());
+        const minutes = padMealDatePart(date.getMinutes());
+        const seconds = padMealDatePart(date.getSeconds());
+        const offsetMinutes = -date.getTimezoneOffset();
+        const sign = offsetMinutes >= 0 ? '+' : '-';
+        const absOffset = Math.abs(offsetMinutes);
+        const offsetHours = padMealDatePart(Math.floor(absOffset / 60));
+        const offsetRemainder = padMealDatePart(absOffset % 60);
+        const localDate = `${year}-${month}-${day}`;
+        return {
+            local_timestamp: date.toISOString(),
+            local_date: localDate,
+            local_iso: `${localDate}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetRemainder}`,
+        };
+    }
+
     function buildMealPendingRow(entry) {
         const row = document.createElement('div');
         row.className = 'meal-pending-row';
@@ -4646,10 +4670,17 @@
             return;
         }
         try {
+            const body = {
+                estimate: edited,
+                text: entry.text || '',
+                local_timestamp: entry.local_timestamp || null,
+                local_date: entry.local_date || null,
+                local_iso: entry.local_iso || null,
+            };
             await api(`/api/meal-intake/${encodeURIComponent(clientId)}/accept`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ estimate: edited, text: entry.text || '' }),
+                body: JSON.stringify(body),
             });
             mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
             renderMealPendingList();
@@ -4680,7 +4711,10 @@
         if (textValue) form.append('text', textValue);
         if (file) form.append('image', file, file.name || 'meal.jpg');
         form.append('client_id', clientId);
-        form.append('local_timestamp', new Date().toISOString());
+        const localTime = browserLocalMealTime();
+        form.append('local_timestamp', localTime.local_timestamp);
+        form.append('local_date', localTime.local_date);
+        form.append('local_iso', localTime.local_iso);
 
         try {
             const res = await fetch('/api/meal-intake', {
@@ -4728,6 +4762,9 @@
                 client_id: ctx.clientId,
                 estimate: payload.estimate || {},
                 text: ctx.textValue || '',
+                local_timestamp: payload.local_timestamp || null,
+                local_date: payload.local_date || null,
+                local_iso: payload.local_iso || null,
             });
             clearMealComposerInputs();
             clearMealDraft();
