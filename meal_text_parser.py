@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from typing import Iterable, Optional
 
+import branded_food_lookup
 from lm_studio_adapter import (
     LM_STUDIO_ANALYZE_TIMEOUT_SEC,
     LmStudioError,
@@ -68,7 +69,7 @@ _SODIUM_MAX = SODIUM_MG_MAX
 # to avoid false positives like "fish" / "rice dish" / "rabbit" matching short
 # approximation markers.
 _AMBIGUOUS_TOKENS = (
-    "popcorn", "movie", "shared", "leftover", "leftovers", "snacks",
+    "popcorn", "movie", "shared", "leftover", "leftovers", "snacks", "half",
     "buffet", "potluck", "?", "guessing", "guess", "some food", "a bit",
     "a few",
 )
@@ -301,12 +302,7 @@ def _fallback_estimate(text: str) -> dict:
             matched = True
             break
     if "half" in norm:
-        for key in ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g"):
-            value = estimate.get(key)
-            if isinstance(value, float):
-                estimate[key] = round(value / 2, 1)
-            elif isinstance(value, int):
-                estimate[key] = value // 2
+        _scale_estimate_macros(estimate, 0.5)
         portion_description = "approx half portion"
 
     ambiguous = any(token in norm for token in _AMBIGUOUS_TOKENS)
@@ -345,6 +341,15 @@ def _fallback_estimate(text: str) -> dict:
     }
 
 
+def _scale_estimate_macros(estimate: dict, factor: float) -> None:
+    for key in ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g"):
+        value = estimate.get(key)
+        if isinstance(value, float):
+            estimate[key] = round(value * factor, 1)
+        elif isinstance(value, int):
+            estimate[key] = int(value * factor)
+
+
 def _post_process(estimate: dict, *, source_text: str) -> dict:
     """Apply local heuristics on top of the model output.
 
@@ -366,6 +371,7 @@ def parse_meal_text(
     text: str,
     *,
     timestamp: Optional[str] = None,  # noqa: ARG001 — accepted for forward-compat
+    user_id: int = 1,
 ) -> dict:
     """Convert free-form meal text into a sanitized food estimate.
 
@@ -398,6 +404,19 @@ def parse_meal_text(
         return {
             "estimate": _fallback_estimate(""),
             "fallback_used": True,
+        }
+
+    branded_estimate = None
+    if branded_food_lookup.should_attempt_direct_lookup(cleaned):
+        try:
+            branded_estimate = branded_food_lookup.lookup(cleaned, user_id=user_id)
+        except Exception:
+            branded_estimate = None
+    if branded_estimate:
+        branded_estimate = _post_process(branded_estimate, source_text=cleaned)
+        return {
+            "estimate": branded_estimate,
+            "fallback_used": False,
         }
 
     payload = {

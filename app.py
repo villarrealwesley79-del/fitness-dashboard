@@ -3435,7 +3435,7 @@ def meal_intake_stub():
         estimate["source"] = source
         response_extras["stub"] = True
     else:
-        parsed = parse_meal_text(text_raw, timestamp=local_timestamp)
+        parsed = parse_meal_text(text_raw, timestamp=local_timestamp, user_id=_current_data_user_id())
         try:
             estimate = sanitize_meal_estimate(parsed["estimate"])
         except MealEstimateValidationError:
