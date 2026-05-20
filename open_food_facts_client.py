@@ -22,6 +22,7 @@ LOCALE_QUERY_TOKENS = {
     "japanese",
     "kingdom",
     "uk",
+    "u.k",
     "u.k.",
     "united",
 }

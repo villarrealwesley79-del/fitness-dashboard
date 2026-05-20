@@ -99,6 +99,21 @@ def test_open_food_facts_client_retries_without_punctuated_locale_word(monkeypat
     assert result["products"][0]["product_name"] == "Petit Ecolier"
 
 
+def test_open_food_facts_client_retries_without_punctuated_uk_locale(monkeypatch):
+    seen_terms = []
+
+    def fake_urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        seen_terms.append(params["search_terms"][0])
+        return _Response({"products": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    open_food_facts_client.search_products("U.K. Walkers crisps")
+
+    assert seen_terms[0] == "Walkers crisps"
+
+
 def test_open_food_facts_client_stops_after_usable_variant(monkeypatch):
     seen_terms = []
 
