@@ -53,6 +53,46 @@ def test_invalid_date_returns_400(fitness_app):
     assert body["error"]["code"] == "invalid_field"
 
 
+def test_shape_valid_but_impossible_date_returns_400(fitness_app):
+    """Regex shape isn't enough — 2026-99-99 looks YYYY-MM-DD but isn't
+    a real calendar date. Codex round 1 audit finding."""
+    res = fitness_app.app.test_client().get("/api/food-logs/by-date/2026-99-99")
+    assert res.status_code == 400
+    body = res.get_json()
+    assert body["error"]["code"] == "invalid_field"
+
+
+def test_returned_entries_use_bounded_projection(fitness_app, monkeypatch):
+    """Codex round 1: response shape must be a stable projection, not
+    raw food_log rows. Sensitive / internal fields like
+    `original_estimate` and `uncertainty_notes` must not leak."""
+    today = _today()
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [{
+            "client_id": "fl-1", "date": today, "logged_at": f"{today}T08:00:00",
+            "item_name": "Eggs", "calories": 200, "protein_g": 14,
+            "carbs_g": 2, "fat_g": 14, "sodium_mg": 200,
+            "source": "ai_text_estimate", "confidence": 0.8,
+            "correction_state": "accepted", "from_image": False,
+            # Should NOT leak through the projection:
+            "original_estimate": {"raw_prompt": "do not leak"},
+            "uncertainty_notes": ["internal"],
+            "id": 42,
+        }],
+    )
+    res = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{today}")
+    entry = res.get_json()["entries"][0]
+    expected_keys = {
+        "client_id", "logged_at", "item_name", "portion_description", "meal_type",
+        "calories", "protein_g", "carbs_g", "fat_g", "sodium_mg",
+        "source", "confidence", "correction_state", "from_image",
+    }
+    assert set(entry.keys()) == expected_keys, (
+        f"projection must be tight; unexpected keys: {set(entry) - expected_keys}"
+    )
+
+
 def test_valid_iso_date_returns_200_even_when_empty(fitness_app):
     res = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{_today()}")
     assert res.status_code == 200

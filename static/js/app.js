@@ -2041,21 +2041,41 @@
         }).join('');
 
         // FIT-93: lazy-load meals on first expand. Avoid re-fetching if
-        // the row was opened before.
+        // the row was opened before. On failure we render an explicit
+        // Retry button instead of a "tap row to retry" hint — toggling
+        // the row first closes it, which would be a confusing two-tap
+        // recovery flow.
+        function loadDayMeals(row, slot, date) {
+            slot.setAttribute('data-loaded', '1');
+            slot.innerHTML = '<div class="body-nutrition-row-loading">Loading meals…</div>';
+            api(`/api/food-logs/by-date/${encodeURIComponent(date)}`)
+                .then((payload) => renderFoodLogMealList(slot, (payload && payload.entries) || []))
+                .catch(() => {
+                    slot.setAttribute('data-loaded', '0');
+                    slot.innerHTML = '';
+                    const msg = document.createElement('div');
+                    msg.className = 'body-nutrition-row-loading';
+                    msg.textContent = 'Couldn\'t load meals.';
+                    slot.appendChild(msg);
+                    const retry = document.createElement('button');
+                    retry.type = 'button';
+                    retry.className = 'body-nutrition-row-retry';
+                    retry.textContent = 'Retry';
+                    retry.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        loadDayMeals(row, slot, date);
+                    });
+                    slot.appendChild(retry);
+                });
+        }
         nutRows.querySelectorAll('details.body-nutrition-row-expandable').forEach((row) => {
             row.addEventListener('toggle', () => {
                 if (!row.open) return;
                 const date = row.getAttribute('data-date');
                 const slot = row.querySelector('.body-nutrition-row-meals');
                 if (!date || !slot || slot.getAttribute('data-loaded') === '1') return;
-                slot.setAttribute('data-loaded', '1');
-                slot.innerHTML = '<div class="body-nutrition-row-loading">Loading meals…</div>';
-                api(`/api/food-logs/by-date/${encodeURIComponent(date)}`)
-                    .then((payload) => renderFoodLogMealList(slot, (payload && payload.entries) || []))
-                    .catch(() => {
-                        slot.setAttribute('data-loaded', '0');
-                        slot.innerHTML = '<div class="body-nutrition-row-loading">Couldn\'t load meals. Tap to retry.</div>';
-                    });
+                loadDayMeals(row, slot, date);
             });
         });
     }

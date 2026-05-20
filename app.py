@@ -4622,8 +4622,12 @@ def food_logs_by_date(date):
     Returns entries sorted by `logged_at` ascending so the UI can
     render breakfast → dinner in natural order.
     """
-    if not date or not re.match(r"^\d{4}-\d{2}-\d{2}$", date or ""):
-        return api_error("date must be YYYY-MM-DD", 400, code="invalid_field")
+    # Strict calendar validation — regex shape alone would accept things
+    # like 2026-99-99 and return an empty result, which is misleading.
+    try:
+        datetime.strptime(date or "", "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return api_error("date must be a valid YYYY-MM-DD", 400, code="invalid_field")
     user_id = _current_data_user_id()
 
     food_log_entries = list(_food_log_entries_for_context(since=date) or [])
@@ -4662,7 +4666,31 @@ def food_logs_by_date(date):
     same_day = [e for e in merged if _nutrition_entry_day(e) == date]
     same_day.sort(key=lambda e: (e.get("logged_at") or "", e.get("id") or 0))
 
-    return jsonify({"date": date, "entries": same_day, "count": len(same_day)})
+    # Bounded projection — only the fields the row-expand UI consumes.
+    # Keeps the public contract tight so a later food_logs schema change
+    # (extra private fields, raw estimates, etc.) doesn't leak into the
+    # client. Matches the FIT-9 retention rule: no image bytes or
+    # original prompts.
+    def _project(entry: dict) -> dict:
+        return {
+            "client_id": entry.get("client_id"),
+            "logged_at": entry.get("logged_at"),
+            "item_name": entry.get("item_name"),
+            "portion_description": entry.get("portion_description"),
+            "meal_type": entry.get("meal_type"),
+            "calories": entry.get("calories"),
+            "protein_g": entry.get("protein_g"),
+            "carbs_g": entry.get("carbs_g"),
+            "fat_g": entry.get("fat_g"),
+            "sodium_mg": entry.get("sodium_mg"),
+            "source": entry.get("source"),
+            "confidence": entry.get("confidence"),
+            "correction_state": entry.get("correction_state"),
+            "from_image": entry.get("from_image"),
+        }
+
+    entries = [_project(e) for e in same_day]
+    return jsonify({"date": date, "entries": entries, "count": len(entries)})
 
 
 @app.route('/api/add-cardio', methods=['POST'])

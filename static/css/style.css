@@ -2421,6 +2421,17 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     font-style: italic;
     padding: 4px 0;
 }
+.body-nutrition-row-retry {
+    align-self: flex-start;
+    background: rgba(51,65,85,0.4);
+    border: 1px solid rgba(51,65,85,0.6);
+    color: var(--fg-1);
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.body-nutrition-row-retry:hover { background: rgba(51,65,85,0.6); }
 .body-nutrition-meal {
     background: rgba(15,23,42,0.4);
     border: 1px solid rgba(51,65,85,0.4);
@@ -2516,10 +2527,11 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     margin-left: 60px;
 }
 @media (max-width: 480px) {
-    .body-nutrition-row {
+    /* FIT-93: grid is on the <summary> now, not the row container. */
+    .body-nutrition-row-summary {
         grid-template-columns: minmax(56px, 1fr) minmax(64px, 1fr) minmax(58px, 1fr) auto;
     }
-    .body-nutrition-row .trend-sodium { display: none; }
+    .body-nutrition-row-summary .trend-sodium { display: none; }
 }
 
 /* ======================= UTIL ======================= */
