@@ -78,7 +78,7 @@ The long-term surface is hybrid: the Flask PWA remains the main product, Health 
 
 The PWA owns the daily brief, food capture, review flows, workout execution, history, and settings. The backend remains the canonical source of truth for workout, food, wearable, and audit data. The Apple Health bridge is measured by freshness evidence rather than assumed connectivity.
 
-Native iOS should not be started as a full app rewrite. It is only a future narrow HealthKit helper if the bridge is stale more than three times in 30 days despite normal phone usage and improved HAE/Shortcuts instrumentation.
+Native iOS should not be started as a full app rewrite. It is only a future narrow HealthKit helper if the bridge fails the documented freshness SLA in `docs/APPLE_HEALTH_HELPER_SLA.md` despite normal phone usage and improved HAE/Shortcuts instrumentation.
 
 ## North Star Outcome
 

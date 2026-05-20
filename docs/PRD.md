@@ -210,7 +210,7 @@ Decision: use the hybrid shortcut/app flow, with the existing Flask PWA as the p
 - Apple Health sync stays bridged through Health Auto Export or Shortcuts-style token-gated webhook posts into the backend. Do not treat the browser/PWA as a direct HealthKit client.
 - Notifications should use Home Screen PWA Web Push for low-stakes reminders, stale-data warnings, and review-pending alerts. Do not treat Web Push as safety-critical infrastructure.
 - Offline workout logging should use a PWA local queue with stable client-generated workout IDs, idempotent backend sync, visible retry/reconcile states, and no silent double-save behavior.
-- Native iOS is deferred to a narrow HealthKit helper only if the Apple Health bridge fails a documented freshness SLA after HAE/Shortcuts instrumentation has been improved.
+- Native iOS is deferred to a narrow HealthKit helper only if the Apple Health bridge fails the documented freshness SLA in `docs/APPLE_HEALTH_HELPER_SLA.md` after HAE/Shortcuts instrumentation has been improved.
 
 Tradeoff record:
 
