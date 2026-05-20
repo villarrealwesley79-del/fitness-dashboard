@@ -51,6 +51,27 @@ curl -i http://127.0.0.1:5050/
 
 The root route should redirect to login when no session is present.
 
+## Launchd Install / Migration
+
+For a new Mac or a repaired checkout, install both user launchd agents with the
+repo script:
+
+```bash
+bash scripts/install-launchd-agents.sh --dry-run
+bash scripts/install-launchd-agents.sh install
+```
+
+The script writes `~/Library/LaunchAgents/com.fitness-dashboard.plist` and
+`~/Library/LaunchAgents/com.fitness-dashboard.staleness.plist`, then bootstraps
+and kickstarts them. It is idempotent; rerunning `install` only rewrites plist
+files when their generated content changes. Use `reinstall` after moving the repo
+path or changing Python environments, and use `uninstall` to remove both agents.
+`--dry-run` prints the generated plists without writing files or calling
+`launchctl`. The dashboard agent pins launchd to `HOST=127.0.0.1`, `PORT=5050`,
+and `FLASK_DEBUG=0` so local development `.env` values do not leak into the
+background service. The staleness agent is pointed at the selected repo's
+`apple_health_sync.db`, so migrated checkouts do not keep monitoring an old path.
+
 ## Cache Bust
 
 When static JavaScript or CSS changes behavior, update the asset version used by

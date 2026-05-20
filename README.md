@@ -59,6 +59,16 @@ Run the Flask app:
 python app.py
 ```
 
+On the Mac mini, install or refresh the local launchd agents with:
+
+```bash
+bash scripts/install-launchd-agents.sh --dry-run
+bash scripts/install-launchd-agents.sh install
+```
+
+This manages both `com.fitness-dashboard` and
+`com.fitness-dashboard.staleness` in `~/Library/LaunchAgents`.
+
 Run the authenticated smoke test against a local server:
 
 ```bash
