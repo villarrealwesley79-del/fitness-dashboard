@@ -736,6 +736,9 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
     border-radius: 999px;
     border: 1px solid transparent;
     line-height: 1.35;
+    /* `.ex-why` is italic; override so the chip matches the existing
+       .meal-state / .trend-reliability chip pattern (Codex audit). */
+    font-style: normal;
 }
 .load-conf-low {
     color: #fca5a5;
