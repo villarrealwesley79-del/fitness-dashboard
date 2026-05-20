@@ -4881,7 +4881,11 @@
         if (text) form.append('text', text);
         if (file) form.append('image', file, file.name || 'meal.jpg');
         form.append('client_id', newClientId);
-        form.append('local_timestamp', new Date().toISOString());
+        // FIT-6: preserve the original submission timestamp so a retry
+        // across midnight doesn't relocate the meal to today. Falls
+        // back to the current time only if the original wasn't captured
+        // (e.g. older pending entries that pre-date this commit).
+        form.append('local_timestamp', entry.localTimestamp || new Date().toISOString());
         let cleanedUp = false;
         try {
             const res = await fetch('/api/meal-intake', {
@@ -4928,6 +4932,10 @@
                     text,
                     imageFile: file,
                     policy: payload.policy || null,
+                    // FIT-6: carry the original submission timestamp
+                    // forward so chained retries (retry → retry → ...)
+                    // never lose the original meal day.
+                    localTimestamp: entry.localTimestamp || null,
                 });
                 renderMealPendingList();
                 toast('New estimate — review before it counts.', 'warn');
@@ -4964,11 +4972,17 @@
         refreshMealSubmitState();
 
         const clientId = newMealClientId();
+        // FIT-6: capture the original submission timestamp so Retry can
+        // reuse it. Without this, retrying a pending entry created
+        // before midnight would misdate the meal — the backend derives
+        // food_log.date and logged_at from local_timestamp, so a stale
+        // pending entry retried "today" would lose its original day.
+        const localTimestamp = new Date().toISOString();
         const form = new FormData();
         if (textValue) form.append('text', textValue);
         if (file) form.append('image', file, file.name || 'meal.jpg');
         form.append('client_id', clientId);
-        form.append('local_timestamp', new Date().toISOString());
+        form.append('local_timestamp', localTimestamp);
 
         try {
             const res = await fetch('/api/meal-intake', {
@@ -4990,12 +5004,10 @@
                 setMealComposerError(msg);
                 return;
             }
-            // FIT-6: pass imageFile through so the pending entry can
-            // power Retry without needing the file picker again. Keep
-            // a separate handle to file because clearMealComposerInputs()
-            // (called inside the pending_review branch) nulls out
-            // mealComposerState.imageFile before we'd be able to read it.
-            handleMealIntakeResponse(payload, { textValue, clientId, imageFile: file });
+            // FIT-6: pass imageFile + localTimestamp through so the
+            // pending entry can power Retry without needing the file
+            // picker again AND without losing the original day.
+            handleMealIntakeResponse(payload, { textValue, clientId, imageFile: file, localTimestamp });
         } catch (e) {
             console.error(e);
             saveMealDraft();
@@ -5018,15 +5030,19 @@
         }
         if (status === 'pending_review') {
             // FIT-6: capture the policy block (confidence_band + reason
-            // codes) and the original imageFile alongside the estimate
-            // so the review card can render reason chips (AC2) and
-            // Retry can re-submit the same input (AC4).
+            // codes), the original imageFile, AND the original
+            // localTimestamp alongside the estimate. The policy block
+            // powers reason chips (AC2). The imageFile + localTimestamp
+            // power Retry (AC4); without persisting the timestamp here
+            // a retry across midnight would misdate the meal (the
+            // backend derives food_log.date from local_timestamp).
             mealComposerState.pending.push({
                 client_id: ctx.clientId,
                 estimate: payload.estimate || {},
                 text: ctx.textValue || '',
                 imageFile: ctx.imageFile || null,
                 policy: payload.policy || null,
+                localTimestamp: ctx.localTimestamp || null,
             });
             clearMealComposerInputs();
             clearMealDraft();
