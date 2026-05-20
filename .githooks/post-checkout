@@ -1,0 +1,41 @@
+#!/bin/bash
+# Restore the previous branch when a branch switch happens under a running
+# dashboard server from this same worktree.
+
+set -u
+
+OLD_REV="${1:-}"
+_NEW_REV="${2:-}"
+IS_BRANCH_CHECKOUT="${3:-0}"
+
+[ "${IS_BRANCH_CHECKOUT}" = "1" ] || exit 0
+[ "${FITNESS_WORKTREE_GUARD_RESTORE:-0}" = "1" ] && exit 0
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+GUARD="${HOOK_DIR}/worktree-server-guard.sh"
+[ -x "${GUARD}" ] || GUARD="${ROOT}/scripts/worktree-server-guard.sh"
+[ -x "${GUARD}" ] || exit 0
+
+"${GUARD}" --root "${ROOT}" --quiet
+guard_status="$?"
+if [ "${guard_status}" = "0" ]; then
+    exit 0
+fi
+
+[ "${guard_status}" = "1" ] || exit 0
+
+new_ref="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "new ref")"
+old_ref="$(git reflog -1 --pretty=%gs HEAD 2>/dev/null | sed -n 's/^checkout: moving from \(.*\) to .*$/\1/p')"
+[ -n "${old_ref}" ] || old_ref="${OLD_REV}"
+
+echo "Flask server detected running from this worktree; refusing branch switch to '${new_ref}'." >&2
+echo "Stop the server before switching branches, or use 'git worktree add' for the new branch." >&2
+
+if [ -n "${old_ref}" ]; then
+    FITNESS_WORKTREE_GUARD_RESTORE=1 git checkout -q "${old_ref}" >/dev/null 2>&1 \
+        || FITNESS_WORKTREE_GUARD_RESTORE=1 git checkout -q "${OLD_REV}" >/dev/null 2>&1 \
+        || true
+fi
+
+exit 1
