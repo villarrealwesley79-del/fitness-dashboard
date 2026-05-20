@@ -21,6 +21,12 @@ import base64
 import time
 import re
 
+try:
+    from pywebpush import WebPushException, webpush
+except ImportError:  # pragma: no cover - exercised only when optional dependency is absent.
+    WebPushException = None
+    webpush = None
+
 # Load .env file if present (for OURA_API_TOKEN etc.)
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 if os.path.exists(_env_path):
@@ -47,6 +53,7 @@ from data_store import (
     import_personal_vocab_entry,
     list_personal_vocab_entries,
     delete_food_log_by_client_id,
+    get_push_subscription_for_delivery,
     list_push_subscriptions,
     revoke_push_subscription,
     save_push_subscription,
@@ -7293,6 +7300,91 @@ def _push_alert_preview(now=None):
     return {"generated_at": (now or datetime.now()).isoformat(timespec="seconds"), "alerts": alerts}
 
 
+def _push_vapid_public_key():
+    return (
+        os.environ.get("FITNESS_PUSH_VAPID_PUBLIC_KEY")
+        or os.environ.get("VAPID_PUBLIC_KEY")
+        or ""
+    ).strip()
+
+
+def _push_vapid_private_key():
+    return (
+        os.environ.get("FITNESS_PUSH_VAPID_PRIVATE_KEY")
+        or os.environ.get("VAPID_PRIVATE_KEY")
+        or ""
+    ).strip()
+
+
+def _push_vapid_claims():
+    subject = (
+        os.environ.get("FITNESS_PUSH_VAPID_SUBJECT")
+        or os.environ.get("VAPID_SUBJECT")
+        or "mailto:admin@example.com"
+    ).strip()
+    return {"sub": subject}
+
+
+def _push_test_payload():
+    return {
+        "title": "Fitness Dashboard test",
+        "body": "Push notifications are working. Scheduled reminders are not enabled yet.",
+        "tag": "fitness-dashboard-test",
+        "url": "/",
+        "safety_critical": False,
+        "sent_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def _send_web_push(subscription: dict, payload: dict):
+    if webpush is None:
+        return {
+            "ok": False,
+            "status": "server_error",
+            "status_code": 500,
+            "error": "pywebpush dependency is not installed",
+        }
+    private_key = _push_vapid_private_key()
+    if not private_key:
+        return {
+            "ok": False,
+            "status": "server_error",
+            "status_code": 500,
+            "error": "VAPID private key is not configured",
+        }
+    try:
+        response = webpush(
+            subscription_info=subscription,
+            data=json.dumps(payload),
+            vapid_private_key=private_key,
+            vapid_claims=_push_vapid_claims(),
+        )
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code in {404, 410}:
+            return {"ok": False, "status": "gone", "status_code": status_code, "error": "subscription gone"}
+        return {
+            "ok": False,
+            "status": "server_error",
+            "status_code": status_code or 500,
+            "error": str(exc),
+        }
+    return {
+        "ok": True,
+        "status": "delivered",
+        "status_code": getattr(response, "status_code", None) or 201,
+    }
+
+
+@app.route("/api/push/vapid-public-key")
+def push_vapid_public_key():
+    public_key = _push_vapid_public_key()
+    if not public_key:
+        return api_error("VAPID public key is not configured", status=404, code="push_vapid_not_configured")
+    return jsonify({"public_key": public_key})
+
+
 @app.route("/api/push/subscriptions", methods=["GET", "POST"])
 def push_subscriptions():
     user_id = _current_data_user_id()
@@ -7322,6 +7414,47 @@ def push_subscription_revoke(endpoint_hash: str):
         return api_error("invalid endpoint_hash", status=400, code="invalid_field")
     removed = revoke_push_subscription(_current_data_user_id(), endpoint_hash)
     return jsonify({"status": "revoked" if removed else "not_found", "revoked": removed})
+
+
+@app.route("/api/push/test", methods=["POST"])
+def push_test_notification():
+    data, err = get_json_body(required=False)
+    if err:
+        return err
+    endpoint_hash = ((data or {}).get("endpoint_hash") or "").strip() or None
+    user_id = _current_data_user_id()
+    delivery_target = get_push_subscription_for_delivery(user_id, endpoint_hash=endpoint_hash)
+    if not delivery_target:
+        return api_error("no active push subscription", status=404, code="push_subscription_not_found")
+
+    payload = _push_test_payload()
+    result = _send_web_push(delivery_target["subscription"], payload)
+    summary = delivery_target["summary"]
+    if result["status"] == "gone":
+        revoke_push_subscription(user_id, summary["endpoint_hash"])
+        return jsonify({
+            "status": "gone",
+            "delivered": False,
+            "revoked": True,
+            "subscription": summary,
+            "safety_critical": False,
+            "error": result["error"],
+        }), 410
+    if not result["ok"]:
+        return jsonify({
+            "status": "server_error",
+            "delivered": False,
+            "subscription": summary,
+            "safety_critical": False,
+            "error": result["error"],
+        }), result["status_code"]
+    return jsonify({
+        "status": "delivered",
+        "delivered": True,
+        "subscription": summary,
+        "payload": payload,
+        "safety_critical": False,
+    })
 
 
 @app.route("/api/push/reminders/preview")

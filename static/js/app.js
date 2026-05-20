@@ -2615,18 +2615,26 @@
         }
     }
 
-    // ── FIT-40: Web Push permission flow + alert surfaces ─────────
-    // No real push delivery yet (FIT-39 deferred the worker). This
-    // section only owns the permission flow + the in-app alert preview.
+    // ── FIT-40/FIT-92: Web Push permission flow + test delivery ───
 
     const PUSH_STATE_CHIP = {
         unsupported:      { text: 'Unsupported',      cls: 'unknown' },
         needs_install:    { text: 'Install required', cls: 'warn'    },
         prompt:           { text: 'Off',              cls: ''        },
-        granted_active:   { text: 'On',               cls: 'ok'      },
-        granted_inactive: { text: 'Pending',          cls: 'warn'    },
+        granted_active:   { text: 'Subscribed',       cls: 'ok'      },
+        granted_inactive: { text: 'Needs setup',      cls: 'warn'    },
         revoked:          { text: 'Revoked',          cls: 'warn'    },
         denied:           { text: 'Blocked',          cls: 'stale'   },
+    };
+
+    const PUSH_STATE_DETAIL = {
+        unsupported: 'This browser does not support web push notifications.',
+        needs_install: 'Install the app to the Home Screen before enabling push on iOS.',
+        prompt: 'Low-stakes nudges only: stale wearable data and pending food review.',
+        granted_active: 'Subscribed, no scheduled reminders yet. Send a test notification to verify delivery.',
+        granted_inactive: 'Permission is granted, but no browser push subscription is active yet.',
+        revoked: 'Browser permission was reset. Re-enable to create a fresh subscription, or disable to clean up.',
+        denied: 'Notifications are blocked in browser or OS settings.',
     };
 
     function _pushSupported() {
@@ -2667,7 +2675,10 @@
             return { name: 'prompt', subs: [] };
         }
         // perm === 'granted'
-        if (subs.length > 0) return { name: 'granted_active', subs };
+        const endpointHash = await _pushCurrentEndpointHash();
+        if (endpointHash && subs.some((sub) => sub && sub.endpoint_hash === endpointHash)) {
+            return { name: 'granted_active', subs };
+        }
         return { name: 'granted_inactive', subs: [] };
     }
 
@@ -2682,8 +2693,9 @@
 
     function _pushApplyButtons(state) {
         const enableBtn = $('btn-push-enable');
+        const testBtn = $('btn-push-test');
         const disableBtn = $('btn-push-disable');
-        if (!enableBtn || !disableBtn) return;
+        if (!enableBtn || !disableBtn || !testBtn) return;
         const stateName = state.name;
         const subCount = (state.subs && state.subs.length) || 0;
         // Enable is offered when the user can grant permission or re-subscribe.
@@ -2700,7 +2712,14 @@
             || (stateName === 'denied' && subCount > 0)
         );
         enableBtn.hidden = !showEnable;
+        testBtn.hidden = stateName !== 'granted_active' || subCount === 0;
         disableBtn.hidden = !showDisable;
+    }
+
+    function _pushApplyDetail(stateName) {
+        const detail = $('push-state-detail');
+        if (!detail) return;
+        detail.textContent = PUSH_STATE_DETAIL[stateName] || PUSH_STATE_DETAIL.unsupported;
     }
 
     function _pushApplyHintRows(stateName) {
@@ -2754,6 +2773,7 @@
         const state = await _pushDetectState();
         _pushApplyChip(state.name);
         _pushApplyButtons(state);
+        _pushApplyDetail(state.name);
         _pushApplyHintRows(state.name);
         _pushApplyDot(state.name);
         _wirePushButtons();
@@ -2770,6 +2790,11 @@
         if (disableBtn && !disableBtn.dataset.wired) {
             disableBtn.dataset.wired = '1';
             disableBtn.addEventListener('click', () => { disablePush(); });
+        }
+        const testBtn = $('btn-push-test');
+        if (testBtn && !testBtn.dataset.wired) {
+            testBtn.dataset.wired = '1';
+            testBtn.addEventListener('click', () => { sendPushTest(); });
         }
     }
 
@@ -2796,6 +2821,22 @@
         const out = new Uint8Array(raw.length);
         for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
         return out;
+    }
+
+    async function _pushEndpointHash(endpoint) {
+        if (!endpoint || !window.crypto || !window.crypto.subtle) return null;
+        const bytes = new TextEncoder().encode(endpoint);
+        const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+        return Array.from(new Uint8Array(digest))
+            .map((byte) => byte.toString(16).padStart(2, '0'))
+            .join('');
+    }
+
+    async function _pushCurrentEndpointHash() {
+        if (!('serviceWorker' in navigator)) return null;
+        const reg = await navigator.serviceWorker.getRegistration();
+        const sub = reg && (await reg.pushManager.getSubscription());
+        return sub ? _pushEndpointHash(sub.endpoint) : null;
     }
 
     async function enablePush() {
@@ -2881,6 +2922,45 @@
             await renderPushSection();
         } finally {
             if (disableBtn) disableBtn.disabled = false;
+        }
+    }
+
+    async function sendPushTest() {
+        const testBtn = $('btn-push-test');
+        const row = $('push-test-row');
+        const result = $('push-test-result');
+        if (testBtn) testBtn.disabled = true;
+        if (row) row.hidden = false;
+        if (result) result.textContent = 'Sending test notification...';
+        try {
+            const endpointHash = await _pushCurrentEndpointHash();
+            if (!endpointHash) {
+                if (result) result.textContent = 'No active subscription on this device. Re-enable notifications here, then send a test.';
+                await renderPushSection();
+                return;
+            }
+            const res = await fetch('/api/push/test', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                body: JSON.stringify({ endpoint_hash: endpointHash }),
+            });
+            const body = await res.json().catch(() => ({}));
+            if (res.ok && body.status === 'delivered') {
+                if (result) result.textContent = 'Delivered. This device should show the test notification now.';
+                toast('Test notification sent');
+            } else if (res.status === 410 || body.status === 'gone') {
+                if (result) result.textContent = 'Subscription expired. Re-enable notifications to create a fresh one.';
+                await renderPushSection();
+            } else {
+                const msg = body && body.error && body.error.message ? body.error.message : (body.error || 'Server could not send the test notification.');
+                if (result) result.textContent = `Not delivered: ${msg}`;
+            }
+        } catch (err) {
+            if (result) result.textContent = 'Not delivered: network or server error.';
+            console.warn('push test failed:', err);
+        } finally {
+            if (testBtn) testBtn.disabled = false;
         }
     }
 

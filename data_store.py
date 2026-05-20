@@ -186,6 +186,24 @@ def list_push_subscriptions(user_id: int, include_revoked: bool = False) -> list
     return [_subscription_public_row(row) for row in rows]
 
 
+def get_push_subscription_for_delivery(user_id: int, endpoint_hash: str | None = None) -> Optional[dict]:
+    """Return one active raw subscription for server-side Web Push delivery."""
+    sql = "SELECT * FROM push_subscriptions WHERE user_id = ? AND revoked_at IS NULL"
+    params: list = [user_id]
+    if endpoint_hash:
+        sql += " AND endpoint_hash = ?"
+        params.append(endpoint_hash)
+    sql += " ORDER BY updated_at DESC LIMIT 1"
+    with _get_db() as conn:
+        row = conn.execute(sql, params).fetchone()
+    if not row:
+        return None
+    return {
+        "summary": _subscription_public_row(row),
+        "subscription": _json_loads_or_none(row["subscription_json"]),
+    }
+
+
 def revoke_push_subscription(user_id: int, endpoint_hash: str) -> bool:
     now = datetime.now().isoformat(timespec="seconds")
     with _get_db() as conn:
