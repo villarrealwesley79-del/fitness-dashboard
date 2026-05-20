@@ -299,8 +299,10 @@ def test_open_food_facts_client_strips_packaged_context_words(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
     open_food_facts_client.search_products("non-US packaged Tim Tams")
+    open_food_facts_client.search_products("non us packaged Tim Tams")
 
     assert seen_terms[0] == "Tim Tams"
+    assert seen_terms[3] == "Tim Tams"
 
 
 def test_open_food_facts_accepts_zero_calorie_products(monkeypatch):

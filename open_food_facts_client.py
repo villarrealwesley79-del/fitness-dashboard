@@ -37,6 +37,7 @@ LOCALE_QUERY_TOKENS = {
     "u.k",
     "u.k.",
     "united",
+    "us",
 }
 PRODUCT_QUERY_ALIASES = {
     "petit ecolier": "Petit Écolier",
