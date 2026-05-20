@@ -1186,7 +1186,7 @@
                     ${rpe ? `<span class="ex-rpe">RPE ${rpe}</span>` : ''}
                     ${ex.rest_label ? `<span class="ex-rpe">Rest ${escapeHtml(ex.rest_label)}</span>` : ''}
                 </div>
-                ${loadHint ? `<div class="ex-why ex-load-hint">${escapeHtml(loadHint)}</div>` : ''}
+                ${loadHint ? `<div class="ex-why ex-load-hint" role="note" aria-label="Load estimate">${escapeHtml(loadHint)}</div>` : ''}
                 ${rationale ? `<div class="ex-why">${escapeHtml(rationale)}</div>` : ''}
             `;
             card.querySelector('.ex-swap-btn').addEventListener('click', () => openSwap(i, muscle, exerciseName));
@@ -3638,7 +3638,7 @@
                         <button class="ex-swap-btn active-remove-btn" type="button" title="Remove this exercise" aria-label="Remove ${escapeHtml(name)}">×</button>
                     </div>
                 </div>
-                ${loadHint ? `<div class="ex-why active-load-hint">${escapeHtml(loadHint)}</div>` : ''}
+                ${loadHint ? `<div class="ex-why active-load-hint" role="note" aria-label="Load estimate">${escapeHtml(loadHint)}</div>` : ''}
                 ${rowsHtml}
             `;
             card.querySelector('.active-swap-btn').addEventListener('click', () => openSwap(i, muscle, name, 'active'));
