@@ -696,6 +696,17 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
     margin-top: 4px;
     font-style: italic;
 }
+.ex-load-hint,
+.active-load-hint,
+.swap-load-hint {
+    color: var(--accent-amber);
+}
+.swap-load-hint {
+    display: block;
+    margin-top: 3px;
+    font-size: 11px;
+    font-weight: 600;
+}
 .ex-swap-btn {
     background: rgba(51,65,85,0.45);
     border: 1px solid var(--border-2);
@@ -2219,6 +2230,7 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 
 .active-ex { margin-bottom: 14px; padding: 12px; border-radius: 12px; background: rgba(15,23,42,0.7); border: 1px solid var(--border-1); }
 .active-ex-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.active-load-hint { margin: -2px 0 10px; }
 .active-ex-main { display: flex; align-items: center; flex: 1; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .active-ex-head h4 { font-size: 15px; font-weight: 700; color: var(--fg-0); margin: 0; flex: 1 1 140px; min-width: 0; }
 .active-ex-target { flex-shrink: 0; font-size: 11px; color: var(--fg-dim); white-space: nowrap; }

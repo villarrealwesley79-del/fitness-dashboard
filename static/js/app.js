@@ -1172,6 +1172,7 @@
             const weightStr = w != null && Number(w) > 0 ? ` · ${Math.round(w)} lb` : '';
             const rpe = ex.rpe_target || ex.rpe;
             const rationale = ex.rationale || ex.reason || '';
+            const loadHint = exerciseLoadHint(ex);
             const exerciseName = ex.exercise || ex.name || ex.machine || '—';
             card.innerHTML = `
                 <div class="ex-row-1">
@@ -1185,6 +1186,7 @@
                     ${rpe ? `<span class="ex-rpe">RPE ${rpe}</span>` : ''}
                     ${ex.rest_label ? `<span class="ex-rpe">Rest ${escapeHtml(ex.rest_label)}</span>` : ''}
                 </div>
+                ${loadHint ? `<div class="ex-why ex-load-hint">${escapeHtml(loadHint)}</div>` : ''}
                 ${rationale ? `<div class="ex-why">${escapeHtml(rationale)}</div>` : ''}
             `;
             card.querySelector('.ex-swap-btn').addEventListener('click', () => openSwap(i, muscle, exerciseName));
@@ -1221,6 +1223,15 @@
         if (w != null && Number(w) > 0) bits.push(`${Math.round(w)} lb`);
         if (ex.rpe_target || ex.rpe) bits.push(`RPE ${ex.rpe_target || ex.rpe}`);
         return bits.join(' · ');
+    }
+
+    function exerciseLoadHint(ex) {
+        const inference = ex && ex.load_inference;
+        if (inference && inference.message) return inference.message;
+        if (ex && ex.load_source === 'similar_history' && ex.load_source_detail) {
+            return 'Estimated from similar exercise history; adjust after first set.';
+        }
+        return '';
     }
 
     function cardioTargetText(cardio) {
@@ -3615,6 +3626,7 @@
             });
             const name = exerciseName(ex);
             const muscle = exerciseMuscle(ex);
+            const loadHint = exerciseLoadHint(ex);
             card.innerHTML = `
                 <div class="active-ex-head">
                     <div class="active-ex-main">
@@ -3626,6 +3638,7 @@
                         <button class="ex-swap-btn active-remove-btn" type="button" title="Remove this exercise" aria-label="Remove ${escapeHtml(name)}">×</button>
                     </div>
                 </div>
+                ${loadHint ? `<div class="ex-why active-load-hint">${escapeHtml(loadHint)}</div>` : ''}
                 ${rowsHtml}
             `;
             card.querySelector('.active-swap-btn').addEventListener('click', () => openSwap(i, muscle, name, 'active'));
@@ -4232,8 +4245,11 @@
             const isCurrent = alt.name.toLowerCase() === currentLower;
             btn.className = 'swap-row' + (isCurrent ? ' current' : '');
             const equipClass = alt.equipment === 'machine' ? 'machine' : alt.equipment === 'cable' ? 'cable' : '';
+            const loadHint = alt.load_hint && alt.load_hint.inferred_from
+                ? `Est. from ${alt.load_hint.inferred_from}`
+                : '';
             btn.innerHTML = `
-                <span>${escapeHtml(alt.name)}${alt.compound ? ' <span class="swap-current-tag">COMPOUND</span>' : ''}</span>
+                <span>${escapeHtml(alt.name)}${alt.compound ? ' <span class="swap-current-tag">COMPOUND</span>' : ''}${loadHint ? `<span class="swap-load-hint">${escapeHtml(loadHint)}</span>` : ''}</span>
                 ${isCurrent ? '<span class="swap-current-tag">CURRENT</span>' : `<span class="swap-row-equip ${equipClass}">${escapeHtml(alt.equipment || '—')}</span>`}
             `;
             if (!isCurrent) {
