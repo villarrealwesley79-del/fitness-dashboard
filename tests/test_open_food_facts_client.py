@@ -220,6 +220,35 @@ def test_open_food_facts_tier_runs_after_usda(monkeypatch):
     assert "CC-BY-SA" in estimate["off_attribution"]
 
 
+def test_open_food_facts_accepts_zero_calorie_products(monkeypatch):
+    product = _product("Sparkling Water", code="zero")
+    product["nutriments"].update(
+        {
+            "energy-kcal_100g": 0,
+            "proteins_100g": 0,
+            "carbohydrates_100g": 0,
+            "fat_100g": 0,
+            "sodium_100g": 0,
+            "fiber_100g": 0,
+        }
+    )
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": [product]},
+    )
+
+    estimate = branded_food_lookup.lookup("UK sparkling water")
+
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["external_food_id"] == "zero"
+    assert estimate["calories"] == 0
+
+
 def test_open_food_facts_filters_bad_quality(monkeypatch):
     bad = _product("Bad Product")
     bad["data_quality_tags"] = ["en:nutrition-data-error"]

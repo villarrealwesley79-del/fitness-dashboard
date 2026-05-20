@@ -279,7 +279,7 @@ def _open_food_facts_estimate(product: dict[str, Any]) -> dict[str, Any]:
         "item_name": name or product.get("product_name") or "Packaged food",
         "portion_description": "100 g",
         "meal_type": "snack",
-        "calories": nutriments.get("energy-kcal_100g") or nutriments.get("energy-kcal"),
+        "calories": _off_energy_kcal(nutriments),
         "protein_g": nutriments.get("proteins_100g"),
         "carbs_g": nutriments.get("carbohydrates_100g"),
         "fat_g": nutriments.get("fat_100g"),
@@ -344,7 +344,14 @@ def _off_macros_plausible(nutriments: dict[str, Any]) -> bool:
         fat = float(nutriments.get("fat_100g"))
     except (TypeError, ValueError):
         return False
-    return 0 < calories <= 900 and all(0 <= value <= 100 for value in (protein, carbs, fat))
+    return 0 <= calories <= 900 and all(0 <= value <= 100 for value in (protein, carbs, fat))
+
+
+def _off_energy_kcal(nutriments: dict[str, Any]) -> Any:
+    value = nutriments.get("energy-kcal_100g")
+    if value is not None:
+        return value
+    return nutriments.get("energy-kcal")
 
 
 def _off_optional_number(value: Any, default: float = 0) -> float:
