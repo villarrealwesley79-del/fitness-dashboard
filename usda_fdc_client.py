@@ -10,7 +10,7 @@ from urllib import error, parse, request
 
 FDC_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 TIMEOUT_SECONDS = 1.5
-PREFERRED_DATA_TYPES = ("Foundation", "SR Legacy")
+PREFERRED_DATA_TYPES = ("Branded", "Foundation", "SR Legacy")
 
 
 def search_foods(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any] | None:
@@ -24,8 +24,9 @@ def search_foods(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, A
         "dataType": ",".join(PREFERRED_DATA_TYPES),
     }
     api_key = os.environ.get("USDA_FDC_API_KEY")
-    if api_key:
-        params["api_key"] = api_key
+    if not api_key:
+        return None
+    params["api_key"] = api_key
     url = f"{FDC_SEARCH_URL}?{parse.urlencode(params)}"
     req = request.Request(url, headers={"Accept": "application/json"})
     try:
