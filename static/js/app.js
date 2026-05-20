@@ -628,6 +628,75 @@
         });
     }
 
+    // FIT-111: populate the four Settings group header chips. Reads the
+    // same freshness block the integration chips use + the existing
+    // notification / coach state chips. No new endpoints; pure DOM
+    // derivation from data already on the page after renderFreshnessChips
+    // has run. Safe to call even if some chips are missing.
+    function applyGroupChip(el, cls, label) {
+        if (!el) return;
+        el.classList.remove('ok', 'warn', 'stale', 'unknown');
+        el.classList.add(cls || 'unknown');
+        el.textContent = label;
+    }
+
+    function renderSettingsGroupSummaries(freshness) {
+        // Data sources: count fresh vs stale across the SETTINGS_FRESHNESS_SLOTS
+        // formatters so the group chip stays in lockstep with the per-row chips.
+        const ago = (window.__dashHelpers && window.__dashHelpers.ago) || function (s) { return s || ''; };
+        let fresh = 0, stale = 0, unknown = 0;
+        SETTINGS_FRESHNESS_SLOTS.forEach((slot) => {
+            const node = freshness ? freshness[slot.key] : null;
+            const cls = (slot.render(node, ago) || {}).cls;
+            if (cls === 'ok') fresh++;
+            else if (cls === 'warn' || cls === 'stale') stale++;
+            else unknown++;
+        });
+        const total = fresh + stale + unknown;
+        const dsCls = stale ? 'warn' : (fresh ? 'ok' : 'unknown');
+        const dsLabel = total ? `${fresh} fresh · ${stale} stale` : '—';
+        applyGroupChip($('settings-group-summary-data-sources'), dsCls, dsLabel);
+
+        // Notifications: mirror the push-state-chip's classes + label so the
+        // group glance matches what the user sees inside the card.
+        const pushChip = $('push-state-chip');
+        if (pushChip) {
+            const pushCls = ['ok', 'warn', 'stale', 'unknown'].find((c) => pushChip.classList.contains(c)) || 'unknown';
+            const txt = pushChip.textContent && pushChip.textContent.trim();
+            applyGroupChip($('settings-group-summary-notifications'),
+                pushCls,
+                txt && txt !== '—' ? txt : 'Not configured');
+        } else {
+            applyGroupChip($('settings-group-summary-notifications'), 'unknown', '—');
+        }
+
+        // Coaching setup: mirror the AI primary chip — that's the only one
+        // of the three coaching cards that has a live freshness signal.
+        const aiChip = $('ai-primary-state');
+        if (aiChip) {
+            const aiCls = ['ok', 'warn', 'stale', 'unknown'].find((c) => aiChip.classList.contains(c)) || 'unknown';
+            const txt = aiChip.textContent && aiChip.textContent.trim();
+            applyGroupChip($('settings-group-summary-coaching'),
+                aiCls,
+                txt && txt !== '—' ? `AI ${txt.toLowerCase()}` : 'Configured');
+        } else {
+            applyGroupChip($('settings-group-summary-coaching'), 'ok', 'Configured');
+        }
+
+        // Maintenance: surface last-backup state. The chip below it is
+        // populated by renderLastBackup elsewhere; mirror it.
+        const backupChip = $('last-backup');
+        if (backupChip) {
+            const bCls = ['ok', 'warn', 'stale', 'unknown'].find((c) => backupChip.classList.contains(c)) || 'unknown';
+            const txt = backupChip.textContent && backupChip.textContent.trim();
+            applyGroupChip($('settings-group-summary-maintenance'),
+                bCls,
+                txt && txt !== '—' ? `Backup ${txt}` : 'No recent backup');
+        } else {
+            applyGroupChip($('settings-group-summary-maintenance'), 'unknown', '—');
+        }
+    }
+
     function buildFoodGuidanceLine(food) {
         // Returns a sentence explaining whether today's food changed/should change
         // the remaining-day guidance. Always render something (per FIT-1 acceptance
@@ -3042,6 +3111,10 @@
         // chip carry the richer cached/live + sync nuance.
         renderFreshnessChips(freshness, SETTINGS_FRESHNESS_SLOTS);
         renderOuraFreshnessDetail(oura, ouraFreshness);
+        // FIT-111: populate the four settings group header chips so the
+        // user gets a glance-level signal per section. Derived from the
+        // same freshness payload + existing chip state — no new endpoints.
+        renderSettingsGroupSummaries(freshness);
 
         // Apple Health — prefer the real sync-status endpoint over
         // the file-existence probe, and only claim "connected" when a

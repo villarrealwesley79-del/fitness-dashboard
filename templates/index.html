@@ -654,34 +654,95 @@
         <section id="tab-settings" class="tab-content">
             <div class="tab-title-row"><h2 class="tab-title">Settings</h2><span class="tab-sub">Preferences &amp; Integrations</span></div>
 
-            <div class="section-title">TRAINING GOAL</div>
-            <div class="card-list" id="settings-goals"></div>
+            <!-- FIT-111: settings re-grouped into four scannable sections. All
+                 existing element IDs preserved verbatim — JS bindings are
+                 ID-based and continue to resolve regardless of wrapper. -->
 
-            <div class="section-title">WORKOUT PREFERENCES</div>
-            <div class="card">
-                <div class="settings-row">
-                    <div class="settings-row-label">Preferred Duration</div>
-                    <div class="settings-row-control">
-                        <select id="settings-duration" class="select-inline"></select>
-                    </div>
-                </div>
-                <div class="settings-row">
-                    <div class="settings-row-label">Sessions Per Week</div>
-                    <div class="settings-row-control">
-                        <input type="range" id="settings-sessions" min="1" max="7" step="1">
-                        <span id="settings-sessions-val" class="settings-row-val">3</span>
-                    </div>
-                </div>
-                <div class="settings-row">
-                    <div class="settings-row-label">Equipment</div>
-                    <div class="settings-row-control">
-                        <select id="settings-equipment" class="select-inline"></select>
-                    </div>
-                </div>
-            </div>
+            <section class="settings-group" data-group="coaching-setup">
+                <header class="settings-group-head">
+                    <span class="settings-group-label">Coaching setup</span>
+                    <span id="settings-group-summary-coaching" class="state-chip state-chip-sm">—</span>
+                </header>
 
-            <div class="section-title">INTEGRATIONS</div>
-            <div class="card">
+                <div class="settings-subtitle">Training goal</div>
+                <div class="card-list" id="settings-goals"></div>
+
+                <div class="settings-subtitle">Workout preferences</div>
+                <div class="card">
+                    <div class="settings-row">
+                        <div class="settings-row-label">Preferred Duration</div>
+                        <div class="settings-row-control">
+                            <select id="settings-duration" class="select-inline"></select>
+                        </div>
+                    </div>
+                    <div class="settings-row">
+                        <div class="settings-row-label">Sessions Per Week</div>
+                        <div class="settings-row-control">
+                            <input type="range" id="settings-sessions" min="1" max="7" step="1">
+                            <span id="settings-sessions-val" class="settings-row-val">3</span>
+                        </div>
+                    </div>
+                    <div class="settings-row">
+                        <div class="settings-row-label">Equipment</div>
+                        <div class="settings-row-control">
+                            <select id="settings-equipment" class="select-inline"></select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-subtitle">AI coach</div>
+                <div class="card">
+                    <div class="settings-row" id="ai-coach-warning-row" hidden>
+                        <div class="settings-row-label settings-row-label-stack">
+                            <span class="settings-row-label-main">⚠ AI coach is flaky</span>
+                            <span id="ai-coach-warning-detail" class="settings-row-detail">Deterministic plan remains the source of truth.</span>
+                        </div>
+                        <div class="settings-row-control">
+                            <span id="ai-coach-warning-pct" class="state-chip warn">—</span>
+                        </div>
+                    </div>
+                    <div class="settings-row">
+                        <div class="settings-row-label settings-row-label-stack">
+                            <span class="settings-row-label-main">
+                                <span class="int-dot" id="ai-primary-dot"></span>
+                                Primary
+                            </span>
+                            <span id="ai-primary-detail" class="settings-row-detail">—</span>
+                        </div>
+                        <div class="settings-row-control">
+                            <span id="ai-primary-state" class="state-chip">—</span>
+                        </div>
+                    </div>
+                    <div class="settings-row">
+                        <div class="settings-row-label settings-row-label-stack">
+                            <span class="settings-row-label-main">
+                                <span class="int-dot" id="ai-fallback-dot"></span>
+                                Fallback
+                            </span>
+                            <span id="ai-fallback-detail" class="settings-row-detail">—</span>
+                        </div>
+                        <div class="settings-row-control">
+                            <span id="ai-fallback-state" class="state-chip">—</span>
+                        </div>
+                    </div>
+                    <div class="settings-row">
+                        <div class="settings-row-label settings-row-label-stack">
+                            <span class="settings-row-label-main">24h activity</span>
+                            <span id="ai-metrics-detail" class="settings-row-detail">—</span>
+                        </div>
+                        <div class="settings-row-control">
+                            <span id="ai-metrics-fallback-pct" class="state-chip">—</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="settings-group" data-group="data-sources">
+                <header class="settings-group-head">
+                    <span class="settings-group-label">Data sources</span>
+                    <span id="settings-group-summary-data-sources" class="state-chip state-chip-sm">—</span>
+                </header>
+                <div class="card">
                 <div class="settings-row">
                     <div class="settings-row-label">
                         <span class="int-dot int-dot-on"></span>
@@ -771,54 +832,14 @@
                 </div>
             </div>
 
-            <div class="section-title">AI COACH</div>
-            <div class="card">
-                <div class="settings-row" id="ai-coach-warning-row" hidden>
-                    <div class="settings-row-label settings-row-label-stack">
-                        <span class="settings-row-label-main">⚠ AI coach is flaky</span>
-                        <span id="ai-coach-warning-detail" class="settings-row-detail">Deterministic plan remains the source of truth.</span>
-                    </div>
-                    <div class="settings-row-control">
-                        <span id="ai-coach-warning-pct" class="state-chip warn">—</span>
-                    </div>
-                </div>
-                <div class="settings-row">
-                    <div class="settings-row-label settings-row-label-stack">
-                        <span class="settings-row-label-main">
-                            <span class="int-dot" id="ai-primary-dot"></span>
-                            Primary
-                        </span>
-                        <span id="ai-primary-detail" class="settings-row-detail">—</span>
-                    </div>
-                    <div class="settings-row-control">
-                        <span id="ai-primary-state" class="state-chip">—</span>
-                    </div>
-                </div>
-                <div class="settings-row">
-                    <div class="settings-row-label settings-row-label-stack">
-                        <span class="settings-row-label-main">
-                            <span class="int-dot" id="ai-fallback-dot"></span>
-                            Fallback
-                        </span>
-                        <span id="ai-fallback-detail" class="settings-row-detail">—</span>
-                    </div>
-                    <div class="settings-row-control">
-                        <span id="ai-fallback-state" class="state-chip">—</span>
-                    </div>
-                </div>
-                <div class="settings-row">
-                    <div class="settings-row-label settings-row-label-stack">
-                        <span class="settings-row-label-main">24h activity</span>
-                        <span id="ai-metrics-detail" class="settings-row-detail">—</span>
-                    </div>
-                    <div class="settings-row-control">
-                        <span id="ai-metrics-fallback-pct" class="state-chip">—</span>
-                    </div>
-                </div>
-            </div>
+            </section>
 
-            <div class="section-title">NOTIFICATIONS</div>
-            <div class="card" id="push-notifications-card">
+            <section class="settings-group" data-group="notifications">
+                <header class="settings-group-head">
+                    <span class="settings-group-label">Notifications</span>
+                    <span id="settings-group-summary-notifications" class="state-chip state-chip-sm">—</span>
+                </header>
+                <div class="card" id="push-notifications-card">
                 <div class="settings-row">
                     <div class="settings-row-label settings-row-label-stack">
                         <span class="settings-row-label-main">
@@ -872,42 +893,51 @@
                 </div>
             </div>
 
-            <div class="section-title">DATA &amp; BACKUP</div>
-            <div class="card">
-                <div class="settings-row">
-                    <div class="settings-row-label">Export Data</div>
-                    <div class="settings-row-control">
-                        <button id="btn-export" class="btn btn-ghost btn-sm" type="button">Download</button>
-                    </div>
-                </div>
-                <div class="settings-row">
-                    <div class="settings-row-label">Import Backup</div>
-                    <div class="settings-row-control">
-                        <input type="file" id="import-file" accept=".json" hidden>
-                        <button id="btn-import" class="btn btn-ghost btn-sm" type="button">Select File</button>
-                    </div>
-                </div>
-                <div class="settings-row">
-                    <div class="settings-row-label">Last Backup</div>
-                    <div class="settings-row-control"><span id="last-backup" class="state-chip">—</span></div>
-                </div>
-            </div>
+            </section>
 
-            <div class="section-title">APP</div>
-            <div class="card">
-                <div class="settings-row">
-                    <div class="settings-row-label">Dark Mode</div>
-                    <div class="settings-row-control"><span class="toggle on" aria-hidden="true"></span></div>
+            <section class="settings-group" data-group="maintenance">
+                <header class="settings-group-head">
+                    <span class="settings-group-label">Maintenance</span>
+                    <span id="settings-group-summary-maintenance" class="state-chip state-chip-sm">—</span>
+                </header>
+
+                <div class="settings-subtitle">Data &amp; backup</div>
+                <div class="card">
+                    <div class="settings-row">
+                        <div class="settings-row-label">Export Data</div>
+                        <div class="settings-row-control">
+                            <button id="btn-export" class="btn btn-ghost btn-sm" type="button">Download</button>
+                        </div>
+                    </div>
+                    <div class="settings-row">
+                        <div class="settings-row-label">Import Backup</div>
+                        <div class="settings-row-control">
+                            <input type="file" id="import-file" accept=".json" hidden>
+                            <button id="btn-import" class="btn btn-ghost btn-sm" type="button">Select File</button>
+                        </div>
+                    </div>
+                    <div class="settings-row">
+                        <div class="settings-row-label">Last Backup</div>
+                        <div class="settings-row-control"><span id="last-backup" class="state-chip">—</span></div>
+                    </div>
                 </div>
-                <div class="settings-row">
-                    <div class="settings-row-label">Units</div>
-                    <div class="settings-row-control"><span class="state-chip">Imperial (lb)</span></div>
+
+                <div class="settings-subtitle">App</div>
+                <div class="card">
+                    <div class="settings-row">
+                        <div class="settings-row-label">Dark Mode</div>
+                        <div class="settings-row-control"><span class="toggle on" aria-hidden="true"></span></div>
+                    </div>
+                    <div class="settings-row">
+                        <div class="settings-row-label">Units</div>
+                        <div class="settings-row-control"><span class="state-chip">Imperial (lb)</span></div>
+                    </div>
+                    <div class="settings-row">
+                        <div class="settings-row-label">Account</div>
+                        <div class="settings-row-control"><a class="btn btn-ghost btn-sm" href="/logout">Sign Out</a></div>
+                    </div>
                 </div>
-                <div class="settings-row">
-                    <div class="settings-row-label">Account</div>
-                    <div class="settings-row-control"><a class="btn btn-ghost btn-sm" href="/logout">Sign Out</a></div>
-                </div>
-            </div>
+            </section>
         </section>
 
         </main>
