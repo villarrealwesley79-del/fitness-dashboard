@@ -38,6 +38,9 @@ def test_direct_lookup_gate_blocks_multi_item_generic_text():
     assert branded_food_lookup.should_attempt_direct_lookup("banana") is True
     assert branded_food_lookup.should_attempt_direct_lookup("UK Walkers crisps") is True
     assert branded_food_lookup.should_attempt_direct_lookup("non-US packaged Smarties") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("non-US packaged") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("packaged product") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("UK") is False
     assert branded_food_lookup.should_attempt_direct_lookup("two eggs and toast") is False
     assert branded_food_lookup.should_attempt_direct_lookup("chicken with rice") is False
     assert branded_food_lookup.should_attempt_direct_lookup("half Chipotle chicken burrito") is False

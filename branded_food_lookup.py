@@ -118,10 +118,17 @@ OFF_PACKAGED_QUERY_TOKENS = {
     "barcode",
     "imported",
     "non-us",
+    "non-u.s",
     "package",
     "packaged",
     "product",
 }
+OFF_CONTEXT_ONLY_QUERY_TOKENS = (
+    OFF_PACKAGED_QUERY_TOKENS
+    | set(OFF_LOCALE_COUNTRY_TAGS)
+    | OFF_LOCALE_ADJECTIVE_TOKENS
+    | {"kingdom", "non", "u.s", "united", "us"}
+)
 OFF_KNOWN_PACKAGED_PRODUCT_PHRASES = {
     "goldbaren",
     "haribo goldbaren",
@@ -224,6 +231,8 @@ def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) ->
     expected_country_tag = _off_expected_country_tag(normalized)
     if _off_lookup_allowed(normalized, expected_country_tag):
         return True
+    if not _off_product_tokens(normalized):
+        return False
     if brand_hint or _brand_from_text(normalized):
         return bool([token for token in tokens if token not in KNOWN_BRANDS])
     return len(tokens) == 1
@@ -408,12 +417,15 @@ def _off_expected_country_tag(text: str) -> str | None:
 
 def _off_lookup_allowed(text: str, expected_country_tag: str | None) -> bool:
     tokens = _off_query_tokens(text)
+    product_tokens = _off_product_tokens(text)
     has_packaged_context = bool(
         OFF_PACKAGED_QUERY_TOKENS.intersection(tokens) or _off_non_us_requested(text)
     )
     if has_packaged_context:
-        return True
+        return bool(product_tokens)
     if not expected_country_tag:
+        return False
+    if not product_tokens:
         return False
     if {"united", "kingdom"}.issubset(tokens):
         return True
@@ -422,9 +434,7 @@ def _off_lookup_allowed(text: str, expected_country_tag: str | None) -> bool:
         return True
     if any(token in OFF_LOCALE_COUNTRY_TAGS for token in explicit_country_tokens):
         return True
-    product_phrase = " ".join(
-        token for token in _off_query_token_list(text) if token not in OFF_LOCALE_COUNTRY_TAGS
-    )
+    product_phrase = " ".join(product_tokens)
     return product_phrase in OFF_KNOWN_PACKAGED_PRODUCT_PHRASES
 
 
@@ -437,6 +447,14 @@ def _off_query_token_list(text: str) -> list[str]:
         raw.strip(".,!?;:()[]{}\"'").lower()
         for raw in (text or "").split()
         if raw.strip(".,!?;:()[]{}\"'")
+    ]
+
+
+def _off_product_tokens(text: str) -> list[str]:
+    return [
+        token
+        for token in _off_query_token_list(text)
+        if token not in OFF_CONTEXT_ONLY_QUERY_TOKENS
     ]
 
 
