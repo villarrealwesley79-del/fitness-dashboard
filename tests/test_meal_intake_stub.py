@@ -1561,3 +1561,27 @@ def test_meal_composer_js_hydrates_pending_and_rolls_back_failed_discard():
     assert "toast('Review the estimate before it counts toward today.', 'warn');\n            refreshMacroCard();" in source
     assert "local_timestamp: entry.local_timestamp || null" in source
     assert "local_timestamp: entry.local_timestamp || fallback.local_timestamp || entry.logged_at" in source
+
+
+def test_meal_composer_js_surfaces_open_food_facts_attribution():
+    """Static guard for the browser-only FIT-80 source-provenance surface."""
+    js = Path("static/js/app.js").read_text()
+    html = Path("templates/index.html").read_text()
+    css = Path("static/css/style.css").read_text()
+
+    assert "mealEstimateProvenanceHtml(est)" in js
+    assert "renderMealComposerProvenance(payload.estimate, ctx.clientId)" in js
+    assert "renderMealComposerProvenance(payload.estimate, newClientId)" in js
+    assert "renderMealComposerProvenance(edited, clientId)" in js
+    assert "clearMealComposerStatus(clientId);\n            toast('Meal removed', 'ok');" in js
+    assert "status.dataset.provenanceClientId !== String(clientId)" in js
+    assert "text.addEventListener('input', () => { clearMealComposerStatus(); refreshMealSubmitState(); saveMealDraft(); });" in js
+    assert "image.addEventListener('change', () => {\n                clearMealComposerStatus();" in js
+    assert "previewClear.addEventListener('click', () => { clearMealComposerStatus(); clearMealImage(); });" in js
+    assert "est.off_attribution" in js
+    assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in js
+    assert "attrUrl || (est && (est.verified_source_url || est.source_url || est.product_url))" in js
+    assert "target=\"_blank\" rel=\"noopener noreferrer\"" in js
+    assert 'data-provenance-surface="meal-estimates"' in html
+    assert ".meal-pending-provenance" in css
+    assert ".meal-composer-status--provenance" in css
