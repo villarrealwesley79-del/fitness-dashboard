@@ -4905,6 +4905,10 @@ def food_logs_by_date(date):
     def _project(entry: dict) -> dict:
         return {
             "client_id": entry.get("client_id"),
+            # FIT-100: include `date` so the correction flow can target
+            # the original day even when `logged_at` is missing on legacy
+            # rows. Without this, edits on those rows would land on today.
+            "date": entry.get("date"),
             "logged_at": entry.get("logged_at"),
             "item_name": entry.get("item_name"),
             "portion_description": entry.get("portion_description"),

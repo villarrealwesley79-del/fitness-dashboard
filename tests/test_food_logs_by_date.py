@@ -93,8 +93,11 @@ def test_returned_entries_use_bounded_projection(fitness_app, monkeypatch):
     )
     res = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{today}")
     entry = res.get_json()["entries"][0]
+    # FIT-100: `date` joins the projection so the correction flow can
+    # anchor the upsert to the original meal date even when `logged_at`
+    # is absent (legacy rows).
     expected_keys = {
-        "client_id", "logged_at", "item_name", "portion_description", "meal_type",
+        "client_id", "date", "logged_at", "item_name", "portion_description", "meal_type",
         "calories", "protein_g", "carbs_g", "fat_g", "sodium_mg",
         "source", "confidence", "correction_state", "from_image",
     }
