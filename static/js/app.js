@@ -1186,7 +1186,7 @@
                     ${rpe ? `<span class="ex-rpe">RPE ${rpe}</span>` : ''}
                     ${ex.rest_label ? `<span class="ex-rpe">Rest ${escapeHtml(ex.rest_label)}</span>` : ''}
                 </div>
-                ${loadHint ? `<div class="ex-why ex-load-hint" role="note" aria-label="Load estimate">${escapeHtml(loadHint)}</div>` : ''}
+                ${renderLoadHintHtml(loadHint, 'ex-load-hint')}
                 ${rationale ? `<div class="ex-why">${escapeHtml(rationale)}</div>` : ''}
             `;
             card.querySelector('.ex-swap-btn').addEventListener('click', () => openSwap(i, muscle, exerciseName));
@@ -1225,13 +1225,68 @@
         return bits.join(' · ');
     }
 
+    // FIT-105: returns either null (no hint, e.g. direct-history exercises)
+    // or a rich object the renderer can decorate with a confidence chip
+    // and a source-detail suffix. The wrapper preserves Codex's FIT-103
+    // backend contract: `inference.message` is canonical when present;
+    // we also pass through `confidence` and `load_source_detail` so the
+    // user can spot LOW-confidence estimates at a glance.
     function exerciseLoadHint(ex) {
         const inference = ex && ex.load_inference;
-        if (inference && inference.message) return inference.message;
-        if (ex && ex.load_source === 'similar_history' && ex.load_source_detail) {
-            return 'Estimated from similar exercise history; adjust after first set.';
+        if (inference && inference.message) {
+            return {
+                text: inference.message,
+                confidence: inference.confidence || null,
+                sourceExercise: inference.source_exercise || null,
+                detail: ex.load_source_detail || null,
+            };
         }
-        return '';
+        if (ex && ex.load_source === 'similar_history' && ex.load_source_detail) {
+            return {
+                text: 'Estimated from similar exercise history; adjust after first set.',
+                confidence: null,
+                sourceExercise: null,
+                detail: ex.load_source_detail,
+            };
+        }
+        return null;
+    }
+
+    // FIT-105: render the rich hint object as inline HTML with an
+    // accessible confidence chip + optional source-detail suffix. Returns
+    // empty string when `hint` is null so call sites can interpolate
+    // unconditionally.
+    function renderLoadHintHtml(hint, baseClass) {
+        if (!hint) return '';
+        const conf = (hint.confidence || '').toLowerCase();
+        const confChip = conf === 'low' || conf === 'medium' || conf === 'high' || conf === 'med'
+            ? renderLoadConfChip(conf)
+            : '';
+        // Detail (e.g. "Lateral Raise: 80% peak") is more useful than the
+        // raw scaling string; trim the noisy internal `similar_history:`
+        // prefix the backend emits in `detail`.
+        const cleanDetail = hint.detail && !hint.detail.startsWith('similar_history:')
+            ? ` · ${escapeHtml(hint.detail)}`
+            : '';
+        return `
+            <div class="ex-why ${baseClass}" role="note" aria-label="Load estimate">
+                <span class="load-hint-text">${escapeHtml(hint.text)}${cleanDetail}</span>
+                ${confChip}
+            </div>
+        `;
+    }
+
+    function renderLoadConfChip(conf) {
+        const label = conf === 'low' ? 'LOW'
+            : (conf === 'medium' || conf === 'med') ? 'MED'
+            : 'HIGH';
+        const cls = conf === 'low' ? 'load-conf-low'
+            : (conf === 'medium' || conf === 'med') ? 'load-conf-med'
+            : 'load-conf-high';
+        const sr = conf === 'low' ? 'low confidence — verify first set'
+            : (conf === 'medium' || conf === 'med') ? 'medium confidence'
+            : 'high confidence';
+        return `<span class="load-conf-chip ${cls}" aria-label="${sr}">${label}</span>`;
     }
 
     function cardioTargetText(cardio) {
@@ -3638,7 +3693,7 @@
                         <button class="ex-swap-btn active-remove-btn" type="button" title="Remove this exercise" aria-label="Remove ${escapeHtml(name)}">×</button>
                     </div>
                 </div>
-                ${loadHint ? `<div class="ex-why active-load-hint" role="note" aria-label="Load estimate">${escapeHtml(loadHint)}</div>` : ''}
+                ${renderLoadHintHtml(loadHint, 'active-load-hint')}
                 ${rowsHtml}
             `;
             card.querySelector('.active-swap-btn').addEventListener('click', () => openSwap(i, muscle, name, 'active'));
@@ -4245,11 +4300,19 @@
             const isCurrent = alt.name.toLowerCase() === currentLower;
             btn.className = 'swap-row' + (isCurrent ? ' current' : '');
             const equipClass = alt.equipment === 'machine' ? 'machine' : alt.equipment === 'cable' ? 'cable' : '';
-            const loadHint = alt.load_hint && alt.load_hint.inferred_from
-                ? `Est. from ${alt.load_hint.inferred_from}`
-                : '';
+            // FIT-105: include the confidence chip on swap rows too, so
+            // the user can tell at swap time whether the alt's estimate
+            // is shaky before committing to it.
+            let loadHintHtml = '';
+            if (alt.load_hint && alt.load_hint.inferred_from) {
+                const conf = (alt.load_hint.inference_confidence || '').toLowerCase();
+                const chip = (conf === 'low' || conf === 'medium' || conf === 'med' || conf === 'high')
+                    ? renderLoadConfChip(conf)
+                    : '';
+                loadHintHtml = `<span class="swap-load-hint">Est. from ${escapeHtml(alt.load_hint.inferred_from)}${chip ? ' ' + chip : ''}</span>`;
+            }
             btn.innerHTML = `
-                <span>${escapeHtml(alt.name)}${alt.compound ? ' <span class="swap-current-tag">COMPOUND</span>' : ''}${loadHint ? `<span class="swap-load-hint">${escapeHtml(loadHint)}</span>` : ''}</span>
+                <span>${escapeHtml(alt.name)}${alt.compound ? ' <span class="swap-current-tag">COMPOUND</span>' : ''}${loadHintHtml}</span>
                 ${isCurrent ? '<span class="swap-current-tag">CURRENT</span>' : `<span class="swap-row-equip ${equipClass}">${escapeHtml(alt.equipment || '—')}</span>`}
             `;
             if (!isCurrent) {

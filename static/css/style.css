@@ -707,6 +707,51 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
     font-size: 11px;
     font-weight: 600;
 }
+/* FIT-105: load-hint layout — text on the left, confidence chip on the
+   right. Wraps cleanly on narrow viewports because the wrapper is
+   flex with `flex-wrap: wrap` and the chip can break to a second line. */
+.ex-load-hint,
+.active-load-hint {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    row-gap: 2px;
+}
+.load-hint-text {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+/* FIT-105: confidence chip styling mirrors the existing reliability /
+   meal-state chip pattern for visual consistency. Distinct hues so a
+   user scanning the card can tell LOW (verify!) from HIGH (likely fine)
+   at a glance without reading the prose. */
+.load-conf-chip {
+    flex: 0 0 auto;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    line-height: 1.35;
+}
+.load-conf-low {
+    color: #fca5a5;
+    background: rgba(248,113,113,0.12);
+    border-color: rgba(248,113,113,0.4);
+}
+.load-conf-med {
+    color: var(--accent-amber);
+    background: rgba(251,191,36,0.12);
+    border-color: rgba(251,191,36,0.4);
+}
+.load-conf-high {
+    color: #6ee7b7;
+    background: rgba(34,197,94,0.12);
+    border-color: rgba(34,197,94,0.4);
+}
 .ex-swap-btn {
     background: rgba(51,65,85,0.45);
     border: 1px solid var(--border-2);
