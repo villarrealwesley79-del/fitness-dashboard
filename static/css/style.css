@@ -2482,6 +2482,31 @@ input[type=number] { -moz-appearance: textfield; }
     background: rgba(248,113,113,0.12);
     border: 1px solid rgba(248,113,113,0.3);
 }
+/* FIT-88: recently-trained muscles render in amber to distinguish from
+   red soreness chips — same shape, different signal (recovering, not sore). */
+.chip.chip-recent {
+    color: #fcd34d;
+    background: rgba(251,191,36,0.12);
+    border: 1px solid rgba(251,191,36,0.3);
+}
+.reco-last-session {
+    font-size: 12px;
+    color: var(--fg-dim);
+    margin: 4px 0 8px 0;
+    line-height: 1.4;
+}
+.reco-last-session-label {
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-size: 11px;
+    color: var(--fg-dim);
+    margin-right: 4px;
+}
+.reco-last-session-fatigue {
+    margin-left: 4px;
+    opacity: 0.85;
+}
 .reco-why.lower-confidence {
     opacity: 0.85;
     font-style: italic;

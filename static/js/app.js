@@ -851,13 +851,60 @@
             else { $('reco-rpe').hidden = true; }
         }
 
+        // FIT-88: last-session badge — one-liner showing how the completion
+        // shaped the next recommendation. Hidden when no recent completion.
+        const lastEl = $('reco-last-session');
+        if (lastEl) {
+            while (lastEl.firstChild) lastEl.removeChild(lastEl.firstChild);
+            const last = reco && reco.last_completed;
+            const hoursAgo = last && (last.hours_ago != null ? last.hours_ago : null);
+            if (last && hoursAgo != null) {
+                const label = document.createElement('span');
+                label.className = 'reco-last-session-label';
+                label.textContent = 'Last session';
+                lastEl.appendChild(label);
+                const muscles = (Array.isArray(last.muscles_trained) ? last.muscles_trained : [])
+                    .slice(0, 3)
+                    .map((entry) => humanizeMuscle(entry && entry.muscle))
+                    .filter(Boolean)
+                    .join(', ');
+                const detail = document.createElement('span');
+                const hoursLabel = hoursAgo < 1
+                    ? 'just now'
+                    : `${hoursAgo < 10 ? hoursAgo.toFixed(1) : Math.round(hoursAgo)}h ago`;
+                detail.textContent = muscles ? `${hoursLabel} — ${muscles}` : hoursLabel;
+                lastEl.appendChild(detail);
+                if (last.overall_fatigue != null) {
+                    const fatigue = document.createElement('span');
+                    fatigue.className = 'reco-last-session-fatigue';
+                    // Leading space inside textContent so screen readers and
+                    // copy/paste don't read "Shoulders· fatigue 9/10"; CSS
+                    // margin still handles visual gap.
+                    fatigue.textContent = ` · fatigue ${last.overall_fatigue}/10`;
+                    lastEl.appendChild(fatigue);
+                }
+                lastEl.hidden = false;
+            } else {
+                lastEl.hidden = true;
+            }
+        }
+
         // Avoid list — surface existing avoid_muscles as chips (0-3 max).
         // Build via DOM + textContent (not innerHTML) so user-supplied soreness
         // muscle names cannot inject HTML/JS into the dashboard card.
+        // FIT-88: muscles that appear in `recently_trained` (came from a recent
+        // completion, not a soreness log) render as amber `chip-recent` to
+        // distinguish recovery-buffer from actual soreness.
         const avoidEl = $('reco-avoid');
         if (avoidEl) {
             const avoidRaw = (reco && reco.avoid_muscles) || [];
             const avoid = (Array.isArray(avoidRaw) ? avoidRaw : []).slice(0, 3);
+            const recentRaw = (reco && reco.recently_trained) || [];
+            const recentSet = new Set(
+                (Array.isArray(recentRaw) ? recentRaw : [])
+                    .map((entry) => entry && entry.muscle)
+                    .filter(Boolean)
+            );
             while (avoidEl.firstChild) avoidEl.removeChild(avoidEl.firstChild);
             if (avoid.length === 0) {
                 avoidEl.hidden = true;
@@ -868,8 +915,17 @@
                 avoidEl.appendChild(label);
                 avoid.forEach(function (m) {
                     const chip = document.createElement('span');
-                    chip.className = 'chip chip-avoid';
+                    // Amber for muscles that came from a recent completion;
+                    // red for muscles flagged via a soreness log. A muscle in
+                    // both buckets renders amber because the post-completion
+                    // signal is fresher and actionable ("recover before
+                    // reloading").
+                    const isRecent = recentSet.has(m);
+                    chip.className = isRecent ? 'chip chip-recent' : 'chip chip-avoid';
                     chip.textContent = humanizeMuscle(m);
+                    if (isRecent) {
+                        chip.title = 'Trained recently — recovery buffer';
+                    }
                     avoidEl.appendChild(chip);
                 });
                 avoidEl.hidden = false;
