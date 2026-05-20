@@ -1034,6 +1034,53 @@ def _nutrition_context_for_date(
     }
 
 
+def _public_nutrition_coaching_context(context: dict) -> dict:
+    """Return only coaching-only fields for public nutrition payloads.
+
+    Totals, targets, remaining values, and percentages are exposed as flat
+    fields on ``nutrition_today``. Keeping them out of ``coaching_context`` makes
+    those flat fields the public source of truth while preserving the richer
+    internal context for server-side callers.
+    """
+    return {
+        "accepted_entries_count": context["accepted_entries_count"],
+        "pending_review_count": context["pending_review_count"],
+        "warnings": context["warnings"],
+        "next_day_context": context["next_day_context"],
+        "plan_adjustment": context["plan_adjustment"],
+        "uses_only_accepted_entries": context["uses_only_accepted_entries"],
+    }
+
+
+def _nutrition_today_public_payload(date_s: str, nutrition_context: dict) -> dict:
+    totals = nutrition_context["totals"]
+    targets = nutrition_context["targets"]
+    remaining = nutrition_context["remaining"]
+    percentages = nutrition_context["percentages"]
+    return {
+        "date": date_s,
+        "calories": totals["calories"],
+        "protein_g": round(totals["protein_g"], 1),
+        "carbs_g": round(totals["carbs_g"], 1),
+        "fat_g": round(totals["fat_g"], 1),
+        "sodium_mg": int(totals["sodium_mg"]),
+        "calories_target": targets["calories"],
+        "protein_target_g": round(targets["protein_g"], 1),
+        "carbs_target_g": targets["carbs_g"],
+        "fat_target_g": targets["fat_g"],
+        "calories_remaining": remaining["calories"],
+        "protein_gap_g": remaining["protein_g"],
+        "carbs_remaining_g": remaining["carbs_g"],
+        "fat_remaining_g": remaining["fat_g"],
+        "calories_pct": percentages["calories"],
+        "protein_pct": percentages["protein"],
+        "carbs_pct": percentages["carbs"],
+        "fat_pct": percentages["fat"],
+        "entries_count": totals["entries_count"],
+        "coaching_context": _public_nutrition_coaching_context(nutrition_context),
+    }
+
+
 def _workout_looks_hard(recommendation) -> bool:
     if not isinstance(recommendation, dict):
         return False
@@ -2884,10 +2931,7 @@ def api_dashboard():
         hard_training_planned=_workout_looks_hard(next_workout),
         food_log_entries=food_log_entries,
     )
-    nutrition_totals = nutrition_context["totals"]
-    nutrition_targets = nutrition_context["targets"]
-    nutrition_remaining = nutrition_context["remaining"]
-    nutrition_percentages = nutrition_context["percentages"]
+    nutrition_today_payload = _nutrition_today_public_payload(today_s, nutrition_context)
     global LAST_WORKOUT_RECOMMENDATION
     LAST_WORKOUT_RECOMMENDATION = next_workout
 
@@ -2914,27 +2958,7 @@ def api_dashboard():
             "readiness": readiness_val if readiness_val is not None else 0,
             "reason": "; ".join(reason_bits)
         },
-        "nutrition_today": {
-            "calories": nutrition_totals["calories"],
-            "protein_g": round(nutrition_totals["protein_g"], 1),
-            "carbs_g": round(nutrition_totals["carbs_g"], 1),
-            "fat_g": round(nutrition_totals["fat_g"], 1),
-            "sodium_mg": int(nutrition_totals["sodium_mg"]),
-            "calories_target": nutrition_targets["calories"],
-            "protein_target_g": round(nutrition_targets["protein_g"], 1),
-            "carbs_target_g": nutrition_targets["carbs_g"],
-            "fat_target_g": nutrition_targets["fat_g"],
-            "calories_remaining": nutrition_remaining["calories"],
-            "protein_gap_g": nutrition_remaining["protein_g"],
-            "carbs_remaining_g": nutrition_remaining["carbs_g"],
-            "fat_remaining_g": nutrition_remaining["fat_g"],
-            "calories_pct": nutrition_percentages["calories"],
-            "protein_pct": nutrition_percentages["protein"],
-            "carbs_pct": nutrition_percentages["carbs"],
-            "fat_pct": nutrition_percentages["fat"],
-            "entries_count": nutrition_totals["entries_count"],
-            "coaching_context": nutrition_context,
-        },
+        "nutrition_today": nutrition_today_payload,
         "advanced_kpis": {
             "personal_records": prs,
             "consistency": consistency,
@@ -3838,32 +3862,7 @@ def nutrition_today():
         date_s,
         food_log_entries=food_log_entries,
     )
-    totals = nutrition_context["totals"]
-    targets = nutrition_context["targets"]
-    remaining = nutrition_context["remaining"]
-    percentages = nutrition_context["percentages"]
-    return jsonify({
-        "date": date_s,
-        "calories": totals["calories"],
-        "protein_g": round(totals["protein_g"], 1),
-        "carbs_g": round(totals["carbs_g"], 1),
-        "fat_g": round(totals["fat_g"], 1),
-        "sodium_mg": int(totals["sodium_mg"]),
-        "calories_target": targets["calories"],
-        "protein_target_g": round(targets["protein_g"], 1),
-        "carbs_target_g": targets["carbs_g"],
-        "fat_target_g": targets["fat_g"],
-        "calories_remaining": remaining["calories"],
-        "protein_gap_g": remaining["protein_g"],
-        "carbs_remaining_g": remaining["carbs_g"],
-        "fat_remaining_g": remaining["fat_g"],
-        "calories_pct": percentages["calories"],
-        "protein_pct": percentages["protein"],
-        "carbs_pct": percentages["carbs"],
-        "fat_pct": percentages["fat"],
-        "entries_count": totals["entries_count"],
-        "coaching_context": nutrition_context,
-    })
+    return jsonify(_nutrition_today_public_payload(date_s, nutrition_context))
 
 
 def _nutrition_history_breakdown(date_s: str, entries):
