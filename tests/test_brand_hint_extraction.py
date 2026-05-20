@@ -179,6 +179,51 @@ def test_lookup_keeps_brand_hint_out_of_usda_fallback(monkeypatch):
     assert saved["normalized"] == "foil wrapped burrito"
 
 
+def test_lookup_reads_generic_cache_before_usda_fallback(monkeypatch):
+    from datetime import datetime
+
+    cached_estimate = {
+        "item_name": "Burrito",
+        "portion_description": "100 g",
+        "meal_type": "snack",
+        "calories": 240,
+        "protein_g": 8,
+        "carbs_g": 38,
+        "fat_g": 6,
+        "sodium_mg": 400,
+        "fiber_g": 4,
+        "confidence": 0.85,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "usda_fdc",
+        "external_food_id": "999",
+    }
+
+    def fake_cache(normalized):
+        if normalized == "foil wrapped burrito":
+            return {
+                "normalized_text": normalized,
+                "source": "usda_fdc",
+                "response_json": cached_estimate,
+                "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        return None
+
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", fake_cache)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("USDA must not run when generic cache exists")),
+    )
+
+    estimate = branded_food_lookup.lookup("foil wrapped burrito", brand_hint="chipotle")
+
+    assert estimate["source"] == "local_cache"
+    assert estimate["underlying_source"] == "usda_fdc"
+    assert estimate["external_food_id"] == "999"
+
+
 def test_meal_intake_passes_brand_hint_to_lookup(monkeypatch):
     import app
 

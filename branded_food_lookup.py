@@ -104,6 +104,10 @@ def lookup(
     if "usda_fdc" in priorities:
         usda_text = cleaned_text or lookup_text
         usda_normalized = generic_normalized or normalized
+        if "cache" in priorities and usda_normalized != normalized:
+            generic_cached = _cache_lookup(usda_normalized)
+            if generic_cached:
+                return generic_cached
         usda = _usda_lookup(usda_text, usda_normalized)
         if usda:
             data_store.save_branded_lookup_cache(usda_normalized, usda["source"], usda)
