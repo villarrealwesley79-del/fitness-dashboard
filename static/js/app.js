@@ -3489,6 +3489,15 @@
         return Number.isFinite(n) ? String(n) : '';
     }
 
+    function plannedTargetNumber(...values) {
+        for (const v of values) {
+            if (v == null || v === '') continue;
+            const n = Number(v);
+            if (Number.isFinite(n)) return n;
+        }
+        return null;
+    }
+
     function recommendedRepsValue(ex) {
         if (ex.target_reps != null) return numericInputValue(ex.target_reps);
         if (ex.reps != null) return numericInputValue(ex.reps);
@@ -3999,7 +4008,16 @@
             const completedSets = sets
                 .filter((s) => s.reps > 0 && s.weight_lbs >= 0 && (!hasCheckedSets || s.done))
                 .map(({ done, ...s }) => s);
-            if (completedSets.length) exercises.push({ machine: exerciseName(ex), muscle_group: ex.muscle_group || ex.muscle, sets: completedSets });
+            if (completedSets.length) {
+                const plannedTargetWeight = plannedTargetNumber(ex.target_weight, ex.target_weight_lbs);
+                const plannedTargetReps = plannedTargetNumber(ex.target_reps, ex.reps);
+                const plannedTargetSets = plannedTargetNumber(ex.target_sets, ex.sets);
+                const exercisePayload = { machine: exerciseName(ex), muscle_group: ex.muscle_group || ex.muscle, sets: completedSets };
+                if (plannedTargetWeight !== null) exercisePayload.planned_target_weight = plannedTargetWeight;
+                if (plannedTargetReps !== null) exercisePayload.planned_target_reps = plannedTargetReps;
+                if (plannedTargetSets !== null) exercisePayload.planned_target_sets = plannedTargetSets;
+                exercises.push(exercisePayload);
+            }
         });
         if (!exercises.length) {
             const message = 'Validation failed: log at least one set before completing this workout.';

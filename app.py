@@ -1758,7 +1758,130 @@ def summarize_recent_completion(workouts, hours=24):
     }
 
 
-def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None):
+def _positive_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _nonnegative_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _planned_targets_from_exercise(exercise):
+    if not isinstance(exercise, dict):
+        return {}
+    target_weight = _positive_number(
+        exercise.get("planned_target_weight")
+        or exercise.get("target_weight")
+        or exercise.get("target_weight_lbs")
+        or exercise.get("recommended_weight")
+    )
+    target_reps = _positive_number(
+        exercise.get("planned_target_reps")
+        or exercise.get("target_reps")
+        or exercise.get("reps")
+        or exercise.get("recommended_reps")
+    )
+    target_sets = _positive_number(
+        exercise.get("planned_target_sets")
+        or exercise.get("target_sets")
+        or exercise.get("recommended_sets")
+        or exercise.get("sets")
+    )
+    planned_targets = {}
+    if target_weight is not None:
+        planned_targets["planned_target_weight"] = target_weight
+    if target_reps is not None:
+        planned_targets["planned_target_reps"] = target_reps
+    if target_sets is not None:
+        planned_targets["planned_target_sets"] = target_sets
+    return planned_targets
+
+
+def _completed_set_rows(sets):
+    return [
+        row
+        for row in (sets or [])
+        if isinstance(row, dict)
+        and row.get("completed") is not False
+        and row.get("done") is not False
+    ]
+
+
+def _recent_muscle_performance_debt(muscle, workouts, hours=72):
+    """Penalty for recent sessions where planned reps/sets were not completed."""
+    cutoff = datetime.now() - timedelta(hours=hours)
+    muscle = (muscle or "").strip().lower()
+    if not muscle:
+        return {"debt": 0, "reason": None}
+
+    debt = 0
+    reason = None
+    for workout in workouts or []:
+        if not isinstance(workout, dict):
+            continue
+        ts = _parse_workout_completion_timestamp(workout)
+        if ts is None or ts < cutoff:
+            continue
+        for exercise in workout.get("exercises") or []:
+            if not isinstance(exercise, dict):
+                continue
+            if (exercise.get("muscle_group") or "").strip().lower() != muscle:
+                continue
+            sets = _completed_set_rows(exercise.get("sets"))
+            target_sets = _positive_number(
+                exercise.get("planned_target_sets")
+                or exercise.get("target_sets")
+                or exercise.get("recommended_sets")
+            )
+            target_reps = _positive_number(
+                exercise.get("planned_target_reps")
+                or exercise.get("target_reps")
+                or exercise.get("recommended_reps")
+            )
+
+            if target_sets is not None and len(sets) < int(round(target_sets)):
+                missed_sets = int(round(target_sets)) - len(sets)
+                candidate = 2 if missed_sets >= 2 else 1
+                if candidate > debt:
+                    debt = candidate
+                    reason = f"missed {missed_sets} planned set{'s' if missed_sets != 1 else ''}"
+
+            if target_reps is None:
+                continue
+            rep_values = []
+            for row in sets:
+                reps = _nonnegative_number(row.get("reps"))
+                if reps is not None:
+                    rep_values.append(reps)
+            if not rep_values:
+                continue
+            min_reps = min(rep_values)
+            rep_ratio = min_reps / target_reps
+            if rep_ratio < 0.7:
+                candidate = 3
+            elif rep_ratio < 0.9:
+                candidate = 2
+            elif rep_ratio < 1:
+                candidate = 1
+            else:
+                candidate = 0
+            if candidate > debt:
+                missed_reps = max(0, int(round(target_reps - min_reps)))
+                debt = candidate
+                reason = f"missed {missed_reps} planned rep{'s' if missed_reps != 1 else ''}"
+
+    return {"debt": debt, "reason": reason}
+
+
+def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None, workouts=None):
     """Calculate readiness score for a muscle group.
 
     Note: only soreness entries from the last 24h are considered (time-decay).
@@ -1779,8 +1902,10 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None):
 
     # Add cardio impact to fatigue calculation
     cardio_fatigue = get_cardio_muscle_impact(cardio_data, muscle)
+    performance = _recent_muscle_performance_debt(muscle, WORKOUTS if workouts is None else workouts)
+    performance_debt = performance["debt"]
 
-    readiness = 10 - soreness_level - recovery_debt - cardio_fatigue
+    readiness = 10 - soreness_level - recovery_debt - cardio_fatigue - performance_debt
 
     if readiness < 5:
         recommendation = "Skip or reduced volume"
@@ -1791,11 +1916,15 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None):
     else:
         recommendation = "Full capacity"
         color = "green"
+    if performance_debt and performance.get("reason"):
+        recommendation = f"{recommendation}: recent workout {performance['reason']}"
 
     return {
         "score": max(0, readiness),  # Don't go below 0
         "soreness": soreness_level,
         "recovery_debt": recovery_debt,
+        "performance_debt": performance_debt,
+        "performance_debt_reason": performance.get("reason"),
         "cardio_fatigue": round(cardio_fatigue, 1),
         "recommendation": recommendation,
         "color": color
@@ -2190,13 +2319,22 @@ def generate_next_workout(
 
     readiness_scores = {}
     for muscle in muscle_groups:
-        readiness_scores[muscle] = get_readiness_score(muscle, soreness_data, volume_data, CARDIO_DATA)
+        readiness_scores[muscle] = get_readiness_score(muscle, soreness_data, volume_data, CARDIO_DATA, workouts)
 
-    available_muscles = [m for m, r in readiness_scores.items() if r["score"] >= 5]
+    available_muscles = [
+        m
+        for m, r in readiness_scores.items()
+        if r["score"] >= 5 and not (r.get("performance_debt") and r["score"] <= 5)
+    ]
 
     # If not enough muscles available, add default ones
     default_muscles = ["chest", "back", "quads", "shoulders", "hamstrings", "glutes", "adductors", "biceps", "triceps", "core", "calves"]
     for m in default_muscles:
+        if m in readiness_scores and (
+            readiness_scores[m]["score"] < 5
+            or (readiness_scores[m].get("performance_debt") and readiness_scores[m]["score"] <= 5)
+        ):
+            continue
         if m not in available_muscles and len(available_muscles) < max_exercises:
             available_muscles.append(m)
 
@@ -3022,12 +3160,12 @@ def api_dashboard():
     improving = sum(1 for d in progression.values() if d["status"] == "On Track")
     total_exercises = len(progression)
 
-    readiness_scores = [get_readiness_score(m, SORENESS_DATA, volume, CARDIO_DATA)["score"] for m in volume.keys()]
+    readiness_scores = [get_readiness_score(m, SORENESS_DATA, volume, CARDIO_DATA, WORKOUTS)["score"] for m in volume.keys()]
     avg_readiness = sum(readiness_scores) / len(readiness_scores) if readiness_scores else 7
 
     muscle_data = []
     for muscle, data in volume.items():
-        readiness = get_readiness_score(muscle, SORENESS_DATA, volume, CARDIO_DATA)
+        readiness = get_readiness_score(muscle, SORENESS_DATA, volume, CARDIO_DATA, WORKOUTS)
         muscle_data.append({
             "muscle": muscle.title(),
             "sets": data["sets"],
@@ -8579,6 +8717,11 @@ def complete_workout():
         adherence = {"followed": None, "skipped": [], "modified": [], "added": []}
     else:
         adherence = {"followed": True, "skipped": [], "modified": [], "added": []}
+    planned_targets_by_machine = {}
+    for act_ex in actual_exercises:
+        planned_targets = _planned_targets_from_exercise(act_ex)
+        if planned_targets:
+            planned_targets_by_machine[act_ex["machine"]] = planned_targets
     if recommendation:
         recommended_exercises = {e["exercise"] for e in recommendation.get("exercises", [])}
         actual_exercise_names = {e["machine"] for e in actual_exercises}
@@ -8592,13 +8735,53 @@ def complete_workout():
             for act_ex in actual_exercises:
                 if rec_ex["exercise"] == act_ex["machine"]:
                     if act_ex.get("sets"):
-                        actual_weight = max(s.get("weight_lbs", 0) for s in act_ex["sets"])
-                        if abs(actual_weight - rec_ex["target_weight"]) > 10:
-                            adherence["modified"].append({
+                        completed_sets = _completed_set_rows(act_ex.get("sets"))
+                        planned_targets = _planned_targets_from_exercise(rec_ex)
+                        if planned_targets:
+                            planned_targets_by_machine[act_ex["machine"]] = planned_targets
+                        target_weight = planned_targets.get("planned_target_weight")
+                        target_reps = planned_targets.get("planned_target_reps")
+                        target_sets = planned_targets.get("planned_target_sets")
+
+                        actual_weights = [
+                            _positive_number(s.get("weight_lbs"))
+                            for s in completed_sets
+                        ]
+                        actual_reps = [
+                            _nonnegative_number(s.get("reps"))
+                            for s in completed_sets
+                        ]
+                        actual_weights = [w for w in actual_weights if w is not None]
+                        actual_reps = [r for r in actual_reps if r is not None]
+                        actual_weight = max(actual_weights) if actual_weights else 0
+                        actual_min_reps = min(actual_reps) if actual_reps else 0
+                        missed_reps = target_reps is not None and actual_min_reps < target_reps
+                        missed_sets = target_sets is not None and len(completed_sets) < int(round(target_sets))
+                        changed_weight = target_weight is not None and abs(actual_weight - target_weight) > 10
+                        if changed_weight or missed_reps or missed_sets:
+                            change = {
                                 "exercise": rec_ex["exercise"],
-                                "recommended_weight": rec_ex["target_weight"],
-                                "actual_weight": actual_weight
-                            })
+                                "actual_weight": actual_weight,
+                                "actual_min_reps": actual_min_reps,
+                                "actual_sets": len(completed_sets),
+                            }
+                            if target_weight is not None:
+                                change["recommended_weight"] = target_weight
+                            if target_reps is not None:
+                                change["recommended_reps"] = target_reps
+                            if target_sets is not None:
+                                change["recommended_sets"] = target_sets
+                            reasons = []
+                            if changed_weight:
+                                reasons.append("weight changed")
+                            if missed_reps:
+                                reasons.append("missed reps")
+                            if missed_sets:
+                                reasons.append("missed sets")
+                            change["reason"] = ", ".join(reasons)
+                            adherence["modified"].append(change)
+        if adherence["modified"]:
+            adherence["followed"] = False
 
     # Create workout entry
     # Coerce a few fields (best-effort, keep app resilient)
@@ -8705,6 +8888,12 @@ def complete_workout():
                 "incoming_fingerprint": sync_fingerprint,
             },
         )
+
+    if planned_targets_by_machine:
+        for exercise in workout_entry.get("exercises") or []:
+            planned_targets = planned_targets_by_machine.get(exercise.get("machine"))
+            if planned_targets:
+                exercise.update(planned_targets)
 
     WORKOUTS.append(workout_entry)
     COMPLETED_WORKOUTS.append(workout_entry)
@@ -9124,7 +9313,7 @@ def muscle_fatigue():
 
     fatigue_data = {}
     for muscle in all_muscles:
-        readiness = get_readiness_score(muscle, SORENESS_DATA, volume, CARDIO_DATA)
+        readiness = get_readiness_score(muscle, SORENESS_DATA, volume, CARDIO_DATA, WORKOUTS)
 
         # Calculate fatigue level (inverse of readiness)
         # 10 = fully recovered (green), 0 = extremely fatigued (red)
@@ -9157,6 +9346,8 @@ def muscle_fatigue():
             "color": color,
             "soreness": readiness["soreness"],
             "recovery_debt": readiness["recovery_debt"],
+            "performance_debt": readiness.get("performance_debt", 0),
+            "performance_debt_reason": readiness.get("performance_debt_reason"),
             "cardio_fatigue": readiness.get("cardio_fatigue", 0),
             "recommendation": readiness["recommendation"],
             "last_trained": volume.get(muscle, {}).get("last_trained"),
