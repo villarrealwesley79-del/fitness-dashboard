@@ -2019,14 +2019,104 @@
             const ctxText = ctxFlags.length
                 ? `<span class="trend-context">${escapeHtml(ctxFlags.join(' · '))}</span>`
                 : '';
+            // FIT-93: each row is an expandable summary; tap to fetch and
+            // render that day's individual food_log entries inline. The
+            // `data-date` attribute drives the on-click fetch.
+            const dateAttr = escapeHtml(d.date);
             return `
-                <div class="body-nutrition-row">
-                    <span class="trend-date">${escapeHtml(fmtDate(d.date))}</span>
-                    <span class="trend-cal ${calClass}">${d.calories || 0}<small>${calPct != null ? ` (${calPct}%)` : ''}</small></span>
-                    <span class="trend-protein ${proClass}">${d.protein_g || 0}g<small>${proPct != null ? ` (${proPct}%)` : ''}</small></span>
-                    <span class="trend-sodium">${(d.sodium_mg || 0).toLocaleString()}mg</span>
-                    ${reliability}
-                    ${ctxText}
+                <details class="body-nutrition-row body-nutrition-row-expandable" data-date="${dateAttr}">
+                    <summary class="body-nutrition-row-summary">
+                        <span class="trend-date">${escapeHtml(fmtDate(d.date))}</span>
+                        <span class="trend-cal ${calClass}">${d.calories || 0}<small>${calPct != null ? ` (${calPct}%)` : ''}</small></span>
+                        <span class="trend-protein ${proClass}">${d.protein_g || 0}g<small>${proPct != null ? ` (${proPct}%)` : ''}</small></span>
+                        <span class="trend-sodium">${(d.sodium_mg || 0).toLocaleString()}mg</span>
+                        ${reliability}
+                        ${ctxText}
+                    </summary>
+                    <div class="body-nutrition-row-meals" data-loaded="0">
+                        <div class="body-nutrition-row-loading">Tap to load meals…</div>
+                    </div>
+                </details>
+            `;
+        }).join('');
+
+        // FIT-93: lazy-load meals on first expand. Avoid re-fetching if
+        // the row was opened before. On failure we render an explicit
+        // Retry button instead of a "tap row to retry" hint — toggling
+        // the row first closes it, which would be a confusing two-tap
+        // recovery flow.
+        function loadDayMeals(row, slot, date) {
+            slot.setAttribute('data-loaded', '1');
+            slot.innerHTML = '<div class="body-nutrition-row-loading">Loading meals…</div>';
+            api(`/api/food-logs/by-date/${encodeURIComponent(date)}`)
+                .then((payload) => renderFoodLogMealList(slot, (payload && payload.entries) || []))
+                .catch(() => {
+                    slot.setAttribute('data-loaded', '0');
+                    slot.innerHTML = '';
+                    const msg = document.createElement('div');
+                    msg.className = 'body-nutrition-row-loading';
+                    msg.textContent = 'Couldn\'t load meals.';
+                    slot.appendChild(msg);
+                    const retry = document.createElement('button');
+                    retry.type = 'button';
+                    retry.className = 'body-nutrition-row-retry';
+                    retry.textContent = 'Retry';
+                    retry.addEventListener('click', (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        loadDayMeals(row, slot, date);
+                    });
+                    slot.appendChild(retry);
+                });
+        }
+        nutRows.querySelectorAll('details.body-nutrition-row-expandable').forEach((row) => {
+            row.addEventListener('toggle', () => {
+                if (!row.open) return;
+                const date = row.getAttribute('data-date');
+                const slot = row.querySelector('.body-nutrition-row-meals');
+                if (!date || !slot || slot.getAttribute('data-loaded') === '1') return;
+                loadDayMeals(row, slot, date);
+            });
+        });
+    }
+
+    function renderFoodLogMealList(container, entries) {
+        if (!entries.length) {
+            container.innerHTML = '<div class="body-nutrition-row-empty">No individual meals recorded for this day.</div>';
+            return;
+        }
+        container.innerHTML = entries.map((e) => {
+            const name = (e.item_name || e.portion_description || 'Meal').trim();
+            const time = (e.logged_at || '').slice(11, 16) || '';
+            const cal = e.calories != null ? `${Math.round(e.calories)} kcal` : '';
+            const macros = [
+                e.protein_g != null ? `${Math.round(e.protein_g)}P` : '',
+                e.carbs_g != null ? `${Math.round(e.carbs_g)}C` : '',
+                e.fat_g != null ? `${Math.round(e.fat_g)}F` : '',
+            ].filter(Boolean).join('/');
+            // Distinguish estimated vs corrected/manual so the user sees
+            // where to focus correction effort. `correction_state` is the
+            // canonical signal (FIT-61); fall back to source heuristic.
+            const state = (e.correction_state || '').toLowerCase();
+            let stateLabel = '';
+            if (state === 'corrected' || state === 'accepted_manual') {
+                stateLabel = '<span class="meal-state meal-state-corrected">corrected</span>';
+            } else if (state === 'pending_review') {
+                stateLabel = '<span class="meal-state meal-state-pending">pending</span>';
+            } else if (state === 'accepted') {
+                stateLabel = '<span class="meal-state meal-state-estimated">estimated</span>';
+            }
+            return `
+                <div class="body-nutrition-meal">
+                    <div class="body-nutrition-meal-head">
+                        ${time ? `<span class="meal-time">${escapeHtml(time)}</span>` : ''}
+                        <span class="meal-name">${escapeHtml(name)}</span>
+                        ${stateLabel}
+                    </div>
+                    <div class="body-nutrition-meal-macros">
+                        ${cal ? `<span>${escapeHtml(cal)}</span>` : ''}
+                        ${macros ? `<span>${escapeHtml(macros)}</span>` : ''}
+                    </div>
                 </div>
             `;
         }).join('');

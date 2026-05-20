@@ -2382,23 +2382,118 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     gap: 4px;
 }
 .body-nutrition-row {
+    /* FIT-93: container is now a <details>; grid layout lives on the
+       <summary> instead so the meals expansion can use its own block flow. */
+    border-top: 1px solid rgba(51,65,85,0.4);
+    color: var(--fg-1);
+    font-size: 12px;
+}
+.body-nutrition-row:first-child { border-top: 0; }
+.body-nutrition-row-summary {
     display: grid;
     grid-template-columns: minmax(60px, 1fr) minmax(70px, 1fr) minmax(70px, 1fr) minmax(60px, 1fr) auto;
     gap: 8px;
     align-items: center;
     padding: 6px 4px;
-    font-size: 12px;
-    border-top: 1px solid rgba(51,65,85,0.4);
-    color: var(--fg-1);
+    cursor: pointer;
+    list-style: none;  /* hide native <summary> marker; the row itself is the affordance */
 }
-.body-nutrition-row:first-child { border-top: 0; }
-.body-nutrition-row > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.body-nutrition-row-summary::-webkit-details-marker { display: none; }
+.body-nutrition-row-summary:hover { background: rgba(51,65,85,0.18); }
+.body-nutrition-row[open] .body-nutrition-row-summary { background: rgba(51,65,85,0.12); }
+.body-nutrition-row-summary > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .body-nutrition-row .trend-date { color: var(--fg-dim); font-size: 11px; }
 .body-nutrition-row small { color: var(--fg-dimmer); font-size: 10px; margin-left: 2px; }
 .body-nutrition-row .pct-ok { color: #6ee7b7; }
 .body-nutrition-row .pct-over { color: #f87171; }
 .body-nutrition-row .pct-under { color: var(--accent-amber); }
 .body-nutrition-row .pct-unknown { color: var(--fg-dimmer); }
+.body-nutrition-row-meals {
+    padding: 4px 4px 10px 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.body-nutrition-row-loading,
+.body-nutrition-row-empty {
+    color: var(--fg-dim);
+    font-size: 11px;
+    font-style: italic;
+    padding: 4px 0;
+}
+.body-nutrition-row-retry {
+    align-self: flex-start;
+    background: rgba(51,65,85,0.4);
+    border: 1px solid rgba(51,65,85,0.6);
+    color: var(--fg-1);
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.body-nutrition-row-retry:hover { background: rgba(51,65,85,0.6); }
+.body-nutrition-meal {
+    background: rgba(15,23,42,0.4);
+    border: 1px solid rgba(51,65,85,0.4);
+    border-radius: 6px;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.body-nutrition-meal-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+}
+.body-nutrition-meal-head .meal-time {
+    color: var(--fg-dimmer);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    min-width: 36px;
+}
+.body-nutrition-meal-head .meal-name {
+    color: var(--fg-1);
+    font-weight: 600;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.body-nutrition-meal-macros {
+    display: flex;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+}
+.meal-state {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+}
+.meal-state-corrected {
+    color: #6ee7b7;
+    background: rgba(34,197,94,0.12);
+    border-color: rgba(34,197,94,0.4);
+}
+.meal-state-estimated {
+    color: var(--fg-dim);
+    background: rgba(51,65,85,0.4);
+    border-color: rgba(51,65,85,0.6);
+}
+.meal-state-pending {
+    color: var(--accent-amber);
+    background: rgba(251,191,36,0.12);
+    border-color: rgba(251,191,36,0.4);
+}
 .trend-reliability {
     font-size: 10px;
     font-weight: 700;
@@ -2432,10 +2527,11 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     margin-left: 60px;
 }
 @media (max-width: 480px) {
-    .body-nutrition-row {
+    /* FIT-93: grid is on the <summary> now, not the row container. */
+    .body-nutrition-row-summary {
         grid-template-columns: minmax(56px, 1fr) minmax(64px, 1fr) minmax(58px, 1fr) auto;
     }
-    .body-nutrition-row .trend-sodium { display: none; }
+    .body-nutrition-row-summary .trend-sodium { display: none; }
 }
 
 /* ======================= UTIL ======================= */

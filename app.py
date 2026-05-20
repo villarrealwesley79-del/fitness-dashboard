@@ -4608,6 +4608,96 @@ def nutrition_history():
     return jsonify({"history": days})
 
 
+@app.route('/api/food-logs/by-date/<date>')
+def food_logs_by_date(date):
+    """Per-meal food log entries for a specific date.
+
+    FIT-93: the existing `/api/nutrition-history` endpoint only returns
+    daily rollups, so the Body tab's nutrition-trend card can't show
+    individual meals. This endpoint backs the row-expand affordance:
+    tap a day → fetch its meals.
+
+    Same dedupe rules as `/api/nutrition-history` (food_logs preferred;
+    legacy `NUTRITION_DATA` filled in for entries that only exist there).
+    Returns entries sorted by `logged_at` ascending so the UI can
+    render breakfast → dinner in natural order.
+    """
+    # Strict calendar validation — regex shape alone would accept things
+    # like 2026-99-99 and return an empty result, which is misleading.
+    # Canonical-form check (`strftime ==`) also rejects `2026-1-1` /
+    # `26-05-20` which strptime tolerates but the stored `YYYY-MM-DD`
+    # values won't match.
+    try:
+        parsed = datetime.strptime(date or "", "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return api_error("date must be a valid YYYY-MM-DD", 400, code="invalid_field")
+    if parsed.strftime("%Y-%m-%d") != date:
+        return api_error("date must be canonical YYYY-MM-DD (zero-padded)", 400, code="invalid_field")
+    user_id = _current_data_user_id()
+
+    food_log_entries = list(_food_log_entries_for_context(since=date) or [])
+    legacy_entries = list(NUTRITION_DATA or [])
+    food_log_client_ids = {
+        str(entry.get("client_id"))
+        for entry in food_log_entries
+        if entry.get("client_id")
+    }
+
+    def _content_signature(entry):
+        return (
+            _nutrition_entry_day(entry),
+            entry.get("calories"),
+            entry.get("protein_g"),
+            entry.get("carbs_g"),
+            entry.get("fat_g"),
+            entry.get("sodium_mg"),
+        )
+
+    food_log_content_keys = {
+        _content_signature(entry)
+        for entry in food_log_entries
+        if not entry.get("client_id")
+    }
+    deduped_legacy = []
+    for entry in legacy_entries:
+        cid = entry.get("client_id")
+        if cid and str(cid) in food_log_client_ids:
+            continue
+        if not cid and _content_signature(entry) in food_log_content_keys:
+            continue
+        deduped_legacy.append(entry)
+
+    merged = food_log_entries + deduped_legacy
+    same_day = [e for e in merged if _nutrition_entry_day(e) == date]
+    same_day.sort(key=lambda e: (e.get("logged_at") or "", e.get("id") or 0))
+
+    # Bounded projection — only the fields the row-expand UI consumes.
+    # Keeps the public contract tight so a later food_logs schema change
+    # (extra private fields, raw estimates, etc.) doesn't leak into the
+    # client. Matches the FIT-9 retention rule: no image bytes or
+    # original prompts.
+    def _project(entry: dict) -> dict:
+        return {
+            "client_id": entry.get("client_id"),
+            "logged_at": entry.get("logged_at"),
+            "item_name": entry.get("item_name"),
+            "portion_description": entry.get("portion_description"),
+            "meal_type": entry.get("meal_type"),
+            "calories": entry.get("calories"),
+            "protein_g": entry.get("protein_g"),
+            "carbs_g": entry.get("carbs_g"),
+            "fat_g": entry.get("fat_g"),
+            "sodium_mg": entry.get("sodium_mg"),
+            "source": entry.get("source"),
+            "confidence": entry.get("confidence"),
+            "correction_state": entry.get("correction_state"),
+            "from_image": entry.get("from_image"),
+        }
+
+    entries = [_project(e) for e in same_day]
+    return jsonify({"date": date, "entries": entries, "count": len(entries)})
+
+
 @app.route('/api/add-cardio', methods=['POST'])
 def add_cardio():
     """Add cardio session data."""
