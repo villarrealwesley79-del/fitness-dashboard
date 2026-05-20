@@ -4532,6 +4532,7 @@
         const { form, status, submit, text, image } = mealComposerEls();
         if (form) form.classList.add('meal-composer-disabled');
         if (status) {
+            status.classList.remove('meal-composer-status--provenance');
             status.hidden = false;
             status.textContent = message || 'Meal intake coming soon — backend not yet enabled.';
         }
@@ -4544,10 +4545,25 @@
         mealComposerState.backendUnavailable = false;
         const { form, status, text, image } = mealComposerEls();
         if (form) form.classList.remove('meal-composer-disabled');
-        if (status) { status.hidden = true; status.textContent = ''; }
+        if (status) {
+            status.classList.remove('meal-composer-status--provenance');
+            status.hidden = true;
+            status.textContent = '';
+        }
         if (text) text.disabled = false;
         if (image) image.disabled = false;
         refreshMealSubmitState();
+    }
+
+    function clearMealComposerStatus(clientId = null) {
+        if (mealComposerState.backendUnavailable) return;
+        const { status } = mealComposerEls();
+        if (!status) return;
+        if (clientId && status.dataset.provenanceClientId !== String(clientId)) return;
+        status.classList.remove('meal-composer-status--provenance');
+        status.hidden = true;
+        status.textContent = '';
+        delete status.dataset.provenanceClientId;
     }
 
     function mealEstimateChip(estimate) {
@@ -4567,6 +4583,7 @@
     async function postMealUndo(clientId) {
         try {
             await api(`/api/meal-intake/${encodeURIComponent(clientId)}`, { method: 'DELETE' });
+            clearMealComposerStatus(clientId);
             toast('Meal removed', 'ok');
         } catch (e) {
             console.error(e);
@@ -4742,6 +4759,82 @@
         return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
     }
 
+    function safeExternalMealSourceUrl(value) {
+        if (!value) return '';
+        const candidate = String(value).trim();
+        if (!candidate) return '';
+        try {
+            const url = new URL(candidate);
+            return (url.protocol === 'https:' || url.protocol === 'http:') ? url.href : '';
+        } catch (_err) {
+            return '';
+        }
+    }
+
+    function mealEstimateSourceUrl(est) {
+        const attr = est && est.off_attribution;
+        const attrUrl = attr && typeof attr === 'object'
+            ? (attr.url || attr.source_url || attr.product_url || attr.license_url)
+            : '';
+        return safeExternalMealSourceUrl(
+            attrUrl || (est && (est.verified_source_url || est.source_url || est.product_url))
+        );
+    }
+
+    function mealEstimateAttributionText(est) {
+        if (!est) return '';
+        const attr = est.off_attribution;
+        if (typeof attr === 'string' && attr.trim()) return attr.trim();
+        if (attr && typeof attr === 'object') {
+            const sourceName = attr.source || attr.name || attr.provider || 'Open Food Facts';
+            const license = attr.license || attr.license_name || attr.license_code;
+            if (license) return `Source: ${sourceName} (${license})`;
+            return `Source: ${sourceName} (ODbL/DbCL data; product images CC BY-SA)`;
+        }
+        const sourceKey = String(est.source || '').trim().toLowerCase();
+        return sourceKey === 'open_food_facts'
+            ? 'Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)'
+            : '';
+    }
+
+    function mealEstimateProvenanceHtml(est) {
+        const inner = mealEstimateProvenanceInnerHtml(est);
+        return inner
+            ? `<div class="meal-pending-provenance" aria-label="Estimate source provenance">${inner}</div>`
+            : '';
+    }
+
+    function mealEstimateProvenanceInnerHtml(est) {
+        const attribution = mealEstimateAttributionText(est);
+        const sourceUrl = mealEstimateSourceUrl(est);
+        if (!attribution && !sourceUrl) return '';
+        const link = sourceUrl
+            ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">Source link</a>`
+            : '';
+        const separator = attribution && link ? '<span aria-hidden="true">·</span>' : '';
+        return `
+            ${attribution ? `<span>${escapeHtml(attribution)}</span>` : ''}
+            ${separator}
+            ${link}
+        `;
+    }
+
+    function renderMealComposerProvenance(est, clientId = null) {
+        const { status } = mealComposerEls();
+        if (!status) return false;
+        const inner = mealEstimateProvenanceInnerHtml(est);
+        if (!inner) {
+            clearMealComposerStatus();
+            return false;
+        }
+        status.classList.add('meal-composer-status--provenance');
+        if (clientId) status.dataset.provenanceClientId = String(clientId);
+        else delete status.dataset.provenanceClientId;
+        status.hidden = false;
+        status.innerHTML = inner;
+        return true;
+    }
+
     function buildMealPendingRow(entry) {
         const row = document.createElement('div');
         row.className = 'meal-pending-row';
@@ -4786,6 +4879,7 @@
                 <span class="meal-pending-source-chip" title="Source of this estimate">${escapeHtml(sourceLabel)}</span>
                 <span class="meal-pending-conf" title="${confTitle}">${escapeHtml(confLabel)}</span>
             </div>
+            ${mealEstimateProvenanceHtml(est)}
             ${reasonChips ? `<div class="meal-pending-policy-reasons" aria-label="Why this needs review">${reasonChips}</div>` : ''}
             <div class="meal-pending-hint">Tap any value to edit before accepting.</div>
             <div class="meal-pending-fields">
@@ -4948,6 +5042,7 @@
             });
             mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
             renderMealPendingList();
+            renderMealComposerProvenance(edited, clientId);
             toast('Meal logged', 'ok');
             refreshMacroCard();
         } catch (e) {
@@ -5053,6 +5148,7 @@
                     () => postMealUndo(newClientId),
                     MEAL_UNDO_MS,
                 );
+                renderMealComposerProvenance(payload.estimate, newClientId);
                 refreshMacroCard();
                 return;
             }
@@ -5169,6 +5265,7 @@
             clearMealDraft();
             const msg = mealEstimateChip(payload.estimate);
             toastUndo(msg, () => postMealUndo(ctx.clientId), MEAL_UNDO_MS);
+            renderMealComposerProvenance(payload.estimate, ctx.clientId);
             refreshMacroCard();
             return;
         }
@@ -5197,6 +5294,7 @@
             });
             clearMealComposerInputs();
             clearMealDraft();
+            clearMealComposerStatus();
             renderMealPendingList();
             toast('Review the estimate before it counts toward today.', 'warn');
             refreshMacroCard();
@@ -5219,16 +5317,17 @@
         hydrateMealPending();
         form.addEventListener('submit', submitMealComposer);
         if (text) {
-            text.addEventListener('input', () => { refreshMealSubmitState(); saveMealDraft(); });
+            text.addEventListener('input', () => { clearMealComposerStatus(); refreshMealSubmitState(); saveMealDraft(); });
         }
         if (image) {
             image.addEventListener('change', () => {
+                clearMealComposerStatus();
                 const file = image.files && image.files[0];
                 applyMealImage(file || null);
             });
         }
         if (previewClear) {
-            previewClear.addEventListener('click', clearMealImage);
+            previewClear.addEventListener('click', () => { clearMealComposerStatus(); clearMealImage(); });
         }
         refreshMealSubmitState();
     }
