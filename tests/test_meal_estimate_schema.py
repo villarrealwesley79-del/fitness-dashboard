@@ -116,7 +116,9 @@ def test_image_meal_intake_uses_public_schema_and_drops_private_fields(monkeypat
         "ambiguous",
         "uncertainty_notes",
         "source",
+        "from_image",
     }
+    assert body["estimate"]["from_image"] is True
 
 
 def test_accept_rejects_non_object_estimate(monkeypatch):

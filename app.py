@@ -3433,6 +3433,9 @@ def meal_intake_stub():
         estimate = sanitize_meal_estimate(result["estimate"], source="stub_vision_estimate")
         source = "stub_vision_estimate"
         estimate["source"] = source
+        # Safe non-image metadata: lets pending photo estimates preserve
+        # photo_retention.image_received when the user accepts them later.
+        estimate["from_image"] = True
         response_extras["stub"] = True
     else:
         parsed = parse_meal_text(text_raw, timestamp=local_timestamp)
@@ -3514,6 +3517,7 @@ def meal_intake_accept_stub(client_id: str):
     if err:
         return err
     estimate = data.get("estimate") or {}
+    originated_from_image = bool(estimate.get("from_image")) if isinstance(estimate, dict) else False
     source_hint = estimate.get("source") if isinstance(estimate, dict) else None
     try:
         estimate = sanitize_meal_estimate(
@@ -3524,18 +3528,20 @@ def meal_intake_accept_stub(client_id: str):
         )
     except MealEstimateValidationError as exc:
         return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
+    if originated_from_image:
+        estimate["from_image"] = True
     text_hint, _ = _coerce_str(data.get("text"), "text", required=False, max_len=500)
     food_log = _meal_intake_stub_persist(
         client_id,
         estimate,
         source=estimate.get("source") or "stub_text_estimate",
-        has_image=bool(estimate.get("from_image")),
+        has_image=originated_from_image,
         text_hint=text_hint or None,
     )
     return jsonify({
         "status": "logged",
         "food_log": food_log,
-        "photo_retention": _food_photo_retention_payload(bool(estimate.get("from_image"))),
+        "photo_retention": _food_photo_retention_payload(originated_from_image),
         "stub": True,
     })
 
