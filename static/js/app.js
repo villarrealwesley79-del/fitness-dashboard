@@ -2085,7 +2085,7 @@
             container.innerHTML = '<div class="body-nutrition-row-empty">No individual meals recorded for this day.</div>';
             return;
         }
-        container.innerHTML = entries.map((e) => {
+        container.innerHTML = entries.map((e, idx) => {
             const name = (e.item_name || e.portion_description || 'Meal').trim();
             const time = (e.logged_at || '').slice(11, 16) || '';
             const cal = e.calories != null ? `${Math.round(e.calories)} kcal` : '';
@@ -2106,8 +2106,16 @@
             } else if (state === 'accepted') {
                 stateLabel = '<span class="meal-state meal-state-estimated">estimated</span>';
             }
+            // FIT-97: tap-target index lets the click handler look up the
+            // original entry by index rather than re-parsing the DOM, so
+            // user-supplied strings never need round-tripping.
+            // FIT-97 a11y: per-row accessible name so screen readers
+            // distinguish entries (e.g. "View meal details: Burger at 12:30").
+            const ariaParts = ['View meal details:', name];
+            if (time) ariaParts.push('at', time);
+            const ariaLabel = escapeHtml(ariaParts.filter(Boolean).join(' '));
             return `
-                <div class="body-nutrition-meal">
+                <button class="body-nutrition-meal body-nutrition-meal-tap" type="button" data-meal-idx="${idx}" aria-label="${ariaLabel}">
                     <div class="body-nutrition-meal-head">
                         ${time ? `<span class="meal-time">${escapeHtml(time)}</span>` : ''}
                         <span class="meal-name">${escapeHtml(name)}</span>
@@ -2117,9 +2125,97 @@
                         ${cal ? `<span>${escapeHtml(cal)}</span>` : ''}
                         ${macros ? `<span>${escapeHtml(macros)}</span>` : ''}
                     </div>
-                </div>
+                </button>
             `;
         }).join('');
+
+        // FIT-97: wire the click → modal flow. Entries are referenced by
+        // index from the bound `entries` array so the closure keeps the
+        // canonical data (including client_id) regardless of DOM state.
+        container.querySelectorAll('[data-meal-idx]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.getAttribute('data-meal-idx'), 10);
+                const entry = entries[idx];
+                if (entry) openMealDetailModal(entry, container);
+            });
+        });
+    }
+
+    // FIT-97: populate and show the meal-detail modal for a food_log entry.
+    // Reads the bounded projection returned by /api/food-logs/by-date so
+    // the same field set as `renderFoodLogMealList`.
+    function openMealDetailModal(entry, listContainer) {
+        const modal = $('modal-meal-detail');
+        if (!modal) return;
+
+        const itemName = (entry.item_name || entry.portion_description || 'Meal').trim();
+        const portion = (entry.portion_description || '').trim() || '—';
+        const loggedAt = entry.logged_at ? entry.logged_at.replace('T', ' ') : '—';
+        const source = (entry.source || '—').toString();
+        const conf = entry.confidence != null
+            ? `${Math.round(Number(entry.confidence) * 100)}%`
+            : '—';
+        // SQLite roundtrip turns Python True into integer 1, so we can't
+        // use strict-equality here. Treat any truthy as Yes, explicit 0/
+        // false as No, null/undefined as unknown.
+        const fromImage = entry.from_image == null
+            ? '—'
+            : (entry.from_image ? 'Yes' : 'No');
+
+        $('meal-detail-title').textContent = itemName;
+        $('meal-detail-item').textContent = itemName;
+        $('meal-detail-portion').textContent = portion;
+        $('meal-detail-time').textContent = loggedAt;
+        $('meal-detail-source').textContent = source;
+        $('meal-detail-confidence').textContent = conf;
+        $('meal-detail-from-image').textContent = fromImage;
+        $('meal-detail-cal').textContent = entry.calories != null ? `${Math.round(entry.calories)} kcal` : '—';
+        $('meal-detail-pro').textContent = entry.protein_g != null ? `${Math.round(entry.protein_g)} g` : '—';
+        $('meal-detail-carb').textContent = entry.carbs_g != null ? `${Math.round(entry.carbs_g)} g` : '—';
+        $('meal-detail-fat').textContent = entry.fat_g != null ? `${Math.round(entry.fat_g)} g` : '—';
+        $('meal-detail-sodium').textContent = entry.sodium_mg != null ? `${Math.round(entry.sodium_mg)} mg` : '—';
+
+        // FIT-97: surface the FIT-90 stub-vision caveat explicitly when
+        // the user is looking at a photo-derived entry that was generated
+        // by the canned `stub_vision_estimate`. Otherwise the inspect
+        // view would silently look authoritative.
+        const stubNotice = $('meal-detail-stub-notice');
+        if (stubNotice) {
+            // Match `stub_vision_estimate` as a source prefix only — avoids
+            // false positives if a future real source happens to contain
+            // "stub" or "vision" as a substring of another label.
+            stubNotice.hidden = !(source && source.toLowerCase().startsWith('stub_vision'));
+        }
+
+        // FIT-97: wire Delete to the existing DELETE endpoint. On success,
+        // remove the row from the inline list, close the modal, and let
+        // the user know via toast.
+        const deleteBtn = $('btn-meal-detail-delete');
+        if (deleteBtn) {
+            // Replace any prior handler — re-binding cleanly avoids stale
+            // client_ids from previous opens.
+            const fresh = deleteBtn.cloneNode(true);
+            deleteBtn.parentNode.replaceChild(fresh, deleteBtn);
+            fresh.disabled = !entry.client_id;
+            fresh.addEventListener('click', async () => {
+                if (!entry.client_id) return;
+                fresh.disabled = true;
+                try {
+                    await api(`/api/meal-intake/${encodeURIComponent(entry.client_id)}`, { method: 'DELETE' });
+                    modal.hidden = true;
+                    toast('Meal deleted', 'ok');
+                    // Force the trend card to re-fetch so the row updates
+                    // immediately without a manual reload.
+                    renderBodyInterpretationAndNutritionTrend();
+                } catch (err) {
+                    console.error(err);
+                    toast(apiErrorMessage(err, 'Delete failed'), 'err');
+                    fresh.disabled = false;
+                }
+            });
+        }
+
+        modal.hidden = false;
     }
 
     async function renderBodyRecompTargetProgress() {
