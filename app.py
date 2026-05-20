@@ -1431,6 +1431,90 @@ def filter_recent_soreness(soreness_data, hours=24):
     return recent
 
 
+def _parse_workout_completion_timestamp(workout):
+    """Best-effort parse of when a workout was completed, in server-local time.
+
+    Prefers `created_at` (precise ISO timestamp) so multiple workouts on the same
+    day still sort correctly. Delegates to `_parse_iso_to_local_datetime` so a
+    `Z`/offset timestamp from sync/import is converted to local before we strip
+    tzinfo — otherwise `hours_ago` could be off by the server's UTC offset and
+    flip recent completions in/out of the window incorrectly. Falls back to
+    `date` at noon local.
+    """
+    ts = workout.get("created_at")
+    if ts:
+        dt = _parse_iso_to_local_datetime(str(ts))
+        if dt is not None:
+            return dt
+    d = workout.get("date")
+    if d:
+        try:
+            return datetime.strptime(d, "%Y-%m-%d") + timedelta(hours=12)
+        except Exception:
+            return None
+    return None
+
+
+def summarize_recent_completion(workouts, hours=24):
+    """Summarize the most-recent completed workout within `hours`.
+
+    Returns ``None`` when no completion falls inside the window. Otherwise
+    returns a dict the recommendation engine uses to dampen intensity and
+    flag freshly-trained muscles in the avoid list.
+    """
+    cutoff = datetime.now() - timedelta(hours=hours)
+    candidates = []
+    for w in workouts or []:
+        if not isinstance(w, dict):
+            continue
+        ts = _parse_workout_completion_timestamp(w)
+        if ts and ts >= cutoff:
+            candidates.append((ts, w))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    ts, w = candidates[0]
+
+    sets_by_muscle = {}
+    total_sets = 0
+    total_volume = 0.0
+    for ex in w.get("exercises") or []:
+        if not isinstance(ex, dict):
+            continue
+        muscle = (ex.get("muscle_group") or "").strip().lower()
+        sets = ex.get("sets") or []
+        n_sets = len(sets)
+        total_sets += n_sets
+        if muscle and muscle != "unknown":
+            sets_by_muscle[muscle] = sets_by_muscle.get(muscle, 0) + n_sets
+        for s in sets:
+            if not isinstance(s, dict):
+                continue
+            try:
+                total_volume += float(s.get("weight_lbs") or 0) * float(s.get("reps") or 0)
+            except Exception:
+                continue
+    muscles_trained = sorted(sets_by_muscle.items(), key=lambda kv: (-kv[1], kv[0]))
+
+    try:
+        overall_fatigue = int(w.get("overall_fatigue")) if w.get("overall_fatigue") is not None else None
+    except Exception:
+        overall_fatigue = None
+
+    hours_ago = round((datetime.now() - ts).total_seconds() / 3600, 1)
+    return {
+        "workout_id": w.get("id"),
+        "date": w.get("date"),
+        "created_at": w.get("created_at"),
+        "hours_ago": hours_ago,
+        "overall_fatigue": overall_fatigue,
+        "session_focus": w.get("session_type"),
+        "total_sets": total_sets,
+        "total_volume_lbs": round(total_volume),
+        "muscles_trained": [{"muscle": m, "sets": n} for m, n in muscles_trained],
+    }
+
+
 def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None):
     """Calculate readiness score for a muscle group.
 
@@ -6796,8 +6880,25 @@ def smart_recommendation_api():
         pass
 
     recent = filter_recent_soreness(SORENESS_DATA, hours=24)
-    avoid = [s.get("muscle") for s in recent if (s.get("soreness_level") or 0) >= 6 and s.get("muscle")]
-    avoid = sorted(set(avoid))
+    avoid_set = {s.get("muscle") for s in recent if (s.get("soreness_level") or 0) >= 6 and s.get("muscle")}
+
+    # Fold in muscles trained in the last ~18h so the next session avoids
+    # reloading them while they're still recovering from the just-completed
+    # workout. Two-set minimum filters out cardio-spillover muscle tags.
+    last_completed = summarize_recent_completion(WORKOUTS, hours=24)
+    recently_trained = []
+    last_hours_ago = last_completed.get("hours_ago") if last_completed else None
+    if last_completed and last_hours_ago is not None and last_hours_ago < 18:
+        for entry in last_completed.get("muscles_trained") or []:
+            muscle = entry.get("muscle")
+            if muscle and (entry.get("sets") or 0) >= 2:
+                avoid_set.add(muscle)
+                recently_trained.append({
+                    "muscle": muscle,
+                    "sets": entry.get("sets"),
+                    "hours_ago": last_hours_ago,
+                })
+    avoid = sorted(avoid_set)
 
     # Readiness factors (ACWR / sleep debt / recovery bonus)
     acwr_data = calculate_acwr(WORKOUTS)
@@ -6851,16 +6952,32 @@ def smart_recommendation_api():
         elif acwr_f >= 1.3:
             recommendation = _downgrade_once(recommendation)
 
+    # Post-workout fatigue: a high-fatigue session in the last ~18h dampens
+    # the next recommendation by one notch. Reads `overall_fatigue` written
+    # at /api/complete-workout so the user's RPE rating actually moves the
+    # plan forward.
+    if (
+        last_completed
+        and last_hours_ago is not None
+        and last_hours_ago < 18
+        and (last_completed.get("overall_fatigue") or 0) >= 8
+    ):
+        recommendation = _downgrade_once(recommendation)
+
     upper = {"chest", "back", "shoulders", "biceps", "triceps"}
     lower = {"quads", "hamstrings", "glutes", "calves", "adductors"}
     avoid_set = set(avoid)
 
+    # `avoid_set` now mixes sore muscles with recently-trained muscles, so
+    # the user-facing copy can't say "due to soreness" categorically.
+    avoid_reason = "soreness or recent training" if recently_trained else "soreness"
     if avoid_set & lower and not (avoid_set & upper):
-        suggested = "Upper body focus - avoid leg exercises due to soreness"
+        suggested = f"Upper body focus - avoid leg exercises due to {avoid_reason}"
     elif avoid_set & upper and not (avoid_set & lower):
-        suggested = "Lower body focus - avoid upper-body loading due to soreness"
+        suggested = f"Lower body focus - avoid upper-body loading due to {avoid_reason}"
     elif avoid_set:
-        suggested = "Recovery / light movement - multiple sore areas"
+        descriptor = "trained or sore" if recently_trained else "sore"
+        suggested = f"Recovery / light movement - multiple {descriptor} areas"
     else:
         suggested = "Normal training - choose session based on your plan"
 
@@ -6887,6 +7004,18 @@ def smart_recommendation_api():
             reason_bits.append(f"{worst.get('muscle')} soreness {worst.get('soreness_level')} logged {age_h}h ago")
         else:
             reason_bits.append(f"{worst.get('muscle')} soreness {worst.get('soreness_level')}")
+    if last_completed and last_hours_ago is not None and last_hours_ago < 24:
+        muscle_list = ", ".join(
+            entry["muscle"] for entry in (last_completed.get("muscles_trained") or [])[:3]
+        ) or "session"
+        fatigue_str = (
+            f", fatigue {last_completed.get('overall_fatigue')}/10"
+            if last_completed.get("overall_fatigue") is not None
+            else ""
+        )
+        reason_bits.append(
+            f"Last session {last_hours_ago}h ago: {muscle_list}{fatigue_str}"
+        )
 
     # Weather adjustment (best-effort)
     weather = None
@@ -6962,6 +7091,8 @@ def smart_recommendation_api():
             "recovery_bonus": recovery_bonus,
         },
         "avoid_muscles": avoid,
+        "recently_trained": recently_trained,
+        "last_completed": last_completed,
         "suggested_workout": suggested,
         "weather": weather,
         "time_of_day": time_of_day,
@@ -7286,6 +7417,7 @@ def _workout_already_synced_response(existing: dict, client_workout_id: str, rec
 @app.route('/api/complete-workout', methods=['POST'])
 def complete_workout():
     """Complete a workout and track adherence to recommendations."""
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -7401,15 +7533,27 @@ def complete_workout():
                 "source": "completed_workout",
             }
 
-    # Find the recommendation
+    # Find the recommendation. The live recommendation path only writes
+    # `LAST_WORKOUT_RECOMMENDATION`, not the `WORKOUT_RECOMMENDATIONS` history
+    # list — checking both keeps adherence honest on the real codepath.
     recommendation = None
-    for rec in WORKOUT_RECOMMENDATIONS:
-        if rec.get("id") == recommendation_id:
-            recommendation = rec
-            break
+    if recommendation_id:
+        for rec in WORKOUT_RECOMMENDATIONS:
+            if rec.get("id") == recommendation_id:
+                recommendation = rec
+                break
+        if recommendation is None and LAST_WORKOUT_RECOMMENDATION:
+            if LAST_WORKOUT_RECOMMENDATION.get("id") == recommendation_id:
+                recommendation = LAST_WORKOUT_RECOMMENDATION
 
-    # Calculate adherence if recommendation found
-    adherence = {"followed": True, "skipped": [], "modified": [], "added": []}
+    # Calculate adherence: default `followed: True` only when no plan was
+    # supposed to be followed (no `recommendation_id`). When a plan was named
+    # but we cannot resolve it, mark `followed: None` so the adherence
+    # endpoint doesn't falsely credit the user with following an unknown plan.
+    if recommendation_id and not recommendation:
+        adherence = {"followed": None, "skipped": [], "modified": [], "added": []}
+    else:
+        adherence = {"followed": True, "skipped": [], "modified": [], "added": []}
     if recommendation:
         recommended_exercises = {e["exercise"] for e in recommendation.get("exercises", [])}
         actual_exercise_names = {e["machine"] for e in actual_exercises}
@@ -7544,6 +7688,9 @@ def complete_workout():
         cardio_log_entry["workout_id"] = workout_id
         CARDIO_DATA.append(cardio_log_entry)
         save_json(CARDIO_FILE, CARDIO_DATA)
+    # Drop the cached plan so the next swap/adjust/recommendation regenerates
+    # against the freshly-completed session, not the one we just executed.
+    LAST_WORKOUT_RECOMMENDATION = None
     _notify_workout_logged(workout_entry)
 
     return jsonify({
@@ -7844,20 +7991,39 @@ def key_insights():
 
 @app.route('/api/adherence')
 def workout_adherence():
-    """Get stats on how well recommendations were followed."""
-    total_recommendations = len(WORKOUT_RECOMMENDATIONS)
-    followed = sum(1 for w in COMPLETED_WORKOUTS if w.get("adherence", {}).get("followed", False))
+    """Stats on how well recommendations were followed.
+
+    Denominator is completed workouts tied to a recommendation (the only ones
+    where adherence is meaningful). `WORKOUTS` is the persisted authoritative
+    list — `COMPLETED_WORKOUTS` is a session-local convenience that starts
+    empty on each boot, so reading from it would silently hide history after
+    the first completion of the day.
+    """
+    completions = WORKOUTS
+    linked = [w for w in completions if w.get("recommendation_id")]
+    followed = sum(1 for w in linked if w.get("adherence", {}).get("followed") is True)
 
     skipped_exercises = {}
-    for w in COMPLETED_WORKOUTS:
+    for w in linked:
         for ex in w.get("adherence", {}).get("skipped", []):
             skipped_exercises[ex] = skipped_exercises.get(ex, 0) + 1
 
+    last = None
+    if completions:
+        last = max(
+            completions,
+            key=lambda w: (w.get("created_at") or "", w.get("date") or "", w.get("id") or ""),
+        )
+
+    adherence_pct = round(followed / len(linked) * 100) if linked else 0
     return jsonify({
-        "total_recommendations": total_recommendations,
+        "total_recommendations": len(linked),
+        "total_completed": len(completions),
+        "linked_completions": len(linked),
         "followed_count": followed,
-        "adherence_rate": round(followed / total_recommendations * 100) if total_recommendations else 0,
-        "frequently_skipped": sorted(skipped_exercises.items(), key=lambda x: -x[1])[:5]
+        "adherence_rate": adherence_pct,
+        "frequently_skipped": sorted(skipped_exercises.items(), key=lambda x: -x[1])[:5],
+        "last_completed_date": (last or {}).get("date") if last else None,
     })
 
 
