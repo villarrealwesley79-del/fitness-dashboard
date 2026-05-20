@@ -90,6 +90,22 @@ def test_guard_allows_branch_switch_with_limited_hook_path(tmp_path):
     assert branch.stdout.strip() == "other"
 
 
+def test_guard_blocks_branch_switch_when_detector_cannot_verify(tmp_path):
+    repo = _init_repo(tmp_path)
+    hooks_path = _run(["git", "config", "--worktree", "--get", "core.hooksPath"], repo, check=True)
+    detector = Path(hooks_path.stdout.strip()) / "worktree-server-guard.sh"
+    detector.write_text("#!/bin/bash\nexit 2\n")
+    detector.chmod(0o755)
+
+    result = _run(["git", "checkout", "other"], repo)
+    branch = _run(["git", "branch", "--show-current"], repo, check=True)
+
+    assert result.returncode != 0
+    assert "Unable to verify whether a Flask server is running" in result.stderr
+    assert "Install pgrep and lsof" in result.stderr
+    assert branch.stdout.strip() == "main"
+
+
 def test_installer_scopes_hooks_path_to_linked_worktree(tmp_path):
     repo = _init_repo(tmp_path)
     repo_hooks_before = _run(["git", "config", "--worktree", "--get", "core.hooksPath"], repo, check=True)
