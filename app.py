@@ -911,8 +911,8 @@ def _nutrition_context_for_date(
         entry for entry in (food_log_entries or [])
         if _nutrition_entry_day(entry) == date_s
     ]
-    has_food_log_day_candidates = food_log_entries is not None and food_log_day_candidates
-    if has_food_log_day_candidates:
+    has_accepted_food_log_day_entries = food_log_entries is not None and food_log_day_entries
+    if has_accepted_food_log_day_entries:
         totals = _summarize_nutrition_entries_for_date(food_log_day_entries, date_s)
     else:
         totals = _summarize_nutrition_for_date(date_s)
@@ -933,10 +933,10 @@ def _nutrition_context_for_date(
         entry for entry in (NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else [])
         if _nutrition_entry_day(entry) == date_s and _nutrition_entry_accepted(entry)
     ]
-    context_entries = food_log_day_entries if has_food_log_day_candidates else accepted_entries
+    context_entries = food_log_day_entries if has_accepted_food_log_day_entries else accepted_entries
     pending_candidates = (
         food_log_day_candidates
-        if has_food_log_day_candidates
+        if food_log_entries is not None and food_log_day_candidates
         else list(NUTRITION_DATA if isinstance(NUTRITION_DATA, list) else [])
     )
     pending_review_count = sum(
@@ -3261,6 +3261,7 @@ _FOOD_PHOTO_RETENTION = {
     "backup_includes_raw_photo": False,
     "message": "Food photos are discarded after extraction; only the final estimate and safe correction metadata are kept.",
 }
+PENDING_MEAL_REVIEW_TTL_DAYS = 7
 _MEAL_INTAKE_STUB_AMBIGUOUS_WORDS = (
     "popcorn", "movie", "shared", "leftover", "leftovers", "snacks",
     "buffet", "potluck", "?", "guessing", "guess",
@@ -3373,6 +3374,90 @@ def _merge_policy_reasons_into_uncertainty_notes(estimate: dict, reasons: list) 
         if note and note.strip().lower() not in existing_lower:
             existing.append(note)
             existing_lower.add(note.strip().lower())
+
+
+def _pending_meal_review_cutoff_date(now=None) -> str:
+    """Return the oldest date still shown in pending meal review."""
+    now = now or datetime.now()
+    return (now.date() - timedelta(days=PENDING_MEAL_REVIEW_TTL_DAYS)).isoformat()
+
+
+def _pending_meal_review_entries(user_id: int, *, now=None) -> list[dict]:
+    cutoff_date = _pending_meal_review_cutoff_date(now)
+    entries = []
+    for entry in get_food_logs(user_id, since=cutoff_date):
+        entry_day = _nutrition_entry_day(entry)
+        if (
+            _nutrition_entry_pending_review(entry)
+            and entry.get("client_id")
+            and entry_day
+            and entry_day >= cutoff_date
+        ):
+            entries.append(entry)
+    return entries
+
+
+def _cleanup_stale_pending_meal_reviews(user_id: int, *, now=None) -> int:
+    cutoff_date = _pending_meal_review_cutoff_date(now)
+    removed = 0
+    for entry in get_food_logs(user_id):
+        client_id = entry.get("client_id")
+        entry_day = _nutrition_entry_day(entry)
+        if (
+            client_id
+            and entry_day
+            and entry_day < cutoff_date
+            and _nutrition_entry_pending_review(entry)
+            and delete_food_log_by_client_id(user_id, client_id)
+        ):
+            removed += 1
+    return removed
+
+
+def _food_log_by_client_id(user_id: int, client_id: str) -> dict | None:
+    if not client_id:
+        return None
+    for entry in get_food_logs(user_id):
+        if entry.get("client_id") == client_id:
+            return entry
+    return None
+
+
+def _meal_pending_review_payload(entry: dict) -> dict:
+    estimate = dict(entry.get("original_estimate") or {})
+    if not estimate:
+        estimate = {
+            "item_name": entry.get("item_name"),
+            "portion_description": entry.get("portion_description"),
+            "meal_type": entry.get("meal_type"),
+            "calories": entry.get("calories"),
+            "protein_g": entry.get("protein_g"),
+            "carbs_g": entry.get("carbs_g"),
+            "fat_g": entry.get("fat_g"),
+            "sodium_mg": entry.get("sodium_mg"),
+            "fiber_g": entry.get("fiber_g"),
+            "confidence": entry.get("confidence"),
+            "source": entry.get("source"),
+            "uncertainty_notes": [],
+        }
+    if entry.get("source") == "stub_vision_estimate":
+        estimate["from_image"] = True
+    try:
+        decision = evaluate_meal_log(estimate)
+        _merge_policy_reasons_into_uncertainty_notes(estimate, decision["reasons"])
+        policy = {
+            "confidence_band": decision["confidence_band"],
+            "reasons": decision["reasons"],
+        }
+    except Exception:
+        policy = {"confidence_band": "unknown", "reasons": ["pending_review"]}
+    return {
+        "client_id": entry.get("client_id"),
+        "estimate": estimate,
+        "text_hint": entry.get("context_note") or "",
+        "logged_at": entry.get("logged_at"),
+        "policy": policy,
+    }
 
 
 def _meal_intake_stub_persist(
@@ -3539,24 +3624,22 @@ def meal_intake_stub():
     # pending entry from the new MEDIUM band has no explanation surface.
     _merge_policy_reasons_into_uncertainty_notes(estimate, decision["reasons"])
 
-    # FIT-61: only auto-logged entries are persisted server-side. Pending
-    # entries live in the composer's JS state until the user explicitly
-    # accepts (which goes through /api/meal-intake/<client_id>/accept and
-    # persists with correction_state="accepted") or discards.
-    #
-    # We deliberately do NOT persist pending estimates here. An earlier
-    # iteration tried this so the dashboard freshness path could surface a
-    # pending_review_count, but it created orphaned rows whenever the user
-    # refreshed, closed the tab, or switched devices before accepting or
-    # discarding — no list endpoint or cross-device reconciliation exists
-    # yet. See FIT-67 for the durable resolution.
+    user_id = _current_data_user_id()
     food_log = None
-    if decision["correction_state"] == CORRECTION_STATE_ACCEPTED:
+    existing_food_log = _food_log_by_client_id(user_id, client_id)
+    if (
+        existing_food_log
+        and not _nutrition_entry_pending_review(existing_food_log)
+        and decision["correction_state"] == CORRECTION_STATE_PENDING_REVIEW
+    ):
+        status = "logged"
+        food_log = existing_food_log
+    elif decision["correction_state"] in {CORRECTION_STATE_ACCEPTED, CORRECTION_STATE_PENDING_REVIEW}:
         food_log = _meal_intake_stub_persist(
             client_id, estimate, source=source, has_image=has_image,
             text_hint=text_raw or None, local_timestamp=local_timestamp,
             local_date=local_date, local_iso=local_iso,
-            correction_state=CORRECTION_STATE_ACCEPTED,
+            correction_state=decision["correction_state"],
         )
 
     return jsonify({
@@ -3571,13 +3654,36 @@ def meal_intake_stub():
     })
 
 
+@app.route("/api/meal-intake/pending", methods=["GET"])
+def meal_intake_pending_stub():
+    """Return durable pending-review meal estimates for cross-reload hydration."""
+    user_id = _current_data_user_id()
+    removed = _cleanup_stale_pending_meal_reviews(user_id)
+    pending = [_meal_pending_review_payload(entry) for entry in _pending_meal_review_entries(user_id)]
+    return jsonify({
+        "pending": pending,
+        "pending_count": len(pending),
+        "ttl_days": PENDING_MEAL_REVIEW_TTL_DAYS,
+        "stale_removed": removed,
+    })
+
+
 @app.route("/api/meal-intake/<client_id>", methods=["DELETE"])
 def meal_intake_undo_stub(client_id: str):
     """FIT-60 stub — undo a logged meal by deleting its food_log row."""
     client_id = (client_id or "").strip()
     if not client_id or len(client_id) > 128:
         return jsonify({"error": {"message": "invalid client_id"}}), 400
-    removed = delete_food_log_by_client_id(_current_data_user_id(), client_id)
+    user_id = _current_data_user_id()
+    expected_state = (request.args.get("correction_state") or request.args.get("state") or "").strip()
+    existing = _food_log_by_client_id(user_id, client_id)
+    if expected_state and existing and str(existing.get("correction_state") or "").strip() != expected_state:
+        return jsonify({
+            "status": "conflict",
+            "removed": False,
+            "correction_state": existing.get("correction_state"),
+        }), 409
+    removed = delete_food_log_by_client_id(user_id, client_id)
     return jsonify({"status": "ok" if removed else "not_found", "removed": removed})
 
 

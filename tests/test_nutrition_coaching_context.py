@@ -155,7 +155,7 @@ def test_nutrition_context_excludes_pending_food_log_rows(monkeypatch):
     assert context["pending_review_count"] == 1
 
 
-def test_nutrition_context_does_not_fallback_to_legacy_when_food_logs_are_pending(monkeypatch):
+def test_nutrition_context_keeps_legacy_totals_when_food_logs_are_pending_only(monkeypatch):
     module = importlib.import_module("app")
     monkeypatch.setattr(
         module,
@@ -181,9 +181,9 @@ def test_nutrition_context_does_not_fallback_to_legacy_when_food_logs_are_pendin
         ],
     )
 
-    assert context["totals"]["calories"] == 0
-    assert context["totals"]["protein_g"] == 0
-    assert context["accepted_entries_count"] == 0
+    assert context["totals"]["calories"] == 700
+    assert context["totals"]["protein_g"] == 35
+    assert context["accepted_entries_count"] == 1
     assert context["pending_review_count"] == 1
 
 
