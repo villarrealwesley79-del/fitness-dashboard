@@ -2675,7 +2675,10 @@
             return { name: 'prompt', subs: [] };
         }
         // perm === 'granted'
-        if (subs.length > 0) return { name: 'granted_active', subs };
+        const endpointHash = await _pushCurrentEndpointHash();
+        if (endpointHash && subs.some((sub) => sub && sub.endpoint_hash === endpointHash)) {
+            return { name: 'granted_active', subs };
+        }
         return { name: 'granted_inactive', subs: [] };
     }
 
@@ -2820,6 +2823,22 @@
         return out;
     }
 
+    async function _pushEndpointHash(endpoint) {
+        if (!endpoint || !window.crypto || !window.crypto.subtle) return null;
+        const bytes = new TextEncoder().encode(endpoint);
+        const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+        return Array.from(new Uint8Array(digest))
+            .map((byte) => byte.toString(16).padStart(2, '0'))
+            .join('');
+    }
+
+    async function _pushCurrentEndpointHash() {
+        if (!('serviceWorker' in navigator)) return null;
+        const reg = await navigator.serviceWorker.getRegistration();
+        const sub = reg && (await reg.pushManager.getSubscription());
+        return sub ? _pushEndpointHash(sub.endpoint) : null;
+    }
+
     async function enablePush() {
         // Must run from a user gesture (button click). Notification.requestPermission
         // requires that on most browsers.
@@ -2914,13 +2933,17 @@
         if (row) row.hidden = false;
         if (result) result.textContent = 'Sending test notification...';
         try {
-            const subs = await _pushSubscriptionsFromServer();
-            const first = subs.find((sub) => sub && sub.endpoint_hash);
+            const endpointHash = await _pushCurrentEndpointHash();
+            if (!endpointHash) {
+                if (result) result.textContent = 'No active subscription on this device. Re-enable notifications here, then send a test.';
+                await renderPushSection();
+                return;
+            }
             const res = await fetch('/api/push/test', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-                body: JSON.stringify({ endpoint_hash: first ? first.endpoint_hash : null }),
+                body: JSON.stringify({ endpoint_hash: endpointHash }),
             });
             const body = await res.json().catch(() => ({}));
             if (res.ok && body.status === 'delivered') {
