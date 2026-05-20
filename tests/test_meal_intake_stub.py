@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib
 import io
+from pathlib import Path
 
 
 def _client(monkeypatch):
@@ -128,12 +129,9 @@ def test_meal_intake_text_pending_review_when_parser_ambiguous(monkeypatch):
     assert body["status"] == "pending_review"
     assert body["estimate"]["item_name"] == "Popcorn"
     assert body["estimate"]["uncertainty_notes"], "ambiguous estimates must surface notes"
-    # FIT-61: pending entries are NOT persisted server-side. They live
-    # in the composer's JS state until the user accepts (which goes
-    # through /api/meal-intake/<client_id>/accept) or discards. See
-    # FIT-67 for durable cross-reload pending resolution.
-    assert persisted == [], "pending estimates must not auto-persist"
-    assert body["food_log"] is None
+    assert persisted[0]["correction_state"] == "pending_review"
+    assert persisted[0]["client_id"] == "meal-pending-1"
+    assert body["food_log"]["client_id"] == "meal-pending-1"
     assert body["policy"]["reasons"], "pending response must surface policy reasons"
 
 
@@ -174,9 +172,8 @@ def test_meal_intake_text_pending_review_when_parser_falls_back(monkeypatch):
     body = res.get_json()
     assert body["status"] == "pending_review"
     assert body["fallback_used"] is True
-    # FIT-61: pending entries are not persisted; user must explicitly accept.
-    assert persisted == [], "fallback estimates must not auto-persist"
-    assert body["food_log"] is None
+    assert persisted[0]["correction_state"] == "pending_review"
+    assert body["food_log"]["client_id"] == "meal-fb-1"
 
 
 def test_meal_intake_text_idempotent_for_same_client_id(monkeypatch):
@@ -236,6 +233,47 @@ def test_meal_intake_text_idempotent_for_same_client_id(monkeypatch):
     # add_food_log handles UPSERT semantics; we just verify same client_id
     # reached the persistence layer both times.
     assert seen == ["meal-idem-1", "meal-idem-1"]
+
+
+def test_meal_intake_pending_retry_does_not_downgrade_accepted_row(monkeypatch):
+    """A stale retry of the original pending POST must not undo accept."""
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Popcorn",
+        "portion_description": "shared",
+        "meal_type": "snack",
+        "calories": 300,
+        "protein_g": 5,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 520,
+        "fiber_g": 6,
+        "confidence": 0.45,
+        "ambiguous": True,
+        "uncertainty_notes": ["Portion unclear."],
+    })
+    accepted_row = {
+        "client_id": "meal-retry-accepted",
+        "correction_state": "accepted",
+        "item_name": "Popcorn",
+        "calories": 300,
+    }
+    monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [accepted_row])
+
+    def fail_add_food_log(*_args, **_kwargs):
+        raise AssertionError("accepted retry must not be upserted back to pending")
+
+    monkeypatch.setattr(module, "add_food_log", fail_add_food_log)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "shared movie popcorn", "client_id": "meal-retry-accepted"},
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "logged"
+    assert body["food_log"]["correction_state"] == "accepted"
 
 
 def test_meal_intake_text_response_omits_meta_and_traces(monkeypatch):
@@ -369,6 +407,7 @@ def test_meal_intake_rejects_non_image_upload(monkeypatch):
 def test_meal_intake_undo_calls_delete_helper(monkeypatch):
     module = _client(monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+    monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [])
 
     seen = {}
 
@@ -389,11 +428,34 @@ def test_meal_intake_undo_calls_delete_helper(monkeypatch):
 def test_meal_intake_undo_returns_not_found_when_missing(monkeypatch):
     module = _client(monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+    monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [])
     monkeypatch.setattr(module, "delete_food_log_by_client_id", lambda *_a, **_kw: False)
 
     res = module.app.test_client().delete("/api/meal-intake/meal-missing")
     assert res.status_code == 200
     assert res.get_json() == {"status": "not_found", "removed": False}
+
+
+def test_meal_intake_pending_discard_does_not_delete_accepted_row(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+    monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [{
+        "client_id": "meal-accepted-elsewhere",
+        "correction_state": "accepted",
+    }])
+
+    def fail_delete(*_args, **_kwargs):
+        raise AssertionError("accepted rows must not be deleted by pending discard")
+
+    monkeypatch.setattr(module, "delete_food_log_by_client_id", fail_delete)
+
+    res = module.app.test_client().delete(
+        "/api/meal-intake/meal-accepted-elsewhere?correction_state=pending_review"
+    )
+    assert res.status_code == 409
+    body = res.get_json()
+    assert body["removed"] is False
+    assert body["correction_state"] == "accepted"
 
 
 def test_meal_intake_accept_persists_estimate(monkeypatch):
@@ -884,8 +946,8 @@ def test_meal_intake_implausible_macros_force_pending_review(monkeypatch):
     body = res.get_json()
     assert body["status"] == "pending_review"
     assert "implausible_calories" in body["policy"]["reasons"]
-    assert persisted == [], "pending estimates must not auto-persist"
-    assert body["food_log"] is None
+    assert persisted[0]["correction_state"] == "pending_review"
+    assert body["food_log"]["client_id"] == "meal-implausible-1"
 
 
 def test_meal_intake_medium_confidence_falls_to_pending(monkeypatch):
@@ -918,8 +980,8 @@ def test_meal_intake_medium_confidence_falls_to_pending(monkeypatch):
     assert body["status"] == "pending_review"
     assert body["policy"]["confidence_band"] == "medium"
     assert "medium_confidence" in body["policy"]["reasons"]
-    assert persisted == [], "medium-confidence estimates must not auto-persist"
-    assert body["food_log"] is None
+    assert persisted[0]["correction_state"] == "pending_review"
+    assert body["food_log"]["client_id"] == "meal-medium-1"
 
 
 def test_meal_intake_pending_response_round_trips_browser_local_time(monkeypatch):
@@ -958,7 +1020,10 @@ def test_meal_intake_pending_response_round_trips_browser_local_time(monkeypatch
     assert body["local_timestamp"] == "2026-05-19T04:55:00.000Z"
     assert body["local_date"] == "2026-05-18"
     assert body["local_iso"] == "2026-05-18T23:55:00-05:00"
-    assert persisted == [], "pending estimates must not auto-persist"
+    assert persisted[0]["correction_state"] == "pending_review"
+    assert persisted[0]["date"] == "2026-05-18"
+    assert persisted[0]["logged_at"] == "2026-05-18T23:55:00"
+    assert body["food_log"]["client_id"] == "meal-pending-time-1"
 
 
 def test_meal_intake_accept_honors_pending_submission_browser_local_time(monkeypatch):
@@ -1191,8 +1256,8 @@ def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
     assert "ambiguous_input" in body["policy"]["reasons"]
     assert body["photo_retention"]["image_received"] is True
     assert body["photo_retention"]["raw_model_trace_retained"] is False
-    assert persisted == [], "ambiguous estimates must not auto-persist"
-    assert body["food_log"] is None
+    assert persisted[0]["correction_state"] == "pending_review"
+    assert body["food_log"]["client_id"] == "meal-ambig-img-1"
 
     accept = module.app.test_client().post(
         "/api/meal-intake/meal-ambig-img-1/accept",
@@ -1226,3 +1291,113 @@ def test_nutrition_today_surfaces_pending_review_count(monkeypatch):
     assert ctx.get("pending_review_count") == 2, (
         f"expected 2 pending entries, got {ctx.get('pending_review_count')}"
     )
+
+
+def test_meal_intake_pending_endpoint_lists_visible_rows_and_cleans_stale(monkeypatch):
+    """FIT-67: pending rows are durable, reloadable, and TTL-cleaned."""
+    module = _client(monkeypatch)
+    today = module.datetime.now().date()
+    visible_day = today.isoformat()
+    stale_day = (today - module.timedelta(days=module.PENDING_MEAL_REVIEW_TTL_DAYS + 1)).isoformat()
+    visible_estimate = {
+        "item_name": "Shared popcorn",
+        "portion_description": "large tub",
+        "meal_type": "snack",
+        "calories": 300,
+        "protein_g": 5,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 520,
+        "fiber_g": 6,
+        "confidence": 0.45,
+        "ambiguous": True,
+        "uncertainty_notes": ["Portion is unclear."],
+        "source": "ai_text_estimate",
+    }
+    logs = [
+        {
+            "client_id": "meal-visible-pending",
+            "date": visible_day,
+            "logged_at": f"{visible_day}T12:30:00",
+            "context_note": "shared popcorn",
+            "correction_state": "pending_review",
+            "original_estimate": dict(visible_estimate),
+        },
+        {
+            "client_id": "meal-stale-pending",
+            "date": stale_day,
+            "logged_at": f"{stale_day}T12:30:00",
+            "context_note": "old popcorn",
+            "correction_state": "pending_review",
+            "original_estimate": dict(visible_estimate),
+        },
+        {
+            "client_id": "meal-stale-accepted",
+            "date": stale_day,
+            "logged_at": f"{stale_day}T08:00:00",
+            "correction_state": "accepted",
+            "original_estimate": dict(visible_estimate),
+        },
+    ]
+    deleted = []
+
+    monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: list(logs))
+    monkeypatch.setattr(module, "delete_food_log_by_client_id", lambda _u, cid: deleted.append(cid) or True)
+
+    res = module.app.test_client().get("/api/meal-intake/pending")
+    assert res.status_code == 200
+    body = res.get_json()
+
+    assert body["pending_count"] == 1
+    assert body["ttl_days"] == module.PENDING_MEAL_REVIEW_TTL_DAYS
+    assert body["stale_removed"] == 1
+    assert deleted == ["meal-stale-pending"]
+    assert body["pending"][0]["client_id"] == "meal-visible-pending"
+    assert body["pending"][0]["estimate"]["item_name"] == "Shared popcorn"
+    assert body["pending"][0]["text_hint"] == "shared popcorn"
+    assert body["pending"][0]["policy"]["reasons"], "pending payload should include review rationale"
+
+
+def test_meal_intake_pending_endpoint_restores_photo_origin_marker(monkeypatch):
+    module = _client(monkeypatch)
+    today = module.datetime.now().date().isoformat()
+    estimate = {
+        "item_name": "Photo meal",
+        "calories": 400,
+        "protein_g": 22,
+        "carbs_g": 40,
+        "fat_g": 15,
+        "confidence": 0.45,
+        "ambiguous": True,
+        "uncertainty_notes": ["Photo needs review."],
+        "source": "stub_vision_estimate",
+    }
+    monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [{
+        "client_id": "meal-photo-pending",
+        "date": today,
+        "logged_at": f"{today}T12:00:00",
+        "source": "stub_vision_estimate",
+        "correction_state": "pending_review",
+        "original_estimate": dict(estimate),
+    }])
+    monkeypatch.setattr(module, "delete_food_log_by_client_id", lambda *_a, **_kw: False)
+
+    res = module.app.test_client().get("/api/meal-intake/pending")
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["pending"][0]["estimate"]["from_image"] is True
+
+
+def test_meal_composer_js_hydrates_pending_and_rolls_back_failed_discard():
+    """Static guard for the browser-only FIT-67 pending-review workflow."""
+    source = Path("static/js/app.js").read_text()
+
+    assert "api('/api/meal-intake/pending')" in source
+    assert "hydrateMealPending();" in source
+    assert "pending.forEach((entry) => upsertMealPendingEntry(entry));" in source
+    assert "correction_state=pending_review" in source
+    assert "result.removed !== true" in source
+    assert "Discard failed — retry when connected" in source
+    assert "toast('Review the estimate before it counts toward today.', 'warn');\n            refreshMacroCard();" in source
+    assert "local_timestamp: entry.local_timestamp || null" in source
+    assert "local_timestamp: entry.local_timestamp || fallback.local_timestamp || entry.logged_at" in source

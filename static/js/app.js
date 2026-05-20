@@ -4607,6 +4607,42 @@
         };
     }
 
+    function mealPendingEntryFromPayload(entry, fallback = {}) {
+        if (!entry) return null;
+        const clientId = entry.client_id || fallback.client_id;
+        if (!clientId) return null;
+        return {
+            client_id: clientId,
+            estimate: entry.estimate || fallback.estimate || {},
+            text: entry.text_hint || fallback.text || '',
+            logged_at: entry.logged_at || fallback.logged_at || null,
+            local_timestamp: entry.local_timestamp || fallback.local_timestamp || entry.logged_at || fallback.logged_at || null,
+            local_date: entry.local_date || fallback.local_date || null,
+            local_iso: entry.local_iso || fallback.local_iso || null,
+            policy: entry.policy || fallback.policy || null,
+        };
+    }
+
+    function upsertMealPendingEntry(entry) {
+        const normalized = mealPendingEntryFromPayload(entry);
+        if (!normalized) return;
+        const index = mealComposerState.pending.findIndex((p) => p.client_id === normalized.client_id);
+        if (index >= 0) mealComposerState.pending[index] = normalized;
+        else mealComposerState.pending.push(normalized);
+    }
+
+    async function hydrateMealPending() {
+        try {
+            const payload = await api('/api/meal-intake/pending');
+            const pending = Array.isArray(payload.pending) ? payload.pending : [];
+            pending.forEach((entry) => upsertMealPendingEntry(entry));
+            renderMealPendingList();
+        } catch (e) {
+            console.error(e);
+            toast('Couldn’t refresh pending meals', 'err');
+        }
+    }
+
     function buildMealPendingRow(entry) {
         const row = document.createElement('div');
         row.className = 'meal-pending-row';
@@ -4641,14 +4677,20 @@
         return row;
     }
 
-    function discardMealPending(clientId) {
-        // Pending estimates live in this composer's local state until
-        // the user accepts or discards. No server-side row exists for
-        // them under FIT-61 (see FIT-67 for the durable resolution),
-        // so discard is a pure local-state clear.
-        mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
-        renderMealPendingList();
-        toast('Estimate discarded', 'ok');
+    async function discardMealPending(clientId) {
+        const entry = mealComposerState.pending.find((p) => p.client_id === clientId);
+        if (!entry) return;
+        try {
+            const result = await api(`/api/meal-intake/${encodeURIComponent(clientId)}?correction_state=pending_review`, { method: 'DELETE' });
+            if (!result || result.removed !== true) throw new Error('pending meal was not removed');
+            mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
+            renderMealPendingList();
+            toast('Estimate discarded', 'ok');
+            refreshMacroCard();
+        } catch (e) {
+            console.error(e);
+            toast('Discard failed — retry when connected', 'err');
+        }
     }
 
     async function acceptMealPending(clientId, rowEl) {
@@ -4758,18 +4800,22 @@
             return;
         }
         if (status === 'pending_review') {
-            mealComposerState.pending.push({
+            upsertMealPendingEntry({
                 client_id: ctx.clientId,
                 estimate: payload.estimate || {},
                 text: ctx.textValue || '',
                 local_timestamp: payload.local_timestamp || null,
                 local_date: payload.local_date || null,
                 local_iso: payload.local_iso || null,
+                text_hint: ctx.textValue || '',
+                logged_at: payload.food_log && payload.food_log.logged_at,
+                policy: payload.policy || null,
             });
             clearMealComposerInputs();
             clearMealDraft();
             renderMealPendingList();
             toast('Review the estimate before it counts toward today.', 'warn');
+            refreshMacroCard();
             return;
         }
         setMealComposerError('Couldn’t parse that meal — try a clearer description.');
@@ -4786,6 +4832,7 @@
         const { form, text, image, previewClear } = mealComposerEls();
         if (!form) return;
         loadMealDraft();
+        hydrateMealPending();
         form.addEventListener('submit', submitMealComposer);
         if (text) {
             text.addEventListener('input', () => { refreshMealSubmitState(); saveMealDraft(); });
