@@ -337,7 +337,11 @@ def _off_query_token_list(text: str) -> list[str]:
 
 def _off_non_us_requested(text: str) -> bool:
     tokens = _off_query_tokens(text)
-    return "non-us" in tokens or {"non", "us"}.issubset(tokens)
+    return bool(
+        {"non-us", "non-u.s"}.intersection(tokens)
+        or {"non", "us"}.issubset(tokens)
+        or {"non", "u.s"}.issubset(tokens)
+    )
 
 
 def _off_country_ok(
@@ -350,8 +354,8 @@ def _off_country_ok(
     if not isinstance(countries, list):
         return False if expected_country_tag else True
     normalized_countries = {str(country).lower() for country in countries}
-    if reject_us_only and normalized_countries and normalized_countries <= {"en:united-states"}:
-        return False
+    if reject_us_only:
+        return any(country and country != "en:united-states" for country in normalized_countries)
     if not expected_country_tag:
         return True
     return expected_country_tag in normalized_countries

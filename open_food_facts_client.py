@@ -29,6 +29,7 @@ LOCALE_QUERY_TOKENS = {
     "japanese",
     "kingdom",
     "non",
+    "non-u.s",
     "non-us",
     "package",
     "packaged",
@@ -36,6 +37,7 @@ LOCALE_QUERY_TOKENS = {
     "uk",
     "u.k",
     "u.k.",
+    "u.s",
     "united",
     "us",
 }

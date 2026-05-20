@@ -235,6 +235,8 @@ def test_open_food_facts_rejects_wrong_country_for_locale(monkeypatch):
 
 def test_open_food_facts_rejects_us_only_for_non_us_query(monkeypatch):
     us_only = _product("Smarties US", code="us-only", country="en:united-states")
+    unknown_country = _product("Smarties Unknown", code="unknown", country="en:united-states")
+    unknown_country["countries_tags"] = []
     canada = _product("Smarties Canada", code="canada", country="en:canada")
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
@@ -243,10 +245,10 @@ def test_open_food_facts_rejects_us_only_for_non_us_query(monkeypatch):
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "search_products",
-        lambda *_a, **_kw: {"products": [us_only, canada]},
+        lambda *_a, **_kw: {"products": [us_only, unknown_country, canada]},
     )
 
-    estimate = branded_food_lookup.lookup("non-US packaged Smarties")
+    estimate = branded_food_lookup.lookup("non-U.S. packaged Smarties")
 
     assert estimate["source"] == "open_food_facts"
     assert estimate["external_food_id"] == "canada"
@@ -319,9 +321,11 @@ def test_open_food_facts_client_strips_packaged_context_words(monkeypatch):
 
     open_food_facts_client.search_products("non-US packaged Tim Tams")
     open_food_facts_client.search_products("non us packaged Tim Tams")
+    open_food_facts_client.search_products("non-U.S. packaged Tim Tams")
 
     assert seen_terms[0] == "Tim Tams"
     assert seen_terms[3] == "Tim Tams"
+    assert seen_terms[6] == "Tim Tams"
 
 
 def test_open_food_facts_accepts_zero_calorie_products(monkeypatch):
