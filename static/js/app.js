@@ -1205,9 +1205,36 @@
             if (c.heart_rate_range) bits.push(c.heart_rate_range);
             else if (c.target_hr) bits.push(`${c.target_hr} bpm`);
             $('nw-cardio-meta').textContent = bits.join(' · ') || (c.intensity || '');
+            // FIT-109: surface FIT-96's rotation/intensity rationale.
+            // Prefer the server-provided `reason` (set by
+            // _choose_dynamic_cardio_recommendation). Fall back to
+            // zone + zone_description so the user still gets context
+            // when an older payload arrives without `reason`.
+            const cardioWhy = $('nw-cardio-why');
+            if (cardioWhy) {
+                const whyText = cardioWhyText(c);
+                cardioWhy.textContent = whyText;
+                cardioWhy.hidden = !whyText;
+            }
         } else {
             card.hidden = true;
         }
+    }
+
+    // FIT-109: shared helper used by both Next Workout card and the
+    // active-workout cardio block so the "why" copy stays consistent.
+    // Prefer the zone + zone_description derived line (FIT-96's
+    // rotation/intensity already encodes recovery vs moderate vs
+    // intensity into `zone_description`), then fall back to the
+    // server-provided `reason` text, then the description alone.
+    function cardioWhyText(c) {
+        if (!c) return '';
+        if (c.zone && c.zone_description) {
+            return `${c.zone} · ${c.zone_description}`;
+        }
+        const reason = (c.reason || '').trim();
+        if (reason) return reason;
+        return c.zone_description || '';
     }
 
     function workoutTitle(nw) {
@@ -4189,6 +4216,7 @@
                 rec.heart_rate_range,
                 rec.intensity,
             ].filter(Boolean);
+            const whyText = cardioWhyText(rec);
             const card = document.createElement('div');
             card.className = 'active-ex active-cardio';
             card.innerHTML = `
@@ -4199,6 +4227,7 @@
                     </div>
                 </div>
                 ${bits.length ? `<div class="active-cardio-meta">${escapeHtml(bits.join(' · '))}</div>` : ''}
+                ${whyText ? `<div class="cardio-why">${escapeHtml(whyText)}</div>` : ''}
                 <label class="active-cardio-check">
                     <input type="checkbox" data-cardio-field="completed"${cardio.completed ? ' checked' : ''}>
                     <span>Completed recommended cardio</span>
