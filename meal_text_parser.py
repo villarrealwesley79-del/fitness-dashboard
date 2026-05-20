@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Iterable, Optional
 
 import branded_food_lookup
+import personal_vocab
 from lm_studio_adapter import (
     LM_STUDIO_ANALYZE_TIMEOUT_SEC,
     LmStudioError,
@@ -373,12 +374,22 @@ def parse_meal_text(
             "fallback_used": True,
         }
 
-    branded_estimate = None
-    if branded_food_lookup.should_attempt_direct_lookup(cleaned):
-        try:
+    try:
+        personal_estimate = personal_vocab.lookup(cleaned, user_id=user_id)
+    except Exception:
+        personal_estimate = None
+    if personal_estimate:
+        return {
+            "estimate": personal_estimate,
+            "fallback_used": False,
+        }
+
+    try:
+        branded_estimate = None
+        if branded_food_lookup.should_attempt_direct_lookup(cleaned):
             branded_estimate = branded_food_lookup.lookup(cleaned, user_id=user_id)
-        except Exception:
-            branded_estimate = None
+    except Exception:
+        branded_estimate = None
     if branded_estimate:
         branded_estimate = _post_process(branded_estimate, source_text=cleaned)
         return {

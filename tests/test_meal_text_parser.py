@@ -40,9 +40,10 @@ def _import_parser():
 
 
 @pytest.fixture(autouse=True)
-def _disable_branded_lookup_for_parser_unit_tests(monkeypatch):
+def _disable_external_learning_for_parser_unit_tests(monkeypatch):
     parser = importlib.import_module("meal_text_parser")
     monkeypatch.setattr(parser.branded_food_lookup, "lookup", lambda *_a, **_kw: None)
+    monkeypatch.setattr(parser.personal_vocab, "lookup", lambda *_a, **_kw: None)
 
 
 # ──────────────────────────────────────────────────────────────────
