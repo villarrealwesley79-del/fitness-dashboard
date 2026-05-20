@@ -385,16 +385,15 @@
         return { text: `${word} over the last ${days} entries · ${dir}.` };
     }
 
-    function deriveHistoryFreqTakeaway(buckets, totalWorkouts) {
+    // FIT-112 (Codex audit): take the range in days directly rather than
+    // deriving it from bucket boundaries. Each bucket's end is
+    // `T23:59:59` (inclusive), so `(end - start) / 86400000 + 1` was
+    // overcounting by ~1 day per bucket and halving the per-week rate.
+    function deriveHistoryFreqTakeaway(buckets, totalWorkouts, days) {
         if (!buckets || !buckets.length || !totalWorkouts) {
             return { text: 'No workouts in range.', empty: true };
         }
-        const spanDays = buckets.reduce((sum, b) => {
-            if (!b.start || !b.end) return sum;
-            const d = (b.end - b.start) / 86400000 + 1;
-            return sum + d;
-        }, 0);
-        const weeks = Math.max(spanDays / 7, 1);
+        const weeks = Math.max((Number(days) || 1) / 7, 1 / 7);
         const perWeek = totalWorkouts / weeks;
         return { text: `${totalWorkouts} workouts in range · ${perWeek.toFixed(1)} per week.` };
     }
@@ -1562,7 +1561,7 @@
 
         // FIT-112: takeaways below the history charts.
         const totalCount = barBuckets.reduce((s, b) => s + (Number(b.count) || 0), 0);
-        const freqTake = deriveHistoryFreqTakeaway(barBuckets, totalCount);
+        const freqTake = deriveHistoryFreqTakeaway(barBuckets, totalCount, days);
         setChartTakeaway('chart-history-freq-takeaway', freqTake.text, { empty: freqTake.empty });
         const volTake = deriveHistoryVolumeTakeaway(barBuckets);
         setChartTakeaway('chart-history-volume-takeaway', volTake.text, { empty: volTake.empty });
