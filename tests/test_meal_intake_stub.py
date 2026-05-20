@@ -361,6 +361,261 @@ def test_meal_intake_image_only_auto_logs(monkeypatch):
     assert captured["context_note"] is None
 
 
+def test_meal_intake_image_text_is_preserved_as_brand_hint(monkeypatch):
+    module = _client(monkeypatch)
+    captured = {}
+    vision = {
+        "provider": "claude",
+        "item_description": "burrito",
+        "portion_hint": "1 burrito",
+        "confidence": 0.86,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    }
+    lookup = {
+        "item_name": "Chipotle chicken burrito",
+        "portion_description": "1 burrito",
+        "meal_type": "lunch",
+        "calories": 1075,
+        "protein_g": 51,
+        "carbs_g": 116,
+        "fat_g": 41,
+        "sodium_mg": 2310,
+        "fiber_g": 13,
+        "confidence": 0.86,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "nutritionix",
+    }
+    monkeypatch.setattr(module.vision_estimator, "describe", lambda *_a, **_kw: dict(vision))
+
+    def fake_lookup(text, **kwargs):
+        captured["text"] = text
+        captured["brand_hint"] = kwargs.get("brand_hint")
+        return dict(lookup)
+
+    monkeypatch.setattr(module.branded_food_lookup, "lookup", fake_lookup)
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "Chipotle chicken burrito",
+            "client_id": "meal-img-brand-hint-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    assert captured == {
+        "text": "Chipotle chicken burrito burrito 1 burrito",
+        "brand_hint": None,
+    }
+    assert res.get_json()["estimate"]["item_name"] == "Chipotle chicken burrito"
+
+
+def test_meal_intake_image_lookup_confidence_is_capped_by_vision(monkeypatch):
+    module = _client(monkeypatch)
+    persisted = []
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "claude",
+            "item_description": "protein shake",
+            "portion_hint": "1 shake",
+            "confidence": 0.62,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+        },
+        lookup={
+            "item_name": "Protein shake",
+            "portion_description": "1 shake",
+            "meal_type": "snack",
+            "calories": 210,
+            "protein_g": 30,
+            "carbs_g": 14,
+            "fat_g": 4,
+            "sodium_mg": 180,
+            "fiber_g": 2,
+            "confidence": 0.86,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "source": "nutritionix",
+            "external_food_id": "shake-1",
+            "verified_source_url": "https://www.nutritionix.com/",
+            "portion_basis": "1 shake",
+        },
+    )
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: persisted.append(record) or record)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-img-low-confidence-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["estimate"]["confidence"] == 0.62
+    assert body["food_log"] is None
+    assert persisted == []
+
+    accept = module.app.test_client().post(
+        "/api/meal-intake/meal-img-low-confidence-1/accept",
+        json={"estimate": body["estimate"], "text": "protein shake"},
+    )
+
+    assert accept.status_code == 200, accept.get_data(as_text=True)
+    accepted_estimate = persisted[-1]["original_estimate"]
+    assert accepted_estimate["external_food_id"] == "shake-1"
+    assert accepted_estimate["verified_source_url"] == "https://www.nutritionix.com/"
+    assert accepted_estimate["portion_basis"] == "1 shake"
+    assert accepted_estimate["vision_description"] == "protein shake"
+    assert accepted_estimate["vision_provider"] == "claude"
+    assert accepted_estimate["vision_confidence"] == 0.62
+
+
+def test_meal_intake_image_invalid_macro_estimate_falls_to_manual_review(monkeypatch):
+    module = _client(monkeypatch)
+    persisted = []
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "claude",
+            "item_description": "mystery pastry",
+            "portion_hint": "1 pastry",
+            "confidence": 0.72,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "macro_estimate": {
+                "meal_type": "snack",
+                "calories": "unknown",
+            },
+        },
+        lookup=None,
+    )
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: persisted.append(record) or record)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-img-bad-macros-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["estimate"]["source"] == "vision_claude_estimate"
+    assert body["estimate"]["confidence"] == 0.45
+    assert body["food_log"] is None
+    assert persisted == []
+
+
+def test_meal_intake_image_lookup_failure_falls_back_to_macro_estimate(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "claude",
+            "item_description": "turkey sandwich",
+            "portion_hint": "1 sandwich",
+            "confidence": 0.72,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "macro_estimate": {
+                "meal_type": "lunch",
+                "calories": 520,
+                "protein_g": 32,
+                "carbs_g": 48,
+                "fat_g": 21,
+                "sodium_mg": 980,
+                "fiber_g": 4,
+            },
+        },
+        lookup=None,
+    )
+    monkeypatch.setattr(
+        module.branded_food_lookup,
+        "lookup",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("cache malformed")),
+    )
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-img-lookup-failure-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["estimate"]["item_name"] == "turkey sandwich"
+    assert body["estimate"]["calories"] == 520
+    assert body["food_log"] is None
+
+
+def test_meal_intake_image_preserves_cached_underlying_source(monkeypatch):
+    module = _client(monkeypatch)
+    captured = {}
+    _stub_vision(
+        monkeypatch,
+        module,
+        lookup={
+            "item_name": "Protein shake",
+            "portion_description": "1 shake",
+            "meal_type": "snack",
+            "calories": 210,
+            "protein_g": 30,
+            "carbs_g": 14,
+            "fat_g": 4,
+            "sodium_mg": 180,
+            "fiber_g": 2,
+            "confidence": 0.86,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "source": "local_cache",
+            "underlying_source": "nutritionix",
+        },
+    )
+
+    def fake_add_food_log(_user_id, record):
+        captured.update(record)
+        return {"client_id": record["client_id"], **record}
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-img-cache-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "logged"
+    assert body["estimate"]["source"] == "vision_claude+local_cache"
+    assert body["estimate"]["underlying_source"] == "nutritionix"
+    assert captured["original_estimate"]["underlying_source"] == "nutritionix"
+
+
 def test_meal_intake_rejects_oversize_image(monkeypatch):
     module = _client(monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
@@ -392,6 +647,27 @@ def test_meal_intake_rejects_non_image_upload(monkeypatch):
     )
     assert res.status_code == 400
     assert "image/" in res.get_json()["error"]["message"]
+
+
+def test_meal_intake_rejects_unsupported_image_type_before_provider(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(
+        module.vision_estimator,
+        "describe",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("provider must not receive unsupported image type")),
+    )
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-heic-1",
+            "image": (io.BytesIO(b"heic-image"), "plate.heic", "image/heic"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 415
+    assert "unsupported image type" in res.get_json()["error"]["message"]
 
 
 def test_meal_intake_image_provider_failure_uses_text_fallback(monkeypatch):
