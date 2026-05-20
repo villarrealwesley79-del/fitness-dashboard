@@ -877,7 +877,10 @@
                 if (last.overall_fatigue != null) {
                     const fatigue = document.createElement('span');
                     fatigue.className = 'reco-last-session-fatigue';
-                    fatigue.textContent = `· fatigue ${last.overall_fatigue}/10`;
+                    // Leading space inside textContent so screen readers and
+                    // copy/paste don't read "Shoulders· fatigue 9/10"; CSS
+                    // margin still handles visual gap.
+                    fatigue.textContent = ` · fatigue ${last.overall_fatigue}/10`;
                     lastEl.appendChild(fatigue);
                 }
                 lastEl.hidden = false;
