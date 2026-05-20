@@ -4624,10 +4624,15 @@ def food_logs_by_date(date):
     """
     # Strict calendar validation — regex shape alone would accept things
     # like 2026-99-99 and return an empty result, which is misleading.
+    # Canonical-form check (`strftime ==`) also rejects `2026-1-1` /
+    # `26-05-20` which strptime tolerates but the stored `YYYY-MM-DD`
+    # values won't match.
     try:
-        datetime.strptime(date or "", "%Y-%m-%d")
+        parsed = datetime.strptime(date or "", "%Y-%m-%d")
     except (ValueError, TypeError):
         return api_error("date must be a valid YYYY-MM-DD", 400, code="invalid_field")
+    if parsed.strftime("%Y-%m-%d") != date:
+        return api_error("date must be canonical YYYY-MM-DD (zero-padded)", 400, code="invalid_field")
     user_id = _current_data_user_id()
 
     food_log_entries = list(_food_log_entries_for_context(since=date) or [])

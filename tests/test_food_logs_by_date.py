@@ -62,6 +62,16 @@ def test_shape_valid_but_impossible_date_returns_400(fitness_app):
     assert body["error"]["code"] == "invalid_field"
 
 
+def test_non_canonical_date_returns_400(fitness_app):
+    """`2026-5-1` parses with strptime but stored dates are zero-padded
+    `2026-05-01`, so the comparison would silently miss. Codex round 2
+    audit finding."""
+    res = fitness_app.app.test_client().get("/api/food-logs/by-date/2026-5-1")
+    assert res.status_code == 400
+    body = res.get_json()
+    assert body["error"]["code"] == "invalid_field"
+
+
 def test_returned_entries_use_bounded_projection(fitness_app, monkeypatch):
     """Codex round 1: response shape must be a stable projection, not
     raw food_log rows. Sensitive / internal fields like
