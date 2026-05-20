@@ -2415,6 +2415,9 @@
         // FIT-15: AI Coach health + 24h metrics card.
         renderAiCoachHealth();
         startAiCoachHealthRefresh();
+
+        // FIT-40: Web Push permission flow + alert surfaces.
+        renderPushSection();
     }
 
     // ── FIT-15: AI Coach health + metrics ─────────────────────────
@@ -2579,6 +2582,275 @@
             // Don't leave a stale "flaky" warning on screen if /api/ai/metrics
             // fails after a previous refresh exposed a high fallback rate.
             if (warnRow) warnRow.hidden = true;
+        }
+    }
+
+    // ── FIT-40: Web Push permission flow + alert surfaces ─────────
+    // No real push delivery yet (FIT-39 deferred the worker). This
+    // section only owns the permission flow + the in-app alert preview.
+
+    const PUSH_STATE_CHIP = {
+        unsupported:      { text: 'Unsupported',      cls: 'unknown' },
+        needs_install:    { text: 'Install required', cls: 'warn'    },
+        prompt:           { text: 'Off',              cls: ''        },
+        granted_active:   { text: 'On',               cls: 'ok'      },
+        granted_inactive: { text: 'Pending',          cls: 'warn'    },
+        revoked:          { text: 'Revoked',          cls: 'warn'    },
+        denied:           { text: 'Blocked',          cls: 'stale'   },
+    };
+
+    function _pushSupported() {
+        return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+    }
+
+    function _pushIsStandalone() {
+        // Either the PWA display-mode or iOS Safari's legacy `standalone`.
+        if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) return true;
+        return Boolean(navigator.standalone);
+    }
+
+    function _pushIsIOS() {
+        return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    }
+
+    async function _pushSubscriptionsFromServer() {
+        try {
+            const res = await api('/api/push/subscriptions');
+            return (res && Array.isArray(res.subscriptions)) ? res.subscriptions : [];
+        } catch {
+            return [];
+        }
+    }
+
+    async function _pushDetectState() {
+        if (!_pushSupported()) return { name: 'unsupported', subs: [] };
+        // iOS only delivers push when installed to Home Screen.
+        if (_pushIsIOS() && !_pushIsStandalone()) return { name: 'needs_install', subs: [] };
+        const perm = Notification.permission;
+        const subs = await _pushSubscriptionsFromServer();
+        if (perm === 'denied') return { name: 'denied', subs };
+        if (perm === 'default') {
+            // If the server still has a subscription record, the user
+            // previously enabled and has since revoked permission at the
+            // browser/OS level. Distinct from the first-time `prompt` state.
+            if (subs.length > 0) return { name: 'revoked', subs };
+            return { name: 'prompt', subs: [] };
+        }
+        // perm === 'granted'
+        if (subs.length > 0) return { name: 'granted_active', subs };
+        return { name: 'granted_inactive', subs: [] };
+    }
+
+    function _pushApplyChip(stateName) {
+        const chip = $('push-state-chip');
+        if (!chip) return;
+        const info = PUSH_STATE_CHIP[stateName] || PUSH_STATE_CHIP.unsupported;
+        chip.classList.remove('ok', 'warn', 'stale', 'unknown');
+        chip.textContent = info.text;
+        if (info.cls) chip.classList.add(info.cls);
+    }
+
+    function _pushApplyButtons(state) {
+        const enableBtn = $('btn-push-enable');
+        const disableBtn = $('btn-push-disable');
+        if (!enableBtn || !disableBtn) return;
+        const stateName = state.name;
+        const subCount = (state.subs && state.subs.length) || 0;
+        // Enable is offered when the user can grant permission or re-subscribe.
+        // Hidden in `denied` because requestPermission() is silently rejected
+        // when the browser already remembers a deny.
+        const showEnable = stateName === 'prompt' || stateName === 'granted_inactive' || stateName === 'revoked';
+        // Disable is offered when there's something to clean up — an active
+        // subscription, a stale server record from a revoked permission, or
+        // an orphan server record from a previous Enable that the user later
+        // denied at the OS level.
+        const showDisable = (
+            stateName === 'granted_active'
+            || stateName === 'revoked'
+            || (stateName === 'denied' && subCount > 0)
+        );
+        enableBtn.hidden = !showEnable;
+        disableBtn.hidden = !showDisable;
+    }
+
+    function _pushApplyHintRows(stateName) {
+        // Each hint row corresponds to a specific failure mode. Show
+        // exactly the ones relevant to the current state.
+        const installRow = $('push-install-row');
+        const blockedRow = $('push-blocked-row');
+        const revokedRow = $('push-revoked-row');
+        const vapidRow = $('push-vapid-row');
+        if (installRow) installRow.hidden = stateName !== 'needs_install';
+        if (blockedRow) blockedRow.hidden = stateName !== 'denied';
+        if (revokedRow) revokedRow.hidden = stateName !== 'revoked';
+        if (vapidRow) vapidRow.hidden = stateName !== 'granted_inactive';
+    }
+
+    function _pushApplyDot(stateName) {
+        const dot = $('push-dot');
+        if (!dot) return;
+        dot.className = stateName === 'granted_active' ? 'int-dot int-dot-on' : 'int-dot';
+    }
+
+    async function _pushRenderAlerts() {
+        // The alert preview uses /api/push/reminders/preview. It reflects
+        // FIT-39's deterministic stale-wearable + pending-food rules and
+        // is safe to surface in-app even when push delivery is off.
+        const row = $('push-alerts-row');
+        const list = $('push-alerts-list');
+        if (!row || !list) return;
+        let preview;
+        try {
+            preview = await api('/api/push/reminders/preview');
+        } catch {
+            row.hidden = true;
+            return;
+        }
+        const alerts = (preview && Array.isArray(preview.alerts)) ? preview.alerts : [];
+        if (!alerts.length) {
+            row.hidden = true;
+            list.textContent = '';
+            return;
+        }
+        row.hidden = false;
+        list.textContent = alerts
+            .map((a) => `${a.title || a.type || 'Alert'} — ${a.body || ''}`.trim())
+            .join(' · ');
+    }
+
+    async function renderPushSection() {
+        const card = $('push-notifications-card');
+        if (!card) return;
+        const state = await _pushDetectState();
+        _pushApplyChip(state.name);
+        _pushApplyButtons(state);
+        _pushApplyHintRows(state.name);
+        _pushApplyDot(state.name);
+        _wirePushButtons();
+        _pushRenderAlerts();
+    }
+
+    function _wirePushButtons() {
+        const enableBtn = $('btn-push-enable');
+        if (enableBtn && !enableBtn.dataset.wired) {
+            enableBtn.dataset.wired = '1';
+            enableBtn.addEventListener('click', () => { enablePush(); });
+        }
+        const disableBtn = $('btn-push-disable');
+        if (disableBtn && !disableBtn.dataset.wired) {
+            disableBtn.dataset.wired = '1';
+            disableBtn.addEventListener('click', () => { disablePush(); });
+        }
+    }
+
+    async function _pushGetVapidKey() {
+        // Server hasn't published a VAPID public-key endpoint yet (FIT-39
+        // explicitly deferred delivery). Try to fetch one; on 404 / network
+        // error, fall through — subscribe will likely fail in Chrome but
+        // we surface that as the "granted_inactive" UI state cleanly.
+        try {
+            const res = await fetch('/api/push/vapid-public-key');
+            if (!res.ok) return null;
+            const body = await res.json();
+            return (body && body.public_key) || null;
+        } catch {
+            return null;
+        }
+    }
+
+    function _pushUrlBase64ToUint8(base64) {
+        // Per Web Push spec: VAPID public keys are URL-safe base64.
+        const padding = '='.repeat((4 - base64.length % 4) % 4);
+        const cleaned = (base64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const raw = atob(cleaned);
+        const out = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+        return out;
+    }
+
+    async function enablePush() {
+        // Must run from a user gesture (button click). Notification.requestPermission
+        // requires that on most browsers.
+        const enableBtn = $('btn-push-enable');
+        if (enableBtn) enableBtn.disabled = true;
+        try {
+            try {
+                const perm = await Notification.requestPermission();
+                if (perm !== 'granted') return;
+                const reg = await navigator.serviceWorker.ready;
+                const vapid = await _pushGetVapidKey();
+                const opts = { userVisibleOnly: true };
+                if (vapid) opts.applicationServerKey = _pushUrlBase64ToUint8(vapid);
+                let subscription = null;
+                try {
+                    subscription = await reg.pushManager.subscribe(opts);
+                } catch (err) {
+                    // Chrome rejects subscribe without applicationServerKey. We
+                    // surface this as the "granted_inactive" state — permission
+                    // is granted but server delivery isn't configured.
+                    console.warn('pushManager.subscribe failed:', err);
+                }
+                if (subscription) {
+                    let serverSaved = false;
+                    try {
+                        await api('/api/push/subscriptions', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                subscription: subscription.toJSON ? subscription.toJSON() : subscription,
+                                permission_state: 'granted',
+                                pwa_installed: _pushIsStandalone(),
+                            }),
+                        });
+                        serverSaved = true;
+                    } catch (err) {
+                        console.warn('POST /api/push/subscriptions failed:', err);
+                    }
+                    // If the server save failed, tear down the browser-side
+                    // subscription so we don't leave a dangling push channel
+                    // that the user can't see or disable in this UI.
+                    if (!serverSaved) {
+                        try { await subscription.unsubscribe(); }
+                        catch (err) { console.warn('rollback unsubscribe failed:', err); }
+                    }
+                }
+            } catch (err) {
+                // Outer catch covers requestPermission rejection, the
+                // serviceWorker.ready promise, VAPID-key decoding, and any
+                // other unexpected throw before the inner try blocks.
+                console.warn('enablePush failed:', err);
+            }
+            await renderPushSection();
+        } finally {
+            if (enableBtn) enableBtn.disabled = false;
+        }
+    }
+
+    async function disablePush() {
+        const disableBtn = $('btn-push-disable');
+        if (disableBtn) disableBtn.disabled = true;
+        try {
+            // Unsubscribe locally first so the browser stops accepting pushes
+            // even if the server DELETE fails.
+            try {
+                if ('serviceWorker' in navigator) {
+                    const reg = await navigator.serviceWorker.getRegistration();
+                    const sub = reg && (await reg.pushManager.getSubscription());
+                    if (sub) await sub.unsubscribe();
+                }
+            } catch (err) {
+                console.warn('pushManager.unsubscribe failed:', err);
+            }
+            const subs = await _pushSubscriptionsFromServer();
+            await Promise.all(subs.map((s) => {
+                if (!s || !s.endpoint_hash) return Promise.resolve();
+                return api('/api/push/subscriptions/' + encodeURIComponent(s.endpoint_hash), {
+                    method: 'DELETE',
+                }).catch((err) => { console.warn('DELETE subscription failed:', err); });
+            }));
+            await renderPushSection();
+        } finally {
+            if (disableBtn) disableBtn.disabled = false;
         }
     }
 
@@ -4537,8 +4809,20 @@
         aiStatusTimer = setInterval(refreshAiStatus, 60_000);
         renderSyncBanner();
         wireMealComposer();
+        registerServiceWorker();
         window.addEventListener('online', () => { flushSyncQueue(); });
         if (navigator.onLine) flushSyncQueue();
+    }
+
+    function registerServiceWorker() {
+        // FIT-40: register the existing sw.js so PushManager + display-mode
+        // detection downstream have a registration to talk to. Failure here
+        // (private browsing, file://) is non-fatal — the rest of the app
+        // works without it; renderPushSection() reports "Unsupported".
+        if (!('serviceWorker' in navigator)) return;
+        navigator.serviceWorker.register('/sw.js').catch((err) => {
+            console.warn('Service worker registration failed:', err);
+        });
     }
 
     if (document.readyState === 'loading') {
