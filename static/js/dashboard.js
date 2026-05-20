@@ -321,7 +321,7 @@
       var streak = data.current_streak || 0;
       var longest = data.longest_streak || 0;
       var weeklyAvg = data.weekly_avg || data.avg_per_week || 0;
-      var pct = data.adherence_rate != null ? (data.adherence_rate * 100) : 0;
+      var pct = data.adherence_rate != null ? data.adherence_rate : 0;
       // Also support nested data.consistency if backend adds it later
       if (data.consistency) {
         streak = data.consistency.current_streak || streak;
