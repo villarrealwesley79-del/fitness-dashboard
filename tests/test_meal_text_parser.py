@@ -166,7 +166,16 @@ def test_parse_text_falls_back_when_lm_studio_unreachable(monkeypatch):
     assert result["estimate"]["confidence"] < 0.65
 
 
-@pytest.mark.parametrize("text", ["Chipotle chicken burrito", "Chipotle chicken burritos"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Chipotle chicken burrito",
+        "Chipotle chicken burritos",
+        "Chipotole chicken burrito",
+        "Chipoltle chicken burrito",
+        "Chiptole chicken burrito",
+    ],
+)
 def test_fallback_preserves_chipotle_burrito_category(text, monkeypatch):
     parser = _import_parser()
     adapter = importlib.import_module("lm_studio_adapter")
@@ -183,7 +192,15 @@ def test_fallback_preserves_chipotle_burrito_category(text, monkeypatch):
     assert result["estimate"]["calories"] == 1075
 
 
-@pytest.mark.parametrize("text", ["Chipotle burrito", "Chipotle steak burrito", "Chipotle veggie burrito"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Chipotle burrito",
+        "Chipotle steak burrito",
+        "Chipotle veggie burrito",
+        "Chipotole burrito",
+    ],
+)
 def test_fallback_does_not_invent_chicken_for_generic_chipotle_burrito(text, monkeypatch):
     parser = _import_parser()
     adapter = importlib.import_module("lm_studio_adapter")

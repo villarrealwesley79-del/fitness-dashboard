@@ -140,9 +140,21 @@ _FALLBACK_DEFAULT = dict(
     carbs_g=40, fat_g=15, sodium_mg=560, fiber_g=4,
 )
 
+_FALLBACK_TOKEN_ALIASES = {
+    "chipotole": "chipotle",
+    "chipoltle": "chipotle",
+    "chiptole": "chipotle",
+}
+
 
 def _fallback_tokens(text: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9]+", text.lower()))
+    raw_tokens = set(re.findall(r"[a-z0-9]+", text.lower()))
+    tokens = set(raw_tokens)
+    for token in raw_tokens:
+        alias = _FALLBACK_TOKEN_ALIASES.get(token)
+        if alias:
+            tokens.add(alias)
+    return tokens
 
 
 def _has_fallback_token(tokens: set[str], term: str) -> bool:
@@ -313,6 +325,8 @@ def _fallback_estimate(text: str) -> dict:
         notes.append("Portion or items are unclear — confirm before it counts toward today.")
     if not matched and norm:
         notes.append("Estimated from a generic meal profile; review macros if accuracy matters.")
+    if matched and "chipotle" in tokens:
+        notes.append("Local Chipotle fallback uses a typical menu profile; verify modifiers if exact macros matter.")
 
     return {
         "item_name": estimate["item_name"],
