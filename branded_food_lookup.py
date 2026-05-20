@@ -74,6 +74,14 @@ OFF_COMPLETE_QUALITY_TAGS = {
     "en:nutrition-completed",
     "en:nutrition-data-complete",
 }
+OFF_PACKAGED_QUERY_TOKENS = {
+    "barcode",
+    "imported",
+    "non-us",
+    "package",
+    "packaged",
+    "product",
+}
 
 
 def normalize_meal_text(text: str) -> str:
@@ -214,6 +222,8 @@ def _usda_lookup(text: str, _normalized: str) -> dict[str, Any] | None:
 
 def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
     expected_country_tag = _off_expected_country_tag(text)
+    if not _off_lookup_allowed(text, expected_country_tag):
+        return None
     payload = open_food_facts_client.search_products(
         text,
         country_tag=expected_country_tag,
@@ -257,6 +267,17 @@ def _off_expected_country_tag(text: str) -> str | None:
         if country_tag:
             return country_tag
     return None
+
+
+def _off_lookup_allowed(text: str, expected_country_tag: str | None) -> bool:
+    if expected_country_tag:
+        return True
+    tokens = {
+        raw.strip(".,!?;:()[]{}\"'").lower()
+        for raw in (text or "").split()
+        if raw.strip(".,!?;:()[]{}\"'")
+    }
+    return bool(OFF_PACKAGED_QUERY_TOKENS.intersection(tokens) or {"non", "us"}.issubset(tokens))
 
 
 def _off_country_ok(product: dict[str, Any], expected_country_tag: str | None) -> bool:

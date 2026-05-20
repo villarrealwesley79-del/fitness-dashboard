@@ -253,6 +253,19 @@ def test_open_food_facts_tier_runs_after_usda(monkeypatch):
     assert "CC-BY-SA" in estimate["off_attribution"]
 
 
+def test_open_food_facts_skips_generic_meal_text(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("OFF must not run for generic meals")),
+    )
+
+    assert branded_food_lookup.lookup("eggs and toast") is None
+
+
 def test_open_food_facts_accepts_zero_calorie_products(monkeypatch):
     product = _product("Sparkling Water", code="zero")
     product["nutriments"].update(
