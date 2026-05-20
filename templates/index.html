@@ -815,6 +815,7 @@
                     <div class="settings-row-control">
                         <span id="push-state-chip" class="state-chip">—</span>
                         <button id="btn-push-enable" class="btn btn-ghost btn-sm" type="button" hidden>Enable</button>
+                        <button id="btn-push-test" class="btn btn-ghost btn-sm" type="button" hidden>Send test</button>
                         <button id="btn-push-disable" class="btn btn-ghost btn-sm" type="button" hidden>Disable</button>
                     </div>
                 </div>
@@ -839,13 +840,19 @@
                 <div class="settings-row" id="push-vapid-row" hidden>
                     <div class="settings-row-label settings-row-label-stack">
                         <span class="settings-row-label-main">⚠ Push delivery not configured</span>
-                        <span class="settings-row-detail">Permission granted, but the server hasn't published a VAPID key yet. In-app alerts still surface here; backend delivery requires server config.</span>
+                        <span class="settings-row-detail">Permission is granted, but no browser subscription is active. Configure VAPID keys, then enable notifications again.</span>
                     </div>
                 </div>
                 <div class="settings-row" id="push-alerts-row" hidden>
                     <div class="settings-row-label settings-row-label-stack">
                         <span class="settings-row-label-main">Active alerts</span>
                         <span id="push-alerts-list" class="settings-row-detail">—</span>
+                    </div>
+                </div>
+                <div class="settings-row" id="push-test-row" hidden>
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">Test delivery</span>
+                        <span id="push-test-result" class="settings-row-detail">—</span>
                     </div>
                 </div>
             </div>

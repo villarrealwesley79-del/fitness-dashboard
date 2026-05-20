@@ -30,6 +30,44 @@ self.addEventListener('activate', event => {
     );
 });
 
+// Web Push - display low-stakes coaching notifications from the server.
+self.addEventListener('push', event => {
+    let payload = {};
+    if (event.data) {
+        try {
+            payload = event.data.json();
+        } catch {
+            payload = { body: event.data.text() };
+        }
+    }
+    const title = payload.title || 'Fitness Dashboard';
+    const options = {
+        body: payload.body || 'Open Fitness Dashboard for the latest coaching reminder.',
+        tag: payload.tag || 'fitness-dashboard-reminder',
+        data: {
+            url: payload.url || '/',
+            safety_critical: payload.safety_critical === true,
+        },
+        icon: '/static/icons/icon-192.png',
+        badge: '/static/icons/icon-192.png',
+    };
+    event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', event => {
+    event.notification.close();
+    const targetUrl = new URL((event.notification.data && event.notification.data.url) || '/', self.location.origin).href;
+    event.waitUntil(
+        self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
+            for (const client of clientList) {
+                if ('focus' in client && client.url === targetUrl) return client.focus();
+            }
+            if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
+            return undefined;
+        })
+    );
+});
+
 // Fetch - network first, fallback to cache
 self.addEventListener('fetch', event => {
     // Skip non-GET requests

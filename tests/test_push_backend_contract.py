@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 
 import data_store
 
@@ -116,3 +117,85 @@ def test_push_reminder_preview_uses_stored_subscription_degradation_state(monkey
     body = client.get("/api/push/reminders/preview").get_json()
 
     assert body["support_state"] == "not_installed"
+
+
+def test_push_vapid_public_key_endpoint_uses_server_config(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    monkeypatch.setenv("FITNESS_PUSH_VAPID_PUBLIC_KEY", "public-test-key")
+
+    res = module.app.test_client().get("/api/push/vapid-public-key")
+
+    assert res.status_code == 200
+    assert res.get_json() == {"public_key": "public-test-key"}
+
+
+def test_push_test_notification_uses_vapid_signed_delivery(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    monkeypatch.setenv("FITNESS_PUSH_VAPID_PRIVATE_KEY", "private-test-key")
+    monkeypatch.setenv("FITNESS_PUSH_VAPID_SUBJECT", "mailto:test@example.com")
+    calls = []
+
+    def fake_webpush(**kwargs):
+        calls.append(kwargs)
+        return type("Response", (), {"status_code": 201})()
+
+    monkeypatch.setattr(module, "webpush", fake_webpush)
+    client = module.app.test_client()
+    saved = client.post("/api/push/subscriptions", json={"subscription": _subscription()}).get_json()["subscription"]
+
+    res = client.post("/api/push/test", json={"endpoint_hash": saved["endpoint_hash"]})
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "delivered"
+    assert body["delivered"] is True
+    assert body["safety_critical"] is False
+    assert calls[0]["subscription_info"] == _subscription()
+    assert calls[0]["vapid_private_key"] == "private-test-key"
+    assert calls[0]["vapid_claims"] == {"sub": "mailto:test@example.com"}
+    payload = json.loads(calls[0]["data"])
+    assert payload["title"] == "Fitness Dashboard test"
+    assert payload["safety_critical"] is False
+
+
+def test_push_test_notification_revokes_gone_subscription(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    monkeypatch.setenv("FITNESS_PUSH_VAPID_PRIVATE_KEY", "private-test-key")
+
+    class GoneResponse:
+        status_code = 410
+
+    class GonePush(Exception):
+        response = GoneResponse()
+
+    def fake_webpush(**_kwargs):
+        raise GonePush("subscription expired")
+
+    monkeypatch.setattr(module, "webpush", fake_webpush)
+    client = module.app.test_client()
+    saved = client.post("/api/push/subscriptions", json={"subscription": _subscription()}).get_json()["subscription"]
+
+    res = client.post("/api/push/test", json={"endpoint_hash": saved["endpoint_hash"]})
+
+    assert res.status_code == 410
+    body = res.get_json()
+    assert body["status"] == "gone"
+    assert body["revoked"] is True
+    assert client.get("/api/push/subscriptions").get_json()["subscriptions"] == []
+
+
+def test_push_test_notification_reports_missing_vapid_private_key(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    monkeypatch.delenv("FITNESS_PUSH_VAPID_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("VAPID_PRIVATE_KEY", raising=False)
+    monkeypatch.setattr(module, "webpush", lambda **_kwargs: None)
+    client = module.app.test_client()
+    client.post("/api/push/subscriptions", json={"subscription": _subscription()})
+
+    res = client.post("/api/push/test", json={})
+
+    assert res.status_code == 500
+    body = res.get_json()
+    assert body["status"] == "server_error"
+    assert body["delivered"] is False
+    assert body["safety_critical"] is False
