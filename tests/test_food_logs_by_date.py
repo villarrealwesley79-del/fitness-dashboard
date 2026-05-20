@@ -1,0 +1,160 @@
+"""FIT-93 — per-date food log endpoint contract.
+
+`/api/food-logs/by-date/<YYYY-MM-DD>` backs the row-expand affordance on
+the Body tab's nutrition trend card so the user can drill from a day's
+total down to the individual meals.
+
+These tests lock in:
+
+* malformed date strings are rejected with 400 / invalid_field;
+* same-day entries are returned, sorted by `logged_at` ascending;
+* entries from other days are excluded;
+* same dedupe behavior as `/api/nutrition-history` (no double-count when
+  the same meal lives in both `food_logs` and the legacy
+  `NUTRITION_DATA` store).
+"""
+from __future__ import annotations
+
+import importlib
+from datetime import datetime, timedelta
+
+import pytest
+
+
+@pytest.fixture()
+def fitness_app(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "fit93-bydate-secret")
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    # Isolate the two backing stores so each test runs against a known
+    # shape and doesn't depend on whatever's in food_logs.sqlite on disk.
+    monkeypatch.setattr(module, "NUTRITION_DATA", [])
+    monkeypatch.setattr(module, "_food_log_entries_for_context", lambda since=None, limit=None: [])
+    yield module
+    module.app.config.update(LOGIN_DISABLED=False)
+
+
+def _today() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _today_minus(days: int) -> str:
+    return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+# ──────────────────────────────────────────────────────────────────
+# Input validation
+# ──────────────────────────────────────────────────────────────────
+
+def test_invalid_date_returns_400(fitness_app):
+    res = fitness_app.app.test_client().get("/api/food-logs/by-date/not-a-date")
+    assert res.status_code == 400
+    body = res.get_json()
+    assert body["error"]["code"] == "invalid_field"
+
+
+def test_valid_iso_date_returns_200_even_when_empty(fitness_app):
+    res = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{_today()}")
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["date"] == _today()
+    assert body["entries"] == []
+    assert body["count"] == 0
+
+
+# ──────────────────────────────────────────────────────────────────
+# Returns same-day entries, excludes other dates
+# ──────────────────────────────────────────────────────────────────
+
+def test_returns_same_day_entries_from_food_logs(fitness_app, monkeypatch):
+    today = _today()
+    food_log_entries = [
+        {"client_id": "fl-1", "date": today, "logged_at": f"{today}T08:00:00",
+         "item_name": "Eggs", "calories": 200, "protein_g": 14, "carbs_g": 2, "fat_g": 14},
+        {"client_id": "fl-2", "date": today, "logged_at": f"{today}T12:30:00",
+         "item_name": "Burger", "calories": 540, "protein_g": 28, "carbs_g": 42, "fat_g": 30},
+    ]
+    monkeypatch.setattr(
+        fitness_app,
+        "_food_log_entries_for_context",
+        lambda since=None, limit=None: food_log_entries,
+    )
+
+    res = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{today}")
+    body = res.get_json()
+    assert body["count"] == 2
+    names = [e["item_name"] for e in body["entries"]]
+    assert names == ["Eggs", "Burger"], "entries must be sorted by logged_at ascending"
+
+
+def test_excludes_other_days(fitness_app, monkeypatch):
+    today = _today()
+    yesterday = _today_minus(1)
+    food_log_entries = [
+        {"client_id": "fl-1", "date": today, "logged_at": f"{today}T08:00:00",
+         "item_name": "Eggs", "calories": 200},
+        {"client_id": "fl-2", "date": yesterday, "logged_at": f"{yesterday}T19:00:00",
+         "item_name": "Dinner yesterday", "calories": 800},
+    ]
+    monkeypatch.setattr(
+        fitness_app,
+        "_food_log_entries_for_context",
+        lambda since=None, limit=None: food_log_entries,
+    )
+
+    res = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{today}")
+    body = res.get_json()
+    assert body["count"] == 1
+    assert body["entries"][0]["item_name"] == "Eggs"
+
+
+# ──────────────────────────────────────────────────────────────────
+# Dedupe parity with /api/nutrition-history
+# ──────────────────────────────────────────────────────────────────
+
+def test_deduplicates_dual_write_by_client_id(fitness_app, monkeypatch):
+    """When /api/add-nutrition writes the same entry to both stores with
+    the same client_id, /api/food-logs/by-date must not double-count it.
+    Mirrors the dedupe rule the nutrition-history endpoint uses."""
+    today = _today()
+    shared = {
+        "client_id": "shared-cid", "date": today, "logged_at": f"{today}T10:00:00",
+        "item_name": "Shake", "calories": 300, "protein_g": 25, "carbs_g": 30, "fat_g": 8,
+    }
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [shared],
+    )
+    fitness_app.NUTRITION_DATA[:] = [shared]
+
+    res = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{today}")
+    body = res.get_json()
+    assert body["count"] == 1, "shared client_id must be counted once, not twice"
+
+
+def test_deduplicates_dual_write_when_both_lack_client_id(fitness_app, monkeypatch):
+    """When /api/add-nutrition writes the same entry to both stores
+    WITHOUT a client_id, the (date, macros) content signature is the
+    only safe dedupe key. Mirrors `_content_signature` in
+    /api/nutrition-history."""
+    today = _today()
+    food_log = {
+        "date": today, "logged_at": f"{today}T10:00:00",
+        "item_name": "Shake", "calories": 300, "protein_g": 25, "carbs_g": 30, "fat_g": 8,
+        "sodium_mg": 200,
+    }
+    legacy_match = {
+        "date": today, "calories": 300, "protein_g": 25, "carbs_g": 30, "fat_g": 8,
+        "sodium_mg": 200, "item_name": "Shake (legacy)",
+    }
+    monkeypatch.setattr(
+        fitness_app, "_food_log_entries_for_context",
+        lambda since=None, limit=None: [food_log],
+    )
+    fitness_app.NUTRITION_DATA[:] = [legacy_match]
+
+    res = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{today}")
+    body = res.get_json()
+    assert body["count"] == 1, (
+        "no-client_id dual-write must dedupe via content signature"
+    )
