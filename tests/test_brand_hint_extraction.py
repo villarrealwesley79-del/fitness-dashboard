@@ -74,6 +74,23 @@ def test_lookup_hint_is_non_binding_when_text_already_has_brand(monkeypatch):
     assert captured["query"] == "Starbucks latte"
 
 
+def test_lookup_uses_hint_when_known_brand_token_can_be_flavor(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+
+    def fake_nutritionix(query):
+        captured["query"] = query
+        return None
+
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", fake_nutritionix)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+
+    branded_food_lookup.lookup("chipotle chicken taco", brand_hint="Taco Bell")
+
+    assert captured["query"] == "taco bell chipotle chicken taco"
+
+
 def test_lookup_hint_is_non_binding_for_unlisted_brand_phrase(monkeypatch):
     captured = {}
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)

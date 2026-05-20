@@ -30,6 +30,7 @@ KNOWN_BRAND_PHRASES = {
     "taco bell",
     "wendys",
 }
+KNOWN_BRAND_TOKENS_THAT_CAN_BE_FLAVORS = {"chipotle"}
 BRAND_TYPOS = {
     "mcdonalds": {"mcdonals", "mcdonlds", "mcdonald"},
     "starbucks": {"starbuks", "starbukcs"},
@@ -123,7 +124,11 @@ def _text_with_brand_hint(text: str, brand_hint: str | None) -> str:
 
 def _text_has_explicit_brand(normalized_text: str, hint: str) -> bool:
     tokens = set(normalized_text.split())
-    if tokens & KNOWN_BRANDS:
+    brand_tokens = tokens & KNOWN_BRANDS
+    if brand_tokens and (
+        hint in brand_tokens
+        or any(token not in KNOWN_BRAND_TOKENS_THAT_CAN_BE_FLAVORS for token in brand_tokens)
+    ):
         return True
     padded = f" {normalized_text} "
     if hint and f" {hint} " in padded:
