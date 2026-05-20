@@ -6968,12 +6968,16 @@ def smart_recommendation_api():
     lower = {"quads", "hamstrings", "glutes", "calves", "adductors"}
     avoid_set = set(avoid)
 
+    # `avoid_set` now mixes sore muscles with recently-trained muscles, so
+    # the user-facing copy can't say "due to soreness" categorically.
+    avoid_reason = "soreness or recent training" if recently_trained else "soreness"
     if avoid_set & lower and not (avoid_set & upper):
-        suggested = "Upper body focus - avoid leg exercises due to soreness"
+        suggested = f"Upper body focus - avoid leg exercises due to {avoid_reason}"
     elif avoid_set & upper and not (avoid_set & lower):
-        suggested = "Lower body focus - avoid upper-body loading due to soreness"
+        suggested = f"Lower body focus - avoid upper-body loading due to {avoid_reason}"
     elif avoid_set:
-        suggested = "Recovery / light movement - multiple sore areas"
+        descriptor = "trained or sore" if recently_trained else "sore"
+        suggested = f"Recovery / light movement - multiple {descriptor} areas"
     else:
         suggested = "Normal training - choose session based on your plan"
 
