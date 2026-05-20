@@ -2780,6 +2780,7 @@ input[type=number] { -moz-appearance: textfield; }
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    flex-wrap: wrap;
 }
 .meal-pending-title {
     font-size: 11px;
@@ -2793,6 +2794,46 @@ input[type=number] { -moz-appearance: textfield; }
     color: var(--fg-dim);
     font-variant-numeric: tabular-nums;
 }
+/* FIT-6 AC1: source provenance chip in the review-card header. */
+.meal-pending-source-chip {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(96,165,250,0.12);
+    border: 1px solid rgba(96,165,250,0.35);
+    color: var(--accent-blue-2, #93c5fd);
+    margin-left: auto;
+}
+/* FIT-6 AC2: policy reason chips — one per stable reason code. */
+.meal-pending-policy-reasons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.meal-pending-reason-chip {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: rgba(245,158,11,0.18);
+    border: 1px solid rgba(245,158,11,0.45);
+    color: var(--accent-amber-2, #fbbf24);
+    text-transform: uppercase;
+}
+.meal-pending-reason-chip[data-reason="missing_calories"],
+.meal-pending-reason-chip[data-reason="implausible_calories"],
+.meal-pending-reason-chip[data-reason="implausible_macros"],
+.meal-pending-reason-chip[data-reason="implausible_sodium"] {
+    background: rgba(239,68,68,0.18);
+    border-color: rgba(239,68,68,0.5);
+    color: #fca5a5;
+}
+.meal-pending-hint {
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-style: italic;
+}
 .meal-pending-fields {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2805,7 +2846,37 @@ input[type=number] { -moz-appearance: textfield; }
     font-size: 11px;
     color: var(--fg-2);
 }
-.meal-pending-fields input {
+/* FIT-6 AC5: per-field name row gets a small tag indicating whether
+   the current value is the AI's estimate or the user's edit. */
+.meal-pending-field-name {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+.meal-pending-field-tag {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(148,163,184,0.18);
+    border: 1px solid rgba(148,163,184,0.35);
+    color: var(--fg-dim);
+    line-height: 1.3;
+}
+.meal-pending-field-tag[data-tag="edited"] {
+    background: rgba(34,197,94,0.18);
+    border-color: rgba(34,197,94,0.5);
+    color: #86efac;
+}
+.meal-pending-fields label.edited input,
+.meal-pending-fields label.edited select {
+    border-color: rgba(34,197,94,0.5);
+}
+.meal-pending-fields input,
+.meal-pending-fields select {
     height: 30px;
     border-radius: 6px;
     border: 1px solid var(--border-2);
@@ -2815,7 +2886,8 @@ input[type=number] { -moz-appearance: textfield; }
     font-size: 12px;
     min-width: 0;
 }
-.meal-pending-fields input:focus {
+.meal-pending-fields input:focus,
+.meal-pending-fields select:focus {
     outline: 2px solid rgba(96,165,250,0.55);
     outline-offset: 1px;
     border-color: rgba(96,165,250,0.6);
@@ -2829,12 +2901,16 @@ input[type=number] { -moz-appearance: textfield; }
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+    flex-wrap: wrap;
 }
+.meal-pending-retry[disabled] { opacity: 0.6; cursor: progress; }
 
 @media (max-width: 640px) {
     .meal-composer-row { grid-template-columns: 38px 1fr auto; }
     .meal-pending-fields { grid-template-columns: 1fr 1fr; }
+    .meal-pending-source-chip { margin-left: 0; }
 }
 @media (max-width: 420px) {
     .meal-pending-fields { grid-template-columns: 1fr; }
+    .meal-pending-head { gap: 6px; }
 }

@@ -4583,37 +4583,181 @@
         mealComposerState.pending.forEach((entry) => pendingList.appendChild(buildMealPendingRow(entry)));
     }
 
+    // FIT-6: human-readable copy for each stable policy reason code.
+    // Mirrors app.py's _POLICY_REASON_NOTES so the per-reason chip on
+    // the review card stays in lock-step with the backend's policy
+    // module (meal_log_policy.evaluate_meal_log).
+    const MEAL_POLICY_REASON_LABELS = {
+        low_confidence: 'Low confidence',
+        medium_confidence: 'Medium confidence',
+        ambiguous_input: 'Ambiguous input',
+        implausible_calories: 'Calories look off',
+        implausible_macros: 'Macros look high',
+        implausible_sodium: 'Sodium looks high',
+        missing_calories: 'Missing calories',
+    };
+
+    const MEAL_TYPE_OPTIONS = ['breakfast', 'lunch', 'dinner', 'snack'];
+
+    // FIT-6 AC5: distinguish AI-estimated values from user-edited ones.
+    // The "Estimated" tag shows on every field by default; once the user
+    // edits a field, the tag flips to "Edited". Tracking the original
+    // value per field is how we know which is which after edits.
+    function mealPendingOriginals(est) {
+        return {
+            item_name: est && est.item_name != null ? String(est.item_name) : '',
+            portion_description: est && est.portion_description != null ? String(est.portion_description) : '',
+            calories: est && est.calories != null ? String(est.calories) : '',
+            protein_g: est && est.protein_g != null ? String(est.protein_g) : '',
+            carbs_g: est && est.carbs_g != null ? String(est.carbs_g) : '',
+            fat_g: est && est.fat_g != null ? String(est.fat_g) : '',
+            sodium_mg: est && est.sodium_mg != null ? String(est.sodium_mg) : '',
+            meal_type: est && est.meal_type ? String(est.meal_type) : 'snack',
+        };
+    }
+
+    // FIT-6: format a source code into a UI-friendly label. Source
+    // strings come from the meal_estimate_schema (e.g. "ai_text_estimate",
+    // "fallback_text_estimate", "stub_vision_estimate") and from the
+    // FIT-72 branded-lookup pipeline (e.g. "nutritionix", "usda_fdc",
+    // "local_cache", "personal_vocab"). Unknown codes fall through to
+    // a humanized lower-case form.
+    function mealSourceLabel(source) {
+        if (!source) return 'AI estimate';
+        const map = {
+            ai_text_estimate: 'AI estimate',
+            fallback_text_estimate: 'Fallback preset',
+            stub_vision_estimate: 'Photo stub',
+            manual_review_estimate: 'Manual entry',
+            nutritionix: 'Nutritionix',
+            usda_fdc: 'USDA',
+            local_cache: 'Cached source',
+            personal_vocab: 'Your vocabulary',
+            open_food_facts: 'Open Food Facts',
+        };
+        const key = String(source).trim().toLowerCase();
+        if (map[key]) return map[key];
+        // Strip a known prefix like "vision_claude+nutritionix" → use the
+        // more authoritative downstream source label when present.
+        if (key.includes('+')) {
+            const tail = key.split('+').pop();
+            if (map[tail]) return map[tail];
+        }
+        return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
     function buildMealPendingRow(entry) {
         const row = document.createElement('div');
         row.className = 'meal-pending-row';
         row.setAttribute('data-client-id', entry.client_id);
         const est = entry.estimate || {};
+        const policy = entry.policy || {};
         const conf = Number(est.confidence);
         const confLabel = Number.isFinite(conf) ? `${Math.round(conf * 100)}%` : '—';
+        const confTitle = Number.isFinite(conf)
+            ? `Confidence ${Math.round(conf * 100)}% (band: ${escapeHtml(policy.confidence_band || 'unknown')})`
+            : 'Confidence unknown';
+        const sourceLabel = mealSourceLabel(est.source);
+        // FIT-6 AC2: surface the stable policy reason codes as chips so
+        // the user sees *why* this estimate needs explicit review (rather
+        // than only the merged uncertainty_notes paragraph).
+        const reasonCodes = Array.isArray(policy.reasons) ? policy.reasons : [];
+        const reasonChips = reasonCodes
+            .map((code) => {
+                const label = MEAL_POLICY_REASON_LABELS[code] || String(code).replace(/_/g, ' ');
+                return `<span class="meal-pending-reason-chip" data-reason="${escapeHtml(code)}">${escapeHtml(label)}</span>`;
+            })
+            .join('');
         const uncertainty = Array.isArray(est.uncertainty_notes) && est.uncertainty_notes.length
             ? `<div class="meal-pending-note">${escapeHtml(est.uncertainty_notes.join(' '))}</div>`
             : '';
+        const currentMealType = (est.meal_type && MEAL_TYPE_OPTIONS.includes(est.meal_type))
+            ? est.meal_type
+            : 'snack';
+        const mealTypeOptions = MEAL_TYPE_OPTIONS.map((mt) => `
+            <option value="${mt}"${mt === currentMealType ? ' selected' : ''}>${mt.charAt(0).toUpperCase() + mt.slice(1)}</option>
+        `).join('');
+        // FIT-6 AC1: full field set — item, portion, calories, protein,
+        // carbs, fat, sodium, confidence, source.
+        // FIT-6 AC3: editable — item_name, portion_description, calories,
+        // protein_g, carbs_g, fat_g, sodium_mg, meal_type.
+        // FIT-6 AC5: every editable field carries a per-field tag that
+        // starts at "Estimated" and flips to "Edited" once the value
+        // differs from the AI estimate captured at row build time.
         row.innerHTML = `
             <div class="meal-pending-head">
                 <span class="meal-pending-title">Review estimate</span>
-                <span class="meal-pending-conf" title="Estimated confidence">${escapeHtml(confLabel)}</span>
+                <span class="meal-pending-source-chip" title="Source of this estimate">${escapeHtml(sourceLabel)}</span>
+                <span class="meal-pending-conf" title="${confTitle}">${escapeHtml(confLabel)}</span>
             </div>
+            ${reasonChips ? `<div class="meal-pending-policy-reasons" aria-label="Why this needs review">${reasonChips}</div>` : ''}
+            <div class="meal-pending-hint">Tap any value to edit before accepting.</div>
             <div class="meal-pending-fields">
-                <label>Item<input type="text" data-field="item_name" value="${escapeHtml(est.item_name || '')}" maxlength="160"></label>
-                <label>Portion<input type="text" data-field="portion_description" value="${escapeHtml(est.portion_description || '')}" maxlength="240"></label>
-                <label>Calories<input type="number" inputmode="numeric" min="0" data-field="calories" value="${escapeHtml(est.calories ?? '')}"></label>
-                <label>Protein (g)<input type="number" inputmode="decimal" min="0" step="0.1" data-field="protein_g" value="${escapeHtml(est.protein_g ?? '')}"></label>
-                <label>Carbs (g)<input type="number" inputmode="decimal" min="0" step="0.1" data-field="carbs_g" value="${escapeHtml(est.carbs_g ?? '')}"></label>
-                <label>Fat (g)<input type="number" inputmode="decimal" min="0" step="0.1" data-field="fat_g" value="${escapeHtml(est.fat_g ?? '')}"></label>
+                <label data-field-label="item_name">
+                    <span class="meal-pending-field-name">Item <span class="meal-pending-field-tag" data-tag="estimated">Estimated</span></span>
+                    <input type="text" data-field="item_name" value="${escapeHtml(est.item_name || '')}" maxlength="160">
+                </label>
+                <label data-field-label="portion_description">
+                    <span class="meal-pending-field-name">Portion <span class="meal-pending-field-tag" data-tag="estimated">Estimated</span></span>
+                    <input type="text" data-field="portion_description" value="${escapeHtml(est.portion_description || '')}" maxlength="240">
+                </label>
+                <label data-field-label="meal_type">
+                    <span class="meal-pending-field-name">Meal time <span class="meal-pending-field-tag" data-tag="estimated">Estimated</span></span>
+                    <select data-field="meal_type">${mealTypeOptions}</select>
+                </label>
+                <label data-field-label="calories">
+                    <span class="meal-pending-field-name">Calories <span class="meal-pending-field-tag" data-tag="estimated">Estimated</span></span>
+                    <input type="number" inputmode="numeric" min="0" data-field="calories" value="${escapeHtml(est.calories ?? '')}">
+                </label>
+                <label data-field-label="protein_g">
+                    <span class="meal-pending-field-name">Protein (g) <span class="meal-pending-field-tag" data-tag="estimated">Estimated</span></span>
+                    <input type="number" inputmode="decimal" min="0" step="0.1" data-field="protein_g" value="${escapeHtml(est.protein_g ?? '')}">
+                </label>
+                <label data-field-label="carbs_g">
+                    <span class="meal-pending-field-name">Carbs (g) <span class="meal-pending-field-tag" data-tag="estimated">Estimated</span></span>
+                    <input type="number" inputmode="decimal" min="0" step="0.1" data-field="carbs_g" value="${escapeHtml(est.carbs_g ?? '')}">
+                </label>
+                <label data-field-label="fat_g">
+                    <span class="meal-pending-field-name">Fat (g) <span class="meal-pending-field-tag" data-tag="estimated">Estimated</span></span>
+                    <input type="number" inputmode="decimal" min="0" step="0.1" data-field="fat_g" value="${escapeHtml(est.fat_g ?? '')}">
+                </label>
+                <label data-field-label="sodium_mg">
+                    <span class="meal-pending-field-name">Sodium (mg) <span class="meal-pending-field-tag" data-tag="estimated">Estimated</span></span>
+                    <input type="number" inputmode="numeric" min="0" data-field="sodium_mg" value="${escapeHtml(est.sodium_mg ?? '')}">
+                </label>
             </div>
             ${uncertainty}
             <div class="meal-pending-actions">
                 <button type="button" class="btn btn-ghost meal-pending-discard">Discard</button>
+                <button type="button" class="btn btn-ghost meal-pending-retry">Retry</button>
                 <button type="button" class="btn btn-primary meal-pending-accept">Accept</button>
             </div>
         `;
+        // FIT-6 AC5 wiring: every editable field watches for the first
+        // value drift away from the original estimate and flips its tag
+        // to "Edited" so the user can see at-a-glance which numbers are
+        // theirs vs. the AI's. Drifting back to the original restores
+        // "Estimated" — handy when the user undoes a typo.
+        const originals = mealPendingOriginals(est);
+        row.querySelectorAll('[data-field]').forEach((input) => {
+            const field = input.getAttribute('data-field');
+            const labelEl = row.querySelector(`label[data-field-label="${field}"]`);
+            const tagEl = labelEl ? labelEl.querySelector('.meal-pending-field-tag') : null;
+            if (!tagEl) return;
+            const sync = () => {
+                const currentVal = input.value != null ? String(input.value) : '';
+                const originalVal = originals[field] != null ? String(originals[field]) : '';
+                const edited = currentVal !== originalVal;
+                tagEl.setAttribute('data-tag', edited ? 'edited' : 'estimated');
+                tagEl.textContent = edited ? 'Edited' : 'Estimated';
+                if (labelEl) labelEl.classList.toggle('edited', edited);
+            };
+            input.addEventListener('input', sync);
+            input.addEventListener('change', sync);
+        });
         row.querySelector('.meal-pending-discard').addEventListener('click', () => discardMealPending(entry.client_id));
         row.querySelector('.meal-pending-accept').addEventListener('click', () => acceptMealPending(entry.client_id, row));
+        row.querySelector('.meal-pending-retry').addEventListener('click', () => retryMealPending(entry.client_id, row));
         return row;
     }
 
@@ -4627,20 +4771,33 @@
         toast('Estimate discarded', 'ok');
     }
 
-    async function acceptMealPending(clientId, rowEl) {
-        const entry = mealComposerState.pending.find((p) => p.client_id === clientId);
-        if (!entry) return;
+    // FIT-6 AC3: collect edited values from the row's inputs. Returns
+    // a sanitized estimate dict ready for /accept or for replacing the
+    // pending entry on Retry. Numeric fields are coerced; text fields
+    // are trimmed; meal_type falls back to the schema default when the
+    // select somehow holds an unsupported value (shouldn't happen with
+    // a <select>, but the guard keeps the payload schema-valid).
+    function collectMealEditedEstimate(entry, rowEl) {
         const edited = { ...entry.estimate };
         rowEl.querySelectorAll('[data-field]').forEach((input) => {
             const field = input.getAttribute('data-field');
             const raw = input.value;
-            if (input.type === 'number') {
+            if (input.tagName === 'SELECT') {
+                edited[field] = MEAL_TYPE_OPTIONS.includes(raw) ? raw : 'snack';
+            } else if (input.type === 'number') {
                 const num = raw === '' ? null : Number(raw);
                 edited[field] = Number.isFinite(num) ? num : null;
             } else {
                 edited[field] = raw.trim() || null;
             }
         });
+        return edited;
+    }
+
+    async function acceptMealPending(clientId, rowEl) {
+        const entry = mealComposerState.pending.find((p) => p.client_id === clientId);
+        if (!entry) return;
+        const edited = collectMealEditedEstimate(entry, rowEl);
         if (!Number.isFinite(Number(edited.calories))) {
             toast('Set calories before accepting', 'err');
             return;
@@ -4658,6 +4815,93 @@
         } catch (e) {
             console.error(e);
             toast(apiErrorMessage(e, 'Accept failed'), 'err');
+        }
+    }
+
+    // FIT-6 AC4: Retry re-runs the original meal-intake request so the
+    // user can ask the estimator for a fresh answer when the first
+    // estimate looked wrong. The retry submits the captured text (and
+    // image, if present) under a NEW client_id; the old pending entry
+    // is removed regardless of whether the new submission returns
+    // pending_review or logged. If the new submission errors (network,
+    // backend unavailable), the old entry stays in place so the user
+    // doesn't lose their review surface.
+    async function retryMealPending(clientId, rowEl) {
+        const entry = mealComposerState.pending.find((p) => p.client_id === clientId);
+        if (!entry) return;
+        if (mealComposerState.backendUnavailable) {
+            toast('Meal intake backend unavailable — can’t retry right now.', 'err');
+            return;
+        }
+        const text = entry.text || '';
+        const file = entry.imageFile || null;
+        if (!text && !file) {
+            toast('Nothing to retry — original input wasn’t captured.', 'err');
+            return;
+        }
+        const retryBtn = rowEl.querySelector('.meal-pending-retry');
+        if (retryBtn) {
+            retryBtn.disabled = true;
+            retryBtn.textContent = 'Retrying…';
+        }
+        const newClientId = newMealClientId();
+        const form = new FormData();
+        if (text) form.append('text', text);
+        if (file) form.append('image', file, file.name || 'meal.jpg');
+        form.append('client_id', newClientId);
+        form.append('local_timestamp', new Date().toISOString());
+        try {
+            const res = await fetch('/api/meal-intake', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json' },
+                body: form,
+            });
+            if (res.status === 404 || res.status === 501) {
+                setMealBackendUnavailable();
+                toast('Meal intake isn’t enabled yet.', 'err');
+                return;
+            }
+            const ct = res.headers.get('content-type') || '';
+            const payload = ct.includes('application/json') ? await res.json() : null;
+            if (!res.ok) {
+                const msg = (payload && payload.error && payload.error.message) || `Retry failed (${res.status}).`;
+                toast(msg, 'err');
+                return;
+            }
+            // Remove the OLD pending entry up front; the new payload
+            // either replaces it (pending_review) or completes the flow
+            // outright (logged). Either way the old client_id is dead.
+            mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
+            if (payload && payload.status === 'logged') {
+                renderMealPendingList();
+                toast(mealEstimateChip(payload.estimate), 'ok');
+                refreshMacroCard();
+                return;
+            }
+            if (payload && payload.status === 'pending_review') {
+                mealComposerState.pending.push({
+                    client_id: newClientId,
+                    estimate: payload.estimate || {},
+                    text,
+                    imageFile: file,
+                    policy: payload.policy || null,
+                });
+                renderMealPendingList();
+                toast('New estimate — review before it counts.', 'warn');
+                return;
+            }
+            // Unknown status — restore nothing; show generic warning.
+            renderMealPendingList();
+            toast('Couldn’t parse retried estimate.', 'err');
+        } catch (e) {
+            console.error(e);
+            toast('Retry failed — check your connection.', 'err');
+        } finally {
+            if (retryBtn) {
+                retryBtn.disabled = false;
+                retryBtn.textContent = 'Retry';
+            }
         }
     }
 
@@ -4702,7 +4946,12 @@
                 setMealComposerError(msg);
                 return;
             }
-            handleMealIntakeResponse(payload, { textValue, clientId });
+            // FIT-6: pass imageFile through so the pending entry can
+            // power Retry without needing the file picker again. Keep
+            // a separate handle to file because clearMealComposerInputs()
+            // (called inside the pending_review branch) nulls out
+            // mealComposerState.imageFile before we'd be able to read it.
+            handleMealIntakeResponse(payload, { textValue, clientId, imageFile: file });
         } catch (e) {
             console.error(e);
             saveMealDraft();
@@ -4724,10 +4973,16 @@
             return;
         }
         if (status === 'pending_review') {
+            // FIT-6: capture the policy block (confidence_band + reason
+            // codes) and the original imageFile alongside the estimate
+            // so the review card can render reason chips (AC2) and
+            // Retry can re-submit the same input (AC4).
             mealComposerState.pending.push({
                 client_id: ctx.clientId,
                 estimate: payload.estimate || {},
                 text: ctx.textValue || '',
+                imageFile: ctx.imageFile || null,
+                policy: payload.policy || null,
             });
             clearMealComposerInputs();
             clearMealDraft();
