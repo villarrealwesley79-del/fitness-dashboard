@@ -340,6 +340,105 @@
         container.appendChild(root);
     }
 
+    // FIT-112: shared chart-takeaway plumbing. setChartTakeaway populates
+    // a sibling <div class="chart-takeaway"> below the named chart and
+    // toggles its visibility based on whether the derived copy is empty.
+    // Empty text → element hidden entirely. The optional `empty` flag
+    // dims the line + uses italic for the "Needs more data" affordance.
+    function setChartTakeaway(id, text, opts = {}) {
+        const el = $(id);
+        if (!el) return;
+        const t = (text || '').trim();
+        el.textContent = t;
+        el.hidden = !t;
+        if (opts.empty) el.classList.add('empty');
+        else el.classList.remove('empty');
+    }
+
+    function deriveWeightTakeaway(points) {
+        if (!points || points.length < 2) {
+            return { text: 'Needs 2+ entries to summarize.', empty: true };
+        }
+        const first = points[0].value;
+        const last = points[points.length - 1].value;
+        const delta = last - first;
+        const dir = Math.abs(delta) < 0.5 ? 'holding steady'
+            : (delta < 0 ? 'trending down' : 'trending up');
+        const days = points.length;
+        const word = Math.abs(delta) < 0.05 ? 'Flat'
+            : `${delta < 0 ? 'Down' : 'Up'} ${Math.abs(delta).toFixed(1)} lb`;
+        return { text: `${word} over the last ${days} entries · ${dir}.` };
+    }
+
+    function deriveBodyFatTakeaway(points) {
+        if (!points || points.length < 2) {
+            return { text: 'Needs 2+ entries to summarize.', empty: true };
+        }
+        const first = points[0].value;
+        const last = points[points.length - 1].value;
+        const delta = last - first;
+        const dir = Math.abs(delta) < 0.3 ? 'holding steady'
+            : (delta < 0 ? 'trending down' : 'trending up');
+        const days = points.length;
+        const word = Math.abs(delta) < 0.05 ? 'Flat'
+            : `${delta < 0 ? 'Down' : 'Up'} ${Math.abs(delta).toFixed(1)}%`;
+        return { text: `${word} over the last ${days} entries · ${dir}.` };
+    }
+
+    function deriveHistoryFreqTakeaway(buckets, totalWorkouts) {
+        if (!buckets || !buckets.length || !totalWorkouts) {
+            return { text: 'No workouts in range.', empty: true };
+        }
+        const spanDays = buckets.reduce((sum, b) => {
+            if (!b.start || !b.end) return sum;
+            const d = (b.end - b.start) / 86400000 + 1;
+            return sum + d;
+        }, 0);
+        const weeks = Math.max(spanDays / 7, 1);
+        const perWeek = totalWorkouts / weeks;
+        return { text: `${totalWorkouts} workouts in range · ${perWeek.toFixed(1)} per week.` };
+    }
+
+    function deriveHistoryVolumeTakeaway(buckets) {
+        if (!buckets || !buckets.length) {
+            return { text: 'No workouts in range.', empty: true };
+        }
+        const total = buckets.reduce((s, b) => s + (Number(b.volume) || 0), 0);
+        if (total <= 0) {
+            return { text: 'No volume recorded in range.', empty: true };
+        }
+        const half = Math.floor(buckets.length / 2);
+        if (half < 1) {
+            return { text: `${fmtKilo(total)} lbs total · need a longer range for trend.` };
+        }
+        const firstHalf = buckets.slice(0, half).reduce((s, b) => s + (Number(b.volume) || 0), 0);
+        const secondHalf = buckets.slice(buckets.length - half).reduce((s, b) => s + (Number(b.volume) || 0), 0);
+        if (firstHalf <= 0) {
+            return { text: `${fmtKilo(total)} lbs total · ramping up.` };
+        }
+        const pct = Math.round(((secondHalf - firstHalf) / firstHalf) * 100);
+        if (Math.abs(pct) < 5) {
+            return { text: `${fmtKilo(total)} lbs total · holding steady.` };
+        }
+        const dir = pct > 0 ? 'up' : 'down';
+        return { text: `${fmtKilo(total)} lbs total · volume ${dir} ${Math.abs(pct)}% vs the prior period.` };
+    }
+
+    function deriveReadiness7dTakeaway(points) {
+        if (!points || !points.length) {
+            return { text: 'No readiness data yet.', empty: true };
+        }
+        const vals = points.map((p) => Number(p.value)).filter((v) => Number.isFinite(v));
+        if (!vals.length) {
+            return { text: 'No readiness data yet.', empty: true };
+        }
+        const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+        const last = vals[vals.length - 1];
+        const dev = Math.max(...vals) - Math.min(...vals);
+        const stability = dev <= 10 ? 'steady' : (last >= avg ? 'recovering' : 'dipping');
+        return { text: `7-day average ${Math.round(avg)} · ${stability}.` };
+    }
+
     function donutChart(container, slices, opts = {}) {
         if (!container) return;
         container.innerHTML = '';
@@ -1012,6 +1111,9 @@
             const avg = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
             $('readiness-7d-avg').textContent = avg != null ? `avg ${avg}` : '—';
         }
+        // FIT-112: takeaway below the readiness chart.
+        const rdy = deriveReadiness7dTakeaway(readinessPts);
+        setChartTakeaway('chart-readiness-7d-takeaway', rdy.text, { empty: rdy.empty });
 
         // Volume 4W bar chart (bucket dashboard.next_workout + history by week)
         const hist = (state.history || (await getHistory().catch(() => null)))?.workouts || [];
@@ -1457,6 +1559,13 @@
             if (idx >= 0) barBuckets[idx].volume = (barBuckets[idx].volume || 0) + Number(w.total_volume || 0);
         });
         lineChart($('chart-history-volume'), barBuckets.map((b) => ({ value: b.volume || 0, label: b.label })), { color: '#a78bfa' });
+
+        // FIT-112: takeaways below the history charts.
+        const totalCount = barBuckets.reduce((s, b) => s + (Number(b.count) || 0), 0);
+        const freqTake = deriveHistoryFreqTakeaway(barBuckets, totalCount);
+        setChartTakeaway('chart-history-freq-takeaway', freqTake.text, { empty: freqTake.empty });
+        const volTake = deriveHistoryVolumeTakeaway(barBuckets);
+        setChartTakeaway('chart-history-volume-takeaway', volTake.text, { empty: volTake.empty });
 
         // top exercises
         const topEx = {};
@@ -1945,6 +2054,11 @@
         const bfPts = recent.filter(h => h.body_fat_pct != null).map((h) => ({ value: Number(h.body_fat_pct), label: fmtDate(h.date) }));
         lineChart($('chart-weight'), wPts, { color: '#60a5fa' });
         lineChart($('chart-bf'), bfPts, { color: '#a78bfa' });
+        // FIT-112: takeaways below the body trend charts.
+        const wTake = deriveWeightTakeaway(wPts);
+        setChartTakeaway('chart-weight-takeaway', wTake.text, { empty: wTake.empty });
+        const bfTake = deriveBodyFatTakeaway(bfPts);
+        setChartTakeaway('chart-bf-takeaway', bfTake.text, { empty: bfTake.empty });
 
         if (wPts.length >= 2) {
             const d = wPts[wPts.length - 1].value - wPts[0].value;

@@ -508,6 +508,26 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
 .chart-holder.chart-tall { height: 140px; }
 .chart-holder svg { display: block; width: 100%; height: 100%; }
 
+/* FIT-112: one-line takeaway annotation below major charts. Mirrors
+   the FIT-13 .body-interpretation-note look so the AI-reasoning
+   surfaces stay visually unified. */
+.chart-takeaway {
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: rgba(15, 23, 42, 0.55);
+    border-left: 3px solid rgba(96, 165, 250, 0.55);
+    border-radius: 0 8px 8px 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--fg-1);
+}
+.chart-takeaway[hidden] { display: none; }
+.chart-takeaway.empty {
+    color: var(--fg-dim);
+    font-style: italic;
+    border-left-color: rgba(148, 163, 184, 0.35);
+}
+
 /* FIT-110: collapse the lower-priority trend cards behind a single
    "Quick trends" expander. Uses native <details> so no JS state is
    needed; the chart renderers run on page load against the hidden
