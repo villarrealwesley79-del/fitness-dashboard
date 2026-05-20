@@ -2180,11 +2180,12 @@
         // by the canned `stub_vision_estimate`. Otherwise the inspect
         // view would silently look authoritative.
         const stubNotice = $('meal-detail-stub-notice');
+        // FIT-100: track whether the caveat applies so setMealDetailMode
+        // can restore it after Cancel returns from edit to view.
+        const stubApplies = !!(source && source.toLowerCase().startsWith('stub_vision'));
         if (stubNotice) {
-            // Match `stub_vision_estimate` as a source prefix only — avoids
-            // false positives if a future real source happens to contain
-            // "stub" or "vision" as a substring of another label.
-            stubNotice.hidden = !(source && source.toLowerCase().startsWith('stub_vision'));
+            stubNotice.dataset.applies = stubApplies ? '1' : '0';
+            stubNotice.hidden = !stubApplies;
         }
 
         // FIT-97: wire Delete to the existing DELETE endpoint. On success,
@@ -2240,6 +2241,9 @@
         if (saveBtn) {
             const fresh = saveBtn.cloneNode(true);
             saveBtn.parentNode.replaceChild(fresh, saveBtn);
+            // Reset disabled — cloneNode preserves the attribute, so a prior
+            // save attempt that left it disabled would persist across opens.
+            fresh.disabled = false;
             fresh.addEventListener('click', () => saveMealCorrection(entry, modal, fresh));
         }
 
@@ -2258,9 +2262,16 @@
         if (edit) edit.hidden = !editing;
         if (footView) footView.hidden = editing;
         if (footEdit) footEdit.hidden = !editing;
-        // Stub notice stays in view mode; hide while editing to keep focus
-        // on the form fields.
-        if (stubNotice && editing) stubNotice.hidden = true;
+        // Stub notice hides while editing (keep focus on the form) but
+        // gets restored on the way back to view mode for entries where
+        // it still applies. `data-applies` is set when the modal opens.
+        if (stubNotice) {
+            if (editing) {
+                stubNotice.hidden = true;
+            } else {
+                stubNotice.hidden = stubNotice.dataset.applies !== '1';
+            }
+        }
         if (errBox) { errBox.hidden = true; errBox.textContent = ''; }
     }
 
@@ -2314,11 +2325,16 @@
             return;
         }
         saveBtn.disabled = true;
+        // Anchor the correction to the original meal date. Prefer the
+        // explicit `date` field on the row (always present for food_log
+        // entries) and fall back to `logged_at` if needed; never let the
+        // server default to today, which would silently move a corrected
+        // legacy entry forward in time.
+        const originalDate = entry.date
+            || (entry.logged_at ? entry.logged_at.slice(0, 10) : undefined);
         const payload = {
             client_id: entry.client_id,
-            // Preserve original date / logged_at / source so the corrected
-            // entry stays anchored to when the meal actually happened.
-            date: entry.logged_at ? entry.logged_at.slice(0, 10) : undefined,
+            date: originalDate,
             logged_at: entry.logged_at || undefined,
             source: entry.source || undefined,
             // Mark the correction explicitly so /api/adherence and history
