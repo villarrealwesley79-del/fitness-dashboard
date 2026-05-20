@@ -288,6 +288,21 @@ def test_open_food_facts_client_strips_country_noun_variants(monkeypatch):
     assert seen_terms[2] == "Petit Ecolier"
 
 
+def test_open_food_facts_client_strips_packaged_context_words(monkeypatch):
+    seen_terms = []
+
+    def fake_urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        seen_terms.append(params["search_terms"][0])
+        return _Response({"products": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    open_food_facts_client.search_products("non-US packaged Tim Tams")
+
+    assert seen_terms[0] == "Tim Tams"
+
+
 def test_open_food_facts_accepts_zero_calorie_products(monkeypatch):
     product = _product("Sparkling Water", code="zero")
     product["nutriments"].update(
