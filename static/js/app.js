@@ -4053,20 +4053,37 @@
     // the first incomplete set so the sticky header + next-row highlight
     // can stay accurate as the user logs sets. Returns 0/0 when there is
     // no active workout so the caller can render a neutral state.
+    // FIT-108 (Codex audit): track the 1-indexed flat position of the
+    // next incomplete row so the "Set N of M" header always agrees with
+    // the highlighted .set-row-next, even if the user toggles sets out
+    // of order. Pure setsDone-based math would diverge from the highlight
+    // (e.g. checking set 3 before set 1 would show "Set 2 of M" while
+    // the accent still points at set 1).
     function countActiveWorkoutProgress() {
         const aw = state.activeWorkout;
-        const out = { setsDone: 0, setsTotal: 0, exercisesWithIncomplete: 0, nextIncomplete: null };
+        const out = {
+            setsDone: 0,
+            setsTotal: 0,
+            exercisesWithIncomplete: 0,
+            nextIncomplete: null,
+            nextIncompleteFlatIdx: null,
+        };
         if (!aw || !Array.isArray(aw.exercises)) return out;
+        let flatIdx = 0;
         aw.exercises.forEach((ex, exIdx) => {
             if (!ex || !Array.isArray(ex.logged_sets) || !ex.logged_sets.length) return;
             let incompleteInEx = false;
             ex.logged_sets.forEach((set, setIdx) => {
                 out.setsTotal += 1;
+                flatIdx += 1;
                 if (set && set.done) {
                     out.setsDone += 1;
                 } else {
                     if (!incompleteInEx) incompleteInEx = true;
-                    if (!out.nextIncomplete) out.nextIncomplete = { exIdx, setIdx };
+                    if (!out.nextIncomplete) {
+                        out.nextIncomplete = { exIdx, setIdx };
+                        out.nextIncompleteFlatIdx = flatIdx;
+                    }
                 }
             });
             if (incompleteInEx) out.exercisesWithIncomplete += 1;
@@ -4076,11 +4093,14 @@
 
     function formatActiveWorkoutProgress(p) {
         if (!p || !p.setsTotal) return 'No sets yet';
-        const setN = Math.min(p.setsDone + 1, p.setsTotal);
-        const exLeft = p.exercisesWithIncomplete;
-        if (p.setsDone >= p.setsTotal) {
+        // FIT-108 (Codex audit): derive "Set N" from the next-incomplete
+        // row's flat index, not from setsDone, so the header agrees with
+        // the highlight even under out-of-order completion.
+        if (!p.nextIncomplete) {
             return `All ${p.setsTotal} sets complete`;
         }
+        const setN = p.nextIncompleteFlatIdx;
+        const exLeft = p.exercisesWithIncomplete;
         return `Set ${setN} of ${p.setsTotal} · ${exLeft} ${exLeft === 1 ? 'exercise' : 'exercises'} left`;
     }
 
