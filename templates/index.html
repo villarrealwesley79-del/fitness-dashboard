@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260520-fit107-food-log-sheet">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260520-fit110-quick-trends">
 </head>
 <body>
     <div class="app-shell">
@@ -195,21 +195,32 @@
                 <div class="insight-sparkline" id="insight-sparkline"></div>
             </div>
 
-            <div class="card trend-card">
-                <div class="card-head">
-                    <div class="card-label">READINESS (7D)</div>
-                    <div class="card-sub" id="readiness-7d-avg">avg —</div>
-                </div>
-                <div class="chart-holder" id="chart-readiness-7d"></div>
-            </div>
+            <!-- FIT-110: collapse the two lower-priority trend charts behind
+                 a single closed-by-default <details> expander. Reduces
+                 dashboard scroll length; charts stay one tap away. -->
+            <details class="quick-trends" id="dash-quick-trends">
+                <summary class="quick-trends-summary">
+                    <span class="quick-trends-label">QUICK TRENDS</span>
+                    <span class="quick-trends-caret" aria-hidden="true">›</span>
+                </summary>
+                <div class="quick-trends-body">
+                    <div class="card trend-card">
+                        <div class="card-head">
+                            <div class="card-label">READINESS (7D)</div>
+                            <div class="card-sub" id="readiness-7d-avg">avg —</div>
+                        </div>
+                        <div class="chart-holder" id="chart-readiness-7d"></div>
+                    </div>
 
-            <div class="card trend-card">
-                <div class="card-head">
-                    <div class="card-label">VOLUME (4W)</div>
-                    <div class="card-sub" id="volume-4w-sub">—</div>
+                    <div class="card trend-card">
+                        <div class="card-head">
+                            <div class="card-label">VOLUME (4W)</div>
+                            <div class="card-sub" id="volume-4w-sub">—</div>
+                        </div>
+                        <div class="chart-holder" id="chart-volume-4w"></div>
+                    </div>
                 </div>
-                <div class="chart-holder" id="chart-volume-4w"></div>
-            </div>
+            </details>
         </section>
 
         <!-- ============ VITALS TAB ============ -->
@@ -1227,6 +1238,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260520-fit107-food-log-sheet"></script>
+    <script src="/static/js/app.js?v=20260520-fit110-quick-trends"></script>
 </body>
 </html>

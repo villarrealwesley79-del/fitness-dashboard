@@ -508,6 +508,52 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
 .chart-holder.chart-tall { height: 140px; }
 .chart-holder svg { display: block; width: 100%; height: 100%; }
 
+/* FIT-110: collapse the lower-priority trend cards behind a single
+   "Quick trends" expander. Uses native <details> so no JS state is
+   needed; the chart renderers run on page load against the hidden
+   canvases without issue. */
+.quick-trends {
+    margin-bottom: 14px;
+}
+.quick-trends-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: rgba(15,23,42,0.7);
+    border: 1px solid var(--border-1);
+    cursor: pointer;
+    list-style: none;
+    min-height: 44px;
+}
+.quick-trends-summary::-webkit-details-marker { display: none; }
+.quick-trends-summary:hover { background: rgba(15,23,42,0.85); }
+.quick-trends-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--fg-dim);
+}
+.quick-trends-caret {
+    color: var(--fg-dim);
+    font-size: 18px;
+    line-height: 1;
+    transition: transform 160ms ease;
+}
+.quick-trends[open] .quick-trends-caret { transform: rotate(90deg); }
+.quick-trends[open] .quick-trends-summary {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    border-bottom: 0;
+}
+.quick-trends-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-top: 12px;
+}
+
 /* ======================= METRIC GRID (Vitals) ======================= */
 
 .metric-grid-2 {
