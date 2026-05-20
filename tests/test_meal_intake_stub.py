@@ -983,6 +983,60 @@ def test_meal_intake_accept_sanitizes_original_estimate_before_persist(monkeypat
     assert "image_bytes" not in persisted["original_estimate"]
 
 
+def test_meal_intake_accept_filters_preserved_metadata_before_persist(monkeypatch):
+    module = _client(monkeypatch)
+    persisted = {}
+
+    def fake_add_food_log(_user_id, record):
+        persisted.update(record)
+        return {"client_id": record["client_id"], "original_estimate": record["original_estimate"]}
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+    monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: False)
+
+    estimate = {
+        "item_name": "Protein shake",
+        "portion_description": "1 bottle",
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.62,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "vision_claude_estimate",
+        "from_image": True,
+        "vision_description": {"raw_model_trace": "secret"},
+        "vision_provider": "claude",
+        "vision_confidence": 0.625,
+        "off_attribution": {
+            "name": "Open Food Facts",
+            "url": "https://world.openfoodfacts.org/",
+            "raw": {"drop": True},
+        },
+        "verified_source_url": "https://world.openfoodfacts.org/",
+    }
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/meal-accept-metadata-sanitize-1/accept",
+        json={"estimate": estimate, "original_estimate": estimate, "text": "protein shake"},
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    original = persisted["original_estimate"]
+    assert "vision_description" not in original
+    assert original["vision_provider"] == "claude"
+    assert original["vision_confidence"] == 0.62
+    assert original["off_attribution"] == {
+        "name": "Open Food Facts",
+        "url": "https://world.openfoodfacts.org/",
+    }
+    assert original["verified_source_url"] == "https://world.openfoodfacts.org/"
+
+
 def test_meal_intake_undo_calls_delete_helper(monkeypatch):
     module = _client(monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})

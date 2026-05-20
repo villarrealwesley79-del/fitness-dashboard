@@ -3389,6 +3389,8 @@ _FOOD_PHOTO_RETENTION = {
     "message": "Food photos are discarded after extraction; only the final estimate and safe correction metadata are kept.",
 }
 PENDING_MEAL_REVIEW_TTL_DAYS = 7
+_MEAL_ESTIMATE_METADATA_STRING_MAX = 500
+_MEAL_ESTIMATE_METADATA_KEY_MAX = 80
 _MEAL_INTAKE_STUB_AMBIGUOUS_WORDS = (
     "popcorn", "movie", "shared", "leftover", "leftovers", "snacks",
     "buffet", "potluck", "?", "guessing", "guess",
@@ -3418,10 +3420,54 @@ def _food_photo_retention_payload(has_image: bool = False) -> dict:
     return payload
 
 
+def _safe_estimate_metadata_string(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    return cleaned[:_MEAL_ESTIMATE_METADATA_STRING_MAX]
+
+
+def _safe_estimate_metadata_scalar(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric != numeric or numeric in (float("inf"), float("-inf")):
+            return None
+        return value
+    return _safe_estimate_metadata_string(value)
+
+
+def _safe_estimate_metadata_value(key: str, value):
+    if key == "off_attribution":
+        if isinstance(value, dict):
+            safe = {}
+            for raw_key, raw_item in value.items():
+                if not isinstance(raw_key, str):
+                    continue
+                safe_key = raw_key.strip()[:_MEAL_ESTIMATE_METADATA_KEY_MAX]
+                safe_item = _safe_estimate_metadata_scalar(raw_item)
+                if safe_key and safe_item is not None:
+                    safe[safe_key] = safe_item
+            return safe or None
+        return _safe_estimate_metadata_string(value)
+    if key == "vision_confidence":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        numeric = float(value)
+        if numeric < 0 or numeric > 1 or numeric != numeric:
+            return None
+        return round(numeric, 2)
+    return _safe_estimate_metadata_string(value)
+
+
 def _preserve_safe_estimate_metadata(estimate: dict, raw: dict) -> dict:
     for key in _MEAL_ESTIMATE_SAFE_METADATA_FIELDS:
-        if raw.get(key) is not None:
-            estimate[key] = raw[key]
+        safe_value = _safe_estimate_metadata_value(key, raw.get(key))
+        if safe_value is not None:
+            estimate[key] = safe_value
     return estimate
 
 
