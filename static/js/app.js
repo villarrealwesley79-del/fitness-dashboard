@@ -690,7 +690,7 @@
             body.hidden = true;
             empty.hidden = false;
             if (sub) sub.textContent = pendingReview ? `${pendingReview} pending review` : 'no entries';
-            renderFoodContext(coaching);
+            renderFoodContext(n);
             return;
         }
         empty.hidden = true;
@@ -702,13 +702,14 @@
         renderMacroRow('fat',     n.fat_g,     n.fat_target_g,     n.fat_pct);
         const sodiumEl = $('macro-sodium-total');
         if (sodiumEl) sodiumEl.textContent = fmtInt(n.sodium_mg);
-        renderFoodContext(coaching);
+        renderFoodContext(n);
     }
 
-    function renderFoodContext(coaching) {
+    function renderFoodContext(n) {
         const chipsHost = $('food-context-chips');
         const nextDayHost = $('food-context-nextday');
         if (!chipsHost || !nextDayHost) return;
+        const coaching = n && n.coaching_context ? n.coaching_context : n;
         if (!coaching || !Array.isArray(coaching.warnings)) {
             chipsHost.innerHTML = '';
             chipsHost.hidden = true;
@@ -716,7 +717,15 @@
             nextDayHost.textContent = '';
             return;
         }
-        const remaining = coaching.remaining || {};
+        const legacyRemaining = coaching.remaining || {};
+        const remaining = {
+            calories: Number.isFinite(Number(n && n.calories_remaining))
+                ? Number(n.calories_remaining)
+                : legacyRemaining.calories,
+            protein_g: Number.isFinite(Number(n && n.protein_gap_g))
+                ? Number(n.protein_gap_g)
+                : legacyRemaining.protein_g,
+        };
         const pendingReview = Number(coaching.pending_review_count) || 0;
         const chipBuilders = {
             calories_over_target: () => ({

@@ -209,7 +209,10 @@ def test_nutrition_today_exposes_remaining_targets_and_context(monkeypatch):
     payload = response.get_json()
     assert payload["calories_remaining"] == 400
     assert payload["protein_gap_g"] == 48
-    assert payload["coaching_context"]["remaining"]["calories"] == 400
+    assert "remaining" not in payload["coaching_context"]
+    assert "totals" not in payload["coaching_context"]
+    assert "targets" not in payload["coaching_context"]
+    assert "percentages" not in payload["coaching_context"]
     assert payload["coaching_context"]["plan_adjustment"]["allowed"] is False
 
 
@@ -247,7 +250,8 @@ def test_nutrition_today_top_level_uses_food_log_totals_when_json_is_empty(monke
     assert payload["protein_g"] == 45
     assert payload["entries_count"] == 1
     assert payload["calories_remaining"] == 1300
-    assert payload["coaching_context"]["totals"]["calories"] == 900
+    assert payload["coaching_context"]["accepted_entries_count"] == 1
+    assert "totals" not in payload["coaching_context"]
 
 
 def test_dashboard_nutrition_top_level_uses_food_log_totals_when_json_is_empty(monkeypatch):
@@ -293,7 +297,8 @@ def test_dashboard_nutrition_top_level_uses_food_log_totals_when_json_is_empty(m
     assert nutrition_today["protein_g"] == 45
     assert nutrition_today["entries_count"] == 1
     assert nutrition_today["calories_remaining"] == 1300
-    assert nutrition_today["coaching_context"]["totals"]["calories"] == 900
+    assert nutrition_today["coaching_context"]["accepted_entries_count"] == 1
+    assert "totals" not in nutrition_today["coaching_context"]
 
 
 def test_food_freshness_targets_use_food_log_totals_when_json_is_empty(monkeypatch):
