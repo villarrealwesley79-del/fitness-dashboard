@@ -2274,6 +2274,11 @@
                     // Force the trend card to re-fetch so the row updates
                     // immediately without a manual reload.
                     renderBodyInterpretationAndNutritionTrend();
+                    // FIT-107: notify the food-log sheet (if open) so it
+                    // can refresh its sections after a delete.
+                    document.dispatchEvent(new CustomEvent('fit107:meal-deleted', {
+                        detail: { client_id: entry.client_id },
+                    }));
                 } catch (err) {
                     console.error(err);
                     toast(apiErrorMessage(err, 'Delete failed'), 'err');
@@ -2428,6 +2433,229 @@
             showError(apiErrorMessage(err, 'Save failed'));
             saveBtn.disabled = false;
         }
+    }
+
+    // ===================== FIT-107: View food log sheet =====================
+    // Opens #modal-food-log from the dashboard macro card and populates
+    // Today / Yesterday / Recent-14d sections from existing endpoints.
+    // No backend changes — reuses /api/nutrition-history and
+    // /api/food-logs/by-date/<YYYY-MM-DD>. Each meal row hands off to
+    // openMealDetailModal so the existing FIT-97 inspect/delete flow works.
+    let foodLogSheetListenerBound = false;
+
+    function foodLogYmd(date) {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+
+    function renderFoodLogSectionTotals(el, day) {
+        if (!el) return;
+        if (!day || !day.entries_count) {
+            el.hidden = true;
+            el.textContent = '';
+            return;
+        }
+        const parts = [];
+        if (day.calories != null) {
+            const tgt = day.calories_target ? ` / ${Math.round(day.calories_target)}` : '';
+            parts.push(`${Math.round(day.calories)}${tgt} kcal`);
+        }
+        if (day.protein_g != null) {
+            const tgt = day.protein_target_g ? ` / ${Math.round(day.protein_target_g)}` : '';
+            parts.push(`${Math.round(day.protein_g)}${tgt}P`);
+        }
+        if (day.entries_count != null) {
+            parts.push(`${day.entries_count} ${day.entries_count === 1 ? 'entry' : 'entries'}`);
+        }
+        el.textContent = parts.join(' · ');
+        el.hidden = false;
+    }
+
+    function renderFoodLogRecent14d(history, todayStr, yesterdayStr) {
+        const host = $('food-log-recent-rows');
+        if (!host) return;
+        const rows = (history || [])
+            .filter((d) => d && d.date && d.date !== todayStr && d.date !== yesterdayStr)
+            .filter((d) => Number(d.entries_count || 0) > 0);
+        if (!rows.length) {
+            host.innerHTML = '<div class="food-log-section-empty">No meals logged in the last 14 days.</div>';
+            return;
+        }
+        host.innerHTML = rows.map((d) => {
+            const calClass = d.calories_pct == null ? 'pct-unknown'
+                : (d.calories_pct > 110 ? 'pct-over' : (d.calories_pct < 80 ? 'pct-under' : 'pct-ok'));
+            const proClass = d.protein_pct == null ? 'pct-unknown'
+                : (d.protein_pct >= 90 ? 'pct-ok' : 'pct-under');
+            const calPct = d.calories_pct != null ? ` (${d.calories_pct}%)` : '';
+            const proPct = d.protein_pct != null ? ` (${d.protein_pct}%)` : '';
+            const reliability = d.entries_count
+                ? `<span class="trend-reliability">${d.corrected_count || 0}c·${d.estimated_count || 0}e</span>`
+                : '<span class="trend-reliability">—</span>';
+            const ctxFlags = [];
+            if (d.high_sodium) ctxFlags.push('high sodium');
+            if (d.late_meal) ctxFlags.push('late meal');
+            const ctxText = ctxFlags.length
+                ? `<span class="trend-context">${escapeHtml(ctxFlags.join(' · '))}</span>`
+                : '';
+            const dateAttr = escapeHtml(d.date);
+            return `
+                <details class="body-nutrition-row body-nutrition-row-expandable" data-date="${dateAttr}">
+                    <summary class="body-nutrition-row-summary">
+                        <span class="trend-date">${escapeHtml(fmtDate(d.date))}</span>
+                        <span class="trend-cal ${calClass}">${d.calories || 0}<small>${calPct}</small></span>
+                        <span class="trend-protein ${proClass}">${d.protein_g || 0}g<small>${proPct}</small></span>
+                        <span class="trend-sodium">${(d.sodium_mg || 0).toLocaleString()}mg</span>
+                        ${reliability}
+                        ${ctxText}
+                    </summary>
+                    <div class="body-nutrition-row-meals" data-loaded="0">
+                        <div class="body-nutrition-row-loading">Tap to load meals…</div>
+                    </div>
+                </details>
+            `;
+        }).join('');
+
+        host.querySelectorAll('details.body-nutrition-row-expandable').forEach((row) => {
+            row.addEventListener('toggle', () => {
+                if (!row.open) return;
+                const date = row.getAttribute('data-date');
+                const slot = row.querySelector('.body-nutrition-row-meals');
+                if (!date || !slot || slot.getAttribute('data-loaded') === '1') return;
+                loadFoodLogDayMeals(slot, date);
+            });
+        });
+    }
+
+    function loadFoodLogDayMeals(slot, date) {
+        slot.setAttribute('data-loaded', '1');
+        slot.innerHTML = '<div class="body-nutrition-row-loading">Loading meals…</div>';
+        api(`/api/food-logs/by-date/${encodeURIComponent(date)}`)
+            .then((payload) => renderFoodLogMealList(slot, (payload && payload.entries) || []))
+            .catch(() => {
+                slot.setAttribute('data-loaded', '0');
+                slot.innerHTML = '';
+                const msg = document.createElement('div');
+                msg.className = 'body-nutrition-row-loading';
+                msg.textContent = "Couldn't load meals.";
+                slot.appendChild(msg);
+                const retry = document.createElement('button');
+                retry.type = 'button';
+                retry.className = 'body-nutrition-row-retry';
+                retry.textContent = 'Retry';
+                retry.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    loadFoodLogDayMeals(slot, date);
+                });
+                slot.appendChild(retry);
+            });
+    }
+
+    function renderFoodLogSectionLoading(slot) {
+        if (slot) slot.innerHTML = '<div class="food-log-section-loading">Loading…</div>';
+    }
+
+    function renderFoodLogSectionError(slot, retryFn) {
+        if (!slot) return;
+        slot.innerHTML = '';
+        const msg = document.createElement('div');
+        msg.className = 'food-log-section-loading';
+        msg.textContent = "Couldn't load meals.";
+        slot.appendChild(msg);
+        if (retryFn) {
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'food-log-section-retry';
+            retry.textContent = 'Retry';
+            retry.addEventListener('click', retryFn);
+            slot.appendChild(retry);
+        }
+    }
+
+    async function loadFoodLogDaySection(date, slotId, totalsEl, dayMeta) {
+        const slot = $(slotId);
+        if (!slot) return 0;
+        renderFoodLogSectionLoading(slot);
+        try {
+            const payload = await api(`/api/food-logs/by-date/${encodeURIComponent(date)}`);
+            const entries = (payload && payload.entries) || [];
+            if (!entries.length) {
+                slot.innerHTML = '<div class="food-log-section-empty">No meals logged.</div>';
+                renderFoodLogSectionTotals(totalsEl, dayMeta);
+                return 0;
+            }
+            renderFoodLogMealList(slot, entries);
+            renderFoodLogSectionTotals(totalsEl, dayMeta);
+            return entries.length;
+        } catch (err) {
+            renderFoodLogSectionError(slot, () => loadFoodLogDaySection(date, slotId, totalsEl, dayMeta));
+            return 0;
+        }
+    }
+
+    async function openFoodLogSheet() {
+        const modal = $('modal-food-log');
+        if (!modal) return;
+        // Reset UI to loading state before showing so reopening doesn't
+        // flash stale content from a previous open.
+        const todayMeals = $('food-log-today-meals');
+        const yesterdayMeals = $('food-log-yesterday-meals');
+        const recentRows = $('food-log-recent-rows');
+        const empty = $('food-log-empty');
+        if (empty) empty.hidden = true;
+        if (todayMeals) todayMeals.innerHTML = '<div class="food-log-section-loading">Loading…</div>';
+        if (yesterdayMeals) yesterdayMeals.innerHTML = '<div class="food-log-section-loading">Loading…</div>';
+        if (recentRows) recentRows.innerHTML = '<div class="food-log-section-loading">Loading…</div>';
+        modal.hidden = false;
+
+        // FIT-107: refresh on delete from the inner meal-detail modal.
+        // Bind once on first open — listener checks visibility at fire time.
+        if (!foodLogSheetListenerBound) {
+            document.addEventListener('fit107:meal-deleted', () => {
+                const m = $('modal-food-log');
+                if (m && !m.hidden) openFoodLogSheet();
+            });
+            foodLogSheetListenerBound = true;
+        }
+
+        // FIT-107 (Codex audit): derive today/yesterday from the
+        // server-keyed nutrition-history response rather than client local
+        // time. /api/nutrition-history orders days oldest→newest with
+        // today as the last entry, so the trailing two entries are the
+        // canonical server-day keys. Avoids timezone-drift bugs around
+        // midnight where the browser and server disagree on "today".
+        let history = [];
+        try {
+            const hist = await api('/api/nutrition-history');
+            history = (hist && hist.history) || [];
+        } catch (err) {
+            console.error('FIT-107: nutrition-history failed', err);
+        }
+
+        // Fall back to client-local only if the server gave us nothing
+        // (e.g. empty history). In that case the by-date lookups will
+        // return empty entries either way.
+        const todayStr = (history.length && history[history.length - 1].date)
+            || foodLogYmd(new Date());
+        const yesterdayStr = (history.length >= 2 && history[history.length - 2].date)
+            || foodLogYmd(new Date(Date.now() - 86400000));
+
+        const todayMeta = history.find((d) => d && d.date === todayStr) || null;
+        const yesterdayMeta = history.find((d) => d && d.date === yesterdayStr) || null;
+
+        const [todayCount, yesterdayCount] = await Promise.all([
+            loadFoodLogDaySection(todayStr, 'food-log-today-meals', $('food-log-today-totals'), todayMeta),
+            loadFoodLogDaySection(yesterdayStr, 'food-log-yesterday-meals', $('food-log-yesterday-totals'), yesterdayMeta),
+        ]);
+
+        renderFoodLogRecent14d(history, todayStr, yesterdayStr);
+
+        const recentTotal = (history || [])
+            .filter((d) => d && d.date !== todayStr && d.date !== yesterdayStr)
+            .reduce((sum, d) => sum + Number(d.entries_count || 0), 0);
+        if (empty) empty.hidden = (todayCount + yesterdayCount + recentTotal) > 0;
     }
 
     async function renderBodyRecompTargetProgress() {
@@ -4907,6 +5135,9 @@
         $('btn-export') && $('btn-export').addEventListener('click', downloadExport);
         $('btn-import') && $('btn-import').addEventListener('click', () => $('import-file').click());
         $('import-file') && $('import-file').addEventListener('change', (e) => importBackupFile(e.target.files && e.target.files[0]));
+
+        // FIT-107: dashboard "View food log" button opens the food-log sheet
+        $('btn-view-food-log') && $('btn-view-food-log').addEventListener('click', openFoodLogSheet);
 
         // Close modals
         qsa('[data-close-modal]').forEach((b) => b.addEventListener('click', () => {

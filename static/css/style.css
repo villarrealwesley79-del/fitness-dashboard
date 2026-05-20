@@ -1382,6 +1382,7 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     padding: calc(var(--safe-top) + 20px) 20px 20px;
 }
 #modal-swap { z-index: 120; }
+#modal-meal-detail { z-index: 120; } /* FIT-107: stack above #modal-food-log (default 100) */
 #modal-delete-confirm { z-index: 130; }
 .modal[hidden] { display: none; }
 .modal-sheet {
@@ -2850,6 +2851,95 @@ input[type=number] { -moz-appearance: textfield; }
     border-top: 1px dashed var(--border-2);
 }
 .macro-row.macro-sodium .macro-values { text-align: left; color: var(--fg-2); }
+
+/* ======================= FIT-107: Food log sheet ======================= */
+/* Button on the macro card head that opens #modal-food-log */
+.card-link-btn {
+    background: transparent;
+    border: 0;
+    color: var(--fg-2);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 6px 8px;
+    margin: -6px -8px -6px auto;
+    min-height: 32px;
+    cursor: pointer;
+    border-radius: 8px;
+    line-height: 1;
+}
+.card-link-btn:hover { color: var(--fg-0); background: rgba(51,65,85,0.25); }
+.card-link-btn:focus-visible {
+    outline: 2px solid rgba(99,102,241,0.6);
+    outline-offset: 2px;
+}
+
+.food-log-section { margin-bottom: 18px; }
+.food-log-section:last-of-type { margin-bottom: 6px; }
+.food-log-section-title {
+    position: sticky;
+    top: -16px; /* counter the .modal-body top padding so the header pins flush */
+    background: linear-gradient(180deg, #131f3a 0%, #131f3a 80%, rgba(19,31,58,0) 100%);
+    padding: 10px 0 6px;
+    margin: 0 0 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    z-index: 1;
+}
+.food-log-section-totals {
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+    margin: -4px 0 6px;
+}
+.food-log-section-totals[hidden] { display: none; }
+.food-log-section-meals {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.food-log-section-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.food-log-section-loading,
+.food-log-section-empty {
+    color: var(--fg-dim);
+    font-size: 11px;
+    font-style: italic;
+    padding: 4px 0;
+}
+.food-log-section-retry {
+    align-self: flex-start;
+    background: rgba(51,65,85,0.4);
+    border: 1px solid rgba(51,65,85,0.6);
+    color: var(--fg-1);
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-top: 4px;
+}
+.food-log-section-retry:hover { background: rgba(51,65,85,0.6); }
+.food-log-empty {
+    padding: 20px 12px;
+    text-align: center;
+    color: var(--fg-dim);
+}
+.food-log-empty .empty-text {
+    font-size: 14px;
+    color: var(--fg-2);
+    margin-bottom: 4px;
+}
+.food-log-empty .empty-hint {
+    font-size: 12px;
+    color: var(--fg-dim);
+    opacity: 0.85;
+}
 
 .food-context-chips {
     display: flex;

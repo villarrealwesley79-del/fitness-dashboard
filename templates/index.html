@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260519-fit14-history-detail-2">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260520-fit107-food-log-sheet">
 </head>
 <body>
     <div class="app-shell">
@@ -88,6 +88,8 @@
                 <div class="card-head">
                     <div class="card-label">TODAY'S MACROS</div>
                     <div class="card-sub" id="macro-card-sub">—</div>
+                    <button type="button" class="card-link card-link-btn" id="btn-view-food-log"
+                            aria-haspopup="dialog" aria-controls="modal-food-log">View food log ›</button>
                 </div>
                 <div class="macro-empty" id="macro-empty">
                     <div class="empty-text">No food logged today.</div>
@@ -1088,6 +1090,36 @@
         </div>
     </div>
 
+    <!-- FIT-107: Dashboard "View food log" sheet — Today / Yesterday / Recent 14 days -->
+    <div id="modal-food-log" class="modal" hidden>
+        <div class="modal-sheet modal-sheet-tall">
+            <div class="modal-head">
+                <h3 class="modal-title">Food log</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body" id="food-log-body">
+                <section class="food-log-section" data-section="today">
+                    <h4 class="food-log-section-title">Today</h4>
+                    <div class="food-log-section-totals" id="food-log-today-totals" hidden></div>
+                    <div class="food-log-section-meals" id="food-log-today-meals"></div>
+                </section>
+                <section class="food-log-section" data-section="yesterday">
+                    <h4 class="food-log-section-title">Yesterday</h4>
+                    <div class="food-log-section-totals" id="food-log-yesterday-totals" hidden></div>
+                    <div class="food-log-section-meals" id="food-log-yesterday-meals"></div>
+                </section>
+                <section class="food-log-section" data-section="recent">
+                    <h4 class="food-log-section-title">Recent 14 days</h4>
+                    <div class="food-log-section-rows" id="food-log-recent-rows"></div>
+                </section>
+                <div class="food-log-empty" id="food-log-empty" hidden>
+                    <div class="empty-text">No meals logged yet.</div>
+                    <div class="empty-hint">Use Log a Meal to add your first entry.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="modal-delete-confirm" class="modal" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
@@ -1195,6 +1227,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260519-fit14-history-detail-2"></script>
+    <script src="/static/js/app.js?v=20260520-fit107-food-log-sheet"></script>
 </body>
 </html>
