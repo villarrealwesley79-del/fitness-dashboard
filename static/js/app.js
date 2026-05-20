@@ -2109,8 +2109,13 @@
             // FIT-97: tap-target index lets the click handler look up the
             // original entry by index rather than re-parsing the DOM, so
             // user-supplied strings never need round-tripping.
+            // FIT-97 a11y: per-row accessible name so screen readers
+            // distinguish entries (e.g. "View meal details: Burger at 12:30").
+            const ariaParts = ['View meal details:', name];
+            if (time) ariaParts.push('at', time);
+            const ariaLabel = escapeHtml(ariaParts.filter(Boolean).join(' '));
             return `
-                <button class="body-nutrition-meal body-nutrition-meal-tap" type="button" data-meal-idx="${idx}" aria-label="View meal details">
+                <button class="body-nutrition-meal body-nutrition-meal-tap" type="button" data-meal-idx="${idx}" aria-label="${ariaLabel}">
                     <div class="body-nutrition-meal-head">
                         ${time ? `<span class="meal-time">${escapeHtml(time)}</span>` : ''}
                         <span class="meal-name">${escapeHtml(name)}</span>
@@ -2176,7 +2181,10 @@
         // view would silently look authoritative.
         const stubNotice = $('meal-detail-stub-notice');
         if (stubNotice) {
-            stubNotice.hidden = !(source && source.toLowerCase().includes('stub_vision'));
+            // Match `stub_vision_estimate` as a source prefix only — avoids
+            // false positives if a future real source happens to contain
+            // "stub" or "vision" as a substring of another label.
+            stubNotice.hidden = !(source && source.toLowerCase().startsWith('stub_vision'));
         }
 
         // FIT-97: wire Delete to the existing DELETE endpoint. On success,
