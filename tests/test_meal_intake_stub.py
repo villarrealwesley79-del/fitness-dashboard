@@ -504,6 +504,166 @@ def test_meal_intake_accept_requires_calories(monkeypatch):
     assert "calories" in res.get_json()["error"]["message"]
 
 
+def test_meal_intake_accept_persists_sodium_and_meal_type_from_review_card(monkeypatch):
+    """FIT-6 AC1 + AC3: the review card sends sodium_mg and meal_type alongside
+    the existing macros when the user accepts, so the persisted food_log carries
+    the user-confirmed sodium and meal time values into the day's nutrition
+    totals. Regression-guards the AC1 "sodium" and AC3 "meal time" edit fields.
+    """
+    module = _client(monkeypatch)
+    captured = {}
+
+    def fake_add_food_log(_user_id, record):
+        captured.update(record)
+        return {
+            "client_id": record["client_id"],
+            "calories": record["calories"],
+            "sodium_mg": record["sodium_mg"],
+            "meal_type": record["meal_type"],
+            "source": record["source"],
+        }
+
+    monkeypatch.setattr(module, "add_food_log", fake_add_food_log)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/meal-fit6-accept-1/accept",
+        json={
+            "estimate": {
+                "item_name": "Chipotle chicken burrito",
+                "portion_description": "1 burrito",
+                "meal_type": "lunch",
+                "calories": 1075,
+                "protein_g": 51,
+                "carbs_g": 116,
+                "fat_g": 41,
+                "sodium_mg": 2310,
+                "fiber_g": 13,
+            },
+            "text": "chipotle chicken burrito",
+        },
+    )
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "logged"
+    assert body["food_log"]["sodium_mg"] == 2310
+    assert body["food_log"]["meal_type"] == "lunch"
+    assert captured["sodium_mg"] == 2310
+    assert captured["meal_type"] == "lunch"
+    assert captured["correction_state"] == "accepted"
+
+
+def test_meal_intake_accept_rejects_invalid_meal_type_from_review_card(monkeypatch):
+    """FIT-6 AC3: meal_type edits are constrained to the schema's allowed
+    values. A bogus meal_type submitted via the review card payload must
+    fail schema validation, not silently coerce to a default.
+    """
+    module = _client(monkeypatch)
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/meal-fit6-bad-meal-type/accept",
+        json={
+            "estimate": {
+                "item_name": "Snack",
+                "calories": 200,
+                "protein_g": 5,
+                "carbs_g": 25,
+                "fat_g": 8,
+                "sodium_mg": 100,
+                "meal_type": "midnight_feast",
+            },
+        },
+    )
+    assert res.status_code == 400
+    assert "meal_type" in res.get_json()["error"]["message"]
+
+
+def test_meal_intake_pending_response_exposes_policy_block_for_review_card(monkeypatch):
+    """FIT-6 AC2 contract: the review card renders policy reason chips
+    (Low confidence / Ambiguous input / Missing calories / ...) from the
+    response's ``policy.reasons`` array, so the user sees *why* the
+    estimate is held back rather than only the merged uncertainty_notes
+    paragraph. The frontend's MEAL_POLICY_REASON_LABELS map mirrors the
+    backend's _POLICY_REASON_NOTES; this test guards the contract by
+    asserting the policy block is present with the expected shape.
+    """
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Burrito",
+        "portion_description": None,
+        "meal_type": "lunch",
+        "calories": 600,
+        "protein_g": 30,
+        "carbs_g": 70,
+        "fat_g": 20,
+        "sodium_mg": 800,
+        "fiber_g": 5,
+        "confidence": 0.55,
+        "ambiguous": True,
+        "uncertainty_notes": ["Portion unclear"],
+    })
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "burrito",
+            "client_id": "meal-fit6-policy-1",
+            "local_timestamp": "2026-05-20T12:00:00",
+        },
+    )
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert "policy" in body
+    policy = body["policy"]
+    assert isinstance(policy.get("reasons"), list)
+    # Ambiguous + medium-confidence input should surface at least the
+    # ambiguous_input reason code. confidence_band may vary as the
+    # FIT-61 policy thresholds evolve, so we only assert the shape +
+    # that at least one stable reason code lands.
+    assert "ambiguous_input" in policy["reasons"]
+    assert isinstance(policy.get("confidence_band"), str) and policy["confidence_band"]
+
+
+def test_meal_intake_pending_response_exposes_source_for_review_card(monkeypatch):
+    """FIT-6 AC1 + AC5: the review card renders a source chip from
+    estimate.source so the user can see whether the numbers came from a
+    branded lookup (Nutritionix / USDA), a cached prior, the AI text
+    parser, or a fallback preset. Source presence in the pending
+    response is the contract this test guards.
+    """
+    module = _client(monkeypatch)
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Burrito",
+        "portion_description": None,
+        "meal_type": "lunch",
+        "calories": 600,
+        "protein_g": 30,
+        "carbs_g": 70,
+        "fat_g": 20,
+        "sodium_mg": 800,
+        "fiber_g": 5,
+        "confidence": 0.5,
+        "ambiguous": True,
+        "uncertainty_notes": [],
+    }, source="ai_text_estimate")
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "burrito",
+            "client_id": "meal-fit6-source-1",
+            "local_timestamp": "2026-05-20T12:00:00",
+        },
+    )
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["estimate"]["source"] == "ai_text_estimate"
+
+
 def test_local_iso_from_iso_strips_offset_for_downstream_hour_reads():
     """Regression for Codex audit round 4: logged_at is read by
     _nutrition_entry_logged_hour via .hour without TZ conversion, so
