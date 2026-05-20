@@ -4794,9 +4794,38 @@
         return edited;
     }
 
+    // FIT-6: lock/unlock the whole review-card row's action buttons.
+    // Used by Retry so a user can't Accept or Discard the OLD pending
+    // entry while a Retry request is in flight — that race would
+    // otherwise create duplicate meal state (old client_id persisted
+    // via /accept + new client_id logged or pending from the retry
+    // response). The lock is per-row, not global, so other pending
+    // entries in the list stay actionable.
+    function setMealPendingRowLocked(rowEl, locked) {
+        if (!rowEl) return;
+        rowEl.classList.toggle('meal-pending-row--locked', !!locked);
+        rowEl.querySelectorAll('.meal-pending-actions button').forEach((btn) => {
+            if (locked) {
+                if (!btn.hasAttribute('data-prev-disabled')) {
+                    btn.setAttribute('data-prev-disabled', btn.disabled ? '1' : '0');
+                }
+                btn.disabled = true;
+            } else {
+                const prev = btn.getAttribute('data-prev-disabled');
+                btn.disabled = prev === '1';
+                btn.removeAttribute('data-prev-disabled');
+            }
+        });
+    }
+
     async function acceptMealPending(clientId, rowEl) {
         const entry = mealComposerState.pending.find((p) => p.client_id === clientId);
         if (!entry) return;
+        // FIT-6: belt-and-suspenders guard. The retry handler already
+        // disables this button via setMealPendingRowLocked, but defend
+        // against any caller that bypasses the UI (test harness, future
+        // refactor) by checking the lock state here too.
+        if (rowEl && rowEl.classList.contains('meal-pending-row--locked')) return;
         const edited = collectMealEditedEstimate(entry, rowEl);
         if (!Number.isFinite(Number(edited.calories))) {
             toast('Set calories before accepting', 'err');
@@ -4840,16 +4869,20 @@
             return;
         }
         const retryBtn = rowEl.querySelector('.meal-pending-retry');
-        if (retryBtn) {
-            retryBtn.disabled = true;
-            retryBtn.textContent = 'Retrying…';
-        }
+        // FIT-6: lock the ENTIRE row, not just the Retry button, so
+        // Accept and Discard can't race the in-flight retry. Without
+        // this, a quick Accept after Retry would persist the OLD
+        // client_id while the retry response also logs/replaces under
+        // newClientId — duplicate meal state.
+        setMealPendingRowLocked(rowEl, true);
+        if (retryBtn) retryBtn.textContent = 'Retrying…';
         const newClientId = newMealClientId();
         const form = new FormData();
         if (text) form.append('text', text);
         if (file) form.append('image', file, file.name || 'meal.jpg');
         form.append('client_id', newClientId);
         form.append('local_timestamp', new Date().toISOString());
+        let cleanedUp = false;
         try {
             const res = await fetch('/api/meal-intake', {
                 method: 'POST',
@@ -4873,9 +4906,18 @@
             // either replaces it (pending_review) or completes the flow
             // outright (logged). Either way the old client_id is dead.
             mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
+            cleanedUp = true;
             if (payload && payload.status === 'logged') {
                 renderMealPendingList();
-                toast(mealEstimateChip(payload.estimate), 'ok');
+                // FIT-6: the retry's auto-log path must offer the same
+                // undo affordance as the regular submitMealComposer
+                // auto-log. Otherwise the user can't immediately
+                // recover from an accidentally-logged retry.
+                toastUndo(
+                    mealEstimateChip(payload.estimate),
+                    () => postMealUndo(newClientId),
+                    MEAL_UNDO_MS,
+                );
                 refreshMacroCard();
                 return;
             }
@@ -4898,9 +4940,11 @@
             console.error(e);
             toast('Retry failed — check your connection.', 'err');
         } finally {
-            if (retryBtn) {
-                retryBtn.disabled = false;
-                retryBtn.textContent = 'Retry';
+            // Only unlock the row if it still exists in the DOM (i.e.
+            // we didn't already remove + re-render the pending list).
+            if (!cleanedUp) {
+                setMealPendingRowLocked(rowEl, false);
+                if (retryBtn) retryBtn.textContent = 'Retry';
             }
         }
     }

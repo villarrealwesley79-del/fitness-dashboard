@@ -2904,6 +2904,17 @@ input[type=number] { -moz-appearance: textfield; }
     flex-wrap: wrap;
 }
 .meal-pending-retry[disabled] { opacity: 0.6; cursor: progress; }
+/* FIT-6: row-level lock during in-flight retry. Disables pointer
+   events on inputs so a user can't tab into them and try to edit
+   while the retry response is replacing the row. */
+.meal-pending-row--locked {
+    opacity: 0.75;
+}
+.meal-pending-row--locked input,
+.meal-pending-row--locked select {
+    pointer-events: none;
+    background: rgba(15,23,42,0.45);
+}
 
 @media (max-width: 640px) {
     .meal-composer-row { grid-template-columns: 38px 1fr auto; }
