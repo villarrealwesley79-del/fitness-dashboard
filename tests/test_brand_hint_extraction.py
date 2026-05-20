@@ -91,6 +91,23 @@ def test_lookup_hint_is_non_binding_for_unlisted_brand_phrase(monkeypatch):
     assert captured["query"] == "Taco Bell crunchy taco"
 
 
+def test_lookup_hint_is_non_binding_for_spaced_chick_fil_a(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+
+    def fake_nutritionix(query):
+        captured["query"] = query
+        return None
+
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", fake_nutritionix)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+
+    branded_food_lookup.lookup("Chick Fil A sandwich", brand_hint="chipotle")
+
+    assert captured["query"] == "Chick Fil A sandwich"
+
+
 def test_lookup_hint_does_not_duplicate_matching_unlisted_brand(monkeypatch):
     captured = {}
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
@@ -106,6 +123,43 @@ def test_lookup_hint_does_not_duplicate_matching_unlisted_brand(monkeypatch):
     branded_food_lookup.lookup("Taco Bell crunchy taco", brand_hint="Taco Bell")
 
     assert captured["query"] == "Taco Bell crunchy taco"
+
+
+def test_lookup_keeps_brand_hint_out_of_usda_fallback(monkeypatch):
+    captured = {}
+    saved = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "save_branded_lookup_cache",
+        lambda normalized, source, response: saved.update({"normalized": normalized, "source": source}),
+    )
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+
+    def fake_usda(query):
+        captured["query"] = query
+        return {
+            "foods": [
+                {
+                    "fdcId": 999,
+                    "description": "BURRITO",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "value": 240},
+                        {"nutrientName": "Protein", "value": 8},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 38},
+                        {"nutrientName": "Total lipid (fat)", "value": 6},
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", fake_usda)
+
+    estimate = branded_food_lookup.lookup("foil wrapped burrito", brand_hint="chipotle")
+
+    assert captured["query"] == "foil wrapped burrito"
+    assert estimate["source"] == "usda_fdc"
+    assert saved["normalized"] == "foil wrapped burrito"
 
 
 def test_meal_intake_passes_brand_hint_to_lookup(monkeypatch):

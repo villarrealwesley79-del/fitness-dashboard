@@ -24,6 +24,7 @@ KNOWN_BRANDS = {
 }
 KNOWN_BRAND_PHRASES = {
     "burger king",
+    "chick fil a",
     "dunkin donuts",
     "panda express",
     "taco bell",
@@ -82,10 +83,12 @@ def lookup(
     source_priority: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Return a sanitized estimate from cache/Nutritionix/USDA, or None."""
+    cleaned_text = (text or "").strip()
     lookup_text = _text_with_brand_hint(text, brand_hint)
     normalized = normalize_meal_text(lookup_text)
     if not normalized:
         return None
+    generic_normalized = normalize_meal_text(cleaned_text)
     priorities = tuple(source_priority or SOURCE_PRIORITY)
 
     if "cache" in priorities:
@@ -98,9 +101,11 @@ def lookup(
             data_store.save_branded_lookup_cache(normalized, nutritionix["source"], nutritionix)
             return nutritionix
     if "usda_fdc" in priorities:
-        usda = _usda_lookup(lookup_text, normalized)
+        usda_text = cleaned_text or lookup_text
+        usda_normalized = generic_normalized or normalized
+        usda = _usda_lookup(usda_text, usda_normalized)
         if usda:
-            data_store.save_branded_lookup_cache(normalized, usda["source"], usda)
+            data_store.save_branded_lookup_cache(usda_normalized, usda["source"], usda)
             return usda
     return None
 
