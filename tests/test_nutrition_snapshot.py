@@ -76,8 +76,117 @@ def test_snapshot_file_is_small_and_documents_license():
     assert "USDA" in payload["license"]
     assert "No Nutritionix-derived data" in payload["license"]
     assert payload["data_sources"][0]["name"] == "USDA FoodData Central"
+    assert payload["data_sources"][0]["dataset"] == "Food and Nutrient Database for Dietary Studies 2021-2023"
     assert "blocked_pending_tos_review" in payload["nutritionix_redistribution_status"]
-    assert len(payload["items"]) >= 5
+    assert payload["coverage"]["chain_default_items"] >= 50
+    assert payload["coverage"]["generic_items"] >= 1000
+    assert len(payload["items"]) >= 1050
+    chain_names = {
+        item["item_name"]
+        for item in payload["items"]
+        if item.get("snapshot_group") == "chain_default"
+    }
+    generic_names = {
+        item["item_name"]
+        for item in payload["items"]
+        if item.get("snapshot_group") == "generic"
+    }
+    assert "Potato, french fries, fast food" in chain_names
+    assert "Milk shake, fast food, chocolate" in chain_names
+    assert "Quarter Pounder (McDonalds)" in chain_names
+    assert "Quarter Pounder (McDonalds)" not in generic_names
+    assert not any("(McDonalds)" in name or "(Burger King)" in name for name in generic_names)
+
+
+def test_snapshot_supports_chain_alias_without_network(monkeypatch):
+    monkeypatch.delenv("NUTRITIONIX_APP_ID", raising=False)
+    monkeypatch.delenv("NUTRITIONIX_APP_KEY", raising=False)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("network blocked")))
+
+    result = branded_food_lookup.lookup("mcdonalds cheeseburger", source_priority=("snapshot", "nutritionix", "usda_fdc"))
+
+    assert result["source"] == "offline_snapshot"
+    assert result["item_name"] == "Cheeseburger (McDonalds)"
+    assert result["meal_type"] == "lunch"
+    assert result["calories"] > 0
+    assert "fdc.nal.usda.gov" in result["verified_source_url"]
+
+
+def test_snapshot_supports_common_chain_aliases_without_network(monkeypatch):
+    monkeypatch.delenv("NUTRITIONIX_APP_ID", raising=False)
+    monkeypatch.delenv("NUTRITIONIX_APP_KEY", raising=False)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("network blocked")))
+
+    expected = {
+        "french fries": "Potato, french fries, fast food",
+        "milk shake": "Milk shake, fast food, chocolate",
+        "big mac": "Big Mac (McDonalds)",
+        "whopper": "Whopper (Burger King)",
+        "burger king hamburger": "Hamburger (Burger King)",
+        "mcdonalds hamburger": "Hamburger (McDonalds)",
+    }
+
+    for query, item_name in expected.items():
+        result = branded_food_lookup.lookup(query, source_priority=("snapshot", "nutritionix", "usda_fdc"))
+        assert result["source"] == "offline_snapshot"
+        assert result["item_name"] == item_name
+
+    assert branded_food_lookup.lookup("hamburger", source_priority=("snapshot",)) is None
+    assert branded_food_lookup.lookup("small hamburger", source_priority=("snapshot",)) is None
+
+
+def test_snapshot_supports_broad_generic_alias_without_network(monkeypatch):
+    monkeypatch.delenv("NUTRITIONIX_APP_ID", raising=False)
+    monkeypatch.delenv("NUTRITIONIX_APP_KEY", raising=False)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("network blocked")))
+
+    result = branded_food_lookup.lookup("avocado", source_priority=("snapshot", "nutritionix", "usda_fdc"))
+
+    assert result["source"] == "offline_snapshot"
+    assert result["item_name"] == "Avocado, raw"
+    assert result["fiber_g"] > 0
+
+
+def test_snapshot_supports_common_default_generic_aliases_without_network(monkeypatch):
+    monkeypatch.delenv("NUTRITIONIX_APP_ID", raising=False)
+    monkeypatch.delenv("NUTRITIONIX_APP_KEY", raising=False)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("network blocked")))
+
+    expected = {
+        "rice": "Rice, cooked, NFS",
+        "coffee": "Coffee, NS as to type",
+        "orange juice": "Orange juice, 100%, NFS",
+        "bread": "Bread, NS as to major flour",
+        "whole milk": "Milk, whole",
+        "skim milk": "Milk, fat free (skim)",
+        "low fat milk": "Milk, low fat (1%)",
+    }
+
+    for query, item_name in expected.items():
+        result = branded_food_lookup.lookup(query, source_priority=("snapshot", "nutritionix", "usda_fdc"))
+        assert result["source"] == "offline_snapshot"
+        assert result["item_name"] == item_name
+
+
+def test_snapshot_exact_key_wins_over_earlier_alias_collision():
+    branded_food_lookup._SNAPSHOT_CACHE = None
+
+    result = branded_food_lookup.lookup("cheeseburger slider", source_priority=("snapshot",))
+
+    assert result["source"] == "offline_snapshot"
+    assert result["item_name"] == "Cheeseburger slider"
+
+
+def test_snapshot_generic_aliases_avoid_specialized_food_collisions():
+    branded_food_lookup._SNAPSHOT_CACHE = None
+
+    potato = branded_food_lookup.lookup("potato", source_priority=("snapshot",))
+    fish = branded_food_lookup.lookup("fish", source_priority=("snapshot",))
+    egg_roll = branded_food_lookup.lookup("egg roll", source_priority=("snapshot",))
+
+    assert potato["item_name"] == "Potato, NFS"
+    assert fish["item_name"] == "Fish, NFS"
+    assert egg_roll is None
 
 
 def test_refresh_script_builds_snapshot_from_official_usda_api(monkeypatch):
@@ -168,6 +277,33 @@ def test_refresh_preserves_existing_snapshot_meal_type(monkeypatch):
     assert snapshot["items"][0]["meal_type"] == "breakfast"
 
 
+def test_refresh_infers_meal_type_for_curated_fndds_foods():
+    assert (
+        refresh_nutrition_snapshot._meal_type_for_snapshot_item(
+            "Cheeseburger (McDonalds)",
+            None,
+            category="Burgers",
+        )
+        == "lunch"
+    )
+    assert (
+        refresh_nutrition_snapshot._meal_type_for_snapshot_item(
+            "Egg roll, with chicken or turkey",
+            None,
+            category="Egg rolls, dumplings, sushi",
+        )
+        == "lunch"
+    )
+    assert (
+        refresh_nutrition_snapshot._meal_type_for_snapshot_item(
+            "Pancakes, plain",
+            None,
+            category="Pancakes, waffles, French toast",
+        )
+        == "breakfast"
+    )
+
+
 def test_refresh_script_dry_run_does_not_write():
     path = Path("data/nutrition_snapshot.json")
     before = path.read_text()
@@ -185,7 +321,7 @@ def test_refresh_script_dry_run_does_not_write():
     assert after == before
 
 
-def test_refresh_script_write_without_usda_key_explains_requirement(monkeypatch, tmp_path):
+def test_refresh_script_write_without_source_archive_explains_requirement(monkeypatch, tmp_path):
     monkeypatch.delenv("USDA_FDC_API_KEY", raising=False)
     result = subprocess.run(
         [
@@ -194,6 +330,8 @@ def test_refresh_script_write_without_usda_key_explains_requirement(monkeypatch,
             "--write",
             "--output",
             str(tmp_path / "snapshot.json"),
+            "--source-dir",
+            str(tmp_path / "missing-sources"),
         ],
         check=False,
         capture_output=True,
@@ -202,7 +340,9 @@ def test_refresh_script_write_without_usda_key_explains_requirement(monkeypatch,
     payload = json.loads(result.stdout)
 
     assert result.returncode == 2
-    assert payload == {"status": "missing_api_key", "env_var": "USDA_FDC_API_KEY", "writes": False}
+    assert payload["status"] == "missing_source_archive"
+    assert payload["writes"] is False
+    assert payload["download_url"].startswith("https://fdc.nal.usda.gov/")
 
 
 def test_refresh_script_refuses_partial_writes(monkeypatch, tmp_path):
