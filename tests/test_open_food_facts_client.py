@@ -81,6 +81,24 @@ def test_open_food_facts_client_retries_without_locale_word(monkeypatch):
     assert result["products"][0]["product_name"] == "Tim Tam"
 
 
+def test_open_food_facts_client_retries_without_punctuated_locale_word(monkeypatch):
+    seen_terms = []
+
+    def fake_urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        seen_terms.append(params["search_terms"][0])
+        if len(seen_terms) == 1:
+            return _Response({"products": [_product("Petit Ecolier")]})
+        return _Response({"products": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = open_food_facts_client.search_products("French: Petit Ecolier")
+
+    assert seen_terms == ["Petit Ecolier"]
+    assert result["products"][0]["product_name"] == "Petit Ecolier"
+
+
 def test_open_food_facts_client_stops_after_usable_variant(monkeypatch):
     seen_terms = []
 
@@ -384,6 +402,27 @@ def test_open_food_facts_defaults_malformed_optional_nutrients(monkeypatch):
     assert estimate["external_food_id"] == "optional"
     assert estimate["fiber_g"] == 0
     assert estimate["sodium_mg"] == 0
+
+
+def test_open_food_facts_falls_back_to_salt_when_sodium_malformed(monkeypatch):
+    product = _product("Salt Fallback Product", code="salt-fallback")
+    product["nutriments"]["sodium_100g"] = "unknown"
+    product["nutriments"]["salt_100g"] = 0.64
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": [product]},
+    )
+
+    estimate = branded_food_lookup.lookup("salt fallback product")
+
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["external_food_id"] == "salt-fallback"
+    assert estimate["sodium_mg"] == 252
 
 
 def test_open_food_facts_skips_schema_invalid_candidates(monkeypatch):

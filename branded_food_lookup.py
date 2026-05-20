@@ -361,11 +361,22 @@ def _off_optional_number(value: Any, default: float = 0) -> float:
         return default
 
 
+def _off_number_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _off_sodium_mg(nutriments: dict[str, Any]) -> int:
     if nutriments.get("sodium_100g") is not None:
-        return int(round(_off_optional_number(nutriments["sodium_100g"]) * 1000))
+        sodium = _off_number_or_none(nutriments["sodium_100g"])
+        if sodium is not None:
+            return int(round(sodium * 1000))
     if nutriments.get("salt_100g") is not None:
-        return int(round(_off_optional_number(nutriments["salt_100g"]) * 393.4))
+        salt = _off_number_or_none(nutriments["salt_100g"])
+        if salt is not None:
+            return int(round(salt * 393.4))
     return 0
 
 

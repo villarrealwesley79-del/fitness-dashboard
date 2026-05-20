@@ -81,7 +81,11 @@ def _search_variants(query: str) -> list[str]:
 
 
 def _strip_locale_words(query: str) -> str:
-    return " ".join(part for part in query.split() if part.lower() not in LOCALE_QUERY_TOKENS)
+    return " ".join(
+        part
+        for part in query.split()
+        if part.strip(".,!?;:()[]{}\"'").lower() not in LOCALE_QUERY_TOKENS
+    )
 
 
 def _search_products_once(
