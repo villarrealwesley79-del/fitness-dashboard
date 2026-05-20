@@ -23,6 +23,8 @@ def _client(monkeypatch):
     monkeypatch.setattr(module, "NUTRITION_DATA", [])
     monkeypatch.setattr(module, "save_json", lambda *_a, **_kw: None)
     monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+    monkeypatch.setattr(module.personal_vocab, "record_accept", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module.personal_vocab, "record_correct", lambda *_a, **_kw: None)
     return module
 
 
@@ -451,6 +453,323 @@ def test_meal_intake_image_only_auto_logs(monkeypatch):
     assert "plate.png" not in str(body)
     assert captured["source"] == "vision_claude+nutritionix"
     assert captured["context_note"] is None
+
+
+def test_meal_intake_bill_miller_cart_uses_structured_item_lookups(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 42)
+    lookup_queries = []
+    persisted = {}
+    vocab_calls = []
+    vision = {
+        "provider": "lm_studio",
+        "item_description": (
+            "Bill Miller BBQ order: 1 Bacon & Egg Taco with Hot Sauce on a Flour Tortilla; "
+            "2 Breakfast Sandwiches on Biscuit with Sausage Patty, Cheese, and Egg"
+        ),
+        "portion_hint": "1 taco and 2 breakfast sandwiches",
+        "confidence": 0.91,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "items": [
+            {
+                "brand": "Bill Miller BBQ",
+                "item_name": "Bacon & Egg Taco",
+                "quantity": 1,
+                "modifiers": ["Hot Sauce", "Flour Tortilla"],
+            },
+            {
+                "brand": "Bill Miller BBQ",
+                "item_name": "Breakfast Sandwich",
+                "quantity": 2,
+                "modifiers": ["On a Biscuit", "Sausage Patty", "Cheese", "Egg"],
+            },
+        ],
+    }
+    monkeypatch.setattr(module.vision_estimator, "describe", lambda *_a, **_kw: dict(vision))
+
+    def fake_lookup(text, **kwargs):
+        lookup_queries.append((text, kwargs.get("user_id")))
+        if "Bacon & Egg Taco" in text:
+            return {
+                "item_name": "Bill Miller BBQ Bacon & Egg Taco",
+                "portion_description": "1 taco",
+                "meal_type": "breakfast",
+                "calories": 330,
+                "protein_g": 16,
+                "carbs_g": 28,
+                "fat_g": 18,
+                "sodium_mg": 780,
+                "fiber_g": 2,
+                "confidence": 0.86,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+                "source": "nutritionix",
+            }
+        if "Breakfast Sandwich" in text:
+            return {
+                "item_name": "Bill Miller BBQ Breakfast Sandwich",
+                "portion_description": "2 sandwiches",
+                "meal_type": "breakfast",
+                "calories": 960,
+                "protein_g": 42,
+                "carbs_g": 72,
+                "fat_g": 56,
+                "sodium_mg": 1880,
+                "fiber_g": 4,
+                "confidence": 0.82,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+                "source": "nutritionix",
+            }
+        return None
+
+    monkeypatch.setattr(module.branded_food_lookup, "lookup", fake_lookup)
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: persisted.setdefault("record", record) or {"client_id": record["client_id"], **record})
+    monkeypatch.setattr(module.personal_vocab, "record_accept", lambda *args, **_kw: vocab_calls.append(args))
+    monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: True)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "Bill Miller",
+            "client_id": "meal-bill-miller-cart-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\0" * 32), "bill-miller.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["status"] == "logged"
+    assert lookup_queries == [
+        ("1 Bill Miller BBQ Bacon & Egg Taco Hot Sauce Flour Tortilla", 42),
+        ("2 Bill Miller BBQ Breakfast Sandwich On a Biscuit Sausage Patty Cheese Egg", 42),
+    ]
+    estimate = body["estimate"]
+    assert estimate["source"] == "vision_lm_studio+nutritionix"
+    assert estimate["item_name"] == "Bill Miller BBQ order: 1 Bacon & Egg Taco; 2 Breakfast Sandwich"
+    assert estimate["portion_description"] == (
+        "1 Bacon & Egg Taco (Hot Sauce, Flour Tortilla); "
+        "2 Breakfast Sandwich (On a Biscuit, Sausage Patty, Cheese, Egg)"
+    )
+    assert estimate["calories"] == 1290
+    assert estimate["protein_g"] == 58
+    assert estimate["sodium_mg"] == 2660
+    assert persisted["record"]["source"] == "vision_lm_studio+nutritionix"
+    assert persisted["record"]["original_estimate"]["vision_description"].startswith("Bill Miller BBQ order")
+    assert "image_bytes" not in str(persisted["record"]["original_estimate"])
+    assert vocab_calls
+    assert vocab_calls[0][0] == 42
+    assert "Bill Miller BBQ order" in vocab_calls[0][1]
+
+
+def test_meal_intake_single_structured_item_applies_top_level_portion_hint(monkeypatch):
+    module = _client(monkeypatch)
+    lookup_queries = []
+    vision = {
+        "provider": "lm_studio",
+        "item_description": "half burger",
+        "portion_hint": "half burger",
+        "confidence": 0.9,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "items": [{"item_name": "burger", "quantity": 1}],
+    }
+    monkeypatch.setattr(module.vision_estimator, "describe", lambda *_a, **_kw: dict(vision))
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
+    monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: False)
+
+    def fake_lookup(text, **_kwargs):
+        lookup_queries.append(text)
+        if text == "1 burger half burger":
+            return {
+                "item_name": "Half burger",
+                "portion_description": "half burger",
+                "meal_type": "lunch",
+                "calories": 280,
+                "protein_g": 14,
+                "carbs_g": 16,
+                "fat_g": 17,
+                "sodium_mg": 520,
+                "fiber_g": 1,
+                "confidence": 0.84,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+                "source": "nutritionix",
+            }
+        return {
+            "item_name": "Full burger",
+            "portion_description": "1 burger",
+            "meal_type": "lunch",
+            "calories": 560,
+            "protein_g": 28,
+            "carbs_g": 32,
+            "fat_g": 34,
+            "sodium_mg": 1040,
+            "fiber_g": 2,
+            "confidence": 0.84,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "source": "nutritionix",
+        }
+
+    monkeypatch.setattr(module.branded_food_lookup, "lookup", fake_lookup)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "half",
+            "client_id": "meal-half-burger-photo",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\0" * 32), "half-burger.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert lookup_queries == ["1 burger half burger"]
+    assert body["estimate"]["calories"] == 280
+    assert body["estimate"]["portion_description"] == "1 burger (half burger)"
+
+
+def test_meal_intake_single_structured_item_applies_user_portion_modifier(monkeypatch):
+    module = _client(monkeypatch)
+    lookup_queries = []
+    vision = {
+        "provider": "lm_studio",
+        "item_description": "Chipotle chicken burrito",
+        "portion_hint": "1 burrito",
+        "confidence": 0.9,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "items": [{"brand": "Chipotle", "item_name": "chicken burrito", "quantity": 1}],
+    }
+    monkeypatch.setattr(module.vision_estimator, "describe", lambda *_a, **_kw: dict(vision))
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
+    monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: False)
+
+    def fake_lookup(text, **_kwargs):
+        lookup_queries.append(text)
+        return {
+            "item_name": "Half Chipotle chicken burrito",
+            "portion_description": "half burrito",
+            "meal_type": "lunch",
+            "calories": 380,
+            "protein_g": 22,
+            "carbs_g": 38,
+            "fat_g": 15,
+            "sodium_mg": 760,
+            "fiber_g": 4,
+            "confidence": 0.84,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "source": "nutritionix",
+        }
+
+    monkeypatch.setattr(module.branded_food_lookup, "lookup", fake_lookup)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "half Chipotle chicken burrito",
+            "client_id": "meal-half-chipotle-photo",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\0" * 32), "half-chipotle.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert lookup_queries == ["1 Chipotle chicken burrito 1 burrito half"]
+    assert body["estimate"]["calories"] == 380
+    assert body["estimate"]["portion_description"] == "1 chicken burrito (1 burrito half)"
+
+
+def test_meal_intake_structured_cart_truncated_items_force_review(monkeypatch):
+    module = _client(monkeypatch)
+    lookup_queries = []
+    vision = {
+        "provider": "lm_studio",
+        "item_description": "Large cart with nine breakfast tacos",
+        "portion_hint": "9 tacos",
+        "confidence": 0.91,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "items": [
+            {"brand": "Bill Miller BBQ", "item_name": f"Breakfast Taco {idx}", "quantity": 1}
+            for idx in range(1, 10)
+        ],
+    }
+    monkeypatch.setattr(module.vision_estimator, "describe", lambda *_a, **_kw: dict(vision))
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
+    monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: False)
+
+    def fake_lookup(text, **_kwargs):
+        lookup_queries.append(text)
+        return {
+            "item_name": text,
+            "portion_description": "1 taco",
+            "meal_type": "breakfast",
+            "calories": 200,
+            "protein_g": 10,
+            "carbs_g": 20,
+            "fat_g": 8,
+            "sodium_mg": 420,
+            "fiber_g": 2,
+            "confidence": 0.84,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "source": "nutritionix",
+        }
+
+    monkeypatch.setattr(module.branded_food_lookup, "lookup", fake_lookup)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "Bill Miller",
+            "client_id": "meal-large-cart-truncated",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\0" * 32), "large-cart.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert len(lookup_queries) == 8
+    assert body["status"] == "pending_review"
+    assert body["estimate"]["ambiguous"] is True
+    assert "Breakfast Taco 9" in body["estimate"]["uncertainty_notes"][0]
+
+
+def test_meal_intake_image_auto_vocab_learning_claims_once(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_vision(monkeypatch, module)
+    vocab_calls = []
+    claims = []
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
+    monkeypatch.setattr(module.personal_vocab, "record_accept", lambda *args, **_kw: vocab_calls.append(args))
+
+    def fake_claim(_user_id, client_id):
+        claims.append(client_id)
+        return len(claims) == 1
+
+    monkeypatch.setattr(module, "claim_food_log_vocab_learning", fake_claim)
+
+    for _ in range(2):
+        res = module.app.test_client().post(
+            "/api/meal-intake",
+            data={
+                "client_id": "meal-img-vocab-idempotent",
+                "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\0" * 32), "plate.png", "image/png"),
+            },
+            content_type="multipart/form-data",
+        )
+        assert res.status_code == 200, res.get_data(as_text=True)
+
+    assert claims == ["meal-img-vocab-idempotent", "meal-img-vocab-idempotent"]
+    assert len(vocab_calls) == 1
 
 
 def test_meal_intake_image_text_is_preserved_as_brand_hint(monkeypatch):
@@ -1125,6 +1444,80 @@ def test_meal_intake_accept_persists_estimate(monkeypatch):
     assert captured["correction_state"] == "accepted"
     assert captured["item_name"] == "Popcorn"
     assert captured["context_note"] == "movie theater popcorn"
+
+
+def test_meal_intake_accept_uses_vision_description_for_image_only_vocab(monkeypatch):
+    module = _client(monkeypatch)
+    vocab_calls = []
+    monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: True)
+    monkeypatch.setattr(module.personal_vocab, "record_accept", lambda *args, **_kw: vocab_calls.append(args))
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/meal-image-vocab-accept/accept",
+        json={
+            "estimate": {
+                "item_name": "Bill Miller BBQ order: 1 Bacon & Egg Taco; 2 Breakfast Sandwich",
+                "portion_description": "1 taco; 2 sandwiches",
+                "meal_type": "breakfast",
+                "calories": 1290,
+                "protein_g": 58,
+                "carbs_g": 100,
+                "fat_g": 74,
+                "sodium_mg": 2660,
+                "fiber_g": 6,
+                "confidence": 0.82,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+                "source": "vision_lm_studio+nutritionix",
+                "from_image": True,
+                "vision_description": "Bill Miller BBQ cart with Bacon & Egg Taco and two Breakfast Sandwiches",
+                "vision_provider": "lm_studio",
+                "vision_confidence": 0.91,
+            }
+        },
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    assert vocab_calls[0][1] == "Bill Miller BBQ cart with Bacon & Egg Taco and two Breakfast Sandwiches"
+
+
+def test_meal_intake_corrected_image_vocab_uses_user_phrase(monkeypatch):
+    module = _client(monkeypatch)
+    vocab_calls = []
+    monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: True)
+    monkeypatch.setattr(module.personal_vocab, "record_correct", lambda *args, **_kw: vocab_calls.append(args))
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/meal-image-vocab-correct/accept",
+        json={
+            "estimate": {
+                "item_name": "Bill Miller BBQ order: 1 Bacon & Egg Taco; 2 Breakfast Sandwich",
+                "portion_description": "1 taco; 2 sandwiches",
+                "meal_type": "breakfast",
+                "calories": 1290,
+                "protein_g": 58,
+                "carbs_g": 100,
+                "fat_g": 74,
+                "sodium_mg": 2660,
+                "fiber_g": 6,
+                "confidence": 0.82,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+                "source": "vision_lm_studio+nutritionix",
+                "from_image": True,
+                "vision_description": "Bill Miller BBQ cart with Bacon & Egg Taco and two Breakfast Sandwiches",
+                "vision_provider": "lm_studio",
+                "vision_confidence": 0.91,
+            },
+            "text": "Bill Miller",
+            "corrected": True,
+        },
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    assert vocab_calls[0][1] == "Bill Miller"
 
 
 def test_meal_intake_accept_requires_calories(monkeypatch):

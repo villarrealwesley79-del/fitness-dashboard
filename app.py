@@ -3485,6 +3485,254 @@ def _vision_lookup_allowed_for_text(text_raw: str, vision: dict) -> bool:
     return "half" in text_raw.lower() and "half" in portion_hint
 
 
+def _vision_item_quantity_text(quantity) -> str:
+    try:
+        numeric = float(quantity)
+    except (TypeError, ValueError):
+        numeric = 1.0
+    if numeric <= 0:
+        numeric = 1.0
+    if numeric.is_integer():
+        return str(int(numeric))
+    return str(round(numeric, 2)).rstrip("0").rstrip(".")
+
+
+def _vision_item_modifiers(item: dict) -> list[str]:
+    raw = item.get("modifiers")
+    if isinstance(raw, list):
+        values = raw
+    elif isinstance(raw, str):
+        values = [raw]
+    else:
+        values = []
+    modifiers = []
+    for value in values:
+        cleaned = str(value or "").strip()
+        if cleaned:
+            modifiers.append(cleaned)
+    return modifiers
+
+
+def _vision_item_lookup_query(item: dict, *, extra_portion_hints: list[str] | None = None) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    item_name = str(item.get("item_name") or "").strip()
+    if not item_name:
+        return None
+    seen_hints = {str(item.get("portion_hint") or "").strip().lower()}
+    portion_hints = [str(item.get("portion_hint") or "").strip()]
+    for hint in extra_portion_hints or []:
+        cleaned = str(hint or "").strip()
+        existing = " ".join(portion_hints).lower()
+        if cleaned and cleaned.lower() not in seen_hints and cleaned.lower() not in existing:
+            portion_hints.append(cleaned)
+            seen_hints.add(cleaned.lower())
+    parts = [
+        _vision_item_quantity_text(item.get("quantity", 1)),
+        str(item.get("brand") or "").strip(),
+        item_name,
+        *_vision_item_modifiers(item),
+        *portion_hints,
+    ]
+    query = " ".join(part for part in parts if part)
+    return query[:500] or None
+
+
+def _vision_text_portion_hint(text_raw: str | None) -> str | None:
+    text = str(text_raw or "").strip()
+    if not text:
+        return None
+    normalized = re.sub(r"\s+", " ", text.lower())
+    if re.search(r"(^|\s)(half|1/2)(\s|$)", normalized):
+        return "half"
+    portion_tokens = {
+        "half", "1/2", "one half", "quarter", "1/4", "small", "medium",
+        "large", "extra large", "regular", "kids", "kid", "single",
+        "double", "triple",
+    }
+    if normalized in portion_tokens:
+        return text
+    if re.fullmatch(r"(\d+(\.\d+)?|one|two|three|four)\s+(cup|cups|oz|ounce|ounces|g|gram|grams|lb|lbs|piece|pieces|slice|slices|serving|servings)", normalized):
+        return text
+    return None
+
+
+def _vision_extra_item_portion_hints(vision: dict, text_raw: str | None) -> list[str]:
+    items = vision.get("items")
+    if not isinstance(items, list) or len(items) != 1:
+        return []
+    hints = []
+    portion_hint = str(vision.get("portion_hint") or "").strip()
+    if portion_hint:
+        hints.append(portion_hint)
+    text_hint = _vision_text_portion_hint(text_raw)
+    if text_hint and text_hint.lower() not in " ".join(hints).lower():
+        hints.append(text_hint)
+    return hints
+
+
+def _vision_items_include_portion_hint(items: list, portion_hint: str | None, vision: dict) -> bool:
+    hint = str(portion_hint or "").strip().lower()
+    if not hint:
+        return True
+    top_level_hint = str(vision.get("portion_hint") or "").strip().lower()
+    if hint in top_level_hint:
+        return True
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        values = [
+            str(item.get("portion_hint") or ""),
+            " ".join(_vision_item_modifiers(item)),
+        ]
+        if hint in " ".join(values).lower():
+            return True
+    return False
+
+
+def _vision_item_label(item: dict, *, include_modifiers: bool = False) -> str:
+    quantity = _vision_item_quantity_text(item.get("quantity", 1))
+    label = f"{quantity} {str(item.get('item_name') or '').strip()}".strip()
+    modifiers = _vision_item_modifiers(item)
+    portion_hint = str(item.get("portion_hint") or "").strip()
+    if include_modifiers and portion_hint and portion_hint.lower() not in " ".join(modifiers).lower():
+        modifiers.append(portion_hint)
+    if include_modifiers and modifiers:
+        label = f"{label} ({', '.join(modifiers)})"
+    return label
+
+
+def _vision_structured_items_lookup(vision: dict, *, user_id: int, text_raw: str | None = None) -> dict | None:
+    items = vision.get("items")
+    if not isinstance(items, list) or not items:
+        return None
+
+    text_portion_hint = _vision_text_portion_hint(text_raw)
+    if len(items) != 1 and not _vision_items_include_portion_hint(items, text_portion_hint, vision):
+        return None
+    extra_portion_hints = _vision_extra_item_portion_hints(vision, text_raw)
+    matched: list[tuple[dict, dict, str]] = []
+    missing: list[str] = [_vision_item_label(item) for item in items[8:] if isinstance(item, dict)]
+    for item in items[:8]:
+        item_for_lookup = dict(item)
+        if extra_portion_hints and not str(item_for_lookup.get("portion_hint") or "").strip():
+            item_for_lookup["portion_hint"] = " ".join(extra_portion_hints)
+        query = _vision_item_lookup_query(item_for_lookup, extra_portion_hints=extra_portion_hints)
+        if not query:
+            continue
+        try:
+            lookup = branded_food_lookup.lookup(query, user_id=user_id)
+        except Exception:
+            lookup = None
+        if lookup:
+            matched.append((item_for_lookup, lookup, query))
+        else:
+            missing.append(_vision_item_label(item_for_lookup) or query)
+
+    if not matched:
+        return None
+    return _combine_vision_item_lookups(matched, missing=missing)
+
+
+def _sum_lookup_number(matched: list[tuple[dict, dict, str]], key: str):
+    total = 0.0
+    found = False
+    for _item, lookup, _query in matched:
+        value = lookup.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        total += float(value)
+        found = True
+    if not found:
+        return 0
+    if key in {"calories", "sodium_mg"}:
+        return int(round(total))
+    return round(total, 1)
+
+
+def _combine_vision_item_lookups(
+    matched: list[tuple[dict, dict, str]],
+    *,
+    missing: list[str],
+) -> dict:
+    first_brand = str(matched[0][0].get("brand") or "").strip()
+    same_brand = first_brand and all(str(item.get("brand") or "").strip() == first_brand for item, _lookup, _query in matched)
+    labels = [_vision_item_label(item) for item, _lookup, _query in matched]
+    portion_labels = [_vision_item_label(item, include_modifiers=True) for item, _lookup, _query in matched]
+    sources = {str(lookup.get("source") or "").strip() for _item, lookup, _query in matched if lookup.get("source")}
+    source = next(iter(sources)) if len(sources) == 1 else "mixed_lookup"
+    confidences = [
+        float(lookup.get("confidence"))
+        for _item, lookup, _query in matched
+        if isinstance(lookup.get("confidence"), (int, float)) and not isinstance(lookup.get("confidence"), bool)
+    ]
+    notes = []
+    for _item, lookup, _query in matched:
+        notes.extend(str(note).strip() for note in (lookup.get("uncertainty_notes") or []) if str(note).strip())
+    if missing:
+        notes.append("Some cart items did not match verified nutrition data: " + ", ".join(missing[:3]))
+    item_name = "; ".join(labels)
+    if same_brand:
+        item_name = f"{first_brand} order: {item_name}"
+    estimate = {
+        "item_name": item_name[:160],
+        "portion_description": "; ".join(portion_labels)[:300],
+        "meal_type": _infer_structured_order_meal_type(matched),
+        "calories": _sum_lookup_number(matched, "calories"),
+        "protein_g": _sum_lookup_number(matched, "protein_g"),
+        "carbs_g": _sum_lookup_number(matched, "carbs_g"),
+        "fat_g": _sum_lookup_number(matched, "fat_g"),
+        "sodium_mg": _sum_lookup_number(matched, "sodium_mg"),
+        "fiber_g": _sum_lookup_number(matched, "fiber_g"),
+        "confidence": min(confidences) if confidences else 0.72,
+        "ambiguous": bool(missing) or any(bool(lookup.get("ambiguous")) for _item, lookup, _query in matched),
+        "uncertainty_notes": notes,
+        "source": source,
+        "underlying_source": source,
+        "portion_basis": "Structured vision item lookup: " + "; ".join(query for _item, _lookup, query in matched)[:700],
+    }
+    return estimate
+
+
+def _infer_structured_order_meal_type(matched: list[tuple[dict, dict, str]]) -> str:
+    for _item, lookup, _query in matched:
+        meal_type = str(lookup.get("meal_type") or "").strip()
+        if meal_type:
+            return meal_type
+    joined = " ".join(
+        " ".join([
+            str(item.get("item_name") or ""),
+            " ".join(_vision_item_modifiers(item)),
+        ]).lower()
+        for item, _lookup, _query in matched
+    )
+    if any(token in joined for token in ("breakfast", "egg", "biscuit", "taco")):
+        return "breakfast"
+    return "snack"
+
+
+def _meal_vocab_learning_phrase(text_hint: str | None, estimate: dict) -> str | None:
+    vision_description = estimate.get("vision_description") if isinstance(estimate, dict) else None
+    if (
+        isinstance(estimate, dict)
+        and _source_indicates_image(estimate.get("source"))
+        and isinstance(vision_description, str)
+        and vision_description.strip()
+        and len(str(text_hint or "").split()) <= 2
+    ):
+        return vision_description.strip()[:500]
+    candidates = (
+        text_hint,
+        estimate.get("personal_vocab_phrase") if isinstance(estimate, dict) else None,
+        vision_description,
+        estimate.get("item_name") if isinstance(estimate, dict) else None,
+    )
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:500]
+    return None
+
+
 def _meal_intake_stub_estimate(text: str, has_image: bool) -> dict:
     """Deterministic canned estimate for the FIT-60 UI stub.
 
@@ -3547,9 +3795,14 @@ def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype:
     description = vision["item_description"]
     lookup_text = " ".join(part for part in (text_raw, description, vision.get("portion_hint")) if part)
     lookup = None
+    try:
+        lookup = _vision_structured_items_lookup(vision, user_id=user_id, text_raw=text_raw)
+    except Exception:
+        lookup = None
     if _vision_lookup_allowed_for_text(text_raw, vision):
         try:
-            lookup = branded_food_lookup.lookup(lookup_text, user_id=user_id)
+            if not lookup:
+                lookup = branded_food_lookup.lookup(lookup_text, user_id=user_id)
         except Exception:
             lookup = None
     provider = vision.get("provider") or vision_estimator.configured_provider()
@@ -3562,6 +3815,8 @@ def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype:
         estimate["vision_confidence"] = vision.get("confidence")
         estimate["confidence"] = min(float(estimate.get("confidence") or 0), float(vision.get("confidence") or 0))
         if vision.get("portion_hint") and not estimate.get("portion_description"):
+            estimate["portion_description"] = vision.get("portion_hint")
+        elif not estimate.get("portion_description") and vision.get("items"):
             estimate["portion_description"] = vision.get("portion_hint")
         if vision.get("ambiguous"):
             estimate["ambiguous"] = True
@@ -4011,6 +4266,10 @@ def meal_intake_stub():
             local_date=local_date, local_iso=local_iso,
             correction_state=decision["correction_state"],
         )
+        if has_image and decision["correction_state"] == CORRECTION_STATE_ACCEPTED:
+            vocab_phrase = _meal_vocab_learning_phrase(text_raw or None, estimate)
+            if vocab_phrase and claim_food_log_vocab_learning(user_id, client_id):
+                personal_vocab.record_accept(user_id, vocab_phrase, estimate)
 
     return jsonify({
         "status": status,
@@ -4119,9 +4378,11 @@ def meal_intake_accept_stub(client_id: str):
     )
     if claim_food_log_vocab_learning(_current_data_user_id(), client_id):
         if corrected:
-            personal_vocab.record_correct(_current_data_user_id(), text_hint or None, estimate)
+            vocab_phrase = text_hint or _meal_vocab_learning_phrase(None, estimate)
+            personal_vocab.record_correct(_current_data_user_id(), vocab_phrase, estimate)
         else:
-            personal_vocab.record_accept(_current_data_user_id(), text_hint or None, estimate)
+            vocab_phrase = _meal_vocab_learning_phrase(text_hint or None, estimate)
+            personal_vocab.record_accept(_current_data_user_id(), vocab_phrase, estimate)
     return jsonify({
         "status": "logged",
         "food_log": food_log,
