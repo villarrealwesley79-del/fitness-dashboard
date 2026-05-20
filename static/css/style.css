@@ -872,6 +872,16 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
 .cardio-body { padding: 6px 0; }
 .cardio-title { font-size: 17px; font-weight: 700; color: var(--fg-0); margin-bottom: 4px; }
 .cardio-meta { font-size: 13px; color: var(--fg-dim); }
+/* FIT-109: one-line "why" beneath cardio meta. Mirrors .reco-why
+   typography so the visual idiom for AI-reasoning surfaces is shared. */
+.cardio-why {
+    font-size: 12px;
+    color: var(--fg-dim);
+    line-height: 1.4;
+    margin-top: 6px;
+    opacity: 0.92;
+}
+.cardio-why[hidden] { display: none; }
 
 .nw-cta { display: grid; gap: 10px; margin-top: 16px; }
 
