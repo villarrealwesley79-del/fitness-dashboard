@@ -17,7 +17,7 @@ import data_store
 
 
 def _client(monkeypatch):
-    monkeypatch.setenv("SECRET_KEY", "fit60-stub-secret")
+    monkeypatch.setenv("SECRET_KEY", "fit65-meal-intake-secret")
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     monkeypatch.setattr(module, "NUTRITION_DATA", [])
@@ -1468,6 +1468,7 @@ def test_meal_intake_accept_persists_estimate(monkeypatch):
     body = res.get_json()
     assert body["status"] == "logged"
     assert body["food_log"]["calories"] == 180
+    assert "stub" not in body
     assert captured["correction_state"] == "accepted"
     assert captured["item_name"] == "Popcorn"
     assert captured["context_note"] == "movie theater popcorn"
@@ -2054,7 +2055,7 @@ def test_meal_intake_accept_persists_parser_source_when_present(monkeypatch):
     """Regression for Codex audit round 1, finding 3: when a pending-review
     estimate originated from the FIT-59 parser (text path), the accept
     handler must persist the parser-assigned ``source`` from the estimate
-    rather than defaulting to ``stub_text_estimate``.
+    rather than defaulting to a generic manual-review source.
     """
     module = _client(monkeypatch)
     captured = {}
@@ -2441,11 +2442,11 @@ def test_meal_intake_policy_notes_do_not_duplicate_existing_uncertainty(monkeypa
 
 
 def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
-    """Regression for Codex audit round 1, finding 1: ``_meal_intake_stub_estimate``
-    detected ambiguity for image+text submissions (e.g. "shared movie popcorn"
-    with a photo) but only exposed it via result["status"] and uncertainty_notes.
-    Since FIT-61 evaluates only ``estimate``, the ``ambiguous`` flag must live
-    inside the estimate dict so the policy sees it and routes to pending review.
+    """Image+text ambiguity must live on the estimate consumed by policy.
+
+    FIT-61 evaluates only ``estimate``, so the ``ambiguous`` flag must live
+    inside that dict for the policy to route shared/unclear photos to pending
+    review.
     """
     module = _client(monkeypatch)
     persisted = []
@@ -2639,6 +2640,15 @@ def test_meal_composer_js_hydrates_pending_and_rolls_back_failed_discard():
     assert "toast('Review the estimate before it counts toward today.', 'warn');\n            refreshMacroCard();" in source
     assert "local_timestamp: entry.local_timestamp || null" in source
     assert "local_timestamp: entry.local_timestamp || fallback.local_timestamp || entry.logged_at" in source
+
+
+def test_fit65_stub_markers_are_removed():
+    """FIT-65 guard: the old FIT-60 stub wrapper and test file stay removed."""
+    app_source = Path("app.py").read_text()
+
+    assert "FIT-60 STUB" not in app_source
+    assert "_meal_intake_stub_estimate" not in app_source
+    assert not Path("tests/test_meal_intake_stub.py").exists()
 
 
 def test_meal_composer_js_surfaces_open_food_facts_attribution():

@@ -1,7 +1,7 @@
 """Unit tests for the FIT-61 meal auto-log policy.
 
 The policy is pure — these tests exercise it directly without spinning
-up Flask. Endpoint integration coverage lives in test_meal_intake_stub.py.
+up Flask. Endpoint integration coverage lives in test_meal_intake_api.py.
 """
 from __future__ import annotations
 
