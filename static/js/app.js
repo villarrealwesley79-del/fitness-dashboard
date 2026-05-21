@@ -5785,7 +5785,7 @@
 
     // ─────────────────────────────────────────────────────────────────────────
     // FIT-60 — Universal meal composer (text or photo → AI auto-log).
-    // Talks to POST /api/meal-intake (FIT-57 contract; currently a stub).
+    // Talks to POST /api/meal-intake (FIT-57 contract).
     // ─────────────────────────────────────────────────────────────────────────
     const MEAL_DRAFT_KEY = 'fit60_meal_draft';
     const MEAL_UNDO_MS = 30_000;
@@ -5946,7 +5946,7 @@
 
     // FIT-97 AC1: build an entry object in the shape openMealDetailModal
     // expects, from the /api/meal-intake (or retry) auto-log payload. The
-    // food_log row is canonical (persisted by _meal_intake_stub_persist), so
+    // food_log row is canonical (persisted by the meal-intake endpoint), so
     // start from it and fall back to estimate fields for anything food_log
     // omits. client_id is passed in because the auto-log path knows it from
     // the call context, not always echoed on food_log.
