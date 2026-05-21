@@ -994,8 +994,16 @@
     // ("--", "Loading…", etc.) until their data lands, and each paint reads
     // from state so it tolerates the other endpoints not having returned yet.
     async function renderDashboard() {
-        // Paint once with whatever's already in cache (often empty on first open).
-        paintDashboardFromState();
+        // FIT-127: only paint from cache if at least one slice is already
+        // hydrated. On a true cold open every slice is undefined and the
+        // painters would otherwise inject misleading defaults (0% "Low"
+        // gauge, "Rest Day" reco title, canned "Based on your readiness…"
+        // reasoning) before any fetch settles. Skipping the paint leaves the
+        // HTML placeholders ('--', '—', empty gauge <div>) in place until
+        // real data lands via the .then(repaint) chains below.
+        if (state.dashboard || state.oura || state.reco || state.ouraSleep) {
+            paintDashboardFromState();
+        }
 
         const repaint = () => { try { paintDashboardFromState(); } catch (e) { console.warn('dashboard repaint failed:', e); } };
         const dashP = getDashboard().then(repaint, () => repaint());
