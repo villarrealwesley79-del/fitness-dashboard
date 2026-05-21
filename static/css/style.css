@@ -47,6 +47,16 @@
 
 * { box-sizing: border-box; }
 
+/* FIT-116: restore the HTML `hidden` attribute default. The browser's
+   user-agent stylesheet sets `[hidden] { display: none }` with the
+   same specificity as a class selector, so any element whose class
+   declares its own `display:` (e.g. `.btn { display: inline-flex }`)
+   wins on source order and stays rendered. That caused the Settings
+   tab's push-notification button row to push 64px past the viewport
+   at 375x812 even when all three buttons were `hidden`. The fix is a
+   single global rule: when `hidden` is on, hide it. */
+[hidden] { display: none !important; }
+
 html, body {
     margin: 0;
     padding: 0;
