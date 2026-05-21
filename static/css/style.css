@@ -1466,6 +1466,10 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     background: rgba(51,65,85,0.4);
     border: 1px solid var(--border-2);
     font-weight: 600;
+    /* FIT-113: never wrap mid-chip. Containers like `.reco-freshness`
+       already use flex-wrap, so an over-long chip flows to a new row
+       instead of breaking its own label across two lines. */
+    white-space: nowrap;
 }
 .state-chip.ok { color: var(--accent-green); background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.3); }
 .state-chip.warn { color: var(--accent-amber); background: rgba(251,191,36,0.1); border-color: rgba(251,191,36,0.3); }
