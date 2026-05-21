@@ -128,6 +128,44 @@ def test_history_all_response_carries_adherence(fitness_app):
     assert workouts[0]["adherence"]["added"] == ["Y"]
 
 
+def test_history_all_workouts_shape_for_history_tab_charts(fitness_app):
+    """FIT-115: The History tab `renderHistory()` in static/js/app.js
+    pipes /api/history-all `workouts` into bucket aggregation
+    (frequency bars + volume line). The JS expects three things per
+    workout:
+      * `workouts` is a LIST (renderHistory calls `.map`/`.filter`)
+      * `date` is a zero-padded ISO `YYYY-MM-DD` string (the bucket
+        keys and `new Date(date + 'T00:00:00')` parsing both depend on
+        it).
+      * `total_volume` is a number (the volume aggregation does
+        `Number(w.total_volume || 0)`).
+
+    A regression in any of these would empty the charts despite the
+    payload looking "fine" at a glance — which is exactly the failure
+    mode FIT-115 caught in the FIT-106 mobile QA matrix.
+    """
+    _seed_workout(fitness_app)
+    res = fitness_app.app.test_client().get("/api/history-all")
+    assert res.status_code == 200, res.get_data(as_text=True)
+    payload = res.get_json()
+    workouts = payload.get("workouts")
+    assert isinstance(workouts, list), (
+        "history-all must return a list under `workouts`; "
+        "renderHistory() calls .map/.filter on it."
+    )
+    assert workouts, "the seeded workout should appear"
+    for w in workouts:
+        date = w.get("date")
+        assert isinstance(date, str) and len(date) == 10 and date[4] == "-" and date[7] == "-", (
+            f"workout date must be a zero-padded YYYY-MM-DD string for the JS "
+            f"bucket lookup; got {date!r}"
+        )
+        assert isinstance(w.get("total_volume"), (int, float)), (
+            f"total_volume must be numeric for the volume line aggregation; "
+            f"got {type(w.get('total_volume')).__name__}"
+        )
+
+
 def test_history_workout_includes_per_exercise_sets(fitness_app):
     """The detail modal renders sets/reps/weight/RPE/notes per exercise.
     The endpoint must keep exposing the full sets array per exercise.
