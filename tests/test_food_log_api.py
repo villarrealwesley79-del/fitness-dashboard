@@ -85,7 +85,7 @@ def test_add_nutrition_client_id_retry_replaces_legacy_summary_entry(monkeypatch
     assert module.NUTRITION_DATA[0]["protein_g"] == 40
 
 
-def test_add_nutrition_without_client_id_keeps_food_log_client_id_null(monkeypatch):
+def test_add_nutrition_without_client_id_generates_shared_dual_write_id(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit7-contract-secret")
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
@@ -112,7 +112,9 @@ def test_add_nutrition_without_client_id_keeps_food_log_client_id_null(monkeypat
 
     assert first.status_code == 200
     assert second.status_code == 200
-    assert seen_client_ids == [None, None]
+    assert all(cid and cid.startswith("nutrition-") for cid in seen_client_ids)
+    assert len(set(seen_client_ids)) == 2
+    assert [entry["client_id"] for entry in module.NUTRITION_DATA] == seen_client_ids
     assert len(module.NUTRITION_DATA) == 2
 
 

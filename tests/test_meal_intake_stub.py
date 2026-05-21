@@ -1390,6 +1390,33 @@ def test_meal_intake_undo_returns_not_found_when_missing(monkeypatch):
     assert res.get_json() == {"status": "not_found", "removed": False}
 
 
+def test_meal_intake_undo_removes_legacy_nutrition_row_by_client_id(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+    monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [])
+    monkeypatch.setattr(module, "delete_food_log_by_client_id", lambda *_a, **_kw: False)
+    module.NUTRITION_DATA[:] = [
+        {
+            "client_id": "legacy-nutrition-delete-me",
+            "date": "2026-05-18",
+            "calories": 500,
+            "protein_g": 30,
+        },
+        {
+            "client_id": "legacy-nutrition-keep-me",
+            "date": "2026-05-18",
+            "calories": 650,
+            "protein_g": 40,
+        },
+    ]
+
+    res = module.app.test_client().delete("/api/meal-intake/legacy-nutrition-delete-me")
+
+    assert res.status_code == 200
+    assert res.get_json() == {"status": "ok", "removed": True}
+    assert [entry["client_id"] for entry in module.NUTRITION_DATA] == ["legacy-nutrition-keep-me"]
+
+
 def test_meal_intake_pending_discard_does_not_delete_accepted_row(monkeypatch):
     module = _client(monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})

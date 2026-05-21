@@ -26,6 +26,8 @@ def fitness_app(monkeypatch):
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     monkeypatch.setattr(module, "_food_log_entries_for_context", lambda since=None, limit=None: [])
+    monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "backfill_food_log_client_id", lambda *_args, **_kwargs: False)
     yield module
     module.app.config.update(LOGIN_DISABLED=False)
 
@@ -41,6 +43,76 @@ def _today_minus(days: int) -> str:
 def _seed_nutrition(module, entries):
     """Replace the in-memory nutrition data for the duration of one test."""
     module.NUTRITION_DATA[:] = list(entries)
+
+
+def test_backfill_legacy_nutrition_client_ids_is_idempotent(fitness_app, monkeypatch):
+    saved_payloads = []
+    linked_matches = []
+    existing_client_id = "already-set"
+    _seed_nutrition(fitness_app, [
+        {
+            "date": _today(), "logged_at": f"{_today()}T08:00:00",
+            "calories": 450, "protein_g": 30, "carbs_g": 40, "fat_g": 12,
+            "sodium_mg": 500, "notes": "breakfast note",
+            "correction_state": "manual",
+        },
+        {
+            "client_id": existing_client_id,
+            "date": _today(), "logged_at": f"{_today()}T12:30:00",
+            "calories": 650, "protein_g": 42, "carbs_g": 55, "fat_g": 22,
+            "sodium_mg": 900, "notes": "already linked lunch",
+            "correction_state": "manual",
+        },
+    ])
+
+    linked_client_ids = set()
+
+    def fake_link(user_id, client_id, match):
+        linked_matches.append((user_id, client_id, match))
+        if client_id in linked_client_ids:
+            return False
+        linked_client_ids.add(client_id)
+        return True
+
+    monkeypatch.setattr(fitness_app, "save_json", lambda _path, data: saved_payloads.append([dict(e) for e in data]))
+    monkeypatch.setattr(fitness_app, "backfill_food_log_client_id", fake_link)
+
+    first = fitness_app.backfill_legacy_nutrition_client_ids(user_id=7)
+    generated_client_id = fitness_app.NUTRITION_DATA[0]["client_id"]
+    second = fitness_app.backfill_legacy_nutrition_client_ids(user_id=7)
+
+    assert generated_client_id.startswith("legacy-nutrition-")
+    assert fitness_app.NUTRITION_DATA[1]["client_id"] == existing_client_id
+    assert first == {"legacy_backfilled": 1, "food_logs_linked": 2}
+    assert second == {"legacy_backfilled": 0, "food_logs_linked": 0}
+    assert len(saved_payloads) == 1, "second run must not rewrite already-backfilled JSON"
+    assert linked_matches[0][0] == 7
+    assert linked_matches[0][1] == generated_client_id
+    assert linked_matches[0][2]["context_note"] == "breakfast note"
+    assert "logged_at" not in linked_matches[0][2], "mismatched logged_at must not block linking"
+
+
+def test_backfill_legacy_nutrition_client_ids_does_not_link_macro_only_rows(fitness_app, monkeypatch):
+    link_attempts = []
+    _seed_nutrition(fitness_app, [
+        {
+            "date": _today(),
+            "calories": 500, "protein_g": 30, "carbs_g": 50, "fat_g": 18,
+            "sodium_mg": 600,
+            "correction_state": "manual",
+        },
+    ])
+    monkeypatch.setattr(
+        fitness_app,
+        "backfill_food_log_client_id",
+        lambda *_args, **_kwargs: link_attempts.append(_args) or True,
+    )
+
+    result = fitness_app.backfill_legacy_nutrition_client_ids(user_id=7)
+
+    assert result == {"legacy_backfilled": 1, "food_logs_linked": 0}
+    assert fitness_app.NUTRITION_DATA[0]["client_id"].startswith("legacy-nutrition-")
+    assert link_attempts == []
 
 
 def test_nutrition_history_fixture_does_not_read_real_food_logs_by_default(fitness_app, monkeypatch):
@@ -367,21 +439,19 @@ def test_nutrition_history_classifies_legacy_entry_with_ai_signal_as_estimated(f
     assert today["manual_count"] == 0
 
 
-def test_nutrition_history_dedupes_clientless_dual_write_with_partial_legacy_fields(fitness_app, monkeypatch):
-    """Regression for Codex audit round 5 finding 1: /api/add-nutrition
-    builds the legacy NUTRITION_DATA entry from a smaller dict that
-    only carries date + macros (see app.py:3110-3149). logged_at,
-    item_name, and source_timestamp are added only to the food_log
-    record. The dedupe signature must NOT include those fields,
-    otherwise dual-write clientless entries never match.
+def test_nutrition_history_keeps_identical_macro_clientless_entries_after_backfill(fitness_app, monkeypatch):
+    """FIT-70: nutrition-history must not use the old date/macro content
+    signature once legacy rows are backfilled. A legacy row and a
+    food_log row with identical macros but no shared client_id are
+    distinct meals unless the migration can link them explicitly.
     """
-    legacy_partial = {  # Mirrors what /api/add-nutrition appends to NUTRITION_DATA.
+    legacy_partial = {
         "date": _today(),
         "calories": 500, "protein_g": 30, "carbs_g": 50, "fat_g": 18,
         "sodium_mg": 600,
         "correction_state": "manual",
     }
-    food_log_full = {  # Mirrors what add_food_log persists for the same call.
+    food_log_full = {
         "id": 1, "client_id": None,
         "date": _today(), "logged_at": f"{_today()}T13:00:00",
         "calories": 500, "protein_g": 30, "carbs_g": 50, "fat_g": 18,
@@ -396,35 +466,28 @@ def test_nutrition_history_dedupes_clientless_dual_write_with_partial_legacy_fie
     today = next(d for d in fitness_app.app.test_client()
                  .get("/api/nutrition-history").get_json()["history"]
                  if d["date"] == _today())
-    assert today["calories"] == 500, (
-        "dual-write entries with partial-legacy shape must dedupe "
-        f"(got {today['calories']}, expected 500)"
+    assert today["calories"] == 1000, (
+        "identical-macro entries without a shared client_id must both count "
+        f"(got {today['calories']}, expected 500+500=1000)"
     )
-    assert today["entries_count"] == 1
+    assert today["entries_count"] == 2
 
 
-def test_nutrition_history_dedupes_clientless_dual_write_entries(fitness_app, monkeypatch):
-    """Regression for Codex audit round 4: /api/add-nutrition appends
-    to BOTH NUTRITION_DATA and food_logs. When called without a
-    client_id (which the endpoint allows), there's no shared key to
-    dedupe on. The round-3 client_id filter kept all legacy entries
-    with null client_id → double count.
-
-    Per-entry content signature (date, logged_at, calories, protein,
-    item_name) catches these clientless duplicates without breaking
-    the legitimate mixed-source same-day case (different content
-    on the same date).
+def test_nutrition_history_dedupes_migrated_dual_write_entries_by_client_id(fitness_app, monkeypatch):
+    """FIT-70: after migration links a legacy row and its food_log row,
+    nutrition-history dedupes by client_id only.
     """
     same_meal_logged_at = f"{_today()}T13:00:00"
-    # Same meal in both stores, no client_id.
+    shared_client_id = "legacy-nutrition-linked"
     legacy_dup = {
+        "client_id": shared_client_id,
         "date": _today(), "logged_at": same_meal_logged_at,
         "calories": 600, "protein_g": 35, "carbs_g": 50, "fat_g": 20,
         "sodium_mg": 800, "item_name": "Chicken bowl",
         "correction_state": "manual",
     }
     food_log_dup = {
-        "id": 1, "client_id": None,
+        "id": 1, "client_id": shared_client_id,
         "date": _today(), "logged_at": same_meal_logged_at,
         "calories": 600, "protein_g": 35, "carbs_g": 50, "fat_g": 20,
         "sodium_mg": 800, "item_name": "Chicken bowl",
@@ -439,9 +502,50 @@ def test_nutrition_history_dedupes_clientless_dual_write_entries(fitness_app, mo
                  .get("/api/nutrition-history").get_json()["history"]
                  if d["date"] == _today())
     assert today["calories"] == 600, (
-        "clientless dual-write entries must count once, not twice "
+        "migrated dual-write entries must count once, not twice "
         f"(got {today['calories']}, expected 600)"
     )
+    assert today["entries_count"] == 1
+
+
+def test_add_nutrition_generated_client_id_dedupes_history(fitness_app, monkeypatch):
+    """FIT-70: /api/add-nutrition still dual-writes to legacy JSON and
+    food_logs. If the request omits client_id, the server must generate one
+    shared by both copies so the client_id-only history merge counts it once.
+    """
+    food_log_records = []
+
+    def fake_add_food_log(_user_id, record):
+        food_log_records.append(record)
+        return record
+
+    _seed_nutrition(fitness_app, [])
+    monkeypatch.setattr(fitness_app, "add_food_log", fake_add_food_log)
+    response = fitness_app.app.test_client().post(
+        "/api/add-nutrition",
+        json={
+            "date": _today(),
+            "calories": 500,
+            "protein_g": 30,
+            "carbs_g": 50,
+            "fat_g": 18,
+            "sodium_mg": 600,
+        },
+    )
+    assert response.status_code == 200
+    generated_client_id = fitness_app.NUTRITION_DATA[0]["client_id"]
+    assert generated_client_id.startswith("nutrition-")
+    assert food_log_records[0]["client_id"] == generated_client_id
+
+    monkeypatch.setattr(
+        fitness_app,
+        "_food_log_entries_for_context",
+        lambda since=None, limit=None: list(food_log_records),
+    )
+    today = next(d for d in fitness_app.app.test_client()
+                 .get("/api/nutrition-history").get_json()["history"]
+                 if d["date"] == _today())
+    assert today["calories"] == 500
     assert today["entries_count"] == 1
 
 
