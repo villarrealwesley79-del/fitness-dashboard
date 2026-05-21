@@ -3449,6 +3449,52 @@ input[type=number] { -moz-appearance: textfield; }
     color: var(--fg-dim);
     font-style: italic;
 }
+/* FIT-119: portion-multiplier chip strip on the review card. One tap
+   scales calories/protein/carbs/fat/sodium proportionally so a half
+   or double portion doesn't require macro hand-editing. */
+.meal-pending-portion {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.meal-pending-portion-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+}
+.meal-pending-portion-chips {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+.meal-pending-portion-chip {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(96,165,250,0.10);
+    border: 1px solid rgba(96,165,250,0.35);
+    color: var(--accent-blue-2, #93c5fd);
+    cursor: pointer;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+    min-height: 28px;
+}
+.meal-pending-portion-chip:hover {
+    background: rgba(96,165,250,0.18);
+}
+.meal-pending-portion-chip.is-active {
+    background: rgba(34,197,94,0.18);
+    border-color: rgba(34,197,94,0.5);
+    color: #86efac;
+}
+.meal-pending-portion-chip:focus-visible {
+    outline: 2px solid rgba(96,165,250,0.55);
+    outline-offset: 1px;
+}
 .meal-pending-fields {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
