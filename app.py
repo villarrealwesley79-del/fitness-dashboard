@@ -488,6 +488,20 @@ def _normalize_cardio_type(value):
     return str(value).strip().lower()
 
 
+def _canonical_cardio_fatigue_type(value):
+    activity = _normalize_cardio_type(value)
+    aliases = {
+        "bike": "cycling",
+        "rower": "rowing",
+        "treadmill incline walk": "treadmill",
+        "treadmill run": "treadmill",
+        "outdoor run": "running",
+        "outdoor walk": "walking",
+        "walk": "walking",
+    }
+    return aliases.get(activity, activity)
+
+
 def _recent_cardio_types(cardio_data, limit=3):
     rows = sorted(cardio_data or [], key=lambda row: row.get("date", ""), reverse=True)
     recent = []
@@ -1057,6 +1071,277 @@ def _local_iso_from_iso(iso_str):
     """
     dt = _parse_iso_to_local_datetime(iso_str)
     return dt.isoformat(timespec="seconds") if dt is not None else None
+
+
+def _fit95_number(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _apple_health_recommendation_enabled():
+    # Tests should not read the owner's real Apple Health DB unless the test
+    # explicitly points APPLE_HEALTH_SYNC_DB at an isolated fixture.
+    if app.config.get("TESTING") and not os.environ.get("APPLE_HEALTH_SYNC_DB"):
+        return False
+    return True
+
+
+def _apple_health_duration_minutes(row):
+    for key in ("duration_minutes", "duration_min"):
+        value = row.get(key)
+        if value is not None:
+            return _fit95_number(value)
+    duration_sec = row.get("duration_sec")
+    if duration_sec is not None:
+        return round(_fit95_number(duration_sec) / 60, 1)
+    duration = row.get("duration")
+    if duration is not None:
+        return round(_fit95_number(duration) / 60, 1)
+    return 0.0
+
+
+def _apple_health_activity(row):
+    return (
+        row.get("activity_type")
+        or row.get("activity")
+        or row.get("type")
+        or row.get("workoutActivityType")
+        or row.get("name")
+        or "Other"
+    )
+
+
+def _apple_health_start_iso(row):
+    return (
+        row.get("startDate")
+        or row.get("start")
+        or row.get("start_time")
+        or row.get("created_at")
+        or ""
+    )
+
+
+def _normalise_apple_health_muscle_groups(row):
+    groups = row.get("muscle_groups") or row.get("muscles") or []
+    if isinstance(groups, dict):
+        groups = [
+            {"muscle": muscle, **(data if isinstance(data, dict) else {})}
+            for muscle, data in groups.items()
+        ]
+    exercises = []
+    for group in groups if isinstance(groups, list) else []:
+        if not isinstance(group, dict):
+            continue
+        muscle = (group.get("muscle") or group.get("muscle_group") or group.get("name") or "").strip().lower()
+        if not muscle:
+            continue
+        sets_count = max(1, int(round(_fit95_number(group.get("sets") or group.get("set_count"), 1))))
+        volume_load = _fit95_number(group.get("volume_load") or group.get("volume") or group.get("load"))
+        weight = volume_load / sets_count if volume_load > 0 else 0
+        exercises.append({
+            "machine": "Apple Health Strength",
+            "muscle_group": muscle,
+            "sets": [
+                {"set_number": idx + 1, "weight_lbs": weight, "reps": 1}
+                for idx in range(sets_count)
+            ],
+        })
+    return exercises
+
+
+def _apple_health_recommendation_load(row, exercises, duration_minutes):
+    volume_load = 0.0
+    for exercise in exercises:
+        for set_row in exercise.get("sets") or []:
+            volume_load += _fit95_number(set_row.get("weight_lbs")) * _fit95_number(set_row.get("reps"))
+    if volume_load > 0:
+        return volume_load
+    intensity = _fit95_number(row.get("intensity"), 1.0)
+    if intensity > 10:
+        intensity = intensity / 10
+    return duration_minutes * max(1.0, intensity)
+
+
+def _normalise_apple_health_workout(row):
+    if not isinstance(row, dict):
+        return None
+    start_iso = _apple_health_start_iso(row)
+    date_s = _local_date_from_iso(start_iso) or row.get("date")
+    if not date_s:
+        return None
+    duration_minutes = _apple_health_duration_minutes(row)
+    activity = _apple_health_activity(row)
+    exercises = _normalise_apple_health_muscle_groups(row)
+    load = _apple_health_recommendation_load(row, exercises, duration_minutes)
+    return {
+        "id": f"apple-health:{start_iso or date_s}:{activity}:{duration_minutes}",
+        "date": date_s,
+        "created_at": _local_iso_from_iso(start_iso) or start_iso,
+        "session_type": activity,
+        "duration_minutes": duration_minutes,
+        "exercises": exercises,
+        "recommendation_load": load,
+        "source": "apple_health",
+        "apple_health": {
+            "activity_type": activity,
+            "start": start_iso,
+            "duration_minutes": duration_minutes,
+        },
+    }
+
+
+def _load_apple_health_recommendation_workouts(days=28):
+    if not _apple_health_recommendation_enabled():
+        return []
+    try:
+        from apple_health_parser import _get_sync_records, parse_workouts as _parse_ah_file_workouts
+    except Exception:
+        return []
+    rows = []
+    try:
+        rows.extend(_parse_ah_file_workouts() or [])
+    except Exception:
+        pass
+    try:
+        rows.extend(_get_sync_records("workouts", days) or [])
+    except Exception:
+        pass
+    normalised = []
+    for row in rows:
+        workout = _normalise_apple_health_workout(row)
+        if workout:
+            normalised.append(workout)
+    return normalised
+
+
+def _workout_start_dt(workout):
+    for key in ("startDate", "start", "start_time", "created_at"):
+        dt = _parse_iso_to_local_datetime(str(workout.get(key) or ""))
+        if dt is not None:
+            return dt
+    apple_health = workout.get("apple_health") if isinstance(workout, dict) else None
+    if isinstance(apple_health, dict):
+        return _parse_iso_to_local_datetime(str(apple_health.get("start") or ""))
+    return None
+
+
+def _workout_duration_minutes(workout):
+    duration = _fit95_number(workout.get("duration_minutes") or workout.get("duration_min"))
+    if duration:
+        return duration
+    cardio = workout.get("cardio") if isinstance(workout, dict) else None
+    if isinstance(cardio, dict):
+        return _fit95_number(cardio.get("duration_minutes") or cardio.get("duration_min"))
+    return 0.0
+
+
+def _workout_activity_for_dedupe(workout):
+    if not isinstance(workout, dict):
+        return ""
+    cardio = workout.get("cardio")
+    if isinstance(cardio, dict):
+        value = cardio.get("activity_type") or cardio.get("type")
+        if value:
+            return _canonical_cardio_fatigue_type(value)
+    apple_health = workout.get("apple_health")
+    if isinstance(apple_health, dict):
+        value = apple_health.get("activity_type")
+        if value:
+            return _canonical_cardio_fatigue_type(value)
+    value = workout.get("activity_type") or workout.get("type") or workout.get("session_type")
+    return _canonical_cardio_fatigue_type(value)
+
+
+def _workout_has_explicit_start(workout):
+    if not isinstance(workout, dict):
+        return False
+    if any(workout.get(key) for key in ("startDate", "start", "start_time")):
+        return True
+    apple_health = workout.get("apple_health")
+    return isinstance(apple_health, dict) and bool(apple_health.get("start"))
+
+
+def _same_date_activity_for_recommendation_dedupe(left, right):
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    left_activity = _workout_activity_for_dedupe(left)
+    right_activity = _workout_activity_for_dedupe(right)
+    return (
+        left.get("date") == right.get("date")
+        and bool(left_activity)
+        and left_activity == right_activity
+    )
+
+
+def _is_same_workout_for_recommendations(left, right):
+    left_start = _workout_start_dt(left)
+    right_start = _workout_start_dt(right)
+    duration_delta = abs(_workout_duration_minutes(left) - _workout_duration_minutes(right))
+    if duration_delta > 5:
+        return False
+    left_activity = _workout_activity_for_dedupe(left)
+    right_activity = _workout_activity_for_dedupe(right)
+    if left_activity and right_activity and left_activity != right_activity:
+        return False
+    if left_start is None or right_start is None:
+        return _same_date_activity_for_recommendation_dedupe(left, right)
+    start_delta = abs((left_start - right_start).total_seconds())
+    if start_delta <= 5 * 60:
+        return True
+    if not (_workout_has_explicit_start(left) and _workout_has_explicit_start(right)):
+        return _same_date_activity_for_recommendation_dedupe(left, right)
+    return False
+
+
+def _recommendation_workouts_with_apple_health(workouts, days=28):
+    merged = list(workouts or [])
+    for apple_workout in _load_apple_health_recommendation_workouts(days=days):
+        if not any(_is_same_workout_for_recommendations(existing, apple_workout) for existing in merged):
+            merged.append(apple_workout)
+    return merged
+
+
+def _cardio_data_with_apple_health(cardio_data, workouts=None):
+    merged = list(cardio_data or [])
+
+    def same_date_cardio(existing, apple_workout):
+        if not isinstance(existing, dict):
+            return False
+        if _workout_start_dt(existing) is not None:
+            return False
+        if existing.get("date") != apple_workout.get("date"):
+            return False
+        existing_activity = _canonical_cardio_fatigue_type(existing.get("activity_type") or existing.get("type"))
+        apple_activity = _canonical_cardio_fatigue_type((apple_workout.get("apple_health") or {}).get("activity_type") or apple_workout.get("session_type"))
+        if existing_activity != apple_activity:
+            return False
+        return abs(_workout_duration_minutes(existing) - _workout_duration_minutes(apple_workout)) <= 5
+
+    for workout in _recommendation_workouts_with_apple_health(workouts if workouts is not None else WORKOUTS):
+        if workout.get("source") != "apple_health":
+            continue
+        activity = ((workout.get("apple_health") or {}).get("activity_type") or workout.get("session_type") or "").strip()
+        if not activity:
+            continue
+        if any(
+            _is_same_workout_for_recommendations(existing, workout) or same_date_cardio(existing, workout)
+            for existing in merged
+            if isinstance(existing, dict)
+        ):
+            continue
+        merged.append({
+            "date": workout.get("date"),
+            "activity_type": activity,
+            "duration_minutes": workout.get("duration_minutes") or 0,
+            "intensity": 5,
+            "source": "apple_health",
+            "created_at": workout.get("created_at"),
+        })
+    return merged
 
 
 def _browser_local_date_from_value(local_date):
@@ -1656,6 +1941,7 @@ def calculate_progression_status(workouts):
 
 def calculate_volume(workouts, weeks=4):
     """Calculate volume load per muscle group over recent weeks."""
+    workouts = _recommendation_workouts_with_apple_health(workouts, days=weeks * 7)
     cutoff = datetime.now() - timedelta(days=weeks * 7)
     muscle_volume = {}
 
@@ -1725,16 +2011,9 @@ def get_cardio_muscle_impact(cardio_data, muscle, days=2):
         "cycling": {"quads": 2, "hamstrings": 1.5, "calves": 1, "glutes": 1},
         "elliptical": {"quads": 1, "glutes": 1, "hamstrings": 1, "calves": 0.5},
         "rowing": {"back": 2, "biceps": 1.5, "core": 1.5, "quads": 1},
-        "swimming": {"back": 1.5, "shoulders": 1.5, "core": 1, "triceps": 1}
+        "swimming": {"back": 1.5, "shoulders": 1.5, "core": 1, "triceps": 1},
+        "walking": {"quads": 1, "hamstrings": 0.5, "calves": 1, "glutes": 0.5}
     }
-    CARDIO_ACTIVITY_ALIASES = {
-        "bike": "cycling",
-        "rower": "rowing",
-        "treadmill incline walk": "treadmill",
-        "treadmill run": "treadmill",
-        "outdoor run": "running",
-    }
-
     cutoff = datetime.now() - timedelta(days=days)
     total_impact = 0
 
@@ -1744,10 +2023,9 @@ def get_cardio_muscle_impact(cardio_data, muscle, days=2):
             if session_date < cutoff:
                 continue
 
-            activity = session.get("activity_type", "").strip().lower()
-            activity = CARDIO_ACTIVITY_ALIASES.get(activity, activity)
-            duration = session.get("duration_minutes", 0)
-            intensity = session.get("intensity", 5)
+            activity = _canonical_cardio_fatigue_type(session.get("activity_type", ""))
+            duration = _fit95_number(session.get("duration_minutes") or session.get("duration_min"))
+            intensity = _fit95_number(session.get("intensity"), 5)
 
             if activity in CARDIO_MUSCLE_IMPACT:
                 muscle_factor = CARDIO_MUSCLE_IMPACT[activity].get(muscle, 0)
@@ -2010,6 +2288,7 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None, wo
     """
     if cardio_data is None:
         cardio_data = []
+    cardio_data = _cardio_data_with_apple_health(cardio_data, workouts)
 
     recent_soreness = filter_recent_soreness(soreness_data, hours=24)
     muscle_soreness = [s for s in recent_soreness if s.get("muscle") == muscle]
@@ -3041,11 +3320,13 @@ def _parse_iso_date_or_datetime(s: str | None):
 def calculate_acwr(workouts: list) -> dict:
     """Calculate Acute:Chronic Workload Ratio (ACWR) from logged workouts.
 
-    Load definition: sum over all sets of (1 * reps * weight).
+    Load definition: sum over all sets of (1 * reps * weight), plus
+    duration-derived load for cardio-style app and Apple Health workouts.
     Acute: sum of last 7 days.
     Chronic: average 7-day load over the last 28 days (uses available days if < 28).
     """
     today = datetime.now().date()
+    workouts = _recommendation_workouts_with_apple_health(workouts, days=28)
     if not workouts:
         return {
             "acwr": 0.0,
@@ -3067,6 +3348,10 @@ def calculate_acwr(workouts: list) -> dict:
                 except Exception:
                     reps_f, weight_f = 0.0, 0.0
                 total += reps_f * weight_f
+        if total <= 0:
+            total = _fit95_number(w.get("recommendation_load"))
+        if total <= 0:
+            total = _workout_duration_minutes(w)
         return total
 
     # Build daily loads for the last 28 days
