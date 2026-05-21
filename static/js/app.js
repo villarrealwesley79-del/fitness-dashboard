@@ -2524,6 +2524,17 @@
             stubNotice.dataset.applies = stubApplies ? '1' : '0';
             stubNotice.hidden = !stubApplies;
         }
+        // FIT-97 AC2: show the photo retention note when this entry was
+        // logged from a photo. The raw image is never persisted (FIT-9),
+        // so the note tells the user the photo isn't retrievable and only
+        // the extracted estimate is kept. Hidden for text-only entries
+        // since there's no photo to talk about.
+        const retentionNote = $('meal-detail-retention-note');
+        const retentionApplies = !!entry.from_image;
+        if (retentionNote) {
+            retentionNote.dataset.applies = retentionApplies ? '1' : '0';
+            retentionNote.hidden = !retentionApplies;
+        }
 
         // FIT-97: wire Delete to the existing DELETE endpoint. On success,
         // remove the row from the inline list, close the modal, and let
@@ -2598,22 +2609,23 @@
         const footView = $('meal-detail-foot-view');
         const footEdit = $('meal-detail-foot-edit');
         const stubNotice = $('meal-detail-stub-notice');
+        const retentionNote = $('meal-detail-retention-note');
         const errBox = $('meal-detail-edit-error');
         const editing = mode === 'edit';
         if (view) view.hidden = editing;
         if (edit) edit.hidden = !editing;
         if (footView) footView.hidden = editing;
         if (footEdit) footEdit.hidden = !editing;
-        // Stub notice hides while editing (keep focus on the form) but
-        // gets restored on the way back to view mode for entries where
-        // it still applies. `data-applies` is set when the modal opens.
-        if (stubNotice) {
-            if (editing) {
-                stubNotice.hidden = true;
-            } else {
-                stubNotice.hidden = stubNotice.dataset.applies !== '1';
-            }
-        }
+        // Notices hide while editing (keep focus on the form) but get
+        // restored on the way back to view mode for entries where they
+        // still apply. `data-applies` is set when the modal opens.
+        const restoreNotice = (el) => {
+            if (!el) return;
+            if (editing) el.hidden = true;
+            else el.hidden = el.dataset.applies !== '1';
+        };
+        restoreNotice(stubNotice);
+        restoreNotice(retentionNote);
         if (errBox) { errBox.hidden = true; errBox.textContent = ''; }
     }
 

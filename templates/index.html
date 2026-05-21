@@ -1105,6 +1105,13 @@
                 <p class="dim" id="meal-detail-stub-notice" hidden>
                     The photo path is currently a stub (FIT-90 — vision pipeline not yet on main). Numbers shown were the canned response, not a real AI read of the photo. Once FIT-90 lands, this detail view will reflect the actual LLM/branded-lookup result.
                 </p>
+                <!-- FIT-97 AC2: photo retention note. Per FIT-9 the raw
+                     image is never persisted; show a "logged with photo"
+                     marker so the user knows the photo isn't retrievable
+                     and only the extracted estimate is kept. -->
+                <p class="dim" id="meal-detail-retention-note" hidden>
+                    Logged with photo. Food photos are discarded after extraction (FIT-9); only the final estimate and safe correction metadata are kept.
+                </p>
 
                 <!-- FIT-100: Correct/edit form. Shown when the user taps Correct
                      in the foot row. Inputs are pre-filled with current values
