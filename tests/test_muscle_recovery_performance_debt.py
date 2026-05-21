@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -24,7 +24,7 @@ def fitness_app(monkeypatch):
     module.app.config.update(LOGIN_DISABLED=False)
 
 
-def _payload(*, reps, recommendation_id="fit104-rec", include_planned_targets=False):
+def _payload(*, reps, recommendation_id="fit104-rec", include_planned_targets=False, fatigue=3):
     exercise = {
         "machine": "Chest Press",
         "muscle_group": "chest",
@@ -49,6 +49,7 @@ def _payload(*, reps, recommendation_id="fit104-rec", include_planned_targets=Fa
         "duration_minutes": 45,
         "exercises": [exercise],
         "recommendation_id": recommendation_id,
+        "fatigue": fatigue,
     }
 
 
@@ -61,6 +62,27 @@ def _recommendation():
                 "target_weight": 100,
                 "target_reps": 10,
                 "target_sets": 3,
+            }
+        ],
+    }
+
+
+def _stored_chest_workout(*, workout_id, completed_at, overall_fatigue):
+    return {
+        "id": workout_id,
+        "date": completed_at.strftime("%Y-%m-%d"),
+        "created_at": completed_at.isoformat(),
+        "overall_fatigue": overall_fatigue,
+        "muscles_trained": [{"muscle": "chest", "sets": 3}],
+        "exercises": [
+            {
+                "machine": "Chest Press",
+                "muscle_group": "chest",
+                "sets": [
+                    {"set_number": 1, "weight_lbs": 100, "reps": 10},
+                    {"set_number": 2, "weight_lbs": 100, "reps": 10},
+                    {"set_number": 3, "weight_lbs": 100, "reps": 10},
+                ],
             }
         ],
     }
@@ -79,8 +101,137 @@ def test_muscle_recovery_stays_at_recent_training_debt_when_reps_completed(fitne
     chest = fatigue["chest"]
     assert chest["readiness"] == 8
     assert chest["recovery_debt"] == 2
+    assert chest["fatigue_debt"] == 0
     assert chest["performance_debt"] == 0
     assert chest["performance_debt_reason"] is None
+
+
+def test_readiness_ignores_unreported_default_fatigue(fitness_app):
+    payload = _payload(reps=[10, 10, 10])
+    payload.pop("fatigue")
+
+    response = fitness_app.app.test_client().post("/api/complete-workout", json=payload)
+    assert response.status_code == 200
+    assert fitness_app.WORKOUTS[-1]["overall_fatigue"] is None
+
+    fatigue = fitness_app.app.test_client().get("/api/muscle-fatigue").get_json()
+    chest = fatigue["chest"]
+    assert chest["readiness"] == 8
+    assert chest["recovery_debt"] == 2
+    assert chest["fatigue_debt"] == 0
+
+
+def test_retry_without_fatigue_accepts_legacy_default_fingerprint(fitness_app):
+    payload = _payload(reps=[10, 10, 10], recommendation_id=None)
+    payload.pop("fatigue")
+
+    legacy_workout = {
+        "id": payload["client_workout_id"],
+        "date": payload["date"],
+        "session_type": payload["session_type"],
+        "duration_minutes": payload["duration_minutes"],
+        "exercises": payload["exercises"],
+        "total_sets": 3,
+        "total_volume": 3000,
+        "overall_fatigue": 5,
+        "notes": "",
+        "cardio": None,
+        "recommendation_id": None,
+        "adherence": {"followed": True, "skipped": [], "modified": [], "added": []},
+    }
+    legacy_workout["offline_sync"] = {
+        "fingerprint": fitness_app._workout_sync_fingerprint(legacy_workout),
+        "sync_attempts": 1,
+    }
+    fitness_app.WORKOUTS.append(legacy_workout)
+
+    response = fitness_app.app.test_client().post("/api/complete-workout", json=payload)
+    assert response.status_code == 200, response.get_data(as_text=True)
+    body = response.get_json()
+    assert body["sync_status"] == "already_synced"
+    assert body["duplicate"] is True
+    assert len(fitness_app.WORKOUTS) == 1
+
+
+def test_readiness_drops_when_recent_workout_overall_fatigue_high(fitness_app):
+    yesterday = datetime.now() - timedelta(days=1)
+    fitness_app.WORKOUTS.append(
+        _stored_chest_workout(
+            workout_id="fit94-heavy-chest",
+            completed_at=yesterday,
+            overall_fatigue=9,
+        )
+    )
+
+    volume = fitness_app.calculate_volume(fitness_app.WORKOUTS, weeks=4)
+    readiness = fitness_app.get_readiness_score(
+        "chest",
+        fitness_app.SORENESS_DATA,
+        volume,
+        fitness_app.CARDIO_DATA,
+        fitness_app.WORKOUTS,
+    )
+
+    assert readiness["score"] <= 5
+    assert readiness["recovery_debt"] == 2
+    assert readiness["fatigue_debt"] == 3
+
+
+def test_readiness_unchanged_when_no_recent_workout(fitness_app):
+    old_day = datetime.now() - timedelta(days=3)
+    fitness_app.WORKOUTS.append(
+        _stored_chest_workout(
+            workout_id="fit94-old-chest",
+            completed_at=old_day,
+            overall_fatigue=9,
+        )
+    )
+
+    volume = fitness_app.calculate_volume(fitness_app.WORKOUTS, weeks=4)
+    readiness = fitness_app.get_readiness_score(
+        "chest",
+        fitness_app.SORENESS_DATA,
+        volume,
+        fitness_app.CARDIO_DATA,
+        fitness_app.WORKOUTS,
+    )
+
+    assert readiness["score"] == 10
+    assert readiness["recovery_debt"] == 0
+    assert readiness["fatigue_debt"] == 0
+
+
+def test_readiness_combines_soreness_and_fatigue_signals(fitness_app):
+    today = datetime.now()
+    fitness_app.SORENESS_DATA.append(
+        {
+            "date": today.strftime("%Y-%m-%d"),
+            "created_at": today.isoformat(),
+            "muscle": "chest",
+            "soreness_level": 2,
+        }
+    )
+    fitness_app.WORKOUTS.append(
+        _stored_chest_workout(
+            workout_id="fit94-sore-fatigued-chest",
+            completed_at=today,
+            overall_fatigue=8,
+        )
+    )
+
+    volume = fitness_app.calculate_volume(fitness_app.WORKOUTS, weeks=4)
+    readiness = fitness_app.get_readiness_score(
+        "chest",
+        fitness_app.SORENESS_DATA,
+        volume,
+        fitness_app.CARDIO_DATA,
+        fitness_app.WORKOUTS,
+    )
+
+    assert readiness["score"] == 3
+    assert readiness["soreness"] == 2
+    assert readiness["recovery_debt"] == 2
+    assert readiness["fatigue_debt"] == 3
 
 
 def test_muscle_recovery_drops_when_recent_planned_reps_were_missed(fitness_app):
