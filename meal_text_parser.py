@@ -141,6 +141,24 @@ _FALLBACK_DEFAULT = dict(
     item_name="Meal", meal_type="snack", calories=400, protein_g=22,
     carbs_g=40, fat_g=15, sodium_mg=560, fiber_g=4,
 )
+_NO_BRANDED_MATCH_NOTE = "Low confidence — no branded match found in Nutritionix, USDA, or Open Food Facts."
+_QUANTITY_WORDS = {
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "dozen",
+    "couple",
+}
+_QUANTITY_RE = re.compile(r"\b(?:\d+(?:\.\d+)?|" + "|".join(sorted(_QUANTITY_WORDS)) + r")\b", re.I)
 
 _FALLBACK_TOKEN_ALIASES = {
     "chipotole": "chipotle",
@@ -368,6 +386,24 @@ def _post_process(estimate: dict, *, source_text: str) -> dict:
     return estimate
 
 
+def _should_parse_private_label_miss(text: str) -> bool:
+    """Let the parser handle quantity-bearing branded misses so it can scale portions."""
+    return bool(_QUANTITY_RE.search(text or ""))
+
+
+def _add_no_branded_match_note(estimate: dict) -> dict:
+    estimate["ambiguous"] = True
+    try:
+        confidence = float(estimate.get("confidence", 0.45))
+    except (TypeError, ValueError):
+        confidence = 0.45
+    estimate["confidence"] = min(confidence, 0.45)
+    notes = estimate.setdefault("uncertainty_notes", [])
+    if _NO_BRANDED_MATCH_NOTE not in notes:
+        estimate["uncertainty_notes"] = [_NO_BRANDED_MATCH_NOTE, *notes]
+    return estimate
+
+
 def parse_meal_text(
     text: str,
     *,
@@ -419,15 +455,26 @@ def parse_meal_text(
 
     try:
         branded_estimate = None
-        if branded_food_lookup.should_attempt_direct_lookup(cleaned):
+        branded_lookup_attempted = branded_food_lookup.should_attempt_direct_lookup(cleaned)
+        private_label_lookup = branded_food_lookup.is_private_label_query(cleaned)
+        if branded_lookup_attempted:
             branded_estimate = branded_food_lookup.lookup(cleaned, user_id=user_id)
     except Exception:
         branded_estimate = None
+        branded_lookup_attempted = False
+        private_label_lookup = False
     if branded_estimate:
         branded_estimate = _post_process(branded_estimate, source_text=cleaned)
         return {
             "estimate": branded_estimate,
             "fallback_used": False,
+        }
+    private_label_miss = branded_lookup_attempted and private_label_lookup
+    if private_label_miss and not _should_parse_private_label_miss(cleaned):
+        estimate = _add_no_branded_match_note(_fallback_estimate(cleaned))
+        return {
+            "estimate": estimate,
+            "fallback_used": True,
         }
 
     payload = {
@@ -446,8 +493,11 @@ def parse_meal_text(
     timeout = LM_STUDIO_ANALYZE_TIMEOUT_SEC
     acquired = _INFERENCE_LOCK.acquire(timeout=timeout + 1)
     if not acquired:
+        estimate = _fallback_estimate(cleaned)
+        if private_label_miss:
+            estimate = _add_no_branded_match_note(estimate)
         return {
-            "estimate": _fallback_estimate(cleaned),
+            "estimate": estimate,
             "fallback_used": True,
         }
     try:
@@ -460,8 +510,11 @@ def parse_meal_text(
                 clean=_clean_estimate,
             )
         except LmStudioError:
+            estimate = _fallback_estimate(cleaned)
+            if private_label_miss:
+                estimate = _add_no_branded_match_note(estimate)
             return {
-                "estimate": _fallback_estimate(cleaned),
+                "estimate": estimate,
                 "fallback_used": True,
             }
     finally:
@@ -469,6 +522,8 @@ def parse_meal_text(
 
     parsed.pop("_meta", None)
     estimate = _post_process(parsed, source_text=cleaned)
+    if private_label_miss:
+        estimate = _add_no_branded_match_note(estimate)
     # Parser-controlled provenance: re-applied after the model output is
     # accepted so the model can't lie about which path produced the estimate.
     estimate["source"] = "ai_text_estimate"
