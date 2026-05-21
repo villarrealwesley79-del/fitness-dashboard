@@ -113,16 +113,36 @@
         if (!host) return null;
         const el = document.createElement('div');
         el.className = 'toast toast-undo';
-        const text = document.createElement('span');
-        text.className = 'toast-undo-text';
-        text.textContent = msg;
+
+        // FIT-124: Inspect surface is a real <button> when tappable, a
+        // passive <span> otherwise. Both share .toast-undo-text styling
+        // so the pill looks identical across the two modes. Using a real
+        // <button> avoids nesting <button> inside a role=button container
+        // (PR #109's shape — flagged in Codex audit) and gives us native
+        // Enter / Space handling for free.
+        const tappable = typeof onTap === 'function';
+        let inspectEl;
+        if (tappable) {
+            inspectEl = document.createElement('button');
+            inspectEl.type = 'button';
+            inspectEl.className = 'toast-undo-text toast-undo-inspect';
+            inspectEl.setAttribute('aria-label', `${msg}. Tap to inspect.`);
+            el.classList.add('toast-undo--tap');
+        } else {
+            inspectEl = document.createElement('span');
+            inspectEl.className = 'toast-undo-text';
+        }
+        inspectEl.textContent = msg;
+
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'toast-undo-btn';
         btn.textContent = 'Undo';
-        el.appendChild(text);
+
+        el.appendChild(inspectEl);
         el.appendChild(btn);
         host.appendChild(el);
+
         let dismissed = false;
         const dismiss = () => {
             if (dismissed) return;
@@ -131,40 +151,23 @@
             clearTimeout(timer);
         };
         const timer = setTimeout(dismiss, durationMs);
-        btn.addEventListener('click', (ev) => {
-            // FIT-97 AC1: when the whole chip is tappable, stop the Undo
-            // click from bubbling to the container's tap handler.
-            ev.stopPropagation();
+
+        btn.addEventListener('click', () => {
             dismiss();
             try { onUndo && onUndo(); } catch (e) { console.error(e); }
         });
-        // FIT-97 AC1: when a tap-target callback is provided, the entire
-        // chip (except the Undo button, whose click stops propagation
-        // above) opens the detail view. Putting the role/click on the
-        // container — not the inner text span — means the pill's padding
-        // and the gap between text and Undo also fire the inspect, per
-        // the AC ("entire chip except the Undo button").
-        if (typeof onTap === 'function') {
-            el.classList.add('toast-undo--tap');
-            el.setAttribute('role', 'button');
-            el.setAttribute('tabindex', '0');
-            el.setAttribute('aria-label', `${msg}. Tap to inspect.`);
+
+        if (tappable) {
             const fire = () => {
                 dismiss();
                 try { onTap(); } catch (e) { console.error(e); }
             };
-            el.addEventListener('click', fire);
-            el.addEventListener('keydown', (ev) => {
-                // Only fire when focus is on the chip itself — pressing
-                // Enter / Space while the Undo button is focused must run
-                // Undo, not Inspect. (The button's click is synthesized
-                // by the browser and stopPropagated above, but the raw
-                // keydown still bubbles, so filter by target.)
-                if (ev.target !== el) return;
-                if (ev.key === 'Enter' || ev.key === ' ') {
-                    ev.preventDefault();
-                    fire();
-                }
+            inspectEl.addEventListener('click', fire);
+            // FIT-124: container click delegate covers the pill's padding
+            // and the gap between Inspect and Undo. Filter by target so a
+            // bubbled click from either child button never double-fires.
+            el.addEventListener('click', (ev) => {
+                if (ev.target === el) fire();
             });
         }
         return dismiss;
