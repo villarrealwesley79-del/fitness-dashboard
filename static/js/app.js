@@ -6205,10 +6205,10 @@
             <div class="meal-pending-portion" role="group" aria-label="Portion multiplier">
                 <span class="meal-pending-portion-label">Portion</span>
                 <div class="meal-pending-portion-chips">
-                    <button type="button" class="meal-pending-portion-chip" data-factor="0.5">½×</button>
-                    <button type="button" class="meal-pending-portion-chip" data-factor="1">1×</button>
-                    <button type="button" class="meal-pending-portion-chip" data-factor="1.5">1.5×</button>
-                    <button type="button" class="meal-pending-portion-chip" data-factor="2">2×</button>
+                    <button type="button" class="meal-pending-portion-chip" data-factor="0.5" aria-pressed="false">½×</button>
+                    <button type="button" class="meal-pending-portion-chip" data-factor="1" aria-pressed="false">1×</button>
+                    <button type="button" class="meal-pending-portion-chip" data-factor="1.5" aria-pressed="false">1.5×</button>
+                    <button type="button" class="meal-pending-portion-chip" data-factor="2" aria-pressed="false">2×</button>
                 </div>
             </div>
             <div class="meal-pending-fields">
@@ -6293,6 +6293,12 @@
         const PORTION_FLOAT_FIELDS = ['protein_g', 'carbs_g', 'fat_g'];
         row.querySelectorAll('.meal-pending-portion-chip').forEach((chip) => {
             chip.addEventListener('click', () => {
+                // Honor the row-level lock that setMealPendingRowLocked()
+                // applies while a Retry request is in flight — same guard
+                // pattern as acceptMealPending(). Without this the chips
+                // would let the user mutate the displayed macros while
+                // the retry response is replacing the row.
+                if (row.classList.contains('meal-pending-row--locked')) return;
                 const factor = Number(chip.getAttribute('data-factor'));
                 if (!Number.isFinite(factor) || factor <= 0) return;
                 PORTION_INT_FIELDS.forEach((field) => {
@@ -6316,7 +6322,9 @@
                 // the original_estimate audit trail captured at /accept.
                 // The user can adjust fiber explicitly in the Correct flow.
                 row.querySelectorAll('.meal-pending-portion-chip').forEach((c) => {
-                    c.classList.toggle('is-active', c === chip);
+                    const active = c === chip;
+                    c.classList.toggle('is-active', active);
+                    c.setAttribute('aria-pressed', active ? 'true' : 'false');
                 });
             });
         });
@@ -6341,7 +6349,10 @@
                 const current = Number(input.value);
                 return Number.isFinite(current) && current === expected;
             });
-            if (!stillMatches) active.classList.remove('is-active');
+            if (!stillMatches) {
+                active.classList.remove('is-active');
+                active.setAttribute('aria-pressed', 'false');
+            }
         };
         row.querySelectorAll('input[data-field]').forEach((input) => {
             input.addEventListener('input', recomputeActivePortionChip);
