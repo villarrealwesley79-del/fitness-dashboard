@@ -680,26 +680,28 @@
 
     function formatAppleChip(apple, ago) {
         if (!apple || apple.status === 'unknown' || apple.status == null) {
-            return { cls: 'unknown', label: 'Apple · —' };
+            return { cls: 'unknown', label: 'Apple · —', title: 'Apple Health freshness' };
         }
         if (apple.status === 'missing') {
-            return { cls: 'stale', label: 'Apple · no data' };
+            return { cls: 'stale', label: 'Apple · no data', title: 'Apple Health freshness · no data received' };
         }
-        // Render both signals when distinct: backend last_sync_attempt vs latest data point.
+        // FIT-113: collapse the two-signal label into a single short chip so it
+        // stays on one line at 390/375 widths. The dual-signal detail
+        // (sync attempt vs data point — useful when sync just ran but the
+        // watch isn't writing) moves to the chip's `title` attribute so
+        // users can hover / long-press for the full story without
+        // crowding the reco card.
         const syncedAgo = ago(apple.last_sync_attempt);
         const dataAgo = ago(apple.last_data_point);
-        let label;
-        if (syncedAgo && dataAgo && syncedAgo !== dataAgo) {
-            label = 'Apple · synced ' + syncedAgo + ' · data ' + dataAgo;
-        } else if (dataAgo) {
-            label = 'Apple · ' + dataAgo;
-        } else {
-            label = 'Apple · —';
-        }
-        if (apple.status === 'fresh')  return { cls: 'ok',    label };
-        if (apple.status === 'aging')  return { cls: 'warn',  label };
-        if (apple.status === 'stale')  return { cls: 'stale', label };
-        return { cls: 'unknown', label };
+        const primary = dataAgo || syncedAgo;
+        const label = primary ? 'Apple · ' + primary : 'Apple · —';
+        const title = (syncedAgo && dataAgo && syncedAgo !== dataAgo)
+            ? `Apple Health · synced ${syncedAgo} · data ${dataAgo}`
+            : 'Apple Health freshness';
+        if (apple.status === 'fresh')  return { cls: 'ok',    label, title };
+        if (apple.status === 'aging')  return { cls: 'warn',  label, title };
+        if (apple.status === 'stale')  return { cls: 'stale', label, title };
+        return { cls: 'unknown', label, title };
     }
 
     const DASHBOARD_FRESHNESS_SLOTS = [
@@ -719,10 +721,15 @@
             const el = $(slot.id);
             if (!el) return;
             const node = freshness ? freshness[slot.key] : null;
-            const { cls, label } = slot.render(node, ago);
+            const { cls, label, title } = slot.render(node, ago);
             el.classList.remove('ok', 'warn', 'stale', 'unknown');
             el.classList.add(cls);
             el.textContent = label;
+            // FIT-113: formatters can return an optional `title` to push
+            // long-form detail into the chip's tooltip instead of the
+            // visible label. Existing `title` is preserved when the
+            // formatter omits one (e.g. Oura, Food still return {cls,label}).
+            if (typeof title === 'string') el.setAttribute('title', title);
         });
     }
 
@@ -3920,6 +3927,22 @@
         const days = Math.floor(ageHours / 24);
         return `${days}d ago`;
     }
+
+    // FIT-113: wrap _fmtAgo for ISO-string inputs and expose via the
+    // __dashHelpers.ago contract that renderFreshnessChips has always
+    // expected but never had wired. Date-only strings (YYYY-MM-DD) get
+    // a local-midnight parse so "today" doesn't mislabel as "1d ago"
+    // in negative-offset timezones (matches the FIT-115 renderHistory
+    // pattern).
+    function _agoFromIso(isoStr) {
+        if (!isoStr) return null;
+        const s = String(isoStr);
+        const d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(s + 'T00:00:00') : new Date(s);
+        if (isNaN(d.getTime())) return null;
+        return _fmtAgo(d);
+    }
+    window.__dashHelpers = window.__dashHelpers || {};
+    window.__dashHelpers.ago = _agoFromIso;
 
     function _setDetail(id, text) {
         const el = $(id);
