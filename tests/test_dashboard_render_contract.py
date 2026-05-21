@@ -28,7 +28,13 @@ def test_render_dashboard_preserves_fit125_repaint_chains():
 
 def test_readiness_gauge_paint_is_guarded_on_missing_data():
     """FIT-127 AC: the readiness gauge must NOT paint a 0%/"Low" reading when
-    neither oura.readiness nor dash.recomp_command.readiness is hydrated."""
+    neither oura.readiness nor dash.recomp_command.readiness is hydrated.
+
+    Also (P1 follow-up): when readiness is null AFTER a prior paint (e.g.
+    invalidateCaches() + slow/failed refetch), the SVG must be cleared so the
+    prior session's ring/value doesn't linger as stale guidance — gaugeChart
+    is the only writer to #readiness-gauge-svg.
+    """
     body = _paint_body()
     assert "gaugeChart($('readiness-gauge-svg')" in body, "gauge call missing"
 
@@ -46,10 +52,23 @@ def test_readiness_gauge_paint_is_guarded_on_missing_data():
         "use null sentinels per readiness source and gate the paint"
     )
 
+    # Clear-on-null else branch must reset the gauge container so a prior
+    # session's ring doesn't linger after invalidate + slow/failed refetch.
+    assert "gaugeEl.innerHTML = ''" in body, (
+        "readiness gauge must clear #readiness-gauge-svg to empty when "
+        "readiness is null — gaugeChart is the only other writer to the "
+        "container, so skipping leaves stale SVG on screen"
+    )
+
 
 def test_reco_title_assignment_is_guarded():
     """FIT-127 AC: the reco-title textContent must NOT receive the literal
-    "Rest Day" fallback when neither reco nor dash.next_workout is hydrated."""
+    "Rest Day" fallback when neither reco nor dash.next_workout is hydrated.
+
+    Also (P1 follow-up): when recoTitle resolves to null AFTER a prior paint,
+    the chip must reset to the '—' HTML placeholder so a prior session's
+    title doesn't linger after invalidate + slow/failed refetch.
+    """
     body = _paint_body()
 
     # The literal "Rest Day" must no longer terminate the recoTitle fallback
@@ -60,15 +79,26 @@ def test_reco_title_assignment_is_guarded():
     )
 
     # And the textContent assignment must be guarded on a truthy recoTitle.
-    assert "if (recoTitle && $('reco-title'))" in body, (
-        "reco-title assignment must be wrapped in a truthy guard so the "
+    assert "if (recoTitle) {" in body, (
+        "reco-title assignment must be wrapped in `if (recoTitle)` so the "
         "HTML placeholder is preserved when recoTitle resolves to null"
+    )
+
+    # Clear-on-null else branch must reset the chip to the '—' HTML placeholder.
+    assert "$('reco-title').textContent = '—';" in body, (
+        "reco-title must reset to '—' HTML placeholder when recoTitle is "
+        "null — skipping would leave a prior session's title on screen"
     )
 
 
 def test_reco_intensity_assignment_is_guarded():
     """FIT-127 AC: the reco-intensity chip must NOT receive the literal
-    "Moderate" fallback when reco.recommendation is absent."""
+    "Moderate" fallback when reco.recommendation is absent.
+
+    Also (P1 follow-up): when neither focus nor reco.recommendation is
+    available AFTER a prior paint, the chip must reset to the '—' HTML
+    placeholder.
+    """
     body = _paint_body()
 
     # The `: 'Moderate'` ternary fallback must be gone.
@@ -83,11 +113,23 @@ def test_reco_intensity_assignment_is_guarded():
         "replaced with a truthy guard around the assignment"
     )
 
+    # Clear-on-null else branch must reset the chip to '—' HTML placeholder.
+    assert "$('reco-intensity').textContent = '—';" in body, (
+        "reco-intensity must reset to '—' HTML placeholder when intensityText "
+        "is empty — skipping would leave a prior session's chip on screen"
+    )
+
 
 def test_reco_why_assignment_is_guarded():
     """FIT-127 AC: the reco-why textContent must NOT receive the canned
     'Based on your readiness, sleep, and training load.' fallback when there's
-    no reco.reasoning AND no wearable-stale/missing signal."""
+    no reco.reasoning AND no wearable-stale/missing signal.
+
+    Also (P1 follow-up): when whyText resolves to null AFTER a prior paint,
+    the textContent must reset to the 'Analyzing your readiness…' HTML
+    placeholder AND the .lower-confidence class must be cleared so a prior
+    session's reasoning doesn't linger.
+    """
     body = _paint_body()
 
     # The canned fallback must NOT be unconditionally assigned. It can still
@@ -105,11 +147,28 @@ def test_reco_why_assignment_is_guarded():
         "so it skips painting when there's no real reasoning to show"
     )
 
+    # Clear-on-null else branch must reset the textContent to the HTML
+    # placeholder AND clear the lower-confidence class.
+    assert "whyEl.textContent = 'Analyzing your readiness, sleep, and training load…';" in body, (
+        "reco-why must reset to the 'Analyzing your readiness…' HTML "
+        "placeholder when whyText is null — skipping would leave a prior "
+        "session's reasoning on screen"
+    )
+    assert "whyEl.classList.remove('lower-confidence');" in body, (
+        "reco-why must clear the .lower-confidence class when resetting to "
+        "the placeholder so a prior session's degraded styling doesn't linger"
+    )
+
 
 def test_reco_confidence_pct_assignment_is_guarded():
     """FIT-127 AC: the reco-confidence-pct chip must NOT receive the legacy
     '45%' worst-bucket fallback when readiness is null (cold open). The HTML
-    placeholder is '--%' (templates/index.html:65)."""
+    placeholder is '--%' (templates/index.html:65).
+
+    Also (P1 follow-up): when confLabel resolves to null AFTER a prior paint,
+    the chip must reset to the '--%' HTML placeholder so a prior session's
+    confidence value doesn't linger.
+    """
     body = _paint_body()
 
     # The legacy readiness-based ladder must be gated on `readiness != null`
@@ -120,16 +179,28 @@ def test_reco_confidence_pct_assignment_is_guarded():
     )
 
     # The textContent assignment must be wrapped in a truthy guard on confLabel.
-    assert "if (confLabel && $('reco-confidence-pct'))" in body, (
-        "reco-confidence-pct assignment must be wrapped in a truthy guard so "
-        "the '--%' HTML placeholder is preserved when confLabel is null"
+    assert "if (confLabel) {" in body, (
+        "reco-confidence-pct assignment must be wrapped in `if (confLabel)` "
+        "so the '--%' HTML placeholder is preserved when confLabel is null"
+    )
+
+    # Clear-on-null else branch must reset the chip to '--%' HTML placeholder.
+    assert "$('reco-confidence-pct').textContent = '--%';" in body, (
+        "reco-confidence-pct must reset to '--%' HTML placeholder when "
+        "confLabel is null — skipping would leave a prior session's % on screen"
     )
 
 
 def test_insight_card_paint_is_guarded_on_missing_reco():
     """FIT-127 AC: the insight card must NOT receive the canned 'Recovery is
     on track' / 'Keep your sleep consistent…' text when reco hasn't resolved.
-    The HTML placeholder is 'Gathering data…' (templates/index.html:193)."""
+    The HTML placeholder is 'Gathering data…' (templates/index.html:193).
+
+    Also (P1 follow-up): when state.reco is null AFTER a prior paint (e.g.
+    the getReco catch path or a post-invalidate refetch that's slow/fails),
+    the title must reset to 'Gathering data…' and the body must clear, so a
+    prior session's insight doesn't linger as stale guidance.
+    """
     body = _paint_body()
 
     assert "// Insight card" in body, "insight card section comment missing"
@@ -167,4 +238,16 @@ def test_insight_card_paint_is_guarded_on_missing_reco():
     assert canned_body_idx == -1 or canned_body_idx > guard_idx, (
         "literal 'Keep your sleep consistent…' must sit inside the "
         "`if (reco)` guard"
+    )
+
+    # Clear-on-null else branch must reset title to 'Gathering data…' and
+    # clear body so a prior session's insight doesn't linger.
+    assert "$('insight-title').textContent = 'Gathering data…';" in insight_section, (
+        "insight-title must reset to 'Gathering data…' HTML placeholder when "
+        "reco is null — skipping would leave a prior session's insight title "
+        "on screen as stale guidance"
+    )
+    assert "$('insight-body').textContent = '';" in insight_section, (
+        "insight-body must clear to empty when reco is null — skipping would "
+        "leave a prior session's reasoning visible"
     )
