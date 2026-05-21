@@ -640,61 +640,54 @@
         el.textContent = label;
     }
 
-    function renderSettingsGroupSummaries(freshness) {
-        // Data sources: count fresh vs stale across the SETTINGS_FRESHNESS_SLOTS
-        // formatters so the group chip stays in lockstep with the per-row chips.
-        const ago = (window.__dashHelpers && window.__dashHelpers.ago) || function (s) { return s || ''; };
-        let fresh = 0, stale = 0, unknown = 0;
+    function _readChipState(chip) {
+        if (!chip) return { cls: 'unknown', text: '' };
+        const cls = ['ok', 'warn', 'stale', 'unknown'].find((c) => chip.classList.contains(c)) || 'unknown';
+        const text = (chip.textContent || '').trim();
+        return { cls, text: text === '—' ? '' : text };
+    }
+
+    // FIT-111: derive every group chip from the LIVE inner-chip state in
+    // the DOM. No `freshness` parameter — that way the same helper stays
+    // accurate after async renderers (renderAiCoachHealth /
+    // renderPushSection / enablePush / disablePush / sendPushTest)
+    // update the inner chips. Each of those callers calls this at the
+    // tail of their work; safe to call any time after the initial
+    // settings render.
+    function renderSettingsGroupSummaries() {
+        // Data sources: count fresh vs stale by inspecting the live
+        // SETTINGS_FRESHNESS_SLOTS chips (already populated by
+        // renderFreshnessChips, which runs before this helper).
+        let fresh = 0, stale = 0;
         SETTINGS_FRESHNESS_SLOTS.forEach((slot) => {
-            const node = freshness ? freshness[slot.key] : null;
-            const cls = (slot.render(node, ago) || {}).cls;
-            if (cls === 'ok') fresh++;
-            else if (cls === 'warn' || cls === 'stale') stale++;
-            else unknown++;
+            const chip = $(slot.id);
+            if (!chip) return;
+            if (chip.classList.contains('ok')) fresh++;
+            else if (chip.classList.contains('warn') || chip.classList.contains('stale')) stale++;
         });
-        const total = fresh + stale + unknown;
-        const dsCls = stale ? 'warn' : (fresh ? 'ok' : 'unknown');
-        const dsLabel = total ? `${fresh} fresh · ${stale} stale` : '—';
-        applyGroupChip($('settings-group-summary-data-sources'), dsCls, dsLabel);
+        const total = fresh + stale;
+        applyGroupChip($('settings-group-summary-data-sources'),
+            stale ? 'warn' : (fresh ? 'ok' : 'unknown'),
+            total ? `${fresh} fresh · ${stale} stale` : '—');
 
-        // Notifications: mirror the push-state-chip's classes + label so the
-        // group glance matches what the user sees inside the card.
-        const pushChip = $('push-state-chip');
-        if (pushChip) {
-            const pushCls = ['ok', 'warn', 'stale', 'unknown'].find((c) => pushChip.classList.contains(c)) || 'unknown';
-            const txt = pushChip.textContent && pushChip.textContent.trim();
-            applyGroupChip($('settings-group-summary-notifications'),
-                pushCls,
-                txt && txt !== '—' ? txt : 'Not configured');
-        } else {
-            applyGroupChip($('settings-group-summary-notifications'), 'unknown', '—');
-        }
+        // Notifications: mirror the push-state-chip exactly.
+        const push = _readChipState($('push-state-chip'));
+        applyGroupChip($('settings-group-summary-notifications'),
+            push.cls,
+            push.text || 'Not configured');
 
-        // Coaching setup: mirror the AI primary chip — that's the only one
-        // of the three coaching cards that has a live freshness signal.
-        const aiChip = $('ai-primary-state');
-        if (aiChip) {
-            const aiCls = ['ok', 'warn', 'stale', 'unknown'].find((c) => aiChip.classList.contains(c)) || 'unknown';
-            const txt = aiChip.textContent && aiChip.textContent.trim();
-            applyGroupChip($('settings-group-summary-coaching'),
-                aiCls,
-                txt && txt !== '—' ? `AI ${txt.toLowerCase()}` : 'Configured');
-        } else {
-            applyGroupChip($('settings-group-summary-coaching'), 'ok', 'Configured');
-        }
+        // Coaching setup: mirror the AI primary chip (the only one with
+        // a live freshness signal in this group).
+        const ai = _readChipState($('ai-primary-state'));
+        applyGroupChip($('settings-group-summary-coaching'),
+            ai.cls,
+            ai.text ? `AI ${ai.text.toLowerCase()}` : 'Configured');
 
-        // Maintenance: surface last-backup state. The chip below it is
-        // populated by renderLastBackup elsewhere; mirror it.
-        const backupChip = $('last-backup');
-        if (backupChip) {
-            const bCls = ['ok', 'warn', 'stale', 'unknown'].find((c) => backupChip.classList.contains(c)) || 'unknown';
-            const txt = backupChip.textContent && backupChip.textContent.trim();
-            applyGroupChip($('settings-group-summary-maintenance'),
-                bCls,
-                txt && txt !== '—' ? `Backup ${txt}` : 'No recent backup');
-        } else {
-            applyGroupChip($('settings-group-summary-maintenance'), 'unknown', '—');
-        }
+        // Maintenance: mirror the last-backup chip.
+        const backup = _readChipState($('last-backup'));
+        applyGroupChip($('settings-group-summary-maintenance'),
+            backup.cls,
+            backup.text ? `Backup ${backup.text}` : 'No recent backup');
     }
 
     function buildFoodGuidanceLine(food) {
@@ -3112,9 +3105,11 @@
         renderFreshnessChips(freshness, SETTINGS_FRESHNESS_SLOTS);
         renderOuraFreshnessDetail(oura, ouraFreshness);
         // FIT-111: populate the four settings group header chips so the
-        // user gets a glance-level signal per section. Derived from the
-        // same freshness payload + existing chip state — no new endpoints.
-        renderSettingsGroupSummaries(freshness);
+        // user gets a glance-level signal per section. Reads live chip
+        // state from the DOM, so renderAiCoachHealth + renderPushSection
+        // also call it after their async updates to keep the headers in
+        // lockstep.
+        renderSettingsGroupSummaries();
 
         // Apple Health — prefer the real sync-status endpoint over
         // the file-existence probe, and only claim "connected" when a
@@ -3339,6 +3334,9 @@
             // fails after a previous refresh exposed a high fallback rate.
             if (warnRow) warnRow.hidden = true;
         }
+        // FIT-111 (Codex audit): re-derive the settings group chips
+        // after the inner AI chips finish updating asynchronously.
+        renderSettingsGroupSummaries();
     }
 
     // ── FIT-40/FIT-92: Web Push permission flow + test delivery ───
@@ -3504,6 +3502,11 @@
         _pushApplyDot(state.name);
         _wirePushButtons();
         _pushRenderAlerts();
+        // FIT-111 (Codex audit): re-derive the settings group chips
+        // after the push chip finishes updating asynchronously. Also
+        // catches enablePush / disablePush / sendPushTest which all
+        // await renderPushSection on their state changes.
+        renderSettingsGroupSummaries();
     }
 
     function _wirePushButtons() {
