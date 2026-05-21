@@ -131,25 +131,36 @@
             clearTimeout(timer);
         };
         const timer = setTimeout(dismiss, durationMs);
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', (ev) => {
+            // FIT-97 AC1: when the whole chip is tappable, stop the Undo
+            // click from bubbling to the container's tap handler.
+            ev.stopPropagation();
             dismiss();
             try { onUndo && onUndo(); } catch (e) { console.error(e); }
         });
-        // FIT-97 AC1: when a tap-target callback is provided, the chip text
-        // becomes a button-like surface that opens the detail view. The
-        // Undo button keeps its existing behavior — its own click handler
-        // wins, and pointer-events on the text don't bubble through it.
+        // FIT-97 AC1: when a tap-target callback is provided, the entire
+        // chip (except the Undo button, whose click stops propagation
+        // above) opens the detail view. Putting the role/click on the
+        // container — not the inner text span — means the pill's padding
+        // and the gap between text and Undo also fire the inspect, per
+        // the AC ("entire chip except the Undo button").
         if (typeof onTap === 'function') {
-            text.classList.add('toast-undo-text--tap');
-            text.setAttribute('role', 'button');
-            text.setAttribute('tabindex', '0');
-            text.setAttribute('aria-label', `${msg}. Tap to inspect.`);
+            el.classList.add('toast-undo--tap');
+            el.setAttribute('role', 'button');
+            el.setAttribute('tabindex', '0');
+            el.setAttribute('aria-label', `${msg}. Tap to inspect.`);
             const fire = () => {
                 dismiss();
                 try { onTap(); } catch (e) { console.error(e); }
             };
-            text.addEventListener('click', fire);
-            text.addEventListener('keydown', (ev) => {
+            el.addEventListener('click', fire);
+            el.addEventListener('keydown', (ev) => {
+                // Only fire when focus is on the chip itself — pressing
+                // Enter / Space while the Undo button is focused must run
+                // Undo, not Inspect. (The button's click is synthesized
+                // by the browser and stopPropagated above, but the raw
+                // keydown still bubbles, so filter by target.)
+                if (ev.target !== el) return;
                 if (ev.key === 'Enter' || ev.key === ' ') {
                     ev.preventDefault();
                     fire();
