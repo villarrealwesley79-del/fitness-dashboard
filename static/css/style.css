@@ -1419,6 +1419,49 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 .state-chip.stale { color: #f87171; background: rgba(248,113,113,0.1); border-color: rgba(248,113,113,0.35); }
 .state-chip.unknown { color: var(--fg-dimmer); background: rgba(51,65,85,0.25); border-color: var(--border-2); font-style: italic; }
 
+/* FIT-111: smaller chip variant used in settings group headers
+   (e.g. "2 fresh · 0 stale"). Keeps the same color tokens as the
+   full-size chip but fits beside group labels. */
+.state-chip.state-chip-sm {
+    font-size: 11px;
+    padding: 2px 8px;
+    font-weight: 600;
+}
+
+/* FIT-111: settings tab grouped into four scannable sections. Each
+   group has a sticky-style header with the label + a small status chip
+   derived from existing freshness / state-chip data. Cards inside the
+   group remain unchanged (preserving all element IDs). */
+.settings-group {
+    margin-bottom: 22px;
+}
+.settings-group:last-of-type { margin-bottom: 6px; }
+.settings-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 4px 10px;
+    border-bottom: 1px solid var(--border-2);
+    margin-bottom: 12px;
+}
+.settings-group-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+}
+.settings-subtitle {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--fg-dimmer);
+    text-transform: uppercase;
+    margin: 14px 4px 6px;
+}
+.settings-group > .settings-subtitle:first-of-type { margin-top: 4px; }
+
 .int-dot { width: 9px; height: 9px; border-radius: 999px; background: var(--fg-dimmer); display: inline-block; }
 .int-dot-on { background: var(--accent-green); box-shadow: 0 0 8px rgba(34,197,94,0.5); }
 

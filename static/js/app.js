@@ -726,6 +726,68 @@
         });
     }
 
+    // FIT-111: populate the four Settings group header chips. Reads the
+    // same freshness block the integration chips use + the existing
+    // notification / coach state chips. No new endpoints; pure DOM
+    // derivation from data already on the page after renderFreshnessChips
+    // has run. Safe to call even if some chips are missing.
+    function applyGroupChip(el, cls, label) {
+        if (!el) return;
+        el.classList.remove('ok', 'warn', 'stale', 'unknown');
+        el.classList.add(cls || 'unknown');
+        el.textContent = label;
+    }
+
+    function _readChipState(chip) {
+        if (!chip) return { cls: 'unknown', text: '' };
+        const cls = ['ok', 'warn', 'stale', 'unknown'].find((c) => chip.classList.contains(c)) || 'unknown';
+        const text = (chip.textContent || '').trim();
+        return { cls, text: text === '—' ? '' : text };
+    }
+
+    // FIT-111: derive every group chip from the LIVE inner-chip state in
+    // the DOM. No `freshness` parameter — that way the same helper stays
+    // accurate after async renderers (renderAiCoachHealth /
+    // renderPushSection / enablePush / disablePush / sendPushTest)
+    // update the inner chips. Each of those callers calls this at the
+    // tail of their work; safe to call any time after the initial
+    // settings render.
+    function renderSettingsGroupSummaries() {
+        // Data sources: count fresh vs stale by inspecting the live
+        // SETTINGS_FRESHNESS_SLOTS chips (already populated by
+        // renderFreshnessChips, which runs before this helper).
+        let fresh = 0, stale = 0;
+        SETTINGS_FRESHNESS_SLOTS.forEach((slot) => {
+            const chip = $(slot.id);
+            if (!chip) return;
+            if (chip.classList.contains('ok')) fresh++;
+            else if (chip.classList.contains('warn') || chip.classList.contains('stale')) stale++;
+        });
+        const total = fresh + stale;
+        applyGroupChip($('settings-group-summary-data-sources'),
+            stale ? 'warn' : (fresh ? 'ok' : 'unknown'),
+            total ? `${fresh} fresh · ${stale} stale` : '—');
+
+        // Notifications: mirror the push-state-chip exactly.
+        const push = _readChipState($('push-state-chip'));
+        applyGroupChip($('settings-group-summary-notifications'),
+            push.cls,
+            push.text || 'Not configured');
+
+        // Coaching setup: mirror the AI primary chip (the only one with
+        // a live freshness signal in this group).
+        const ai = _readChipState($('ai-primary-state'));
+        applyGroupChip($('settings-group-summary-coaching'),
+            ai.cls,
+            ai.text ? `AI ${ai.text.toLowerCase()}` : 'Configured');
+
+        // Maintenance: mirror the last-backup chip.
+        const backup = _readChipState($('last-backup'));
+        applyGroupChip($('settings-group-summary-maintenance'),
+            backup.cls,
+            backup.text ? `Backup ${backup.text}` : 'No recent backup');
+    }
+
     function buildFoodGuidanceLine(food) {
         // Returns a sentence explaining whether today's food changed/should change
         // the remaining-day guidance. Always render something (per FIT-1 acceptance
@@ -3155,6 +3217,12 @@
         // chip carry the richer cached/live + sync nuance.
         renderFreshnessChips(freshness, SETTINGS_FRESHNESS_SLOTS);
         renderOuraFreshnessDetail(oura, ouraFreshness);
+        // FIT-111: populate the four settings group header chips so the
+        // user gets a glance-level signal per section. Reads live chip
+        // state from the DOM, so renderAiCoachHealth + renderPushSection
+        // also call it after their async updates to keep the headers in
+        // lockstep.
+        renderSettingsGroupSummaries();
 
         // Apple Health — prefer the real sync-status endpoint over
         // the file-existence probe, and only claim "connected" when a
@@ -3379,6 +3447,9 @@
             // fails after a previous refresh exposed a high fallback rate.
             if (warnRow) warnRow.hidden = true;
         }
+        // FIT-111 (Codex audit): re-derive the settings group chips
+        // after the inner AI chips finish updating asynchronously.
+        renderSettingsGroupSummaries();
     }
 
     // ── FIT-40/FIT-92: Web Push permission flow + test delivery ───
@@ -3544,6 +3615,11 @@
         _pushApplyDot(state.name);
         _wirePushButtons();
         _pushRenderAlerts();
+        // FIT-111 (Codex audit): re-derive the settings group chips
+        // after the push chip finishes updating asynchronously. Also
+        // catches enablePush / disablePush / sendPushTest which all
+        // await renderPushSection on their state changes.
+        renderSettingsGroupSummaries();
     }
 
     function _wirePushButtons() {
