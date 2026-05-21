@@ -6202,6 +6202,15 @@
             ${mealEstimateProvenanceHtml(est)}
             ${reasonChips ? `<div class="meal-pending-policy-reasons" aria-label="Why this needs review">${reasonChips}</div>` : ''}
             <div class="meal-pending-hint">Tap any value to edit before accepting.</div>
+            <div class="meal-pending-portion" role="group" aria-label="Portion multiplier">
+                <span class="meal-pending-portion-label">Portion</span>
+                <div class="meal-pending-portion-chips">
+                    <button type="button" class="meal-pending-portion-chip" data-factor="0.5" aria-pressed="false">½×</button>
+                    <button type="button" class="meal-pending-portion-chip" data-factor="1" aria-pressed="false">1×</button>
+                    <button type="button" class="meal-pending-portion-chip" data-factor="1.5" aria-pressed="false">1.5×</button>
+                    <button type="button" class="meal-pending-portion-chip" data-factor="2" aria-pressed="false">2×</button>
+                </div>
+            </div>
             <div class="meal-pending-fields">
                 <label data-field-label="item_name">
                     <span class="meal-pending-field-name">Item <span class="meal-pending-field-tag" data-tag="estimated">Estimated</span></span>
@@ -6264,6 +6273,89 @@
             };
             input.addEventListener('input', sync);
             input.addEventListener('change', sync);
+        });
+        // FIT-119: snapshot the AI's numeric macros so the portion chips
+        // always scale from the original 1× baseline (not from the
+        // possibly-already-scaled current input values). Successive chip
+        // clicks therefore don't compound, and ½× → 2× round-trips
+        // through 1× cleanly. Non-numeric estimate values (null, '',
+        // strings) yield NaN so the chip handler skips scaling and the
+        // user's input is left alone for that field.
+        const baselineMacro = (v) => (typeof v === 'number' && Number.isFinite(v)) ? v : NaN;
+        const aiMacroBaseline = {
+            calories: baselineMacro(est.calories),
+            protein_g: baselineMacro(est.protein_g),
+            carbs_g: baselineMacro(est.carbs_g),
+            fat_g: baselineMacro(est.fat_g),
+            sodium_mg: baselineMacro(est.sodium_mg),
+        };
+        const PORTION_INT_FIELDS = ['calories', 'sodium_mg'];
+        const PORTION_FLOAT_FIELDS = ['protein_g', 'carbs_g', 'fat_g'];
+        row.querySelectorAll('.meal-pending-portion-chip').forEach((chip) => {
+            chip.addEventListener('click', () => {
+                // Honor the row-level lock that setMealPendingRowLocked()
+                // applies while a Retry request is in flight — same guard
+                // pattern as acceptMealPending(). Without this the chips
+                // would let the user mutate the displayed macros while
+                // the retry response is replacing the row.
+                if (row.classList.contains('meal-pending-row--locked')) return;
+                const factor = Number(chip.getAttribute('data-factor'));
+                if (!Number.isFinite(factor) || factor <= 0) return;
+                PORTION_INT_FIELDS.forEach((field) => {
+                    const base = aiMacroBaseline[field];
+                    if (!Number.isFinite(base)) return;
+                    const input = row.querySelector(`input[data-field="${field}"]`);
+                    if (!input) return;
+                    input.value = String(Math.round(base * factor));
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                });
+                PORTION_FLOAT_FIELDS.forEach((field) => {
+                    const base = aiMacroBaseline[field];
+                    if (!Number.isFinite(base)) return;
+                    const input = row.querySelector(`input[data-field="${field}"]`);
+                    if (!input) return;
+                    input.value = String(Math.round(base * factor * 10) / 10);
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                });
+                // Fiber is intentionally not scaled: it has no review-card
+                // input, and mutating entry.estimate.fiber_g would corrupt
+                // the original_estimate audit trail captured at /accept.
+                // The user can adjust fiber explicitly in the Correct flow.
+                row.querySelectorAll('.meal-pending-portion-chip').forEach((c) => {
+                    const active = c === chip;
+                    c.classList.toggle('is-active', active);
+                    c.setAttribute('aria-pressed', active ? 'true' : 'false');
+                });
+            });
+        });
+        // Manual edits that drift away from the active chip's expected
+        // values deactivate it — the chip no longer represents what the
+        // user is about to accept. We compare current input values to
+        // baseline × factor instead of relying on event.isTrusted so this
+        // also works correctly under headless / preview drivers.
+        const recomputeActivePortionChip = () => {
+            const active = row.querySelector('.meal-pending-portion-chip.is-active');
+            if (!active) return;
+            const factor = Number(active.getAttribute('data-factor'));
+            if (!Number.isFinite(factor) || factor <= 0) return;
+            const stillMatches = [...PORTION_INT_FIELDS, ...PORTION_FLOAT_FIELDS].every((field) => {
+                const base = aiMacroBaseline[field];
+                if (!Number.isFinite(base)) return true;
+                const input = row.querySelector(`input[data-field="${field}"]`);
+                if (!input) return true;
+                const expected = PORTION_INT_FIELDS.includes(field)
+                    ? Math.round(base * factor)
+                    : Math.round(base * factor * 10) / 10;
+                const current = Number(input.value);
+                return Number.isFinite(current) && current === expected;
+            });
+            if (!stillMatches) {
+                active.classList.remove('is-active');
+                active.setAttribute('aria-pressed', 'false');
+            }
+        };
+        row.querySelectorAll('input[data-field]').forEach((input) => {
+            input.addEventListener('input', recomputeActivePortionChip);
         });
         row.querySelector('.meal-pending-discard').addEventListener('click', () => discardMealPending(entry.client_id));
         row.querySelector('.meal-pending-accept').addEventListener('click', () => acceptMealPending(entry.client_id, row));
