@@ -28,6 +28,27 @@ def _client(monkeypatch):
     return module
 
 
+def _isolated_food_log_db(monkeypatch, tmp_path):
+    db_path = tmp_path / "fitness_data.db"
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+    data_store.init_data_db()
+    return db_path
+
+
+def _add_food_log(client_id: str, *, user_id: int = 1, calories: int = 500):
+    return data_store.add_food_log(
+        user_id,
+        {
+            "client_id": client_id,
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": "Lunch",
+            "calories": calories,
+            "protein_g": 30,
+        },
+    )
+
+
 def _stub_parser(monkeypatch, module, *, estimate, source="ai_text_estimate", fallback_used=False):
     """Replace meal_text_parser.parse_meal_text with a deterministic stub
     so endpoint tests exercise the wiring, not the parser internals.
@@ -1379,6 +1400,35 @@ def test_meal_intake_undo_calls_delete_helper(monkeypatch):
     assert seen == {"user_id": 1, "client_id": "meal-undo-1"}
 
 
+def test_meal_intake_undo_removes_food_log_only_entry_and_is_idempotent(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    _add_food_log("food-log-only-delete-me")
+    module.NUTRITION_DATA[:] = [
+        {
+            "client_id": "legacy-nutrition-keep-me",
+            "date": "2026-05-18",
+            "calories": 650,
+            "protein_g": 40,
+        }
+    ]
+
+    res = module.app.test_client().delete("/api/meal-intake/food-log-only-delete-me")
+
+    assert res.status_code == 200
+    assert res.get_json() == {"status": "ok", "removed": True}
+    assert [
+        entry.get("client_id")
+        for entry in data_store.get_food_logs(1)
+        if entry.get("client_id") == "food-log-only-delete-me"
+    ] == []
+    assert [entry["client_id"] for entry in module.NUTRITION_DATA] == ["legacy-nutrition-keep-me"]
+
+    retry = module.app.test_client().delete("/api/meal-intake/food-log-only-delete-me")
+    assert retry.status_code == 200
+    assert retry.get_json() == {"status": "not_found", "removed": False}
+
+
 def test_meal_intake_undo_returns_not_found_when_missing(monkeypatch):
     module = _client(monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
@@ -1414,6 +1464,38 @@ def test_meal_intake_undo_removes_legacy_nutrition_row_by_client_id(monkeypatch)
 
     assert res.status_code == 200
     assert res.get_json() == {"status": "ok", "removed": True}
+    assert [entry["client_id"] for entry in module.NUTRITION_DATA] == ["legacy-nutrition-keep-me"]
+
+    retry = module.app.test_client().delete("/api/meal-intake/legacy-nutrition-delete-me")
+    assert retry.status_code == 200
+    assert retry.get_json() == {"status": "not_found", "removed": False}
+
+
+def test_meal_intake_undo_removes_dual_write_food_log_and_legacy_entry(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    _add_food_log("dual-write-delete-me", calories=500)
+    _add_food_log("food-log-keep-me", calories=700)
+    module.NUTRITION_DATA[:] = [
+        {
+            "client_id": "dual-write-delete-me",
+            "date": "2026-05-18",
+            "calories": 500,
+            "protein_g": 30,
+        },
+        {
+            "client_id": "legacy-nutrition-keep-me",
+            "date": "2026-05-18",
+            "calories": 650,
+            "protein_g": 40,
+        },
+    ]
+
+    res = module.app.test_client().delete("/api/meal-intake/dual-write-delete-me")
+
+    assert res.status_code == 200
+    assert res.get_json() == {"status": "ok", "removed": True}
+    assert [entry["client_id"] for entry in data_store.get_food_logs(1)] == ["food-log-keep-me"]
     assert [entry["client_id"] for entry in module.NUTRITION_DATA] == ["legacy-nutrition-keep-me"]
 
 
