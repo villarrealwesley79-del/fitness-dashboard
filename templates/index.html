@@ -47,6 +47,7 @@
             <div class="card readiness-card">
                 <div class="card-head">
                     <div class="card-label">READINESS SCORE</div>
+                    <button type="button" class="chip chip-retry" id="readiness-retry" hidden>Couldn’t load · retry</button>
                     <div class="card-link" id="readiness-caret">›</div>
                 </div>
                 <div class="readiness-row">
@@ -62,6 +63,7 @@
             <div class="card reco-card">
                 <div class="reco-head">
                     <div class="reco-badge">AI RECOMMENDATION</div>
+                    <button type="button" class="chip chip-retry" id="reco-retry" hidden>Couldn’t load · retry</button>
                     <div class="reco-confidence"><span class="reco-conf-dot"></span><span id="reco-confidence-pct">--%</span></div>
                 </div>
                 <div class="reco-title" id="reco-title">—</div>
@@ -189,6 +191,7 @@
             <div class="card insight-card">
                 <div class="insight-head">
                     <span class="insight-tag">AI INSIGHT</span>
+                    <button type="button" class="chip chip-retry" id="insight-retry" hidden>Couldn’t load · retry</button>
                 </div>
                 <div class="insight-title" id="insight-title">Gathering data…</div>
                 <div class="insight-body" id="insight-body"></div>

@@ -590,14 +590,17 @@
     }
     async function getOuraStatus(force = false, refreshApi = false) {
         if (!force && !refreshApi && state.oura) return state.oura;
-        try { state.oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : '')); }
-        catch { state.oura = null; }
+        // FIT-128: track success/failure on a sentinel so paintDashboardFromState
+        // can surface a per-card retry chip without losing the rejection in
+        // the existing try/catch swallow.
+        try { state.oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : '')); state.ouraError = false; }
+        catch { state.oura = null; state.ouraError = true; }
         return state.oura;
     }
     async function getOuraSleep(force = false) {
         if (!force && state.ouraSleep) return state.ouraSleep;
-        try { state.ouraSleep = await api('/api/oura/sleep-summary'); }
-        catch { state.ouraSleep = null; }
+        try { state.ouraSleep = await api('/api/oura/sleep-summary'); state.ouraSleepError = false; }
+        catch { state.ouraSleep = null; state.ouraSleepError = true; }
         return state.ouraSleep;
     }
     async function getOuraTrends(force = false) {
@@ -608,8 +611,8 @@
     }
     async function getReco(force = false) {
         if (!force && state.reco) return state.reco;
-        try { state.reco = await api('/api/recommendation/smart'); }
-        catch { state.reco = null; }
+        try { state.reco = await api('/api/recommendation/smart'); state.recoError = false; }
+        catch { state.reco = null; state.recoError = true; }
         return state.reco;
     }
     async function getInsights(force = false) {
@@ -999,10 +1002,22 @@
         // state from injecting misleading defaults — the painters skip cards
         // whose backing data is fully absent, so the HTML placeholders
         // ('--', '—', empty gauge <div>) stay in place until real data lands.
+        //
+        // FIT-128: reset per-card error sentinels at the top of each render so
+        // a card that recovered since the last navigation isn't stuck in
+        // failure state. Fetchers re-set them on rejection below.
+        state.ouraError = false;
+        state.recoError = false;
+        state.ouraSleepError = false;
+
         paintDashboardFromState();
 
         const repaint = () => { try { paintDashboardFromState(); } catch (e) { console.warn('dashboard repaint failed:', e); } };
-        const dashP = getDashboard().then(repaint, () => repaint());
+        // FIT-128: getDashboard does NOT swallow its rejection (unlike the
+        // other three), so map its failure onto state.recoError — same chip
+        // surface as a reco failure since both endpoints feed the AI
+        // Recommendation card.
+        const dashP = getDashboard().then(repaint, () => { state.recoError = true; repaint(); });
         const ouraP = getOuraStatus().then(repaint, () => repaint());
         const recoP = getReco().then(repaint, () => repaint());
         const sleepP = getOuraSleep().then(repaint, () => repaint());
@@ -1270,6 +1285,41 @@
         // Sparkline: sleep scores from Oura trend
         const sleepSeries = (sleep && sleep.trend_data ? sleep.trend_data : []).map((d) => d.score);
         sparkline($('insight-sparkline'), sleepSeries, { color: '#22d3ee', height: 32 });
+
+        // FIT-128: per-card retry chips. Each chip surfaces when its endpoint
+        // rejected/timed out (sentinel set by the fetcher's catch or by
+        // renderDashboard's .then-rejection for the un-swallowing dashboard
+        // endpoint). Click re-fetches the relevant endpoint(s) with force=true
+        // and repaints; on repeat failure the fetcher re-sets the sentinel
+        // and the chip stays visible.
+        paintRetryChip('readiness-retry', state.ouraError, () => getOuraStatus(true));
+        paintRetryChip('reco-retry', state.recoError, async () => {
+            // The AI Recommendation chip covers BOTH dashboard and reco
+            // because the card chrome is fed by both endpoints. getDashboard
+            // throws on failure (unlike the other fetchers), so wrap it.
+            let dashFailed = false;
+            try { await getDashboard(true); } catch { dashFailed = true; }
+            await getReco(true);
+            if (dashFailed && !state.recoError) state.recoError = true;
+        });
+        paintRetryChip('insight-retry', state.ouraSleepError, () => getOuraSleep(true));
+    }
+
+    function paintRetryChip(elementId, isErrored, retryFn) {
+        const chip = $(elementId);
+        if (!chip) return;
+        chip.hidden = !isErrored;
+        if (!isErrored) return;
+        chip.onclick = async () => {
+            chip.disabled = true;
+            chip.hidden = true;
+            try {
+                await retryFn();
+            } finally {
+                chip.disabled = false;
+                paintDashboardFromState();
+            }
+        };
     }
 
     function paintReadinessTrendChart(trends) {

@@ -681,6 +681,26 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
     border: 1px solid rgba(255,255,255,0.18);
 }
 .chip-rpe { background: rgba(251,191,36,0.18); border-color: rgba(251,191,36,0.4); color: #fde68a; }
+/* FIT-128: per-card retry chip surfaced when its primary API endpoint
+   rejects / times out. Button-style chip — amber to read as a recoverable
+   warning rather than the destructive red of chip-avoid. */
+.chip-retry {
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+    background: rgba(251,191,36,0.16);
+    border: 1px solid rgba(251,191,36,0.42);
+    color: #fde68a;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 5px 12px;
+    border-radius: var(--radius-pill);
+    transition: background .15s, transform .12s;
+}
+.chip-retry:hover { background: rgba(251,191,36,0.26); }
+.chip-retry:active { transform: scale(0.97); }
+.chip-retry:focus-visible { outline: 2px solid var(--accent-amber, #f59e0b); outline-offset: 2px; }
 .hero-why {
     padding-top: 12px;
     border-top: 1px solid rgba(255,255,255,0.15);
