@@ -2433,6 +2433,20 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     border-color: rgba(248,113,113,0.45);
 }
 .toast-undo-text { color: var(--fg-0); }
+/* FIT-97 AC1: tappable variant only — the entire chip becomes the tap
+   target (per the AC "entire chip except the Undo button"). The Undo
+   button stops propagation, so only the pill padding, gap, and text
+   region trigger Inspect. Adds affordance without changing the non-tap
+   chip's layout. */
+.toast-undo--tap {
+    cursor: pointer;
+    transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+.toast-undo--tap:hover { background: rgba(15,23,42,0.85); }
+.toast-undo--tap:focus-visible {
+    outline: none;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.4), 0 0 0 2px rgba(99,102,241,0.55);
+}
 .toast-undo-btn {
     appearance: none;
     -webkit-appearance: none;

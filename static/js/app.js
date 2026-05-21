@@ -108,7 +108,7 @@
         setTimeout(() => el.remove(), 2400);
     }
 
-    function toastUndo(msg, onUndo, durationMs = 10000) {
+    function toastUndo(msg, onUndo, durationMs = 10000, onTap = null) {
         const host = $('toast-host');
         if (!host) return null;
         const el = document.createElement('div');
@@ -131,10 +131,42 @@
             clearTimeout(timer);
         };
         const timer = setTimeout(dismiss, durationMs);
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', (ev) => {
+            // FIT-97 AC1: when the whole chip is tappable, stop the Undo
+            // click from bubbling to the container's tap handler.
+            ev.stopPropagation();
             dismiss();
             try { onUndo && onUndo(); } catch (e) { console.error(e); }
         });
+        // FIT-97 AC1: when a tap-target callback is provided, the entire
+        // chip (except the Undo button, whose click stops propagation
+        // above) opens the detail view. Putting the role/click on the
+        // container — not the inner text span — means the pill's padding
+        // and the gap between text and Undo also fire the inspect, per
+        // the AC ("entire chip except the Undo button").
+        if (typeof onTap === 'function') {
+            el.classList.add('toast-undo--tap');
+            el.setAttribute('role', 'button');
+            el.setAttribute('tabindex', '0');
+            el.setAttribute('aria-label', `${msg}. Tap to inspect.`);
+            const fire = () => {
+                dismiss();
+                try { onTap(); } catch (e) { console.error(e); }
+            };
+            el.addEventListener('click', fire);
+            el.addEventListener('keydown', (ev) => {
+                // Only fire when focus is on the chip itself — pressing
+                // Enter / Space while the Undo button is focused must run
+                // Undo, not Inspect. (The button's click is synthesized
+                // by the browser and stopPropagated above, but the raw
+                // keydown still bubbles, so filter by target.)
+                if (ev.target !== el) return;
+                if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    fire();
+                }
+            });
+        }
         return dismiss;
     }
 
@@ -2499,6 +2531,17 @@
             stubNotice.dataset.applies = stubApplies ? '1' : '0';
             stubNotice.hidden = !stubApplies;
         }
+        // FIT-97 AC2: show the photo retention note when this entry was
+        // logged from a photo. The raw image is never persisted (FIT-9),
+        // so the note tells the user the photo isn't retrievable and only
+        // the extracted estimate is kept. Hidden for text-only entries
+        // since there's no photo to talk about.
+        const retentionNote = $('meal-detail-retention-note');
+        const retentionApplies = !!entry.from_image;
+        if (retentionNote) {
+            retentionNote.dataset.applies = retentionApplies ? '1' : '0';
+            retentionNote.hidden = !retentionApplies;
+        }
 
         // FIT-97: wire Delete to the existing DELETE endpoint. On success,
         // remove the row from the inline list, close the modal, and let
@@ -2573,22 +2616,23 @@
         const footView = $('meal-detail-foot-view');
         const footEdit = $('meal-detail-foot-edit');
         const stubNotice = $('meal-detail-stub-notice');
+        const retentionNote = $('meal-detail-retention-note');
         const errBox = $('meal-detail-edit-error');
         const editing = mode === 'edit';
         if (view) view.hidden = editing;
         if (edit) edit.hidden = !editing;
         if (footView) footView.hidden = editing;
         if (footEdit) footEdit.hidden = !editing;
-        // Stub notice hides while editing (keep focus on the form) but
-        // gets restored on the way back to view mode for entries where
-        // it still applies. `data-applies` is set when the modal opens.
-        if (stubNotice) {
-            if (editing) {
-                stubNotice.hidden = true;
-            } else {
-                stubNotice.hidden = stubNotice.dataset.applies !== '1';
-            }
-        }
+        // Notices hide while editing (keep focus on the form) but get
+        // restored on the way back to view mode for entries where they
+        // still apply. `data-applies` is set when the modal opens.
+        const restoreNotice = (el) => {
+            if (!el) return;
+            if (editing) el.hidden = true;
+            else el.hidden = el.dataset.applies !== '1';
+        };
+        restoreNotice(stubNotice);
+        restoreNotice(retentionNote);
         if (errBox) { errBox.hidden = true; errBox.textContent = ''; }
     }
 
@@ -5900,6 +5944,33 @@
         return 'Logged: ' + parts.join(' · ');
     }
 
+    // FIT-97 AC1: build an entry object in the shape openMealDetailModal
+    // expects, from the /api/meal-intake (or retry) auto-log payload. The
+    // food_log row is canonical (persisted by _meal_intake_stub_persist), so
+    // start from it and fall back to estimate fields for anything food_log
+    // omits. client_id is passed in because the auto-log path knows it from
+    // the call context, not always echoed on food_log.
+    function mealEntryFromIntakePayload(payload, clientId) {
+        const estimate = (payload && payload.estimate) || {};
+        const foodLog = (payload && payload.food_log) || {};
+        const pick = (field) => (foodLog[field] != null ? foodLog[field] : estimate[field]);
+        return {
+            client_id: foodLog.client_id || clientId || null,
+            item_name: pick('item_name'),
+            portion_description: pick('portion_description'),
+            logged_at: foodLog.logged_at || null,
+            source: pick('source'),
+            confidence: pick('confidence'),
+            from_image: pick('from_image'),
+            calories: pick('calories'),
+            protein_g: pick('protein_g'),
+            carbs_g: pick('carbs_g'),
+            fat_g: pick('fat_g'),
+            sodium_mg: pick('sodium_mg'),
+            correction_state: foodLog.correction_state || estimate.correction_state || null,
+        };
+    }
+
     async function postMealUndo(clientId) {
         try {
             await api(`/api/meal-intake/${encodeURIComponent(clientId)}`, { method: 'DELETE' });
@@ -6556,10 +6627,14 @@
                 // undo affordance as the regular submitMealComposer
                 // auto-log. Otherwise the user can't immediately
                 // recover from an accidentally-logged retry.
+                // FIT-97 AC1: same chip → same tap-to-inspect modal as
+                // the non-retry auto-log path.
+                const retryEntry = mealEntryFromIntakePayload(payload, newClientId);
                 toastUndo(
                     mealEstimateChip(payload.estimate),
                     () => postMealUndo(newClientId),
                     MEAL_UNDO_MS,
+                    () => openMealDetailModal(retryEntry),
                 );
                 renderMealComposerProvenance(payload.estimate, newClientId);
                 refreshMacroCard();
@@ -6677,7 +6752,13 @@
             clearMealComposerInputs();
             clearMealDraft();
             const msg = mealEstimateChip(payload.estimate);
-            toastUndo(msg, () => postMealUndo(ctx.clientId), MEAL_UNDO_MS);
+            const entry = mealEntryFromIntakePayload(payload, ctx.clientId);
+            toastUndo(
+                msg,
+                () => postMealUndo(ctx.clientId),
+                MEAL_UNDO_MS,
+                () => openMealDetailModal(entry),
+            );
             renderMealComposerProvenance(payload.estimate, ctx.clientId);
             refreshMacroCard();
             return;
