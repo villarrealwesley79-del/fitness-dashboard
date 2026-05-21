@@ -968,6 +968,18 @@
             <div class="modal-body">
                 <p class="dim" id="swap-modal-sub">Choose a replacement from the same muscle group.</p>
                 <div id="swap-alternatives" class="swap-list"><div class="skeleton">Loading alternatives…</div></div>
+                <!-- FIT-117: free-text swap path. Sends the typed name to
+                     /api/workout/swap which uses FIT-103 inference for
+                     exercises in the library but without direct history.
+                     Friendly inline error if the backend can't match. -->
+                <div class="swap-custom">
+                    <label for="swap-custom-input" class="swap-custom-label">Or type your own</label>
+                    <form id="swap-custom-form" class="swap-custom-row" autocomplete="off" novalidate>
+                        <input type="text" id="swap-custom-input" class="swap-custom-input" placeholder="e.g. Overhead Tricep Extension" maxlength="64" aria-describedby="swap-custom-error" />
+                        <button type="submit" id="swap-custom-submit" class="btn btn-ghost btn-sm">Swap</button>
+                    </form>
+                    <div id="swap-custom-error" class="swap-custom-error" role="alert" hidden></div>
+                </div>
             </div>
         </div>
     </div>
