@@ -994,16 +994,12 @@
     // ("--", "Loading…", etc.) until their data lands, and each paint reads
     // from state so it tolerates the other endpoints not having returned yet.
     async function renderDashboard() {
-        // FIT-127: only paint from cache if at least one slice is already
-        // hydrated. On a true cold open every slice is undefined and the
-        // painters would otherwise inject misleading defaults (0% "Low"
-        // gauge, "Rest Day" reco title, canned "Based on your readiness…"
-        // reasoning) before any fetch settles. Skipping the paint leaves the
-        // HTML placeholders ('--', '—', empty gauge <div>) in place until
-        // real data lands via the .then(repaint) chains below.
-        if (state.dashboard || state.oura || state.reco || state.ouraSleep) {
-            paintDashboardFromState();
-        }
+        // Paint once with whatever's already in cache. Per-field guards inside
+        // paintDashboardFromState (added in FIT-127) keep the cold-open empty
+        // state from injecting misleading defaults — the painters skip cards
+        // whose backing data is fully absent, so the HTML placeholders
+        // ('--', '—', empty gauge <div>) stay in place until real data lands.
+        paintDashboardFromState();
 
         const repaint = () => { try { paintDashboardFromState(); } catch (e) { console.warn('dashboard repaint failed:', e); } };
         const dashP = getDashboard().then(repaint, () => repaint());
@@ -1026,9 +1022,23 @@
         const oura = state.oura;
         const reco = state.reco;
         const sleep = state.ouraSleep;
-        const readiness = (oura && oura.readiness) || (dash && dash.recomp_command && dash.recomp_command.readiness) || 0;
 
-        gaugeChart($('readiness-gauge-svg'), readiness, { label: readiness >= 75 ? 'Very Good' : readiness >= 55 ? 'Good' : 'Low' });
+        // FIT-127: per-field guards. paintDashboardFromState runs again after
+        // every .then(repaint) in renderDashboard, so e.g. /api/oura/sleep-
+        // summary resolving first would otherwise repaint the WHOLE dashboard
+        // from a still-undefined oura/reco/dash slice and inject misleading
+        // defaults (0% "Low" gauge, "Rest Day" reco title, "Moderate" intensity,
+        // canned "Based on your readiness…" reasoning). Each card now skips
+        // painting when its backing data is fully absent and leaves the HTML
+        // placeholder ('--', '—', empty gauge <div>) in place until real data
+        // lands.
+        const ouraReadiness = oura && oura.readiness != null ? oura.readiness : null;
+        const dashReadiness = dash && dash.recomp_command && dash.recomp_command.readiness != null ? dash.recomp_command.readiness : null;
+        const readiness = ouraReadiness != null ? ouraReadiness : dashReadiness;
+
+        if (readiness != null) {
+            gaugeChart($('readiness-gauge-svg'), readiness, { label: readiness >= 75 ? 'Very Good' : readiness >= 55 ? 'Good' : 'Low' });
+        }
 
         if ($('dash-hrv')) $('dash-hrv').textContent = oura && oura.hrv != null ? `${oura.hrv} ms` : '--';
         if ($('dash-rhr')) $('dash-rhr').textContent = oura && oura.resting_hr != null ? `${oura.resting_hr} bpm` : '--';
@@ -1060,20 +1070,29 @@
                 ? `Generic recommendation — wearable data is ${daysOld} days old`
                 : 'Generic recommendation — wearable data is stale';
         } else {
-            recoTitle = (reco && reco.suggested_workout) || (nw && (nw.focus || nw.goal_name)) || 'Rest Day';
+            // FIT-127: no real data → null sentinel so the assignment below
+            // skips and the HTML placeholder ('—') stays put.
+            recoTitle = (reco && reco.suggested_workout) || (nw && (nw.focus || nw.goal_name)) || null;
         }
-        if ($('reco-title')) $('reco-title').textContent = recoTitle.replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+        if (recoTitle && $('reco-title')) {
+            $('reco-title').textContent = recoTitle.replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+        }
 
         // Intensity / time / RPE chips
         const focusLabel = nw ? (nw.focus || nw.goal_name || '') : '';
+        // FIT-127: null sentinel instead of "Moderate" so the assignment below
+        // skips when there's no reco data and the HTML placeholder stays put.
         const intensityWord = reco && reco.recommendation
             ? (reco.recommendation === 'intensity' ? 'High'
                 : reco.recommendation === 'moderate' ? 'Moderate'
                 : reco.recommendation === 'recovery' ? 'Low'
                 : reco.recommendation)
-            : 'Moderate';
+            : null;
         if ($('reco-intensity')) {
-            $('reco-intensity').textContent = [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ') || 'Moderate';
+            const intensityText = [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ');
+            if (intensityText) {
+                $('reco-intensity').textContent = intensityText;
+            }
         }
         const timeMin = nw && nw.estimated_minutes;
         if ($('reco-time')) {
@@ -1170,20 +1189,25 @@
         // Reason / "why" — wearable reasoning + explicit food guidance (FIT-1 AC)
         const whyEl = $('reco-why');
         if (whyEl) {
-            let whyText;
+            // FIT-127: null sentinel so we skip writing the canned "Based on
+            // your readiness, sleep, and training load." text on a cold open
+            // where neither reco nor wearable freshness data has resolved.
+            let whyText = null;
             if (wearableAllMissing) {
                 whyText = 'No recent wearable data — showing a conservative default. Sync Oura or Apple Health for a personalized recommendation.';
             } else if (wearableStale) {
                 whyText = ((reco && reco.reasoning) ? reco.reasoning + '. ' : '') + 'Confidence is lowered because wearable data is stale.';
-            } else {
-                whyText = (reco && reco.reasoning) || 'Based on your readiness, sleep, and training load.';
+            } else if (reco && reco.reasoning) {
+                whyText = reco.reasoning;
             }
-            // Append food guidance line so the brief always explains how today's
-            // food changed (or could change) remaining-day guidance.
-            const foodLine = buildFoodGuidanceLine(freshness && freshness.food);
-            if (foodLine) whyText = whyText.replace(/\.\s*$/, '') + '. ' + foodLine;
-            whyEl.textContent = whyText;
-            whyEl.classList.toggle('lower-confidence', wearableDegraded);
+            if (whyText) {
+                // Append food guidance line so the brief always explains how
+                // today's food changed (or could change) remaining-day guidance.
+                const foodLine = buildFoodGuidanceLine(freshness && freshness.food);
+                if (foodLine) whyText = whyText.replace(/\.\s*$/, '') + '. ' + foodLine;
+                whyEl.textContent = whyText;
+                whyEl.classList.toggle('lower-confidence', wearableDegraded);
+            }
         }
 
         // Confidence — server-driven bucket → label; legacy ladder as fallback
