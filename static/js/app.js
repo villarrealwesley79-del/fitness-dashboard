@@ -5014,6 +5014,12 @@
             ? `Pick a replacement from the ${muscle} library (equipment-filtered).`
             : 'Pick a replacement exercise.';
         host.innerHTML = '<div class="skeleton">Loading alternatives…</div>';
+        // FIT-117: reset the custom-swap input + inline error each open so
+        // stale text from a prior swap doesn't bleed into the next session.
+        const customInput = $('swap-custom-input');
+        const customErr = $('swap-custom-error');
+        if (customInput) customInput.value = '';
+        if (customErr) { customErr.hidden = true; customErr.textContent = ''; }
         modal.hidden = false;
 
         if (!muscle) {
@@ -5064,6 +5070,22 @@
         });
     }
 
+    function _finalizeSwap(resp, oldName, newName) {
+        if (resp && resp.recommendation) {
+            if (!state.dashboard) state.dashboard = {};
+            state.dashboard.next_workout = resp.recommendation;
+        }
+        $('modal-swap').hidden = true;
+        toast(`Swapped ${oldName} → ${newName}`, 'ok');
+        if (state.swapContext && state.swapContext.source === 'active' && resp && resp.recommendation) {
+            const previous = (state.activeWorkout && state.activeWorkout.exercises) || [];
+            setActiveWorkoutFromRecommendation(resp.recommendation, previous);
+            renderActiveWorkout();
+        } else {
+            renderNextWorkout();
+        }
+    }
+
     async function applySwap(exIdx, newName, oldName) {
         const host = $('swap-alternatives');
         host.innerHTML = '<div class="skeleton">Swapping…</div>';
@@ -5073,22 +5095,73 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ workout_index: 0, exercise_index: exIdx, new_exercise_name: newName }),
             });
-            if (resp && resp.recommendation) {
-                if (!state.dashboard) state.dashboard = {};
-                state.dashboard.next_workout = resp.recommendation;
-            }
-            $('modal-swap').hidden = true;
-            toast(`Swapped ${oldName} → ${newName}`, 'ok');
-            if (state.swapContext && state.swapContext.source === 'active' && resp && resp.recommendation) {
-                const previous = (state.activeWorkout && state.activeWorkout.exercises) || [];
-                setActiveWorkoutFromRecommendation(resp.recommendation, previous);
-                renderActiveWorkout();
-            } else {
-                renderNextWorkout();
-            }
+            _finalizeSwap(resp, oldName, newName);
         } catch (e) {
             console.error(e);
             host.innerHTML = `<div class="empty">Swap failed — ${escapeHtml(String(e.message || e))}</div>`;
+        }
+    }
+
+    // FIT-117: free-text swap. The form-submit handler is wired once in
+    // wireEvents() and reads state.swapContext at submit time. The same
+    // /api/workout/swap endpoint accepts the typed name — for exercises
+    // that are in the library but have no direct history, FIT-103's
+    // similar-history inference fills in the starter weight + load_hint
+    // chip (rendered by setActiveWorkoutFromRecommendation /
+    // renderNextWorkout). Errors stay inline so the alternatives picker
+    // remains visible for the user to fall back to.
+    async function applyCustomSwap() {
+        const ctx = state.swapContext;
+        if (!ctx) return;
+        const input = $('swap-custom-input');
+        const errEl = $('swap-custom-error');
+        const submitBtn = $('swap-custom-submit');
+        if (!input || !errEl || !submitBtn) return;
+
+        const raw = (input.value || '').trim();
+        errEl.hidden = true;
+        errEl.textContent = '';
+
+        if (!raw) {
+            errEl.textContent = 'Enter an exercise name to swap to.';
+            errEl.hidden = false;
+            input.focus();
+            return;
+        }
+        if (!/[a-z]/i.test(raw)) {
+            errEl.textContent = 'Enter a real exercise name (letters required).';
+            errEl.hidden = false;
+            input.focus();
+            return;
+        }
+
+        submitBtn.disabled = true;
+        const origLabel = submitBtn.textContent;
+        submitBtn.textContent = 'Swapping…';
+        try {
+            const resp = await api('/api/workout/swap', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workout_index: 0, exercise_index: ctx.exIdx, new_exercise_name: raw }),
+            });
+            _finalizeSwap(resp, ctx.currentName, raw);
+            input.value = '';
+        } catch (e) {
+            console.error('applyCustomSwap', e);
+            const msg = String((e && e.message) || e || '').toLowerCase();
+            let friendly = `Couldn't swap to "${raw}".`;
+            if (msg.includes('unknown exercise')) {
+                friendly = `"${raw}" isn't in the exercise library yet — pick one from the list above or check the spelling.`;
+            } else if (msg.includes('muscle group')) {
+                friendly = `"${raw}" isn't a ${ctx.muscle || 'matching'}-group exercise — pick something from the list above.`;
+            } else if (msg.includes('equipment')) {
+                friendly = `"${raw}" is blocked by your current equipment preference — change it in Settings or pick from the list above.`;
+            }
+            errEl.textContent = friendly;
+            errEl.hidden = false;
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = origLabel;
         }
     }
 
@@ -5505,6 +5578,15 @@
         // AI status button (top right)
         $('btn-ai-status') && $('btn-ai-status').addEventListener('click', toggleAiPopover);
         document.addEventListener('click', closeAiPopoverOnOutsideClick, true);
+
+        // FIT-117: custom-exercise swap form.
+        const swapForm = $('swap-custom-form');
+        if (swapForm) {
+            swapForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                applyCustomSwap();
+            });
+        }
     }
 
     // --- AI coach status (header button) -----------------------

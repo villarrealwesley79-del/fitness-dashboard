@@ -113,6 +113,122 @@ def test_next_workout_can_recommend_biceps_without_preacher_curl(fitness_app):
     assert "Preacher Curl" not in exercise_names
 
 
+def test_swap_returns_structured_not_found_for_unknown_custom_exercise_name(fitness_app, monkeypatch):
+    """FIT-117 contract: the swap modal's "Or type your own" input sends the
+    typed string to /api/workout/swap. When the typed name isn't in the
+    library, the endpoint MUST return a structured 404 with the
+    'Unknown exercise name' message — that's what the JS
+    `applyCustomSwap` matches on to render the friendly
+    "…isn't in the exercise library yet" inline error rather than wiping
+    the alternatives picker.
+    """
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Seated Row",
+                "muscle": "back",
+                "is_compound": True,
+                "target_weight": 80,
+                "target_reps": 10,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "exercise_index": 0,
+            "new_exercise_name": "Quantum Bicep Levitation",
+        },
+    )
+
+    assert response.status_code == 404
+    body = response.get_json()
+    assert body["error"]["code"] == "not_found"
+    assert body["error"]["message"] == "Unknown exercise name"
+
+
+def test_swap_returns_structured_muscle_mismatch_for_cross_group_custom_exercise(fitness_app, monkeypatch):
+    """FIT-117 contract: when the typed name resolves but belongs to a
+    different muscle group than the current exercise, the endpoint MUST
+    return a structured 400 with the 'muscle group' message. The JS
+    `applyCustomSwap` keys off the 'muscle group' substring to render
+    the friendly "isn't a {muscle}-group exercise" inline error.
+    """
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Seated Row",
+                "muscle": "back",
+                "is_compound": True,
+                "target_weight": 80,
+                "target_reps": 10,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "exercise_index": 0,
+            "new_exercise_name": "Lateral Raise",
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["error"]["code"] == "invalid_field"
+    assert "muscle group" in body["error"]["message"]
+
+
+def test_swap_accepts_custom_typed_same_muscle_exercise_name(fitness_app, monkeypatch):
+    """FIT-117 happy path: typing the exact canonical name of an in-library,
+    same-muscle exercise swaps successfully and returns the updated
+    recommendation the JS pipes into the active workout / next workout
+    rendering.
+    """
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Seated Row",
+                "muscle": "back",
+                "is_compound": True,
+                "target_weight": 80,
+                "target_reps": 10,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    # Lat Pulldown is back/machine, allowed by the fixture's machines_only
+    # equipment preference. Cable / bodyweight back alternatives are
+    # filtered out by the same preference so they're not the right
+    # ground truth for the happy path under this fixture.
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "exercise_index": 0,
+            "new_exercise_name": "Lat Pulldown",
+        },
+    )
+
+    assert response.status_code == 200
+    exercise = response.get_json()["recommendation"]["exercises"][0]
+    assert exercise["exercise"] == "Lat Pulldown"
+    assert "Swapped from Seated Row" in exercise["rationale"]
+
+
 def test_swap_rejects_excluded_preacher_curl(fitness_app, monkeypatch):
     recommendation = {
         "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
