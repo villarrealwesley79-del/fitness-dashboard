@@ -52,6 +52,7 @@ from data_store import (
     get_food_logs,
     backfill_food_log_client_id,
     claim_food_log_vocab_learning,
+    delete_personal_vocab_entry,
     import_personal_vocab_entry,
     list_personal_vocab_entries,
     delete_food_log_by_client_id,
@@ -5979,6 +5980,24 @@ def settings_equipment():
     USER_SETTINGS["equipment_preference"] = pref
     save_json(SETTINGS_FILE, USER_SETTINGS)
     return jsonify({"status": "success", "equipment_preference": pref})
+
+
+@app.route('/api/personal-vocab', methods=['GET'])
+def personal_vocab_entries():
+    """List learned personal vocabulary mappings for Settings."""
+    user_id = _current_data_user_id()
+    return jsonify({"entries": list_personal_vocab_entries(user_id)})
+
+
+@app.route('/api/personal-vocab/<path:normalized_input>', methods=['DELETE'])
+def personal_vocab_delete(normalized_input):
+    """Forget one learned personal vocabulary mapping."""
+    normalized_input = (normalized_input or "").strip()
+    if not normalized_input or len(normalized_input) > 500:
+        return api_error("invalid vocabulary key", 400, code="invalid_field")
+    removed = delete_personal_vocab_entry(_current_data_user_id(), normalized_input)
+    status_code = 200 if removed else 404
+    return jsonify({"status": "ok" if removed else "not_found", "removed": removed}), status_code
 
 
 @app.route('/api/exercises/alternatives/<muscle_group>')

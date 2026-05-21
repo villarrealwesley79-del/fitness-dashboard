@@ -3319,6 +3319,66 @@
 
         // FIT-40: Web Push permission flow + alert surfaces.
         renderPushSection();
+        renderPersonalVocabSettings();
+    }
+
+    function renderPersonalVocabRow(entry) {
+        const canonical = entry.canonical_resolution || {};
+        const phrase = entry.phrase || entry.normalized_input || 'Mapping';
+        const item = canonical.item_name || 'Saved meal';
+        const calories = canonical.calories != null ? `${fmtInt(canonical.calories)} kcal` : 'Macros saved';
+        const source = canonical.source || canonical.underlying_source || 'manual';
+        const accepts = Number(entry.accept_count || 0);
+        const corrections = Number(entry.correct_count || 0);
+        const row = document.createElement('div');
+        row.className = 'settings-row';
+        row.innerHTML = `
+            <div class="settings-row-label settings-row-label-stack">
+                <span class="settings-row-label-main">${escapeHtml(phrase)}</span>
+                <span class="settings-row-detail">${escapeHtml(item)} · ${escapeHtml(calories)} · ${escapeHtml(source)}</span>
+            </div>
+            <div class="settings-row-control">
+                <span class="state-chip">${accepts} accept${accepts === 1 ? '' : 's'}</span>
+                ${corrections ? `<span class="state-chip warn">${corrections} correction${corrections === 1 ? '' : 's'}</span>` : ''}
+                <button class="btn btn-danger btn-sm" type="button">Forget</button>
+            </div>
+        `;
+        const btn = row.querySelector('button');
+        btn.addEventListener('click', () => forgetPersonalVocabEntry(entry.normalized_input, btn));
+        return row;
+    }
+
+    async function renderPersonalVocabSettings() {
+        const host = $('personal-vocab-list');
+        if (!host) return;
+        host.innerHTML = '<div class="empty">Loading mappings.</div>';
+        try {
+            const payload = await api('/api/personal-vocab');
+            const entries = Array.isArray(payload.entries) ? payload.entries : [];
+            if (!entries.length) {
+                host.innerHTML = '<div class="empty">No learned mappings yet.</div>';
+                return;
+            }
+            host.innerHTML = '';
+            entries.forEach((entry) => host.appendChild(renderPersonalVocabRow(entry)));
+        } catch (err) {
+            console.error(err);
+            host.innerHTML = '<div class="empty">Could not load learned mappings.</div>';
+        }
+    }
+
+    async function forgetPersonalVocabEntry(normalizedInput, button) {
+        if (!normalizedInput) return;
+        button.disabled = true;
+        try {
+            await api(`/api/personal-vocab/${encodeURIComponent(normalizedInput)}`, { method: 'DELETE' });
+            toast('Mapping forgotten', 'ok');
+            renderPersonalVocabSettings();
+        } catch (err) {
+            console.error(err);
+            toast(apiErrorMessage(err, 'Forget failed'), 'err');
+            button.disabled = false;
+        }
     }
 
     // ── FIT-15: AI Coach health + metrics ─────────────────────────
