@@ -989,6 +989,12 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
     border: 1px solid var(--border-2);
 }
 .btn-ghost:hover { background: rgba(51,65,85,0.8); }
+.btn-secondary {
+    background: rgba(51, 65, 85, 0.6);
+    color: var(--fg-1);
+    border: 1px solid var(--border-2);
+}
+.btn-secondary:hover { background: rgba(51, 65, 85, 0.85); }
 .btn-danger {
     background: rgba(239,68,68,0.14);
     color: #fecaca;
