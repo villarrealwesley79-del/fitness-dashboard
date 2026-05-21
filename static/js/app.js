@@ -80,12 +80,28 @@
         return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     };
 
+    // FIT-128: dashboard fetchers pass timeoutMs so a hung endpoint
+    // surfaces the per-card retry chip instead of sitting silent forever.
+    const DASHBOARD_FETCH_TIMEOUT_MS = 30000;
+
     async function api(path, opts = {}) {
-        const res = await fetch(path, {
-            credentials: 'same-origin',
-            headers: { 'Accept': 'application/json', ...(opts.headers || {}) },
-            ...opts,
-        });
+        const { timeoutMs, ...fetchOpts } = opts;
+        let timer = null;
+        if (timeoutMs && !fetchOpts.signal) {
+            const controller = new AbortController();
+            timer = setTimeout(() => controller.abort(), timeoutMs);
+            fetchOpts.signal = controller.signal;
+        }
+        let res;
+        try {
+            res = await fetch(path, {
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json', ...(fetchOpts.headers || {}) },
+                ...fetchOpts,
+            });
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
         if (res.status === 401) {
             window.location.href = '/login?next=' + encodeURIComponent(location.pathname);
             throw new Error('unauthorized');
@@ -580,7 +596,7 @@
     // --- loaders (cached) ----------------------------------------
     async function getDashboard(force = false) {
         if (!force && state.dashboard) return state.dashboard;
-        state.dashboard = await api('/api/dashboard');
+        state.dashboard = await api('/api/dashboard', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
         return state.dashboard;
     }
     async function getVitals(force = false) {
@@ -592,14 +608,15 @@
         if (!force && !refreshApi && state.oura) return state.oura;
         // FIT-128: track success/failure on a sentinel so paintDashboardFromState
         // can surface a per-card retry chip without losing the rejection in
-        // the existing try/catch swallow.
-        try { state.oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : '')); state.ouraError = false; }
+        // the existing try/catch swallow. timeoutMs makes a hung endpoint
+        // reject after 30s instead of leaving the chip silent forever.
+        try { state.oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : ''), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); state.ouraError = false; }
         catch { state.oura = null; state.ouraError = true; }
         return state.oura;
     }
     async function getOuraSleep(force = false) {
         if (!force && state.ouraSleep) return state.ouraSleep;
-        try { state.ouraSleep = await api('/api/oura/sleep-summary'); state.ouraSleepError = false; }
+        try { state.ouraSleep = await api('/api/oura/sleep-summary', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); state.ouraSleepError = false; }
         catch { state.ouraSleep = null; state.ouraSleepError = true; }
         return state.ouraSleep;
     }
@@ -611,7 +628,7 @@
     }
     async function getReco(force = false) {
         if (!force && state.reco) return state.reco;
-        try { state.reco = await api('/api/recommendation/smart'); state.recoError = false; }
+        try { state.reco = await api('/api/recommendation/smart', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); state.recoError = false; }
         catch { state.reco = null; state.recoError = true; }
         return state.reco;
     }

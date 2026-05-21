@@ -107,6 +107,53 @@ def test_render_dashboard_resets_error_sentinels_and_maps_dashboard_to_reco():
     )
 
 
+def test_dashboard_fetchers_pass_30s_timeout_to_api():
+    """FIT-128 AC explicitly requires the chip to surface when an endpoint
+    'times out (>30s)'. The shared api() helper takes an opts.timeoutMs that
+    wires through an AbortController; the four dashboard fetchers must pass
+    that constant so a hung endpoint actually aborts instead of leaving the
+    chip silent forever (the bug Codex flagged in round 1)."""
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+
+    # The constant must exist and be 30 seconds.
+    assert "const DASHBOARD_FETCH_TIMEOUT_MS = 30000" in app_js, (
+        "DASHBOARD_FETCH_TIMEOUT_MS constant must be defined at 30000ms"
+    )
+
+    # api() must honor timeoutMs by wiring an AbortController.
+    api_body = app_js.split("async function api(", 1)[1].split("\n    }\n", 1)[0]
+    assert "AbortController" in api_body, (
+        "api() must use AbortController to enforce timeoutMs — without it a "
+        "hung endpoint sits forever and the retry chip never surfaces"
+    )
+    assert "controller.abort()" in api_body, (
+        "api() must call controller.abort() on timeout fire"
+    )
+
+    # Each of the four dashboard fetchers must pass timeoutMs through.
+    for fetcher in ("getDashboard", "getOuraStatus", "getOuraSleep", "getReco"):
+        body = app_js.split(f"async function {fetcher}(", 1)[1].split("\n    }\n", 1)[0]
+        assert "timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS" in body, (
+            f"{fetcher} must pass `timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS` to "
+            f"api() — otherwise a hung endpoint can never surface the chip"
+        )
+
+
+def test_retry_chips_announce_via_aria_live():
+    """FIT-128 a11y: the chips appear asynchronously when a fetch fails, so
+    screen-reader users need aria-live to hear them. Without the attribute
+    the failure state is silent to assistive tech."""
+    template = (ROOT / "templates" / "index.html").read_text()
+    for chip_id in ("readiness-retry", "reco-retry", "insight-retry"):
+        start = template.index(f'id="{chip_id}"')
+        end = template.index(">", start)
+        opening_tag = template[start:end + 1]
+        assert 'aria-live="polite"' in opening_tag, (
+            f"{chip_id} must carry aria-live=\"polite\" so screen readers "
+            f"announce when the chip appears"
+        )
+
+
 def test_paint_retry_chip_helper_exists_and_is_called_per_chip():
     """FIT-128: paintRetryChip helper must exist, and paintDashboardFromState
     must call it once per chip with the matching sentinel + retry fn."""
