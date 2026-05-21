@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 import copy
 import json
+import logging
 import os
 import socket
 import sqlite3
@@ -7531,12 +7532,42 @@ def _sleep_metrics_from_events(events: list):
 
     return last_night, avg_hours
 
+_DEBUG_TIMING_ENDPOINTS = {
+    "/api/dashboard",
+    "/api/oura/status",
+    "/api/recommendation/smart",
+    "/api/oura/sleep-summary",
+}
+
+
+def _debug_timing_enabled():
+    return os.environ.get("DEBUG_TIMING") == "1"
+
+
+@app.before_request
+def start_debug_timing():
+    if _debug_timing_enabled() and request.path in _DEBUG_TIMING_ENDPOINTS:
+        if app.logger.getEffectiveLevel() > logging.INFO:
+            app.logger.setLevel(logging.INFO)
+        request.environ["fitness_dashboard.debug_timing_start"] = time.perf_counter()
+
+
 @app.after_request
 def add_cors_headers(response):
     """Allow remote access (ngrok, etc) without compromising data safety."""
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    start = request.environ.get("fitness_dashboard.debug_timing_start")
+    if start is not None and _debug_timing_enabled():
+        duration_ms = (time.perf_counter() - start) * 1000
+        app.logger.info(
+            "DEBUG_TIMING method=%s path=%s status=%s duration_ms=%.1f",
+            request.method,
+            request.path,
+            response.status_code,
+            duration_ms,
+        )
     return response
 
 
@@ -8548,27 +8579,6 @@ def smart_recommendation_api():
             readiness = cached.get("readiness_score")
             sleep_score = cached.get("sleep_score")
             hrv = cached.get("hrv")
-        else:
-            client = OuraClient()
-            readiness, sleep_score, hrv, metrics, raw = client.get_today_metrics(today)
-            upsert_oura_daily(
-                OURA_DB_FILE,
-                day=today,
-                readiness_score=readiness,
-                sleep_score=sleep_score,
-                hrv=hrv,
-                raw_json=raw,
-                steps=metrics.get("steps"),
-                activity_score=metrics.get("activity_score"),
-                active_calories=metrics.get("active_calories"),
-                resting_hr=metrics.get("resting_hr"),
-                temperature_deviation=metrics.get("temperature_deviation"),
-                sleep_duration_min=metrics.get("sleep_duration_min"),
-                sleep_deep_min=metrics.get("sleep_deep_min"),
-                sleep_rem_min=metrics.get("sleep_rem_min"),
-                sleep_light_min=metrics.get("sleep_light_min"),
-                sleep_awake_min=metrics.get("sleep_awake_min"),
-            )
     except Exception:
         pass
 
@@ -8666,8 +8676,8 @@ def smart_recommendation_api():
     # Weather adjustment (best-effort)
     weather = None
     try:
-        weather = _fetch_wttr(_WEATHER_CACHE.get("location") or "San_Antonio")
-        if weather.get("available"):
+        weather = _cached_wttr(_WEATHER_CACHE.get("location") or "San_Antonio")
+        if weather and weather.get("available"):
             temp = weather.get("feelslike_f") if weather.get("feelslike_f") is not None else weather.get("temp_f")
             hum = weather.get("humidity_pct")
             if temp is not None:
