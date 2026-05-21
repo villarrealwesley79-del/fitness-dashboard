@@ -175,13 +175,57 @@ This is the same posture FIT-72 documented in its rejection of Scrapling. Do not
 
 ---
 
-## 5. Verification log
+## 5. FIT-98 regional-chain coverage smoke test
+
+**Run date:** 2026-05-20 23:35 CDT
+**Command:** `.venv/bin/python scripts/smoke_branded_lookup_coverage.py`
+**Mode:** cache reads skipped; cache writes disabled by the helper. Provider lookup is exercised for the coverage matrix; the production direct-lookup gate status is recorded per row.
+
+Provider status for this run:
+
+- **Direct lookup gate:** bypassed for coverage matrix; production gate recorded per row.
+- **Nutritionix:** missing `NUTRITIONIX_APP_ID` / `NUTRITIONIX_APP_KEY`, so this run could not prove Nutritionix live coverage.
+- **USDA FDC:** missing `USDA_FDC_API_KEY`, so this run could not prove USDA live coverage.
+- **Open Food Facts:** no credentials required. The restaurant-chain queries below are not packaged-food queries, so OFF is not expected to cover them.
+
+Local food history was not available in the clean FIT-98 worktree, so the additional rows below are proxy Texas/regional-chain checks, not user-confirmed frequent restaurants. HEB/private-label grocery coverage is intentionally out of scope for FIT-98 and tracked separately in FIT-118.
+
+Follow-up filed: FIT-123 tracks the direct-lookup gate blocking regional restaurant queries before branded provider lookup.
+
+| Category | Query | Outcome | Matched item | Calories | Source URL | Confidence | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| required | bill miller bacon and egg taco | provider unavailable |  |  |  |  | FIT-98 Bill Miller BBQ query; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| required | bill miller breakfast sandwich on biscuit | provider unavailable |  |  |  |  | FIT-98 Bill Miller BBQ query; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| required | bill miller brisket sandwich | provider unavailable |  |  |  |  | FIT-98 Bill Miller BBQ query; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | whataburger patty melt | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | taco cabana bean and cheese taco | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | torchys democrat taco | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | rudys brisket sandwich | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | p terrys cheeseburger | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | schlotzskys original sandwich | provider unavailable |  |  |  |  | Regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | golden chick chicken tenders | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | la madeleine chicken caesar salad | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+
+### FIT-98 UI source-label verification
+
+The meal review surface already distinguishes source types in `static/js/app.js`:
+
+- Verified branded/generic lookup labels: `Nutritionix`, `USDA`, `Open Food Facts`.
+- Fallback/low-certainty label: `Fallback preset`.
+- Provenance links render from `verified_source_url`, `source_url`, or `product_url` when present.
+
+FIT-98 added static test coverage for these labels so a future UI edit does not collapse verified-source and fallback estimates into the same label.
+
+---
+
+## 6. Verification log
 
 | Date | Verifier | Source | Action |
 |---|---|---|---|
 | 2026-05-19 | Claude Code | https://fdc.nal.usda.gov/api-guide/ | Initial USDA FDC section populated from live docs. |
 | 2026-05-19 | Claude Code | https://world.openfoodfacts.org/data | OFF license confirmed (ODbL + DbCL + CC-BY-SA). Attribution text unresolved — flagged for FIT-76 verification. |
 | 2026-05-19 | Claude Code | developer.nutritionix.com | **Blocked by Cloudflare; could not retrieve.** Nutritionix section relies on prior planning context, marked unverified throughout. Owner verification required before FIT-72 PR #56 merges. |
+| 2026-05-20 | Codex | FIT-98 smoke helper | Regional-chain smoke matrix added. Provider lookup was exercised for coverage, with the production direct-lookup gate recorded separately per row. Live provider coverage remains environment-limited because Nutritionix and USDA credentials were absent; Open Food Facts was reached and did not verify these restaurant-chain rows. |
 
 ### Open verification items (must close before the named PRs merge)
 

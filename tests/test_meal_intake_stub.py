@@ -2648,6 +2648,10 @@ def test_meal_composer_js_surfaces_open_food_facts_attribution():
     css = Path("static/css/style.css").read_text()
 
     assert "mealEstimateProvenanceHtml(est)" in js
+    assert "nutritionix: 'Nutritionix'" in js
+    assert "usda_fdc: 'USDA'" in js
+    assert "open_food_facts: 'Open Food Facts'" in js
+    assert "fallback_text_estimate: 'Fallback preset'" in js
     assert "renderMealComposerProvenance(payload.estimate, ctx.clientId)" in js
     assert "renderMealComposerProvenance(payload.estimate, newClientId)" in js
     assert "renderMealComposerProvenance(edited, clientId)" in js
