@@ -25,6 +25,7 @@ def fitness_app(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit13-history-secret")
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "_food_log_entries_for_context", lambda since=None, limit=None: [])
     yield module
     module.app.config.update(LOGIN_DISABLED=False)
 
@@ -40,6 +41,24 @@ def _today_minus(days: int) -> str:
 def _seed_nutrition(module, entries):
     """Replace the in-memory nutrition data for the duration of one test."""
     module.NUTRITION_DATA[:] = list(entries)
+
+
+def test_nutrition_history_fixture_does_not_read_real_food_logs_by_default(fitness_app, monkeypatch):
+    """The fixture isolates this suite from the developer's local food_logs DB."""
+    def fail_get_food_logs(*_args, **_kwargs):
+        raise AssertionError("nutrition-history tests must not read real food_logs")
+
+    monkeypatch.setattr(fitness_app, "get_food_logs", fail_get_food_logs)
+    _seed_nutrition(fitness_app, [
+        {"date": _today(), "calories": 500, "protein_g": 25,
+         "carbs_g": 40, "fat_g": 20, "sodium_mg": 700,
+         "correction_state": "accepted"},
+    ])
+    today = next(d for d in fitness_app.app.test_client()
+                 .get("/api/nutrition-history").get_json()["history"]
+                 if d["date"] == _today())
+    assert today["calories"] == 500
+    assert today["entries_count"] == 1
 
 
 # ──────────────────────────────────────────────────────────────────
