@@ -2281,6 +2281,61 @@ def _recent_muscle_performance_debt(muscle, workouts, hours=72):
     return {"debt": debt, "reason": reason}
 
 
+def _muscles_trained_for_workout(workout):
+    muscles = set()
+    for entry in workout.get("muscles_trained") or []:
+        if isinstance(entry, dict):
+            muscle = entry.get("muscle")
+        else:
+            muscle = entry
+        if isinstance(muscle, str) and muscle.strip().lower() != "unknown":
+            muscles.add(muscle.strip().lower())
+
+    if muscles:
+        return muscles
+
+    for exercise in workout.get("exercises") or []:
+        if not isinstance(exercise, dict):
+            continue
+        muscle = (exercise.get("muscle_group") or "").strip().lower()
+        if not muscle or muscle == "unknown":
+            continue
+        if _completed_set_rows(exercise.get("sets")):
+            muscles.add(muscle)
+    return muscles
+
+
+def _recent_workout_fatigue_debt(muscle, workouts, hours=48):
+    cutoff = datetime.now() - timedelta(hours=hours)
+    muscle = (muscle or "").strip().lower()
+    if not muscle:
+        return 0
+
+    debt = 0
+    for workout in workouts or []:
+        if not isinstance(workout, dict):
+            continue
+        ts = _parse_workout_completion_timestamp(workout)
+        if ts is None or ts < cutoff:
+            continue
+        if muscle not in _muscles_trained_for_workout(workout):
+            continue
+        try:
+            overall_fatigue = int(workout.get("overall_fatigue") or 0)
+        except (TypeError, ValueError):
+            overall_fatigue = 0
+        if overall_fatigue >= 8:
+            candidate = 3
+        elif overall_fatigue >= 6:
+            candidate = 2
+        elif overall_fatigue >= 4:
+            candidate = 1
+        else:
+            candidate = 0
+        debt = max(debt, candidate)
+    return debt
+
+
 def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None, workouts=None):
     """Calculate readiness score for a muscle group.
 
@@ -2305,8 +2360,9 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None, wo
     cardio_fatigue = get_cardio_muscle_impact(cardio_data, muscle)
     performance = _recent_muscle_performance_debt(muscle, WORKOUTS if workouts is None else workouts)
     performance_debt = performance["debt"]
+    fatigue_debt = _recent_workout_fatigue_debt(muscle, WORKOUTS if workouts is None else workouts)
 
-    readiness = 10 - soreness_level - recovery_debt - cardio_fatigue - performance_debt
+    readiness = 10 - soreness_level - recovery_debt - cardio_fatigue - performance_debt - fatigue_debt
 
     if readiness < 5:
         recommendation = "Skip or reduced volume"
@@ -2324,6 +2380,7 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None, wo
         "score": max(0, readiness),  # Don't go below 0
         "soreness": soreness_level,
         "recovery_debt": recovery_debt,
+        "fatigue_debt": fatigue_debt,
         "performance_debt": performance_debt,
         "performance_debt_reason": performance.get("reason"),
         "cardio_fatigue": round(cardio_fatigue, 1),
@@ -3993,7 +4050,7 @@ def add_workout():
         "session_type": session_type,
         "duration_minutes": duration,
         "exercises": exercises,
-        "overall_fatigue": data.get("overall_fatigue", 5),
+        "overall_fatigue": data.get("overall_fatigue"),
         "notes": notes,
     }
 
@@ -9228,12 +9285,16 @@ def complete_workout():
     if cardio_actual and cardio_actual.get("completed"):
         duration_minutes = min(600, duration_minutes + int(cardio_actual.get("duration_minutes") or 0))
 
-    overall_fatigue = data.get("fatigue", 5)
-    try:
-        overall_fatigue = int(overall_fatigue)
-    except Exception:
-        overall_fatigue = 5
-    overall_fatigue = max(1, min(overall_fatigue, 10))
+    fatigue_provided = "fatigue" in data and data.get("fatigue") not in (None, "")
+    if fatigue_provided:
+        overall_fatigue = data.get("fatigue")
+        try:
+            overall_fatigue = int(overall_fatigue)
+        except Exception:
+            overall_fatigue = 5
+        overall_fatigue = max(1, min(overall_fatigue, 10))
+    else:
+        overall_fatigue = None
 
     # Auto-fill muscle_group from machine name if missing
     _MACHINE_TO_MUSCLE = {
@@ -9296,7 +9357,12 @@ def complete_workout():
     if existing_by_client_id:
         existing_fingerprint = (existing_by_client_id.get("offline_sync") or {}).get("fingerprint")
         existing_fingerprint = existing_fingerprint or _workout_sync_fingerprint(existing_by_client_id)
-        if existing_fingerprint == sync_fingerprint:
+        accepted_fingerprints = {sync_fingerprint}
+        if not fatigue_provided and existing_by_client_id.get("overall_fatigue") == 5:
+            legacy_entry = dict(workout_entry)
+            legacy_entry["overall_fatigue"] = 5
+            accepted_fingerprints.add(_workout_sync_fingerprint(legacy_entry))
+        if existing_fingerprint in accepted_fingerprints:
             return _workout_already_synced_response(
                 existing_by_client_id,
                 client_workout_id,
@@ -9781,6 +9847,7 @@ def muscle_fatigue():
             "color": color,
             "soreness": readiness["soreness"],
             "recovery_debt": readiness["recovery_debt"],
+            "fatigue_debt": readiness.get("fatigue_debt", 0),
             "performance_debt": readiness.get("performance_debt", 0),
             "performance_debt_reason": readiness.get("performance_debt_reason"),
             "cardio_fatigue": readiness.get("cardio_fatigue", 0),
