@@ -989,10 +989,35 @@
     }
 
     // --- Dashboard render ----------------------------------------
+    // FIT-125: render each card as its API resolves instead of awaiting
+    // Promise.all on the slowest call. Cards stay in their HTML placeholder
+    // ("--", "Loading…", etc.) until their data lands, and each paint reads
+    // from state so it tolerates the other endpoints not having returned yet.
     async function renderDashboard() {
-        const [dash, oura, reco, sleep] = await Promise.all([
-            getDashboard(), getOuraStatus(), getReco(), getOuraSleep(),
-        ]);
+        // Paint once with whatever's already in cache (often empty on first open).
+        paintDashboardFromState();
+
+        const repaint = () => { try { paintDashboardFromState(); } catch (e) { console.warn('dashboard repaint failed:', e); } };
+        const dashP = getDashboard().then(repaint, () => repaint());
+        const ouraP = getOuraStatus().then(repaint, () => repaint());
+        const recoP = getReco().then(repaint, () => repaint());
+        const sleepP = getOuraSleep().then(repaint, () => repaint());
+
+        // Independent trend + history charts paint as soon as their own data lands.
+        getOuraTrends().then(paintReadinessTrendChart, () => paintReadinessTrendChart(null));
+        if (state.history) paintVolumeChart(state.history);
+        else getHistory().then(paintVolumeChart, () => paintVolumeChart(null));
+
+        // Awaited last so callers (e.g. settings flow at line ~4187) still know when
+        // the four primary cards have all attempted to load.
+        await Promise.allSettled([dashP, ouraP, recoP, sleepP]);
+    }
+
+    function paintDashboardFromState() {
+        const dash = state.dashboard;
+        const oura = state.oura;
+        const reco = state.reco;
+        const sleep = state.ouraSleep;
         const readiness = (oura && oura.readiness) || (dash && dash.recomp_command && dash.recomp_command.readiness) || 0;
 
         gaugeChart($('readiness-gauge-svg'), readiness, { label: readiness >= 75 ? 'Very Good' : readiness >= 55 ? 'Good' : 'Low' });
@@ -1203,9 +1228,9 @@
         // Sparkline: sleep scores from Oura trend
         const sleepSeries = (sleep && sleep.trend_data ? sleep.trend_data : []).map((d) => d.score);
         sparkline($('insight-sparkline'), sleepSeries, { color: '#22d3ee', height: 32 });
+    }
 
-        // Readiness 7D line
-        const trends = await getOuraTrends();
+    function paintReadinessTrendChart(trends) {
         const series = trends && trends.series ? trends.series : [];
         const readinessPts = series.map((s) => ({ value: s.readiness_score, label: fmtDate(s.day) })).filter(p => p.value != null);
         lineChart($('chart-readiness-7d'), readinessPts, { color: '#22c55e' });
@@ -1217,9 +1242,10 @@
         // FIT-112: takeaway below the readiness chart.
         const rdy = deriveReadiness7dTakeaway(readinessPts);
         setChartTakeaway('chart-readiness-7d-takeaway', rdy.text, { empty: rdy.empty });
+    }
 
-        // Volume 4W bar chart (bucket dashboard.next_workout + history by week)
-        const hist = (state.history || (await getHistory().catch(() => null)))?.workouts || [];
+    function paintVolumeChart(history) {
+        const hist = (history && history.workouts) || [];
         const weekVolumes = computeWeeklyVolumes(hist, 4);
         barChart($('chart-volume-4w'), weekVolumes.map(w => ({ value: w.volume, label: w.label })), { color: '#a78bfa' });
         if ($('volume-4w-sub')) {
