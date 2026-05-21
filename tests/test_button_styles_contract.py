@@ -20,7 +20,7 @@ def test_btn_secondary_has_dark_theme_styling():
 
 def test_meal_detail_correct_button_uses_secondary_class():
     """FIT-114: the meal-detail Correct button must keep .btn-secondary so the
-    new style applies."""
+    new style applies. Asserts the opening tag verbatim so the class can't
+    silently move to a different button."""
     template = (ROOT / "templates" / "index.html").read_text()
-    assert 'id="btn-meal-detail-edit"' in template
-    assert 'class="btn btn-secondary"' in template
+    assert '<button id="btn-meal-detail-edit" class="btn btn-secondary"' in template
