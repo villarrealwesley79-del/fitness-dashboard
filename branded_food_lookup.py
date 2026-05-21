@@ -341,6 +341,7 @@ def _nutritionix_lookup(text: str, normalized: str) -> dict[str, Any] | None:
         "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
         "portion_basis": _portion_from_nutritionix_items(food_items),
         "brand_id": _brand_from_text(normalize_meal_text(source_brand or "")),
+        "source_brand_name": source_brand,
     }
     return _sanitize_with_provenance(estimate)
 
@@ -389,6 +390,7 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
         "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
         "portion_basis": "100 g USDA FoodData Central reference portion",
         "brand_id": _brand_from_text(normalize_meal_text(source_brand or "")),
+        "source_brand_name": source_brand,
     }
     return _sanitize_with_provenance(estimate)
 
@@ -601,6 +603,7 @@ def _open_food_facts_estimate(product: dict[str, Any]) -> dict[str, Any]:
         "verified_source_url": product.get("url") or "https://world.openfoodfacts.org/",
         "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
         "portion_basis": "100 g Open Food Facts packaged-food reference",
+        "source_brand_name": product.get("brands"),
         # The visible attribution surface is tracked separately in FIT-80; this
         # backend slice keeps the database and product-image licenses attached.
         "off_attribution": "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)",
@@ -616,6 +619,7 @@ def _sanitize_with_provenance(estimate: dict[str, Any]) -> dict[str, Any]:
         "data_fetched_at",
         "portion_basis",
         "brand_id",
+        "source_brand_name",
         "underlying_source",
     ):
         if estimate.get(key) is not None:
