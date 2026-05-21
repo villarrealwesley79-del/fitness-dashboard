@@ -123,6 +123,80 @@ def test_food_log_blank_client_id_is_not_idempotency_key(isolated_store):
     assert [row["client_id"] for row in rows] == [None, None]
 
 
+def test_backfill_food_log_client_id_claims_single_matching_clientless_row(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+    store.add_food_log(
+        user_id=1,
+        record={
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T13:00:00",
+            "calories": 500,
+            "protein_g": 30,
+            "carbs_g": 50,
+            "fat_g": 18,
+            "sodium_mg": 600,
+            "context_note": "lunch note",
+        },
+    )
+
+    claimed = store.backfill_food_log_client_id(
+        1,
+        "legacy-nutrition-abc123",
+        {
+            "date": "2026-05-18",
+            "calories": 500,
+            "protein_g": 30,
+            "carbs_g": 50,
+            "fat_g": 18,
+            "sodium_mg": 600,
+            "context_note": "lunch note",
+        },
+    )
+
+    rows = store.get_food_logs(user_id=1)
+    assert claimed is True
+    assert len(rows) == 1
+    assert rows[0]["client_id"] == "legacy-nutrition-abc123"
+
+
+def test_backfill_food_log_client_id_refuses_ambiguous_matches(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+    for _ in range(2):
+        store.add_food_log(
+            user_id=1,
+            record={
+                "date": "2026-05-18",
+                "logged_at": "2026-05-18T13:00:00",
+                "calories": 500,
+                "protein_g": 30,
+                "carbs_g": 50,
+                "fat_g": 18,
+                "sodium_mg": 600,
+                "context_note": "same note",
+            },
+        )
+
+    claimed = store.backfill_food_log_client_id(
+        1,
+        "legacy-nutrition-ambiguous",
+        {
+            "date": "2026-05-18",
+            "calories": 500,
+            "protein_g": 30,
+            "carbs_g": 50,
+            "fat_g": 18,
+            "sodium_mg": 600,
+            "context_note": "same note",
+        },
+    )
+
+    rows = store.get_food_logs(user_id=1)
+    assert claimed is False
+    assert [row["client_id"] for row in rows] == [None, None]
+
+
 def test_food_log_vocab_learning_claim_is_one_time(isolated_store):
     store, _ = isolated_store
     store.init_data_db()

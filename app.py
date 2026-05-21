@@ -20,6 +20,7 @@ import urllib.parse
 import base64
 import time
 import re
+import uuid
 
 try:
     from pywebpush import WebPushException, webpush
@@ -49,6 +50,7 @@ from data_store import (
     init_data_db,
     add_food_log,
     get_food_logs,
+    backfill_food_log_client_id,
     claim_food_log_vocab_learning,
     import_personal_vocab_entry,
     list_personal_vocab_entries,
@@ -1473,6 +1475,96 @@ def _food_log_entries_for_context(since=None, limit=None):
             )
             _food_log_read_failure_logged = True
         return []
+
+
+def _legacy_nutrition_client_id(entry: dict, index: int) -> str:
+    payload = {
+        "index": index,
+        "date": entry.get("date"),
+        "logged_at": entry.get("logged_at"),
+        "calories": entry.get("calories"),
+        "protein_g": entry.get("protein_g"),
+        "carbs_g": entry.get("carbs_g"),
+        "fat_g": entry.get("fat_g"),
+        "sodium_mg": entry.get("sodium_mg"),
+        "notes": entry.get("notes"),
+        "item_name": entry.get("item_name"),
+    }
+    digest = hashlib.sha1(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"legacy-nutrition-{digest}"
+
+
+def _legacy_nutrition_food_log_match(entry: dict) -> dict | None:
+    date_s = _nutrition_entry_day(entry)
+    if not date_s:
+        return None
+    identity_fields = {}
+    notes = str(entry.get("notes") or "").strip()
+    if notes:
+        identity_fields["context_note"] = notes
+    for key in ("context_note", "item_name", "portion_description", "meal_type", "source_timestamp"):
+        value = str(entry.get(key) or "").strip()
+        if value:
+            identity_fields[key] = value
+    if not identity_fields:
+        return None
+    return {
+        "date": date_s,
+        "calories": entry.get("calories"),
+        "protein_g": entry.get("protein_g"),
+        "carbs_g": entry.get("carbs_g"),
+        "fat_g": entry.get("fat_g"),
+        "sodium_mg": entry.get("sodium_mg"),
+        **identity_fields,
+    }
+
+
+def backfill_legacy_nutrition_client_ids(user_id: int | None = None) -> dict:
+    """Backfill stable client_ids onto legacy NUTRITION_DATA rows.
+
+    Food-log linking is intentionally conservative: only rows with an
+    extra identity field such as notes/context_note or item_name can claim
+    a clientless food_log. Macro-only matches are left unlinked so two
+    distinct same-day meals with identical macros are not collapsed.
+    """
+    if not isinstance(NUTRITION_DATA, list):
+        return {"legacy_backfilled": 0, "food_logs_linked": 0}
+    user_id = user_id if user_id is not None else _current_data_user_id()
+    changed = False
+    backfilled = 0
+    linked = 0
+    used_client_ids = {
+        str(entry.get("client_id"))
+        for entry in NUTRITION_DATA
+        if isinstance(entry, dict) and entry.get("client_id")
+    }
+    for index, entry in enumerate(NUTRITION_DATA):
+        if not isinstance(entry, dict):
+            continue
+        client_id = str(entry.get("client_id") or "").strip()
+        if not client_id:
+            client_id = _legacy_nutrition_client_id(entry, index)
+            suffix = 1
+            base_client_id = client_id
+            while client_id in used_client_ids:
+                suffix += 1
+                client_id = f"{base_client_id}-{suffix}"
+            entry["client_id"] = client_id
+            used_client_ids.add(client_id)
+            changed = True
+            backfilled += 1
+        match = _legacy_nutrition_food_log_match(entry)
+        if match:
+            try:
+                if backfill_food_log_client_id(user_id, client_id, match):
+                    linked += 1
+            except Exception:
+                app.logger.warning("legacy nutrition food_log client_id backfill failed", exc_info=True)
+    if changed:
+        save_json(NUTRITION_FILE, NUTRITION_DATA)
+    return {"legacy_backfilled": backfilled, "food_logs_linked": linked}
 
 
 def _nutrition_context_for_date(
@@ -4152,6 +4244,8 @@ def add_nutrition():
     if err2:
         return err2
     client_id = client_id or None
+    if client_id is None:
+        client_id = f"nutrition-{uuid.uuid4().hex[:16]}"
     confidence, err2 = _coerce_float(data.get("confidence"), "confidence", min_v=0, max_v=100, allow_none=True)
     if err2:
         return err2
@@ -4816,6 +4910,25 @@ def _food_log_by_client_id(user_id: int, client_id: str) -> dict | None:
     return None
 
 
+def _delete_legacy_nutrition_by_client_id(client_id: str) -> bool:
+    if not client_id or not isinstance(NUTRITION_DATA, list):
+        return False
+    previous = list(NUTRITION_DATA)
+    kept = [
+        entry for entry in NUTRITION_DATA
+        if not isinstance(entry, dict) or str(entry.get("client_id") or "") != client_id
+    ]
+    if len(kept) == len(NUTRITION_DATA):
+        return False
+    try:
+        NUTRITION_DATA[:] = kept
+        save_json(NUTRITION_FILE, NUTRITION_DATA)
+    except Exception:
+        NUTRITION_DATA[:] = previous
+        raise
+    return True
+
+
 def _meal_pending_review_payload(entry: dict) -> dict:
     estimate = dict(entry.get("original_estimate") or {})
     if not estimate:
@@ -5160,6 +5273,8 @@ def meal_intake_undo_stub(client_id: str):
             "correction_state": existing.get("correction_state"),
         }), 409
     removed = delete_food_log_by_client_id(user_id, client_id)
+    legacy_removed = _delete_legacy_nutrition_by_client_id(client_id)
+    removed = bool(removed or legacy_removed)
     return jsonify({"status": "ok" if removed else "not_found", "removed": removed})
 
 
@@ -5363,6 +5478,7 @@ def nutrition_history():
     calories_target = USER_SETTINGS.get("daily_calorie_target")
     protein_target = USER_SETTINGS.get("daily_protein_target_g")
     earliest = (today - timedelta(days=13)).strftime("%Y-%m-%d")
+    backfill_legacy_nutrition_client_ids()
     food_log_entries = list(_food_log_entries_for_context(since=earliest) or [])
     legacy_entries = list(NUTRITION_DATA or [])
     # Dedupe by client_id, not by day. /api/add-nutrition writes the
@@ -5373,39 +5489,13 @@ def nutrition_history():
     # dedupe handles both cases:
     #   * dual-write: skip the legacy copy when food_logs has the same client_id
     #   * mixed-source same-day: keep both since their client_ids differ
-    #   * legacy without client_id: kept as-is (no risk of dual-write
-    #     because that path always sets one)
+    #   * legacy without client_id: backfilled before this merge, so the
+    #     history endpoint no longer collapses macro-identical meals via
+    #     a content signature.
     food_log_client_ids = {
         str(entry.get("client_id"))
         for entry in food_log_entries
         if entry.get("client_id")
-    }
-
-    def _content_signature(entry):
-        """Stable dedup key for entries without a client_id.
-
-        /api/add-nutrition without a client_id appends the same meal
-        to both stores. The legacy NUTRITION_DATA entry is built from
-        a smaller dict that ONLY carries date + macros (logged_at and
-        item_name are passed to add_food_log but not appended to the
-        legacy entry — see app.py:3110-3149). So the signature must
-        only use fields both stores definitely have: the date and the
-        macro tuple. Anything else (logged_at, item_name) is missing
-        on one side and would prevent the match.
-        """
-        return (
-            _nutrition_entry_day(entry),
-            entry.get("calories"),
-            entry.get("protein_g"),
-            entry.get("carbs_g"),
-            entry.get("fat_g"),
-            entry.get("sodium_mg"),
-        )
-
-    food_log_content_keys = {
-        _content_signature(entry)
-        for entry in food_log_entries
-        if not entry.get("client_id")
     }
 
     deduped_legacy = []
@@ -5413,8 +5503,6 @@ def nutrition_history():
         cid = entry.get("client_id")
         if cid and str(cid) in food_log_client_ids:
             continue  # dual-write with explicit client_id — skip the legacy copy.
-        if not cid and _content_signature(entry) in food_log_content_keys:
-            continue  # dual-write without client_id — skip the content-match copy.
         deduped_legacy.append(entry)
     merged_entries = food_log_entries + deduped_legacy
     days = []
@@ -5457,8 +5545,9 @@ def food_logs_by_date(date):
     individual meals. This endpoint backs the row-expand affordance:
     tap a day → fetch its meals.
 
-    Same dedupe rules as `/api/nutrition-history` (food_logs preferred;
-    legacy `NUTRITION_DATA` filled in for entries that only exist there).
+    Same client_id-only dedupe rules as `/api/nutrition-history`
+    (food_logs preferred; legacy `NUTRITION_DATA` filled in for entries
+    that only exist there).
     Returns entries sorted by `logged_at` ascending so the UI can
     render breakfast → dinner in natural order.
     """
@@ -5475,6 +5564,7 @@ def food_logs_by_date(date):
         return api_error("date must be canonical YYYY-MM-DD (zero-padded)", 400, code="invalid_field")
     user_id = _current_data_user_id()
 
+    backfill_legacy_nutrition_client_ids(user_id)
     food_log_entries = list(_food_log_entries_for_context(since=date) or [])
     legacy_entries = list(NUTRITION_DATA or [])
     food_log_client_ids = {
@@ -5483,27 +5573,10 @@ def food_logs_by_date(date):
         if entry.get("client_id")
     }
 
-    def _content_signature(entry):
-        return (
-            _nutrition_entry_day(entry),
-            entry.get("calories"),
-            entry.get("protein_g"),
-            entry.get("carbs_g"),
-            entry.get("fat_g"),
-            entry.get("sodium_mg"),
-        )
-
-    food_log_content_keys = {
-        _content_signature(entry)
-        for entry in food_log_entries
-        if not entry.get("client_id")
-    }
     deduped_legacy = []
     for entry in legacy_entries:
         cid = entry.get("client_id")
         if cid and str(cid) in food_log_client_ids:
-            continue
-        if not cid and _content_signature(entry) in food_log_content_keys:
             continue
         deduped_legacy.append(entry)
 

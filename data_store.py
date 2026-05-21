@@ -757,6 +757,70 @@ def food_log_exists_by_client_id(user_id: int, client_id: str) -> bool:
     return bool(row)
 
 
+def backfill_food_log_client_id(user_id: int, client_id: str, match: dict) -> bool:
+    """Assign client_id to exactly one matching clientless food_log row.
+
+    The caller supplies only fields that are safe to match on. If the
+    match is ambiguous or a row already owns the client_id, leave the
+    table unchanged.
+    """
+    if not client_id or not isinstance(match, dict):
+        return False
+    allowed_fields = {
+        "date",
+        "calories",
+        "protein_g",
+        "carbs_g",
+        "fat_g",
+        "sodium_mg",
+        "context_note",
+        "item_name",
+        "portion_description",
+        "meal_type",
+        "source_timestamp",
+    }
+    match_fields = {k: match[k] for k in allowed_fields if k in match}
+    if not match_fields.get("date"):
+        return False
+    init_data_db()
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    clauses = ["user_id = ?", "(client_id IS NULL OR client_id = '')"]
+    params: list = [user_id]
+    for field, value in match_fields.items():
+        if value is None:
+            clauses.append(f"{field} IS NULL")
+        else:
+            clauses.append(f"{field} = ?")
+            params.append(value)
+    where_sql = " AND ".join(clauses)
+    with _get_db() as conn:
+        existing = conn.execute(
+            "SELECT id FROM food_logs WHERE user_id = ? AND client_id = ? LIMIT 1",
+            (user_id, client_id),
+        ).fetchone()
+        if existing:
+            return False
+        candidates = conn.execute(
+            f"SELECT id FROM food_logs WHERE {where_sql} LIMIT 2",
+            params,
+        ).fetchall()
+        if len(candidates) != 1:
+            return False
+        row = conn.execute(
+            """
+            UPDATE food_logs
+               SET client_id = ?, updated_at = ?
+             WHERE id = ?
+               AND user_id = ?
+               AND (client_id IS NULL OR client_id = '')
+            RETURNING id
+            """,
+            (client_id, now_iso, candidates[0]["id"], user_id),
+        ).fetchone()
+        conn.commit()
+    return bool(row)
+
+
 def claim_food_log_vocab_learning(user_id: int, client_id: str) -> bool:
     """Atomically claim vocabulary learning for a persisted food log."""
     if not client_id:

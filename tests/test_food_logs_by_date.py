@@ -30,6 +30,8 @@ def fitness_app(monkeypatch):
     # shape and doesn't depend on whatever's in food_logs.sqlite on disk.
     monkeypatch.setattr(module, "NUTRITION_DATA", [])
     monkeypatch.setattr(module, "_food_log_entries_for_context", lambda since=None, limit=None: [])
+    monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "backfill_food_log_client_id", lambda *_args, **_kwargs: False)
     yield module
     module.app.config.update(LOGIN_DISABLED=False)
 
@@ -185,11 +187,11 @@ def test_deduplicates_dual_write_by_client_id(fitness_app, monkeypatch):
     assert body["count"] == 1, "shared client_id must be counted once, not twice"
 
 
-def test_deduplicates_dual_write_when_both_lack_client_id(fitness_app, monkeypatch):
-    """When /api/add-nutrition writes the same entry to both stores
-    WITHOUT a client_id, the (date, macros) content signature is the
-    only safe dedupe key. Mirrors `_content_signature` in
-    /api/nutrition-history."""
+def test_keeps_identical_macro_clientless_entries_after_backfill(fitness_app, monkeypatch):
+    """FIT-70: by-date details use the same client_id-only dedupe rule
+    as nutrition-history. Without a shared client_id, same-macro entries
+    must remain visible as distinct meals.
+    """
     today = _today()
     food_log = {
         "date": today, "logged_at": f"{today}T10:00:00",
@@ -208,6 +210,6 @@ def test_deduplicates_dual_write_when_both_lack_client_id(fitness_app, monkeypat
 
     res = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{today}")
     body = res.get_json()
-    assert body["count"] == 1, (
-        "no-client_id dual-write must dedupe via content signature"
+    assert body["count"] == 2, (
+        "same-macro entries without a shared client_id must both be returned"
     )
