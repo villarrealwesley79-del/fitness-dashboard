@@ -1562,19 +1562,46 @@
 
     // --- History -------------------------------------------------
     async function renderHistory() {
-        const [hist, aw] = await Promise.all([
-            getHistory(),
-            getAppleHealthWorkouts(Math.max(state.ranges.history, 30)),
-        ]);
-        const allLifts = (hist && hist.workouts) || [];
+        // FIT-115: write the empty-state KPI surfaces ("0", "Last N days")
+        // before any data fetching or chart math runs. The original code
+        // only set these AFTER the data pipeline, so any thrown error left
+        // the static "--" placeholders in place — which read as
+        // "never loaded" rather than "no data".
         const days = state.ranges.history;
+        $('history-count').textContent = '0';
+        $('history-freq-sub').textContent = `Last ${days} days`;
+        $('history-total-volume').textContent = fmtKilo(0);
+        $('history-vol-sub').textContent = `Last ${days} days · lifting only`;
+
+        let hist, aw;
+        try {
+            [hist, aw] = await Promise.all([
+                getHistory(),
+                getAppleHealthWorkouts(Math.max(days, 30)),
+            ]);
+        } catch (e) {
+            console.error('renderHistory: history fetch failed', e);
+            $('chart-history-freq').innerHTML = '<div class="empty">Could not load history. Tap a range chip to retry.</div>';
+            $('chart-history-volume').innerHTML = '<div class="empty">Could not load history. Tap a range chip to retry.</div>';
+            setChartTakeaway('chart-history-freq-takeaway', '', {});
+            setChartTakeaway('chart-history-volume-takeaway', '', {});
+            $('history-top-exercises').innerHTML = '<div class="empty">No exercises in range.</div>';
+            $('history-workout-list').innerHTML = '';
+            return;
+        }
+
+        // FIT-115: defend against malformed responses (e.g. a backend that
+        // surfaces an empty object on a soft error). Without this guard,
+        // a non-array `workouts` would crash `.map`/`.filter` below and
+        // wipe the chart surfaces.
+        const allLifts = Array.isArray(hist && hist.workouts) ? hist.workouts : [];
         const cutoff = new Date();
         cutoff.setDate(cutoff.getDate() - days);
 
         const lifts = allLifts
             .map((w, i) => ({ ...w, source: 'lifted', _origIndex: i }))
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff);
-        const watch = (aw || [])
+        const watch = (Array.isArray(aw) ? aw : [])
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
             .map((w) => ({ ...w, source: 'watch' }));
 
@@ -1588,9 +1615,6 @@
         });
 
         const workouts = lifts.length ? lifts : [];
-        const liftFreqDates = new Set(lifts.map((w) => w.date));
-        const watchFreqDates = new Set(watchFiltered.map((w) => w.date));
-        const sessionDates = new Set([...liftFreqDates, ...watchFreqDates]);
 
         const totalVol = lifts.reduce((a, w) => a + Number(w.total_volume || 0), 0);
         const totalSessions = lifts.length + watchFiltered.length;
@@ -1609,17 +1633,30 @@
             if (b) b.count += 1;
         });
         const barBuckets = groupIntoBuckets(buckets, Math.min(days, 30));
-        barChart($('chart-history-freq'), barBuckets.map((b) => ({ value: b.count, label: b.label })), { color: '#60a5fa' });
 
-        // volume over time (line)
-        const volPts = barBuckets.map((b) => ({ value: b.volume, label: b.label }));
+        // volume over time — aggregate before drawing so the line chart sees
+        // the populated bucket values.
         workouts.forEach((w) => {
             if (!w.date) return;
             const dt = new Date(w.date + 'T00:00:00');
             const idx = barBuckets.findIndex((b) => dt >= b.start && dt <= b.end);
             if (idx >= 0) barBuckets[idx].volume = (barBuckets[idx].volume || 0) + Number(w.total_volume || 0);
         });
-        lineChart($('chart-history-volume'), barBuckets.map((b) => ({ value: b.volume || 0, label: b.label })), { color: '#a78bfa' });
+
+        // FIT-115: render each chart independently so a failure in one
+        // doesn't leave the other blank.
+        try {
+            barChart($('chart-history-freq'), barBuckets.map((b) => ({ value: b.count, label: b.label })), { color: '#60a5fa' });
+        } catch (e) {
+            console.error('renderHistory: barChart failed', e);
+            $('chart-history-freq').innerHTML = '<div class="empty">Chart unavailable.</div>';
+        }
+        try {
+            lineChart($('chart-history-volume'), barBuckets.map((b) => ({ value: b.volume || 0, label: b.label })), { color: '#a78bfa' });
+        } catch (e) {
+            console.error('renderHistory: lineChart failed', e);
+            $('chart-history-volume').innerHTML = '<div class="empty">Chart unavailable.</div>';
+        }
 
         // FIT-112: takeaways below the history charts.
         const totalCount = barBuckets.reduce((s, b) => s + (Number(b.count) || 0), 0);
