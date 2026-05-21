@@ -2429,6 +2429,22 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     border-color: rgba(248,113,113,0.45);
 }
 .toast-undo-text { color: var(--fg-0); }
+/* FIT-97 AC1: tappable variant only — adds affordance without changing
+   the non-tap chip's layout. The tap surface opens the meal-detail modal
+   for the just-logged entry; Undo button keeps its own click handler. */
+.toast-undo-text--tap {
+    cursor: pointer;
+    border-radius: 999px;
+    padding: 2px 8px;
+    margin: -2px -8px;
+    transition: background 0.15s ease;
+}
+.toast-undo-text--tap:hover { background: rgba(248,250,252,0.08); }
+.toast-undo-text--tap:focus-visible {
+    background: rgba(248,250,252,0.08);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(99,102,241,0.55);
+}
 .toast-undo-btn {
     appearance: none;
     -webkit-appearance: none;

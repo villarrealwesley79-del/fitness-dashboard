@@ -108,7 +108,7 @@
         setTimeout(() => el.remove(), 2400);
     }
 
-    function toastUndo(msg, onUndo, durationMs = 10000) {
+    function toastUndo(msg, onUndo, durationMs = 10000, onTap = null) {
         const host = $('toast-host');
         if (!host) return null;
         const el = document.createElement('div');
@@ -135,6 +135,27 @@
             dismiss();
             try { onUndo && onUndo(); } catch (e) { console.error(e); }
         });
+        // FIT-97 AC1: when a tap-target callback is provided, the chip text
+        // becomes a button-like surface that opens the detail view. The
+        // Undo button keeps its existing behavior — its own click handler
+        // wins, and pointer-events on the text don't bubble through it.
+        if (typeof onTap === 'function') {
+            text.classList.add('toast-undo-text--tap');
+            text.setAttribute('role', 'button');
+            text.setAttribute('tabindex', '0');
+            text.setAttribute('aria-label', `${msg}. Tap to inspect.`);
+            const fire = () => {
+                dismiss();
+                try { onTap(); } catch (e) { console.error(e); }
+            };
+            text.addEventListener('click', fire);
+            text.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    fire();
+                }
+            });
+        }
         return dismiss;
     }
 
@@ -5877,6 +5898,33 @@
         return 'Logged: ' + parts.join(' · ');
     }
 
+    // FIT-97 AC1: build an entry object in the shape openMealDetailModal
+    // expects, from the /api/meal-intake (or retry) auto-log payload. The
+    // food_log row is canonical (persisted by _meal_intake_stub_persist), so
+    // start from it and fall back to estimate fields for anything food_log
+    // omits. client_id is passed in because the auto-log path knows it from
+    // the call context, not always echoed on food_log.
+    function mealEntryFromIntakePayload(payload, clientId) {
+        const estimate = (payload && payload.estimate) || {};
+        const foodLog = (payload && payload.food_log) || {};
+        const pick = (field) => (foodLog[field] != null ? foodLog[field] : estimate[field]);
+        return {
+            client_id: foodLog.client_id || clientId || null,
+            item_name: pick('item_name'),
+            portion_description: pick('portion_description'),
+            logged_at: foodLog.logged_at || null,
+            source: pick('source'),
+            confidence: pick('confidence'),
+            from_image: pick('from_image'),
+            calories: pick('calories'),
+            protein_g: pick('protein_g'),
+            carbs_g: pick('carbs_g'),
+            fat_g: pick('fat_g'),
+            sodium_mg: pick('sodium_mg'),
+            correction_state: foodLog.correction_state || estimate.correction_state || null,
+        };
+    }
+
     async function postMealUndo(clientId) {
         try {
             await api(`/api/meal-intake/${encodeURIComponent(clientId)}`, { method: 'DELETE' });
@@ -6441,10 +6489,14 @@
                 // undo affordance as the regular submitMealComposer
                 // auto-log. Otherwise the user can't immediately
                 // recover from an accidentally-logged retry.
+                // FIT-97 AC1: same chip → same tap-to-inspect modal as
+                // the non-retry auto-log path.
+                const retryEntry = mealEntryFromIntakePayload(payload, newClientId);
                 toastUndo(
                     mealEstimateChip(payload.estimate),
                     () => postMealUndo(newClientId),
                     MEAL_UNDO_MS,
+                    () => openMealDetailModal(retryEntry),
                 );
                 renderMealComposerProvenance(payload.estimate, newClientId);
                 refreshMacroCard();
@@ -6562,7 +6614,13 @@
             clearMealComposerInputs();
             clearMealDraft();
             const msg = mealEstimateChip(payload.estimate);
-            toastUndo(msg, () => postMealUndo(ctx.clientId), MEAL_UNDO_MS);
+            const entry = mealEntryFromIntakePayload(payload, ctx.clientId);
+            toastUndo(
+                msg,
+                () => postMealUndo(ctx.clientId),
+                MEAL_UNDO_MS,
+                () => openMealDetailModal(entry),
+            );
             renderMealComposerProvenance(payload.estimate, ctx.clientId);
             refreshMacroCard();
             return;
