@@ -104,3 +104,67 @@ def test_reco_why_assignment_is_guarded():
         "the whyEl.textContent assignment must be wrapped in `if (whyText)` "
         "so it skips painting when there's no real reasoning to show"
     )
+
+
+def test_reco_confidence_pct_assignment_is_guarded():
+    """FIT-127 AC: the reco-confidence-pct chip must NOT receive the legacy
+    '45%' worst-bucket fallback when readiness is null (cold open). The HTML
+    placeholder is '--%' (templates/index.html:65)."""
+    body = _paint_body()
+
+    # The legacy readiness-based ladder must be gated on `readiness != null`
+    # so cold-open with no readiness data doesn't fall through to '45%'.
+    assert "readiness != null ? (readiness >= 80 ?" in body, (
+        "confidence ladder must be gated on `readiness != null` so cold-open "
+        "doesn't paint the '45%' worst-bucket fallback"
+    )
+
+    # The textContent assignment must be wrapped in a truthy guard on confLabel.
+    assert "if (confLabel && $('reco-confidence-pct'))" in body, (
+        "reco-confidence-pct assignment must be wrapped in a truthy guard so "
+        "the '--%' HTML placeholder is preserved when confLabel is null"
+    )
+
+
+def test_insight_card_paint_is_guarded_on_missing_reco():
+    """FIT-127 AC: the insight card must NOT receive the canned 'Recovery is
+    on track' / 'Keep your sleep consistent…' text when reco hasn't resolved.
+    The HTML placeholder is 'Gathering data…' (templates/index.html:193)."""
+    body = _paint_body()
+
+    assert "// Insight card" in body, "insight card section comment missing"
+
+    # Carve out the insight-card region: from the `// Insight card` comment
+    # to the next major sub-section header (Sparkline). Both textContent
+    # assignments AND a `if (reco) {` guard must appear in that region, and
+    # the guard must precede the assignments — otherwise the canned strings
+    # paint unguarded on cold open.
+    insight_section = body.split("// Insight card", 1)[1].split("// Sparkline:", 1)[0]
+
+    title_idx = insight_section.find("$('insight-title').textContent")
+    body_idx = insight_section.find("$('insight-body').textContent")
+    guard_idx = insight_section.find("if (reco) {")
+
+    assert title_idx != -1, "insight-title textContent assignment missing"
+    assert body_idx != -1, "insight-body textContent assignment missing"
+    assert guard_idx != -1, (
+        "`if (reco) {` guard missing from the insight-card section — the "
+        "canned 'Recovery is on track' / 'Keep your sleep consistent…' text "
+        "would paint over the 'Gathering data…' placeholder on cold open"
+    )
+    assert guard_idx < title_idx and guard_idx < body_idx, (
+        "`if (reco) {` guard must precede the insight-title / insight-body "
+        "textContent assignments"
+    )
+
+    # And the canned defaults must NOT sit outside the guard block. We detect
+    # this by asserting the literal strings only appear AFTER the guard.
+    canned_title_idx = insight_section.find("'Recovery is on track'")
+    canned_body_idx = insight_section.find("'Keep your sleep consistent")
+    assert canned_title_idx == -1 or canned_title_idx > guard_idx, (
+        "literal 'Recovery is on track' must sit inside the `if (reco)` guard"
+    )
+    assert canned_body_idx == -1 or canned_body_idx > guard_idx, (
+        "literal 'Keep your sleep consistent…' must sit inside the "
+        "`if (reco)` guard"
+    )

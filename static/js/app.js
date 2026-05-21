@@ -1210,10 +1210,15 @@
             }
         }
 
-        // Confidence — server-driven bucket → label; legacy ladder as fallback
+        // Confidence — server-driven bucket → label; legacy ladder as fallback.
+        // FIT-127: skip the legacy ladder when readiness is null so cold-open
+        // doesn't overwrite the '--%' HTML placeholder with the worst-bucket
+        // '45%'.
         const confLabel = (reco && reco.confidence_level && RECO_CONF_LABEL[reco.confidence_level])
-            || (readiness >= 80 ? '92%' : readiness >= 65 ? '78%' : readiness >= 50 ? '62%' : '45%');
-        if ($('reco-confidence-pct')) $('reco-confidence-pct').textContent = confLabel;
+            || (readiness != null ? (readiness >= 80 ? '92%' : readiness >= 65 ? '78%' : readiness >= 50 ? '62%' : '45%') : null);
+        if (confLabel && $('reco-confidence-pct')) {
+            $('reco-confidence-pct').textContent = confLabel;
+        }
 
         // Freshness chips (always render — null freshness shows "unknown" state)
         renderFreshnessChips(freshness);
@@ -1241,21 +1246,26 @@
             }
         }
 
-        // Insight card
-        const recoFactors = reco && reco.readiness_factors;
-        let insightTitle = 'Recovery is on track';
-        let insightBody = reco && reco.reasoning ? reco.reasoning : 'Keep your sleep consistent and you\'ll stay ready.';
-        if (recoFactors) {
-            if (recoFactors.sleep_debt && recoFactors.sleep_debt.status === 'severe') {
-                insightTitle = 'Sleep debt is high';
-                insightBody = recoFactors.sleep_debt.message;
-            } else if (recoFactors.acwr && recoFactors.acwr.risk === 'detraining') {
-                insightTitle = 'Training load is low';
-                insightBody = recoFactors.acwr.message;
+        // Insight card — FIT-127: only paint when reco has resolved, otherwise
+        // the canned "Recovery is on track" / "Keep your sleep consistent…"
+        // text would overwrite the "Gathering data…" HTML placeholder before
+        // the algorithm has anything to say.
+        if (reco) {
+            const recoFactors = reco.readiness_factors;
+            let insightTitle = 'Recovery is on track';
+            let insightBody = reco.reasoning || 'Keep your sleep consistent and you\'ll stay ready.';
+            if (recoFactors) {
+                if (recoFactors.sleep_debt && recoFactors.sleep_debt.status === 'severe') {
+                    insightTitle = 'Sleep debt is high';
+                    insightBody = recoFactors.sleep_debt.message;
+                } else if (recoFactors.acwr && recoFactors.acwr.risk === 'detraining') {
+                    insightTitle = 'Training load is low';
+                    insightBody = recoFactors.acwr.message;
+                }
             }
+            if ($('insight-title')) $('insight-title').textContent = insightTitle;
+            if ($('insight-body')) $('insight-body').textContent = insightBody;
         }
-        if ($('insight-title')) $('insight-title').textContent = insightTitle;
-        if ($('insight-body')) $('insight-body').textContent = insightBody;
 
         // Sparkline: sleep scores from Oura trend
         const sleepSeries = (sleep && sleep.trend_data ? sleep.trend_data : []).map((d) => d.score);
