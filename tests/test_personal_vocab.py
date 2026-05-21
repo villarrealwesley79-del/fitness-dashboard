@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 
 import personal_vocab
 
@@ -334,3 +335,46 @@ def test_auto_logged_meals_do_not_train_personal_vocab_before_explicit_accept(mo
     assert res.status_code == 200
     assert res.get_json()["status"] == "logged"
     assert calls == {"accept": 0}
+
+
+def test_personal_vocab_settings_api_lists_and_deletes(monkeypatch, tmp_path):
+    import app
+    import data_store
+
+    monkeypatch.setenv("SECRET_KEY", "fit74-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    app.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(app, "_current_data_user_id", lambda: 1)
+    for _ in range(3):
+        personal_vocab.record_accept(1, "chip ckn bur", _estimate())
+    personal_vocab.record_accept(2, "other user", _estimate(item_name="Other"))
+
+    client = app.app.test_client()
+    listed = client.get("/api/personal-vocab")
+
+    assert listed.status_code == 200
+    body = listed.get_json()
+    assert [entry["normalized_input"] for entry in body["entries"]] == ["chip ckn bur"]
+    assert body["entries"][0]["canonical_resolution"]["item_name"] == "Chipotle chicken burrito"
+
+    deleted = client.delete("/api/personal-vocab/chip%20ckn%20bur")
+    missing = client.delete("/api/personal-vocab/chip%20ckn%20bur")
+
+    assert deleted.status_code == 200
+    assert deleted.get_json() == {"status": "ok", "removed": True}
+    assert data_store.get_personal_vocab_entry(1, "chip ckn bur") is None
+    assert data_store.get_personal_vocab_entry(2, "other user") is not None
+    assert missing.status_code == 404
+    assert missing.get_json() == {"status": "not_found", "removed": False}
+
+
+def test_settings_ui_exposes_learned_vocabulary_card():
+    root = Path(__file__).resolve().parents[1]
+    template = (root / "templates" / "index.html").read_text()
+    script = (root / "static" / "js" / "app.js").read_text()
+
+    assert "personal-vocab-list" in template
+    assert "Learned vocabulary" in template
+    assert "/api/personal-vocab" in script
+    assert "Forget" in script

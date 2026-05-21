@@ -619,6 +619,21 @@ def list_personal_vocab_entries(user_id: int) -> list[dict]:
     return entries
 
 
+def delete_personal_vocab_entry(user_id: int, normalized_input: str) -> bool:
+    """Delete one learned vocabulary mapping for the user."""
+    key = (normalized_input or "").strip()
+    if not key:
+        return False
+    init_data_db()
+    with _get_db() as conn:
+        cursor = conn.execute(
+            "DELETE FROM personal_vocab WHERE user_id = ? AND normalized_input = ?",
+            (user_id, key),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
 def import_personal_vocab_entry(user_id: int, entry: dict) -> dict | None:
     """Restore one exported personal vocabulary row for a user."""
     if not isinstance(entry, dict):
