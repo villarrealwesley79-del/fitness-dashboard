@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 from difflib import get_close_matches
 from typing import Any
 
 import data_store
+import heb_product_lookup
 import nutritionix_client
 import open_food_facts_client
 import usda_fdc_client
@@ -14,11 +16,14 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 
 CACHE_TTL_DAYS = 180
-SOURCE_PRIORITY = ("cache", "nutritionix", "usda_fdc", "open_food_facts")
+SOURCE_PRIORITY = ("cache", "heb_product_page", "nutritionix", "usda_fdc", "open_food_facts")
 MULTI_ITEM_TOKENS = {"and", "with", "plus", "&", "+", "combo", "meal", "plate"}
 PORTION_MODIFIER_TOKENS = {"half"}
+EXACT_ONLY_BRANDS = {"h-e-b", "heb"}
 KNOWN_BRANDS = {
     "chipotle",
+    "h-e-b",
+    "heb",
     "starbucks",
     "mcdonalds",
     "subway",
@@ -27,6 +32,7 @@ KNOWN_BRANDS = {
 }
 BRAND_ALIASES = {
     "chickfila": "chick-fil-a",
+    "heb": "h-e-b",
 }
 BRAND_TYPOS = {
     "mcdonalds": {"mcdonals", "mcdonlds", "mcdonald"},
@@ -111,9 +117,13 @@ OFF_LOCALE_ADJECTIVE_TOKENS = {
 }
 
 OFF_COMPLETE_QUALITY_TAGS = {
+    "en:nutriments-completed",
     "en:nutrition-completed",
     "en:nutrition-data-complete",
 }
+OFF_PRIVATE_LABEL_BRANDS = {"h-e-b"}
+OFF_PRIVATE_LABEL_BRAND_TOKENS = {"h-e-b", "heb"}
+OFF_PRIVATE_LABEL_VARIANT_TOKENS = {"brown", "cauliflower", "crunchy", "poke", "spicy"}
 OFF_PACKAGED_QUERY_TOKENS = {
     "barcode",
     "imported",
@@ -150,7 +160,7 @@ def normalize_meal_text(text: str) -> str:
                 token = brand
                 break
         else:
-            match = get_close_matches(token, KNOWN_BRANDS, n=1, cutoff=0.8)
+            match = get_close_matches(token, KNOWN_BRANDS - EXACT_ONLY_BRANDS, n=1, cutoff=0.8)
             if match:
                 token = match[0]
         if token:
@@ -171,6 +181,7 @@ def lookup(
     if not normalized:
         return None
     priorities = tuple(source_priority or SOURCE_PRIORITY)
+    private_label_brand = _off_private_label_brand_from_text(normalized)
 
     for source in priorities:
         if source == "cache":
@@ -178,7 +189,7 @@ def lookup(
                 cached = _cache_lookup(normalized, user_id=user_id)
             except Exception:
                 cached = None
-            if cached:
+            if cached and _cache_allowed_for_lookup(cached, private_label_brand):
                 return cached
         elif source == "nutritionix":
             try:
@@ -188,6 +199,14 @@ def lookup(
             if nutritionix:
                 _save_cache_best_effort(normalized, nutritionix["source"], nutritionix, user_id=user_id)
                 return nutritionix
+        elif source == "heb_product_page":
+            try:
+                heb = heb_product_lookup.lookup(lookup_text)
+            except Exception:
+                heb = None
+            if heb:
+                _save_cache_best_effort(normalized, heb["source"], heb, user_id=user_id)
+                return heb
         elif source == "usda_fdc":
             try:
                 usda = _usda_lookup(lookup_text, normalized)
@@ -238,6 +257,14 @@ def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) ->
     return len(tokens) == 1
 
 
+def is_private_label_query(text: str) -> bool:
+    """Return True for private-label packaged-food queries such as H-E-B sushi."""
+    normalized = normalize_meal_text(text)
+    return _off_private_label_brand_from_text(normalized) is not None and bool(
+        _off_private_label_product_tokens(normalized)
+    )
+
+
 def _cache_lookup(normalized: str, *, user_id: int = 1) -> dict[str, Any] | None:
     row = data_store.get_branded_lookup_cache(normalized, user_id=user_id)
     if not row:
@@ -252,6 +279,12 @@ def _cache_lookup(normalized: str, *, user_id: int = 1) -> dict[str, Any] | None
     estimate["source"] = "local_cache"
     estimate.setdefault("underlying_source", row.get("source"))
     return _sanitize_with_provenance(estimate)
+
+
+def _cache_allowed_for_lookup(estimate: dict[str, Any], private_label_brand: str | None) -> bool:
+    if not private_label_brand:
+        return True
+    return estimate.get("brand_id") == private_label_brand
 
 
 def _save_cache_best_effort(normalized: str, source: str, estimate: dict[str, Any], *, user_id: int) -> None:
@@ -279,6 +312,8 @@ def _nutritionix_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     requested_brand = _brand_from_text(normalized)
     source_brand = _matching_source_brand(food_items, requested_brand)
     if requested_brand and not source_brand:
+        if _off_private_label_brand_requested(requested_brand):
+            return None
         ambiguous = True
         notes.append("Nutritionix did not verify the requested brand; review before logging.")
     if _requested_item_mismatch(normalized, food_items):
@@ -325,6 +360,8 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     if _needs_modifier_review(normalized):
         notes.append("Customizable item is missing protein or modifier details.")
     if requested_brand and not source_brand:
+        if _off_private_label_brand_requested(requested_brand):
+            return None
         ambiguous = True
         notes.append("USDA FDC did not verify the requested brand; review before logging.")
     if _requested_item_mismatch(normalized, [food]):
@@ -361,6 +398,7 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
     if not _off_lookup_allowed(text, expected_country_tag):
         return None
     reject_us_only = _off_non_us_requested(text) and expected_country_tag is None
+    expected_private_label_brand = _off_private_label_brand_from_text(text)
     payload = open_food_facts_client.search_products(
         text,
         country_tag=expected_country_tag,
@@ -368,6 +406,8 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
             product,
             expected_country_tag=expected_country_tag,
             reject_us_only=reject_us_only,
+            expected_private_label_brand=expected_private_label_brand,
+            query_text=text,
         ),
     )
     products = payload.get("products") if isinstance(payload, dict) else None
@@ -378,10 +418,15 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
             product,
             expected_country_tag=expected_country_tag,
             reject_us_only=reject_us_only,
+            expected_private_label_brand=expected_private_label_brand,
+            query_text=text,
         ):
             continue
         try:
-            return _open_food_facts_estimate(product)
+            estimate = _open_food_facts_estimate(product)
+            if expected_private_label_brand:
+                estimate["brand_id"] = expected_private_label_brand
+            return estimate
         except (TypeError, ValueError, OverflowError):
             continue
     return None
@@ -392,7 +437,13 @@ def _off_candidate_usable(
     *,
     expected_country_tag: str | None = None,
     reject_us_only: bool = False,
+    expected_private_label_brand: str | None = None,
+    query_text: str | None = None,
 ) -> bool:
+    if expected_private_label_brand and not _off_private_label_brand_matches(product, expected_private_label_brand):
+        return False
+    if expected_private_label_brand and not _off_private_label_product_matches(product, query_text or ""):
+        return False
     if not _off_country_ok(product, expected_country_tag, reject_us_only=reject_us_only):
         return False
     if not _off_quality_ok(product):
@@ -418,6 +469,8 @@ def _off_expected_country_tag(text: str) -> str | None:
 def _off_lookup_allowed(text: str, expected_country_tag: str | None) -> bool:
     tokens = _off_query_tokens(text)
     product_tokens = _off_product_tokens(text)
+    if _off_private_label_brand_from_text(text):
+        return bool(_off_private_label_product_tokens(text))
     has_packaged_context = bool(
         OFF_PACKAGED_QUERY_TOKENS.intersection(tokens) or _off_non_us_requested(text)
     )
@@ -456,6 +509,45 @@ def _off_product_tokens(text: str) -> list[str]:
         for token in _off_query_token_list(text)
         if token not in OFF_CONTEXT_ONLY_QUERY_TOKENS
     ]
+
+
+def _off_private_label_product_tokens(text: str) -> list[str]:
+    return [
+        token
+        for token in _off_product_tokens(text)
+        if token not in OFF_PRIVATE_LABEL_BRAND_TOKENS
+    ]
+
+
+def _off_private_label_brand_from_text(text: str) -> str | None:
+    brand = _brand_from_text(normalize_meal_text(text))
+    return brand if _off_private_label_brand_requested(brand) else None
+
+
+def _off_private_label_brand_requested(brand: str | None) -> bool:
+    return brand in OFF_PRIVATE_LABEL_BRANDS
+
+
+def _off_private_label_brand_matches(product: dict[str, Any], brand: str) -> bool:
+    brands = str(product.get("brands") or "").lower()
+    if brand == "h-e-b":
+        normalized = brands.replace("h-e-b", "heb").replace("h e b", "heb").replace("h‑e‑b", "heb")
+        tokens = set(re.findall(r"[a-z0-9]+", normalized))
+        return bool({"heb", "sushiya"}.intersection(tokens))
+    return brand in brands
+
+
+def _off_private_label_product_matches(product: dict[str, Any], query_text: str) -> bool:
+    requested_tokens = set(_off_private_label_product_tokens(normalize_meal_text(query_text)))
+    if not requested_tokens:
+        return False
+    product_text = " ".join(str(product.get(key) or "") for key in ("brands", "product_name"))
+    product_tokens = set(re.findall(r"[a-z0-9]+", normalize_meal_text(product_text)))
+    if not requested_tokens.issubset(product_tokens):
+        return False
+    requested_variants = requested_tokens.intersection(OFF_PRIVATE_LABEL_VARIANT_TOKENS)
+    product_variants = product_tokens.intersection(OFF_PRIVATE_LABEL_VARIANT_TOKENS)
+    return product_variants.issubset(requested_variants)
 
 
 def _off_non_us_requested(text: str) -> bool:

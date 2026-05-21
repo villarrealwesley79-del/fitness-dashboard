@@ -81,6 +81,75 @@ def test_open_food_facts_client_retries_without_locale_word(monkeypatch):
     assert result["products"][0]["product_name"] == "Tim Tam"
 
 
+def test_open_food_facts_client_tries_hyphenated_heb_variant_first(monkeypatch):
+    seen_terms = []
+
+    def fake_urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        seen_terms.append(params["search_terms"][0])
+        if seen_terms[-1] == "H-E-B Sushiya California Roll":
+            return _Response({"products": [_product("Crunchy California Roll", brand="H-E-B")]})
+        return _Response({"products": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = open_food_facts_client.search_products("HEB California Roll")
+
+    assert seen_terms == ["H-E-B California Roll", "H-E-B Sushiya California Roll"]
+    assert result["products"][0]["brands"] == "H-E-B"
+
+
+def test_open_food_facts_client_tries_sushiya_variant_for_official_heb_spelling(monkeypatch):
+    seen_terms = []
+
+    def fake_urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        seen_terms.append(params["search_terms"][0])
+        if seen_terms[-1] == "H-E-B Sushiya Spicy California Roll":
+            return _Response({"products": [_product("Spicy California Roll", brand="H-E-B Sushiya")]})
+        return _Response({"products": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = open_food_facts_client.search_products("H-E-B Spicy California Roll")
+
+    assert seen_terms == ["H-E-B Sushiya Spicy California Roll"]
+    assert result["products"][0]["brands"] == "H-E-B Sushiya"
+
+
+def test_open_food_facts_client_does_not_duplicate_sushiya_variant(monkeypatch):
+    seen_terms = []
+
+    def fake_urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        seen_terms.append(params["search_terms"][0])
+        return _Response({"products": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    open_food_facts_client.search_products("H-E-B Sushiya Spicy California Roll")
+
+    assert seen_terms == ["H-E-B Sushiya Spicy California Roll"]
+
+
+def test_open_food_facts_client_preserves_sushi_subbrand_original_retry(monkeypatch):
+    seen_terms = []
+
+    def fake_urlopen(req, timeout):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)
+        seen_terms.append(params["search_terms"][0])
+        if seen_terms[-1] == "HEB Sushi Crunchy Cal Poke Bowl":
+            return _Response({"products": [_product("Crunchy Cal Poke Bowl", brand="HEB Sushi")]})
+        return _Response({"products": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = open_food_facts_client.search_products("HEB Sushi Crunchy Cal Poke Bowl")
+
+    assert seen_terms == ["H-E-B Sushi Crunchy Cal Poke Bowl", "HEB Sushi Crunchy Cal Poke Bowl"]
+    assert result["products"][0]["brands"] == "HEB Sushi"
+
+
 def test_open_food_facts_client_retries_without_punctuated_locale_word(monkeypatch):
     seen_terms = []
 

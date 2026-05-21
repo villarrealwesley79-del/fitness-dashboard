@@ -29,12 +29,16 @@ def test_normalize_plural_and_brand_typos():
     assert branded_food_lookup.normalize_meal_text("chipotole chicken burritos") == "chipotle chicken burrito"
     assert branded_food_lookup.normalize_meal_text("starbuks wraps") == "starbucks wrap"
     assert branded_food_lookup.normalize_meal_text("mcdonals sandwiches") == "mcdonalds sandwich"
+    assert branded_food_lookup.normalize_meal_text("herb chicken") == "herb chicken"
 
 
 def test_direct_lookup_gate_blocks_multi_item_generic_text():
     assert branded_food_lookup.should_attempt_direct_lookup("Chipotle chicken burrito") is True
     assert branded_food_lookup.should_attempt_direct_lookup("Chipotle") is False
     assert branded_food_lookup.should_attempt_direct_lookup("Starbucks") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("HEB California Roll") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("H-E-B Sushiya Spicy California Roll") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("HEB") is False
     assert branded_food_lookup.should_attempt_direct_lookup("banana") is True
     assert branded_food_lookup.should_attempt_direct_lookup("UK Walkers crisps") is True
     assert branded_food_lookup.should_attempt_direct_lookup("non-US packaged Smarties") is True
@@ -44,6 +48,238 @@ def test_direct_lookup_gate_blocks_multi_item_generic_text():
     assert branded_food_lookup.should_attempt_direct_lookup("two eggs and toast") is False
     assert branded_food_lookup.should_attempt_direct_lookup("chicken with rice") is False
     assert branded_food_lookup.should_attempt_direct_lookup("half Chipotle chicken burrito") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("herb chicken") is False
+
+
+def test_lookup_uses_open_food_facts_for_heb_private_label_when_other_sources_do_not_verify_brand(monkeypatch):
+    saved = {}
+    product = {
+        "code": "0041220087457",
+        "product_name": "California Roll",
+        "brands": "H-E-B,Sushiya",
+        "url": "https://world.openfoodfacts.org/product/0041220087457",
+        "countries_tags": ["en:united-states"],
+        "data_quality_tags": ["en:nutriments-completed"],
+        "nutriments": {
+            "energy-kcal_100g": 141.66666666667,
+            "proteins_100g": 2.9166666666667,
+            "carbohydrates_100g": 21.25,
+            "fat_100g": 6.6666666666667,
+            "sodium_100g": 0.45,
+            "fiber_100g": 1.2,
+        },
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "save_branded_lookup_cache",
+        lambda normalized, source, response, **kwargs: saved.update(
+            {"normalized": normalized, "source": source, "user_id": kwargs.get("user_id")}
+        ),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda *_a, **_kw: _nutritionix_payload(food_name="California roll", brand_name=None),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a, **_kw: {
+            "foods": [{
+                "fdcId": 123,
+                "description": "CALIFORNIA ROLL",
+                "foodNutrients": [
+                    {"nutrientName": "Energy", "value": 140},
+                    {"nutrientName": "Protein", "value": 3},
+                    {"nutrientName": "Carbohydrate, by difference", "value": 21},
+                    {"nutrientName": "Total lipid (fat)", "value": 7},
+                ],
+            }]
+        },
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": [product]},
+    )
+
+    estimate = branded_food_lookup.lookup(
+        "HEB California Roll",
+        source_priority=("nutritionix", "usda_fdc", "open_food_facts"),
+        user_id=42,
+    )
+
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["confidence"] >= 0.7
+    assert estimate["external_food_id"] == "0041220087457"
+    assert estimate["verified_source_url"] == "https://world.openfoodfacts.org/product/0041220087457"
+    assert estimate["item_name"] == "H-E-B,Sushiya California Roll"
+    assert estimate["brand_id"] == "h-e-b"
+    assert saved == {"normalized": "heb california roll", "source": "open_food_facts", "user_id": 42}
+
+
+def test_lookup_rejects_off_neighboring_heb_variant(monkeypatch):
+    spicy_product = {
+        "code": "spicy",
+        "product_name": "Spicy California Roll",
+        "brands": "H-E-B Sushiya",
+        "url": "https://world.openfoodfacts.org/product/spicy",
+        "countries_tags": ["en:united-states"],
+        "data_quality_tags": ["en:nutriments-completed"],
+        "nutriments": {
+            "energy-kcal_100g": 140,
+            "proteins_100g": 3,
+            "carbohydrates_100g": 21,
+            "fat_100g": 7,
+        },
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": [spicy_product]},
+    )
+
+    assert branded_food_lookup.lookup(
+        "HEB California Roll",
+        source_priority=("open_food_facts",),
+    ) is None
+
+
+def test_lookup_rejects_off_non_heb_brand_for_heb_private_label(monkeypatch):
+    saved = []
+    bad_product = {
+        "code": "bad",
+        "product_name": "California Roll",
+        "brands": "Other Sushi Brand",
+        "url": "https://world.openfoodfacts.org/product/bad",
+        "countries_tags": ["en:united-states"],
+        "data_quality_tags": ["en:nutriments-completed"],
+        "nutriments": {
+            "energy-kcal_100g": 140,
+            "proteins_100g": 3,
+            "carbohydrates_100g": 21,
+            "fat_100g": 7,
+        },
+    }
+    good_product = dict(bad_product)
+    good_product.update({
+        "code": "good",
+        "product_name": "Spicy California Roll",
+        "brands": "H-E-B Sushiya",
+        "url": "https://world.openfoodfacts.org/product/good",
+    })
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "save_branded_lookup_cache",
+        lambda normalized, source, response, **kwargs: saved.append((normalized, source, response, kwargs)),
+    )
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": [bad_product, good_product]},
+    )
+
+    estimate = branded_food_lookup.lookup(
+        "HEB Spicy California Roll",
+        source_priority=("open_food_facts",),
+    )
+
+    assert estimate["source"] == "open_food_facts"
+    assert estimate["external_food_id"] == "good"
+    assert estimate["item_name"] == "H-E-B Sushiya Spicy California Roll"
+    assert saved[0][1] == "open_food_facts"
+
+
+def test_lookup_rejects_off_substring_brand_for_heb_private_label(monkeypatch):
+    sheba_product = {
+        "code": "sheba",
+        "product_name": "California Roll",
+        "brands": "Sheba",
+        "url": "https://world.openfoodfacts.org/product/sheba",
+        "countries_tags": ["en:united-states"],
+        "data_quality_tags": ["en:nutriments-completed"],
+        "nutriments": {
+            "energy-kcal_100g": 140,
+            "proteins_100g": 3,
+            "carbohydrates_100g": 21,
+            "fat_100g": 7,
+        },
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": [sheba_product]},
+    )
+
+    assert branded_food_lookup.lookup(
+        "HEB Spicy California Roll",
+        source_priority=("open_food_facts",),
+    ) is None
+
+
+def test_lookup_uses_official_heb_product_page_for_plain_california_roll(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "save_branded_lookup_cache",
+        lambda normalized, source, response, **kwargs: saved.update(
+            {"normalized": normalized, "source": source, "response": response, "user_id": kwargs.get("user_id")}
+        ),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("Nutritionix should not run for known HEB item")),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("OFF should not run for known HEB item")),
+    )
+
+    estimate = branded_food_lookup.lookup("HEB California Roll", user_id=42)
+
+    assert estimate["source"] == "heb_product_page"
+    assert estimate["item_name"] == "H-E-B Sushiya California Sushi Roll"
+    assert estimate["portion_description"] == "10 pieces (224 g)"
+    assert estimate["calories"] == 240
+    assert estimate["protein_g"] == 7.0
+    assert estimate["carbs_g"] == 50.0
+    assert estimate["fat_g"] == 5.0
+    assert estimate["sodium_mg"] == 930
+    assert estimate["fiber_g"] == 3.0
+    assert estimate["confidence"] >= 0.8
+    assert estimate["verified_source_url"] == "https://www.heb.com/product-detail/h-e-b-sushiya-california-roll/2038218"
+    assert saved["normalized"] == "heb california roll"
+    assert saved["source"] == "heb_product_page"
+    assert saved["user_id"] == 42
+
+
+def test_official_heb_product_page_does_not_match_quantified_roll_input(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+
+    assert branded_food_lookup.lookup(
+        "2 HEB California Rolls",
+        source_priority=("heb_product_page",),
+    ) is None
+    assert branded_food_lookup.lookup(
+        "HEB California Roll 12 pieces",
+        source_priority=("heb_product_page",),
+    ) is None
 
 
 def test_lookup_uses_nutritionix_and_records_provenance(monkeypatch):
@@ -442,6 +678,43 @@ def test_cache_hit_returns_local_cache_without_network(monkeypatch):
     assert estimate["external_food_id"] == "chipotle-burrito"
 
 
+def test_heb_private_label_bypasses_cache_without_verified_brand(monkeypatch):
+    fetched_at = datetime.now().isoformat(timespec="seconds")
+    stale_cached_estimate = {
+        "item_name": "Generic California roll",
+        "portion_description": "100 g",
+        "meal_type": "lunch",
+        "calories": 140,
+        "protein_g": 3,
+        "carbs_g": 21,
+        "fat_g": 7,
+        "sodium_mg": 300,
+        "fiber_g": 1,
+        "confidence": 0.72,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "open_food_facts",
+        "external_food_id": "old",
+    }
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "get_branded_lookup_cache",
+        lambda normalized, **_kw: {
+            "normalized_text": normalized,
+            "source": "open_food_facts",
+            "response_json": stale_cached_estimate,
+            "fetched_at": fetched_at,
+        },
+    )
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+
+    estimate = branded_food_lookup.lookup("HEB California Roll")
+
+    assert estimate["source"] == "heb_product_page"
+    assert estimate["external_food_id"] == "2038218"
+    assert estimate["brand_id"] == "h-e-b"
+
+
 def test_malformed_cache_row_is_treated_as_miss(monkeypatch):
     monkeypatch.setattr(
         branded_food_lookup.data_store,
@@ -821,6 +1094,61 @@ def test_parse_meal_text_directly_looks_up_non_us_packaged_food(monkeypatch):
     assert result["fallback_used"] is False
     assert result["estimate"]["source"] == "open_food_facts"
     assert result["estimate"]["verified_source_url"] == "https://world.openfoodfacts.org/product/500032837"
+
+
+def test_parse_meal_text_surfaces_no_branded_match_for_heb_private_label(monkeypatch):
+    parser = importlib.import_module("meal_text_parser")
+    monkeypatch.setattr(parser.branded_food_lookup, "lookup", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        parser,
+        "_completion_json",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("LM must not run after HEB branded miss")),
+    )
+
+    result = parser.parse_meal_text("HEB Mystery Roll")
+
+    assert result["fallback_used"] is True
+    assert result["estimate"]["source"] == "fallback_text_estimate"
+    assert result["estimate"]["ambiguous"] is True
+    assert result["estimate"]["confidence"] <= 0.45
+    assert result["estimate"]["uncertainty_notes"][0] == (
+        "Low confidence — no branded match found in Nutritionix, USDA, or Open Food Facts."
+    )
+
+
+def test_parse_meal_text_uses_parser_for_quantified_heb_branded_miss(monkeypatch):
+    parser = importlib.import_module("meal_text_parser")
+    monkeypatch.setattr(parser.branded_food_lookup, "lookup", lambda *_a, **_kw: None)
+
+    def fake_completion(*_args, **_kwargs):
+        return {
+            "item_name": "H-E-B California Rolls",
+            "portion_description": "2 rolls",
+            "meal_type": "lunch",
+            "calories": 480,
+            "protein_g": 14,
+            "carbs_g": 100,
+            "fat_g": 10,
+            "sodium_mg": 1860,
+            "fiber_g": 6,
+            "confidence": 0.82,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+        }
+
+    monkeypatch.setattr(parser, "_completion_json", fake_completion)
+
+    result = parser.parse_meal_text("2 HEB California Rolls")
+
+    assert result["fallback_used"] is False
+    assert result["estimate"]["source"] == "ai_text_estimate"
+    assert result["estimate"]["portion_description"] == "2 rolls"
+    assert result["estimate"]["calories"] == 480
+    assert result["estimate"]["ambiguous"] is True
+    assert result["estimate"]["confidence"] <= 0.45
+    assert result["estimate"]["uncertainty_notes"][0] == (
+        "Low confidence — no branded match found in Nutritionix, USDA, or Open Food Facts."
+    )
 
 
 def test_parse_meal_text_skips_direct_lookup_for_half_portions(monkeypatch):

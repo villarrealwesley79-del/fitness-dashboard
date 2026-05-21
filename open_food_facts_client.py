@@ -102,6 +102,37 @@ def _search_variants(query: str) -> list[str]:
     alias = PRODUCT_QUERY_ALIASES.get(product_only.lower())
     if alias and alias.lower() not in {variant.lower() for variant in variants}:
         variants.insert(1 if variants else 0, alias)
+    heb_variants = []
+    seen = {variant.lower() for variant in variants}
+    for variant in variants:
+        for heb_variant in _heb_search_variants(variant):
+            lowered = heb_variant.lower()
+            if lowered not in seen:
+                heb_variants.append(heb_variant)
+                seen.add(lowered)
+    if heb_variants:
+        variants = heb_variants + variants
+    return variants
+
+
+def _heb_search_variants(query: str) -> list[str]:
+    parts = query.split()
+    if not parts:
+        return []
+    first = parts[0].strip(".,!?;:()[]{}\"'")
+    if first.lower() not in {"heb", "h-e-b"}:
+        return []
+    suffix = " ".join(parts[1:]).strip()
+    variants = [f"H-E-B {suffix}".strip()]
+    suffix_tokens = {part.strip(".,!?;:()[]{}\"'").lower() for part in parts[1:]}
+    if (
+        suffix
+        and "sushi" not in suffix_tokens
+        and "sushiya" not in suffix_tokens
+        and suffix_tokens.intersection({"california", "roll", "poke", "bowl"})
+    ):
+        sushiya_suffix = suffix
+        variants.append(f"H-E-B Sushiya {sushiya_suffix}".strip())
     return variants
 
 
