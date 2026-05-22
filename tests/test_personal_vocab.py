@@ -97,6 +97,27 @@ def test_personal_vocab_correction_resets_mapping(tmp_path, monkeypatch):
     assert entry["correct_count"] == 1
 
 
+def test_personal_vocab_negative_feedback_is_user_scoped_and_untrusted(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+
+    personal_vocab.record_negative_feedback(1, "side salad", _estimate(item_name="Side salad"), "skipped")
+    personal_vocab.record_negative_feedback(1, "side salad", _estimate(item_name="Side salad"), "deleted")
+    personal_vocab.record_negative_feedback(2, "side salad", _estimate(item_name="Side salad"), "deleted")
+
+    user_one = data_store.get_personal_vocab_entry(1, "side salad")
+    user_two = data_store.get_personal_vocab_entry(2, "side salad")
+    assert user_one["skip_count"] == 1
+    assert user_one["deleted_count"] == 1
+    assert user_one["last_negative_feedback_at"]
+    assert user_one["accept_count"] == 0
+    assert user_two["skip_count"] == 0
+    assert user_two["deleted_count"] == 1
+    assert personal_vocab.lookup("side salad", user_id=1) is None
+
+
 def test_personal_vocab_correction_can_recover_after_new_accepts(tmp_path, monkeypatch):
     import data_store
 

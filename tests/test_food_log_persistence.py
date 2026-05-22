@@ -67,6 +67,82 @@ def test_food_log_preserves_final_values_and_sanitized_original_estimate(isolate
     assert rows[0]["original_estimate"] == saved["original_estimate"]
 
 
+def test_food_log_persists_multi_item_meal_metadata(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+
+    saved = store.add_food_log(
+        user_id=1,
+        record={
+            "client_id": "meal-1-item-a",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:30:00",
+            "item_name": "chicken",
+            "calories": 300,
+            "meal_id": "meal-1",
+            "meal_item_id": "item-a",
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+
+    rows = store.get_food_logs(user_id=1)
+    assert saved["meal_id"] == "meal-1"
+    assert saved["meal_item_id"] == "item-a"
+    assert saved["item_index"] == 0
+    assert saved["item_state"] == "included"
+    assert rows[0]["meal_id"] == "meal-1"
+
+
+def test_existing_database_migration_adds_multi_item_columns_and_index(tmp_path, monkeypatch):
+    import data_store
+
+    db_path = tmp_path / "fitness_data.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE food_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            client_id TEXT,
+            date TEXT NOT NULL,
+            logged_at TEXT NOT NULL,
+            calories INTEGER,
+            UNIQUE(user_id, client_id)
+        );
+        CREATE TABLE personal_vocab (
+            user_id INTEGER NOT NULL,
+            normalized_input TEXT NOT NULL,
+            phrase TEXT NOT NULL,
+            canonical_resolution TEXT NOT NULL,
+            accept_count INTEGER NOT NULL DEFAULT 0,
+            correct_count INTEGER NOT NULL DEFAULT 0,
+            confidence_boost REAL NOT NULL DEFAULT 0,
+            last_used TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY(user_id, normalized_input)
+        );
+        """
+    )
+    conn.close()
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+
+    data_store.init_data_db()
+
+    with sqlite3.connect(db_path) as migrated:
+        food_cols = {row[1] for row in migrated.execute("PRAGMA table_info(food_logs)").fetchall()}
+        vocab_cols = {row[1] for row in migrated.execute("PRAGMA table_info(personal_vocab)").fetchall()}
+        event_cols = {row[1] for row in migrated.execute("PRAGMA table_info(meal_acceptance_events)").fetchall()}
+        indexes = {row[1] for row in migrated.execute("PRAGMA index_list(food_logs)").fetchall()}
+        tables = {row[0] for row in migrated.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+    assert {"meal_id", "meal_item_id", "item_index", "item_state"} <= food_cols
+    assert {"skip_count", "deleted_count", "last_negative_feedback_at"} <= vocab_cols
+    assert "feedback_fingerprint" in event_cols
+    assert "ix_food_logs_user_meal_id" in indexes
+    assert "meal_acceptance_events" in tables
+
+
 def test_food_log_client_id_is_idempotent(isolated_store):
     store, _ = isolated_store
     store.init_data_db()

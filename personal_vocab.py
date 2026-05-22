@@ -45,6 +45,30 @@ def record_correct(user_id: int, phrase: str | None, estimate: dict[str, Any]) -
     )
 
 
+def record_negative_feedback(
+    user_id: int,
+    phrase: str | None,
+    estimate: dict[str, Any] | None,
+    feedback_type: str,
+) -> dict | None:
+    """Record skipped/deleted review feedback without creating a trusted mapping."""
+    phrase_text = (phrase or "").strip()
+    normalized = _normalize(phrase_text)
+    if not normalized:
+        return None
+    canonical = _canonical_estimate(estimate or {}) or {
+        "item_name": phrase_text[:500],
+        "source": "negative_feedback",
+    }
+    return data_store.record_personal_vocab_negative_feedback(
+        user_id,
+        normalized_input=normalized,
+        phrase=phrase_text,
+        canonical_resolution=canonical,
+        feedback_type=feedback_type,
+    )
+
+
 def lookup(phrase: str | None, *, user_id: int = 1) -> dict | None:
     """Return a personal-vocab estimate when the learned mapping is trusted."""
     normalized = _normalize(phrase)
