@@ -80,12 +80,28 @@
         return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     };
 
+    // FIT-128: dashboard fetchers pass timeoutMs so a hung endpoint
+    // surfaces the per-card retry chip instead of sitting silent forever.
+    const DASHBOARD_FETCH_TIMEOUT_MS = 30000;
+
     async function api(path, opts = {}) {
-        const res = await fetch(path, {
-            credentials: 'same-origin',
-            headers: { 'Accept': 'application/json', ...(opts.headers || {}) },
-            ...opts,
-        });
+        const { timeoutMs, ...fetchOpts } = opts;
+        let timer = null;
+        if (timeoutMs && !fetchOpts.signal) {
+            const controller = new AbortController();
+            timer = setTimeout(() => controller.abort(), timeoutMs);
+            fetchOpts.signal = controller.signal;
+        }
+        let res;
+        try {
+            res = await fetch(path, {
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json', ...(fetchOpts.headers || {}) },
+                ...fetchOpts,
+            });
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
         if (res.status === 401) {
             window.location.href = '/login?next=' + encodeURIComponent(location.pathname);
             throw new Error('unauthorized');
@@ -580,7 +596,7 @@
     // --- loaders (cached) ----------------------------------------
     async function getDashboard(force = false) {
         if (!force && state.dashboard) return state.dashboard;
-        state.dashboard = await api('/api/dashboard');
+        state.dashboard = await api('/api/dashboard', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
         return state.dashboard;
     }
     async function getVitals(force = false) {
@@ -590,14 +606,18 @@
     }
     async function getOuraStatus(force = false, refreshApi = false) {
         if (!force && !refreshApi && state.oura) return state.oura;
-        try { state.oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : '')); }
-        catch { state.oura = null; }
+        // FIT-128: track success/failure on a sentinel so paintDashboardFromState
+        // can surface a per-card retry chip without losing the rejection in
+        // the existing try/catch swallow. timeoutMs makes a hung endpoint
+        // reject after 30s instead of leaving the chip silent forever.
+        try { state.oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : ''), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); state.ouraError = false; }
+        catch { state.oura = null; state.ouraError = true; }
         return state.oura;
     }
     async function getOuraSleep(force = false) {
         if (!force && state.ouraSleep) return state.ouraSleep;
-        try { state.ouraSleep = await api('/api/oura/sleep-summary'); }
-        catch { state.ouraSleep = null; }
+        try { state.ouraSleep = await api('/api/oura/sleep-summary', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); state.ouraSleepError = false; }
+        catch { state.ouraSleep = null; state.ouraSleepError = true; }
         return state.ouraSleep;
     }
     async function getOuraTrends(force = false) {
@@ -608,8 +628,8 @@
     }
     async function getReco(force = false) {
         if (!force && state.reco) return state.reco;
-        try { state.reco = await api('/api/recommendation/smart'); }
-        catch { state.reco = null; }
+        try { state.reco = await api('/api/recommendation/smart', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); state.recoError = false; }
+        catch { state.reco = null; state.recoError = true; }
         return state.reco;
     }
     async function getInsights(force = false) {
@@ -994,11 +1014,27 @@
     // ("--", "Loading…", etc.) until their data lands, and each paint reads
     // from state so it tolerates the other endpoints not having returned yet.
     async function renderDashboard() {
-        // Paint once with whatever's already in cache (often empty on first open).
+        // Paint once with whatever's already in cache. Per-field guards inside
+        // paintDashboardFromState (added in FIT-127) keep the cold-open empty
+        // state from injecting misleading defaults — the painters skip cards
+        // whose backing data is fully absent, so the HTML placeholders
+        // ('--', '—', empty gauge <div>) stay in place until real data lands.
+        //
+        // FIT-128: reset per-card error sentinels at the top of each render so
+        // a card that recovered since the last navigation isn't stuck in
+        // failure state. Fetchers re-set them on rejection below.
+        state.ouraError = false;
+        state.recoError = false;
+        state.ouraSleepError = false;
+
         paintDashboardFromState();
 
         const repaint = () => { try { paintDashboardFromState(); } catch (e) { console.warn('dashboard repaint failed:', e); } };
-        const dashP = getDashboard().then(repaint, () => repaint());
+        // FIT-128: getDashboard does NOT swallow its rejection (unlike the
+        // other three), so map its failure onto state.recoError — same chip
+        // surface as a reco failure since both endpoints feed the AI
+        // Recommendation card.
+        const dashP = getDashboard().then(repaint, () => { state.recoError = true; repaint(); });
         const ouraP = getOuraStatus().then(repaint, () => repaint());
         const recoP = getReco().then(repaint, () => repaint());
         const sleepP = getOuraSleep().then(repaint, () => repaint());
@@ -1018,9 +1054,23 @@
         const oura = state.oura;
         const reco = state.reco;
         const sleep = state.ouraSleep;
-        const readiness = (oura && oura.readiness) || (dash && dash.recomp_command && dash.recomp_command.readiness) || 0;
 
-        gaugeChart($('readiness-gauge-svg'), readiness, { label: readiness >= 75 ? 'Very Good' : readiness >= 55 ? 'Good' : 'Low' });
+        // FIT-127: per-field guards. paintDashboardFromState runs again after
+        // every .then(repaint) in renderDashboard, so e.g. /api/oura/sleep-
+        // summary resolving first would otherwise repaint the WHOLE dashboard
+        // from a still-undefined oura/reco/dash slice and inject misleading
+        // defaults (0% "Low" gauge, "Rest Day" reco title, "Moderate" intensity,
+        // canned "Based on your readiness…" reasoning). Each card now skips
+        // painting when its backing data is fully absent and leaves the HTML
+        // placeholder ('--', '—', empty gauge <div>) in place until real data
+        // lands.
+        const ouraReadiness = oura && oura.readiness != null ? oura.readiness : null;
+        const dashReadiness = dash && dash.recomp_command && dash.recomp_command.readiness != null ? dash.recomp_command.readiness : null;
+        const readiness = ouraReadiness != null ? ouraReadiness : dashReadiness;
+
+        if (readiness != null) {
+            gaugeChart($('readiness-gauge-svg'), readiness, { label: readiness >= 75 ? 'Very Good' : readiness >= 55 ? 'Good' : 'Low' });
+        }
 
         if ($('dash-hrv')) $('dash-hrv').textContent = oura && oura.hrv != null ? `${oura.hrv} ms` : '--';
         if ($('dash-rhr')) $('dash-rhr').textContent = oura && oura.resting_hr != null ? `${oura.resting_hr} bpm` : '--';
@@ -1052,20 +1102,29 @@
                 ? `Generic recommendation — wearable data is ${daysOld} days old`
                 : 'Generic recommendation — wearable data is stale';
         } else {
-            recoTitle = (reco && reco.suggested_workout) || (nw && (nw.focus || nw.goal_name)) || 'Rest Day';
+            // FIT-127: no real data → null sentinel so the assignment below
+            // skips and the HTML placeholder ('—') stays put.
+            recoTitle = (reco && reco.suggested_workout) || (nw && (nw.focus || nw.goal_name)) || null;
         }
-        if ($('reco-title')) $('reco-title').textContent = recoTitle.replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+        if (recoTitle && $('reco-title')) {
+            $('reco-title').textContent = recoTitle.replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+        }
 
         // Intensity / time / RPE chips
         const focusLabel = nw ? (nw.focus || nw.goal_name || '') : '';
+        // FIT-127: null sentinel instead of "Moderate" so the assignment below
+        // skips when there's no reco data and the HTML placeholder stays put.
         const intensityWord = reco && reco.recommendation
             ? (reco.recommendation === 'intensity' ? 'High'
                 : reco.recommendation === 'moderate' ? 'Moderate'
                 : reco.recommendation === 'recovery' ? 'Low'
                 : reco.recommendation)
-            : 'Moderate';
+            : null;
         if ($('reco-intensity')) {
-            $('reco-intensity').textContent = [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ') || 'Moderate';
+            const intensityText = [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ');
+            if (intensityText) {
+                $('reco-intensity').textContent = intensityText;
+            }
         }
         const timeMin = nw && nw.estimated_minutes;
         if ($('reco-time')) {
@@ -1162,26 +1221,36 @@
         // Reason / "why" — wearable reasoning + explicit food guidance (FIT-1 AC)
         const whyEl = $('reco-why');
         if (whyEl) {
-            let whyText;
+            // FIT-127: null sentinel so we skip writing the canned "Based on
+            // your readiness, sleep, and training load." text on a cold open
+            // where neither reco nor wearable freshness data has resolved.
+            let whyText = null;
             if (wearableAllMissing) {
                 whyText = 'No recent wearable data — showing a conservative default. Sync Oura or Apple Health for a personalized recommendation.';
             } else if (wearableStale) {
                 whyText = ((reco && reco.reasoning) ? reco.reasoning + '. ' : '') + 'Confidence is lowered because wearable data is stale.';
-            } else {
-                whyText = (reco && reco.reasoning) || 'Based on your readiness, sleep, and training load.';
+            } else if (reco && reco.reasoning) {
+                whyText = reco.reasoning;
             }
-            // Append food guidance line so the brief always explains how today's
-            // food changed (or could change) remaining-day guidance.
-            const foodLine = buildFoodGuidanceLine(freshness && freshness.food);
-            if (foodLine) whyText = whyText.replace(/\.\s*$/, '') + '. ' + foodLine;
-            whyEl.textContent = whyText;
-            whyEl.classList.toggle('lower-confidence', wearableDegraded);
+            if (whyText) {
+                // Append food guidance line so the brief always explains how
+                // today's food changed (or could change) remaining-day guidance.
+                const foodLine = buildFoodGuidanceLine(freshness && freshness.food);
+                if (foodLine) whyText = whyText.replace(/\.\s*$/, '') + '. ' + foodLine;
+                whyEl.textContent = whyText;
+                whyEl.classList.toggle('lower-confidence', wearableDegraded);
+            }
         }
 
-        // Confidence — server-driven bucket → label; legacy ladder as fallback
+        // Confidence — server-driven bucket → label; legacy ladder as fallback.
+        // FIT-127: skip the legacy ladder when readiness is null so cold-open
+        // doesn't overwrite the '--%' HTML placeholder with the worst-bucket
+        // '45%'.
         const confLabel = (reco && reco.confidence_level && RECO_CONF_LABEL[reco.confidence_level])
-            || (readiness >= 80 ? '92%' : readiness >= 65 ? '78%' : readiness >= 50 ? '62%' : '45%');
-        if ($('reco-confidence-pct')) $('reco-confidence-pct').textContent = confLabel;
+            || (readiness != null ? (readiness >= 80 ? '92%' : readiness >= 65 ? '78%' : readiness >= 50 ? '62%' : '45%') : null);
+        if (confLabel && $('reco-confidence-pct')) {
+            $('reco-confidence-pct').textContent = confLabel;
+        }
 
         // Freshness chips (always render — null freshness shows "unknown" state)
         renderFreshnessChips(freshness);
@@ -1209,25 +1278,65 @@
             }
         }
 
-        // Insight card
-        const recoFactors = reco && reco.readiness_factors;
-        let insightTitle = 'Recovery is on track';
-        let insightBody = reco && reco.reasoning ? reco.reasoning : 'Keep your sleep consistent and you\'ll stay ready.';
-        if (recoFactors) {
-            if (recoFactors.sleep_debt && recoFactors.sleep_debt.status === 'severe') {
-                insightTitle = 'Sleep debt is high';
-                insightBody = recoFactors.sleep_debt.message;
-            } else if (recoFactors.acwr && recoFactors.acwr.risk === 'detraining') {
-                insightTitle = 'Training load is low';
-                insightBody = recoFactors.acwr.message;
+        // Insight card — FIT-127: only paint when reco has resolved, otherwise
+        // the canned "Recovery is on track" / "Keep your sleep consistent…"
+        // text would overwrite the "Gathering data…" HTML placeholder before
+        // the algorithm has anything to say.
+        if (reco) {
+            const recoFactors = reco.readiness_factors;
+            let insightTitle = 'Recovery is on track';
+            let insightBody = reco.reasoning || 'Keep your sleep consistent and you\'ll stay ready.';
+            if (recoFactors) {
+                if (recoFactors.sleep_debt && recoFactors.sleep_debt.status === 'severe') {
+                    insightTitle = 'Sleep debt is high';
+                    insightBody = recoFactors.sleep_debt.message;
+                } else if (recoFactors.acwr && recoFactors.acwr.risk === 'detraining') {
+                    insightTitle = 'Training load is low';
+                    insightBody = recoFactors.acwr.message;
+                }
             }
+            if ($('insight-title')) $('insight-title').textContent = insightTitle;
+            if ($('insight-body')) $('insight-body').textContent = insightBody;
         }
-        if ($('insight-title')) $('insight-title').textContent = insightTitle;
-        if ($('insight-body')) $('insight-body').textContent = insightBody;
 
         // Sparkline: sleep scores from Oura trend
         const sleepSeries = (sleep && sleep.trend_data ? sleep.trend_data : []).map((d) => d.score);
         sparkline($('insight-sparkline'), sleepSeries, { color: '#22d3ee', height: 32 });
+
+        // FIT-128: per-card retry chips. Each chip surfaces when its endpoint
+        // rejected/timed out (sentinel set by the fetcher's catch or by
+        // renderDashboard's .then-rejection for the un-swallowing dashboard
+        // endpoint). Click re-fetches the relevant endpoint(s) with force=true
+        // and repaints; on repeat failure the fetcher re-sets the sentinel
+        // and the chip stays visible.
+        paintRetryChip('readiness-retry', state.ouraError, () => getOuraStatus(true));
+        paintRetryChip('reco-retry', state.recoError, async () => {
+            // The AI Recommendation chip covers BOTH dashboard and reco
+            // because the card chrome is fed by both endpoints. getDashboard
+            // throws on failure (unlike the other fetchers), so wrap it.
+            let dashFailed = false;
+            try { await getDashboard(true); } catch { dashFailed = true; }
+            await getReco(true);
+            if (dashFailed && !state.recoError) state.recoError = true;
+        });
+        paintRetryChip('insight-retry', state.ouraSleepError, () => getOuraSleep(true));
+    }
+
+    function paintRetryChip(elementId, isErrored, retryFn) {
+        const chip = $(elementId);
+        if (!chip) return;
+        chip.hidden = !isErrored;
+        if (!isErrored) return;
+        chip.onclick = async () => {
+            chip.disabled = true;
+            chip.hidden = true;
+            try {
+                await retryFn();
+            } finally {
+                chip.disabled = false;
+                paintDashboardFromState();
+            }
+        };
     }
 
     function paintReadinessTrendChart(trends) {
