@@ -15,15 +15,24 @@ def _paint_body() -> str:
 
 
 def test_render_dashboard_preserves_fit125_repaint_chains():
-    """FIT-127 must not regress FIT-125: each primary endpoint still gets its
-    own .then(repaint) so a slow endpoint can't block the others."""
+    """FIT-127 + FIT-129 must not regress FIT-125: each primary endpoint
+    still gets its own .then chain in renderDashboard so a slow endpoint
+    can't block the others. FIT-129 replaced the bare `.then(repaint, () =>
+    repaint())` shape with gen-guarded settle calls, but the per-slice
+    fan-out (one .then per fetcher) is still the contract."""
     app_js = (ROOT / "static" / "js" / "app.js").read_text()
     assert "async function renderDashboard()" in app_js
-    assert ".then(repaint, () => repaint())" in app_js, (
-        "FIT-125 per-slice repaint chains must remain — FIT-127 only adds "
-        "per-field guards inside paintDashboardFromState, it does not change "
-        "renderDashboard's fetch fan-out"
-    )
+    body = app_js.split("async function renderDashboard()", 1)[1].split("\n    }\n", 1)[0]
+
+    # Each of the four primary fetchers must have its own .then chain in
+    # renderDashboard. We assert this by checking that each fetcher's
+    # invocation inside renderDashboard is immediately followed by `.then(`.
+    for fetcher in ("getDashboard", "getOuraStatus", "getReco", "getOuraSleep"):
+        assert f"{fetcher}().then(" in body, (
+            f"FIT-125 per-slice fan-out must remain — {fetcher} must have its "
+            f"own .then chain inside renderDashboard so a slow endpoint can't "
+            f"block the others"
+        )
 
 
 def test_readiness_gauge_paint_is_guarded_on_missing_data():
