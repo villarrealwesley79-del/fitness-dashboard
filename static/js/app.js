@@ -1055,21 +1055,25 @@
         const reco = state.reco;
         const sleep = state.ouraSleep;
 
-        // FIT-127: per-field guards. paintDashboardFromState runs again after
-        // every .then(repaint) in renderDashboard, so e.g. /api/oura/sleep-
-        // summary resolving first would otherwise repaint the WHOLE dashboard
-        // from a still-undefined oura/reco/dash slice and inject misleading
-        // defaults (0% "Low" gauge, "Rest Day" reco title, "Moderate" intensity,
-        // canned "Based on your readiness…" reasoning). Each card now skips
-        // painting when its backing data is fully absent and leaves the HTML
-        // placeholder ('--', '—', empty gauge <div>) in place until real data
-        // lands.
+        // FIT-127: per-field guards. paintDashboardFromState runs after every
+        // .then(repaint) in renderDashboard AND after invalidateCaches() nulls
+        // state slices on sync/log actions. To keep misleading defaults off
+        // the cold-open placeholders AND to clear stale data from a prior
+        // session when a refetch is slow or fails, each card writes its HTML
+        // placeholder back when its backing data is fully absent — never
+        // skipping silently (which would otherwise leave the prior session's
+        // ring/text on screen as stale guidance).
         const ouraReadiness = oura && oura.readiness != null ? oura.readiness : null;
         const dashReadiness = dash && dash.recomp_command && dash.recomp_command.readiness != null ? dash.recomp_command.readiness : null;
         const readiness = ouraReadiness != null ? ouraReadiness : dashReadiness;
 
         if (readiness != null) {
             gaugeChart($('readiness-gauge-svg'), readiness, { label: readiness >= 75 ? 'Very Good' : readiness >= 55 ? 'Good' : 'Low' });
+        } else {
+            // Clear the SVG so a prior session's ring/value doesn't linger.
+            // gaugeChart is the only writer to this container.
+            const gaugeEl = $('readiness-gauge-svg');
+            if (gaugeEl) gaugeEl.innerHTML = '';
         }
 
         if ($('dash-hrv')) $('dash-hrv').textContent = oura && oura.hrv != null ? `${oura.hrv} ms` : '--';
@@ -1102,18 +1106,19 @@
                 ? `Generic recommendation — wearable data is ${daysOld} days old`
                 : 'Generic recommendation — wearable data is stale';
         } else {
-            // FIT-127: no real data → null sentinel so the assignment below
-            // skips and the HTML placeholder ('—') stays put.
             recoTitle = (reco && reco.suggested_workout) || (nw && (nw.focus || nw.goal_name)) || null;
         }
-        if (recoTitle && $('reco-title')) {
-            $('reco-title').textContent = recoTitle.replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+        if ($('reco-title')) {
+            if (recoTitle) {
+                $('reco-title').textContent = recoTitle.replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+            } else {
+                // Reset to HTML placeholder so a prior session's title doesn't linger.
+                $('reco-title').textContent = '—';
+            }
         }
 
         // Intensity / time / RPE chips
         const focusLabel = nw ? (nw.focus || nw.goal_name || '') : '';
-        // FIT-127: null sentinel instead of "Moderate" so the assignment below
-        // skips when there's no reco data and the HTML placeholder stays put.
         const intensityWord = reco && reco.recommendation
             ? (reco.recommendation === 'intensity' ? 'High'
                 : reco.recommendation === 'moderate' ? 'Moderate'
@@ -1124,6 +1129,9 @@
             const intensityText = [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ');
             if (intensityText) {
                 $('reco-intensity').textContent = intensityText;
+            } else {
+                // Reset to HTML placeholder so a prior session's chip doesn't linger.
+                $('reco-intensity').textContent = '—';
             }
         }
         const timeMin = nw && nw.estimated_minutes;
@@ -1221,9 +1229,6 @@
         // Reason / "why" — wearable reasoning + explicit food guidance (FIT-1 AC)
         const whyEl = $('reco-why');
         if (whyEl) {
-            // FIT-127: null sentinel so we skip writing the canned "Based on
-            // your readiness, sleep, and training load." text on a cold open
-            // where neither reco nor wearable freshness data has resolved.
             let whyText = null;
             if (wearableAllMissing) {
                 whyText = 'No recent wearable data — showing a conservative default. Sync Oura or Apple Health for a personalized recommendation.';
@@ -1239,17 +1244,25 @@
                 if (foodLine) whyText = whyText.replace(/\.\s*$/, '') + '. ' + foodLine;
                 whyEl.textContent = whyText;
                 whyEl.classList.toggle('lower-confidence', wearableDegraded);
+            } else {
+                // Reset to HTML placeholder so a prior session's reasoning doesn't linger.
+                whyEl.textContent = 'Analyzing your readiness, sleep, and training load…';
+                whyEl.classList.remove('lower-confidence');
             }
         }
 
         // Confidence — server-driven bucket → label; legacy ladder as fallback.
-        // FIT-127: skip the legacy ladder when readiness is null so cold-open
-        // doesn't overwrite the '--%' HTML placeholder with the worst-bucket
-        // '45%'.
+        // Ladder is gated on readiness != null so cold-open doesn't paint the
+        // worst-bucket '45%' over the '--%' HTML placeholder.
         const confLabel = (reco && reco.confidence_level && RECO_CONF_LABEL[reco.confidence_level])
             || (readiness != null ? (readiness >= 80 ? '92%' : readiness >= 65 ? '78%' : readiness >= 50 ? '62%' : '45%') : null);
-        if (confLabel && $('reco-confidence-pct')) {
-            $('reco-confidence-pct').textContent = confLabel;
+        if ($('reco-confidence-pct')) {
+            if (confLabel) {
+                $('reco-confidence-pct').textContent = confLabel;
+            } else {
+                // Reset to '--%' HTML placeholder so a prior session's % doesn't linger.
+                $('reco-confidence-pct').textContent = '--%';
+            }
         }
 
         // Freshness chips (always render — null freshness shows "unknown" state)
@@ -1278,10 +1291,11 @@
             }
         }
 
-        // Insight card — FIT-127: only paint when reco has resolved, otherwise
-        // the canned "Recovery is on track" / "Keep your sleep consistent…"
-        // text would overwrite the "Gathering data…" HTML placeholder before
-        // the algorithm has anything to say.
+        // Insight card — only paint when reco has resolved. On a cold open,
+        // or when state.reco is nulled by getReco's catch path or by a post-
+        // invalidate refetch that's slow or fails, reset to the HTML
+        // placeholders so a prior session's insight doesn't linger as stale
+        // guidance.
         if (reco) {
             const recoFactors = reco.readiness_factors;
             let insightTitle = 'Recovery is on track';
@@ -1297,6 +1311,9 @@
             }
             if ($('insight-title')) $('insight-title').textContent = insightTitle;
             if ($('insight-body')) $('insight-body').textContent = insightBody;
+        } else {
+            if ($('insight-title')) $('insight-title').textContent = 'Gathering data…';
+            if ($('insight-body')) $('insight-body').textContent = '';
         }
 
         // Sparkline: sleep scores from Oura trend
