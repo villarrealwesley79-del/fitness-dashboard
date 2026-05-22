@@ -26,6 +26,10 @@ def test_import_backup_replays_food_logs_without_wiping_or_duplication(tmp_path,
             "item_name": "existing meal",
             "calories": 700,
             "protein_g": 45,
+            "meal_id": "backup-meal-1",
+            "meal_item_id": "backup-item-1",
+            "item_index": 0,
+            "item_state": "included",
         },
     )
     backup = {
@@ -51,6 +55,11 @@ def test_import_backup_replays_food_logs_without_wiping_or_duplication(tmp_path,
     rows = data_store.get_food_logs(1)
     assert len(rows) == 2
     assert {row["item_name"] for row in rows} == {"existing meal", "legacy breakfast"}
+    existing_row = next(row for row in rows if row["client_id"] == "keep-existing")
+    assert existing_row["meal_id"] == "backup-meal-1"
+    assert existing_row["meal_item_id"] == "backup-item-1"
+    assert existing_row["item_index"] == 0
+    assert existing_row["item_state"] == "included"
     assert any(row["client_id"].startswith("backup-food-log-") for row in rows)
     assert data_store.get_food_logs(1, since=existing["date"])
 
@@ -80,19 +89,47 @@ def test_backup_round_trips_personal_vocab(tmp_path, monkeypatch):
         canonical_resolution=canonical,
         accepted=True,
     )
+    data_store.record_personal_vocab_negative_feedback(
+        1,
+        normalized_input="skip me",
+        phrase="skip me",
+        canonical_resolution={"item_name": "skip me", "source": "negative_feedback"},
+        feedback_type="skipped",
+    )
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id="discarded-meal-1",
+        status="discarded",
+        included_client_ids=[],
+        skipped_count=1,
+        deleted_count=0,
+    )
 
     client = module.app.test_client()
     exported = client.get("/api/export-backup")
     assert exported.status_code == 200
     backup = exported.get_json()
     vocab_rows = backup["data"]["personal_vocab"]
-    assert vocab_rows[0]["normalized_input"] == "chip ckn bur"
+    meal_events = backup["data"]["meal_acceptance_events"]
+    assert {row["normalized_input"] for row in vocab_rows} == {"chip ckn bur", "skip me"}
+    assert meal_events[0]["meal_id"] == "discarded-meal-1"
 
     data_store.delete_user_data(1)
-    restored = client.post("/api/import-backup", json={"data": {"personal_vocab": vocab_rows}})
+    restored = client.post("/api/import-backup", json={"data": {
+        "personal_vocab": vocab_rows,
+        "meal_acceptance_events": meal_events,
+    }})
 
     assert restored.status_code == 200
-    assert restored.get_json()["imported"]["personal_vocab"] == 1
+    assert restored.get_json()["imported"]["personal_vocab"] == 2
+    assert restored.get_json()["imported"]["meal_acceptance_events"] == 1
     entry = data_store.get_personal_vocab_entry(1, "chip ckn bur")
     assert entry["phrase"] == "chip ckn bur"
     assert entry["canonical_resolution"] == canonical
+    skipped = data_store.get_personal_vocab_entry(1, "skip me")
+    assert skipped["skip_count"] == 1
+    assert skipped["deleted_count"] == 0
+    assert skipped["last_negative_feedback_at"]
+    restored_event = data_store.get_meal_acceptance_event(1, "discarded-meal-1")
+    assert restored_event["status"] == "discarded"
+    assert restored_event["included_client_ids"] == []

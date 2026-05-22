@@ -291,6 +291,10 @@ def init_data_db():
                 source                 TEXT,
                 correction_state       TEXT,
                 original_estimate_json TEXT,
+                meal_id                TEXT,
+                meal_item_id           TEXT,
+                item_index             INTEGER,
+                item_state             TEXT,
                 vocab_learned_at       TEXT,
                 created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
                 updated_at             TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -313,11 +317,27 @@ def init_data_db():
                 canonical_resolution TEXT    NOT NULL,
                 accept_count         INTEGER NOT NULL DEFAULT 0,
                 correct_count        INTEGER NOT NULL DEFAULT 0,
+                skip_count           INTEGER NOT NULL DEFAULT 0,
+                deleted_count        INTEGER NOT NULL DEFAULT 0,
                 confidence_boost     REAL    NOT NULL DEFAULT 0,
                 last_used            TEXT    NOT NULL,
+                last_negative_feedback_at TEXT,
                 created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
                 updated_at           TEXT    NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY(user_id, normalized_input)
+            );
+
+            CREATE TABLE IF NOT EXISTS meal_acceptance_events (
+                user_id                  INTEGER NOT NULL,
+                meal_id                  TEXT    NOT NULL,
+                status                   TEXT    NOT NULL,
+                included_client_ids_json TEXT    NOT NULL,
+                feedback_fingerprint     TEXT,
+                skipped_count            INTEGER NOT NULL DEFAULT 0,
+                deleted_count            INTEGER NOT NULL DEFAULT 0,
+                created_at               TEXT    NOT NULL DEFAULT (datetime('now')),
+                updated_at               TEXT    NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(user_id, meal_id)
             );
 
             CREATE TABLE IF NOT EXISTS recovery_data (
@@ -374,6 +394,10 @@ def init_data_db():
             "source": "TEXT",
             "correction_state": "TEXT",
             "original_estimate_json": "TEXT",
+            "meal_id": "TEXT",
+            "meal_item_id": "TEXT",
+            "item_index": "INTEGER",
+            "item_state": "TEXT",
             "vocab_learned_at": "TEXT",
             "created_at": "TEXT",
             "updated_at": "TEXT",
@@ -381,6 +405,18 @@ def init_data_db():
         for col, col_type in food_log_columns.items():
             if col not in existing_food_log_cols:
                 conn.execute(f"ALTER TABLE food_logs ADD COLUMN {col} {col_type}")
+        existing_vocab_cols = {r["name"] for r in conn.execute("PRAGMA table_info(personal_vocab)").fetchall()}
+        personal_vocab_columns = {
+            "skip_count": "INTEGER NOT NULL DEFAULT 0",
+            "deleted_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_negative_feedback_at": "TEXT",
+        }
+        for col, col_type in personal_vocab_columns.items():
+            if col not in existing_vocab_cols:
+                conn.execute(f"ALTER TABLE personal_vocab ADD COLUMN {col} {col_type}")
+        existing_meal_event_cols = {r["name"] for r in conn.execute("PRAGMA table_info(meal_acceptance_events)").fetchall()}
+        if "feedback_fingerprint" not in existing_meal_event_cols:
+            conn.execute("ALTER TABLE meal_acceptance_events ADD COLUMN feedback_fingerprint TEXT")
         existing_push_cols = {r["name"] for r in conn.execute("PRAGMA table_info(push_subscriptions)").fetchall()}
         push_columns = {
             "permission_state": "TEXT",
@@ -426,6 +462,10 @@ def init_data_db():
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_food_logs_user_client_id "
             "ON food_logs(user_id, client_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_food_logs_user_meal_id "
+            "ON food_logs(user_id, meal_id)"
         )
         conn.commit()
 
@@ -619,6 +659,106 @@ def list_personal_vocab_entries(user_id: int) -> list[dict]:
     return entries
 
 
+def get_meal_acceptance_event(user_id: int, meal_id: str) -> Optional[dict]:
+    key = (meal_id or "").strip()
+    if not key:
+        return None
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM meal_acceptance_events WHERE user_id = ? AND meal_id = ?",
+            (user_id, key),
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["included_client_ids"] = _json_loads_or_none(result.pop("included_client_ids_json", None)) or []
+    return result
+
+
+def save_meal_acceptance_event(
+    user_id: int,
+    *,
+    meal_id: str,
+    status: str,
+    included_client_ids: list[str],
+    skipped_count: int,
+    deleted_count: int,
+    feedback_fingerprint: str | None = None,
+) -> dict:
+    key = (meal_id or "").strip()
+    if not key:
+        raise ValueError("meal_id is required")
+    safe_ids = sorted(str(client_id) for client_id in included_client_ids if client_id)
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO meal_acceptance_events (
+                user_id, meal_id, status, included_client_ids_json,
+                feedback_fingerprint, skipped_count, deleted_count, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, meal_id) DO UPDATE SET
+                status = excluded.status,
+                included_client_ids_json = excluded.included_client_ids_json,
+                feedback_fingerprint = excluded.feedback_fingerprint,
+                skipped_count = excluded.skipped_count,
+                deleted_count = excluded.deleted_count,
+                updated_at = excluded.updated_at
+            RETURNING *
+            """,
+            (
+                user_id,
+                key,
+                status,
+                _json_dumps_or_none(safe_ids) or "[]",
+                (feedback_fingerprint or None),
+                max(0, int(skipped_count or 0)),
+                max(0, int(deleted_count or 0)),
+                now_iso,
+                now_iso,
+            ),
+        ).fetchone()
+        conn.commit()
+    result = dict(row)
+    result["included_client_ids"] = _json_loads_or_none(result.pop("included_client_ids_json", None)) or []
+    return result
+
+
+def list_meal_acceptance_events(user_id: int) -> list[dict]:
+    init_data_db()
+    with _get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM meal_acceptance_events WHERE user_id = ? ORDER BY updated_at DESC, meal_id ASC",
+            (user_id,),
+        ).fetchall()
+    events = []
+    for row in rows:
+        event = dict(row)
+        event["included_client_ids"] = _json_loads_or_none(event.pop("included_client_ids_json", None)) or []
+        events.append(event)
+    return events
+
+
+def import_meal_acceptance_event(user_id: int, event: dict) -> dict | None:
+    if not isinstance(event, dict):
+        return None
+    meal_id = (event.get("meal_id") or "").strip()
+    if not meal_id:
+        return None
+    return save_meal_acceptance_event(
+        user_id,
+        meal_id=meal_id,
+        status=(event.get("status") or "logged"),
+        included_client_ids=event.get("included_client_ids") or [],
+        skipped_count=event.get("skipped_count") or 0,
+        deleted_count=event.get("deleted_count") or 0,
+        feedback_fingerprint=event.get("feedback_fingerprint"),
+    )
+
+
 def delete_personal_vocab_entry(user_id: int, normalized_input: str) -> bool:
     """Delete one learned vocabulary mapping for the user."""
     key = (normalized_input or "").strip()
@@ -646,8 +786,11 @@ def import_personal_vocab_entry(user_id: int, entry: dict) -> dict | None:
     phrase = (entry.get("phrase") or normalized).strip()[:500]
     accept_count = max(0, int(entry.get("accept_count") or 0))
     correct_count = max(0, int(entry.get("correct_count") or 0))
+    skip_count = max(0, int(entry.get("skip_count") or 0))
+    deleted_count = max(0, int(entry.get("deleted_count") or 0))
     confidence_boost = max(0.0, min(0.2, float(entry.get("confidence_boost") or 0)))
     last_used = (entry.get("last_used") or now_iso)
+    last_negative_feedback_at = entry.get("last_negative_feedback_at")
     created_at = (entry.get("created_at") or now_iso)
     updated_at = (entry.get("updated_at") or now_iso)
     init_data_db()
@@ -656,16 +799,20 @@ def import_personal_vocab_entry(user_id: int, entry: dict) -> dict | None:
             """
             INSERT INTO personal_vocab (
                 user_id, normalized_input, phrase, canonical_resolution,
-                accept_count, correct_count, confidence_boost, last_used, created_at, updated_at
+                accept_count, correct_count, skip_count, deleted_count,
+                confidence_boost, last_used, last_negative_feedback_at, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, normalized_input) DO UPDATE SET
                 phrase = excluded.phrase,
                 canonical_resolution = excluded.canonical_resolution,
                 accept_count = excluded.accept_count,
                 correct_count = excluded.correct_count,
+                skip_count = excluded.skip_count,
+                deleted_count = excluded.deleted_count,
                 confidence_boost = excluded.confidence_boost,
                 last_used = excluded.last_used,
+                last_negative_feedback_at = excluded.last_negative_feedback_at,
                 created_at = personal_vocab.created_at,
                 updated_at = excluded.updated_at
             RETURNING *
@@ -677,10 +824,73 @@ def import_personal_vocab_entry(user_id: int, entry: dict) -> dict | None:
                 _json_dumps_or_none(canonical),
                 accept_count,
                 correct_count,
+                skip_count,
+                deleted_count,
                 confidence_boost,
                 last_used,
+                last_negative_feedback_at,
                 created_at,
                 updated_at,
+            ),
+        ).fetchone()
+        conn.commit()
+    result = dict(row)
+    result["canonical_resolution"] = _json_loads_or_none(result.get("canonical_resolution"))
+    return result
+
+
+def record_personal_vocab_negative_feedback(
+    user_id: int,
+    *,
+    normalized_input: str,
+    phrase: str,
+    canonical_resolution: dict,
+    feedback_type: str,
+) -> dict:
+    """Record skipped/deleted food review feedback without creating trusted accepts."""
+    key = (normalized_input or "").strip()
+    if not key or not isinstance(canonical_resolution, dict):
+        raise ValueError("normalized_input and canonical_resolution are required")
+    feedback = (feedback_type or "").strip().lower()
+    if feedback not in {"skipped", "deleted"}:
+        raise ValueError("feedback_type must be skipped or deleted")
+    skip_delta = 1 if feedback == "skipped" else 0
+    deleted_delta = 1 if feedback == "deleted" else 0
+    init_data_db()
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    with _get_db() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO personal_vocab (
+                user_id, normalized_input, phrase, canonical_resolution,
+                accept_count, correct_count, skip_count, deleted_count,
+                confidence_boost, last_used, last_negative_feedback_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 0, 0, ?, ?, 0, ?, ?, ?, ?)
+            ON CONFLICT(user_id, normalized_input) DO UPDATE SET
+                phrase = excluded.phrase,
+                canonical_resolution = CASE
+                    WHEN personal_vocab.accept_count = 0 THEN excluded.canonical_resolution
+                    ELSE personal_vocab.canonical_resolution
+                END,
+                skip_count = personal_vocab.skip_count + excluded.skip_count,
+                deleted_count = personal_vocab.deleted_count + excluded.deleted_count,
+                last_used = excluded.last_used,
+                last_negative_feedback_at = excluded.last_negative_feedback_at,
+                updated_at = excluded.updated_at
+            RETURNING *
+            """,
+            (
+                user_id,
+                key,
+                phrase.strip()[:500],
+                _json_dumps_or_none(canonical_resolution),
+                skip_delta,
+                deleted_delta,
+                now_iso,
+                now_iso,
+                now_iso,
+                now_iso,
             ),
         ).fetchone()
         conn.commit()
@@ -896,6 +1106,10 @@ def add_food_log(user_id: int, record: dict) -> dict:
         "source": record.get("source") or ("vision_estimate" if original_estimate else "manual"),
         "correction_state": record.get("correction_state") or ("accepted" if original_estimate else "manual"),
         "original_estimate_json": _json_dumps_or_none(original_estimate),
+        "meal_id": record.get("meal_id") or None,
+        "meal_item_id": record.get("meal_item_id") or None,
+        "item_index": record.get("item_index"),
+        "item_state": record.get("item_state") or None,
         "created_at": record.get("created_at") or now_iso,
         "updated_at": now_iso,
     }
@@ -1004,6 +1218,7 @@ def delete_user_data(user_id: int) -> None:
         "nutrition_data",
         "food_logs",
         "personal_vocab",
+        "meal_acceptance_events",
         "recovery_data",
         "user_settings",
     ]
@@ -1016,7 +1231,7 @@ def delete_user_data(user_id: int) -> None:
 
 def get_user_data_summary(user_id: int) -> dict:
     """Return record counts per table for a user (useful for admin/debugging)."""
-    tables = ["body_data", "cardio_data", "nutrition_data", "food_logs", "personal_vocab", "recovery_data"]
+    tables = ["body_data", "cardio_data", "nutrition_data", "food_logs", "personal_vocab", "meal_acceptance_events", "recovery_data"]
     summary = {}
     with _get_db() as conn:
         for table in tables:
