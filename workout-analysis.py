@@ -7,7 +7,7 @@ Called by cron after workout is logged.
 import json, os
 from datetime import datetime, timedelta
 
-WORKOUTS_FILE = os.path.expanduser("~/.openclaw/workspace/projects/fitness-dashboard/data_workouts.json")
+WORKOUTS_FILE = os.path.expanduser("~/fitness-dashboard/data_workouts.json")
 
 
 def load_workouts():

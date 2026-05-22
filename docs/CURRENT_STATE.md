@@ -11,7 +11,7 @@ The current product is functional but still in a draft product state. The app ha
 
 ## Runtime State Observed
 
-- Project path: `/Users/admin/.openclaw/workspace/projects/fitness-dashboard`
+- Project path: `/Users/admin/fitness-dashboard`
 - Local listener observed: `127.0.0.1:5050`
 - Launchd jobs observed: `com.fitness-dashboard` and `com.fitness-dashboard.staleness`
 - Root URL behavior: `GET /` returns `302` to `/login?next=/`
