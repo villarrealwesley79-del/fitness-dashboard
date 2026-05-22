@@ -23,12 +23,26 @@ def configured_provider() -> str:
 
 
 def describe(
-    image_bytes: bytes,
+    image_bytes: bytes | None = None,
     *,
+    images: list[tuple[bytes, str]] | None = None,
     context_text: str | None = None,
     media_type: str = "image/jpeg",
 ) -> dict[str, Any]:
-    """Describe a food image without retaining raw image bytes."""
+    """Describe one or more food images without retaining raw image bytes.
+
+    FIT-138: ``images`` is the canonical multi-photo input — a list of
+    ``(bytes, mimetype)`` tuples passed to the provider as one combined
+    call (multi-image content array). The legacy single-image
+    ``image_bytes`` + ``media_type`` kwargs remain supported for callers
+    that haven't migrated.
+    """
+    if images is None:
+        if image_bytes is None:
+            raise VisionEstimatorError("no image data provided")
+        images = [(image_bytes, media_type)]
+    if not images:
+        raise VisionEstimatorError("no image data provided")
     provider = configured_provider()
     if provider == "disabled":
         raise VisionEstimatorError("vision provider disabled; set VISION_ESTIMATOR_PROVIDER=lm_studio, ollama, or claude")
@@ -37,15 +51,13 @@ def describe(
     try:
         if provider == "claude":
             result = claude_vision_adapter.describe_food_photo(
-                image_bytes,
+                images=images,
                 context_text=context_text,
-                media_type=media_type,
             )
         else:
             result = local_vision_adapter.describe_food_photo(
-                image_bytes,
+                images=images,
                 context_text=context_text,
-                media_type=media_type,
                 provider=provider,
             )
     except claude_vision_adapter.ClaudeVisionError as exc:

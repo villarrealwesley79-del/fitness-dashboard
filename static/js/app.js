@@ -6000,9 +6000,26 @@
     // ─────────────────────────────────────────────────────────────────────────
     const MEAL_DRAFT_KEY = 'fit60_meal_draft';
     const MEAL_UNDO_MS = 30_000;
+    // FIT-138: per-meal photo cap. Backend mirrors this at
+    // _MEAL_INTAKE_MAX_IMAGE_COUNT; both must stay in sync.
+    const MEAL_MAX_PHOTOS = 4;
+    const MEAL_MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+    // FIT-138: aggregate-byte cap mirrored to backend's
+    // _MEAL_INTAKE_MAX_AGGREGATE_BYTES. Enforced client-side so the
+    // user gets immediate feedback rather than a wasted 413 round-trip.
+    const MEAL_MAX_AGGREGATE_BYTES = 18 * 1024 * 1024;
     const mealComposerState = {
-        imageFile: null,
-        imagePreviewUrl: null,
+        // FIT-138: arrays for multi-photo capture; one submission = one meal.
+        imageFiles: [],
+        imagePreviewUrls: [],
+        // FIT-138: in-composer retry state machine. draftClientId is
+        // generated on first submit attempt and reused across transient
+        // retries so the server idempotency contract (same client_id ⇒
+        // same row) prevents duplicate pending entries. Cleared on
+        // success, 4xx, or material draft change (text edit / photo
+        // add or remove).
+        draftClientId: null,
+        lastSubmitFailedTransient: false,
         submitting: false,
         backendUnavailable: false,
         pending: [],
@@ -6014,9 +6031,10 @@
             text: $('meal-composer-text'),
             image: $('meal-composer-image'),
             submit: $('meal-composer-submit'),
-            preview: $('meal-composer-preview'),
-            previewImg: $('meal-composer-preview-img'),
-            previewClear: $('meal-composer-preview-clear'),
+            thumbs: $('meal-composer-thumbs'),
+            retention: $('meal-composer-retention'),
+            retry: $('meal-composer-retry'),
+            offline: $('meal-composer-offline'),
             error: $('meal-composer-error'),
             status: $('meal-composer-status'),
             pendingList: $('meal-pending-list'),
@@ -6040,16 +6058,26 @@
         const { text, submit } = mealComposerEls();
         if (!submit) return;
         const hasText = text && text.value.trim().length > 0;
-        const hasImage = !!mealComposerState.imageFile;
-        const enabled = (hasText || hasImage) && !mealComposerState.submitting && !mealComposerState.backendUnavailable;
+        const hasImage = mealComposerState.imageFiles.length > 0;
+        // FIT-138: navigator.onLine gates submit; offline banner is
+        // shown by toggleMealComposerOffline().
+        const online = typeof navigator === 'undefined' || navigator.onLine !== false;
+        const enabled = (hasText || hasImage) && !mealComposerState.submitting && !mealComposerState.backendUnavailable && online;
         submit.disabled = !enabled;
-        submit.textContent = mealComposerState.submitting ? 'Logging…' : 'Log';
+        // FIT-138: surface multi-photo processing count while in-flight.
+        if (mealComposerState.submitting) {
+            submit.textContent = hasImage
+                ? `Processing ${mealComposerState.imageFiles.length} photo${mealComposerState.imageFiles.length === 1 ? '' : 's'}…`
+                : 'Logging…';
+        } else {
+            submit.textContent = 'Log';
+        }
     }
 
     function saveMealDraft() {
         try {
             const { text } = mealComposerEls();
-            const draft = { text: text ? text.value : '', has_image: !!mealComposerState.imageFile };
+            const draft = { text: text ? text.value : '', has_image: mealComposerState.imageFiles.length > 0 };
             if (draft.text || draft.has_image) localStorage.setItem(MEAL_DRAFT_KEY, JSON.stringify(draft));
             else localStorage.removeItem(MEAL_DRAFT_KEY);
         } catch (_) { /* storage may be unavailable */ }
@@ -6069,37 +6097,142 @@
         } catch (_) {}
     }
 
-    function clearMealImage() {
-        const { image, preview, previewImg } = mealComposerEls();
-        if (mealComposerState.imagePreviewUrl) {
-            URL.revokeObjectURL(mealComposerState.imagePreviewUrl);
-            mealComposerState.imagePreviewUrl = null;
-        }
-        mealComposerState.imageFile = null;
+    // FIT-138: revoke all preview URLs, clear array state, reset the
+    // file input. Called on submit success, accept/discard cleanup, and
+    // backend-unavailable transitions.
+    function clearMealComposerImages() {
+        const { image } = mealComposerEls();
+        mealComposerState.imagePreviewUrls.forEach((url) => {
+            try { URL.revokeObjectURL(url); } catch (_) { /* already revoked */ }
+        });
+        mealComposerState.imageFiles = [];
+        mealComposerState.imagePreviewUrls = [];
         if (image) image.value = '';
-        if (preview) preview.hidden = true;
-        if (previewImg) previewImg.removeAttribute('src');
+        renderMealComposerThumbs();
         refreshMealSubmitState();
     }
 
-    function applyMealImage(file) {
-        if (!file) { clearMealImage(); return; }
-        if (!/^image\//.test(file.type)) {
-            setMealComposerError('That file isn’t an image.');
+    // FIT-138: render the multi-photo thumb strip. Each thumb wraps its
+    // own × remove button which revokes its preview URL and splices
+    // both arrays. Resets draftClientId on material change so the next
+    // submit uses a fresh client_id.
+    function renderMealComposerThumbs() {
+        const { thumbs, retention } = mealComposerEls();
+        if (!thumbs) return;
+        thumbs.innerHTML = '';
+        const count = mealComposerState.imageFiles.length;
+        if (count === 0) {
+            thumbs.hidden = true;
+            if (retention) retention.hidden = true;
             return;
         }
-        if (file.size > 6 * 1024 * 1024) {
-            setMealComposerError('Image is over 6 MB — pick a smaller one.');
-            return;
+        thumbs.hidden = false;
+        if (retention) retention.hidden = false;
+        for (let i = 0; i < count; i += 1) {
+            const url = mealComposerState.imagePreviewUrls[i];
+            const file = mealComposerState.imageFiles[i];
+            const thumb = document.createElement('div');
+            thumb.className = 'meal-composer-thumb';
+            thumb.setAttribute('role', 'listitem');
+            const img = document.createElement('img');
+            img.src = url;
+            img.alt = `Attached photo ${i + 1} of ${count}`;
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'meal-composer-thumb-remove';
+            remove.setAttribute('aria-label', `Remove photo ${i + 1}`);
+            remove.textContent = '✕';
+            remove.addEventListener('click', () => removeMealComposerImage(i));
+            thumb.appendChild(img);
+            thumb.appendChild(remove);
+            thumbs.appendChild(thumb);
+            // Avoid an unused-var warning while keeping the File handy if
+            // future debugging needs it.
+            void file;
         }
-        setMealComposerError(null);
-        if (mealComposerState.imagePreviewUrl) URL.revokeObjectURL(mealComposerState.imagePreviewUrl);
-        mealComposerState.imageFile = file;
-        mealComposerState.imagePreviewUrl = URL.createObjectURL(file);
-        const { preview, previewImg } = mealComposerEls();
-        if (previewImg) previewImg.src = mealComposerState.imagePreviewUrl;
-        if (preview) preview.hidden = false;
+    }
+
+    function removeMealComposerImage(index) {
+        const url = mealComposerState.imagePreviewUrls[index];
+        if (url) {
+            try { URL.revokeObjectURL(url); } catch (_) {}
+        }
+        mealComposerState.imageFiles.splice(index, 1);
+        mealComposerState.imagePreviewUrls.splice(index, 1);
+        // Material draft change: invalidate the in-flight draftClientId
+        // so the next submit is a fresh attempt, not a same-id retry.
+        mealComposerState.draftClientId = null;
+        mealComposerState.lastSubmitFailedTransient = false;
+        renderMealComposerThumbs();
         refreshMealSubmitState();
+        saveMealDraft();
+    }
+
+    // FIT-138: validate and append newly-selected files to the
+    // mealComposerState arrays. Enforces per-file mimetype + size, the
+    // 4-photo count cap, and the 18 MB aggregate cap. Any rejection
+    // raises an error message but does NOT discard already-accepted
+    // files.
+    function onMealComposerImageSelected(fileList) {
+        if (!fileList || fileList.length === 0) return;
+        setMealComposerError(null);
+        const incoming = Array.from(fileList);
+        const accepted = [];
+        const remainingSlots = MEAL_MAX_PHOTOS - mealComposerState.imageFiles.length;
+        let aggregateBytes = mealComposerState.imageFiles.reduce(
+            (sum, f) => sum + (f && f.size ? f.size : 0),
+            0,
+        );
+        let rejectedTooMany = 0;
+        let rejectedTooLarge = 0;
+        let rejectedWrongType = 0;
+        let rejectedAggregate = 0;
+        for (const file of incoming) {
+            if (accepted.length >= remainingSlots) {
+                rejectedTooMany += 1;
+                continue;
+            }
+            if (!file || !/^image\//.test(file.type)) {
+                rejectedWrongType += 1;
+                continue;
+            }
+            if (file.size > MEAL_MAX_IMAGE_BYTES) {
+                rejectedTooLarge += 1;
+                continue;
+            }
+            if (aggregateBytes + file.size > MEAL_MAX_AGGREGATE_BYTES) {
+                rejectedAggregate += 1;
+                continue;
+            }
+            aggregateBytes += file.size;
+            accepted.push(file);
+        }
+        for (const file of accepted) {
+            mealComposerState.imageFiles.push(file);
+            mealComposerState.imagePreviewUrls.push(URL.createObjectURL(file));
+        }
+        if (accepted.length > 0) {
+            // Adding photos is a material change too.
+            mealComposerState.draftClientId = null;
+            mealComposerState.lastSubmitFailedTransient = false;
+        }
+        const errors = [];
+        if (rejectedTooMany) {
+            errors.push(`Only ${MEAL_MAX_PHOTOS} photos per meal — extra ${rejectedTooMany === 1 ? 'photo' : 'photos'} ignored.`);
+        }
+        if (rejectedTooLarge) {
+            errors.push(`${rejectedTooLarge === 1 ? 'A photo is' : `${rejectedTooLarge} photos are`} over 6 MB — pick smaller ${rejectedTooLarge === 1 ? 'one' : 'ones'}.`);
+        }
+        if (rejectedWrongType) {
+            errors.push(`${rejectedWrongType === 1 ? 'A file' : `${rejectedWrongType} files`} ${rejectedWrongType === 1 ? "isn't" : "aren't"} an image.`);
+        }
+        if (rejectedAggregate) {
+            errors.push(`Photos exceed 18 MB total — pick smaller ones.`);
+        }
+        if (errors.length) setMealComposerError(errors.join(' '));
+        renderMealComposerThumbs();
+        refreshMealSubmitState();
+        saveMealDraft();
     }
 
     function setMealBackendUnavailable(message) {
@@ -6265,6 +6398,25 @@
         const derived = needsDerive
             ? deriveLocalTimeFromLoggedAt(entry.logged_at || fallback.logged_at)
             : null;
+        // FIT-138: prefer the multi-photo arrays when present; fall back
+        // to the legacy single imageFile for callers that haven't been
+        // updated yet. Server-hydrated entries (from
+        // /api/meal-intake/pending) carry no File handles, so the
+        // arrays end up empty and Retry degrades to text-only.
+        const incomingFiles = entry.imageFiles || fallback.imageFiles;
+        const incomingUrls = entry.imagePreviewUrls || fallback.imagePreviewUrls;
+        let imageFiles;
+        let imagePreviewUrls;
+        if (Array.isArray(incomingFiles) && incomingFiles.length > 0) {
+            imageFiles = incomingFiles.slice();
+            imagePreviewUrls = Array.isArray(incomingUrls) && incomingUrls.length === incomingFiles.length
+                ? incomingUrls.slice()
+                : imageFiles.map((file) => URL.createObjectURL(file));
+        } else {
+            const legacyFile = entry.imageFile || fallback.imageFile || null;
+            imageFiles = legacyFile ? [legacyFile] : [];
+            imagePreviewUrls = legacyFile ? [URL.createObjectURL(legacyFile)] : [];
+        }
         return {
             client_id: clientId,
             estimate: entry.estimate || fallback.estimate || {},
@@ -6274,13 +6426,12 @@
             local_date: entry.local_date || fallback.local_date || (derived && derived.local_date) || null,
             local_iso: entry.local_iso || fallback.local_iso || (derived && derived.local_iso) || null,
             policy: entry.policy || fallback.policy || null,
-            // FIT-6: carry the original File reference so Retry (AC4) can
-            // re-submit the same image without prompting the user to pick
-            // it again. Server-hydrated entries (from
-            // /api/meal-intake/pending) have no File handle and end up
-            // with imageFile=null — Retry degrades to text-only on those
-            // (still better than no retry at all).
-            imageFile: entry.imageFile || fallback.imageFile || null,
+            // FIT-138: canonical multi-photo handles for retry + privacy
+            // cleanup (Phase 4). imageFile is kept as the first-file
+            // alias for callers still on the legacy single-image API.
+            imageFile: imageFiles[0] || null,
+            imageFiles,
+            imagePreviewUrls,
         };
     }
 
@@ -6504,10 +6655,10 @@
             <div class="meal-pending-portion" role="group" aria-label="Portion multiplier">
                 <span class="meal-pending-portion-label">Portion</span>
                 <div class="meal-pending-portion-chips">
-                    <button type="button" class="meal-pending-portion-chip" data-factor="0.5" aria-pressed="false">½×</button>
-                    <button type="button" class="meal-pending-portion-chip" data-factor="1" aria-pressed="false">1×</button>
-                    <button type="button" class="meal-pending-portion-chip" data-factor="1.5" aria-pressed="false">1.5×</button>
-                    <button type="button" class="meal-pending-portion-chip" data-factor="2" aria-pressed="false">2×</button>
+                    <button type="button" class="meal-pending-portion-chip" data-factor="0.5" aria-pressed="false">Half</button>
+                    <button type="button" class="meal-pending-portion-chip" data-factor="1" aria-pressed="false">Standard</button>
+                    <button type="button" class="meal-pending-portion-chip" data-factor="1.5" aria-pressed="false">1½</button>
+                    <button type="button" class="meal-pending-portion-chip" data-factor="2" aria-pressed="false">Double</button>
                 </div>
             </div>
             <div class="meal-pending-fields">
@@ -6662,12 +6813,50 @@
         return row;
     }
 
+    // FIT-138: privacy cleanup when a pending entry leaves the local
+    // list (accept, discard, or retry-cleanup). Revokes every blob URL
+    // the entry held so the browser releases the underlying File data,
+    // and conditionally removes the localStorage draft key — but only
+    // if the stored draft still corresponds to this entry's text, so a
+    // new active draft the user started after submit-success is not
+    // wiped (per Codex consensus round-3 R2).
+    function releasePendingEntryArtifacts(entry) {
+        if (!entry) return;
+        const urls = Array.isArray(entry.imagePreviewUrls) ? entry.imagePreviewUrls : [];
+        urls.forEach((url) => {
+            try { URL.revokeObjectURL(url); } catch (_) { /* already revoked or invalid */ }
+        });
+        // Drop array references so the File objects become GC-eligible.
+        entry.imagePreviewUrls = [];
+        entry.imageFiles = [];
+        entry.imageFile = null;
+        try {
+            const raw = localStorage.getItem(MEAL_DRAFT_KEY);
+            if (raw) {
+                const draft = JSON.parse(raw);
+                const draftText = (draft && typeof draft.text === 'string') ? draft.text : '';
+                const entryText = entry.text || '';
+                // FIT-138 AC8 + Codex audit R2: clear MEAL_DRAFT_KEY only
+                // when the stored draft still corresponds to the just-
+                // resolved entry's submitted text. An empty stored
+                // text combined with has_image=true is a NEW photo-only
+                // draft the user started after submit-success — never
+                // wipe that. Anything that doesn't match the entry's
+                // text is a new active draft we must preserve.
+                if (entryText && draftText === entryText) {
+                    localStorage.removeItem(MEAL_DRAFT_KEY);
+                }
+            }
+        } catch (_) { /* storage may be unavailable */ }
+    }
+
     async function discardMealPending(clientId) {
         const entry = mealComposerState.pending.find((p) => p.client_id === clientId);
         if (!entry) return;
         try {
             const result = await api(`/api/meal-intake/${encodeURIComponent(clientId)}?correction_state=pending_review`, { method: 'DELETE' });
             if (!result || result.removed !== true) throw new Error('pending meal was not removed');
+            releasePendingEntryArtifacts(entry);
             mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
             renderMealPendingList();
             toast('Estimate discarded', 'ok');
@@ -6752,6 +6941,10 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             });
+            // FIT-138 AC8: revoke blob URLs + release File references +
+            // conditionally clear MEAL_DRAFT_KEY before dropping the
+            // pending entry from local state.
+            releasePendingEntryArtifacts(entry);
             mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
             renderMealPendingList();
             renderMealComposerProvenance(edited, clientId);
@@ -6780,8 +6973,12 @@
             return;
         }
         const text = entry.text || '';
-        const file = entry.imageFile || null;
-        if (!text && !file) {
+        // FIT-138: prefer the multi-photo array; fall back to the legacy
+        // single imageFile for entries created before the array shape.
+        const files = Array.isArray(entry.imageFiles) && entry.imageFiles.length > 0
+            ? entry.imageFiles.slice()
+            : (entry.imageFile ? [entry.imageFile] : []);
+        if (!text && files.length === 0) {
             toast('Nothing to retry — original input wasn’t captured.', 'err');
             return;
         }
@@ -6796,7 +6993,11 @@
         const newClientId = newMealClientId();
         const form = new FormData();
         if (text) form.append('text', text);
-        if (file) form.append('image', file, file.name || 'meal.jpg');
+        // FIT-138: send all captured photos under plural "images" so the
+        // backend treats them as one combined meal context.
+        files.forEach((file, idx) => {
+            form.append('images', file, file.name || `meal-${idx + 1}.jpg`);
+        });
         form.append('client_id', newClientId);
         // FIT-6 + FIT-66: preserve the original three-field browser-local
         // timestamp so a retry across midnight doesn't relocate the meal
@@ -6847,6 +7048,11 @@
                 console.warn('Retry cleanup DELETE failed:', deleteErr);
                 toast('Retried, but couldn’t clean up the old pending row — discard it manually if it reappears.', 'warn');
             }
+            // FIT-138 AC8: release blob URLs for the old pending entry
+            // before dropping it from local state. The new retry entry
+            // is created by handleMealIntakeResponse with its own URLs.
+            const oldEntry = mealComposerState.pending.find((p) => p.client_id === clientId);
+            releasePendingEntryArtifacts(oldEntry);
             mealComposerState.pending = mealComposerState.pending.filter((p) => p.client_id !== clientId);
             cleanedUp = true;
             if (payload && payload.status === 'logged') {
@@ -6874,6 +7080,11 @@
                 // timestamp forward so chained retries (retry → retry
                 // → ...) never lose the original meal day even if the
                 // server response omits them.
+                // FIT-138: pass the plural `files` so the new pending
+                // entry holds all photos for any future pending-card
+                // retry. Previously this read a singular `file` that
+                // no longer existed after the multi-photo refactor.
+                const previewUrls = files.map((f) => URL.createObjectURL(f));
                 upsertMealPendingEntry({
                     client_id: newClientId,
                     estimate: payload.estimate || {},
@@ -6884,7 +7095,9 @@
                     local_iso: payload.local_iso || originalLocalIso,
                     logged_at: payload.food_log && payload.food_log.logged_at,
                     policy: payload.policy || null,
-                    imageFile: file,
+                    imageFile: files[0] || null,
+                    imageFiles: files,
+                    imagePreviewUrls: previewUrls,
                 });
                 renderMealPendingList();
                 refreshMacroCard();
@@ -6907,31 +7120,60 @@
         }
     }
 
+    // FIT-138: toggle the in-composer Retry button based on whether the
+    // last submit hit a transient failure (5xx / network error). The
+    // Retry path re-uses the same draftClientId so the server's
+    // idempotency contract prevents duplicate pending rows.
+    function refreshMealComposerRetryUI() {
+        const { retry } = mealComposerEls();
+        if (!retry) return;
+        retry.hidden = !mealComposerState.lastSubmitFailedTransient;
+    }
+
+    // FIT-138: toggle the offline banner based on navigator.onLine.
+    function refreshMealComposerOfflineUI() {
+        const { offline } = mealComposerEls();
+        if (!offline) return;
+        const online = typeof navigator === 'undefined' || navigator.onLine !== false;
+        offline.hidden = online;
+    }
+
     async function submitMealComposer(ev) {
         if (ev) ev.preventDefault();
         if (mealComposerState.submitting || mealComposerState.backendUnavailable) return;
         const { text } = mealComposerEls();
         const textValue = text ? text.value.trim() : '';
-        const file = mealComposerState.imageFile;
-        if (!textValue && !file) {
+        const files = mealComposerState.imageFiles.slice();
+        if (!textValue && files.length === 0) {
             setMealComposerError('Type a meal or attach a photo.');
             return;
         }
         setMealComposerError(null);
+        // FIT-138: generate draftClientId on the first attempt and reuse
+        // it across transient-failure retries. Material draft changes
+        // (text edit, photo add/remove) clear this elsewhere.
+        if (!mealComposerState.draftClientId) {
+            mealComposerState.draftClientId = newMealClientId();
+        }
+        const clientId = mealComposerState.draftClientId;
         mealComposerState.submitting = true;
         refreshMealSubmitState();
 
-        const clientId = newMealClientId();
         // FIT-6 + FIT-66: capture the original submission's three-field
         // browser-local timestamp so Retry can reuse it. Without this,
         // retrying a pending entry created before midnight would misdate
-        // the meal — the backend derives food_log.date / logged_at /
-        // local_iso from these fields, so a stale pending entry retried
-        // "today" would lose its original day.
+        // the meal.
         const localTime = browserLocalMealTime();
         const form = new FormData();
         if (textValue) form.append('text', textValue);
-        if (file) form.append('image', file, file.name || 'meal.jpg');
+        // FIT-138: append each file under the plural "images" key. The
+        // backend reads request.files.getlist("images") and treats the
+        // photos as one combined meal context (one vision call). The
+        // legacy singular "image" key remains accepted server-side for
+        // back-compat with the existing FIT-128 pending-card retry path.
+        files.forEach((file, idx) => {
+            form.append('images', file, file.name || `meal-${idx + 1}.jpg`);
+        });
         form.append('client_id', clientId);
         form.append('local_timestamp', localTime.local_timestamp);
         form.append('local_date', localTime.local_date);
@@ -6956,6 +7198,9 @@
                 setMealBackendUnavailable();
                 setMealComposerError('Meal intake isn’t enabled yet. Your draft is saved.');
                 saveMealDraft();
+                // Backend gone: nothing to retry against; clear retry state.
+                mealComposerState.lastSubmitFailedTransient = false;
+                refreshMealComposerRetryUI();
                 return;
             }
             const ct = res.headers.get('content-type') || '';
@@ -6963,18 +7208,40 @@
             if (!res.ok) {
                 const msg = (payload && payload.error && payload.error.message) || `Couldn’t log meal (${res.status}).`;
                 setMealComposerError(msg);
+                if (res.status >= 500) {
+                    // FIT-138: transient server failure — preserve the draft
+                    // and the draftClientId so Retry re-uses the same id.
+                    mealComposerState.lastSubmitFailedTransient = true;
+                } else {
+                    // 4xx: the request itself is wrong (validation, too many
+                    // photos, bad mime). Don't offer Retry on a bad request.
+                    mealComposerState.lastSubmitFailedTransient = false;
+                    mealComposerState.draftClientId = null;
+                }
+                refreshMealComposerRetryUI();
                 return;
             }
-            // FIT-6 + FIT-66/FIT-67: pass imageFile + the captured
+            // FIT-6 + FIT-66/FIT-67: pass imageFiles + the captured
             // three-field localTime through so the pending entry can
             // power Retry without needing the file picker again AND
-            // without losing the original day. localTime is the
-            // fallback when payload doesn't echo back the timestamp
-            // fields (older /api/meal-intake responses).
-            handleMealIntakeResponse(payload, { textValue, clientId, imageFile: file, localTime });
+            // without losing the original day.
+            handleMealIntakeResponse(payload, {
+                textValue,
+                clientId,
+                imageFiles: files,
+                localTime,
+            });
+            // Success: reset the in-composer retry state.
+            mealComposerState.draftClientId = null;
+            mealComposerState.lastSubmitFailedTransient = false;
+            refreshMealComposerRetryUI();
         } catch (e) {
             console.error(e);
             saveMealDraft();
+            // FIT-138: network/transport failure is transient — keep
+            // draftClientId so Retry submits idempotently under the same id.
+            mealComposerState.lastSubmitFailedTransient = true;
+            refreshMealComposerRetryUI();
             toast('Couldn’t reach the meal estimator — your draft is saved.', 'err');
         } finally {
             mealComposerState.submitting = false;
@@ -7007,16 +7274,16 @@
             return;
         }
         if (status === 'pending_review') {
-            // FIT-6 + FIT-67: hydrate the local pending entry from the
-            // server response (FIT-67's durable persistence already
-            // wrote the row server-side, so the response carries
-            // canonical local_timestamp/local_date/local_iso). Fall
-            // back to ctx.localTime when the payload omits a field so
-            // Retry can still preserve the original meal day even on
-            // older meal-intake responses. The imageFile + policy
-            // fields are FIT-6 additions: imageFile powers Retry (AC4)
-            // and policy powers the per-reason chips (AC2).
+            // FIT-6 + FIT-67 + FIT-138: hydrate the local pending entry
+            // from the server response. ctx.imageFiles carries the
+            // captured File handles plus per-file blob preview URLs so
+            // the pending-card retry path (FIT-128) can resubmit the
+            // same photos and the user can see thumbnails. The blob
+            // URLs are revoked on accept/discard (Phase 4 privacy
+            // cleanup).
             const localTime = ctx.localTime || {};
+            const imageFiles = Array.isArray(ctx.imageFiles) ? ctx.imageFiles.slice() : [];
+            const imagePreviewUrls = imageFiles.map((file) => URL.createObjectURL(file));
             upsertMealPendingEntry({
                 client_id: ctx.clientId,
                 estimate: payload.estimate || {},
@@ -7027,7 +7294,13 @@
                 local_iso: payload.local_iso || localTime.local_iso || null,
                 logged_at: payload.food_log && payload.food_log.logged_at,
                 policy: payload.policy || null,
-                imageFile: ctx.imageFile || null,
+                // First file kept for the legacy single-image consumers
+                // (mealPendingOriginals, the FIT-128 pending-card retry
+                // path before this PR fully migrates it). The full
+                // array is the canonical handle going forward.
+                imageFile: imageFiles[0] || null,
+                imageFiles,
+                imagePreviewUrls,
             });
             clearMealComposerInputs();
             clearMealDraft();
@@ -7827,29 +8100,64 @@
     function clearMealComposerInputs() {
         const { text } = mealComposerEls();
         if (text) text.value = '';
-        clearMealImage();
+        clearMealComposerImages();
         refreshMealSubmitState();
     }
 
     function wireMealComposer() {
-        const { form, text, image, previewClear } = mealComposerEls();
+        const { form, text, image, retry } = mealComposerEls();
         if (!form) return;
         loadMealDraft();
         hydrateMealPending();
         form.addEventListener('submit', submitMealComposer);
         if (text) {
-            text.addEventListener('input', () => { clearMealComposerStatus(); refreshMealSubmitState(); saveMealDraft(); });
+            text.addEventListener('input', () => {
+                clearMealComposerStatus();
+                // FIT-138: typing is a material draft change after a
+                // failed submit; invalidate same-id retry so the next
+                // submit is a fresh attempt.
+                if (mealComposerState.draftClientId || mealComposerState.lastSubmitFailedTransient) {
+                    mealComposerState.draftClientId = null;
+                    mealComposerState.lastSubmitFailedTransient = false;
+                    refreshMealComposerRetryUI();
+                }
+                refreshMealSubmitState();
+                saveMealDraft();
+            });
         }
         if (image) {
             image.addEventListener('change', () => {
                 clearMealComposerStatus();
-                const file = image.files && image.files[0];
-                applyMealImage(file || null);
+                onMealComposerImageSelected(image.files);
+                // Reset the input value so re-selecting the same file
+                // after a remove still fires `change`.
+                image.value = '';
+                refreshMealComposerRetryUI();
             });
         }
-        if (previewClear) {
-            previewClear.addEventListener('click', () => { clearMealComposerStatus(); clearMealImage(); });
+        if (retry) {
+            // FIT-138: in-composer Retry re-submits the same draft
+            // under the SAME draftClientId so the server's idempotency
+            // contract prevents duplicate pending rows.
+            retry.addEventListener('click', () => {
+                clearMealComposerStatus();
+                submitMealComposer();
+            });
         }
+        // FIT-138: react to network state changes so the offline banner
+        // and submit-disabled state stay in sync.
+        if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+            window.addEventListener('online', () => {
+                refreshMealComposerOfflineUI();
+                refreshMealSubmitState();
+            });
+            window.addEventListener('offline', () => {
+                refreshMealComposerOfflineUI();
+                refreshMealSubmitState();
+            });
+        }
+        refreshMealComposerOfflineUI();
+        refreshMealComposerRetryUI();
         refreshMealSubmitState();
     }
 

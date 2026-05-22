@@ -138,8 +138,10 @@
                             <span class="visually-hidden">Attach a photo of the meal or take a new one</span>
                             <!-- FIT-91: no `capture` attribute so iOS/Android shows the native
                                  "Take Photo / Photo Library" action sheet instead of forcing
-                                 live capture. `accept="image/*"` keeps non-image files filtered. -->
-                            <input type="file" id="meal-composer-image" accept="image/*" hidden>
+                                 live capture. `accept="image/*"` keeps non-image files filtered.
+                                 FIT-138: `multiple` allows up to 4 photos per meal as one
+                                 combined context (validated client- and server-side). -->
+                            <input type="file" id="meal-composer-image" accept="image/*" multiple hidden>
                         </label>
                         <input
                             type="text"
@@ -153,10 +155,11 @@
                         >
                         <button type="submit" class="meal-composer-submit" id="meal-composer-submit" disabled>Log</button>
                     </div>
-                    <div class="meal-composer-preview" id="meal-composer-preview" hidden>
-                        <img id="meal-composer-preview-img" alt="" />
-                        <button type="button" class="meal-composer-preview-clear" id="meal-composer-preview-clear" aria-label="Remove photo">✕</button>
-                    </div>
+                    <!-- FIT-138: multi-photo thumb strip; each thumb has its own × remove. -->
+                    <div class="meal-composer-thumbs" id="meal-composer-thumbs" hidden role="list" aria-label="Attached photos"></div>
+                    <div class="meal-composer-retention" id="meal-composer-retention" hidden>Photos are discarded after extraction.</div>
+                    <button type="button" class="meal-composer-retry" id="meal-composer-retry" hidden>Retry</button>
+                    <div class="meal-composer-offline" id="meal-composer-offline" hidden aria-live="polite">You’re offline — connect to log this meal.</div>
                     <div class="meal-composer-error" id="meal-composer-error" hidden aria-live="polite"></div>
                 </form>
 

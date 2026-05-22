@@ -3374,24 +3374,34 @@ input[type=number] { -moz-appearance: textfield; }
     cursor: not-allowed;
     transform: none;
 }
-.meal-composer-preview {
-    position: relative;
+/* FIT-138: multi-photo thumb strip. Horizontal scroll on narrow
+   viewports so up to 4 thumbs fit without wrapping. */
+.meal-composer-thumbs {
+    display: flex;
+    gap: 6px;
     margin-top: 4px;
-    display: inline-block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 2px;
+}
+.meal-composer-thumbs[hidden] { display: none; }
+.meal-composer-thumb {
+    position: relative;
+    flex: 0 0 auto;
+    width: 84px;
+    height: 84px;
     border-radius: 8px;
     overflow: hidden;
     border: 1px solid var(--border-2);
-    max-width: 140px;
+    background: rgba(11,17,32,0.4);
 }
-.meal-composer-preview[hidden] { display: none; }
-.meal-composer-preview img {
+.meal-composer-thumb img {
     display: block;
     width: 100%;
-    height: auto;
-    max-height: 140px;
+    height: 100%;
     object-fit: cover;
 }
-.meal-composer-preview-clear {
+.meal-composer-thumb-remove {
     position: absolute;
     top: 4px;
     right: 4px;
@@ -3402,11 +3412,36 @@ input[type=number] { -moz-appearance: textfield; }
     width: 22px;
     height: 22px;
     font-size: 12px;
-    cursor: pointer;
     line-height: 22px;
     padding: 0;
+    cursor: pointer;
 }
-.meal-composer-preview-clear:hover { background: rgba(11,17,32,0.95); }
+.meal-composer-thumb-remove:hover { background: rgba(11,17,32,0.95); }
+.meal-composer-retention {
+    font-size: 11px;
+    color: var(--fg-dim, #94a3b8);
+    margin-top: 2px;
+}
+.meal-composer-retention[hidden] { display: none; }
+.meal-composer-retry {
+    align-self: flex-start;
+    margin-top: 4px;
+    padding: 4px 10px;
+    font-size: 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border-2);
+    background: rgba(59,130,246,0.12);
+    color: var(--accent-blue, #60a5fa);
+    cursor: pointer;
+}
+.meal-composer-retry[hidden] { display: none; }
+.meal-composer-retry:hover { background: rgba(59,130,246,0.2); }
+.meal-composer-offline {
+    font-size: 12px;
+    color: var(--accent-amber-2, #fbbf24);
+    margin-top: 4px;
+}
+.meal-composer-offline[hidden] { display: none; }
 .meal-composer-error {
     color: var(--accent-amber-2, #fbbf24);
     font-size: 12px;

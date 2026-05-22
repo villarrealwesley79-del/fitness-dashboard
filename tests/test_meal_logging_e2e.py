@@ -89,7 +89,10 @@ def _stub_text_parser(monkeypatch, module, estimate, *, fallback_used=False):
 
 
 def _stub_vision_pipeline(monkeypatch, module):
-    def fake_describe(_image_bytes, *, context_text=None, media_type=None):
+    def fake_describe(_image_bytes=None, *, images=None, context_text=None, media_type=None):
+        # FIT-138: vision_estimator.describe now accepts `images=list[(bytes, str)]`.
+        # The stub ignores image bytes entirely; we just match on context_text.
+        _ = images
         text = (context_text or "").lower()
         if "shared" in text or "popcorn" in text:
             return {

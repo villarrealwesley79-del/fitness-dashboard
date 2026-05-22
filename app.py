@@ -4317,6 +4317,11 @@ def add_nutrition():
 
 
 _MEAL_INTAKE_MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6 MB
+# FIT-138: cap multi-photo meals; client mirrors MEAL_MAX_PHOTOS in app.js.
+_MEAL_INTAKE_MAX_IMAGE_COUNT = 4
+# FIT-138: aggregate request cap protects against 4 × 6 MB worst-case while
+# allowing realistic batches (a single 6 MB photo plus three smaller ones).
+_MEAL_INTAKE_MAX_AGGREGATE_BYTES = 18 * 1024 * 1024  # 18 MB
 _MEAL_INTAKE_SUPPORTED_IMAGE_MIMETYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 _MEAL_ESTIMATE_SAFE_METADATA_FIELDS = (
     "external_food_id",
@@ -4666,11 +4671,31 @@ def _meal_vocab_learning_phrase(text_hint: str | None, estimate: dict) -> str | 
     return None
 
 
-def _meal_intake_vision_estimate(image_bytes: bytes, *, text_raw: str, mimetype: str, user_id: int) -> dict:
+def _meal_intake_vision_estimate(
+    image_bytes: bytes | None = None,
+    *,
+    images: list[tuple[bytes, str]] | None = None,
+    text_raw: str,
+    mimetype: str | None = None,
+    user_id: int,
+) -> dict:
+    """Vision estimate covering one or more photos as a single combined call.
+
+    FIT-138: ``images`` carries a list of ``(bytes, mimetype)`` tuples and
+    becomes the canonical input. The legacy ``image_bytes`` + ``mimetype``
+    kwargs are preserved for back-compat with any caller still using the
+    single-image signature.
+    """
+    if images is None:
+        if image_bytes:
+            images = [(image_bytes, mimetype or "image/jpeg")]
+        else:
+            images = []
+    if not images:
+        raise vision_estimator.VisionEstimatorError("no image data provided")
     vision = vision_estimator.describe(
-        image_bytes,
+        images=images,
         context_text=text_raw or None,
-        media_type=mimetype or "image/jpeg",
     )
     description = vision["item_description"]
     lookup_text = " ".join(part for part in (text_raw, description, vision.get("portion_hint")) if part)
@@ -5918,17 +5943,30 @@ def meal_intake():
         return jsonify({"error": {"message": "local_iso too long (max 64 chars)"}}), 400
     local_iso = local_iso_raw or None
 
-    image_file = request.files.get("image")
-    has_image = False
-    image_bytes = b""
-    image_mimetype = "image/jpeg"
-    if image_file is not None and image_file.filename:
+    # FIT-138: accept multi-image submissions via plural "images" key;
+    # fall back to legacy singular "image" for compatibility with the
+    # FIT-128 pending-card retry path and any older clients still
+    # in flight.
+    image_files = request.files.getlist("images")
+    if not image_files:
+        legacy_image = request.files.get("image")
+        if legacy_image is not None:
+            image_files = [legacy_image]
+    image_files = [f for f in image_files if f is not None and f.filename]
+    if len(image_files) > _MEAL_INTAKE_MAX_IMAGE_COUNT:
+        return jsonify({
+            "error": {
+                "message": f"too many photos; up to {_MEAL_INTAKE_MAX_IMAGE_COUNT} per meal",
+            },
+        }), 400
+    image_blobs: list[tuple[bytes, str]] = []
+    aggregate_bytes = 0
+    for image_file in image_files:
         mimetype = (image_file.mimetype or "").lower()
         if not mimetype.startswith("image/"):
             return jsonify({"error": {"message": "image must be image/*"}}), 400
         if mimetype not in _MEAL_INTAKE_SUPPORTED_IMAGE_MIMETYPES:
             return jsonify({"error": {"message": "unsupported image type; use JPEG, PNG, WebP, or GIF"}}), 415
-        image_mimetype = mimetype
         image_file.stream.seek(0, os.SEEK_END)
         size = image_file.stream.tell()
         image_file.stream.seek(0)
@@ -5936,9 +5974,18 @@ def meal_intake():
             return jsonify({"error": {"message": "image exceeds 6 MB limit"}}), 413
         if size <= 0:
             return jsonify({"error": {"message": "image is empty"}}), 400
-        image_bytes = image_file.read()
+        aggregate_bytes += size
+        if aggregate_bytes > _MEAL_INTAKE_MAX_AGGREGATE_BYTES:
+            return jsonify({"error": {"message": "images exceed 18 MB total"}}), 413
+        image_blobs.append((image_file.read(), mimetype))
         image_file.stream.seek(0)
-        has_image = True
+    has_image = bool(image_blobs)
+    # Preserve the legacy single-image variables so the rest of the
+    # handler, the vision_extras response, and ``photo_retention`` still
+    # work. The first image's mimetype is canonical for the response
+    # surface; the vision adapter sees every image via image_blobs.
+    image_bytes = image_blobs[0][0] if image_blobs else b""
+    image_mimetype = image_blobs[0][1] if image_blobs else "image/jpeg"
 
     if not text_raw and not has_image:
         return jsonify({"error": {"message": "provide a meal description or photo"}}), 400
@@ -5978,9 +6025,8 @@ def meal_intake():
     if has_image:
         try:
             estimate = _meal_intake_vision_estimate(
-                image_bytes,
+                images=image_blobs,
                 text_raw=text_raw,
-                mimetype=image_mimetype,
                 user_id=user_id,
             )
             source = estimate["source"]
@@ -6042,13 +6088,11 @@ def meal_intake():
         source = estimate["source"]
         response_extras["fallback_used"] = parsed["fallback_used"]
 
-    # FIT-61: the meal-log policy is the single source of truth for
-    # auto-log vs pending-review. Confidence bands, ambiguous-input
-    # detection, and macro plausibility gates all live in
-    # ``meal_log_policy.evaluate_meal_log`` so both the text-parser and
-    # image paths share the same decision and reason copy.
+    # FIT-61: the meal-log policy still labels each estimate with a
+    # confidence band + reasons; FIT-138 reads them for the response
+    # surface but overrides the persistence decision so the capture
+    # endpoint always routes to review before save.
     decision = evaluate_meal_log(estimate)
-    status = decision["status"]
     response_extras["policy"] = {
         "confidence_band": decision["confidence_band"],
         "reasons": decision["reasons"],
@@ -6057,10 +6101,18 @@ def meal_intake():
     # ``uncertainty_notes`` list so the composer's pending-review card
     # (which reads ``estimate.uncertainty_notes``) shows the user why
     # their entry was held back, even when the reason is policy-only
-    # (e.g. medium_confidence, implausible_macros). Without this, a
-    # pending entry from the new MEDIUM band has no explanation surface.
+    # (e.g. medium_confidence, implausible_macros).
     _merge_policy_reasons_into_uncertainty_notes(estimate, decision["reasons"])
 
+    # FIT-138 "Capture flow routes to review before save" is satisfied by
+    # FIT-144's v2 fresh-submit return: _review_payload_from_estimate +
+    # _review_save_snapshot creates the pending-review snapshot and returns
+    # the multi-item review payload that the frontend dispatches to
+    # buildMealReviewCardV2. PR #124's pre-rebase force-pending path was a
+    # v1 single-item return that conflicts with the v2 shape on origin/main
+    # post-FIT-134/FIT-144; it is dropped here. Idempotent replay paths
+    # upstream in this handler still return the legacy logged shape for
+    # already-accepted meals.
     status = "pending_review"
     food_log = _meal_intake_persist(
         client_id, estimate, source=source, has_image=has_image,
