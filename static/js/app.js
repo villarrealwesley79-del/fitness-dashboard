@@ -29,6 +29,15 @@
         swapContext: null,
     };
 
+    // FIT-129: generation counters drop sentinel writes from stale fetches.
+    // dashboardRenderGen bumps once per renderDashboard() (closes the
+    // inter-render race). dashboardSentinelGen[key] bumps once per
+    // renderDashboard() AND once per retry click for that chip (closes the
+    // intra-render retry race — an older same-render fetch landing after a
+    // retry success can no longer flip its sentinel back on).
+    let dashboardRenderGen = 0;
+    const dashboardSentinelGen = { ouraError: 0, recoError: 0, ouraSleepError: 0 };
+
     // --- helpers -------------------------------------------------
     const $ = (id) => document.getElementById(id);
     const qs = (sel, root = document) => root.querySelector(sel);
@@ -606,18 +615,20 @@
     }
     async function getOuraStatus(force = false, refreshApi = false) {
         if (!force && !refreshApi && state.oura) return state.oura;
-        // FIT-128: track success/failure on a sentinel so paintDashboardFromState
-        // can surface a per-card retry chip without losing the rejection in
-        // the existing try/catch swallow. timeoutMs makes a hung endpoint
-        // reject after 30s instead of leaving the chip silent forever.
-        try { state.oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : ''), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); state.ouraError = false; }
-        catch { state.oura = null; state.ouraError = true; }
+        // FIT-129: sentinel ownership moved to renderDashboard's settle helper
+        // so a stale fetch from an older render/retry can no longer flip
+        // state.ouraError back on. Swallow contract preserved (returns null on
+        // failure) for non-dashboard callers (renderVitals, renderSettings).
+        // timeoutMs makes a hung endpoint reject after 30s instead of leaving
+        // the chip silent forever.
+        try { state.oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : ''), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
+        catch { state.oura = null; }
         return state.oura;
     }
     async function getOuraSleep(force = false) {
         if (!force && state.ouraSleep) return state.ouraSleep;
-        try { state.ouraSleep = await api('/api/oura/sleep-summary', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); state.ouraSleepError = false; }
-        catch { state.ouraSleep = null; state.ouraSleepError = true; }
+        try { state.ouraSleep = await api('/api/oura/sleep-summary', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
+        catch { state.ouraSleep = null; }
         return state.ouraSleep;
     }
     async function getOuraTrends(force = false) {
@@ -628,8 +639,8 @@
     }
     async function getReco(force = false) {
         if (!force && state.reco) return state.reco;
-        try { state.reco = await api('/api/recommendation/smart', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); state.recoError = false; }
-        catch { state.reco = null; state.recoError = true; }
+        try { state.reco = await api('/api/recommendation/smart', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
+        catch { state.reco = null; }
         return state.reco;
     }
     async function getInsights(force = false) {
@@ -1014,6 +1025,19 @@
     // ("--", "Loading…", etc.) until their data lands, and each paint reads
     // from state so it tolerates the other endpoints not having returned yet.
     async function renderDashboard() {
+        // FIT-129: capture both gens at the top so stale fetches landing
+        // after a newer render OR after a retry click can be dropped before
+        // they touch the sentinels. dashboardRenderGen guards against
+        // overlapping renderDashboard() calls; sentinelGens guard against an
+        // older same-render fetch flipping a sentinel after a retry click
+        // has already superseded it.
+        const gen = ++dashboardRenderGen;
+        const sentinelGens = {
+            ouraError:      ++dashboardSentinelGen.ouraError,
+            recoError:      ++dashboardSentinelGen.recoError,
+            ouraSleepError: ++dashboardSentinelGen.ouraSleepError,
+        };
+
         // Paint once with whatever's already in cache. Per-field guards inside
         // paintDashboardFromState (added in FIT-127) keep the cold-open empty
         // state from injecting misleading defaults — the painters skip cards
@@ -1022,22 +1046,35 @@
         //
         // FIT-128: reset per-card error sentinels at the top of each render so
         // a card that recovered since the last navigation isn't stuck in
-        // failure state. Fetchers re-set them on rejection below.
+        // failure state. Settle (below) re-sets them on rejection.
         state.ouraError = false;
         state.recoError = false;
         state.ouraSleepError = false;
 
         paintDashboardFromState();
 
-        const repaint = () => { try { paintDashboardFromState(); } catch (e) { console.warn('dashboard repaint failed:', e); } };
-        // FIT-128: getDashboard does NOT swallow its rejection (unlike the
-        // other three), so map its failure onto state.recoError — same chip
-        // surface as a reco failure since both endpoints feed the AI
-        // Recommendation card.
-        const dashP = getDashboard().then(repaint, () => { state.recoError = true; repaint(); });
-        const ouraP = getOuraStatus().then(repaint, () => repaint());
-        const recoP = getReco().then(repaint, () => repaint());
-        const sleepP = getOuraSleep().then(repaint, () => repaint());
+        const repaint = () => {
+            if (gen !== dashboardRenderGen) return;
+            try { paintDashboardFromState(); } catch (e) { console.warn('dashboard repaint failed:', e); }
+        };
+        // FIT-129: gen-guarded sentinel write. Bails if either a newer
+        // renderDashboard() has started OR a retry click on this chip has
+        // bumped the per-sentinel gen, so a stale fetcher can't re-surface
+        // the chip after the user has moved on.
+        const settle = (ok, sentinel) => {
+            if (gen !== dashboardRenderGen) return;
+            if (sentinelGens[sentinel] !== dashboardSentinelGen[sentinel]) return;
+            if (!ok) state[sentinel] = true;
+            repaint();
+        };
+
+        // FIT-128/129: getDashboard rejects on failure (unlike the other
+        // three, which swallow and return null). Both endpoints feed the AI
+        // Recommendation card, so both map to recoError.
+        const dashP  = getDashboard().then(() => settle(true,      'recoError'),       () => settle(false, 'recoError'));
+        const ouraP  = getOuraStatus().then(v => settle(v != null, 'ouraError'));
+        const recoP  = getReco().then(v       => settle(v != null, 'recoError'));
+        const sleepP = getOuraSleep().then(v  => settle(v != null, 'ouraSleepError'));
 
         // Independent trend + history charts paint as soon as their own data lands.
         getOuraTrends().then(paintReadinessTrendChart, () => paintReadinessTrendChart(null));
@@ -1320,37 +1357,56 @@
         const sleepSeries = (sleep && sleep.trend_data ? sleep.trend_data : []).map((d) => d.score);
         sparkline($('insight-sparkline'), sleepSeries, { color: '#22d3ee', height: 32 });
 
-        // FIT-128: per-card retry chips. Each chip surfaces when its endpoint
-        // rejected/timed out (sentinel set by the fetcher's catch or by
-        // renderDashboard's .then-rejection for the un-swallowing dashboard
-        // endpoint). Click re-fetches the relevant endpoint(s) with force=true
-        // and repaints; on repeat failure the fetcher re-sets the sentinel
-        // and the chip stays visible.
-        paintRetryChip('readiness-retry', state.ouraError, () => getOuraStatus(true));
-        paintRetryChip('reco-retry', state.recoError, async () => {
+        // FIT-128/129: per-card retry chips. Each chip surfaces when its
+        // endpoint rejected/timed out (sentinel set by renderDashboard's
+        // settle helper). Click re-fetches with force=true under a per-
+        // sentinel gen guard so a stale older fetch can't re-show the chip
+        // after a successful retry, and a newer renderDashboard wins over an
+        // in-flight retry. retryFn must throw on failure (paintRetryChip
+        // catches and writes state[sentinelKey] = true under guard); the
+        // null-as-failure normalization below adapts the swallow-on-failure
+        // fetchers to that contract.
+        paintRetryChip('readiness-retry', state.ouraError, 'ouraError', async () => {
+            if (await getOuraStatus(true) == null) throw new Error('readiness retry failed');
+        });
+        paintRetryChip('reco-retry', state.recoError, 'recoError', async () => {
             // The AI Recommendation chip covers BOTH dashboard and reco
             // because the card chrome is fed by both endpoints. getDashboard
-            // throws on failure (unlike the other fetchers), so wrap it.
-            let dashFailed = false;
-            try { await getDashboard(true); } catch { dashFailed = true; }
-            await getReco(true);
-            if (dashFailed && !state.recoError) state.recoError = true;
+            // throws on failure (unlike the other fetchers); getReco swallows
+            // and returns null. Either failing surfaces the chip.
+            let dashOk = true;
+            try { await getDashboard(true); } catch { dashOk = false; }
+            const reco = await getReco(true);
+            if (!dashOk || reco == null) throw new Error('reco retry failed');
         });
-        paintRetryChip('insight-retry', state.ouraSleepError, () => getOuraSleep(true));
+        paintRetryChip('insight-retry', state.ouraSleepError, 'ouraSleepError', async () => {
+            if (await getOuraSleep(true) == null) throw new Error('insight retry failed');
+        });
     }
 
-    function paintRetryChip(elementId, isErrored, retryFn) {
+    function paintRetryChip(elementId, isErrored, sentinelKey, retryFn) {
         const chip = $(elementId);
         if (!chip) return;
         chip.hidden = !isErrored;
         if (!isErrored) return;
         chip.onclick = async () => {
+            // FIT-129: capture render-gen and bump this chip's sentinel-gen
+            // BEFORE retryFn runs. The bump invalidates any older same-render
+            // in-flight fetch for the same sentinel, so it can no longer
+            // re-show the chip after the retry succeeds. Both gens are
+            // checked at the top of finally, before any DOM/state mutation,
+            // so a stale retry can't re-enable the chip or repaint either.
+            const clickGen = dashboardRenderGen;
+            const clickSentinelGen = ++dashboardSentinelGen[sentinelKey];
             chip.disabled = true;
             chip.hidden = true;
-            try {
-                await retryFn();
-            } finally {
+            let failed = false;
+            try { await retryFn(); } catch { failed = true; }
+            finally {
+                if (clickGen !== dashboardRenderGen) return;
+                if (clickSentinelGen !== dashboardSentinelGen[sentinelKey]) return;
                 chip.disabled = false;
+                state[sentinelKey] = failed;
                 paintDashboardFromState();
             }
         };

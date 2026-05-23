@@ -55,40 +55,59 @@ def test_chip_retry_css_is_defined():
     assert ".chip-retry:focus-visible" in css, ".chip-retry:focus-visible missing"
 
 
-def test_fetchers_set_per_endpoint_error_sentinels():
-    """FIT-128: getOuraStatus / getOuraSleep / getReco must each set their
-    corresponding `state.<x>Error` sentinel on rejection so the chips know
-    when to surface. Without this the chips can never appear because the
-    existing try/catch swallows the rejection silently (a regression of
-    FIT-125 AC 3)."""
+def test_fetchers_no_longer_write_error_sentinels():
+    """FIT-129: sentinel ownership moved from the fetchers into
+    renderDashboard's settle helper so a stale fetch from an older render or
+    retry can no longer flip the sentinel back on. Each fetcher body must
+    contain NO `state.<X>Error =` writes (any direction). The catch must
+    still null the cache slice (preserves the data-invalidation behavior the
+    rest of the painters rely on), and must NOT re-throw (preserves the
+    swallow-on-failure contract that non-dashboard callers — renderVitals,
+    renderNextWorkout, renderSettings — depend on for graceful-null
+    rendering)."""
     app_js = (ROOT / "static" / "js" / "app.js").read_text()
 
-    for fetcher, sentinel in [
-        ("getOuraStatus", "state.ouraError"),
-        ("getOuraSleep", "state.ouraSleepError"),
-        ("getReco", "state.recoError"),
+    for fetcher, cache_slice in [
+        ("getOuraStatus", "state.oura"),
+        ("getOuraSleep", "state.ouraSleep"),
+        ("getReco", "state.reco"),
     ]:
         marker = f"async function {fetcher}("
         assert marker in app_js, f"{fetcher} not found"
         body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
-        # The catch branch must set the sentinel to true.
-        assert f"{sentinel} = true" in body, (
-            f"{fetcher} catch must set `{sentinel} = true` so the retry chip "
-            f"can surface"
+
+        # Negative: no sentinel writes survive in the fetcher body. A stale
+        # write here would re-introduce the FIT-129 race regardless of the
+        # gen guard.
+        for sentinel in ("state.ouraError", "state.recoError", "state.ouraSleepError"):
+            assert f"{sentinel} =" not in body, (
+                f"{fetcher} body must not write `{sentinel}` — sentinel "
+                f"ownership lives in renderDashboard's settle helper (FIT-129)"
+            )
+
+        # Positive: cache invalidation on failure is preserved.
+        assert f"{cache_slice} = null" in body, (
+            f"{fetcher} catch must still set `{cache_slice} = null` so a "
+            f"failed refetch doesn't leave stale data in the cache"
         )
-        # The success branch must clear the sentinel so a recovered fetch
-        # doesn't leave a stale chip behind on the next render.
-        assert f"{sentinel} = false" in body, (
-            f"{fetcher} success branch must set `{sentinel} = false` so a "
-            f"recovered fetch clears the chip"
+
+        # Positive: catch must not re-throw — non-dashboard callers
+        # (renderVitals / renderNextWorkout / renderSettings) rely on the
+        # swallow-on-failure contract.
+        catch_body = body.split("catch", 1)[1].split("\n", 1)[0]
+        assert "throw" not in catch_body, (
+            f"{fetcher} catch must not re-throw — non-dashboard callers "
+            f"(renderVitals/renderNextWorkout/renderSettings) rely on the "
+            f"swallow-on-failure contract"
         )
 
 
 def test_render_dashboard_resets_error_sentinels_and_maps_dashboard_to_reco():
-    """FIT-128 persistence + mapping: renderDashboard must reset all three
-    error sentinels at the top (so a recovered card doesn't stay stuck), and
-    it must map a dashboard-endpoint rejection onto state.recoError because
-    the AI Recommendation card chip covers BOTH dashboard and reco."""
+    """FIT-128 persistence + mapping (FIT-129 refactor): renderDashboard
+    must reset all three error sentinels at the top (so a recovered card
+    doesn't stay stuck), and it must route a dashboard-endpoint rejection
+    onto state.recoError via the settle helper because the AI Recommendation
+    card chip covers BOTH dashboard and reco."""
     app_js = (ROOT / "static" / "js" / "app.js").read_text()
     marker = "async function renderDashboard()"
     body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
@@ -98,12 +117,23 @@ def test_render_dashboard_resets_error_sentinels_and_maps_dashboard_to_reco():
     assert "state.recoError = false;" in body, "renderDashboard must reset state.recoError"
     assert "state.ouraSleepError = false;" in body, "renderDashboard must reset state.ouraSleepError"
 
-    # Dashboard rejection maps to state.recoError so the chip fires for either
-    # dashboard or reco failure (per the FIT-128 endpoint-to-chip mapping).
-    assert "getDashboard().then(repaint, () => { state.recoError = true; repaint(); })" in body, (
-        "renderDashboard's dashboard .then-rejection must set state.recoError "
-        "= true — this is the only fetcher that doesn't swallow its own "
-        "rejection, so the chip mapping has to be wired up here"
+    # Dashboard's rejection branch routes onto recoError via settle (FIT-129
+    # shape). getDashboard is the only fetcher that still throws on failure,
+    # so it gets the rejection-handler form of .then; the others use
+    # null-as-failure detection (covered by the gen-counter test below).
+    # Whitespace-tolerant: the source uses vertical alignment in the four
+    # .then chains, so match on the .then structure rather than literal text.
+    import re
+    dash_then = re.search(
+        r"getDashboard\(\)\.then\(\s*\(\)\s*=>\s*settle\(true,\s*'recoError'\)\s*,"
+        r"\s*\(\)\s*=>\s*settle\(false,\s*'recoError'\)\s*\)",
+        body,
+    )
+    assert dash_then is not None, (
+        "renderDashboard's getDashboard .then chain must route both branches "
+        "onto the recoError sentinel via settle — success → settle(true, "
+        "'recoError'), rejection → settle(false, 'recoError'). Both dashboard "
+        "and reco endpoints feed the AI Recommendation card chip."
     )
 
 
@@ -155,11 +185,20 @@ def test_retry_chips_announce_via_aria_live():
 
 
 def test_paint_retry_chip_helper_exists_and_is_called_per_chip():
-    """FIT-128: paintRetryChip helper must exist, and paintDashboardFromState
-    must call it once per chip with the matching sentinel + retry fn."""
+    """FIT-128 (FIT-129 signature update): paintRetryChip helper must exist
+    with the (elementId, isErrored, sentinelKey, retryFn) signature, and
+    paintDashboardFromState must call it once per chip with the matching
+    sentinel value, sentinel key string, and retry fn."""
     app_js = (ROOT / "static" / "js" / "app.js").read_text()
 
-    assert "function paintRetryChip(" in app_js, "paintRetryChip helper missing"
+    # FIT-129: signature now includes sentinelKey so the click handler can
+    # write `state[sentinelKey] = failed` authoritatively under the gen guard
+    # (instead of relying on the fetcher's catch to flip the sentinel).
+    assert "function paintRetryChip(elementId, isErrored, sentinelKey, retryFn)" in app_js, (
+        "paintRetryChip signature must be (elementId, isErrored, sentinelKey, "
+        "retryFn) — the sentinelKey lets the click handler write the sentinel "
+        "authoritatively under the gen guard"
+    )
 
     # The helper must hide the chip when no error and show it on error,
     # plus wire an onclick handler.
@@ -171,14 +210,137 @@ def test_paint_retry_chip_helper_exists_and_is_called_per_chip():
         "paintRetryChip must wire chip.onclick to trigger the retry"
     )
 
-    # paintDashboardFromState must invoke the helper for all three chips.
+    # paintDashboardFromState must invoke the helper for all three chips,
+    # passing the matching sentinel-key string as the third argument.
     paint_body = app_js.split("function paintDashboardFromState()", 1)[1].split("\n    }\n", 1)[0]
-    assert "paintRetryChip('readiness-retry', state.ouraError," in paint_body, (
-        "readiness-retry chip must be wired to state.ouraError"
+    assert "paintRetryChip('readiness-retry', state.ouraError, 'ouraError'," in paint_body, (
+        "readiness-retry chip must be wired to state.ouraError + 'ouraError' key"
     )
-    assert "paintRetryChip('reco-retry', state.recoError," in paint_body, (
-        "reco-retry chip must be wired to state.recoError"
+    assert "paintRetryChip('reco-retry', state.recoError, 'recoError'," in paint_body, (
+        "reco-retry chip must be wired to state.recoError + 'recoError' key"
     )
-    assert "paintRetryChip('insight-retry', state.ouraSleepError," in paint_body, (
-        "insight-retry chip must be wired to state.ouraSleepError"
+    assert "paintRetryChip('insight-retry', state.ouraSleepError, 'ouraSleepError'," in paint_body, (
+        "insight-retry chip must be wired to state.ouraSleepError + 'ouraSleepError' key"
     )
+
+
+def test_dashboard_render_uses_generation_counters():
+    """FIT-129: renderDashboard must capture BOTH a render-gen and a
+    per-sentinel gen at the top, and the settle helper must bail on either
+    gen mismatch BEFORE touching the sentinel — otherwise stale fetches
+    (from an older render OR from before a retry click superseded them) can
+    still flip the sentinel back on."""
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+
+    # Module-scope counters.
+    assert "let dashboardRenderGen = 0;" in app_js, (
+        "dashboardRenderGen module-scope counter is missing"
+    )
+    assert "const dashboardSentinelGen = { ouraError: 0, recoError: 0, ouraSleepError: 0 };" in app_js, (
+        "dashboardSentinelGen module-scope per-sentinel counter is missing — "
+        "render-gen alone doesn't close the intra-render retry race"
+    )
+
+    body = app_js.split("async function renderDashboard()", 1)[1].split("\n    }\n", 1)[0]
+
+    # Render-gen capture at top.
+    assert "const gen = ++dashboardRenderGen;" in body, (
+        "renderDashboard must capture `const gen = ++dashboardRenderGen;`"
+    )
+
+    # Per-sentinel gen snapshot at top — all three.
+    for sentinel in ("ouraError", "recoError", "ouraSleepError"):
+        assert f"++dashboardSentinelGen.{sentinel}" in body, (
+            f"renderDashboard must capture sentinel gen for {sentinel} via "
+            f"`++dashboardSentinelGen.{sentinel}` so retry on this chip "
+            f"invalidates older same-render fetches for it"
+        )
+
+    # settle helper has BOTH guards.
+    assert "if (gen !== dashboardRenderGen) return;" in body, (
+        "settle helper must bail on render-gen mismatch"
+    )
+    assert "if (sentinelGens[sentinel] !== dashboardSentinelGen[sentinel]) return;" in body, (
+        "settle helper must bail on per-sentinel-gen mismatch — closes the "
+        "intra-render retry race where the older fetcher from the current "
+        "render rejects after a retry on the same chip has succeeded"
+    )
+
+    # Ordering: both guards must precede any sentinel mutation inside settle.
+    render_gen_idx = body.index("if (gen !== dashboardRenderGen) return;")
+    sentinel_gen_idx = body.index("if (sentinelGens[sentinel] !== dashboardSentinelGen[sentinel]) return;")
+    # The only sentinel write inside settle is `state[sentinel] = true;`.
+    settle_write_idx = body.index("state[sentinel] = true;")
+    assert render_gen_idx < settle_write_idx, (
+        "render-gen guard must appear BEFORE `state[sentinel] = true;` so a "
+        "stale settle never mutates"
+    )
+    assert sentinel_gen_idx < settle_write_idx, (
+        "sentinel-gen guard must appear BEFORE `state[sentinel] = true;` so a "
+        "stale settle never mutates"
+    )
+
+
+def test_paint_retry_chip_guards_on_both_generations():
+    """FIT-129: paintRetryChip's click handler must capture the render-gen
+    AND bump+capture the per-sentinel gen BEFORE retryFn() runs. The bump
+    invalidates any older same-render in-flight fetch for the same sentinel
+    (the intra-render retry race Codex flagged in round 2). Both gens are
+    re-checked at the top of `finally` so a stale retry cannot re-enable the
+    chip, write the sentinel, or repaint."""
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+
+    helper = app_js.split("function paintRetryChip(", 1)[1].split("\n    }\n", 1)[0]
+
+    # Capture render-gen at click time.
+    assert "const clickGen = dashboardRenderGen;" in helper, (
+        "paintRetryChip click handler must capture the render-gen at click time"
+    )
+
+    # Bump + capture per-sentinel gen — must use `++` (the bump) so older
+    # same-render fetches for the same sentinel are invalidated. Capturing
+    # without bumping wouldn't drop the older fetch's settle.
+    assert "const clickSentinelGen = ++dashboardSentinelGen[sentinelKey];" in helper, (
+        "click handler must `++dashboardSentinelGen[sentinelKey]` and capture "
+        "it as clickSentinelGen BEFORE retryFn runs — the bump invalidates "
+        "older same-render in-flight fetches for this sentinel"
+    )
+
+    # Ordering: the sentinel-gen bump must happen BEFORE retryFn is awaited,
+    # otherwise an older in-flight fetch could land between retryFn start and
+    # the bump and still touch the sentinel.
+    bump_idx = helper.index("const clickSentinelGen = ++dashboardSentinelGen[sentinelKey];")
+    try_idx = helper.index("try { await retryFn();")
+    assert bump_idx < try_idx, (
+        "sentinel-gen bump must occur BEFORE retryFn is awaited"
+    )
+
+    # Both bail checks in finally.
+    assert "if (clickGen !== dashboardRenderGen) return;" in helper, (
+        "click handler must bail in finally on render-gen mismatch"
+    )
+    assert "if (clickSentinelGen !== dashboardSentinelGen[sentinelKey]) return;" in helper, (
+        "click handler must bail in finally on sentinel-gen mismatch"
+    )
+
+    # Ordering: both bails must precede the three mutations
+    # (re-enable, sentinel write, repaint) in the finally block.
+    render_bail_idx = helper.index("if (clickGen !== dashboardRenderGen) return;")
+    sentinel_bail_idx = helper.index("if (clickSentinelGen !== dashboardSentinelGen[sentinelKey]) return;")
+    sentinel_write_idx = helper.index("state[sentinelKey] = failed;")
+    disable_idx = helper.index("chip.disabled = false;")
+    repaint_idx = helper.index("paintDashboardFromState();")
+
+    for label, idx in (
+        ("state[sentinelKey] = failed;", sentinel_write_idx),
+        ("chip.disabled = false;", disable_idx),
+        ("paintDashboardFromState();", repaint_idx),
+    ):
+        assert render_bail_idx < idx, (
+            f"render-gen bail must precede `{label}` so a stale retry cannot "
+            f"mutate after a newer render has taken over"
+        )
+        assert sentinel_bail_idx < idx, (
+            f"sentinel-gen bail must precede `{label}` so a stale retry cannot "
+            f"mutate after another retry has superseded it"
+        )
