@@ -340,6 +340,17 @@ def init_data_db():
                 PRIMARY KEY(user_id, meal_id)
             );
 
+            CREATE TABLE IF NOT EXISTS meal_review_snapshots (
+                user_id                 INTEGER NOT NULL,
+                meal_id                 TEXT    NOT NULL,
+                payload_json            TEXT    NOT NULL,
+                next_item_seq           INTEGER NOT NULL DEFAULT 1,
+                applied_refreshes_json  TEXT    NOT NULL DEFAULT '{}',
+                created_at              TEXT    NOT NULL DEFAULT (datetime('now')),
+                updated_at              TEXT    NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(user_id, meal_id)
+            );
+
             CREATE TABLE IF NOT EXISTS recovery_data (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id          INTEGER NOT NULL,
@@ -676,6 +687,20 @@ def get_meal_acceptance_event(user_id: int, meal_id: str) -> Optional[dict]:
     return result
 
 
+def delete_meal_acceptance_event(user_id: int, meal_id: str) -> bool:
+    key = (meal_id or "").strip()
+    if not key:
+        return False
+    init_data_db()
+    with _get_db() as conn:
+        cur = conn.execute(
+            "DELETE FROM meal_acceptance_events WHERE user_id = ? AND meal_id = ?",
+            (user_id, key),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
 def save_meal_acceptance_event(
     user_id: int,
     *,
@@ -756,6 +781,117 @@ def import_meal_acceptance_event(user_id: int, event: dict) -> dict | None:
         skipped_count=event.get("skipped_count") or 0,
         deleted_count=event.get("deleted_count") or 0,
         feedback_fingerprint=event.get("feedback_fingerprint"),
+    )
+
+
+def get_meal_review_snapshot(user_id: int, meal_id: str) -> Optional[dict]:
+    key = (meal_id or "").strip()
+    if not key:
+        return None
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM meal_review_snapshots WHERE user_id = ? AND meal_id = ?",
+            (user_id, key),
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["payload"] = _json_loads_or_none(result.pop("payload_json", None)) or {}
+    result["applied_refreshes"] = _json_loads_or_none(result.pop("applied_refreshes_json", None)) or {}
+    return result
+
+
+def save_meal_review_snapshot(
+    user_id: int,
+    *,
+    meal_id: str,
+    payload: dict,
+    next_item_seq: int,
+    applied_refreshes: dict | None = None,
+) -> dict:
+    key = (meal_id or "").strip()
+    if not key:
+        raise ValueError("meal_id is required")
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a dict")
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO meal_review_snapshots (
+                user_id, meal_id, payload_json, next_item_seq,
+                applied_refreshes_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, meal_id) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                next_item_seq = excluded.next_item_seq,
+                applied_refreshes_json = excluded.applied_refreshes_json,
+                updated_at = excluded.updated_at
+            RETURNING *
+            """,
+            (
+                user_id,
+                key,
+                _json_dumps_or_none(payload) or "{}",
+                max(1, int(next_item_seq or 1)),
+                _json_dumps_or_none(applied_refreshes or {}) or "{}",
+                now_iso,
+                now_iso,
+            ),
+        ).fetchone()
+        conn.commit()
+    result = dict(row)
+    result["payload"] = _json_loads_or_none(result.pop("payload_json", None)) or {}
+    result["applied_refreshes"] = _json_loads_or_none(result.pop("applied_refreshes_json", None)) or {}
+    return result
+
+
+def delete_meal_review_snapshot(user_id: int, meal_id: str) -> bool:
+    key = (meal_id or "").strip()
+    if not key:
+        return False
+    init_data_db()
+    with _get_db() as conn:
+        cursor = conn.execute(
+            "DELETE FROM meal_review_snapshots WHERE user_id = ? AND meal_id = ?",
+            (user_id, key),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def list_meal_review_snapshots(user_id: int) -> list[dict]:
+    init_data_db()
+    with _get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM meal_review_snapshots WHERE user_id = ? ORDER BY updated_at DESC, meal_id ASC",
+            (user_id,),
+        ).fetchall()
+    snapshots = []
+    for row in rows:
+        snapshot = dict(row)
+        snapshot["payload"] = _json_loads_or_none(snapshot.pop("payload_json", None)) or {}
+        snapshot["applied_refreshes"] = _json_loads_or_none(snapshot.pop("applied_refreshes_json", None)) or {}
+        snapshots.append(snapshot)
+    return snapshots
+
+
+def import_meal_review_snapshot(user_id: int, snapshot: dict) -> dict | None:
+    if not isinstance(snapshot, dict):
+        return None
+    meal_id = (snapshot.get("meal_id") or "").strip()
+    payload = snapshot.get("payload")
+    if not meal_id or not isinstance(payload, dict):
+        return None
+    return save_meal_review_snapshot(
+        user_id,
+        meal_id=meal_id,
+        payload=payload,
+        next_item_seq=snapshot.get("next_item_seq") or 1,
+        applied_refreshes=snapshot.get("applied_refreshes") or {},
     )
 
 
@@ -1081,6 +1217,20 @@ def delete_food_log_by_client_id(user_id: int, client_id: str) -> bool:
         return cursor.rowcount > 0
 
 
+def delete_food_logs_by_meal_id(user_id: int, meal_id: str) -> int:
+    """Delete all food logs for a user-scoped meal_id. Returns rows removed."""
+    key = (meal_id or "").strip()
+    if not key:
+        return 0
+    with _get_db() as conn:
+        cursor = conn.execute(
+            "DELETE FROM food_logs WHERE user_id = ? AND meal_id = ?",
+            (user_id, key),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0)
+
+
 def add_food_log(user_id: int, record: dict) -> dict:
     """Persist one accepted food entry with sanitized estimate/correction metadata."""
     now_iso = datetime.now().isoformat(timespec="seconds")
@@ -1219,6 +1369,7 @@ def delete_user_data(user_id: int) -> None:
         "food_logs",
         "personal_vocab",
         "meal_acceptance_events",
+        "meal_review_snapshots",
         "recovery_data",
         "user_settings",
     ]
@@ -1231,7 +1382,16 @@ def delete_user_data(user_id: int) -> None:
 
 def get_user_data_summary(user_id: int) -> dict:
     """Return record counts per table for a user (useful for admin/debugging)."""
-    tables = ["body_data", "cardio_data", "nutrition_data", "food_logs", "personal_vocab", "meal_acceptance_events", "recovery_data"]
+    tables = [
+        "body_data",
+        "cardio_data",
+        "nutrition_data",
+        "food_logs",
+        "personal_vocab",
+        "meal_acceptance_events",
+        "meal_review_snapshots",
+        "recovery_data",
+    ]
     summary = {}
     with _get_db() as conn:
         for table in tables:

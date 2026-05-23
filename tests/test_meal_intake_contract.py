@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import importlib
 import io
+import tempfile
+from pathlib import Path
+
+import data_store
 
 
 REQUIRED_ESTIMATE_KEYS = {
@@ -23,6 +27,9 @@ REQUIRED_ESTIMATE_KEYS = {
 
 def _module(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit57-contract-secret")
+    db_path = Path(tempfile.mkdtemp(prefix="fit-meal-intake-contract-")) / "fitness_data.db"
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+    data_store.init_data_db()
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     monkeypatch.setattr(module, "NUTRITION_DATA", [])
@@ -73,13 +80,13 @@ def test_zero_context_text_request_returns_contract_shape_and_uses_client_id(mon
 
     assert response.status_code == 200
     body = response.get_json()
-    assert body["status"] == "logged"
+    assert body["status"] == "pending_review"
     assert set(REQUIRED_ESTIMATE_KEYS).issubset(body["estimate"])
     assert body["estimate"]["source"] == "ai_text_estimate"
     assert body["policy"] == {"confidence_band": "high", "reasons": []}
     assert body["food_log"]["client_id"] == "fit57-shake-1"
     assert persisted["client_id"] == "fit57-shake-1"
-    assert persisted["correction_state"] == "accepted"
+    assert persisted["correction_state"] == "pending_review"
 
 
 def test_zero_context_image_request_uses_same_estimate_shape_without_raw_image_echo(monkeypatch):

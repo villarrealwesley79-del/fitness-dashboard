@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import tempfile
 from pathlib import Path
 
 import data_store
@@ -18,6 +19,9 @@ import data_store
 
 def _client(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit65-meal-intake-secret")
+    db_path = Path(tempfile.mkdtemp(prefix="fit-meal-intake-api-")) / "fitness_data.db"
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+    data_store.init_data_db()
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     monkeypatch.setattr(module, "NUTRITION_DATA", [])
@@ -156,13 +160,13 @@ def test_meal_intake_text_only_auto_logs_when_parser_is_confident(monkeypatch):
     )
     assert res.status_code == 200, res.get_data(as_text=True)
     body = res.get_json()
-    assert body["status"] == "logged"
+    assert body["status"] == "pending_review"
     assert body["estimate"]["item_name"] == "Eggs and toast"
     assert body["estimate"]["calories"] > 0
     assert body["food_log"]["client_id"] == "meal-abc-1"
     assert body["fallback_used"] is False
     assert "stub" not in body, "real text path must not advertise stub: true"
-    assert persisted["correction_state"] == "accepted"
+    assert persisted["correction_state"] == "pending_review"
     assert persisted["source"] == "ai_text_estimate"
 
 
@@ -210,10 +214,10 @@ def test_meal_intake_preserves_open_food_facts_attribution(monkeypatch):
     assert res.status_code == 200, res.get_data(as_text=True)
     body = res.get_json()
     assert body["estimate"]["source"] == "open_food_facts"
-    assert body["estimate"]["verified_source_url"] == "https://world.openfoodfacts.org/product/500032837"
+    assert "verified_source_url" not in str(body)
     assert "CC BY-SA" in body["estimate"]["off_attribution"]
     assert "ODbL/DbCL data" in body["estimate"]["off_attribution"]
-    assert persisted["original_estimate"]["verified_source_url"] == "https://world.openfoodfacts.org/product/500032837"
+    assert "verified_source_url" not in str(persisted["original_estimate"])
     assert "CC BY-SA" in persisted["original_estimate"]["off_attribution"]
     assert "ODbL/DbCL data" in persisted["original_estimate"]["off_attribution"]
 
@@ -485,7 +489,7 @@ def test_meal_intake_image_only_auto_logs(monkeypatch):
     )
     assert res.status_code == 200, res.get_data(as_text=True)
     body = res.get_json()
-    assert body["status"] == "logged"
+    assert body["status"] == "pending_review"
     assert body["estimate"]["confidence"] >= 0.7
     assert body["photo_retention"]["policy"] == "discard_after_extraction"
     assert body["photo_retention"]["raw_photo_retained"] is False
@@ -582,7 +586,7 @@ def test_meal_intake_bill_miller_cart_uses_structured_item_lookups(monkeypatch):
 
     assert res.status_code == 200, res.get_data(as_text=True)
     body = res.get_json()
-    assert body["status"] == "logged"
+    assert body["status"] == "pending_review"
     assert lookup_queries == [
         ("1 Bill Miller BBQ Bacon & Egg Taco Hot Sauce Flour Tortilla", 42),
         ("2 Bill Miller BBQ Breakfast Sandwich On a Biscuit Sausage Patty Cheese Egg", 42),
@@ -600,9 +604,7 @@ def test_meal_intake_bill_miller_cart_uses_structured_item_lookups(monkeypatch):
     assert persisted["record"]["source"] == "vision_lm_studio+nutritionix"
     assert persisted["record"]["original_estimate"]["vision_description"].startswith("Bill Miller BBQ order")
     assert "image_bytes" not in str(persisted["record"]["original_estimate"])
-    assert vocab_calls
-    assert vocab_calls[0][0] == 42
-    assert "Bill Miller BBQ order" in vocab_calls[0][1]
+    assert vocab_calls == []
 
 
 def test_meal_intake_single_structured_item_applies_top_level_portion_hint(monkeypatch):
@@ -798,6 +800,7 @@ def test_meal_intake_image_auto_vocab_learning_claims_once(monkeypatch):
 
     monkeypatch.setattr(module, "claim_food_log_vocab_learning", fake_claim)
 
+    client = module.app.test_client()
     for _ in range(2):
         res = module.app.test_client().post(
             "/api/meal-intake",
@@ -809,7 +812,11 @@ def test_meal_intake_image_auto_vocab_learning_claims_once(monkeypatch):
         )
         assert res.status_code == 200, res.get_data(as_text=True)
 
-    assert claims == ["meal-img-vocab-idempotent", "meal-img-vocab-idempotent"]
+    assert claims == []
+    accept = client.post("/api/meal-intake/meal-img-vocab-idempotent/accept", json={})
+    assert accept.status_code == 200, accept.get_data(as_text=True)
+    assert len(claims) == 1
+    assert claims[0].startswith("meal-img-vocab-idempotent-item-")
     assert len(vocab_calls) == 1
 
 
@@ -965,7 +972,7 @@ def test_meal_intake_image_lookup_confidence_is_capped_by_vision(monkeypatch):
     assert accept.status_code == 200, accept.get_data(as_text=True)
     accepted_estimate = persisted[-1]["original_estimate"]
     assert accepted_estimate["external_food_id"] == "shake-1"
-    assert accepted_estimate["verified_source_url"] == "https://www.nutritionix.com/"
+    assert "verified_source_url" not in str(accepted_estimate)
     assert accepted_estimate["portion_basis"] == "1 shake"
     assert accepted_estimate["vision_description"] == "protein shake"
     assert accepted_estimate["vision_provider"] == "claude"
@@ -1101,7 +1108,7 @@ def test_meal_intake_image_preserves_cached_underlying_source(monkeypatch):
 
     assert res.status_code == 200
     body = res.get_json()
-    assert body["status"] == "logged"
+    assert body["status"] == "pending_review"
     assert body["estimate"]["source"] == "vision_claude+local_cache"
     assert body["estimate"]["underlying_source"] == "nutritionix"
     assert captured["original_estimate"]["underlying_source"] == "nutritionix"
@@ -1196,7 +1203,7 @@ def test_meal_intake_image_provider_failure_uses_text_fallback(monkeypatch):
 
     assert res.status_code == 200
     body = res.get_json()
-    assert body["status"] == "logged"
+    assert body["status"] == "pending_review"
     assert body["estimate"]["source"] == "ai_text_estimate"
     assert body["vision_error"] == "provider down"
 
@@ -1265,8 +1272,8 @@ def test_meal_intake_image_provider_failure_preserves_photo_origin_after_pending
         "/api/meal-intake/meal-vision-fallback-pending-1/accept",
         json={"estimate": pending_estimate, "text": "shared movie popcorn"},
     )
-    assert accept.status_code == 200
-    assert accept.get_json()["photo_retention"]["image_received"] is True
+    assert accept.status_code == 409
+    assert accept.get_json()["save_blocked_item_ids"] == ["item-1"]
 
 
 def test_meal_intake_image_provider_failure_without_text_returns_clear_error(monkeypatch):
@@ -2227,9 +2234,9 @@ def test_meal_intake_response_surfaces_policy_band_and_reasons(monkeypatch):
     )
     assert res.status_code == 200
     body = res.get_json()
-    assert body["status"] == "logged"
+    assert body["status"] == "pending_review"
     assert body["policy"]["confidence_band"] == "high"
-    assert body["policy"]["reasons"] == [], "high-confidence auto-log has no policy reasons"
+    assert body["policy"]["reasons"] == [], "high-confidence review has no policy reasons"
 
 
 def test_meal_intake_implausible_macros_force_pending_review(monkeypatch):
@@ -2389,8 +2396,8 @@ def test_meal_intake_accept_honors_pending_submission_browser_local_time(monkeyp
     assert module._nutrition_entry_logged_hour(captured) == 23
 
 
-def test_meal_intake_auto_log_persists_with_accepted_state(monkeypatch):
-    """The end-to-end auto-log path must persist correction_state="accepted"."""
+def test_meal_intake_submit_persists_with_pending_review_state(monkeypatch):
+    """The submit path must persist a non-counting pending-review row."""
     module = _client(monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Protein shake",
@@ -2415,8 +2422,8 @@ def test_meal_intake_auto_log_persists_with_accepted_state(monkeypatch):
         content_type="multipart/form-data",
     )
     assert res.status_code == 200
-    assert res.get_json()["status"] == "logged"
-    assert persisted[0]["correction_state"] == "accepted"
+    assert res.get_json()["status"] == "pending_review"
+    assert persisted[0]["correction_state"] == "pending_review"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -2605,8 +2612,8 @@ def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
         json={"estimate": body["estimate"], "text": "shared movie popcorn"},
     )
     accepted = accept.get_json()
-    assert accept.status_code == 200
-    assert accepted["photo_retention"]["image_received"] is True
+    assert accept.status_code == 409
+    assert accepted["save_blocked_item_ids"] == ["item-1"]
 
 
 def test_nutrition_today_surfaces_pending_review_count(monkeypatch):
@@ -2895,6 +2902,44 @@ def test_multi_item_accept_namespaces_explicit_item_client_ids(monkeypatch, tmp_
     assert {row["meal_id"] for row in rows} == {"photo-meal-explicit-one", "photo-meal-explicit-two"}
     assert len({row["client_id"] for row in rows}) == 2
     assert sum(row["calories"] for row in rows) == 300
+
+
+def test_multi_item_accept_does_not_delete_same_id_legacy_log(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "photo-parent-legacy",
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T09:00:00",
+            "item_name": "Legacy snack",
+            "calories": 111,
+            "protein_g": 3,
+            "carbs_g": 10,
+            "fat_g": 4,
+            "sodium_mg": 90,
+            "fiber_g": 1,
+            "correction_state": "accepted",
+            "source": "manual",
+        },
+    )
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/photo-parent-legacy/accept",
+        json={
+            "meal_id": "photo-parent-legacy",
+            "items": [
+                {"state": "included", "item_id": "new", "estimate": _accepted_estimate(item_name="New meal", calories=222)}
+            ],
+        },
+    )
+
+    rows = data_store.get_food_logs(1)
+    child_client_id = module._meal_item_client_id("photo-parent-legacy", {"item_id": "new"}, 0)
+    assert res.status_code == 200, res.get_data(as_text=True)
+    assert {row["client_id"] for row in rows} == {"photo-parent-legacy", child_client_id}
+    assert next(row for row in rows if row["client_id"] == "photo-parent-legacy")["item_name"] == "Legacy snack"
 
 
 def test_multi_item_accept_validates_all_items_before_persisting(monkeypatch, tmp_path):

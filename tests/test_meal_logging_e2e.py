@@ -207,6 +207,12 @@ def _log_by_client_id(harness, client_id):
     return matches[0]
 
 
+def _log_by_meal_id(harness, meal_id):
+    matches = [entry for entry in _food_logs(harness) if entry.get("meal_id") == meal_id]
+    assert len(matches) == 1
+    return matches[0]
+
+
 def _jpeg_probe_bytes():
     return b"\xff\xd8\xff\xe0" + PHOTO_BYTE_PROBE + b"\xff\xd9"
 
@@ -224,11 +230,11 @@ def test_text_only_auto_log_persists_confident_burrito(meal_e2e, monkeypatch):
         text="chipotle chicken burrito with white rice",
     )
 
-    assert body["status"] == "logged"
+    assert body["status"] == "pending_review"
     assert body["estimate"]["confidence"] >= 0.75
     assert body["estimate"]["source"] in {"nutritionix", "ai_text_estimate"}
     row = _log_by_client_id(meal_e2e, "fit83-text-auto-1")
-    assert row["correction_state"] == "accepted"
+    assert row["correction_state"] == "pending_review"
     assert row["item_name"] == "Chipotle chicken burrito"
 
 
@@ -264,7 +270,7 @@ def test_text_only_ambiguous_food_persists_pending_review(meal_e2e, monkeypatch)
 def test_photo_only_auto_log_uses_vision_pipeline_and_drops_raw_image(meal_e2e):
     body = _post_photo(meal_e2e, client_id="fit83-photo-auto-1")
 
-    assert body["status"] == "logged"
+    assert body["status"] == "pending_review"
     assert body["estimate"]["from_image"] is True
     assert body["estimate"]["source"] == "vision_claude+nutritionix"
     assert body["estimate"]["item_name"]
@@ -282,13 +288,13 @@ def test_photo_with_text_auto_logs_and_applies_half_portion_modifier(meal_e2e):
         text="half chipotle chicken burrito",
     )
 
-    assert body["status"] == "logged"
+    assert body["status"] == "pending_review"
     assert body["estimate"]["from_image"] is True
     assert body["estimate"]["portion_description"] == "approx half portion"
     assert body["estimate"]["calories"] == 340
     assert body["estimate"]["protein_g"] == 21
     row = _log_by_client_id(meal_e2e, "fit83-photo-text-half-1")
-    assert row["context_note"] == "half chipotle chicken burrito"
+    assert row["context_note"] is None
     assert row["calories"] == 340
 
 
@@ -297,16 +303,15 @@ def test_pending_review_accept_updates_existing_food_log(meal_e2e, monkeypatch):
     _stub_text_parser(monkeypatch, meal_e2e.module, estimate)
     pending = _post_text(meal_e2e, client_id="fit83-pending-accept-1", text="some food")
 
-    accepted = _accept(
-        meal_e2e,
-        client_id="fit83-pending-accept-1",
-        estimate=pending["estimate"],
-        text="some food",
+    accepted = meal_e2e.client.post(
+        "/api/meal-intake/fit83-pending-accept-1/accept",
+        json={"estimate": pending["estimate"], "text": "some food"},
     )
 
-    assert accepted["status"] == "logged"
+    assert accepted.status_code == 409
+    assert accepted.get_json()["save_blocked_item_ids"] == ["item-1"]
     row = _log_by_client_id(meal_e2e, "fit83-pending-accept-1")
-    assert row["correction_state"] == "accepted"
+    assert row["correction_state"] == "pending_review"
     assert row["item_name"] == "Chipotle chicken burrito"
 
 
@@ -328,15 +333,26 @@ def test_pending_review_edit_then_accept_persists_corrected_values(meal_e2e, mon
         }
     )
 
+    _stub_text_parser(monkeypatch, meal_e2e.module, edited)
+    refresh = meal_e2e.client.post(
+        "/api/meal-intake/fit83-pending-edit-1/refresh",
+        json={
+            "kind": "edit_portion",
+            "request_id": "fit83-edit-1",
+            "item_id": "item-1",
+            "text": "corrected burrito",
+        },
+    )
+    assert refresh.status_code == 200, refresh.get_data(as_text=True)
     _accept(meal_e2e, client_id="fit83-pending-edit-1", estimate=edited, text="corrected burrito")
 
-    row = _log_by_client_id(meal_e2e, "fit83-pending-edit-1")
-    assert row["correction_state"] == "accepted"
+    row = _log_by_meal_id(meal_e2e, "fit83-pending-edit-1")
+    assert row["correction_state"] == "corrected"
     assert row["item_name"] == "Edited burrito"
     assert row["calories"] == 610
     assert row["protein_g"] == 39
-    assert row["context_note"] == "corrected burrito"
-    assert row["original_estimate"]["item_name"] == "Edited burrito"
+    assert row["context_note"] is None
+    assert row["original_estimate"]["item_name"] == "Chipotle chicken burrito"
 
 
 def test_pending_review_discard_removes_food_log(meal_e2e, monkeypatch):
@@ -382,7 +398,7 @@ def test_pending_endpoint_hydrates_full_estimate_after_reload(meal_e2e, monkeypa
     assert pending["estimate"]["calories"] == 300
     assert pending["estimate"]["protein_g"] == 5
     assert pending["estimate"]["source"] == "ai_text_estimate"
-    assert pending["text_hint"] == "shared popcorn"
+    assert pending.get("text_hint", "") == "shared popcorn"
     assert pending["policy"]["reasons"]
 
 
@@ -408,7 +424,7 @@ def test_pending_accept_keeps_submission_day_when_accepted_after_midnight(meal_e
         local_iso=pending["local_iso"],
     )
 
-    row = _log_by_client_id(meal_e2e, "fit83-midnight-accept-1")
+    row = _log_by_meal_id(meal_e2e, "fit83-midnight-accept-1")
     assert row["date"] == "2026-05-18"
     assert row["logged_at"] == "2026-05-18T23:55:00"
 
@@ -453,15 +469,13 @@ def test_pending_photo_accept_round_trips_retention_metadata(meal_e2e):
     assert pending["estimate"]["from_image"] is True
     assert pending["photo_retention"]["image_received"] is True
 
-    accepted = _accept(
-        meal_e2e,
-        client_id="fit83-photo-retention-1",
-        estimate=pending["estimate"],
-        text="shared movie popcorn",
+    accepted = meal_e2e.client.post(
+        "/api/meal-intake/fit83-photo-retention-1/accept",
+        json={"estimate": pending["estimate"], "text": "shared movie popcorn"},
     )
 
-    assert accepted["status"] == "logged"
-    assert accepted["photo_retention"]["image_received"] is True
+    assert accepted.status_code == 409
+    assert accepted.get_json()["save_blocked_item_ids"] == ["item-1"]
     row = _log_by_client_id(meal_e2e, "fit83-photo-retention-1")
-    assert row["correction_state"] == "accepted"
+    assert row["correction_state"] == "pending_review"
     assert row["source"] == "vision_claude+nutritionix"

@@ -52,19 +52,26 @@ from data_store import (
     add_food_log,
     get_food_logs,
     get_meal_acceptance_event,
+    get_meal_review_snapshot,
+    list_meal_review_snapshots,
     import_meal_acceptance_event,
+    import_meal_review_snapshot,
     backfill_food_log_client_id,
     claim_food_log_vocab_learning,
+    delete_meal_acceptance_event,
+    delete_meal_review_snapshot,
     delete_personal_vocab_entry,
     import_personal_vocab_entry,
     list_meal_acceptance_events,
     list_personal_vocab_entries,
     delete_food_log_by_client_id,
+    delete_food_logs_by_meal_id,
     get_push_subscription_for_delivery,
     list_push_subscriptions,
     revoke_push_subscription,
     save_push_subscription,
     save_meal_acceptance_event,
+    save_meal_review_snapshot,
 )
 from meal_estimate_schema import (
     MealEstimateValidationError,
@@ -76,8 +83,12 @@ import personal_vocab
 import vision_estimator
 from meal_text_parser import parse_meal_text
 from meal_log_policy import (
+    CALORIE_MAX,
     CORRECTION_STATE_ACCEPTED,
     CORRECTION_STATE_PENDING_REVIEW,
+    MACRO_GRAM_MAX,
+    MEDIUM_CONFIDENCE_THRESHOLD,
+    SODIUM_MG_MAX,
     STATUS_LOGGED,
     STATUS_PENDING_REVIEW,
     evaluate_meal_log,
@@ -4825,8 +4836,24 @@ def _cleanup_stale_pending_meal_reviews(user_id: int, *, now=None) -> int:
             and _nutrition_entry_pending_review(entry)
             and delete_food_log_by_client_id(user_id, client_id)
         ):
+            delete_meal_review_snapshot(user_id, client_id)
             removed += 1
     return removed
+
+
+def _meal_pending_review_response_payload(user_id: int, entry: dict) -> dict:
+    client_id = entry.get("client_id")
+    snapshot = get_meal_review_snapshot(user_id, client_id) if client_id else None
+    if snapshot:
+        payload = copy.deepcopy(snapshot["payload"])
+        payload["client_id"] = payload.get("client_id") or payload.get("meal_id") or client_id
+        payload.setdefault("meal_id", client_id)
+        payload.setdefault("estimate", _meal_pending_review_payload(entry)["estimate"])
+        payload.setdefault("food_log", entry)
+        payload.setdefault("logged_at", entry.get("logged_at"))
+        payload["text_hint"] = entry.get("context_note") or payload.get("text_hint") or ""
+        return payload
+    return _meal_pending_review_payload(entry)
 
 
 def _food_log_by_client_id(user_id: int, client_id: str) -> dict | None:
@@ -5068,7 +5095,26 @@ def _meal_item_has_image(item: dict) -> bool:
 def _meal_existing_rows(user_id: int, meal_id: str) -> list[dict]:
     if not meal_id:
         return []
-    return [entry for entry in get_food_logs(user_id) if entry.get("meal_id") == meal_id]
+    rows = [entry for entry in get_food_logs(user_id) if entry.get("meal_id") == meal_id]
+    return sorted(rows, key=lambda row: row.get("item_index") if row.get("item_index") is not None else 10_000)
+
+
+def _meal_terminal_idempotency_response(user_id: int, meal_id: str, has_image: bool):
+    event = get_meal_acceptance_event(user_id, meal_id)
+    if not event:
+        return None
+    rows = _meal_existing_rows(user_id, meal_id)
+    if not rows and event.get("status") != "discarded":
+        return None
+    row_has_image = any(_source_indicates_image(row.get("source")) for row in rows)
+    return _meal_multi_response(
+        meal_id,
+        rows,
+        len(rows),
+        int(event.get("skipped_count") or 0),
+        int(event.get("deleted_count") or 0),
+        has_image or row_has_image,
+    )
 
 
 def _meal_totals(food_logs: list[dict]) -> dict:
@@ -5095,13 +5141,521 @@ def _meal_multi_response(meal_id: str, rows: list[dict], included_count: int, sk
     })
 
 
+_REVIEW_STATUS_VALUES = {"included", "skipped", "deleted"}
+_REVIEW_MEAL_TYPES = {"breakfast", "lunch", "dinner", "snack"}
+_REVIEW_REQUEST_ID_KINDS = {"add_item", "edit_portion", "choose_candidate", "followup_answer"}
+_REVIEW_PROHIBITED_ESTIMATE_KEYS = {
+    "verified_source_url",
+    "raw_model_trace",
+    "raw_trace",
+    "prompt",
+    "messages",
+    "image_bytes",
+    "image",
+    "provider_payload",
+    "vendor_payload",
+    "candidates",
+}
+
+
+def _review_safe_str(value, *, max_len: int = 500) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text[:max_len]
+
+
+def _review_source_from_estimate(estimate: dict, *, default_kind: str = "estimate") -> dict:
+    raw = estimate.get("source") if isinstance(estimate, dict) else None
+    source_text = _review_safe_str(raw, max_len=80)
+    if not source_text:
+        return {"kind": default_kind, "label": None, "link": None}
+    if source_text in {"manual_review_estimate", "manual_text_review", "user"}:
+        return {"kind": "user", "label": None, "link": None}
+    return {"kind": source_text, "label": source_text, "link": None}
+
+
+def _review_strip_private_estimate_fields(estimate: dict) -> dict:
+    safe = {}
+    for key, value in estimate.items():
+        if key in _REVIEW_PROHIBITED_ESTIMATE_KEYS:
+            continue
+        safe[key] = value
+    safe.pop("verified_source_url", None)
+    return safe
+
+
+def _review_sanitize_estimate(raw: dict, *, source: str | None = None) -> dict:
+    raw = dict(raw) if isinstance(raw, dict) else {}
+    source_hint = source or raw.get("source") or "manual_review_estimate"
+    try:
+        estimate = sanitize_meal_estimate(
+            raw,
+            source=source_hint,
+            legacy_defaults=True,
+            plausible_ranges=False,
+        )
+    except MealEstimateValidationError:
+        estimate = manual_review_estimate(
+            text=_review_safe_str(raw.get("item_name") or raw.get("text") or "food item") or "food item",
+            source=source_hint,
+        )
+    for key in (
+        "external_food_id",
+        "data_fetched_at",
+        "portion_basis",
+        "brand_id",
+        "underlying_source",
+        "off_attribution",
+        "personal_vocab_phrase",
+        "vision_description",
+        "vision_provider",
+        "vision_confidence",
+    ):
+        safe_value = _safe_estimate_metadata_value(key, raw.get(key))
+        if safe_value is not None:
+            estimate[key] = safe_value
+    if raw.get("from_image") is True:
+        estimate["from_image"] = True
+    estimate = _review_strip_private_estimate_fields(estimate)
+    if isinstance(raw.get("clarification_question"), str):
+        estimate["clarification_question"] = raw["clarification_question"].strip()[:240]
+    return estimate
+
+
+def _review_sanitize_candidates(raw_candidates) -> list[dict]:
+    if not isinstance(raw_candidates, list):
+        return []
+    candidates = []
+    for index, raw in enumerate(raw_candidates[:5], start=1):
+        if not isinstance(raw, dict):
+            continue
+        candidate_id = _meal_safe_identifier(
+            raw.get("candidate_id") or raw.get("id") or f"candidate-{index}",
+            fallback=f"candidate-{index}",
+            max_len=64,
+        )
+        raw_estimate = raw.get("estimate") if isinstance(raw.get("estimate"), dict) else raw
+        estimate = _review_sanitize_estimate(raw_estimate, source=raw_estimate.get("source"))
+        candidates.append({
+            "candidate_id": candidate_id,
+            "name": estimate.get("item_name"),
+            "portion": estimate.get("portion_description"),
+            "calories": estimate.get("calories"),
+            "protein_g": estimate.get("protein_g"),
+            "carbs_g": estimate.get("carbs_g"),
+            "fat_g": estimate.get("fat_g"),
+            "sodium_mg": estimate.get("sodium_mg"),
+            "fiber_g": estimate.get("fiber_g"),
+            "confidence": estimate.get("confidence"),
+            "unclear": bool(estimate.get("ambiguous")),
+            "source": _review_source_from_estimate(estimate),
+            "estimate": estimate,
+        })
+    return candidates
+
+
+def _review_item_from_estimate(
+    estimate: dict,
+    *,
+    item_id: str,
+    item_order: int,
+    status: str = "included",
+    text: str | None = None,
+    candidates=None,
+    original_estimate: dict | None = None,
+) -> dict:
+    estimate = _review_sanitize_estimate(estimate, source=estimate.get("source") if isinstance(estimate, dict) else None)
+    original = (
+        _review_sanitize_estimate(original_estimate, source=original_estimate.get("source") if isinstance(original_estimate, dict) else None)
+        if isinstance(original_estimate, dict)
+        else dict(estimate)
+    )
+    status = status if status in _REVIEW_STATUS_VALUES else "included"
+    return {
+        "item_id": item_id,
+        "item_order": item_order,
+        "status": status,
+        "name": estimate.get("item_name"),
+        "portion": estimate.get("portion_description"),
+        "calories": estimate.get("calories"),
+        "protein_g": estimate.get("protein_g"),
+        "carbs_g": estimate.get("carbs_g"),
+        "fat_g": estimate.get("fat_g"),
+        "sodium_mg": estimate.get("sodium_mg"),
+        "fiber_g": estimate.get("fiber_g"),
+        "confidence": estimate.get("confidence"),
+        "source": _review_source_from_estimate(estimate),
+        "unclear": bool(estimate.get("ambiguous")),
+        "candidates": _review_sanitize_candidates(candidates if candidates is not None else estimate.get("candidates")),
+        "estimate": estimate,
+        "original_estimate": original,
+    }
+
+
+def _review_candidate_to_item(candidate: dict, item: dict) -> dict:
+    estimate = _review_sanitize_estimate(candidate.get("estimate") or candidate)
+    updated = dict(item)
+    updated.update({
+        "name": estimate.get("item_name"),
+        "portion": estimate.get("portion_description"),
+        "calories": estimate.get("calories"),
+        "protein_g": estimate.get("protein_g"),
+        "carbs_g": estimate.get("carbs_g"),
+        "fat_g": estimate.get("fat_g"),
+        "sodium_mg": estimate.get("sodium_mg"),
+        "fiber_g": estimate.get("fiber_g"),
+        "confidence": estimate.get("confidence"),
+        "source": _review_source_from_estimate(estimate),
+        "unclear": bool(estimate.get("ambiguous")),
+        "candidates": [],
+        "estimate": estimate,
+    })
+    return updated
+
+
+def _review_item_is_blocked(item: dict) -> bool:
+    if item.get("status") != "included":
+        return False
+    if bool(item.get("unclear")):
+        return True
+    confidence = item.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or float(confidence) < MEDIUM_CONFIDENCE_THRESHOLD:
+        return True
+    calories = item.get("calories")
+    if isinstance(calories, bool) or not isinstance(calories, (int, float)):
+        return True
+    if calories < 0 or calories > CALORIE_MAX:
+        return True
+    for field in ("protein_g", "carbs_g", "fat_g", "fiber_g"):
+        value = item.get(field)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0 or value > MACRO_GRAM_MAX):
+            return True
+    sodium = item.get("sodium_mg")
+    return bool(sodium is not None and (isinstance(sodium, bool) or not isinstance(sodium, (int, float)) or sodium < 0 or sodium > SODIUM_MG_MAX))
+
+
+def _review_sum_items(items: list[dict]) -> dict:
+    totals = {}
+    included = [item for item in items if item.get("status") == "included"]
+    for field in _MEAL_TOTAL_FIELDS:
+        total = sum(float(item.get(field) or 0) for item in included)
+        totals[field] = int(round(total)) if field in {"calories", "sodium_mg"} else round(total, 1)
+    return totals
+
+
+def _review_followup_default() -> dict:
+    return {"available": False, "question": None, "used": False, "target_item_id": None}
+
+
+def _review_first_unclear_blocked_item(payload: dict) -> dict | None:
+    for item in sorted(payload.get("items") or [], key=lambda row: int(row.get("item_order") or 0)):
+        if item.get("status") == "included" and bool(item.get("unclear")) and _review_item_is_blocked(item):
+            return item
+    return None
+
+
+def _review_recalculate(payload: dict) -> dict:
+    items = sorted(payload.get("items") or [], key=lambda row: int(row.get("item_order") or 0))
+    payload["items"] = items
+    payload["meal_totals"] = _review_sum_items(items)
+    payload["save_blocked_item_ids"] = [item["item_id"] for item in items if _review_item_is_blocked(item)]
+    followup = payload.get("followup") if isinstance(payload.get("followup"), dict) else _review_followup_default()
+    if followup.get("available"):
+        target_id = followup.get("target_item_id")
+        target = next((item for item in items if item.get("item_id") == target_id), None)
+        if not target or target.get("status") != "included" or not bool(target.get("unclear")) or not _review_item_is_blocked(target):
+            followup = {"available": False, "question": None, "used": True, "target_item_id": None}
+    payload["followup"] = {
+        "available": bool(followup.get("available")),
+        "question": _review_safe_str(followup.get("question"), max_len=240) if followup.get("available") else None,
+        "used": bool(followup.get("used")),
+        "target_item_id": followup.get("target_item_id") if followup.get("available") else None,
+    }
+    payload["meal_type"] = payload.get("meal_type") if payload.get("meal_type") in _REVIEW_MEAL_TYPES else "snack"
+    return payload
+
+
+def _review_maybe_create_followup(payload: dict) -> dict:
+    payload = _review_recalculate(payload)
+    followup = payload.get("followup") or _review_followup_default()
+    if followup.get("used") or followup.get("available"):
+        return payload
+    target = _review_first_unclear_blocked_item(payload)
+    if not target:
+        return payload
+    estimate = target.get("estimate") if isinstance(target.get("estimate"), dict) else {}
+    question = _review_safe_str(estimate.get("clarification_question"), max_len=240)
+    if not question:
+        label = target.get("name") or "this item"
+        question = f"Can you clarify the food or portion for {label}?"
+    payload["followup"] = {
+        "available": True,
+        "question": question,
+        "used": False,
+        "target_item_id": target.get("item_id"),
+    }
+    return _review_recalculate(payload)
+
+
+def _review_aggregate_estimate(payload: dict) -> dict:
+    included = [item for item in payload.get("items") or [] if item.get("status") == "included"]
+    totals = _review_sum_items(included)
+    names = [str(item.get("name") or "").strip() for item in included if str(item.get("name") or "").strip()]
+    portions = [str(item.get("portion") or "").strip() for item in included if str(item.get("portion") or "").strip()]
+    confidences = [float(item.get("confidence")) for item in included if isinstance(item.get("confidence"), (int, float)) and not isinstance(item.get("confidence"), bool)]
+    uncertainty_notes: list[str] = []
+    seen_notes: set[str] = set()
+    for item in included:
+        estimate = item.get("estimate") if isinstance(item.get("estimate"), dict) else {}
+        for note in estimate.get("uncertainty_notes") or []:
+            note_text = _review_safe_str(note, max_len=240)
+            note_key = (note_text or "").lower().strip()
+            if note_text and note_key not in seen_notes:
+                uncertainty_notes.append(note_text)
+                seen_notes.add(note_key)
+    if payload.get("save_blocked_item_ids") and not uncertainty_notes:
+        original_estimate = payload.get("estimate") if isinstance(payload.get("estimate"), dict) else {}
+        for note in original_estimate.get("uncertainty_notes") or []:
+            note_text = _review_safe_str(note, max_len=240)
+            note_key = (note_text or "").lower().strip()
+            if note_text and note_key not in seen_notes:
+                uncertainty_notes.append(note_text)
+                seen_notes.add(note_key)
+    if payload.get("save_blocked_item_ids") and not uncertainty_notes:
+        uncertainty_notes = ["Meal review draft has unresolved items."]
+    source_kinds = [
+        str(((item.get("source") if isinstance(item.get("source"), dict) else {}) or {}).get("kind") or "").strip()
+        for item in included
+    ]
+    source_kinds = [kind for kind in source_kinds if kind and kind != "user"]
+    aggregate_source = source_kinds[0] if source_kinds and all(kind == source_kinds[0] for kind in source_kinds) else "meal_review_snapshot"
+    if not included:
+        aggregate_source = "meal_review_snapshot"
+    estimate = {
+        "item_name": "; ".join(names)[:160] if names else "Meal review draft",
+        "portion_description": "; ".join(portions)[:300] if portions else None,
+        "meal_type": payload.get("meal_type") if payload.get("meal_type") in _REVIEW_MEAL_TYPES else "snack",
+        "calories": totals["calories"],
+        "protein_g": totals["protein_g"],
+        "carbs_g": totals["carbs_g"],
+        "fat_g": totals["fat_g"],
+        "sodium_mg": totals["sodium_mg"],
+        "fiber_g": totals["fiber_g"],
+        "confidence": min(confidences) if confidences else 0.0,
+        "ambiguous": bool(payload.get("save_blocked_item_ids")),
+        "uncertainty_notes": uncertainty_notes,
+        "source": aggregate_source,
+    }
+    if payload.get("has_image"):
+        estimate["from_image"] = True
+    if len(included) == 1 and isinstance(included[0].get("estimate"), dict):
+        original = included[0]["estimate"]
+        for key in (
+            "external_food_id",
+            "data_fetched_at",
+            "portion_basis",
+            "brand_id",
+            "underlying_source",
+            "off_attribution",
+            "from_image",
+            "personal_vocab_phrase",
+            "vision_description",
+            "vision_provider",
+            "vision_confidence",
+        ):
+            if key in original:
+                estimate[key] = original[key]
+    return _review_sanitize_estimate(estimate, source=aggregate_source)
+
+
+def _review_sync_pending_row(user_id: int, meal_id: str, payload: dict, aggregate: dict | None = None) -> dict | None:
+    aggregate = aggregate or _review_aggregate_estimate(payload)
+    existing = _food_log_by_client_id(user_id, meal_id)
+    text_hint = existing.get("context_note") if existing and not payload.get("has_image") else None
+    return _meal_intake_persist(
+        meal_id,
+        aggregate,
+        source=aggregate.get("source") or "meal_review_snapshot",
+        has_image=bool(payload.get("has_image")),
+        text_hint=text_hint,
+        local_timestamp=payload.get("local_timestamp"),
+        local_date=payload.get("local_date"),
+        local_iso=payload.get("local_iso"),
+        correction_state=CORRECTION_STATE_PENDING_REVIEW,
+        original_estimate=aggregate,
+    )
+
+
+def _review_save_snapshot(user_id: int, meal_id: str, payload: dict, next_item_seq: int, applied_refreshes: dict | None, *, sync_pending: bool = True) -> dict:
+    payload = _review_recalculate(payload)
+    aggregate = _review_aggregate_estimate(payload)
+    payload["estimate"] = aggregate
+    decision = evaluate_meal_log(aggregate)
+    payload["policy"] = {
+        "confidence_band": decision["confidence_band"],
+        "reasons": decision["reasons"],
+    }
+    food_log = _review_sync_pending_row(user_id, meal_id, payload, aggregate) if sync_pending else payload.get("food_log")
+    if food_log is not None:
+        payload["food_log"] = dict(food_log)
+        payload["food_log"]["context_note"] = None
+    saved = save_meal_review_snapshot(
+        user_id,
+        meal_id=meal_id,
+        payload=payload,
+        next_item_seq=next_item_seq,
+        applied_refreshes=applied_refreshes or {},
+    )
+    return saved["payload"]
+
+
+_REVIEW_ACCEPT_COMPARE_FIELDS = (
+    "item_name",
+    "portion_description",
+    "meal_type",
+    "calories",
+    "protein_g",
+    "carbs_g",
+    "fat_g",
+    "sodium_mg",
+    "fiber_g",
+)
+
+
+def _review_estimate_differs(submitted: dict, baseline: dict | None) -> bool:
+    if not isinstance(baseline, dict):
+        return True
+    baseline_estimate = _review_sanitize_estimate(baseline, source=baseline.get("source"))
+    return any(submitted.get(field) != baseline_estimate.get(field) for field in _REVIEW_ACCEPT_COMPARE_FIELDS)
+
+
+def _review_sanitize_legacy_accept_estimate(raw_estimate: dict) -> dict:
+    if not isinstance(raw_estimate, dict):
+        raise MealEstimateValidationError("estimate must be an object")
+    source_hint = raw_estimate.get("source") if isinstance(raw_estimate.get("source"), str) else None
+    estimate = sanitize_meal_estimate(
+        raw_estimate,
+        source=source_hint or "manual_review_estimate",
+        legacy_defaults=True,
+        plausible_ranges=True,
+    )
+    _preserve_safe_estimate_metadata(estimate, raw_estimate)
+    return _review_strip_private_estimate_fields(estimate)
+
+
+def _review_user_confirmed_estimate(raw_estimate: dict) -> dict:
+    estimate = _review_sanitize_legacy_accept_estimate(raw_estimate)
+    estimate["ambiguous"] = False
+    estimate["uncertainty_notes"] = []
+    confidence = estimate.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or float(confidence) < MEDIUM_CONFIDENCE_THRESHOLD:
+        estimate["confidence"] = MEDIUM_CONFIDENCE_THRESHOLD
+    return estimate
+
+
+def _review_snapshot_items_for_accept(payload: dict, legacy_accept_body: dict | None = None) -> list[dict]:
+    items = []
+    snapshot_items = sorted(payload.get("items") or [], key=lambda row: int(row.get("item_order") or 0))
+    legacy_estimate = legacy_accept_body.get("estimate") if isinstance(legacy_accept_body, dict) else None
+    if isinstance(legacy_estimate, dict) and len(snapshot_items) == 1:
+        item = snapshot_items[0]
+        submitted = _review_sanitize_legacy_accept_estimate(legacy_estimate)
+        if _review_estimate_differs(submitted, item.get("estimate")):
+            estimate = _review_user_confirmed_estimate(legacy_estimate)
+            original = legacy_accept_body.get("original_estimate") if isinstance(legacy_accept_body.get("original_estimate"), dict) else item.get("original_estimate")
+            raw = {
+                "state": item.get("status") if item.get("status") in _REVIEW_STATUS_VALUES else "included",
+                "item_id": item.get("item_id"),
+                "estimate": estimate,
+            }
+            if isinstance(original, dict):
+                raw["original_estimate"] = original
+            return [raw]
+
+    meal_type = payload.get("meal_type") if payload.get("meal_type") in _REVIEW_MEAL_TYPES else None
+    for item in snapshot_items:
+        estimate = dict(item.get("estimate") if isinstance(item.get("estimate"), dict) else _review_aggregate_estimate({"items": [item], "meal_type": payload.get("meal_type")}))
+        if meal_type:
+            estimate["meal_type"] = meal_type
+        raw = {
+            "state": item.get("status") if item.get("status") in _REVIEW_STATUS_VALUES else "included",
+            "item_id": item.get("item_id"),
+            "estimate": estimate,
+        }
+        if isinstance(item.get("original_estimate"), dict):
+            raw["original_estimate"] = item["original_estimate"]
+        items.append(raw)
+    return items
+
+
+def _review_blocked_item_ids_for_accept_items(items: list[dict]) -> list[str]:
+    blocked_ids = []
+    for index, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            continue
+        state = str(raw.get("state") or raw.get("item_state") or raw.get("status") or "included").strip().lower()
+        if state != "included":
+            continue
+        item_id = str(raw.get("item_id") or f"item-{index + 1}")
+        review_item = _review_item_from_estimate(
+            raw.get("estimate") if isinstance(raw.get("estimate"), dict) else {},
+            item_id=item_id,
+            item_order=index + 1,
+            status="included",
+        )
+        if _review_item_is_blocked(review_item):
+            blocked_ids.append(item_id)
+    return blocked_ids
+
+
+def _review_payload_from_estimate(
+    *,
+    meal_id: str,
+    estimate: dict,
+    food_log: dict | None,
+    has_image: bool,
+    local_timestamp: str | None,
+    local_date: str | None,
+    local_iso: str | None,
+    response_extras: dict,
+    text_hint: str | None,
+) -> dict:
+    item = _review_item_from_estimate(
+        estimate,
+        item_id="item-1",
+        item_order=1,
+        status="included",
+        text=text_hint,
+        candidates=estimate.get("candidates") if isinstance(estimate, dict) else None,
+    )
+    payload = {
+        "status": "pending_review",
+        "estimate": _review_strip_private_estimate_fields(dict(estimate)),
+        "food_log": food_log,
+        "photo_retention": _food_photo_retention_payload(has_image),
+        "local_timestamp": local_timestamp,
+        "local_date": local_date,
+        "local_iso": local_iso,
+        "meal_id": meal_id,
+        "meal_type": item["estimate"].get("meal_type") or "snack",
+        "followup": _review_followup_default(),
+        "items": [item],
+        "has_image": bool(has_image),
+        **response_extras,
+    }
+    return _review_maybe_create_followup(payload)
+
+
 def _prepare_multi_meal_items(parent_client_id: str, items: list[dict]):
     prepared = []
     seen_client_ids: set[str] = set()
     for index, item in enumerate(items):
         if not isinstance(item, dict):
             return None, api_error("items must contain objects", 400, code="invalid_field")
-        state = str(item.get("state") or item.get("item_state") or "included").strip().lower()
+        state = str(item.get("state") or item.get("item_state") or item.get("status") or "included").strip().lower()
         if state not in _MEAL_ITEM_STATES:
             return None, api_error("item state must be included, skipped, or deleted", 400, code="invalid_field")
         item_client_id = _meal_item_client_id(parent_client_id, item, index)
@@ -5390,6 +5944,36 @@ def meal_intake():
         return jsonify({"error": {"message": "provide a meal description or photo"}}), 400
 
     user_id = _current_data_user_id()
+    existing_snapshot = get_meal_review_snapshot(user_id, client_id)
+    if existing_snapshot:
+        return jsonify(existing_snapshot["payload"])
+    existing_food_log = _food_log_by_client_id(user_id, client_id)
+    if existing_food_log:
+        if _nutrition_entry_pending_review(existing_food_log):
+            pending = _meal_pending_review_payload(existing_food_log)
+            return jsonify({
+                "status": "pending_review",
+                "estimate": pending["estimate"],
+                "food_log": existing_food_log,
+                "photo_retention": _food_photo_retention_payload(has_image or bool(pending["estimate"].get("from_image"))),
+                "local_timestamp": local_timestamp,
+                "local_date": local_date,
+                "local_iso": local_iso,
+                "policy": pending["policy"],
+            })
+        return jsonify({
+            "status": "logged",
+            "estimate": dict(existing_food_log.get("original_estimate") or {}),
+            "food_log": existing_food_log,
+            "photo_retention": _food_photo_retention_payload(has_image or _source_indicates_image(existing_food_log.get("source"))),
+            "local_timestamp": local_timestamp,
+            "local_date": local_date,
+            "local_iso": local_iso,
+        })
+    terminal_response = _meal_terminal_idempotency_response(user_id, client_id, has_image)
+    if terminal_response is not None:
+        return terminal_response
+
     response_extras: dict = {}
     if has_image:
         try:
@@ -5422,6 +6006,11 @@ def meal_intake():
                 raw_estimate = parsed["estimate"]
                 estimate = sanitize_meal_estimate(raw_estimate)
                 _copy_meal_estimate_provenance(estimate, raw_estimate)
+                if isinstance(raw_estimate, dict):
+                    if isinstance(raw_estimate.get("candidates"), list):
+                        estimate["candidates"] = raw_estimate.get("candidates")
+                    if isinstance(raw_estimate.get("clarification_question"), str):
+                        estimate["clarification_question"] = raw_estimate["clarification_question"].strip()[:240]
             except MealEstimateValidationError:
                 estimate = manual_review_estimate(text=text_raw, source="manual_text_review")
                 parsed = {"fallback_used": True}
@@ -5439,6 +6028,11 @@ def meal_intake():
         try:
             estimate = sanitize_meal_estimate(raw_estimate)
             _copy_meal_estimate_provenance(estimate, raw_estimate)
+            if isinstance(raw_estimate, dict):
+                if isinstance(raw_estimate.get("candidates"), list):
+                    estimate["candidates"] = raw_estimate.get("candidates")
+                if isinstance(raw_estimate.get("clarification_question"), str):
+                    estimate["clarification_question"] = raw_estimate["clarification_question"].strip()[:240]
         except MealEstimateValidationError:
             estimate = manual_review_estimate(text=text_raw, source="manual_text_review")
             parsed = {"fallback_used": True}
@@ -5467,37 +6061,33 @@ def meal_intake():
     # pending entry from the new MEDIUM band has no explanation surface.
     _merge_policy_reasons_into_uncertainty_notes(estimate, decision["reasons"])
 
-    food_log = None
-    existing_food_log = _food_log_by_client_id(user_id, client_id)
-    if (
-        existing_food_log
-        and not _nutrition_entry_pending_review(existing_food_log)
-        and decision["correction_state"] == CORRECTION_STATE_PENDING_REVIEW
-    ):
-        status = "logged"
-        food_log = existing_food_log
-    elif decision["correction_state"] in {CORRECTION_STATE_ACCEPTED, CORRECTION_STATE_PENDING_REVIEW}:
-        food_log = _meal_intake_persist(
-            client_id, estimate, source=source, has_image=has_image,
-            text_hint=text_raw or None, local_timestamp=local_timestamp,
-            local_date=local_date, local_iso=local_iso,
-            correction_state=decision["correction_state"],
-        )
-        if has_image and decision["correction_state"] == CORRECTION_STATE_ACCEPTED:
-            vocab_phrase = _meal_vocab_learning_phrase(text_raw or None, estimate)
-            if vocab_phrase and claim_food_log_vocab_learning(user_id, client_id):
-                personal_vocab.record_accept(user_id, vocab_phrase, estimate)
-
-    return jsonify({
-        "status": status,
-        "estimate": estimate,
-        "food_log": food_log,
-        "photo_retention": _food_photo_retention_payload(has_image),
-        "local_timestamp": local_timestamp,
-        "local_date": local_date,
-        "local_iso": local_iso,
-        **response_extras,
-    })
+    status = "pending_review"
+    food_log = _meal_intake_persist(
+        client_id, estimate, source=source, has_image=has_image,
+        text_hint=text_raw or None, local_timestamp=local_timestamp,
+        local_date=local_date, local_iso=local_iso,
+        correction_state=CORRECTION_STATE_PENDING_REVIEW,
+    )
+    payload = _review_payload_from_estimate(
+        meal_id=client_id,
+        estimate=estimate,
+        food_log=food_log,
+        has_image=has_image,
+        local_timestamp=local_timestamp,
+        local_date=local_date,
+        local_iso=local_iso,
+        response_extras=response_extras,
+        text_hint=text_raw or None,
+    )
+    saved_payload = _review_save_snapshot(
+        user_id,
+        client_id,
+        payload,
+        next_item_seq=2,
+        applied_refreshes={},
+        sync_pending=True,
+    )
+    return jsonify(saved_payload)
 
 
 @app.route("/api/meal-intake/pending", methods=["GET"])
@@ -5505,13 +6095,214 @@ def meal_intake_pending():
     """Return durable pending-review meal estimates for cross-reload hydration."""
     user_id = _current_data_user_id()
     removed = _cleanup_stale_pending_meal_reviews(user_id)
-    pending = [_meal_pending_review_payload(entry) for entry in _pending_meal_review_entries(user_id)]
+    pending = [_meal_pending_review_response_payload(user_id, entry) for entry in _pending_meal_review_entries(user_id)]
     return jsonify({
         "pending": pending,
         "pending_count": len(pending),
         "ttl_days": PENDING_MEAL_REVIEW_TTL_DAYS,
         "stale_removed": removed,
     })
+
+
+def _review_estimate_from_text(text: str, *, user_id: int, timestamp: str | None = None) -> dict:
+    parsed = parse_meal_text(text, timestamp=timestamp, user_id=user_id)
+    raw = parsed.get("estimate") if isinstance(parsed, dict) else {}
+    estimate = _review_sanitize_estimate(raw, source=raw.get("source") if isinstance(raw, dict) else None)
+    if isinstance(raw, dict):
+        _copy_meal_estimate_provenance(estimate, raw)
+        estimate = _review_strip_private_estimate_fields(estimate)
+        if isinstance(raw.get("candidates"), list):
+            estimate["candidates"] = raw.get("candidates")
+        if isinstance(raw.get("clarification_question"), str):
+            estimate["clarification_question"] = raw["clarification_question"].strip()[:240]
+    return estimate
+
+
+def _review_find_item(payload: dict, item_id: str) -> dict | None:
+    for item in payload.get("items") or []:
+        if item.get("item_id") == item_id:
+            return item
+    return None
+
+
+def _review_replace_item(payload: dict, item_id: str, replacement: dict) -> None:
+    items = payload.get("items") or []
+    for index, item in enumerate(items):
+        if item.get("item_id") == item_id:
+            items[index] = replacement
+            payload["items"] = items
+            return
+
+
+def _review_response_code(result) -> int:
+    if isinstance(result, tuple) and len(result) >= 2:
+        try:
+            return int(result[1])
+        except (TypeError, ValueError):
+            return 200
+    return int(getattr(result, "status_code", 200) or 200)
+
+
+def _review_cleanup_terminal_snapshot(user_id: int, meal_id: str) -> None:
+    delete_meal_review_snapshot(user_id, meal_id)
+    row = _food_log_by_client_id(user_id, meal_id)
+    if row and row.get("correction_state") == CORRECTION_STATE_PENDING_REVIEW:
+        delete_food_log_by_client_id(user_id, meal_id)
+
+
+@app.route("/api/meal-intake/<meal_id>/refresh", methods=["POST"])
+def meal_intake_refresh(meal_id: str):
+    meal_id = (meal_id or "").strip()
+    if not meal_id or len(meal_id) > 128:
+        return jsonify({"error": {"message": "invalid meal_id"}}), 400
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+    kind = str(data.get("kind") or "").strip()
+    if kind not in {
+        "add_item",
+        "edit_portion",
+        "followup_answer",
+        "choose_candidate",
+        "skip_item",
+        "delete_item",
+        "restore_item",
+        "set_meal_type",
+    }:
+        return jsonify({"error": {"message": "invalid refresh kind"}}), 400
+
+    user_id = _current_data_user_id()
+    snapshot = get_meal_review_snapshot(user_id, meal_id)
+    if not snapshot:
+        return jsonify({"error": {"message": "meal review snapshot not found"}}), 404
+
+    payload = copy.deepcopy(snapshot["payload"])
+    next_item_seq = int(snapshot.get("next_item_seq") or 1)
+    applied = dict(snapshot.get("applied_refreshes") or {})
+    request_id = str(data.get("request_id") or "").strip()
+    if kind in _REVIEW_REQUEST_ID_KINDS and not request_id:
+        return jsonify({"error": {"message": "request_id is required for this refresh kind"}}), 400
+    if request_id:
+        previous_kind = applied.get(request_id)
+        if previous_kind:
+            if previous_kind == kind:
+                return jsonify(payload)
+            return jsonify({"error": {"message": "request_id already used for a different refresh kind"}}), 409
+
+    item_id = str(data.get("item_id") or "").strip()
+
+    if kind == "add_item":
+        text, err = _coerce_str(data.get("text"), "text", required=True, max_len=500)
+        if err:
+            return err
+        estimate = _review_estimate_from_text(text, user_id=user_id, timestamp=payload.get("local_iso") or payload.get("local_timestamp"))
+        item_id_new = f"item-{next_item_seq}"
+        payload.setdefault("items", []).append(_review_item_from_estimate(
+            estimate,
+            item_id=item_id_new,
+            item_order=next_item_seq,
+            status="included",
+            text=text,
+            candidates=estimate.get("candidates"),
+        ))
+        next_item_seq += 1
+        payload = _review_maybe_create_followup(payload)
+
+    elif kind == "edit_portion":
+        if not item_id:
+            return jsonify({"error": {"message": "item_id is required"}}), 400
+        text, err = _coerce_str(data.get("text"), "text", required=True, max_len=500)
+        if err:
+            return err
+        item = _review_find_item(payload, item_id)
+        if not item:
+            return jsonify({"error": {"message": "item not found"}}), 404
+        if item.get("status") != "included":
+            return jsonify({"error": {"message": "item is not editable unless included"}}), 409
+        estimate = _review_estimate_from_text(text, user_id=user_id, timestamp=payload.get("local_iso") or payload.get("local_timestamp"))
+        replacement = _review_item_from_estimate(
+            estimate,
+            item_id=item["item_id"],
+            item_order=int(item.get("item_order") or 0),
+            status="included",
+            text=text,
+            candidates=estimate.get("candidates"),
+            original_estimate=item.get("original_estimate") if isinstance(item.get("original_estimate"), dict) else item.get("estimate"),
+        )
+        _review_replace_item(payload, item_id, replacement)
+        payload = _review_maybe_create_followup(payload)
+
+    elif kind == "choose_candidate":
+        if not item_id:
+            return jsonify({"error": {"message": "item_id is required"}}), 400
+        candidate_id = str(data.get("candidate_id") or "").strip()
+        if not candidate_id:
+            return jsonify({"error": {"message": "candidate_id is required"}}), 400
+        item = _review_find_item(payload, item_id)
+        if not item:
+            return jsonify({"error": {"message": "item not found"}}), 404
+        if item.get("status") != "included":
+            return jsonify({"error": {"message": "candidate can only be chosen for included items"}}), 409
+        candidate = next((cand for cand in item.get("candidates") or [] if cand.get("candidate_id") == candidate_id), None)
+        if not candidate:
+            return jsonify({"error": {"message": "candidate not found"}}), 404
+        _review_replace_item(payload, item_id, _review_candidate_to_item(candidate, item))
+        payload = _review_recalculate(payload)
+
+    elif kind in {"skip_item", "delete_item", "restore_item"}:
+        if not item_id:
+            return jsonify({"error": {"message": "item_id is required"}}), 400
+        item = _review_find_item(payload, item_id)
+        if not item:
+            return jsonify({"error": {"message": "item not found"}}), 404
+        item["status"] = {
+            "skip_item": "skipped",
+            "delete_item": "deleted",
+            "restore_item": "included",
+        }[kind]
+        payload = _review_maybe_create_followup(payload)
+
+    elif kind == "set_meal_type":
+        meal_type = str(data.get("meal_type") or "").strip().lower()
+        if meal_type not in _REVIEW_MEAL_TYPES:
+            return jsonify({"error": {"message": "invalid meal_type"}}), 400
+        payload["meal_type"] = meal_type
+        payload = _review_recalculate(payload)
+
+    elif kind == "followup_answer":
+        followup = payload.get("followup") if isinstance(payload.get("followup"), dict) else _review_followup_default()
+        target_id = followup.get("target_item_id")
+        target = _review_find_item(payload, str(target_id or ""))
+        if (
+            followup.get("used")
+            or not followup.get("available")
+            or not target
+            or target.get("status") != "included"
+            or not bool(target.get("unclear"))
+            or not _review_item_is_blocked(target)
+        ):
+            return jsonify({"error": {"message": "no available followup question"}}), 409
+        answer = str(data.get("answer") or "").strip()
+        skipped = bool(data.get("skipped"))
+        if answer and not skipped:
+            estimate = _review_estimate_from_text(answer, user_id=user_id, timestamp=payload.get("local_iso") or payload.get("local_timestamp"))
+            replacement = _review_item_from_estimate(
+                estimate,
+                item_id=target["item_id"],
+                item_order=int(target.get("item_order") or 0),
+                status="included",
+                text=answer,
+                candidates=estimate.get("candidates"),
+                original_estimate=target.get("original_estimate") if isinstance(target.get("original_estimate"), dict) else target.get("estimate"),
+            )
+            _review_replace_item(payload, target["item_id"], replacement)
+        payload["followup"] = {"available": False, "question": None, "used": True, "target_item_id": None}
+        payload = _review_recalculate(payload)
+
+    if request_id:
+        applied[request_id] = kind
+    saved_payload = _review_save_snapshot(user_id, meal_id, payload, next_item_seq, applied, sync_pending=True)
+    return jsonify(saved_payload)
 
 
 @app.route("/api/meal-intake/<client_id>", methods=["DELETE"])
@@ -5523,15 +6314,25 @@ def meal_intake_undo(client_id: str):
     user_id = _current_data_user_id()
     expected_state = (request.args.get("correction_state") or request.args.get("state") or "").strip()
     existing = _food_log_by_client_id(user_id, client_id)
-    if expected_state and existing and str(existing.get("correction_state") or "").strip() != expected_state:
-        return jsonify({
-            "status": "conflict",
-            "removed": False,
-            "correction_state": existing.get("correction_state"),
-        }), 409
+    meal_rows = _meal_existing_rows(user_id, client_id)
+    if expected_state:
+        rows_to_check = ([existing] if existing else []) + meal_rows
+        mismatched = [
+            row for row in rows_to_check
+            if str(row.get("correction_state") or "").strip() != expected_state
+        ]
+        if mismatched:
+            return jsonify({
+                "status": "conflict",
+                "removed": False,
+                "correction_state": mismatched[0].get("correction_state"),
+            }), 409
+    snapshot_removed = delete_meal_review_snapshot(user_id, client_id)
     removed = delete_food_log_by_client_id(user_id, client_id)
+    meal_removed = delete_food_logs_by_meal_id(user_id, client_id)
+    event_removed = delete_meal_acceptance_event(user_id, client_id)
     legacy_removed = _delete_legacy_nutrition_by_client_id(client_id)
-    removed = bool(removed or legacy_removed)
+    removed = bool(removed or legacy_removed or snapshot_removed or meal_removed or event_removed)
     return jsonify({"status": "ok" if removed else "not_found", "removed": removed})
 
 
@@ -5544,8 +6345,49 @@ def meal_intake_accept(client_id: str):
     data, err = get_json_body(required=True)
     if err:
         return err
+    user_id = _current_data_user_id()
     if "items" in data:
-        return _meal_intake_accept_multi(client_id, data)
+        meal_id = str(data.get("meal_id") or client_id).strip()
+        if get_meal_review_snapshot(user_id, meal_id):
+            items = data.get("items") if isinstance(data.get("items"), list) else []
+            blocked_ids = _review_blocked_item_ids_for_accept_items(items)
+            if blocked_ids:
+                return jsonify({
+                    "status": "blocked",
+                    "meal_id": meal_id,
+                    "save_blocked_item_ids": blocked_ids,
+                    "error": {"message": "review has blocked items"},
+                }), 409
+        result = _meal_intake_accept_multi(client_id, data)
+        if _review_response_code(result) < 400:
+            meal_id = str(data.get("meal_id") or client_id).strip()
+            _review_cleanup_terminal_snapshot(user_id, meal_id)
+        return result
+    snapshot = get_meal_review_snapshot(user_id, client_id)
+    if snapshot:
+        snapshot_payload = snapshot["payload"]
+        try:
+            snapshot_items = _review_snapshot_items_for_accept(snapshot_payload, data)
+        except MealEstimateValidationError as exc:
+            return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
+        blocked_ids = _review_blocked_item_ids_for_accept_items(snapshot_items)
+        if blocked_ids:
+            return jsonify({
+                "status": "blocked",
+                "meal_id": client_id,
+                "save_blocked_item_ids": blocked_ids,
+                "error": {"message": "review has blocked items"},
+            }), 409
+        accept_body = dict(data)
+        accept_body["meal_id"] = client_id
+        accept_body["items"] = snapshot_items
+        for key in ("local_timestamp", "local_date", "local_iso"):
+            if key not in accept_body and snapshot_payload.get(key):
+                accept_body[key] = snapshot_payload.get(key)
+        result = _meal_intake_accept_multi(client_id, accept_body)
+        if _review_response_code(result) < 400:
+            _review_cleanup_terminal_snapshot(user_id, client_id)
+        return result
     raw_estimate = data.get("estimate") or {}
     source_hint = raw_estimate.get("source") if isinstance(raw_estimate, dict) else None
     originated_from_image = (
@@ -5553,6 +6395,9 @@ def meal_intake_accept(client_id: str):
         if isinstance(raw_estimate, dict)
         else False
     )
+    terminal = _meal_terminal_idempotency_response(user_id, client_id, originated_from_image)
+    if terminal is not None:
+        return terminal
     try:
         estimate = sanitize_meal_estimate(
             raw_estimate,
@@ -5597,13 +6442,15 @@ def meal_intake_accept(client_id: str):
         correction_state=correction_state,
         original_estimate=original_for_log,
     )
-    if claim_food_log_vocab_learning(_current_data_user_id(), client_id):
+    if claim_food_log_vocab_learning(user_id, client_id):
         if corrected:
             vocab_phrase = text_hint or _meal_vocab_learning_phrase(None, estimate)
-            personal_vocab.record_correct(_current_data_user_id(), vocab_phrase, estimate)
+            personal_vocab.record_correct(user_id, vocab_phrase, estimate)
         else:
             vocab_phrase = _meal_vocab_learning_phrase(text_hint or None, estimate)
-            personal_vocab.record_accept(_current_data_user_id(), vocab_phrase, estimate)
+            personal_vocab.record_accept(user_id, vocab_phrase, estimate)
+    if "estimate" in data:
+        delete_meal_review_snapshot(user_id, client_id)
     return jsonify({
         "status": "logged",
         "food_log": food_log,
@@ -9789,6 +10636,7 @@ def export_backup():
             "nutrition": NUTRITION_DATA,
             "food_logs": get_food_logs(user_id),
             "meal_acceptance_events": list_meal_acceptance_events(user_id),
+            "meal_review_snapshots": list_meal_review_snapshots(user_id),
             "personal_vocab": list_personal_vocab_entries(user_id),
         }
     }
@@ -9882,6 +10730,12 @@ def import_backup():
                 if isinstance(meal_event, dict):
                     import_meal_acceptance_event(user_id, meal_event)
 
+        if "meal_review_snapshots" in data:
+            user_id = _current_data_user_id()
+            for meal_snapshot in data["meal_review_snapshots"]:
+                if isinstance(meal_snapshot, dict):
+                    import_meal_review_snapshot(user_id, meal_snapshot)
+
         return jsonify({
             "status": "success",
             "message": "Backup restored successfully",
@@ -9897,6 +10751,7 @@ def import_backup():
                 "nutrition": len(data.get("nutrition", [])),
                 "food_logs": len(data.get("food_logs", [])),
                 "meal_acceptance_events": len(data.get("meal_acceptance_events", [])),
+                "meal_review_snapshots": len(data.get("meal_review_snapshots", [])),
                 "personal_vocab": len(data.get("personal_vocab", [])),
             }
         })
