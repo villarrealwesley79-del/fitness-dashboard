@@ -5924,6 +5924,16 @@ def meal_intake():
     if request.content_type and "multipart/form-data" not in request.content_type and "application/x-www-form-urlencoded" not in request.content_type:
         return jsonify({"error": {"message": "multipart/form-data expected"}}), 415
 
+    # FIT-138 aggregate cap: the Linear AC reads "aggregate request bytes
+    # <= 18 MB (over rejected with 413)" — the wire size, not just summed
+    # file bytes after Werkzeug parsing. Check Content-Length before any
+    # form/files access so the cap covers multipart boundaries, headers,
+    # filenames, and text fields. The summed-file fallback below stays as
+    # belt-and-suspenders in case Content-Length is absent or spoofed.
+    content_length = request.content_length
+    if content_length is not None and content_length > _MEAL_INTAKE_MAX_AGGREGATE_BYTES:
+        return jsonify({"error": {"message": "images exceed 18 MB total"}}), 413
+
     text_raw = (request.form.get("text") or "").strip()
     if len(text_raw) > 500:
         return jsonify({"error": {"message": "text too long (max 500 chars)"}}), 400

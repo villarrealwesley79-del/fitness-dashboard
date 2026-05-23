@@ -7185,7 +7185,11 @@
             // FIT-135 lands the real backend. Production path is unchanged.
             if (mealV2MockEnabled()) {
                 const payload = mealV2Mock.createMeal(textValue);
-                handleMealIntakeResponse(payload, { textValue, clientId, imageFile: file, localTime });
+                // FIT-138 multi-image refactor: the legacy single `file`
+                // variable no longer exists; use the first attached photo
+                // for the legacy imageFile field and the full list for
+                // imageFiles so the mock harness mirrors the real submit.
+                handleMealIntakeResponse(payload, { textValue, clientId, imageFile: files[0] || null, imageFiles: files, localTime });
                 return;
             }
             const res = await fetch('/api/meal-intake', {
