@@ -122,6 +122,9 @@ def _stub_vision(monkeypatch, module, *, vision=None, lookup=_DEFAULT_LOOKUP):
 
 
 def test_meal_intake_text_only_returns_pending_review_when_parser_is_confident(monkeypatch):
+    """FIT-144 v2 capture: every text submission lands as pending_review and
+    is finalized via /accept. The legacy high-confidence auto-log shortcut
+    was removed by the FIT-138 + FIT-144 work."""
     module = _client(monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Eggs and toast",
@@ -467,6 +470,7 @@ def test_meal_intake_requires_client_id(monkeypatch):
 
 
 def test_meal_intake_image_only_returns_pending_review(monkeypatch):
+    """FIT-144 v2 capture: image-only submissions land as pending_review."""
     module = _client(monkeypatch)
     captured = {}
     _stub_vision(monkeypatch, module)
@@ -786,7 +790,10 @@ def test_meal_intake_structured_cart_truncated_items_force_review(monkeypatch):
     assert "Breakfast Taco 9" in body["estimate"]["uncertainty_notes"][0]
 
 
-def test_meal_intake_image_auto_vocab_learning_claims_once(monkeypatch):
+def test_meal_intake_capture_does_not_fire_vocab_learning_under_fit138(monkeypatch):
+    """FIT-138: vocab learning previously fired on the auto-log capture path.
+    With the capture flow routed to review before save, vocab learning is
+    handled by /accept instead and must NOT fire from /api/meal-intake."""
     module = _client(monkeypatch)
     _stub_vision(monkeypatch, module)
     vocab_calls = []
@@ -796,7 +803,7 @@ def test_meal_intake_image_auto_vocab_learning_claims_once(monkeypatch):
 
     def fake_claim(_user_id, client_id):
         claims.append(client_id)
-        return len(claims) == 1
+        return True
 
     monkeypatch.setattr(module, "claim_food_log_vocab_learning", fake_claim)
 
@@ -812,6 +819,7 @@ def test_meal_intake_image_auto_vocab_learning_claims_once(monkeypatch):
         )
         assert res.status_code == 200, res.get_data(as_text=True)
 
+    # Capture path does not claim or record vocab — that work moves to /accept.
     assert claims == []
     accept = client.post("/api/meal-intake/meal-img-vocab-idempotent/accept", json={})
     assert accept.status_code == 200, accept.get_data(as_text=True)
@@ -2205,8 +2213,12 @@ def test_meal_intake_accept_persists_parser_source_when_present(monkeypatch):
 # ──────────────────────────────────────────────────────────────────
 
 def test_meal_intake_response_surfaces_policy_band_and_reasons(monkeypatch):
-    """The response must include policy.confidence_band and policy.reasons
-    so the UI can explain auto-log vs pending review decisions.
+    """The response must include policy.confidence_band and policy.reasons so
+    the review-card UI can show why the estimate was held back.
+
+    FIT-138: high-confidence text still surfaces band=high with no reasons,
+    but the response status is pending_review because the capture path now
+    always routes to review before save.
     """
     module = _client(monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
@@ -2224,7 +2236,7 @@ def test_meal_intake_response_surfaces_policy_band_and_reasons(monkeypatch):
         "uncertainty_notes": [],
     })
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {
-        "client_id": "meal-policy-1", "correction_state": "accepted",
+        "client_id": "meal-policy-1", "correction_state": "pending_review",
     })
 
     res = module.app.test_client().post(
@@ -2397,7 +2409,10 @@ def test_meal_intake_accept_honors_pending_submission_browser_local_time(monkeyp
 
 
 def test_meal_intake_submit_persists_with_pending_review_state(monkeypatch):
-    """The submit path must persist a non-counting pending-review row."""
+    """The submit path must persist a non-counting pending-review row.
+    FIT-138 + FIT-144: the legacy high-confidence auto-log shortcut is
+    removed from the capture path; review-before-save holds universally.
+    """
     module = _client(monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Protein shake",
@@ -3209,9 +3224,18 @@ def test_meal_composer_js_surfaces_open_food_facts_attribution():
     assert "renderMealComposerProvenance(edited, clientId)" in js
     assert "clearMealComposerStatus(clientId);\n            toast('Meal removed', 'ok');" in js
     assert "status.dataset.provenanceClientId !== String(clientId)" in js
-    assert "text.addEventListener('input', () => { clearMealComposerStatus(); refreshMealSubmitState(); saveMealDraft(); });" in js
+    # FIT-138: input/change handlers were refactored for the multi-photo
+    # state machine; assert the post-FIT-138 shapes.
+    assert "text.addEventListener('input'" in js
+    assert "clearMealComposerStatus();" in js
+    assert "refreshMealSubmitState();" in js
+    assert "saveMealDraft();" in js
     assert "image.addEventListener('change', () => {\n                clearMealComposerStatus();" in js
-    assert "previewClear.addEventListener('click', () => { clearMealComposerStatus(); clearMealImage(); });" in js
+    assert "onMealComposerImageSelected(image.files);" in js
+    # FIT-138: per-thumb × replaces the single previewClear; per-thumb removal
+    # is wired inside renderMealComposerThumbs().
+    assert "function renderMealComposerThumbs()" in js
+    assert "removeMealComposerImage(" in js
     assert "est.off_attribution" in js
     assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in js
     assert "attrUrl || (est && (est.verified_source_url || est.source_url || est.product_url))" in js
@@ -3219,3 +3243,165 @@ def test_meal_composer_js_surfaces_open_food_facts_attribution():
     assert 'data-provenance-surface="meal-estimates"' in html
     assert ".meal-pending-provenance" in css
     assert ".meal-composer-status--provenance" in css
+
+
+# ──────────────────────────────────────────────────────────────────
+# FIT-138: multi-image capture acceptance (plural ``images`` key,
+# legacy ``image`` back-compat, per-file + count + aggregate caps).
+# Every successful capture response must land in pending_review.
+# ──────────────────────────────────────────────────────────────────
+
+
+def _png_bytes(filler: int = 32) -> bytes:
+    return b"\x89PNG\r\n\x1a\n" + b"\0" * filler
+
+
+def test_meal_intake_accepts_two_images_under_plural_key(monkeypatch):
+    """FIT-138 AC4: 2 photos in one submission → 200, pending_review, vision
+    adapter receives the photos as one combined call."""
+    module = _client(monkeypatch)
+    seen = {}
+
+    def fake_describe(*_args, **kwargs):
+        seen["images"] = kwargs.get("images")
+        seen["image_bytes"] = kwargs.get("image_bytes")
+        return {
+            "provider": "claude",
+            "item_description": "salad bowl with chicken",
+            "portion_hint": "1 bowl",
+            "confidence": 0.82,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+        }
+
+    monkeypatch.setattr(module.vision_estimator, "describe", fake_describe)
+    monkeypatch.setattr(module.branded_food_lookup, "lookup", lambda *_a, **_kw: _accepted_estimate())
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: {"client_id": r["client_id"], **r})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-multi-2",
+            "images": [
+                (io.BytesIO(_png_bytes()), "front.png", "image/png"),
+                (io.BytesIO(_png_bytes()), "side.png", "image/png"),
+            ],
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    # Both images reached the vision adapter as one combined call.
+    assert seen["images"] is not None
+    assert len(seen["images"]) == 2
+    assert all(isinstance(item, tuple) and len(item) == 2 for item in seen["images"])
+
+
+def test_meal_intake_accepts_four_images(monkeypatch):
+    """FIT-138 AC4: 4 photos in one submission → 200, pending_review."""
+    module = _client(monkeypatch)
+    _stub_vision(monkeypatch, module)
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: {"client_id": r["client_id"], **r})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-multi-4",
+            "images": [
+                (io.BytesIO(_png_bytes()), f"p{i}.png", "image/png")
+                for i in range(4)
+            ],
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200, res.get_data(as_text=True)
+    assert res.get_json()["status"] == "pending_review"
+
+
+def test_meal_intake_rejects_five_images_with_400(monkeypatch):
+    """FIT-138 AC4: 5+ photos → 400 too-many."""
+    module = _client(monkeypatch)
+    _stub_vision(monkeypatch, module)
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-multi-5",
+            "images": [
+                (io.BytesIO(_png_bytes()), f"p{i}.png", "image/png")
+                for i in range(5)
+            ],
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 400
+    msg = res.get_json()["error"]["message"]
+    assert "too many" in msg.lower() or "4" in msg
+
+
+def test_meal_intake_rejects_aggregate_over_18_mb_with_413(monkeypatch):
+    """FIT-138 AC4: aggregate bytes > 18 MB → 413."""
+    module = _client(monkeypatch)
+    _stub_vision(monkeypatch, module)
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    # 4 × 5 MB = 20 MB total, each within the per-file 6 MB cap.
+    big = b"\0" * (5 * 1024 * 1024)
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-multi-big",
+            "images": [
+                (io.BytesIO(big), f"big{i}.jpg", "image/jpeg")
+                for i in range(4)
+            ],
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 413
+    msg = res.get_json()["error"]["message"]
+    assert "18" in msg or "total" in msg.lower()
+
+
+def test_meal_intake_legacy_image_key_still_accepted(monkeypatch):
+    """FIT-138 back-compat: the singular ``image`` FormData key still works
+    (FIT-128 pending-card retry path may still send it during rollout)."""
+    module = _client(monkeypatch)
+    _stub_vision(monkeypatch, module)
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: {"client_id": r["client_id"], **r})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-legacy-1",
+            "image": (io.BytesIO(_png_bytes()), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 200, res.get_data(as_text=True)
+    assert res.get_json()["status"] == "pending_review"
+
+
+def test_meal_intake_rejects_oversize_individual_image_in_multi(monkeypatch):
+    """FIT-138: even within a batch, any single photo > 6 MB still returns 413."""
+    module = _client(monkeypatch)
+    _stub_vision(monkeypatch, module)
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
+
+    small = _png_bytes()
+    big = b"\0" * (6 * 1024 * 1024 + 1)
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-multi-oversize",
+            "images": [
+                (io.BytesIO(small), "ok.png", "image/png"),
+                (io.BytesIO(big), "huge.jpg", "image/jpeg"),
+            ],
+        },
+        content_type="multipart/form-data",
+    )
+    assert res.status_code == 413
+    assert "6 MB" in res.get_json()["error"]["message"] or "exceeds" in res.get_json()["error"]["message"].lower()

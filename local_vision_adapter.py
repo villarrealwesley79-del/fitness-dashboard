@@ -53,57 +53,70 @@ def _prompt(context_text: str | None = None) -> str:
 
 
 def describe_food_photo(
-    image_bytes: bytes,
+    image_bytes: bytes | None = None,
     *,
+    images: list[tuple[bytes, str]] | None = None,
     context_text: str | None = None,
     media_type: str = "image/jpeg",
     provider: str = "lm_studio",
     timeout: float = TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    if not image_bytes:
+    """FIT-138: ``images`` is a list of ``(bytes, mimetype)`` for
+    multi-photo meals. ``image_bytes`` + ``media_type`` are accepted for
+    legacy single-image callers and normalized to a one-element list."""
+    if images is None:
+        if not image_bytes:
+            raise LocalVisionError("image bytes are required")
+        images = [(image_bytes, media_type)]
+    if not images:
         raise LocalVisionError("image bytes are required")
     provider_name = (provider or "lm_studio").strip().lower()
     if provider_name == "lm_studio":
-        return _describe_lm_studio(image_bytes, context_text=context_text, media_type=media_type, timeout=timeout)
+        return _describe_lm_studio(images=images, context_text=context_text, timeout=timeout)
     if provider_name == "ollama":
-        return _describe_ollama(image_bytes, context_text=context_text, timeout=timeout)
+        return _describe_ollama(images=images, context_text=context_text, timeout=timeout)
     raise LocalVisionError(f"unsupported local vision provider: {provider_name}")
 
 
+def _multi_image_prompt(context_text: str | None, count: int) -> str:
+    base = _prompt(context_text)
+    if count <= 1:
+        return base
+    return (
+        f"Identify the food across these {count} photos as ONE meal. Treat the photos as "
+        "different views of the same meal context — do not double-count items that appear "
+        "in multiple photos.\n" + base
+    )
+
+
 def _describe_lm_studio(
-    image_bytes: bytes,
     *,
+    images: list[tuple[bytes, str]],
     context_text: str | None,
-    media_type: str,
     timeout: float,
 ) -> dict[str, Any]:
-    encoded = base64.b64encode(image_bytes).decode("ascii")
+    content: list[dict[str, Any]] = [{"type": "text", "text": _multi_image_prompt(context_text, len(images))}]
+    for image_bytes, media_type in images:
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        content.append({"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{encoded}"}})
     payload = {
         "model": LM_STUDIO_MODEL,
         "temperature": 0,
         "max_tokens": 700,
         "response_format": {"type": "json_object"},
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": _prompt(context_text)},
-                    {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{encoded}"}},
-                ],
-            }
-        ],
+        "messages": [{"role": "user", "content": content}],
     }
     body = _post_json(f"{LM_STUDIO_URL}/v1/chat/completions", payload, timeout=timeout)
     try:
-        content = body["choices"][0]["message"].get("content") or ""
+        content_out = body["choices"][0]["message"].get("content") or ""
     except (KeyError, IndexError, TypeError) as exc:
         raise LocalVisionError(f"unexpected LM Studio response shape: {body}") from exc
-    return _parse_json_content(content)
+    return _parse_json_content(content_out)
 
 
 def _describe_ollama(
-    image_bytes: bytes,
     *,
+    images: list[tuple[bytes, str]],
     context_text: str | None,
     timeout: float,
 ) -> dict[str, Any]:
@@ -115,8 +128,8 @@ def _describe_ollama(
         "messages": [
             {
                 "role": "user",
-                "content": _prompt(context_text),
-                "images": [base64.b64encode(image_bytes).decode("ascii")],
+                "content": _multi_image_prompt(context_text, len(images)),
+                "images": [base64.b64encode(b).decode("ascii") for b, _mt in images],
             }
         ],
     }

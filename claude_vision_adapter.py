@@ -20,16 +20,25 @@ class ClaudeVisionError(RuntimeError):
 
 
 def describe_food_photo(
-    image_bytes: bytes,
+    image_bytes: bytes | None = None,
     *,
+    images: list[tuple[bytes, str]] | None = None,
     context_text: str | None = None,
     media_type: str = "image/jpeg",
     timeout: float = TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
+    """FIT-138: ``images`` is a list of ``(bytes, mimetype)`` tuples for
+    multi-photo meals. ``image_bytes`` + ``media_type`` remain supported
+    for legacy single-image callers; they are normalized to a one-element
+    list internally."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise ClaudeVisionError("ANTHROPIC_API_KEY is not set")
-    if not image_bytes:
+    if images is None:
+        if not image_bytes:
+            raise ClaudeVisionError("image bytes are required")
+        images = [(image_bytes, media_type)]
+    if not images:
         raise ClaudeVisionError("image bytes are required")
 
     prompt = (
@@ -42,8 +51,25 @@ def describe_food_photo(
         "collapse a multi-item cart into one generic meal. Do not use prices as nutrition facts. "
         "Do not include raw image data or chain of thought."
     )
+    if len(images) > 1:
+        prompt = (
+            f"Identify the food across these {len(images)} photos as ONE meal. Treat the "
+            "photos as different views of the same meal context — do not double-count items "
+            "that appear in multiple photos. " + prompt
+        )
     if context_text:
         prompt += f"\nUser context: {context_text[:500]}"
+    image_blocks = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mt,
+                "data": base64.b64encode(b).decode("ascii"),
+            },
+        }
+        for b, mt in images
+    ]
     payload = {
         "model": DEFAULT_MODEL,
         "max_tokens": 500,
@@ -51,17 +77,7 @@ def describe_food_photo(
         "messages": [
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": base64.b64encode(image_bytes).decode("ascii"),
-                        },
-                    },
-                    {"type": "text", "text": prompt},
-                ],
+                "content": image_blocks + [{"type": "text", "text": prompt}],
             }
         ],
     }

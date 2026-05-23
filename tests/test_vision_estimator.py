@@ -223,3 +223,158 @@ def test_local_adapter_vision_model_does_not_fall_back_to_text_model(monkeypatch
 def test_local_adapter_malformed_url_is_handled():
     with pytest.raises(local_vision_adapter.LocalVisionError):
         local_vision_adapter._post_json("/v1/chat/completions", {}, timeout=1)
+
+
+# ──────────────────────────────────────────────────────────────────
+# FIT-138: multi-image support in all three provider adapters.
+# Each adapter must emit N image content blocks in one combined call,
+# alongside one text prompt that names the count so the model treats
+# the photos as one meal context.
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_vision_estimator_threads_multi_image_list_to_adapter(monkeypatch):
+    """FIT-138: vision_estimator.describe(images=[(b, mt), ...]) forwards
+    the full list to the configured adapter without dropping any images."""
+    monkeypatch.setenv("VISION_ESTIMATOR_PROVIDER", "claude")
+    captured = {}
+
+    def fake_describe(*_args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "item_description": "two-photo meal",
+            "portion_hint": "1 plate",
+            "confidence": 0.8,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+        }
+
+    monkeypatch.setattr(vision_estimator.claude_vision_adapter, "describe_food_photo", fake_describe)
+    result = vision_estimator.describe(
+        images=[(b"first", "image/png"), (b"second", "image/jpeg")],
+        context_text="combo meal",
+    )
+    assert result["provider"] == "claude"
+    assert captured.get("images") == [(b"first", "image/png"), (b"second", "image/jpeg")]
+    assert captured.get("context_text") == "combo meal"
+
+
+def test_vision_estimator_preserves_legacy_single_image_call(monkeypatch):
+    """FIT-138 back-compat: callers that still pass image_bytes positionally
+    keep working — vision_estimator normalizes to a one-element images list."""
+    monkeypatch.setenv("VISION_ESTIMATOR_PROVIDER", "lm_studio")
+    captured = {}
+
+    def fake_describe(*_args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "item_description": "single photo meal",
+            "portion_hint": "1 plate",
+            "confidence": 0.8,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+        }
+
+    monkeypatch.setattr(vision_estimator.local_vision_adapter, "describe_food_photo", fake_describe)
+    vision_estimator.describe(b"fake-image", media_type="image/webp")
+    images = captured.get("images")
+    assert images == [(b"fake-image", "image/webp")]
+
+
+def test_claude_adapter_emits_n_image_blocks_for_multi_image(monkeypatch):
+    """FIT-138: claude adapter emits one Anthropic-style image content block
+    per image, followed by the text prompt that names the photo count."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        body = json.loads(req.data.decode("utf-8"))
+        captured["content"] = body["messages"][0]["content"]
+        return _Response({
+            "content": [
+                {"type": "text", "text": json.dumps({
+                    "item_description": "two-photo meal",
+                    "portion_hint": "1 plate",
+                    "confidence": 0.8,
+                    "ambiguous": False,
+                    "uncertainty_notes": [],
+                })}
+            ]
+        })
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    claude_vision_adapter.describe_food_photo(
+        images=[(b"front", "image/png"), (b"side", "image/jpeg")],
+        context_text="dinner",
+    )
+    content = captured["content"]
+    # Two image content blocks + one text prompt block, in that order.
+    assert [part["type"] for part in content] == ["image", "image", "text"]
+    assert content[0]["source"]["media_type"] == "image/png"
+    assert content[1]["source"]["media_type"] == "image/jpeg"
+    # Text prompt names the photo count so the model treats them as one meal.
+    assert "2 photos" in content[2]["text"]
+
+
+def test_lm_studio_adapter_emits_n_image_urls_for_multi_image(monkeypatch):
+    """FIT-138: lm_studio adapter emits one OpenAI-style image_url block per
+    image, with the text prompt first."""
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        body = json.loads(req.data.decode("utf-8"))
+        captured["content"] = body["messages"][0]["content"]
+        return _Response({
+            "choices": [
+                {"message": {"content": json.dumps({
+                    "item_description": "two-photo meal",
+                    "portion_hint": "1 plate",
+                    "confidence": 0.8,
+                    "ambiguous": False,
+                    "uncertainty_notes": [],
+                })}}
+            ]
+        })
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    local_vision_adapter.describe_food_photo(
+        images=[(b"front", "image/png"), (b"side", "image/jpeg")],
+        context_text="dinner",
+        provider="lm_studio",
+    )
+    content = captured["content"]
+    # text first, then N image_url entries.
+    assert content[0]["type"] == "text"
+    assert "2 photos" in content[0]["text"]
+    assert [part["type"] for part in content[1:]] == ["image_url", "image_url"]
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert content[2]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_ollama_adapter_emits_n_base64_images_for_multi_image(monkeypatch):
+    """FIT-138: ollama adapter uses the existing ``images: [...]`` array on
+    its chat message — multi-image just means N entries in that array."""
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        body = json.loads(req.data.decode("utf-8"))
+        captured["message"] = body["messages"][0]
+        return _Response({
+            "message": {"content": json.dumps({
+                "item_description": "two-photo meal",
+                "portion_hint": "1 plate",
+                "confidence": 0.8,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+            })}
+        })
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    local_vision_adapter.describe_food_photo(
+        images=[(b"front", "image/png"), (b"side", "image/jpeg")],
+        context_text="dinner",
+        provider="ollama",
+    )
+    msg = captured["message"]
+    assert len(msg["images"]) == 2
+    assert "2 photos" in msg["content"]
