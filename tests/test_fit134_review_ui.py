@@ -303,6 +303,31 @@ def test_contract_refresh_kinds_match_locked_plan():
         assert f"'{kind}'" in enum_line, f"refresh kind {kind!r} missing"
 
 
+def test_live_accept_sends_meal_id_and_items_body():
+    """FIT-144 _meal_intake_accept_multi (app.py:_meal_intake_accept_multi)
+    expects a JSON body `{ meal_id, items: [{state, item_id, estimate, ...}] }`
+    on POST /api/meal-intake/<meal_id>/accept. PR #123 was coded against an
+    earlier draft that sent no body; the live backend would reject that
+    with `items must be a list`.
+    """
+    block = _v2_block()
+    accept_section = block.split("async function acceptMealV2", 1)[1].split("async function", 1)[0]
+    # Live path posts the body (mock path is allowed to short-circuit).
+    assert "method: 'POST'" in accept_section
+    assert "'Content-Type': 'application/json'" in accept_section
+    assert "JSON.stringify(buildMealV2AcceptBody(entry))" in accept_section
+    # Body builder exists, includes meal_id + items, and maps status -> state.
+    builder_section = block.split("function buildMealV2AcceptBody", 1)[1].split("\n    function ", 1)[0]
+    assert "meal_id: entry.meal_id" in builder_section
+    assert "items:" in builder_section
+    assert "state: MEAL_V2_ITEM_STATUSES.includes(item.status) ? item.status : 'included'" in builder_section
+    # Each item carries an `estimate` dict with the macro fields the backend
+    # _accepted_estimate / _meal_item_phrase helpers read.
+    assert "estimate: {" in builder_section
+    for key in ("item_name", "calories", "protein_g", "carbs_g", "fat_g", "sodium_mg"):
+        assert key in builder_section, f"accept body estimate missing {key!r}"
+
+
 def test_live_refresh_injects_request_id_for_guarded_kinds():
     """FIT-144 backend at app.py:_REVIEW_REQUEST_ID_KINDS returns 400 without
     a `request_id` for add_item, edit_portion, choose_candidate, and
