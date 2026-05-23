@@ -303,6 +303,27 @@ def test_contract_refresh_kinds_match_locked_plan():
         assert f"'{kind}'" in enum_line, f"refresh kind {kind!r} missing"
 
 
+def test_accept_body_merges_entry_meal_type_into_included_item_estimates():
+    """FIT-144 backend persists food_log.meal_type from each item's
+    `estimate.meal_type`, not from a top-level `meal_type` on the request.
+    `set_meal_type` refresh updates payload.meal_type server-side but
+    does not rewrite per-item estimates, so the frontend must merge the
+    current entry.meal_type into each included item's estimate when
+    posting accept — otherwise the user's meal-type edit silently fails
+    to persist (FIT-134 AC: "meal type can be inferred and edited").
+    Skipped/deleted items keep their original estimate so the backend's
+    negative-feedback path sees the original meal-type context.
+    """
+    block = _v2_block()
+    builder = block.split("function buildMealV2AcceptBody", 1)[1].split("\n    function ", 1)[0]
+    assert "MEAL_TYPE_OPTIONS.includes(entry.meal_type)" in builder
+    # Override only fires for included items.
+    assert "state === 'included' && mealType" in builder
+    # The override spreads the existing estimate first so backend-owned
+    # fields stay intact, then overwrites meal_type.
+    assert "...baseEstimate, meal_type: mealType" in builder
+
+
 def test_pending_hydration_routes_v2_entries_through_normalize():
     """FIT-144's `/api/meal-intake/pending` returns saved v2 snapshots
     (meal_id + items[]) alongside legacy single-item entries. After a
@@ -357,7 +378,7 @@ def test_live_accept_sends_meal_id_and_items_body():
     builder_section = block.split("function buildMealV2AcceptBody", 1)[1].split("\n    function ", 1)[0]
     assert "meal_id: entry.meal_id" in builder_section
     assert "items:" in builder_section
-    assert "state: MEAL_V2_ITEM_STATUSES.includes(item.status) ? item.status : 'included'" in builder_section
+    assert "MEAL_V2_ITEM_STATUSES.includes(item.status) ? item.status : 'included'" in builder_section
     # Reuse the backend's own per-item estimate (schema-clean) instead of
     # rebuilding one from the flattened top-level fields. Skipped/deleted
     # items still carry their estimate so backend negative-feedback

@@ -7523,17 +7523,32 @@
     // (requires `ambiguous` bool, `source` string, etc.); reuse the backend's
     // own item.estimate so it round-trips schema-clean. Skipped/deleted items
     // stay in the array so the backend can record negative feedback.
+    //
+    // The persistence path reads `meal_type` from each item's estimate
+    // (food_logs row meal_type comes from estimate.meal_type), so the
+    // collapsed-chip selection (`entry.meal_type`) is merged into each
+    // included item before send. set_meal_type refresh updates
+    // payload.meal_type but does not rewrite per-item estimates, so without
+    // this merge the user's edit silently fails to persist.
     function buildMealV2AcceptBody(entry) {
+        const mealType = MEAL_TYPE_OPTIONS.includes(entry.meal_type) ? entry.meal_type : null;
         return {
             meal_id: entry.meal_id,
             meal_type: entry.meal_type,
-            items: (entry.items || []).map((item) => ({
-                state: MEAL_V2_ITEM_STATUSES.includes(item.status) ? item.status : 'included',
-                item_id: item.item_id,
-                text: item.text || item.name || '',
-                estimate: item.estimate || item.original_estimate || {},
-                original_estimate: item.original_estimate || item.estimate || null,
-            })),
+            items: (entry.items || []).map((item) => {
+                const state = MEAL_V2_ITEM_STATUSES.includes(item.status) ? item.status : 'included';
+                const baseEstimate = item.estimate || item.original_estimate || {};
+                const estimate = (state === 'included' && mealType)
+                    ? { ...baseEstimate, meal_type: mealType }
+                    : baseEstimate;
+                return {
+                    state,
+                    item_id: item.item_id,
+                    text: item.text || item.name || '',
+                    estimate,
+                    original_estimate: item.original_estimate || item.estimate || null,
+                };
+            }),
         };
     }
 
