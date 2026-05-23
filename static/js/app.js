@@ -7507,10 +7507,11 @@
     }
 
     // FIT-144 _meal_intake_accept_multi (app.py:5709) expects a JSON body
-    // `{ meal_id, items: [{state, item_id, estimate, ...}] }`. Each item's
-    // macro/identity fields go inside `estimate` so the persistence path can
-    // find them via _meal_item_phrase / _accepted_estimate. Skipped/deleted
-    // items stay in the array so the backend can record negative feedback.
+    // `{ meal_id, items: [{state, item_id, estimate, ...}] }`. The backend's
+    // `_review_sanitize_estimate` re-validates the per-item `estimate` dict
+    // (requires `ambiguous` bool, `source` string, etc.); reuse the backend's
+    // own item.estimate so it round-trips schema-clean. Skipped/deleted items
+    // stay in the array so the backend can record negative feedback.
     function buildMealV2AcceptBody(entry) {
         return {
             meal_id: entry.meal_id,
@@ -7519,19 +7520,8 @@
                 state: MEAL_V2_ITEM_STATUSES.includes(item.status) ? item.status : 'included',
                 item_id: item.item_id,
                 text: item.text || item.name || '',
-                estimate: {
-                    item_name: item.name,
-                    portion_description: item.portion_description,
-                    meal_type: entry.meal_type,
-                    calories: item.calories,
-                    protein_g: item.protein_g,
-                    carbs_g: item.carbs_g,
-                    fat_g: item.fat_g,
-                    sodium_mg: item.sodium_mg,
-                    fiber_g: item.fiber_g,
-                    confidence: item.confidence,
-                    source: item.source || null,
-                },
+                estimate: item.estimate || item.original_estimate || {},
+                original_estimate: item.original_estimate || item.estimate || null,
             })),
         };
     }

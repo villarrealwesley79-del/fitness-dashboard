@@ -308,7 +308,11 @@ def test_live_accept_sends_meal_id_and_items_body():
     expects a JSON body `{ meal_id, items: [{state, item_id, estimate, ...}] }`
     on POST /api/meal-intake/<meal_id>/accept. PR #123 was coded against an
     earlier draft that sent no body; the live backend would reject that
-    with `items must be a list`.
+    with `items must be a list`. The backend re-sanitizes each item's
+    `estimate` (requires `ambiguous` bool, `source` string, valid macros),
+    so the frontend must pass the backend-owned `item.estimate` through
+    untouched rather than building a fresh dict from the flattened item
+    fields (which would drop `ambiguous` and send `source` as an object).
     """
     block = _v2_block()
     accept_section = block.split("async function acceptMealV2", 1)[1].split("async function", 1)[0]
@@ -321,11 +325,12 @@ def test_live_accept_sends_meal_id_and_items_body():
     assert "meal_id: entry.meal_id" in builder_section
     assert "items:" in builder_section
     assert "state: MEAL_V2_ITEM_STATUSES.includes(item.status) ? item.status : 'included'" in builder_section
-    # Each item carries an `estimate` dict with the macro fields the backend
-    # _accepted_estimate / _meal_item_phrase helpers read.
-    assert "estimate: {" in builder_section
-    for key in ("item_name", "calories", "protein_g", "carbs_g", "fat_g", "sodium_mg"):
-        assert key in builder_section, f"accept body estimate missing {key!r}"
+    # Reuse the backend's own per-item estimate (schema-clean) instead of
+    # rebuilding one from the flattened top-level fields. Skipped/deleted
+    # items still carry their estimate so backend negative-feedback
+    # persistence (FIT-135) can read the phrase.
+    assert "item.estimate" in builder_section
+    assert "item.original_estimate" in builder_section
 
 
 def test_live_refresh_injects_request_id_for_guarded_kinds():
