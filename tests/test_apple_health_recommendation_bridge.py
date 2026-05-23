@@ -137,6 +137,132 @@ def test_apple_health_walk_increases_acwr_and_leg_readiness_load(fitness_app):
     assert readiness["score"] < 10
 
 
+def test_apple_health_workout_hr_is_preserved_with_flag_off(fitness_app, monkeypatch):
+    monkeypatch.delenv("APPLE_HEALTH_WORKOUT_HR_INTENSITY", raising=False)
+    workout = _apple_health_walk(fitness_app)
+    workout["avgHeartRate"] = {"qty": 165}
+    _sync_apple_health_workout(fitness_app, workout)
+
+    apple_workouts = fitness_app._load_apple_health_recommendation_workouts()
+    assert len(apple_workouts) == 1
+    assert apple_workouts[0]["avg_heart_rate"] == 165
+    assert apple_workouts[0]["apple_health"]["avg_heart_rate"] == 165
+    assert apple_workouts[0]["apple_health"]["hr_intensity_applied"] is False
+    assert apple_workouts[0]["recommendation_load"] == 60
+
+    cardio = fitness_app._cardio_data_with_apple_health([], fitness_app.WORKOUTS)
+    assert cardio[0]["avg_heart_rate"] == 165
+    assert cardio[0]["intensity"] == 5
+
+
+def test_apple_health_workout_hr_can_raise_load_when_enabled(fitness_app, monkeypatch):
+    monkeypatch.setenv("APPLE_HEALTH_WORKOUT_HR_INTENSITY", "1")
+    workout = _apple_health_walk(fitness_app)
+    workout["avg_heart_rate"] = 165
+    _sync_apple_health_workout(fitness_app, workout)
+
+    apple_workouts = fitness_app._load_apple_health_recommendation_workouts()
+    assert apple_workouts[0]["apple_health"]["hr_intensity"] == 7
+    assert apple_workouts[0]["apple_health"]["hr_intensity_applied"] is True
+    assert apple_workouts[0]["recommendation_load"] == 420
+
+    cardio = fitness_app._cardio_data_with_apple_health([], fitness_app.WORKOUTS)
+    assert cardio[0]["intensity"] == 7
+
+    acwr = fitness_app.calculate_acwr(fitness_app.WORKOUTS)
+    assert acwr["acute_load"] >= 420
+
+
+def test_apple_health_hr_does_not_raise_cardio_when_load_was_not_raised(fitness_app, monkeypatch):
+    monkeypatch.setenv("APPLE_HEALTH_WORKOUT_HR_INTENSITY", "1")
+    day = _today(fitness_app)
+    _sync_apple_health_workout(
+        fitness_app,
+        {
+            "date": day,
+            "startDate": f"{day}T06:30:00-05:00",
+            "activity": "Traditional Strength Training",
+            "activity_type": "Traditional Strength Training",
+            "duration_min": 30,
+            "duration_minutes": 30,
+            "avg_heart_rate": 172,
+            "source": "health_auto_export",
+            "muscle_groups": [
+                {"muscle": "quads", "sets": 3, "volume_load": 900},
+            ],
+        },
+    )
+
+    apple_workouts = fitness_app._load_apple_health_recommendation_workouts()
+    assert apple_workouts[0]["apple_health"]["hr_intensity_applied"] is False
+    assert apple_workouts[0]["recommendation_load"] == 900
+
+    cardio = fitness_app._cardio_data_with_apple_health([], fitness_app.WORKOUTS)
+    assert cardio[0]["intensity"] == 5
+
+
+def test_apple_health_hr_raises_cardio_when_zero_volume_uses_hr_load(fitness_app, monkeypatch):
+    monkeypatch.setenv("APPLE_HEALTH_WORKOUT_HR_INTENSITY", "1")
+    day = _today(fitness_app)
+    _sync_apple_health_workout(
+        fitness_app,
+        {
+            "date": day,
+            "startDate": f"{day}T06:30:00-05:00",
+            "activity": "Traditional Strength Training",
+            "activity_type": "Traditional Strength Training",
+            "duration_min": 30,
+            "duration_minutes": 30,
+            "avg_heart_rate": 172,
+            "source": "health_auto_export",
+            "muscle_groups": [
+                {"muscle": "quads", "sets": 3},
+            ],
+        },
+    )
+
+    apple_workouts = fitness_app._load_apple_health_recommendation_workouts()
+    assert apple_workouts[0]["apple_health"]["hr_intensity_applied"] is True
+    assert apple_workouts[0]["recommendation_load"] == 240
+
+    cardio = fitness_app._cardio_data_with_apple_health([], fitness_app.WORKOUTS)
+    assert cardio[0]["intensity"] == 8
+
+
+def test_apple_health_null_or_invalid_hr_keeps_existing_load(fitness_app, monkeypatch):
+    monkeypatch.setenv("APPLE_HEALTH_WORKOUT_HR_INTENSITY", "true")
+    workout = _apple_health_walk(fitness_app)
+    workout["avg_heart_rate"] = 260
+    _sync_apple_health_workout(fitness_app, workout)
+
+    apple_workouts = fitness_app._load_apple_health_recommendation_workouts()
+    assert apple_workouts[0]["avg_heart_rate"] is None
+    assert apple_workouts[0]["recommendation_load"] == 60
+
+    cardio = fitness_app._cardio_data_with_apple_health([], fitness_app.WORKOUTS)
+    assert cardio[0]["intensity"] == 5
+
+
+def test_daily_resting_hr_is_not_used_for_workout_intensity(fitness_app, monkeypatch):
+    monkeypatch.setenv("APPLE_HEALTH_WORKOUT_HR_INTENSITY", "on")
+    day = _today(fitness_app)
+    response = fitness_app.app.test_client().post(
+        "/api/apple-health/sync?token=fit95-health-token",
+        json={
+            "heart_rate": [{"date": day, "value": 180, "type": "resting"}],
+            "workouts": [_apple_health_walk(fitness_app)],
+        },
+    )
+    assert response.status_code == 200, response.get_data(as_text=True)
+
+    apple_workouts = fitness_app._load_apple_health_recommendation_workouts()
+    assert apple_workouts[0]["avg_heart_rate"] is None
+    assert apple_workouts[0]["recommendation_load"] == 60
+
+    cardio = fitness_app._cardio_data_with_apple_health([], fitness_app.WORKOUTS)
+    assert cardio[0]["intensity"] == 5
+
+
 def test_long_apple_health_duration_minutes_are_not_double_converted(fitness_app):
     workout = _apple_health_walk(fitness_app)
     workout["duration_min"] = 300
@@ -345,3 +471,20 @@ def test_smart_recommendation_includes_apple_health_load_in_readiness_factors(fi
     acwr = payload["readiness_factors"]["acwr"]
     assert acwr["acute_load"] >= 60
     assert acwr["chronic_load"] >= 60
+
+
+def test_smart_recommendation_mentions_hr_only_when_hr_raises_load(fitness_app, monkeypatch):
+    monkeypatch.setenv("APPLE_HEALTH_WORKOUT_HR_INTENSITY", "1")
+    workout = _apple_health_walk(fitness_app)
+    workout["avg_heart_rate"] = 172
+    _sync_apple_health_workout(fitness_app, workout)
+
+    response = fitness_app.app.test_client().get("/api/recommendation/smart")
+    assert response.status_code == 200, response.get_data(as_text=True)
+    payload = response.get_json()
+    assert "Apple Health workout HR raised recent cardio load" in payload["reasoning"]
+
+    monkeypatch.delenv("APPLE_HEALTH_WORKOUT_HR_INTENSITY", raising=False)
+    response = fitness_app.app.test_client().get("/api/recommendation/smart")
+    payload = response.get_json()
+    assert "Apple Health workout HR raised recent cardio load" not in payload["reasoning"]

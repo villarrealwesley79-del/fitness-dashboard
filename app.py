@@ -1109,6 +1109,47 @@ def _apple_health_recommendation_enabled():
     return True
 
 
+APPLE_HEALTH_WORKOUT_HR_INTENSITY_ENV = "APPLE_HEALTH_WORKOUT_HR_INTENSITY"
+APPLE_HEALTH_WORKOUT_HR_MIN = 30
+APPLE_HEALTH_WORKOUT_HR_MAX = 230
+
+
+def _apple_health_hr_intensity_enabled():
+    value = os.environ.get(APPLE_HEALTH_WORKOUT_HR_INTENSITY_ENV, "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apple_health_avg_heart_rate(row):
+    if not isinstance(row, dict):
+        return None
+    value = row.get("avg_heart_rate")
+    if value is None:
+        value = row.get("avgHeartRate")
+    if isinstance(value, dict):
+        value = (
+            value.get("avg")
+            or value.get("average")
+            or value.get("qty")
+            or value.get("value")
+        )
+    avg_hr = _fit95_number(value)
+    if avg_hr < APPLE_HEALTH_WORKOUT_HR_MIN or avg_hr > APPLE_HEALTH_WORKOUT_HR_MAX:
+        return None
+    return avg_hr
+
+
+def _apple_health_intensity_from_avg_hr(avg_hr):
+    if avg_hr is None:
+        return None
+    if avg_hr >= 170:
+        return 8
+    if avg_hr >= 150:
+        return 7
+    if avg_hr >= 120:
+        return 6
+    return 5
+
+
 def _apple_health_duration_minutes(row):
     for key in ("duration_minutes", "duration_min"):
         value = row.get(key)
@@ -1181,17 +1222,33 @@ def _normalise_apple_health_muscle_groups(row):
     return exercises
 
 
-def _apple_health_recommendation_load(row, exercises, duration_minutes):
+def _apple_health_exercise_volume_load(exercises):
     volume_load = 0.0
     for exercise in exercises:
         for set_row in exercise.get("sets") or []:
             volume_load += _fit95_number(set_row.get("weight_lbs")) * _fit95_number(set_row.get("reps"))
+    return volume_load
+
+
+def _apple_health_recommendation_load(row, exercises, duration_minutes):
+    volume_load = _apple_health_exercise_volume_load(exercises)
     if volume_load > 0:
         return volume_load
     intensity = _fit95_number(row.get("intensity"), 1.0)
     if intensity > 10:
         intensity = intensity / 10
+    hr_intensity = _apple_health_intensity_from_avg_hr(_apple_health_avg_heart_rate(row))
+    if _apple_health_hr_intensity_enabled() and hr_intensity is not None:
+        intensity = max(intensity, hr_intensity)
+    intensity = min(10.0, intensity)
     return duration_minutes * max(1.0, intensity)
+
+
+def _apple_health_base_intensity(row):
+    intensity = _fit95_number(row.get("intensity"), 1.0)
+    if intensity > 10:
+        intensity = intensity / 10
+    return min(10.0, intensity)
 
 
 def _normalise_apple_health_workout(row):
@@ -1206,6 +1263,15 @@ def _normalise_apple_health_workout(row):
     duration_minutes = _apple_health_duration_minutes(row)
     activity = _apple_health_activity(row)
     exercises = _normalise_apple_health_muscle_groups(row)
+    volume_load = _apple_health_exercise_volume_load(exercises)
+    avg_hr = _apple_health_avg_heart_rate(row)
+    hr_intensity = _apple_health_intensity_from_avg_hr(avg_hr)
+    hr_intensity_applied = (
+        _apple_health_hr_intensity_enabled()
+        and hr_intensity is not None
+        and hr_intensity > max(1.0, _apple_health_base_intensity(row))
+        and volume_load <= 0
+    )
     load = _apple_health_recommendation_load(row, exercises, duration_minutes)
     return {
         "id": f"apple-health:{start_iso or date_s}:{activity}:{duration_minutes}",
@@ -1214,12 +1280,16 @@ def _normalise_apple_health_workout(row):
         "session_type": activity,
         "duration_minutes": duration_minutes,
         "exercises": exercises,
+        "avg_heart_rate": avg_hr,
         "recommendation_load": load,
         "source": "apple_health",
         "apple_health": {
             "activity_type": activity,
             "start": start_iso,
             "duration_minutes": duration_minutes,
+            "avg_heart_rate": avg_hr,
+            "hr_intensity": hr_intensity,
+            "hr_intensity_applied": hr_intensity_applied,
         },
     }
 
@@ -1363,15 +1433,48 @@ def _cardio_data_with_apple_health(cardio_data, workouts=None):
             if isinstance(existing, dict)
         ):
             continue
+        apple_health = workout.get("apple_health") or {}
+        hr_intensity = apple_health.get("hr_intensity") if isinstance(apple_health, dict) else None
+        intensity = 5
+        if (
+            _apple_health_hr_intensity_enabled()
+            and isinstance(apple_health, dict)
+            and apple_health.get("hr_intensity_applied")
+            and hr_intensity is not None
+        ):
+            intensity = max(intensity, min(10, _fit95_number(hr_intensity, 5)))
         merged.append({
             "date": workout.get("date"),
             "activity_type": activity,
             "duration_minutes": workout.get("duration_minutes") or 0,
-            "intensity": 5,
+            "intensity": intensity,
+            "avg_heart_rate": workout.get("avg_heart_rate"),
             "source": "apple_health",
             "created_at": workout.get("created_at"),
         })
     return merged
+
+
+def _apple_health_hr_intensity_summary(days=7):
+    if not _apple_health_hr_intensity_enabled():
+        return {"applied_count": 0}
+    applied = []
+    for workout in _load_apple_health_recommendation_workouts(days=days):
+        apple_health = workout.get("apple_health") or {}
+        if not isinstance(apple_health, dict) or not apple_health.get("hr_intensity_applied"):
+            continue
+        applied.append({
+            "avg_heart_rate": workout.get("avg_heart_rate"),
+            "hr_intensity": apple_health.get("hr_intensity"),
+        })
+    if not applied:
+        return {"applied_count": 0}
+    max_item = max(applied, key=lambda item: _fit95_number(item.get("avg_heart_rate")))
+    return {
+        "applied_count": len(applied),
+        "max_avg_heart_rate": max_item.get("avg_heart_rate"),
+        "max_hr_intensity": max_item.get("hr_intensity"),
+    }
 
 
 def _browser_local_date_from_value(local_date):
@@ -9913,6 +10016,12 @@ def smart_recommendation_api():
         reason_bits.append(f"Sleep debt {sleep_debt.get('debt_minutes')} min ({sleep_debt.get('status')})")
     if acwr_data.get('chronic_load', 0) > 0:
         reason_bits.append(f"ACWR {acwr_data.get('acwr')} ({acwr_data.get('risk')})")
+    hr_intensity = _apple_health_hr_intensity_summary(days=7)
+    if hr_intensity.get("applied_count"):
+        reason_bits.append(
+            "Apple Health workout HR raised recent cardio load "
+            f"({round(hr_intensity.get('max_avg_heart_rate'))} bpm -> intensity {hr_intensity.get('max_hr_intensity')})"
+        )
     if recent:
         worst = max(recent, key=lambda s: s.get("soreness_level") or 0)
         ts = _parse_soreness_timestamp(worst)

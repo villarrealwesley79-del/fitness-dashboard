@@ -317,12 +317,23 @@ def _get_sync_records(record_type: str, days: int = 0) -> list[dict]:
 def _normalize_sync_workout(workout: dict) -> dict:
     normalized = dict(workout)
     activity = _workout_activity_name(normalized)
+    avg_hr = normalized.get("avg_heart_rate")
+    if avg_hr is None:
+        avg_hr = normalized.get("avgHeartRate")
+    if isinstance(avg_hr, dict):
+        avg_hr = (
+            avg_hr.get("avg")
+            or avg_hr.get("average")
+            or avg_hr.get("qty")
+            or avg_hr.get("value")
+        )
     normalized["activity"] = activity
     normalized.setdefault("activity_type", activity)
     normalized.setdefault("date", normalized.get("startDate", "")[:10])
     normalized.setdefault("duration_min", normalized.get("duration_minutes", 0))
     normalized.setdefault("energy_kcal", normalized.get("total_energy_kcal", 0))
     normalized.setdefault("distance_m", normalized.get("distance_m", 0))
+    normalized["avg_heart_rate"] = avg_hr
     return normalized
 
 
@@ -693,7 +704,7 @@ def register_apple_health_routes(flask_app):
                 energy_val = energy
             avg_hr = w.get("avgHeartRate") or w.get("avg_heart_rate")
             if isinstance(avg_hr, dict):
-                avg_hr = avg_hr.get("qty") or avg_hr.get("value")
+                avg_hr = avg_hr.get("avg") or avg_hr.get("average") or avg_hr.get("qty") or avg_hr.get("value")
             # Prefer activeEnergyBurned if totalEnergy is missing (HAE v2 exposes both for some types)
             active_e = w.get("activeEnergyBurned")
             if isinstance(active_e, dict):
