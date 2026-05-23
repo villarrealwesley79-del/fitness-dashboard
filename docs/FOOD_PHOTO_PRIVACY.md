@@ -50,6 +50,23 @@ policy.
 - Raw model prompts, completions, traces, or chain-of-thought.
 - Full model debug payloads.
 
+## Temporary Offline Queue Storage
+
+FIT-145 adds one narrow client-side exception for offline meal logging:
+when the browser is offline, queued meal photos are stored as `Blob`s in
+IndexedDB database `fitMealIntakeQueueDB`, store `meal_photos`, only until the
+queued meal can be sent to `/api/meal-intake`.
+
+The offline queue never stores raw photo bytes, base64 image data, local image
+paths, object URLs, or original filenames in localStorage. Filenames are
+stripped before queueing; replay uses synthetic names such as `meal-1.jpg`.
+
+Queued photo blobs must be deleted immediately after the server accepts the
+meal response, before the browser treats the queued entry as synced. User
+discard also deletes both the queue entry and its photo blobs. If IndexedDB is
+unavailable or quota prevents writing the queue, offline photo submissions are
+not silently dropped; the composer keeps the draft visible and shows an error.
+
 ## Future Opt-In Retention Requirements
 
 If photo retention is ever added, it must define:

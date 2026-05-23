@@ -4924,6 +4924,16 @@
 
     const SYNC_QUEUE_KEY = 'fit51:sync-queue:v1';
     let _syncFlushInFlight = false;
+    // FIT-145: meal-intake offline queue. Metadata and photo blobs live
+    // together in IndexedDB so reloads preserve queued meals without
+    // putting raw photo bytes into localStorage.
+    const MEAL_QUEUE_DB_NAME = 'fitMealIntakeQueueDB';
+    const MEAL_QUEUE_DB_VERSION = 1;
+    const MEAL_QUEUE_STORE = 'queued_meals';
+    const MEAL_PHOTO_STORE = 'meal_photos';
+    let _mealQueueDbPromise = null;
+    let _mealSyncFlushInFlight = false;
+    const _mealSyncInFlightClientIds = new Set();
 
     function loadSyncQueue() {
         try {
@@ -5042,20 +5052,336 @@
         }
     }
 
+    function mealQueueRequest(request) {
+        return new Promise((resolve, reject) => {
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('IndexedDB request failed'));
+        });
+    }
+
+    function mealQueueTxComplete(tx) {
+        return new Promise((resolve, reject) => {
+            tx.oncomplete = () => resolve();
+            tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+            tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+        });
+    }
+
+    function openMealQueueDb() {
+        if (!('indexedDB' in window)) return Promise.reject(new Error('IndexedDB unavailable'));
+        if (_mealQueueDbPromise) return _mealQueueDbPromise;
+        _mealQueueDbPromise = new Promise((resolve, reject) => {
+            const request = indexedDB.open(MEAL_QUEUE_DB_NAME, MEAL_QUEUE_DB_VERSION);
+            request.onupgradeneeded = () => {
+                const db = request.result;
+                if (!db.objectStoreNames.contains(MEAL_QUEUE_STORE)) {
+                    db.createObjectStore(MEAL_QUEUE_STORE, { keyPath: 'client_id' });
+                }
+                if (!db.objectStoreNames.contains(MEAL_PHOTO_STORE)) {
+                    const photoStore = db.createObjectStore(MEAL_PHOTO_STORE, { keyPath: 'photo_id' });
+                    photoStore.createIndex('client_id', 'client_id', { unique: false });
+                }
+            };
+            request.onsuccess = () => {
+                const db = request.result;
+                db.onversionchange = () => {
+                    db.close();
+                    _mealQueueDbPromise = null;
+                };
+                resolve(db);
+            };
+            request.onerror = () => {
+                _mealQueueDbPromise = null;
+                reject(request.error || new Error('Could not open meal queue'));
+            };
+            request.onblocked = () => {
+                _mealQueueDbPromise = null;
+                reject(new Error('Meal queue database upgrade blocked'));
+            };
+        });
+        return _mealQueueDbPromise;
+    }
+
+    function mealPhotoExtension(type) {
+        const normalized = String(type || '').toLowerCase();
+        if (normalized.includes('png')) return 'png';
+        if (normalized.includes('webp')) return 'webp';
+        if (normalized.includes('gif')) return 'gif';
+        return 'jpg';
+    }
+
+    async function listMealQueueEntries() {
+        const db = await openMealQueueDb();
+        const tx = db.transaction(MEAL_QUEUE_STORE, 'readonly');
+        const entries = await mealQueueRequest(tx.objectStore(MEAL_QUEUE_STORE).getAll());
+        await mealQueueTxComplete(tx);
+        return (Array.isArray(entries) ? entries : []).sort((a, b) => String(a.queued_at || '').localeCompare(String(b.queued_at || '')));
+    }
+
+    async function getQueuedMealWithPhotos(clientId) {
+        const db = await openMealQueueDb();
+        const tx = db.transaction([MEAL_QUEUE_STORE, MEAL_PHOTO_STORE], 'readonly');
+        const mealStore = tx.objectStore(MEAL_QUEUE_STORE);
+        const photoStore = tx.objectStore(MEAL_PHOTO_STORE);
+        const entryPromise = mealQueueRequest(mealStore.get(clientId));
+        const photosPromise = mealQueueRequest(photoStore.index('client_id').getAll(clientId));
+        const entry = await entryPromise;
+        const photos = await photosPromise;
+        await mealQueueTxComplete(tx);
+        return {
+            entry: entry || null,
+            photos: (Array.isArray(photos) ? photos : []).sort((a, b) => (a.position || 0) - (b.position || 0)),
+        };
+    }
+
+    async function enqueueMealIntakeOffline({ textValue, files, clientId, localTime }) {
+        const text = String(textValue || '').trim();
+        const imageFiles = Array.isArray(files) ? files : [];
+        if (!text && imageFiles.length === 0) {
+            throw new Error('Type a meal or attach a photo.');
+        }
+        const queuedAt = new Date().toISOString();
+        const photoRecords = imageFiles.map((file, idx) => {
+            const type = file.type || 'image/jpeg';
+            const photoId = `${clientId}:photo:${idx + 1}`;
+            return {
+                photo_id: photoId,
+                client_id: clientId,
+                position: idx,
+                type,
+                size: file.size || 0,
+                queued_at: queuedAt,
+                blob: typeof file.slice === 'function' ? file.slice(0, file.size, type) : file,
+            };
+        });
+        const entry = {
+            client_id: clientId,
+            queued_at: queuedAt,
+            last_attempt_at: null,
+            attempts: 0,
+            last_status: 'pending',
+            text,
+            local_timestamp: localTime && localTime.local_timestamp,
+            local_date: localTime && localTime.local_date,
+            local_iso: localTime && localTime.local_iso,
+            image_count: photoRecords.length,
+            aggregate_bytes: photoRecords.reduce((total, photo) => total + (photo.size || 0), 0),
+            image_metadata: photoRecords.map((photo) => ({
+                photo_id: photo.photo_id,
+                position: photo.position,
+                type: photo.type,
+                size: photo.size,
+            })),
+            photo_ids: photoRecords.map((photo) => photo.photo_id),
+            server_response_summary: null,
+            reject_reason: null,
+        };
+        const db = await openMealQueueDb();
+        const tx = db.transaction([MEAL_QUEUE_STORE, MEAL_PHOTO_STORE], 'readwrite');
+        const mealStore = tx.objectStore(MEAL_QUEUE_STORE);
+        const photoStore = tx.objectStore(MEAL_PHOTO_STORE);
+        photoRecords.forEach((photo) => photoStore.put(photo));
+        mealStore.put(entry);
+        await mealQueueTxComplete(tx);
+        renderSyncBanner();
+        return entry;
+    }
+
+    async function removeMealQueueEntry(clientId) {
+        const db = await openMealQueueDb();
+        const readTx = db.transaction(MEAL_QUEUE_STORE, 'readonly');
+        const entry = await mealQueueRequest(readTx.objectStore(MEAL_QUEUE_STORE).get(clientId));
+        await mealQueueTxComplete(readTx);
+        const photoIds = entry && Array.isArray(entry.photo_ids) ? entry.photo_ids : [];
+        const tx = db.transaction([MEAL_QUEUE_STORE, MEAL_PHOTO_STORE], 'readwrite');
+        const mealStore = tx.objectStore(MEAL_QUEUE_STORE);
+        const photoStore = tx.objectStore(MEAL_PHOTO_STORE);
+        photoIds.forEach((photoId) => photoStore.delete(photoId));
+        mealStore.delete(clientId);
+        await mealQueueTxComplete(tx);
+        renderSyncBanner();
+    }
+
+    async function cleanupOrphanedMealQueuePhotos() {
+        const db = await openMealQueueDb();
+        const readTx = db.transaction([MEAL_QUEUE_STORE, MEAL_PHOTO_STORE], 'readonly');
+        const mealStore = readTx.objectStore(MEAL_QUEUE_STORE);
+        const photoStore = readTx.objectStore(MEAL_PHOTO_STORE);
+        const entries = await mealQueueRequest(mealStore.getAll());
+        const photos = await mealQueueRequest(photoStore.getAll());
+        await mealQueueTxComplete(readTx);
+        const clientIds = new Set((entries || []).map((entry) => entry.client_id));
+        const tx = db.transaction(MEAL_PHOTO_STORE, 'readwrite');
+        const writePhotoStore = tx.objectStore(MEAL_PHOTO_STORE);
+        (photos || []).forEach((photo) => {
+            if (!clientIds.has(photo.client_id)) writePhotoStore.delete(photo.photo_id);
+        });
+        await mealQueueTxComplete(tx);
+    }
+
+    async function updateMealQueueEntry(clientId, fields) {
+        const db = await openMealQueueDb();
+        const readTx = db.transaction(MEAL_QUEUE_STORE, 'readonly');
+        const entry = await mealQueueRequest(readTx.objectStore(MEAL_QUEUE_STORE).get(clientId));
+        await mealQueueTxComplete(readTx);
+        if (!entry) {
+            return;
+        }
+        const tx = db.transaction(MEAL_QUEUE_STORE, 'readwrite');
+        tx.objectStore(MEAL_QUEUE_STORE).put({ ...entry, ...fields });
+        await mealQueueTxComplete(tx);
+        renderSyncBanner();
+    }
+
+    function queuedMealFormData(entry, photos) {
+        const form = new FormData();
+        if (entry.text) form.append('text', entry.text);
+        (photos || []).forEach((photo, idx) => {
+            const extension = mealPhotoExtension(photo.type);
+            form.append('images', photo.blob, `meal-${idx + 1}.${extension}`);
+        });
+        form.append('client_id', entry.client_id);
+        if (entry.local_timestamp) form.append('local_timestamp', entry.local_timestamp);
+        if (entry.local_date) form.append('local_date', entry.local_date);
+        if (entry.local_iso) form.append('local_iso', entry.local_iso);
+        return form;
+    }
+
+    async function postQueuedMealIntake(entry, photos) {
+        const res = await fetch('/api/meal-intake', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' },
+            body: queuedMealFormData(entry, photos),
+        });
+        const ct = res.headers.get('content-type') || '';
+        const body = ct.includes('application/json') ? await res.json().catch(() => null) : null;
+        if (res.ok) {
+            return { ok: true, status: res.status, body };
+        }
+        const message = (body && body.error && body.error.message) || `Meal sync failed (${res.status}).`;
+        const syncStatus = res.status === 409 ? 'conflicted' : (res.status >= 500 ? 'pending' : 'rejected');
+        return { ok: false, status: res.status, body, syncStatus, reason: message };
+    }
+
+    function annotateMealSyncReason(rawReason, syncStatus) {
+        const base = String(rawReason || '').trim();
+        if (syncStatus === 'pending') {
+            // Network / 5xx — retry is possible and happens automatically on reconnect.
+            const note = 'Will retry automatically when you’re back online.';
+            return base ? `${base} ${note}` : note;
+        }
+        if (syncStatus === 'rejected') {
+            // 4xx — the server can’t accept this entry; no auto-retry.
+            const note = 'The server didn’t accept this meal. Discard it from the queue to remove it.';
+            return base ? `${base} ${note}` : note;
+        }
+        if (syncStatus === 'conflicted') {
+            // 409 — operator may need to discard or retry once the duplicate clears.
+            const note = 'Conflict reported by the server. Discard this entry, or retry later if you think it should go through.';
+            return base ? `${base} ${note}` : note;
+        }
+        return base || null;
+    }
+
+    async function syncSingleMealQueueEntry(clientId) {
+        if (_mealSyncInFlightClientIds.has(clientId)) return { ok: false, status: 'pending' };
+        _mealSyncInFlightClientIds.add(clientId);
+        try {
+            const queued = await getQueuedMealWithPhotos(clientId);
+            const entry = queued.entry;
+            if (!entry) return null;
+            const attemptedAt = new Date().toISOString();
+            const attempts = (entry.attempts || 0) + 1;
+            try {
+                const result = await postQueuedMealIntake(entry, queued.photos);
+                if (result.ok) {
+                    try {
+                        await removeMealQueueEntry(clientId);
+                    } catch (deleteErr) {
+                        await updateMealQueueEntry(clientId, {
+                            last_status: 'eviction_failed',
+                            last_attempt_at: attemptedAt,
+                            attempts,
+                            server_response_summary: result.body ? { status: result.body.status || null } : null,
+                            reject_reason: 'The server accepted this meal, but the browser couldn’t clear the local copy. Tap Discard to remove the offline entry and its photos.',
+                        });
+                        return { ok: false, status: 'eviction_failed', error: deleteErr && deleteErr.message };
+                    }
+                    handleMealIntakeResponse(result.body, {
+                        textValue: entry.text || '',
+                        clientId,
+                        imageFiles: [],
+                        fromQueue: true,
+                        localTime: {
+                            local_timestamp: entry.local_timestamp || null,
+                            local_date: entry.local_date || null,
+                            local_iso: entry.local_iso || null,
+                        },
+                    });
+                    toast('Queued meal synced');
+                    return { ok: true, status: 'synced' };
+                }
+                await updateMealQueueEntry(clientId, {
+                    last_status: result.syncStatus || 'rejected',
+                    last_attempt_at: attemptedAt,
+                    attempts,
+                    server_response_summary: result.body ? { status: result.body.status || null, http_status: result.status } : { http_status: result.status },
+                    reject_reason: annotateMealSyncReason(result.reason, result.syncStatus || 'rejected'),
+                });
+                return { ok: false, status: result.syncStatus || 'rejected' };
+            } catch (e) {
+                await updateMealQueueEntry(clientId, {
+                    last_status: 'pending',
+                    last_attempt_at: attemptedAt,
+                    attempts,
+                    reject_reason: annotateMealSyncReason((e && e.message) || 'Couldn’t reach the server.', 'pending'),
+                });
+                return { ok: false, status: 'pending', error: e && e.message };
+            }
+        } finally {
+            _mealSyncInFlightClientIds.delete(clientId);
+        }
+    }
+
+    async function flushMealSyncQueue() {
+        if (!navigator.onLine || _mealSyncFlushInFlight) return;
+        _mealSyncFlushInFlight = true;
+        try {
+            const ids = (await listMealQueueEntries())
+                .filter((e) => (e.last_status || 'pending') === 'pending')
+                .map((e) => e.client_id);
+            for (const id of ids) {
+                await syncSingleMealQueueEntry(id);
+            }
+            await renderSyncQueueModal();
+        } catch (e) {
+            console.warn('Meal sync queue flush failed:', e);
+        } finally {
+            _mealSyncFlushInFlight = false;
+        }
+    }
+
     function renderSyncBanner() {
         const banner = $('sync-banner');
         const textEl = $('sync-banner-text');
         if (!banner || !textEl) return;
         const queue = loadSyncQueue();
-        if (!queue.length) { banner.hidden = true; return; }
-        const pending = queue.filter((e) => e.last_status === 'pending').length;
-        const failed = queue.filter((e) => e.last_status === 'rejected' || e.last_status === 'conflicted').length;
-        const parts = [];
-        if (pending) parts.push(`${pending} pending`);
-        if (failed) parts.push(`${failed} failed`);
-        textEl.textContent = parts.length ? parts.join(' · ') : `${queue.length} queued`;
-        banner.classList.toggle('has-failed', failed > 0);
-        banner.hidden = false;
+        listMealQueueEntries().catch(() => []).then((mealQueue) => {
+            const pending = queue.filter((e) => e.last_status === 'pending').length
+                + mealQueue.filter((e) => (e.last_status || 'pending') === 'pending').length;
+            const failedStatuses = new Set(['rejected', 'conflicted', 'eviction_failed']);
+            const failed = queue.filter((e) => failedStatuses.has(e.last_status)).length
+                + mealQueue.filter((e) => failedStatuses.has(e.last_status)).length;
+            const total = queue.length + mealQueue.length;
+            if (!total) { banner.hidden = true; return; }
+            const parts = [];
+            if (pending) parts.push(`${pending} pending`);
+            if (failed) parts.push(`${failed} failed`);
+            textEl.textContent = parts.length ? parts.join(' · ') : `${total} queued`;
+            banner.classList.toggle('has-failed', failed > 0);
+            banner.hidden = false;
+        });
     }
 
     function openSyncQueueModal() {
@@ -5064,16 +5390,17 @@
         if (modal) modal.hidden = false;
     }
 
-    function renderSyncQueueModal() {
+    async function renderSyncQueueModal() {
         const host = $('sync-queue-list');
         if (!host) return;
         const queue = loadSyncQueue();
+        const mealQueue = await listMealQueueEntries().catch(() => []);
         host.innerHTML = '';
-        if (!queue.length) {
-            host.innerHTML = '<div class="empty">No queued workouts.</div>';
+        if (!queue.length && !mealQueue.length) {
+            host.innerHTML = '<div class="empty">No queued meals or workouts.</div>';
             return;
         }
-        const statusLabels = { pending: 'Pending', conflicted: 'Conflict', rejected: 'Rejected', inserted: 'Synced', already_synced: 'Synced' };
+        const statusLabels = { pending: 'Pending', conflicted: 'Conflict', rejected: 'Rejected', eviction_failed: 'Cleanup failed', inserted: 'Synced', already_synced: 'Synced' };
         queue.forEach((entry) => {
             const status = entry.last_status || 'pending';
             const row = document.createElement('div');
@@ -5097,12 +5424,64 @@
             `;
             host.appendChild(row);
         });
+        // FIT-145: distinct labels so meals don't borrow the workout queue's
+        // terse "Rejected"/"Conflict" wording — meal users see why and what
+        // to do next.
+        const mealStatusLabels = {
+            pending: 'Waiting to sync',
+            conflicted: 'Conflict',
+            rejected: 'Can’t accept',
+            eviction_failed: 'Cleanup failed',
+            inserted: 'Synced',
+            already_synced: 'Synced',
+        };
+        mealQueue.forEach((entry) => {
+            const status = entry.last_status || 'pending';
+            const row = document.createElement('div');
+            row.className = `sync-row sync-row-meal sync-row-${status}`;
+            const photoCount = entry.image_count || 0;
+            const textValue = entry.text ? entry.text.trim() : '';
+            let titleText;
+            if (textValue) {
+                titleText = textValue.slice(0, 48);
+            } else if (photoCount > 1) {
+                titleText = `${photoCount}-photo meal`;
+            } else if (photoCount === 1) {
+                titleText = 'Photo meal';
+            } else {
+                titleText = 'Meal';
+            }
+            let typeLabel;
+            if (textValue && photoCount) {
+                typeLabel = `Text + ${photoCount} photo${photoCount === 1 ? '' : 's'}`;
+            } else if (photoCount) {
+                typeLabel = `${photoCount} photo${photoCount === 1 ? '' : 's'}`;
+            } else {
+                typeLabel = 'Text only';
+            }
+            const queuedAt = entry.queued_at ? fmtDateTime(entry.queued_at) : 'unknown';
+            const lastAttempt = entry.last_attempt_at ? fmtDateTime(entry.last_attempt_at) : 'not tried yet';
+            const reasonHtml = entry.reject_reason ? `<div class="sync-row-reason">${escapeHtml(entry.reject_reason)}</div>` : '';
+            row.innerHTML = `
+                <div class="sync-row-head">
+                    <span class="sync-row-title">Meal · ${escapeHtml(titleText)}</span>
+                    <span class="sync-status-pill sync-status-${status}">${escapeHtml(mealStatusLabels[status] || 'Pending')}</span>
+                </div>
+                <div class="sync-row-meta">${escapeHtml(typeLabel)} · saved on this device ${escapeHtml(queuedAt)} · ${entry.attempts || 0} sync attempt${(entry.attempts || 0) === 1 ? '' : 's'} · last try ${escapeHtml(lastAttempt)}</div>
+                ${reasonHtml}
+                <div class="sync-row-actions">
+                    <button class="btn btn-ghost btn-sm" data-meal-sync-discard="${escapeHtml(entry.client_id)}" type="button">Discard</button>
+                    <button class="btn btn-primary btn-sm" data-meal-sync-retry="${escapeHtml(entry.client_id)}" type="button">Retry</button>
+                </div>
+            `;
+            host.appendChild(row);
+        });
         host.querySelectorAll('[data-sync-retry]').forEach((btn) => {
             btn.addEventListener('click', async () => {
                 btn.disabled = true;
                 btn.textContent = 'Retrying…';
                 const res = await syncSingleEntry(btn.dataset.syncRetry);
-                renderSyncQueueModal();
+                await renderSyncQueueModal();
                 if (res && res.ok) toast('Workout synced');
                 else if (res) toast(`Sync ${res.status || 'failed'}`, 'err');
             });
@@ -5116,6 +5495,38 @@
                 removeQueueEntry(clientId);
                 renderSyncQueueModal();
                 toast('Workout discarded from queue');
+            });
+        });
+        host.querySelectorAll('[data-meal-sync-retry]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                btn.disabled = true;
+                btn.textContent = 'Syncing…';
+                const res = await syncSingleMealQueueEntry(btn.dataset.mealSyncRetry);
+                await renderSyncQueueModal();
+                if (res && res.ok) {
+                    toast('Meal synced.');
+                } else if (res) {
+                    let msg;
+                    if (res.status === 'pending') msg = 'Couldn’t reach the server — saved for another try.';
+                    else if (res.status === 'rejected') msg = 'Server can’t accept this meal. Discard it from the queue.';
+                    else if (res.status === 'conflicted') msg = 'Server reported a conflict — discard or retry later.';
+                    else if (res.status === 'eviction_failed') msg = 'Synced, but local photos didn’t clear. Tap Discard to remove them.';
+                    else msg = 'Meal sync didn’t complete.';
+                    toast(msg, 'err');
+                }
+            });
+        });
+        host.querySelectorAll('[data-meal-sync-discard]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const clientId = btn.dataset.mealSyncDiscard;
+                if (!window.confirm('Discard this offline meal? Any photos saved on this device will be deleted from your browser.')) return;
+                try {
+                    await removeMealQueueEntry(clientId);
+                    await renderSyncQueueModal();
+                    toast('Meal removed from the offline queue.');
+                } catch (e) {
+                    toast('Couldn’t discard queued meal', 'err');
+                }
             });
         });
     }
@@ -5889,8 +6300,8 @@
         $('btn-complete-workout') && $('btn-complete-workout').addEventListener('click', completeWorkout);
         $('sync-banner') && $('sync-banner').addEventListener('click', openSyncQueueModal);
         $('btn-sync-retry-all') && $('btn-sync-retry-all').addEventListener('click', async () => {
-            await flushSyncQueue();
-            renderSyncQueueModal();
+            await Promise.all([flushSyncQueue(), flushMealSyncQueue()]);
+            await renderSyncQueueModal();
         });
         $('btn-sync-oura') && $('btn-sync-oura').addEventListener('click', syncOura);
         $('btn-export') && $('btn-export').addEventListener('click', downloadExport);
@@ -6059,18 +6470,22 @@
         if (!submit) return;
         const hasText = text && text.value.trim().length > 0;
         const hasImage = mealComposerState.imageFiles.length > 0;
-        // FIT-138: navigator.onLine gates submit; offline banner is
-        // shown by toggleMealComposerOffline().
         const online = typeof navigator === 'undefined' || navigator.onLine !== false;
-        const enabled = (hasText || hasImage) && !mealComposerState.submitting && !mealComposerState.backendUnavailable && online;
+        const enabled = (hasText || hasImage) && !mealComposerState.submitting && !mealComposerState.backendUnavailable;
         submit.disabled = !enabled;
         // FIT-138: surface multi-photo processing count while in-flight.
+        // FIT-145: when offline, the submit path enqueues locally instead
+        // of uploading, so reflect that in the loading label.
         if (mealComposerState.submitting) {
-            submit.textContent = hasImage
-                ? `Processing ${mealComposerState.imageFiles.length} photo${mealComposerState.imageFiles.length === 1 ? '' : 's'}…`
-                : 'Logging…';
+            if (online) {
+                submit.textContent = hasImage
+                    ? `Processing ${mealComposerState.imageFiles.length} photo${mealComposerState.imageFiles.length === 1 ? '' : 's'}…`
+                    : 'Logging…';
+            } else {
+                submit.textContent = 'Saving offline…';
+            }
         } else {
-            submit.textContent = 'Log';
+            submit.textContent = online ? 'Log' : 'Save offline';
         }
     }
 
@@ -7135,6 +7550,11 @@
         const { offline } = mealComposerEls();
         if (!offline) return;
         const online = typeof navigator === 'undefined' || navigator.onLine !== false;
+        if (!online) {
+            // FIT-145: keep this in sync with the HTML default in templates/index.html
+            // so the meaning is clear before JS has had a chance to run.
+            offline.innerHTML = 'You’re offline. Log is paused — tap <b>Save offline</b> to keep this meal on this device and sync it when you reconnect.';
+        }
         offline.hidden = online;
     }
 
@@ -7164,6 +7584,35 @@
         // retrying a pending entry created before midnight would misdate
         // the meal.
         const localTime = browserLocalMealTime();
+        const online = typeof navigator === 'undefined' || navigator.onLine !== false;
+        if (!online) {
+            try {
+                const entry = await enqueueMealIntakeOffline({ textValue, files, clientId, localTime });
+                clearMealComposerInputs();
+                clearMealDraft();
+                mealComposerState.draftClientId = null;
+                mealComposerState.lastSubmitFailedTransient = false;
+                refreshMealComposerRetryUI();
+                const photoCount = entry.image_count || 0;
+                const photoNote = photoCount ? ` (${photoCount} photo${photoCount === 1 ? '' : 's'} kept on this device)` : '';
+                toast(`Meal saved offline${photoNote}. It will sync when you reconnect.`);
+                const { status } = mealComposerEls();
+                if (status && !mealComposerState.backendUnavailable) {
+                    status.classList.remove('meal-composer-status--provenance');
+                    status.hidden = false;
+                    status.textContent = 'Saved on this device — will sync automatically when you reconnect.';
+                }
+                return;
+            } catch (e) {
+                console.error(e);
+                saveMealDraft();
+                setMealComposerError('Couldn’t save this meal offline. Your draft is kept — try again, or wait until you reconnect.');
+                return;
+            } finally {
+                mealComposerState.submitting = false;
+                refreshMealSubmitState();
+            }
+        }
         const form = new FormData();
         if (textValue) form.append('text', textValue);
         // FIT-138: append each file under the plural "images" key. The
@@ -7254,6 +7703,7 @@
     }
 
     function handleMealIntakeResponse(payload, ctx) {
+        ctx = ctx || {};
         // FIT-134: branch to multi-item review when the backend returns the
         // new contract (meal_id + items[]). Until FIT-135 lands that shape,
         // legacy single-item responses fall through to the original flow.
@@ -7263,8 +7713,10 @@
         }
         const status = payload && payload.status;
         if (status === 'logged') {
-            clearMealComposerInputs();
-            clearMealDraft();
+            if (!ctx.fromQueue) {
+                clearMealComposerInputs();
+                clearMealDraft();
+            }
             const msg = mealEstimateChip(payload.estimate);
             const entry = mealEntryFromIntakePayload(payload, ctx.clientId);
             toastUndo(
@@ -7273,7 +7725,7 @@
                 MEAL_UNDO_MS,
                 () => openMealDetailModal(entry),
             );
-            renderMealComposerProvenance(payload.estimate, ctx.clientId);
+            if (!ctx.fromQueue) renderMealComposerProvenance(payload.estimate, ctx.clientId);
             refreshMacroCard();
             return;
         }
@@ -7306,9 +7758,11 @@
                 imageFiles,
                 imagePreviewUrls,
             });
-            clearMealComposerInputs();
-            clearMealDraft();
-            clearMealComposerStatus();
+            if (!ctx.fromQueue) {
+                clearMealComposerInputs();
+                clearMealDraft();
+                clearMealComposerStatus();
+            }
             renderMealPendingList();
             toast('Review the estimate before it counts toward today.', 'warn');
             refreshMacroCard();
@@ -7409,9 +7863,11 @@
         const entry = normalizeMealV2Entry(payload, ctx);
         if (!entry) return false;
         upsertMealV2Entry(entry);
-        clearMealComposerInputs();
-        clearMealDraft();
-        clearMealComposerStatus();
+        if (!ctx.fromQueue) {
+            clearMealComposerInputs();
+            clearMealDraft();
+            clearMealComposerStatus();
+        }
         renderMealPendingList();
         toast('Review the meal before saving.', 'warn');
         refreshMacroCard();
@@ -8175,8 +8631,15 @@
         renderSyncBanner();
         wireMealComposer();
         registerServiceWorker();
-        window.addEventListener('online', () => { flushSyncQueue(); });
-        if (navigator.onLine) flushSyncQueue();
+        cleanupOrphanedMealQueuePhotos().catch((err) => console.warn('Meal queue cleanup failed:', err));
+        window.addEventListener('online', () => {
+            flushSyncQueue();
+            flushMealSyncQueue();
+        });
+        if (navigator.onLine) {
+            flushSyncQueue();
+            flushMealSyncQueue();
+        }
     }
 
     function registerServiceWorker() {
