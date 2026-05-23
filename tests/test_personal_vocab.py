@@ -333,7 +333,7 @@ def test_meal_intake_preserves_personal_vocab_provenance(monkeypatch, tmp_path):
     assert captured["original_estimate"]["personal_vocab_phrase"] == "chip usual"
 
 
-def test_auto_logged_meals_do_not_train_personal_vocab_before_explicit_accept(monkeypatch, tmp_path):
+def test_submitted_meals_do_not_train_personal_vocab_before_explicit_accept(monkeypatch, tmp_path):
     import app
     import data_store
 
@@ -345,6 +345,7 @@ def test_auto_logged_meals_do_not_train_personal_vocab_before_explicit_accept(mo
     monkeypatch.setattr(app, "add_food_log", lambda _uid, record: {"client_id": record["client_id"], **record})
     calls = {"accept": 0}
     monkeypatch.setattr(app.personal_vocab, "record_accept", lambda *_a, **_kw: calls.__setitem__("accept", calls["accept"] + 1))
+    monkeypatch.setattr(app, "claim_food_log_vocab_learning", lambda *_a, **_kw: True)
     monkeypatch.setattr(app, "parse_meal_text", lambda *_a, **_kw: {"estimate": _estimate(confidence=0.95), "fallback_used": False})
 
     res = app.app.test_client().post(
@@ -354,8 +355,11 @@ def test_auto_logged_meals_do_not_train_personal_vocab_before_explicit_accept(mo
     )
 
     assert res.status_code == 200
-    assert res.get_json()["status"] == "logged"
+    assert res.get_json()["status"] == "pending_review"
     assert calls == {"accept": 0}
+    accept = app.app.test_client().post("/api/meal-intake/meal-auto-vocab/accept", json={})
+    assert accept.status_code == 200, accept.get_data(as_text=True)
+    assert calls == {"accept": 1}
 
 
 def test_personal_vocab_settings_api_lists_and_deletes(monkeypatch, tmp_path):
