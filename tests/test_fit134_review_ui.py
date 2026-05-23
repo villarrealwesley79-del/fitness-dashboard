@@ -303,6 +303,22 @@ def test_contract_refresh_kinds_match_locked_plan():
         assert f"'{kind}'" in enum_line, f"refresh kind {kind!r} missing"
 
 
+def test_item_and_candidate_portion_reads_live_backend_field():
+    """FIT-144 backend exposes the review item's portion text as `portion`
+    (app.py:_review_item_from_estimate sets `"portion": estimate.get(
+    "portion_description")`) and the same for candidates. The frontend
+    must read `item.portion` / `c.portion` first, falling back to
+    `portion_description` so the mock backend (which keeps the schema
+    field name) still works.
+    """
+    block = _v2_block()
+    # Expanded item row prefers `item.portion`, with portion_description as
+    # a fallback so the mock data and tests keep working.
+    assert "item.portion || item.portion_description" in block
+    # Candidate chip renders `c.portion` with the same fallback.
+    assert "c.portion || c.portion_description" in block
+
+
 def test_live_accept_sends_meal_id_and_items_body():
     """FIT-144 _meal_intake_accept_multi (app.py:_meal_intake_accept_multi)
     expects a JSON body `{ meal_id, items: [{state, item_id, estimate, ...}] }`

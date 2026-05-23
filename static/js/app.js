@@ -7296,7 +7296,7 @@
                 <span class="meal-review-v2-candidates-label">Top choices</span>
                 ${candidates.map((c) => `
                     <button type="button" class="meal-review-v2-candidate-chip" data-action="choose-candidate" data-candidate-id="${escapeHtml(c.candidate_id)}">
-                        ${escapeHtml(c.name || '')}${c.portion_description ? ` · ${escapeHtml(c.portion_description)}` : ''}
+                        ${escapeHtml(c.name || '')}${(c.portion || c.portion_description) ? ` · ${escapeHtml(c.portion || c.portion_description)}` : ''}
                     </button>
                 `).join('')}
             </div>
@@ -7341,7 +7341,7 @@
                 <header class="meal-review-v2-item-head">
                     <button type="button" class="meal-review-v2-item-toggle" data-action="toggle-item" aria-expanded="${expanded}">
                         <span class="meal-review-v2-item-name">${escapeHtml(item.name || 'Item')}</span>
-                        <span class="meal-review-v2-item-portion">${escapeHtml(item.portion_description || '')}</span>
+                        <span class="meal-review-v2-item-portion">${escapeHtml(item.portion || item.portion_description || '')}</span>
                     </button>
                     ${sourceChip}
                     ${confLabel ? `<span class="meal-review-v2-item-conf">${escapeHtml(confLabel)}</span>` : ''}
