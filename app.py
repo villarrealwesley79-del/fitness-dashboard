@@ -1124,7 +1124,7 @@ def _apple_health_duration_minutes(row):
 
 
 def _apple_health_activity(row):
-    return (
+    activity = (
         row.get("activity_type")
         or row.get("activity")
         or row.get("type")
@@ -1132,6 +1132,15 @@ def _apple_health_activity(row):
         or row.get("name")
         or "Other"
     )
+    try:
+        from apple_health_parser import ACTIVITY_MAP
+        return ACTIVITY_MAP.get(int(activity), str(activity).strip())
+    except (ImportError, TypeError, ValueError):
+        return str(activity).strip()
+
+
+def _ignore_apple_health_workout(row):
+    return _apple_health_activity(row).strip().lower() == "other"
 
 
 def _apple_health_start_iso(row):
@@ -1187,6 +1196,8 @@ def _apple_health_recommendation_load(row, exercises, duration_minutes):
 
 def _normalise_apple_health_workout(row):
     if not isinstance(row, dict):
+        return None
+    if _ignore_apple_health_workout(row):
         return None
     start_iso = _apple_health_start_iso(row)
     date_s = _local_date_from_iso(start_iso) or row.get("date")

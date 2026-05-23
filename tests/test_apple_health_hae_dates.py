@@ -163,6 +163,50 @@ def test_sync_routes_honor_runtime_db_env_after_app_import(monkeypatch):
     assert [(row[0], row[1]) for row in rows] == [("steps", "2026-05-18")]
 
 
+def test_workouts_endpoint_preserves_basketball_and_filters_other(monkeypatch):
+    module = _app_module(monkeypatch)
+    parser = importlib.import_module("apple_health_parser")
+    monkeypatch.setattr(parser, "parse_workouts", lambda: [])
+    client = module.app.test_client()
+
+    response = client.post(
+        "/api/apple-health/sync?token=fit29-health-token",
+        json={
+            "workouts": [
+                {
+                    "date": "2026-05-21",
+                    "startDate": "2026-05-21 12:28:05 -0500",
+                    "workoutActivityType": 37,
+                    "duration_minutes": 95.3,
+                    "total_energy_kcal": 1035.4,
+                    "distance_m": 4.25,
+                },
+                {
+                    "date": "2026-05-21",
+                    "startDate": "2026-05-21 23:50:00 -0500",
+                    "workoutActivityType": 25,
+                    "duration_minutes": 14.0,
+                    "total_energy_kcal": 67.5,
+                },
+            ]
+        },
+    )
+    assert response.status_code == 200
+
+    payload = client.get("/api/apple-health/workouts?days=0").get_json()
+
+    assert payload["total"] == 1
+    assert payload["workouts"][0]["date"] == "2026-05-21"
+    assert payload["workouts"][0]["activity"] == "Basketball"
+    assert payload["workouts"][0]["activity_type"] == "Basketball"
+    assert payload["workouts"][0]["duration_min"] == 95.3
+
+    summary = client.get("/api/apple-health/summary").get_json()
+    assert summary["workouts_total"] == 1
+    assert summary["workouts_7d"] == 1
+    assert summary["workouts_30d"] == 1
+
+
 def test_sync_status_initializes_runtime_db_env_after_app_import(monkeypatch):
     module = _app_module(monkeypatch)
     alt_db_path = Path(tempfile.gettempdir()) / "fitness-dashboard-fit29-runtime-status.db"
