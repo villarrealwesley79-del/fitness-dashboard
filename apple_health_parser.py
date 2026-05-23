@@ -218,8 +218,29 @@ def parse_hrv() -> list[dict]:
     return parse_timeseries("heartRateVariabilitySDNN", "healthkit_timeseries_multi_20260111T221514Z.json")
 
 
+def _workout_activity_name(workout: dict) -> str:
+    if not isinstance(workout, dict):
+        return "Other"
+    activity = (
+        workout.get("activity")
+        or workout.get("activity_type")
+        or workout.get("type")
+        or workout.get("workoutActivityType")
+        or workout.get("name")
+        or "Other"
+    )
+    try:
+        return ACTIVITY_MAP.get(int(activity), str(activity).strip())
+    except (TypeError, ValueError):
+        return str(activity).strip()
+
+
+def _ignore_workout(workout: dict) -> bool:
+    return _workout_activity_name(workout).strip().lower() == "other"
+
+
 def get_summary() -> dict:
-    workouts = parse_workouts()
+    workouts = [w for w in parse_workouts() if not _ignore_workout(w)]
     sleep = parse_sleep()
     steps = parse_steps()
     now = datetime.now(timezone.utc)
@@ -293,11 +314,25 @@ def _get_sync_records(record_type: str, days: int = 0) -> list[dict]:
         return []
 
 
+def _normalize_sync_workout(workout: dict) -> dict:
+    normalized = dict(workout)
+    activity = _workout_activity_name(normalized)
+    normalized["activity"] = activity
+    normalized.setdefault("activity_type", activity)
+    normalized.setdefault("date", normalized.get("startDate", "")[:10])
+    normalized.setdefault("duration_min", normalized.get("duration_minutes", 0))
+    normalized.setdefault("energy_kcal", normalized.get("total_energy_kcal", 0))
+    normalized.setdefault("distance_m", normalized.get("distance_m", 0))
+    return normalized
+
+
 def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
     """Merge file-based and sync-based workouts, deduplicating by date+activity."""
     seen = set()
     merged = []
     for w in file_workouts + sync_workouts:
+        if _ignore_workout(w):
+            continue
         key = (w.get("date", ""), w.get("activity", ""))
         if key not in seen:
             seen.add(key)
@@ -357,7 +392,11 @@ def register_apple_health_routes(flask_app):
             return jsonify({"error": "No Apple Health data found. Export from iPhone Health app or use Health Auto Export to sync.", "data_source": "unavailable"}), 404
         summary = get_summary()
         # Enrich with sync DB data
-        sync_workouts = _get_sync_records("workouts", 30)
+        sync_workouts = [
+            w
+            for w in (_normalize_sync_workout(sw) for sw in _get_sync_records("workouts", 30))
+            if not _ignore_workout(w)
+        ]
         sync_sleep = _get_sync_records("sleep", 30)
         sync_steps = _get_sync_records("steps", 30)
         sync_hr = _get_sync_records("heart_rate", 30)
@@ -388,13 +427,7 @@ def register_apple_health_routes(flask_app):
         days = request.args.get("days", 30, type=int)
         file_workouts = parse_workouts()
         sync_workouts = _get_sync_records("workouts", days)
-        # Normalize sync records to match file format
-        for sw in sync_workouts:
-            sw.setdefault("date", sw.get("startDate", "")[:10])
-            sw.setdefault("activity", sw.get("activity", "Other"))
-            sw.setdefault("duration_min", sw.get("duration_min", 0))
-            sw.setdefault("energy_kcal", sw.get("energy_kcal", 0))
-            sw.setdefault("distance_m", sw.get("distance_m", 0))
+        sync_workouts = [_normalize_sync_workout(sw) for sw in sync_workouts]
         workouts = _merge_workouts(file_workouts, sync_workouts)
         if days > 0:
             cutoff = (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d")

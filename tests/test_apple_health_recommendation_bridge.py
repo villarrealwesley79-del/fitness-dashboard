@@ -304,6 +304,37 @@ def test_apple_health_strength_workout_contributes_to_muscle_volume_and_readines
     assert readiness["score"] <= 8
 
 
+def test_apple_health_other_is_ignored_but_basketball_counts(fitness_app):
+    day = _today(fitness_app)
+    _sync_apple_health_workout(
+        fitness_app,
+        {
+            "date": day,
+            "startDate": f"{day}T08:00:00-05:00",
+            "workoutActivityType": 25,
+            "duration_minutes": 14,
+            "source": "health_auto_export",
+        },
+    )
+    _sync_apple_health_workout(
+        fitness_app,
+        {
+            "date": day,
+            "startDate": f"{day}T12:28:05-05:00",
+            "workoutActivityType": 37,
+            "duration_minutes": 95.3,
+            "source": "health_auto_export",
+        },
+    )
+
+    apple_workouts = fitness_app._load_apple_health_recommendation_workouts()
+
+    assert [w["session_type"] for w in apple_workouts] == ["Basketball"]
+    assert apple_workouts[0]["duration_minutes"] == 95.3
+    acwr = fitness_app.calculate_acwr(fitness_app.WORKOUTS)
+    assert acwr["acute_load"] >= 95
+
+
 def test_smart_recommendation_includes_apple_health_load_in_readiness_factors(fitness_app):
     _sync_apple_health_workout(fitness_app, _apple_health_walk(fitness_app))
 
