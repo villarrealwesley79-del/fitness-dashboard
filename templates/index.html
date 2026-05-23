@@ -159,7 +159,7 @@
                     <div class="meal-composer-thumbs" id="meal-composer-thumbs" hidden role="list" aria-label="Attached photos"></div>
                     <div class="meal-composer-retention" id="meal-composer-retention" hidden>Photos are discarded after extraction.</div>
                     <button type="button" class="meal-composer-retry" id="meal-composer-retry" hidden>Retry</button>
-                    <div class="meal-composer-offline" id="meal-composer-offline" hidden aria-live="polite">You’re offline — connect to log this meal.</div>
+                    <div class="meal-composer-offline" id="meal-composer-offline" hidden aria-live="polite">You’re offline. Log is paused — tap <b>Save offline</b> to keep this meal on this device and sync it when you reconnect.</div>
                     <div class="meal-composer-error" id="meal-composer-error" hidden aria-live="polite"></div>
                 </form>
 
@@ -1291,7 +1291,7 @@
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body">
-                <p class="dim sync-queue-intro">Workouts you finished while offline (or that the server hasn't accepted yet). Retry pushes them up; Discard drops them locally.</p>
+                <p class="dim sync-queue-intro">Meals and workouts saved on this device while offline, or that the server hasn’t accepted yet. Retry tries again. Discard removes the local entry and clears any offline meal photos.</p>
                 <div id="sync-queue-list" class="sync-queue-list"></div>
             </div>
             <div class="modal-foot">
@@ -1302,7 +1302,7 @@
 
     <button id="sync-banner" class="sync-banner" type="button" hidden>
         <span class="sync-banner-dot" aria-hidden="true"></span>
-        <span class="sync-banner-text" id="sync-banner-text">Queued workouts</span>
+        <span class="sync-banner-text" id="sync-banner-text">Pending sync</span>
     </button>
 
     <div id="toast-host" class="toast-host"></div>

@@ -2403,13 +2403,20 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     border: 1px solid var(--border-2);
 }
 .sync-status-pending      { color: var(--accent-blue);     border-color: rgba(96,165,250,0.4);  background: rgba(96,165,250,0.12); }
+.sync-status-auth_required,
 .sync-status-conflicted   { color: var(--accent-amber-2);  border-color: rgba(245,158,11,0.45); background: rgba(245,158,11,0.14); }
-.sync-status-rejected     { color: #fecaca;                border-color: rgba(239,68,68,0.5);   background: rgba(239,68,68,0.14); }
+.sync-status-rejected,
+.sync-status-eviction_failed { color: #fecaca;             border-color: rgba(239,68,68,0.5);   background: rgba(239,68,68,0.14); }
 .sync-status-inserted,
 .sync-status-already_synced { color: #a7f3d0; border-color: rgba(34,197,94,0.4); background: rgba(34,197,94,0.12); }
 .sync-row-pending   .sync-row-actions .btn[data-sync-retry] { display: none; }
-.sync-row-conflicted .sync-row { border-color: rgba(245,158,11,0.45); }
-.sync-row-rejected .sync-row { border-color: rgba(239,68,68,0.5); }
+.sync-row-auth_required,
+.sync-row-conflicted { border-color: rgba(245,158,11,0.45); }
+.sync-row-rejected,
+.sync-row-eviction_failed { border-color: rgba(239,68,68,0.5); }
+.sync-row-meal {
+    border-style: dashed;
+}
 
 .saved-queued-note {
     margin-top: 10px;
