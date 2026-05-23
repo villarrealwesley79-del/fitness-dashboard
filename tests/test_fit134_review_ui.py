@@ -121,8 +121,10 @@ def test_follow_up_budget_uses_server_used_flag():
     assert "entry.followup.available" in block
     assert "!entry.followup.used" in block
     assert "!entry.lastFollowupAnswered" in block
-    # Submit posts followup_answer.
-    assert "kind: 'followup_answer', text" in block
+    # Submit posts followup_answer with the user's text in `answer`, matching
+    # the FIT-144 backend (app.py followup_answer reads `answer` and
+    # `skipped`, not `text`).
+    assert "kind: 'followup_answer', answer: text" in block
     # The server-side `used` flag is mirrored on normalize so a refresh
     # that returns used=true keeps the banner dismissed.
     assert "lastFollowupAnswered = !!(payload.followup && payload.followup.used)" in block

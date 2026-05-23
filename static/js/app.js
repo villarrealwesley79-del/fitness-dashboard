@@ -7400,7 +7400,11 @@
                 const input = followupForm.querySelector('[data-field="followup-answer"]');
                 const text = (input && input.value || '').trim();
                 if (!text) return;
-                submitMealV2Refresh(mealId, { kind: 'followup_answer', text });
+                // FIT-144 backend (app.py followup_answer handler) reads
+                // the user's reply from `answer` and treats absent text as
+                // a no-op. `skipped: true` would also be accepted but here
+                // the user is submitting an answer so we send `answer`.
+                submitMealV2Refresh(mealId, { kind: 'followup_answer', answer: text });
             });
             const dismissBtn = followupForm.querySelector('[data-action="followup-dismiss"]');
             if (dismissBtn) {
