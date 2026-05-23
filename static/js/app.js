@@ -4931,7 +4931,10 @@
     const MEAL_QUEUE_DB_VERSION = 1;
     const MEAL_QUEUE_STORE = 'queued_meals';
     const MEAL_PHOTO_STORE = 'meal_photos';
+    const MEAL_QUEUE_RETRYABLE_STATUSES = new Set(['pending', 'auth_required']);
+    const MEAL_QUEUE_AUTH_SCOPE_KEY = 'fit145:meal-queue-auth-scope:v1';
     let _mealQueueDbPromise = null;
+    let _mealQueueAuthScope = '';
     let _mealSyncFlushInFlight = false;
     const _mealSyncInFlightClientIds = new Set();
 
@@ -5110,6 +5113,106 @@
         return 'jpg';
     }
 
+    function persistedMealQueueAuthScope() {
+        try {
+            return String(localStorage.getItem(MEAL_QUEUE_AUTH_SCOPE_KEY) || '').trim();
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function cachedMealQueueAuthScope() {
+        return String(_mealQueueAuthScope || persistedMealQueueAuthScope() || '').trim();
+    }
+
+    function persistMealQueueAuthScope(scope) {
+        const normalized = String(scope || '').trim();
+        if (!normalized) return '';
+        _mealQueueAuthScope = normalized;
+        try {
+            localStorage.setItem(MEAL_QUEUE_AUTH_SCOPE_KEY, normalized);
+        } catch (_) { /* localStorage may be unavailable; keep in memory for this page. */ }
+        return normalized;
+    }
+
+    async function fetchCurrentMealQueueAuthScope() {
+        try {
+            const res = await fetch('/api/auth/scope', {
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json' },
+            });
+            if (res.status === 401 || res.status === 403) {
+                return {
+                    ok: false,
+                    status: 'auth_required',
+                    reason: 'Sign in with the account that saved this offline meal, then retry.',
+                };
+            }
+            if (!res.ok) {
+                return {
+                    ok: false,
+                    status: 'pending',
+                    reason: `Could not verify the current sign-in before syncing this meal (${res.status}).`,
+                };
+            }
+            const body = await res.json().catch(() => null);
+            const scope = String(body && body.auth_scope || '').trim();
+            if (!scope) {
+                return {
+                    ok: false,
+                    status: 'auth_required',
+                    reason: 'The browser could not verify which account is signed in.',
+                };
+            }
+            return { ok: true, scope };
+        } catch (e) {
+            return {
+                ok: false,
+                status: 'pending',
+                reason: 'Could not verify the current sign-in before syncing this meal.',
+            };
+        }
+    }
+
+    async function refreshMealQueueAuthScope() {
+        const liveScope = await fetchCurrentMealQueueAuthScope();
+        if (liveScope.ok) {
+            persistMealQueueAuthScope(liveScope.scope);
+        }
+        return liveScope;
+    }
+
+    async function mealQueueAuthGate(entry) {
+        const queuedScope = String(entry && entry.auth_scope || '').trim();
+        if (!queuedScope) {
+            return {
+                ok: false,
+                status: 'auth_required',
+                reason: 'This offline meal could not be tied to a signed-in account. It will stay on this device until you discard it.',
+            };
+        }
+        const liveScope = await fetchCurrentMealQueueAuthScope();
+        if (!liveScope.ok) {
+            return liveScope;
+        }
+        const currentScope = liveScope.scope;
+        if (!currentScope) {
+            return {
+                ok: false,
+                status: 'auth_required',
+                reason: 'Sign in with the account that saved this offline meal, then retry. It will stay on this device until then.',
+            };
+        }
+        if (queuedScope !== currentScope) {
+            return {
+                ok: false,
+                status: 'auth_required',
+                reason: 'This offline meal was saved under a different sign-in. Sign in to that account to sync it, or discard it.',
+            };
+        }
+        return { ok: true };
+    }
+
     async function listMealQueueEntries() {
         const db = await openMealQueueDb();
         const tx = db.transaction(MEAL_QUEUE_STORE, 'readonly');
@@ -5140,6 +5243,10 @@
         if (!text && imageFiles.length === 0) {
             throw new Error('Type a meal or attach a photo.');
         }
+        const authScope = cachedMealQueueAuthScope();
+        if (!authScope) {
+            throw new Error('Sign in before saving meals offline.');
+        }
         const queuedAt = new Date().toISOString();
         const photoRecords = imageFiles.map((file, idx) => {
             const type = file.type || 'image/jpeg';
@@ -5156,6 +5263,7 @@
         });
         const entry = {
             client_id: clientId,
+            auth_scope: authScope,
             queued_at: queuedAt,
             last_attempt_at: null,
             attempts: 0,
@@ -5260,7 +5368,14 @@
             return { ok: true, status: res.status, body };
         }
         const message = (body && body.error && body.error.message) || `Meal sync failed (${res.status}).`;
-        const syncStatus = res.status === 409 ? 'conflicted' : (res.status >= 500 ? 'pending' : 'rejected');
+        let syncStatus = 'rejected';
+        if (res.status === 401 || res.status === 403) {
+            syncStatus = 'auth_required';
+        } else if (res.status === 409) {
+            syncStatus = 'conflicted';
+        } else if (res.status >= 500) {
+            syncStatus = 'pending';
+        }
         return { ok: false, status: res.status, body, syncStatus, reason: message };
     }
 
@@ -5269,6 +5384,10 @@
         if (syncStatus === 'pending') {
             // Network / 5xx — retry is possible and happens automatically on reconnect.
             const note = 'Will retry automatically when you’re back online.';
+            return base ? `${base} ${note}` : note;
+        }
+        if (syncStatus === 'auth_required') {
+            const note = 'Sign in with the account that saved this offline meal, then retry. The meal and any offline photos remain on this device.';
             return base ? `${base} ${note}` : note;
         }
         if (syncStatus === 'rejected') {
@@ -5293,6 +5412,17 @@
             if (!entry) return null;
             const attemptedAt = new Date().toISOString();
             const attempts = (entry.attempts || 0) + 1;
+            const authGate = await mealQueueAuthGate(entry);
+            if (!authGate.ok) {
+                const authStatus = authGate.status || 'auth_required';
+                await updateMealQueueEntry(clientId, {
+                    last_status: authStatus,
+                    last_attempt_at: attemptedAt,
+                    attempts,
+                    reject_reason: annotateMealSyncReason(authGate.reason, authStatus),
+                });
+                return { ok: false, status: authStatus };
+            }
             try {
                 const result = await postQueuedMealIntake(entry, queued.photos);
                 if (result.ok) {
@@ -5349,7 +5479,7 @@
         _mealSyncFlushInFlight = true;
         try {
             const ids = (await listMealQueueEntries())
-                .filter((e) => (e.last_status || 'pending') === 'pending')
+                .filter((e) => MEAL_QUEUE_RETRYABLE_STATUSES.has(e.last_status || 'pending'))
                 .map((e) => e.client_id);
             for (const id of ids) {
                 await syncSingleMealQueueEntry(id);
@@ -5370,7 +5500,7 @@
         listMealQueueEntries().catch(() => []).then((mealQueue) => {
             const pending = queue.filter((e) => e.last_status === 'pending').length
                 + mealQueue.filter((e) => (e.last_status || 'pending') === 'pending').length;
-            const failedStatuses = new Set(['rejected', 'conflicted', 'eviction_failed']);
+            const failedStatuses = new Set(['rejected', 'conflicted', 'eviction_failed', 'auth_required']);
             const failed = queue.filter((e) => failedStatuses.has(e.last_status)).length
                 + mealQueue.filter((e) => failedStatuses.has(e.last_status)).length;
             const total = queue.length + mealQueue.length;
@@ -5429,6 +5559,7 @@
         // to do next.
         const mealStatusLabels = {
             pending: 'Waiting to sync',
+            auth_required: 'Sign-in needed',
             conflicted: 'Conflict',
             rejected: 'Can’t accept',
             eviction_failed: 'Cleanup failed',
@@ -5508,6 +5639,7 @@
                 } else if (res) {
                     let msg;
                     if (res.status === 'pending') msg = 'Couldn’t reach the server — saved for another try.';
+                    else if (res.status === 'auth_required') msg = 'Sign in with the account that saved this meal, then retry.';
                     else if (res.status === 'rejected') msg = 'Server can’t accept this meal. Discard it from the queue.';
                     else if (res.status === 'conflicted') msg = 'Server reported a conflict — discard or retry later.';
                     else if (res.status === 'eviction_failed') msg = 'Synced, but local photos didn’t clear. Tap Discard to remove them.';
@@ -8631,8 +8763,10 @@
         renderSyncBanner();
         wireMealComposer();
         registerServiceWorker();
+        refreshMealQueueAuthScope().catch((err) => console.warn('Meal queue auth scope refresh failed:', err));
         cleanupOrphanedMealQueuePhotos().catch((err) => console.warn('Meal queue cleanup failed:', err));
         window.addEventListener('online', () => {
+            refreshMealQueueAuthScope().catch((err) => console.warn('Meal queue auth scope refresh failed:', err));
             flushSyncQueue();
             flushMealSyncQueue();
         });

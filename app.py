@@ -3735,6 +3735,12 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/api/auth/scope')
+def auth_scope():
+    """Return the current signed-in scope for client-side queue ownership checks."""
+    return jsonify({"auth_scope": f"user:{_current_data_user_id()}"})
+
+
 @app.route('/api/dashboard')
 def api_dashboard():
     """API endpoint for dashboard data."""

@@ -57,7 +57,8 @@ when the browser is offline, queued meal photos are stored as `Blob`s in
 IndexedDB database `fitMealIntakeQueueDB`, store `meal_photos`, only until the
 queued meal can be sent to `/api/meal-intake`.
 
-The offline queue never stores raw photo bytes, base64 image data, local image
+The offline queue stores raw photo bytes only as temporary `Blob` records in
+IndexedDB. It does not store raw photo bytes, base64 image data, local image
 paths, object URLs, or original filenames in localStorage. Filenames are
 stripped before queueing; replay uses synthetic names such as `meal-1.jpg`.
 
