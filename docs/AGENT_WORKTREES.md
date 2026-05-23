@@ -1,13 +1,23 @@
 # Agent Worktrees
 
-Linear: FIT-85
+Linear: FIT-36, FIT-85
 
-Use one branch and one worktree per Linear issue. Do not switch branches in a
-worktree while the Flask dashboard is running from that same directory; that can
-leave in-memory routes from one branch serving templates, auth settings, or data
-contracts from another branch.
+Use one branch and one worktree per Linear issue. New feature, fix, and docs
+branches start from `origin/main`; do not branch from local `master`.
+
+FIT-36 is the canonical reconciliation writeup for the old unrelated local
+`master` history. If a local `master` branch exists, treat it as a deprecated
+alias kept only for reconciliation checks. Do not commit to it, do not branch
+from it, and do not use it as the source of truth.
+
+Do not switch branches in a worktree while the Flask dashboard is running from
+that same directory; that can leave in-memory routes from one branch serving
+templates, auth settings, or data contracts from another branch. FIT-43 is the
+incident that exposed this failure mode.
 
 ## Branch Switch Guard
+
+FIT-85 shipped the worktree/server safety guard that enforces the FIT-36 rule.
 
 Enable the guard in each checkout:
 
