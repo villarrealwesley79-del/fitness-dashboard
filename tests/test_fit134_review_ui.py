@@ -303,6 +303,23 @@ def test_contract_refresh_kinds_match_locked_plan():
         assert f"'{kind}'" in enum_line, f"refresh kind {kind!r} missing"
 
 
+def test_pending_hydration_routes_v2_entries_through_normalize():
+    """FIT-144's `/api/meal-intake/pending` returns saved v2 snapshots
+    (meal_id + items[]) alongside legacy single-item entries. After a
+    reload, those v2 entries must hydrate into the v2 review card so
+    FIT-134's "Review UI carries the same meal_id through refresh/save/
+    discard" acceptance criterion holds across page reloads. Legacy
+    entries must keep routing through upsertMealPendingEntry.
+    """
+    block = APP_JS  # hydrateMealPending lives outside _v2_block
+    hydrate = block.split("async function hydrateMealPending", 1)[1].split("\n    }\n", 1)[0]
+    assert "isMealV2Payload(entry)" in hydrate
+    assert "normalizeMealV2Entry(entry)" in hydrate
+    assert "upsertMealV2Entry(" in hydrate
+    # Legacy fallback stays wired so single-item entries still hydrate.
+    assert "upsertMealPendingEntry(entry)" in hydrate
+
+
 def test_item_and_candidate_portion_reads_live_backend_field():
     """FIT-144 backend exposes the review item's portion text as `portion`
     (app.py:_review_item_from_estimate sets `"portion": estimate.get(

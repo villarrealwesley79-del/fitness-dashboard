@@ -6296,7 +6296,18 @@
         try {
             const payload = await api('/api/meal-intake/pending');
             const pending = Array.isArray(payload.pending) ? payload.pending : [];
-            pending.forEach((entry) => upsertMealPendingEntry(entry));
+            // FIT-144: /api/meal-intake/pending now returns saved v2 snapshots
+            // (meal_id + items[]) alongside legacy single-item entries. Route
+            // v2 entries through normalizeMealV2Entry so reload keeps the
+            // multi-item review surface intact.
+            pending.forEach((entry) => {
+                if (isMealV2Payload(entry)) {
+                    const v2 = normalizeMealV2Entry(entry);
+                    if (v2) upsertMealV2Entry(v2);
+                } else {
+                    upsertMealPendingEntry(entry);
+                }
+            });
             renderMealPendingList();
         } catch (e) {
             console.error(e);
