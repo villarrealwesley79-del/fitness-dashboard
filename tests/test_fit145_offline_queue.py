@@ -32,6 +32,13 @@ def _fit145_storage_block() -> str:
     return APP_JS[start:end]
 
 
+def _app_js_block(start_marker: str, end_marker: str) -> str:
+    start = APP_JS.find(start_marker)
+    end = APP_JS.find(end_marker, start)
+    assert start != -1 and end != -1, f"block markers not found: {start_marker}"
+    return APP_JS[start:end]
+
+
 def test_meal_queue_uses_versioned_indexeddb_schema():
     block = _fit145_storage_block()
 
@@ -97,16 +104,63 @@ def test_auth_failures_stay_visible_retryable_and_do_not_post_on_scope_mismatch(
     assert "const MEAL_QUEUE_RETRYABLE_STATUSES = new Set(['pending', 'auth_required']);" in APP_JS
     assert "res.status === 401 || res.status === 403" in block
     assert "syncStatus = 'auth_required';" in block
+    assert "status: 'pending'" in block
+    assert "Could not verify the current sign-in before syncing this meal." in block
     assert "MEAL_QUEUE_RETRYABLE_STATUSES.has(e.last_status || 'pending')" in block
     assert "await updateMealQueueEntry(clientId, {" in block
     assert "last_status: authStatus" in block
     assert "return { ok: false, status: authStatus };" in block
-    assert "const result = await postQueuedMealIntake(entry, queued.photos);" in block
+    assert "const latestQueued = await getQueuedMealWithPhotos(clientId);" in block
+    assert "if (!latestQueued.entry)" in block
+    assert "const result = await postQueuedMealIntake(latestQueued.entry, latestQueued.photos);" in block
     auth_gate_idx = block.find("const authGate = await mealQueueAuthGate(entry);")
-    post_idx = block.find("const result = await postQueuedMealIntake(entry, queued.photos);")
+    post_idx = block.find("const result = await postQueuedMealIntake(latestQueued.entry, latestQueued.photos);")
     assert auth_gate_idx < post_idx
     assert "auth_required: 'Sign-in needed'" in block
     assert "sync-status-auth_required" in APP_CSS
+
+
+def test_service_worker_offline_auth_scope_fallback_stays_retryable():
+    block = _app_js_block(
+        "async function fetchCurrentMealQueueAuthScope()",
+        "async function refreshMealQueueAuthScope()",
+    )
+    missing_scope_block = _app_js_block("if (!scope) {", "return { ok: true, scope };")
+
+    assert "JSON.stringify({ error: 'Offline' })" in APP_SW
+    assert "const scope = String(body && body.auth_scope || '').trim();" in block
+    assert "status: 'pending'" in missing_scope_block
+    assert "Could not verify the current sign-in before syncing this meal." in missing_scope_block
+    assert "status: 'auth_required'" not in missing_scope_block
+
+
+def test_meal_sync_rechecks_queue_and_blocks_discard_while_uploading():
+    sync_block = _app_js_block(
+        "async function syncSingleMealQueueEntry(clientId)",
+        "async function flushMealSyncQueue()",
+    )
+    modal_block = _app_js_block(
+        "async function renderSyncQueueModal()",
+        "async function completeWorkout()",
+    )
+    discard_block = _app_js_block(
+        "host.querySelectorAll('[data-meal-sync-discard]')",
+        "async function completeWorkout()",
+    )
+
+    assert "const latestQueued = await getQueuedMealWithPhotos(clientId);" in sync_block
+    assert "if (!latestQueued.entry)" in sync_block
+    assert "return { ok: false, status: 'discarded' };" in sync_block
+    assert "const result = await postQueuedMealIntake(latestQueued.entry, latestQueued.photos);" in sync_block
+
+    assert "const inFlight = _mealSyncInFlightClientIds.has(entry.client_id);" in modal_block
+    assert "data-meal-sync-discard" in modal_block
+    assert "data-meal-sync-retry" in modal_block
+    assert 'disabled aria-disabled="true"' in modal_block
+
+    assert "if (_mealSyncInFlightClientIds.has(clientId))" in discard_block
+    assert "Meal is syncing" in discard_block
+    assert discard_block.count("if (_mealSyncInFlightClientIds.has(clientId))") >= 2
 
 
 def test_success_and_discard_delete_queue_entry_and_photo_bytes():
@@ -118,6 +172,9 @@ def test_success_and_discard_delete_queue_entry_and_photo_bytes():
     assert "await removeMealQueueEntry(clientId);" in block
     assert "last_status: 'eviction_failed'" in block
     assert "data-meal-sync-discard" in block
+    assert "_mealSyncInFlightClientIds.has(entry.client_id)" in block
+    assert "_mealSyncInFlightClientIds.has(clientId)" in block
+    assert "Meal is syncing" in block
 
 
 def test_meal_flush_has_duplicate_guards_and_online_hooks():

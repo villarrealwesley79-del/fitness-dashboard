@@ -5160,8 +5160,8 @@
             if (!scope) {
                 return {
                     ok: false,
-                    status: 'auth_required',
-                    reason: 'The browser could not verify which account is signed in.',
+                    status: 'pending',
+                    reason: 'Could not verify the current sign-in before syncing this meal.',
                 };
             }
             return { ok: true, scope };
@@ -5424,7 +5424,11 @@
                 return { ok: false, status: authStatus };
             }
             try {
-                const result = await postQueuedMealIntake(entry, queued.photos);
+                const latestQueued = await getQueuedMealWithPhotos(clientId);
+                if (!latestQueued.entry) {
+                    return { ok: false, status: 'discarded' };
+                }
+                const result = await postQueuedMealIntake(latestQueued.entry, latestQueued.photos);
                 if (result.ok) {
                     try {
                         await removeMealQueueEntry(clientId);
@@ -5439,14 +5443,14 @@
                         return { ok: false, status: 'eviction_failed', error: deleteErr && deleteErr.message };
                     }
                     handleMealIntakeResponse(result.body, {
-                        textValue: entry.text || '',
+                        textValue: latestQueued.entry.text || '',
                         clientId,
                         imageFiles: [],
                         fromQueue: true,
                         localTime: {
-                            local_timestamp: entry.local_timestamp || null,
-                            local_date: entry.local_date || null,
-                            local_iso: entry.local_iso || null,
+                            local_timestamp: latestQueued.entry.local_timestamp || null,
+                            local_date: latestQueued.entry.local_date || null,
+                            local_iso: latestQueued.entry.local_iso || null,
                         },
                     });
                     toast('Queued meal synced');
@@ -5593,6 +5597,9 @@
             const queuedAt = entry.queued_at ? fmtDateTime(entry.queued_at) : 'unknown';
             const lastAttempt = entry.last_attempt_at ? fmtDateTime(entry.last_attempt_at) : 'not tried yet';
             const reasonHtml = entry.reject_reason ? `<div class="sync-row-reason">${escapeHtml(entry.reject_reason)}</div>` : '';
+            const inFlight = _mealSyncInFlightClientIds.has(entry.client_id);
+            if (inFlight) row.classList.add('sync-row-in-flight');
+            const syncDisabled = inFlight ? ' disabled aria-disabled="true"' : '';
             row.innerHTML = `
                 <div class="sync-row-head">
                     <span class="sync-row-title">Meal · ${escapeHtml(titleText)}</span>
@@ -5601,8 +5608,8 @@
                 <div class="sync-row-meta">${escapeHtml(typeLabel)} · saved on this device ${escapeHtml(queuedAt)} · ${entry.attempts || 0} sync attempt${(entry.attempts || 0) === 1 ? '' : 's'} · last try ${escapeHtml(lastAttempt)}</div>
                 ${reasonHtml}
                 <div class="sync-row-actions">
-                    <button class="btn btn-ghost btn-sm" data-meal-sync-discard="${escapeHtml(entry.client_id)}" type="button">Discard</button>
-                    <button class="btn btn-primary btn-sm" data-meal-sync-retry="${escapeHtml(entry.client_id)}" type="button">Retry</button>
+                    <button class="btn btn-ghost btn-sm" data-meal-sync-discard="${escapeHtml(entry.client_id)}" type="button"${syncDisabled}>Discard</button>
+                    <button class="btn btn-primary btn-sm" data-meal-sync-retry="${escapeHtml(entry.client_id)}" type="button"${syncDisabled}>${inFlight ? 'Syncing...' : 'Retry'}</button>
                 </div>
             `;
             host.appendChild(row);
@@ -5632,6 +5639,13 @@
             btn.addEventListener('click', async () => {
                 btn.disabled = true;
                 btn.textContent = 'Syncing…';
+                const row = btn.closest('.sync-row');
+                if (row) {
+                    row.querySelectorAll('[data-meal-sync-retry], [data-meal-sync-discard]').forEach((rowBtn) => {
+                        rowBtn.disabled = true;
+                        rowBtn.setAttribute('aria-disabled', 'true');
+                    });
+                }
                 const res = await syncSingleMealQueueEntry(btn.dataset.mealSyncRetry);
                 await renderSyncQueueModal();
                 if (res && res.ok) {
@@ -5651,8 +5665,16 @@
         host.querySelectorAll('[data-meal-sync-discard]').forEach((btn) => {
             btn.addEventListener('click', async () => {
                 const clientId = btn.dataset.mealSyncDiscard;
+                if (_mealSyncInFlightClientIds.has(clientId)) {
+                    toast('Meal is syncing — wait for this attempt to finish before discarding.', 'warn');
+                    return;
+                }
                 if (!window.confirm('Discard this offline meal? Any photos saved on this device will be deleted from your browser.')) return;
                 try {
+                    if (_mealSyncInFlightClientIds.has(clientId)) {
+                        toast('Meal is syncing — wait for this attempt to finish before discarding.', 'warn');
+                        return;
+                    }
                     await removeMealQueueEntry(clientId);
                     await renderSyncQueueModal();
                     toast('Meal removed from the offline queue.');
