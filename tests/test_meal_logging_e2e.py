@@ -217,7 +217,7 @@ def _jpeg_probe_bytes():
     return b"\xff\xd8\xff\xe0" + PHOTO_BYTE_PROBE + b"\xff\xd9"
 
 
-def test_text_only_auto_log_persists_confident_burrito(meal_e2e, monkeypatch):
+def test_text_only_submit_persists_pending_review_burrito(meal_e2e, monkeypatch):
     _stub_text_parser(
         monkeypatch,
         meal_e2e.module,
@@ -267,7 +267,7 @@ def test_text_only_ambiguous_food_persists_pending_review(meal_e2e, monkeypatch)
     assert row["correction_state"] == "pending_review"
 
 
-def test_photo_only_auto_log_uses_vision_pipeline_and_drops_raw_image(meal_e2e):
+def test_photo_only_submit_uses_vision_pipeline_and_drops_raw_image(meal_e2e):
     body = _post_photo(meal_e2e, client_id="fit83-photo-auto-1")
 
     assert body["status"] == "pending_review"
@@ -281,7 +281,7 @@ def test_photo_only_auto_log_uses_vision_pipeline_and_drops_raw_image(meal_e2e):
     assert PHOTO_BYTE_PROBE not in meal_e2e.db_path.read_bytes()
 
 
-def test_photo_with_text_auto_logs_and_applies_half_portion_modifier(meal_e2e):
+def test_photo_with_text_returns_pending_review_and_applies_half_portion_modifier(meal_e2e):
     body = _post_photo(
         meal_e2e,
         client_id="fit83-photo-text-half-1",

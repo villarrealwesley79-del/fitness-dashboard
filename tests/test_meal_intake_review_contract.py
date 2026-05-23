@@ -356,6 +356,34 @@ def test_refresh_candidate_request_replay_and_terminal_lifecycle(monkeypatch, tm
     assert relogged.get_json()["food_logs"][0]["item_name"] == "Relogged burrito"
 
 
+def test_refresh_add_item_appends_once_with_stable_sequence(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    _stub_parser(monkeypatch, module)
+    client.post("/api/meal-intake", data={"client_id": "fit144-add-item", "text": "ambiguous burrito"})
+
+    added = client.post(
+        "/api/meal-intake/fit144-add-item/refresh",
+        json={"kind": "add_item", "request_id": "add-1", "text": "candidate bowl"},
+    )
+    replay = client.post(
+        "/api/meal-intake/fit144-add-item/refresh",
+        json={"kind": "add_item", "request_id": "add-1", "text": "candidate bowl again"},
+    )
+
+    added_body = added.get_json()
+    replay_body = replay.get_json()
+    snapshot = data_store.get_meal_review_snapshot(1, "fit144-add-item")
+    assert added.status_code == 200, added.get_data(as_text=True)
+    assert [item["item_id"] for item in added_body["items"]] == ["item-1", "item-2"]
+    assert added_body["items"][1]["name"] == "Burrito bowl"
+    assert added_body["items"][1]["source"] == {"kind": "nutritionix", "label": "nutritionix", "link": None}
+    assert added_body["meal_totals"]["calories"] == 1160
+    assert added_body["save_blocked_item_ids"] == ["item-1"]
+    assert replay.status_code == 200, replay.get_data(as_text=True)
+    assert [item["item_id"] for item in replay_body["items"]] == ["item-1", "item-2"]
+    assert snapshot["next_item_seq"] == 3
+
+
 def test_terminal_replay_preserves_explicit_multi_item_order(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     _stub_parser(monkeypatch, module)
@@ -505,6 +533,32 @@ def test_refresh_state_setters_retire_followup_and_zero_included_accept_discards
     assert data_store.get_meal_review_snapshot(1, "fit144-meal-3") is None
     assert data_store.get_food_logs(1) == []
     assert data_store.get_meal_acceptance_event(1, "fit144-meal-3")["status"] == "discarded"
+
+
+def test_refresh_delete_and_restore_keep_item_identity_and_totals(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    _stub_parser(monkeypatch, module)
+    client.post("/api/meal-intake", data={"client_id": "fit144-delete-restore", "text": "candidate"})
+
+    deleted = client.post(
+        "/api/meal-intake/fit144-delete-restore/refresh",
+        json={"kind": "delete_item", "item_id": "item-1"},
+    )
+    restored = client.post(
+        "/api/meal-intake/fit144-delete-restore/refresh",
+        json={"kind": "restore_item", "item_id": "item-1"},
+    )
+
+    assert deleted.status_code == 200, deleted.get_data(as_text=True)
+    assert deleted.get_json()["items"][0]["item_id"] == "item-1"
+    assert deleted.get_json()["items"][0]["status"] == "deleted"
+    assert deleted.get_json()["meal_totals"]["calories"] == 0
+    assert deleted.get_json()["save_blocked_item_ids"] == []
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+    assert restored.get_json()["items"][0]["item_id"] == "item-1"
+    assert restored.get_json()["items"][0]["status"] == "included"
+    assert restored.get_json()["meal_totals"]["calories"] == 520
+    assert restored.get_json()["save_blocked_item_ids"] == []
 
 
 def test_refresh_missing_snapshot_and_cross_user_return_404(monkeypatch, tmp_path):

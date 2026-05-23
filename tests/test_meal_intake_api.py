@@ -121,7 +121,7 @@ def _stub_vision(monkeypatch, module, *, vision=None, lookup=_DEFAULT_LOOKUP):
     monkeypatch.setattr(module.branded_food_lookup, "lookup", lambda *_a, **_kw: dict(lookup) if lookup else None)
 
 
-def test_meal_intake_text_only_auto_logs_when_parser_is_confident(monkeypatch):
+def test_meal_intake_text_only_returns_pending_review_when_parser_is_confident(monkeypatch):
     module = _client(monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Eggs and toast",
@@ -466,7 +466,7 @@ def test_meal_intake_requires_client_id(monkeypatch):
     assert "client_id" in res.get_json()["error"]["message"]
 
 
-def test_meal_intake_image_only_auto_logs(monkeypatch):
+def test_meal_intake_image_only_returns_pending_review(monkeypatch):
     module = _client(monkeypatch)
     captured = {}
     _stub_vision(monkeypatch, module)
