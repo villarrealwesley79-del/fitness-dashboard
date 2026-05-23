@@ -3172,7 +3172,10 @@ def test_meal_composer_js_hydrates_pending_and_rolls_back_failed_discard():
 
     assert "api('/api/meal-intake/pending')" in source
     assert "hydrateMealPending();" in source
-    assert "pending.forEach((entry) => upsertMealPendingEntry(entry));" in source
+    # FIT-134 rebase routes v2 entries through normalizeMealV2Entry while
+    # keeping the legacy upsertMealPendingEntry path for single-item entries.
+    assert "pending.forEach((entry) => {" in source
+    assert "upsertMealPendingEntry(entry);" in source
     assert "correction_state=pending_review" in source
     assert "result.removed !== true" in source
     assert "Discard failed — retry when connected" in source

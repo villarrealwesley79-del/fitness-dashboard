@@ -6199,7 +6199,13 @@
         const { pendingList } = mealComposerEls();
         if (!pendingList) return;
         pendingList.innerHTML = '';
-        mealComposerState.pending.forEach((entry) => pendingList.appendChild(buildMealPendingRow(entry)));
+        mealComposerState.pending.forEach((entry) => {
+            if (entry && entry.__v2) {
+                pendingList.appendChild(buildMealReviewCardV2(entry));
+            } else {
+                pendingList.appendChild(buildMealPendingRow(entry));
+            }
+        });
     }
 
     function padMealDatePart(value) {
@@ -6290,7 +6296,18 @@
         try {
             const payload = await api('/api/meal-intake/pending');
             const pending = Array.isArray(payload.pending) ? payload.pending : [];
-            pending.forEach((entry) => upsertMealPendingEntry(entry));
+            // FIT-144: /api/meal-intake/pending now returns saved v2 snapshots
+            // (meal_id + items[]) alongside legacy single-item entries. Route
+            // v2 entries through normalizeMealV2Entry so reload keeps the
+            // multi-item review surface intact.
+            pending.forEach((entry) => {
+                if (isMealV2Payload(entry)) {
+                    const v2 = normalizeMealV2Entry(entry);
+                    if (v2) upsertMealV2Entry(v2);
+                } else {
+                    upsertMealPendingEntry(entry);
+                }
+            });
             renderMealPendingList();
         } catch (e) {
             console.error(e);
@@ -6921,6 +6938,14 @@
         form.append('local_iso', localTime.local_iso);
 
         try {
+            // FIT-134: ?fit134=mock short-circuits to a synthetic multi-item
+            // payload so the new review UI can be exercised locally before
+            // FIT-135 lands the real backend. Production path is unchanged.
+            if (mealV2MockEnabled()) {
+                const payload = mealV2Mock.createMeal(textValue);
+                handleMealIntakeResponse(payload, { textValue, clientId, imageFile: file, localTime });
+                return;
+            }
             const res = await fetch('/api/meal-intake', {
                 method: 'POST',
                 credentials: 'same-origin',
@@ -6958,6 +6983,13 @@
     }
 
     function handleMealIntakeResponse(payload, ctx) {
+        // FIT-134: branch to multi-item review when the backend returns the
+        // new contract (meal_id + items[]). Until FIT-135 lands that shape,
+        // legacy single-item responses fall through to the original flow.
+        if (isMealV2Payload(payload)) {
+            handleMealIntakeV2Response(payload, ctx);
+            return;
+        }
         const status = payload && payload.status;
         if (status === 'logged') {
             clearMealComposerInputs();
@@ -7007,6 +7039,790 @@
         }
         setMealComposerError('Couldn’t parse that meal — try a clearer description.');
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // FIT-134 — Multi-item meal review (V2).
+    //
+    // Activates when /api/meal-intake (or refresh) returns the new
+    // contract shape: top-level meal_id, meal_totals, followup, items[]
+    // with item_id/candidates/unclear/status, and save_blocked_item_ids[].
+    // Until FIT-135 (Codex, sibling-backend) lands that contract, legacy
+    // single-item responses fall through to the original review card and
+    // the existing accept/discard flow.
+    //
+    // A ?fit134=mock URL param swaps the real backend for an in-memory
+    // synthetic backend so the new UI can be exercised end-to-end locally
+    // before FIT-135 ships. The production path is unchanged.
+    //
+    // Contract source: /Users/admin/.claude/plans/codex-is-owrking-on-shiny-ripple.md
+    // (locked via codex-consensus-loop on 2026-05-22).
+    // ─────────────────────────────────────────────────────────────────────
+
+    const MEAL_V2_REFRESH_KINDS = [
+        'add_item', 'edit_portion', 'followup_answer', 'choose_candidate',
+        'skip_item', 'delete_item', 'restore_item', 'set_meal_type',
+    ];
+    // FIT-144 backend (app.py:_REVIEW_REQUEST_ID_KINDS) requires a client-
+    // generated request_id for these 4 kinds and treats same-id+same-kind as
+    // an idempotent replay (returns the prior payload without applying the
+    // new body). A fresh UUID per logical mutation attempt is the correct
+    // contract; reusing one across distinct user actions would silently drop
+    // the second action's input.
+    const MEAL_V2_REQUEST_ID_KINDS = new Set([
+        'add_item', 'edit_portion', 'choose_candidate', 'followup_answer',
+    ]);
+    const MEAL_V2_MACRO_KEYS = ['calories', 'protein_g', 'carbs_g', 'fat_g', 'sodium_mg', 'fiber_g'];
+    const MEAL_V2_ITEM_STATUSES = ['included', 'skipped', 'deleted'];
+    const MEAL_V2_SOURCE_KINDS = ['vision', 'text', 'branded', 'vocab', 'manual'];
+
+    function mealV2GenerateRequestId() {
+        if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+        return 'meal-v2-req-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    }
+
+    function isMealV2Payload(payload) {
+        return !!(payload && typeof payload === 'object'
+            && typeof payload.meal_id === 'string'
+            && Array.isArray(payload.items));
+    }
+
+    function normalizeMealV2Entry(payload, ctx = {}) {
+        if (!isMealV2Payload(payload)) return null;
+        const existing = mealV2EntryById(payload.meal_id);
+        const expandedItems = existing && existing.expandedItems instanceof Set
+            ? new Set(existing.expandedItems)
+            : new Set();
+        const lastFollowupAnswered = !!(payload.followup && payload.followup.used)
+            || (existing && existing.lastFollowupAnswered)
+            || false;
+        return {
+            __v2: true,
+            meal_id: payload.meal_id,
+            meal_type: MEAL_TYPE_OPTIONS.includes(payload.meal_type) ? payload.meal_type : 'snack',
+            meal_totals: payload.meal_totals || {},
+            followup: payload.followup || { available: false, question: null, used: false },
+            save_blocked_item_ids: Array.isArray(payload.save_blocked_item_ids)
+                ? payload.save_blocked_item_ids.slice()
+                : [],
+            items: Array.isArray(payload.items) ? payload.items.map((it) => ({ ...it })) : [],
+            expandedItems,
+            pendingRefresh: false,
+            lastFollowupAnswered,
+            text_hint: (existing && existing.text_hint) || ctx.textValue || '',
+            imageFile: (existing && existing.imageFile) || ctx.imageFile || null,
+        };
+    }
+
+    function mealV2EntryById(mealId) {
+        return mealComposerState.pending.find((p) => p && p.__v2 && p.meal_id === mealId) || null;
+    }
+
+    function upsertMealV2Entry(entry) {
+        if (!entry || !entry.__v2) return;
+        const idx = mealComposerState.pending.findIndex((p) => p && p.__v2 && p.meal_id === entry.meal_id);
+        if (idx >= 0) mealComposerState.pending[idx] = entry;
+        else mealComposerState.pending.push(entry);
+    }
+
+    function removeMealV2Entry(mealId) {
+        mealComposerState.pending = mealComposerState.pending.filter((p) => !(p && p.__v2 && p.meal_id === mealId));
+    }
+
+    function handleMealIntakeV2Response(payload, ctx = {}) {
+        const entry = normalizeMealV2Entry(payload, ctx);
+        if (!entry) return false;
+        upsertMealV2Entry(entry);
+        clearMealComposerInputs();
+        clearMealDraft();
+        clearMealComposerStatus();
+        renderMealPendingList();
+        toast('Review the meal before saving.', 'warn');
+        refreshMacroCard();
+        return true;
+    }
+
+    function applyMealV2Refresh(mealId, payload) {
+        const entry = normalizeMealV2Entry(payload);
+        if (!entry) return;
+        // FIT-134: skipped/deleted items remain in items[]; auto-expand any
+        // item that becomes save-blocked so the user sees what to fix.
+        (entry.save_blocked_item_ids || []).forEach((id) => entry.expandedItems.add(id));
+        upsertMealV2Entry(entry);
+        renderMealPendingList();
+    }
+
+    function setMealV2PendingRefresh(mealId, value) {
+        const entry = mealV2EntryById(mealId);
+        if (!entry) return;
+        entry.pendingRefresh = !!value;
+        renderMealPendingList();
+    }
+
+    // ── Number/label helpers ────────────────────────────────────────────
+    function formatMealV2Kcal(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return '— kcal';
+        return `${Math.round(n)} kcal`;
+    }
+
+    function formatMealV2Macros(totals) {
+        if (!totals) return '';
+        const macros = [];
+        if (Number.isFinite(Number(totals.protein_g))) macros.push(`${Math.round(totals.protein_g)}P`);
+        if (Number.isFinite(Number(totals.carbs_g))) macros.push(`${Math.round(totals.carbs_g)}C`);
+        if (Number.isFinite(Number(totals.fat_g))) macros.push(`${Math.round(totals.fat_g)}F`);
+        return macros.join(' · ');
+    }
+
+    function formatMealV2ItemMacros(item) {
+        if (!item) return '';
+        const parts = [];
+        if (Number.isFinite(Number(item.calories))) parts.push(`${Math.round(item.calories)} kcal`);
+        const macros = [];
+        if (Number.isFinite(Number(item.protein_g))) macros.push(`${Math.round(item.protein_g)}P`);
+        if (Number.isFinite(Number(item.carbs_g))) macros.push(`${Math.round(item.carbs_g)}C`);
+        if (Number.isFinite(Number(item.fat_g))) macros.push(`${Math.round(item.fat_g)}F`);
+        if (macros.length) parts.push(macros.join('/'));
+        return parts.join(' · ');
+    }
+
+    function mealV2ConfidenceLabel(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return '';
+        return `${Math.round(n * 100)}% conf`;
+    }
+
+    // ── Renderer ────────────────────────────────────────────────────────
+    function buildMealReviewCardV2(entry) {
+        const row = document.createElement('div');
+        row.className = 'meal-pending-row meal-review-v2';
+        row.setAttribute('data-meal-id', entry.meal_id);
+        if (entry.pendingRefresh) row.classList.add('meal-review-v2--refreshing');
+
+        const totals = entry.meal_totals || {};
+        const includedItems = entry.items.filter((it) => it.status === 'included');
+        const blockedSet = new Set(entry.save_blocked_item_ids || []);
+        const blocked = blockedSet.size > 0;
+        const allRemoved = includedItems.length === 0 && entry.items.length > 0;
+        const expanded = entry.expandedItems.size > 0 || blocked || allRemoved;
+
+        const mealTypeChip = `
+            <label class="meal-review-v2-meal-type" data-field-label="meal_type">
+                <span class="meal-review-v2-meal-type-label">Meal</span>
+                <select data-action="set-meal-type" aria-label="Meal type">
+                    ${MEAL_TYPE_OPTIONS.map((mt) => `<option value="${mt}"${mt === entry.meal_type ? ' selected' : ''}>${mt.charAt(0).toUpperCase() + mt.slice(1)}</option>`).join('')}
+                </select>
+            </label>
+        `;
+
+        const totalsHtml = `
+            <div class="meal-review-v2-totals" aria-label="Meal totals">
+                <span class="meal-review-v2-kcal">${escapeHtml(formatMealV2Kcal(totals.calories))}</span>
+                <span class="meal-review-v2-macros">${escapeHtml(formatMealV2Macros(totals))}</span>
+            </div>
+        `;
+
+        const actionsHtml = allRemoved ? `
+            <div class="meal-pending-actions meal-review-v2-actions" data-state="all-removed">
+                <button type="button" class="btn btn-primary" data-action="discard-log">Discard log</button>
+            </div>
+        ` : `
+            <div class="meal-pending-actions meal-review-v2-actions">
+                <button type="button" class="btn btn-ghost" data-action="discard">Discard</button>
+                <button type="button" class="btn btn-primary" data-action="save"${(blocked || entry.pendingRefresh) ? ' disabled' : ''}>${blocked ? 'Resolve items to save' : 'Save'}</button>
+            </div>
+        `;
+
+        const showFollowup = entry.followup
+            && entry.followup.available
+            && !entry.followup.used
+            && !entry.lastFollowupAnswered;
+        const followupHtml = showFollowup ? `
+            <form class="meal-review-v2-followup" data-action="followup-form" role="region" aria-label="Follow-up question">
+                <div class="meal-review-v2-followup-q">${escapeHtml(entry.followup.question || '')}</div>
+                <div class="meal-review-v2-followup-row">
+                    <input type="text" data-field="followup-answer" placeholder="Type your answer" maxlength="240" required>
+                    <button type="submit" class="btn btn-primary">Submit</button>
+                    <button type="button" class="btn btn-ghost" data-action="followup-dismiss">Skip</button>
+                </div>
+            </form>
+        ` : '';
+
+        const itemsHtml = entry.items.length ? `
+            <div class="meal-review-v2-items" role="list">
+                ${entry.items.map((item) => buildMealReviewV2ItemHtml(item, {
+                    blocked: blockedSet.has(item.item_id),
+                    expanded: entry.expandedItems.has(item.item_id) || blockedSet.has(item.item_id),
+                })).join('')}
+            </div>
+        ` : '<div class="meal-review-v2-empty">No items in this meal yet.</div>';
+
+        const addItemHtml = `
+            <form class="meal-review-v2-add-item" data-action="add-item-form">
+                <label>
+                    <span>Add an item (describe in your own words)</span>
+                    <input type="text" data-field="add-item-text" placeholder="e.g. a small side of rice, or a 16 oz coke" maxlength="240" required>
+                </label>
+                <button type="submit" class="btn btn-ghost">Add</button>
+            </form>
+        `;
+
+        row.innerHTML = `
+            <div class="meal-review-v2-collapsed">
+                <div class="meal-pending-head">
+                    <span class="meal-pending-title">Review meal</span>
+                    ${mealTypeChip}
+                </div>
+                ${totalsHtml}
+                ${actionsHtml}
+                <button type="button" class="meal-review-v2-expand" data-action="toggle-expand" aria-expanded="${expanded}">${expanded ? 'Hide items' : 'Show items'}</button>
+                ${entry.pendingRefresh ? '<div class="meal-review-v2-refreshing-note" role="status">Looking up…</div>' : ''}
+            </div>
+            <div class="meal-review-v2-expanded"${expanded ? '' : ' hidden'}>
+                ${followupHtml}
+                ${itemsHtml}
+                ${addItemHtml}
+            </div>
+        `;
+
+        wireMealReviewCardV2(row, entry);
+        return row;
+    }
+
+    function buildMealReviewV2ItemHtml(item, opts = {}) {
+        if (!item) return '';
+        const status = item.status || 'included';
+        const isIncluded = status === 'included';
+        const isRemoved = status === 'skipped' || status === 'deleted';
+        const blocked = !!opts.blocked && isIncluded;
+        const expanded = !!opts.expanded || blocked;
+        const sourceLabel = (item.source && item.source.label) || 'AI estimate';
+        const sourceKind = item.source && MEAL_V2_SOURCE_KINDS.includes(item.source.kind) ? item.source.kind : 'manual';
+        const sourceLink = item.source && item.source.link ? String(item.source.link) : '';
+        const confLabel = mealV2ConfidenceLabel(item.confidence);
+        const candidates = Array.isArray(item.candidates) ? item.candidates.slice(0, 3) : [];
+
+        const candidatesHtml = (isIncluded && candidates.length) ? `
+            <div class="meal-review-v2-candidates" role="group" aria-label="Top choices">
+                <span class="meal-review-v2-candidates-label">Top choices</span>
+                ${candidates.map((c) => `
+                    <button type="button" class="meal-review-v2-candidate-chip" data-action="choose-candidate" data-candidate-id="${escapeHtml(c.candidate_id)}">
+                        ${escapeHtml(c.name || '')}${(c.portion || c.portion_description) ? ` · ${escapeHtml(c.portion || c.portion_description)}` : ''}
+                    </button>
+                `).join('')}
+            </div>
+        ` : '';
+
+        const portionEditHtml = isIncluded ? `
+            <form class="meal-review-v2-portion-edit" data-action="portion-edit-form" hidden>
+                <label>
+                    <span>Edit portion (describe in your own words)</span>
+                    <input type="text" data-field="portion-text" placeholder="e.g. half the plate, or a 16 oz serving" maxlength="240" required>
+                </label>
+                <div class="meal-review-v2-portion-edit-actions">
+                    <button type="button" class="btn btn-ghost" data-action="portion-edit-cancel">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Update</button>
+                </div>
+            </form>
+        ` : '';
+
+        const itemActions = isIncluded ? `
+            <div class="meal-review-v2-item-actions">
+                <button type="button" class="btn btn-ghost meal-review-v2-portion-edit-toggle" data-action="portion-edit-open">Edit portion</button>
+                <button type="button" class="btn btn-ghost" data-action="skip-item">Skip</button>
+                <button type="button" class="btn btn-ghost" data-action="delete-item">Delete</button>
+            </div>
+        ` : `
+            <div class="meal-review-v2-item-actions meal-review-v2-item-actions--removed">
+                <span class="meal-review-v2-item-removed-label">${status === 'skipped' ? 'Skipped' : 'Deleted'}</span>
+                <button type="button" class="btn btn-ghost meal-review-v2-undo" data-action="restore-item">Undo</button>
+            </div>
+        `;
+
+        const blockedNote = blocked ? '<div class="meal-review-v2-item-blocked" role="alert">Save blocked — clarify, choose a top match, edit, or skip.</div>' : '';
+
+        const sourceChip = sourceLink ? `
+            <button type="button" class="meal-review-v2-source-chip" data-action="open-source" data-source-link="${escapeHtml(sourceLink)}" data-source-label="${escapeHtml(sourceLabel)}" title="Open source details in app">
+                ${escapeHtml(sourceLabel)}
+            </button>
+        ` : `<span class="meal-review-v2-source-chip" data-source-kind="${escapeHtml(sourceKind)}">${escapeHtml(sourceLabel)}</span>`;
+
+        return `
+            <div class="meal-review-v2-item${isRemoved ? ' meal-review-v2-item--removed' : ''}${blocked ? ' meal-review-v2-item--blocked' : ''}${expanded ? ' meal-review-v2-item--expanded' : ''}" role="listitem" data-item-id="${escapeHtml(item.item_id)}" data-item-status="${escapeHtml(status)}">
+                <header class="meal-review-v2-item-head">
+                    <button type="button" class="meal-review-v2-item-toggle" data-action="toggle-item" aria-expanded="${expanded}">
+                        <span class="meal-review-v2-item-name">${escapeHtml(item.name || 'Item')}</span>
+                        <span class="meal-review-v2-item-portion">${escapeHtml(item.portion || item.portion_description || '')}</span>
+                    </button>
+                    ${sourceChip}
+                    ${confLabel ? `<span class="meal-review-v2-item-conf">${escapeHtml(confLabel)}</span>` : ''}
+                </header>
+                <div class="meal-review-v2-item-body"${expanded ? '' : ' hidden'}>
+                    <div class="meal-review-v2-item-macros">${escapeHtml(formatMealV2ItemMacros(item))}</div>
+                    ${blockedNote}
+                    ${candidatesHtml}
+                    ${portionEditHtml}
+                    ${itemActions}
+                </div>
+            </div>
+        `;
+    }
+
+    // ── Event wiring ───────────────────────────────────────────────────
+    function wireMealReviewCardV2(row, entry) {
+        const mealId = entry.meal_id;
+
+        // Toggle whole card expanded/collapsed
+        row.querySelector('[data-action="toggle-expand"]').addEventListener('click', () => {
+            const expandedEl = row.querySelector('.meal-review-v2-expanded');
+            const isHidden = expandedEl.hasAttribute('hidden');
+            if (isHidden) {
+                // Mark every item visible — gives the user the full picture
+                entry.items.forEach((it) => entry.expandedItems.add(it.item_id));
+            } else {
+                entry.expandedItems.clear();
+            }
+            renderMealPendingList();
+        });
+
+        // Meal type edit (collapsed-view chip)
+        const mealTypeSelect = row.querySelector('[data-action="set-meal-type"]');
+        if (mealTypeSelect) {
+            mealTypeSelect.addEventListener('change', () => {
+                const next = mealTypeSelect.value;
+                if (!MEAL_TYPE_OPTIONS.includes(next)) return;
+                submitMealV2Refresh(mealId, { kind: 'set_meal_type', meal_type: next });
+            });
+        }
+
+        // Save / Discard / Discard log
+        const saveBtn = row.querySelector('[data-action="save"]');
+        if (saveBtn) saveBtn.addEventListener('click', () => acceptMealV2(mealId));
+        const discardBtn = row.querySelector('[data-action="discard"]');
+        if (discardBtn) discardBtn.addEventListener('click', () => discardMealV2(mealId));
+        const discardLogBtn = row.querySelector('[data-action="discard-log"]');
+        if (discardLogBtn) discardLogBtn.addEventListener('click', () => discardMealV2(mealId));
+
+        // Follow-up
+        const followupForm = row.querySelector('[data-action="followup-form"]');
+        if (followupForm) {
+            followupForm.addEventListener('submit', (ev) => {
+                ev.preventDefault();
+                const input = followupForm.querySelector('[data-field="followup-answer"]');
+                const text = (input && input.value || '').trim();
+                if (!text) return;
+                // FIT-144 backend (app.py followup_answer handler) reads
+                // the user's reply from `answer` and treats absent text as
+                // a no-op. `skipped: true` would also be accepted but here
+                // the user is submitting an answer so we send `answer`.
+                submitMealV2Refresh(mealId, { kind: 'followup_answer', answer: text });
+            });
+            const dismissBtn = followupForm.querySelector('[data-action="followup-dismiss"]');
+            if (dismissBtn) {
+                dismissBtn.addEventListener('click', () => {
+                    entry.lastFollowupAnswered = true;
+                    renderMealPendingList();
+                });
+            }
+        }
+
+        // Add item
+        const addItemForm = row.querySelector('[data-action="add-item-form"]');
+        if (addItemForm) {
+            addItemForm.addEventListener('submit', (ev) => {
+                ev.preventDefault();
+                const input = addItemForm.querySelector('[data-field="add-item-text"]');
+                const text = (input && input.value || '').trim();
+                if (!text) return;
+                submitMealV2Refresh(mealId, { kind: 'add_item', text });
+                if (input) input.value = '';
+            });
+        }
+
+        // Per-item actions
+        row.querySelectorAll('.meal-review-v2-item').forEach((itemEl) => {
+            const itemId = itemEl.getAttribute('data-item-id');
+            const toggleBtn = itemEl.querySelector('[data-action="toggle-item"]');
+            if (toggleBtn) {
+                toggleBtn.addEventListener('click', () => {
+                    if (entry.expandedItems.has(itemId)) entry.expandedItems.delete(itemId);
+                    else entry.expandedItems.add(itemId);
+                    renderMealPendingList();
+                });
+            }
+            itemEl.querySelectorAll('[data-action="choose-candidate"]').forEach((chip) => {
+                chip.addEventListener('click', () => {
+                    const candidateId = chip.getAttribute('data-candidate-id');
+                    submitMealV2Refresh(mealId, { kind: 'choose_candidate', item_id: itemId, candidate_id: candidateId });
+                });
+            });
+            const portionForm = itemEl.querySelector('[data-action="portion-edit-form"]');
+            const portionOpen = itemEl.querySelector('[data-action="portion-edit-open"]');
+            const portionCancel = itemEl.querySelector('[data-action="portion-edit-cancel"]');
+            if (portionForm && portionOpen) {
+                portionOpen.addEventListener('click', () => {
+                    portionForm.hidden = false;
+                    portionOpen.hidden = true;
+                    const input = portionForm.querySelector('[data-field="portion-text"]');
+                    if (input) input.focus();
+                });
+                if (portionCancel) {
+                    portionCancel.addEventListener('click', () => {
+                        portionForm.hidden = true;
+                        portionOpen.hidden = false;
+                    });
+                }
+                portionForm.addEventListener('submit', (ev) => {
+                    ev.preventDefault();
+                    const input = portionForm.querySelector('[data-field="portion-text"]');
+                    const text = (input && input.value || '').trim();
+                    if (!text) return;
+                    submitMealV2Refresh(mealId, { kind: 'edit_portion', item_id: itemId, text });
+                });
+            }
+            const skipBtn = itemEl.querySelector('[data-action="skip-item"]');
+            if (skipBtn) skipBtn.addEventListener('click', () => submitMealV2Refresh(mealId, { kind: 'skip_item', item_id: itemId }));
+            const deleteBtn = itemEl.querySelector('[data-action="delete-item"]');
+            if (deleteBtn) deleteBtn.addEventListener('click', () => submitMealV2Refresh(mealId, { kind: 'delete_item', item_id: itemId }));
+            const restoreBtn = itemEl.querySelector('[data-action="restore-item"]');
+            if (restoreBtn) restoreBtn.addEventListener('click', () => submitMealV2Refresh(mealId, { kind: 'restore_item', item_id: itemId }));
+            const sourceBtn = itemEl.querySelector('[data-action="open-source"]');
+            if (sourceBtn) {
+                sourceBtn.addEventListener('click', () => {
+                    openMealV2SourceViewer(sourceBtn.getAttribute('data-source-link'), sourceBtn.getAttribute('data-source-label'));
+                });
+            }
+        });
+    }
+
+    // ── Network: refresh / accept / discard ────────────────────────────
+    async function submitMealV2Refresh(mealId, body) {
+        if (!body || !MEAL_V2_REFRESH_KINDS.includes(body.kind)) return;
+        const entry = mealV2EntryById(mealId);
+        if (!entry || entry.pendingRefresh) return;
+        // FIT-144 idempotency: every user-initiated mutation in the guarded
+        // set gets a fresh request_id. `pendingRefresh` already serializes
+        // calls so each invocation is one logical attempt.
+        const liveBody = MEAL_V2_REQUEST_ID_KINDS.has(body.kind) && !body.request_id
+            ? { ...body, request_id: mealV2GenerateRequestId() }
+            : body;
+        setMealV2PendingRefresh(mealId, true);
+        try {
+            const payload = await postMealV2Refresh(mealId, liveBody);
+            applyMealV2Refresh(mealId, payload);
+        } catch (e) {
+            console.error(e);
+            toast(apiErrorMessage(e, 'Couldn’t update meal'), 'err');
+            setMealV2PendingRefresh(mealId, false);
+        }
+    }
+
+    // FIT-144 _meal_intake_accept_multi (app.py:5709) expects a JSON body
+    // `{ meal_id, items: [{state, item_id, estimate, ...}] }`. The backend's
+    // `_review_sanitize_estimate` re-validates the per-item `estimate` dict
+    // (requires `ambiguous` bool, `source` string, etc.); reuse the backend's
+    // own item.estimate so it round-trips schema-clean. Skipped/deleted items
+    // stay in the array so the backend can record negative feedback.
+    //
+    // The persistence path reads `meal_type` from each item's estimate
+    // (food_logs row meal_type comes from estimate.meal_type), so the
+    // collapsed-chip selection (`entry.meal_type`) is merged into each
+    // included item before send. set_meal_type refresh updates
+    // payload.meal_type but does not rewrite per-item estimates, so without
+    // this merge the user's edit silently fails to persist.
+    function buildMealV2AcceptBody(entry) {
+        const mealType = MEAL_TYPE_OPTIONS.includes(entry.meal_type) ? entry.meal_type : null;
+        return {
+            meal_id: entry.meal_id,
+            meal_type: entry.meal_type,
+            items: (entry.items || []).map((item) => {
+                const state = MEAL_V2_ITEM_STATUSES.includes(item.status) ? item.status : 'included';
+                const baseEstimate = item.estimate || item.original_estimate || {};
+                const estimate = (state === 'included' && mealType)
+                    ? { ...baseEstimate, meal_type: mealType }
+                    : baseEstimate;
+                return {
+                    state,
+                    item_id: item.item_id,
+                    text: item.text || item.name || '',
+                    estimate,
+                    original_estimate: item.original_estimate || item.estimate || null,
+                };
+            }),
+        };
+    }
+
+    async function acceptMealV2(mealId) {
+        const entry = mealV2EntryById(mealId);
+        if (!entry || entry.pendingRefresh) return;
+        if ((entry.save_blocked_item_ids || []).length > 0) {
+            (entry.save_blocked_item_ids || []).forEach((id) => entry.expandedItems.add(id));
+            renderMealPendingList();
+            toast('Resolve flagged items before saving.', 'warn');
+            return;
+        }
+        const includedCount = entry.items.filter((it) => it.status === 'included').length;
+        if (includedCount === 0) {
+            toast('No items left to save — discard the log instead.', 'warn');
+            return;
+        }
+        setMealV2PendingRefresh(mealId, true);
+        try {
+            if (mealV2MockEnabled()) {
+                mealV2Mock.accept(mealId);
+            } else {
+                await api(`/api/meal-intake/${encodeURIComponent(mealId)}/accept`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildMealV2AcceptBody(entry)),
+                });
+            }
+            removeMealV2Entry(mealId);
+            renderMealPendingList();
+            toast('Meal saved.', 'ok');
+            refreshMacroCard();
+        } catch (e) {
+            console.error(e);
+            toast(apiErrorMessage(e, 'Save failed'), 'err');
+            setMealV2PendingRefresh(mealId, false);
+        }
+    }
+
+    async function discardMealV2(mealId) {
+        const entry = mealV2EntryById(mealId);
+        if (!entry) return;
+        setMealV2PendingRefresh(mealId, true);
+        try {
+            if (mealV2MockEnabled()) {
+                mealV2Mock.discard(mealId);
+            } else {
+                await api(`/api/meal-intake/${encodeURIComponent(mealId)}`, { method: 'DELETE' });
+            }
+            removeMealV2Entry(mealId);
+            renderMealPendingList();
+            toast('Meal discarded.', 'ok');
+            refreshMacroCard();
+        } catch (e) {
+            console.error(e);
+            toast(apiErrorMessage(e, 'Discard failed'), 'err');
+            setMealV2PendingRefresh(mealId, false);
+        }
+    }
+
+    async function postMealV2Refresh(mealId, body) {
+        if (mealV2MockEnabled()) {
+            return mealV2Mock.refresh(mealId, body);
+        }
+        return api(`/api/meal-intake/${encodeURIComponent(mealId)}/refresh`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+    }
+
+    // ── In-app source viewer ────────────────────────────────────────────
+    // The contract guarantees source.link is null, a same-origin route, or a
+    // backend-sanitized URL safe for an in-app sandboxed viewer. We never
+    // open target=_blank on these links per FIT-134 acceptance.
+    function openMealV2SourceViewer(link, label) {
+        if (!link) return;
+        const safe = sanitizeMealV2SourceLink(link);
+        if (!safe) return;
+        const modal = document.createElement('div');
+        modal.className = 'meal-review-v2-source-modal modal';
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-label', `${label || 'Source'} details`);
+        modal.innerHTML = `
+            <div class="modal-backdrop" data-action="close-source"></div>
+            <div class="modal-content meal-review-v2-source-modal-content">
+                <header class="meal-review-v2-source-modal-head">
+                    <h3>${escapeHtml(label || 'Source')}</h3>
+                    <button type="button" class="meal-review-v2-source-modal-close" aria-label="Close" data-action="close-source">✕</button>
+                </header>
+                <iframe class="meal-review-v2-source-frame" src="${escapeHtml(safe)}" sandbox="allow-same-origin" referrerpolicy="no-referrer" loading="lazy"></iframe>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        const close = () => modal.remove();
+        modal.querySelectorAll('[data-action="close-source"]').forEach((el) => el.addEventListener('click', close));
+        document.addEventListener('keydown', function onEsc(ev) {
+            if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc); }
+        });
+    }
+
+    function sanitizeMealV2SourceLink(link) {
+        const value = String(link || '').trim();
+        if (!value) return '';
+        // Defense-in-depth at the iframe-src seam. The contract commits to
+        // null | same-origin route | sanitized URL, but a protocol-relative
+        // value like "//evil.example.com/x" passed straight through would
+        // escape the current origin once rendered in an iframe src — the
+        // browser pairs it with the current page's protocol against the
+        // attacker-controlled host. Always resolve through new URL() and
+        // require the resolved origin to equal window.location.origin,
+        // with an extra explicit reject for "//"-leading inputs so that
+        // even a buggy URL polyfill cannot widen the surface.
+        if (value.startsWith('//')) return '';
+        try {
+            const u = new URL(value, window.location.origin);
+            if (u.origin !== window.location.origin) return '';
+            if (u.protocol !== window.location.protocol) return '';
+            return u.pathname + u.search + u.hash;
+        } catch (_) {
+            return '';
+        }
+    }
+
+    // ── Mock backend (?fit134=mock) ─────────────────────────────────────
+    function mealV2MockEnabled() {
+        try {
+            const params = new URLSearchParams(window.location.search);
+            return params.get('fit134') === 'mock';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    const mealV2Mock = {
+        store: new Map(),
+        createMeal(textValue) {
+            const mealId = 'mock-meal-' + Math.random().toString(36).slice(2, 10);
+            const payload = {
+                meal_id: mealId,
+                meal_type: this.inferMealType(textValue) || 'lunch',
+                followup: {
+                    available: true,
+                    question: 'How big was the side of rice — a small scoop, half a cup, or a full cup?',
+                    used: false,
+                },
+                items: [
+                    {
+                        item_id: mealId + '-i1',
+                        name: 'Grilled chicken breast',
+                        portion_description: '6 oz',
+                        calories: 280, protein_g: 53, carbs_g: 0, fat_g: 6, sodium_mg: 95, fiber_g: 0,
+                        confidence: 0.88,
+                        source: { kind: 'vision', label: 'AI estimate', link: null },
+                        unclear: false,
+                        candidates: [],
+                        status: 'included',
+                    },
+                    {
+                        item_id: mealId + '-i2',
+                        name: 'Side of rice',
+                        portion_description: 'small',
+                        calories: 160, protein_g: 3, carbs_g: 35, fat_g: 0, sodium_mg: 1, fiber_g: 0,
+                        confidence: 0.42,
+                        source: { kind: 'text', label: 'Text parser', link: null },
+                        unclear: true,
+                        candidates: [
+                            { candidate_id: 'c-rice-white-cup', name: 'White rice', portion_description: '1 cup', source: { kind: 'branded', label: 'USDA', link: '/api/sources/usda/white-rice' } },
+                            { candidate_id: 'c-rice-brown-cup', name: 'Brown rice', portion_description: '1 cup', source: { kind: 'branded', label: 'USDA', link: '/api/sources/usda/brown-rice' } },
+                        ],
+                        status: 'included',
+                    },
+                ],
+            };
+            this.recompute(payload);
+            this.store.set(mealId, payload);
+            return JSON.parse(JSON.stringify(payload));
+        },
+        refresh(mealId, body) {
+            const payload = this.store.get(mealId);
+            if (!payload) throw new Error('mock meal not found: ' + mealId);
+            const kind = body && body.kind;
+            const findItem = (id) => payload.items.find((x) => x.item_id === id);
+            if (kind === 'add_item') {
+                const text = String(body.text || '').trim();
+                const branded = /\b(heb|h-?e-?b|hot cheetos?|chipotle|bill miller|whataburger|coca-?cola|coke|pepsi|trader joe|costco|starbucks|mcdonalds?)\b/i.test(text);
+                const itemId = mealId + '-i' + (payload.items.length + 1);
+                payload.items.push({
+                    item_id: itemId,
+                    name: text || 'Added item',
+                    portion_description: branded ? 'looking up…' : '1 serving',
+                    calories: branded ? 240 : 120,
+                    protein_g: branded ? 3 : 2,
+                    carbs_g: branded ? 30 : 18,
+                    fat_g: branded ? 12 : 3,
+                    sodium_mg: branded ? 320 : 50,
+                    fiber_g: 1,
+                    confidence: branded ? 0.62 : 0.35,
+                    source: { kind: branded ? 'branded' : 'text', label: branded ? 'Branded lookup' : 'Text parser', link: branded ? '/api/sources/branded/' + encodeURIComponent(text.toLowerCase().replace(/\s+/g, '-')) : null },
+                    unclear: !branded,
+                    candidates: [],
+                    status: 'included',
+                });
+            } else if (kind === 'edit_portion') {
+                const it = findItem(body.item_id);
+                if (it) {
+                    it.portion_description = String(body.text || '').trim() || it.portion_description;
+                    it.unclear = false;
+                }
+            } else if (kind === 'followup_answer') {
+                payload.followup.used = true;
+                const unclear = payload.items.find((x) => x.status === 'included' && x.unclear);
+                if (unclear) unclear.unclear = false;
+            } else if (kind === 'choose_candidate') {
+                const it = findItem(body.item_id);
+                if (it) {
+                    const choice = (it.candidates || []).find((c) => c.candidate_id === body.candidate_id);
+                    if (choice) {
+                        it.name = choice.name;
+                        it.portion_description = choice.portion_description;
+                        it.source = choice.source || it.source;
+                        it.unclear = false;
+                        if (!Number.isFinite(Number(it.calories)) || it.calories === 0) it.calories = 200;
+                    }
+                    it.candidates = [];
+                }
+            } else if (kind === 'skip_item') {
+                const it = findItem(body.item_id);
+                if (it) it.status = 'skipped';
+            } else if (kind === 'delete_item') {
+                const it = findItem(body.item_id);
+                if (it) it.status = 'deleted';
+            } else if (kind === 'restore_item') {
+                const it = findItem(body.item_id);
+                if (it) it.status = 'included';
+            } else if (kind === 'set_meal_type') {
+                if (MEAL_TYPE_OPTIONS.includes(body.meal_type)) payload.meal_type = body.meal_type;
+            }
+            this.recompute(payload);
+            return JSON.parse(JSON.stringify(payload));
+        },
+        accept(mealId) {
+            if (!this.store.has(mealId)) throw new Error('mock meal not found: ' + mealId);
+            this.store.delete(mealId);
+            return { saved: true };
+        },
+        discard(mealId) {
+            this.store.delete(mealId);
+            return { removed: true };
+        },
+        recompute(payload) {
+            payload.save_blocked_item_ids = payload.items
+                .filter((it) => it.status === 'included' && it.unclear)
+                .map((it) => it.item_id);
+            const totals = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0, sodium_mg: 0, fiber_g: 0 };
+            payload.items
+                .filter((it) => it.status === 'included')
+                .forEach((it) => {
+                    MEAL_V2_MACRO_KEYS.forEach((k) => {
+                        const v = Number(it[k]);
+                        if (Number.isFinite(v)) totals[k] += v;
+                    });
+                });
+            MEAL_V2_MACRO_KEYS.forEach((k) => { totals[k] = Math.round(totals[k] * 10) / 10; });
+            payload.meal_totals = totals;
+        },
+        inferMealType(text) {
+            const t = String(text || '').toLowerCase();
+            if (/(breakfast|eggs?|bagel|cereal|oatmeal|pancake)/.test(t)) return 'breakfast';
+            if (/(lunch|sandwich|salad|burrito|taco)/.test(t)) return 'lunch';
+            if (/(dinner|steak|pasta|pizza|rice and|grill)/.test(t)) return 'dinner';
+            return 'snack';
+        },
+    };
 
     function clearMealComposerInputs() {
         const { text } = mealComposerEls();
