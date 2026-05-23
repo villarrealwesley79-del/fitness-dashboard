@@ -301,6 +301,39 @@ def test_contract_refresh_kinds_match_locked_plan():
         assert f"'{kind}'" in enum_line, f"refresh kind {kind!r} missing"
 
 
+def test_live_refresh_injects_request_id_for_guarded_kinds():
+    """FIT-144 backend at app.py:_REVIEW_REQUEST_ID_KINDS returns 400 without
+    a `request_id` for add_item, edit_portion, choose_candidate, and
+    followup_answer. A duplicate request_id with the same kind is treated as
+    an idempotent replay (returns the prior payload, drops the new body), so
+    the frontend must generate a fresh id per logical mutation attempt — not
+    one per (meal_id, kind).
+    """
+    block = _v2_block()
+    # The guarded set matches the backend constant exactly.
+    guarded_line = block.split("const MEAL_V2_REQUEST_ID_KINDS = new Set([", 1)[1].split("])", 1)[0]
+    for kind in {"add_item", "edit_portion", "choose_candidate", "followup_answer"}:
+        assert f"'{kind}'" in guarded_line, f"guarded kind {kind!r} missing"
+    # skip_item / delete_item / restore_item / set_meal_type are NOT guarded
+    # (backend does not require request_id for those).
+    for kind in {"skip_item", "delete_item", "restore_item", "set_meal_type"}:
+        assert f"'{kind}'" not in guarded_line, (
+            f"kind {kind!r} should not require request_id"
+        )
+    # Helper exists and mirrors the newMealClientId UUID-with-fallback pattern.
+    assert "function mealV2GenerateRequestId()" in block
+    assert "crypto.randomUUID" in block.split("function mealV2GenerateRequestId", 1)[1].split("\n    }", 1)[0]
+    # submitMealV2Refresh injects request_id BEFORE the network call for
+    # guarded kinds, and leaves it absent otherwise so the backend can
+    # validate the 400 path correctly.
+    submit_section = block.split("async function submitMealV2Refresh", 1)[1].split("async function", 1)[0]
+    assert "MEAL_V2_REQUEST_ID_KINDS.has(body.kind)" in submit_section
+    assert "mealV2GenerateRequestId()" in submit_section
+    # The caller's body object is not mutated (a fresh object with the id
+    # is constructed via spread).
+    assert "{ ...body, request_id:" in submit_section
+
+
 def test_css_contains_v2_review_styles():
     """Visual QA needs the new review card to be styled; assert the V2
     block actually shipped to style.css so the contract test isn't fooled

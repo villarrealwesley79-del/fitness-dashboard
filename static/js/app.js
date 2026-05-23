@@ -7051,9 +7051,23 @@
         'add_item', 'edit_portion', 'followup_answer', 'choose_candidate',
         'skip_item', 'delete_item', 'restore_item', 'set_meal_type',
     ];
+    // FIT-144 backend (app.py:_REVIEW_REQUEST_ID_KINDS) requires a client-
+    // generated request_id for these 4 kinds and treats same-id+same-kind as
+    // an idempotent replay (returns the prior payload without applying the
+    // new body). A fresh UUID per logical mutation attempt is the correct
+    // contract; reusing one across distinct user actions would silently drop
+    // the second action's input.
+    const MEAL_V2_REQUEST_ID_KINDS = new Set([
+        'add_item', 'edit_portion', 'choose_candidate', 'followup_answer',
+    ]);
     const MEAL_V2_MACRO_KEYS = ['calories', 'protein_g', 'carbs_g', 'fat_g', 'sodium_mg', 'fiber_g'];
     const MEAL_V2_ITEM_STATUSES = ['included', 'skipped', 'deleted'];
     const MEAL_V2_SOURCE_KINDS = ['vision', 'text', 'branded', 'vocab', 'manual'];
+
+    function mealV2GenerateRequestId() {
+        if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+        return 'meal-v2-req-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    }
 
     function isMealV2Payload(payload) {
         return !!(payload && typeof payload === 'object'
@@ -7471,9 +7485,15 @@
         if (!body || !MEAL_V2_REFRESH_KINDS.includes(body.kind)) return;
         const entry = mealV2EntryById(mealId);
         if (!entry || entry.pendingRefresh) return;
+        // FIT-144 idempotency: every user-initiated mutation in the guarded
+        // set gets a fresh request_id. `pendingRefresh` already serializes
+        // calls so each invocation is one logical attempt.
+        const liveBody = MEAL_V2_REQUEST_ID_KINDS.has(body.kind) && !body.request_id
+            ? { ...body, request_id: mealV2GenerateRequestId() }
+            : body;
         setMealV2PendingRefresh(mealId, true);
         try {
-            const payload = await postMealV2Refresh(mealId, body);
+            const payload = await postMealV2Refresh(mealId, liveBody);
             applyMealV2Refresh(mealId, payload);
         } catch (e) {
             console.error(e);
