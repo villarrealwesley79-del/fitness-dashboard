@@ -281,6 +281,23 @@ GENERIC_NUTRITION_BANDS_BY_INPUT = {
     "packaged_photo": {"protein_g": (0, 80), "carbs_g": (0, 160), "fat_g": (0, 90), "sodium_mg": (0, 2500)},
 }
 _ITEM_HINT_STOPWORDS = {"and", "with", "meal", "plate", "food", "some"}
+RAW_TRACE_BLOCKED_FRAGMENTS = (
+    "meal input:",
+    "task input:",
+    "attached image",
+    "image_url",
+    "data:image",
+    "```",
+    "/tmp/",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".heic",
+    "\"calories\"",
+)
+IMAGE_PAYLOAD_INSTRUCTIONS_BY_TASK = {
+    "food_photo_nutrition": "Estimate the meal from the attached image only.",
+}
 
 
 @dataclass(frozen=True)
@@ -585,12 +602,14 @@ def _chat_payload(case: MealCase, model: str, image_path: str | None = None) -> 
     instruction = _task_instruction(case)
     content: str | list[dict] = f"{instruction}\n\nTask input: {case.prompt}"
     if image_path:
+        if case.task_class not in IMAGE_PAYLOAD_INSTRUCTIONS_BY_TASK:
+            raise ValueError(f"image payloads are only supported for food_photo_nutrition: {case.task_class}")
         mime_type = mimetypes.guess_type(image_path)[0] or "image/jpeg"
         with open(image_path, "rb") as handle:
             encoded = base64.b64encode(handle.read()).decode("ascii")
         content = [
             {"type": "text", "text": instruction},
-            {"type": "text", "text": "Estimate the meal from the attached image only."},
+            {"type": "text", "text": IMAGE_PAYLOAD_INSTRUCTIONS_BY_TASK[case.task_class]},
             {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}},
         ]
     return {
@@ -708,21 +727,7 @@ def _raw_trace_free(estimate: dict) -> bool:
     if isinstance(notes, list):
         snippets.extend(note for note in notes if isinstance(note, str))
     joined = "\n".join(snippets).lower()
-    blocked_fragments = (
-        "meal input:",
-        "task input:",
-        "attached image",
-        "image_url",
-        "data:image",
-        "```",
-        "/tmp/",
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".heic",
-        "\"calories\"",
-    )
-    return not any(fragment in joined for fragment in blocked_fragments)
+    return not any(fragment in joined for fragment in RAW_TRACE_BLOCKED_FRAGMENTS)
 
 
 def _string_values(value: object) -> list[str]:
@@ -866,6 +871,20 @@ def _non_nutrition_task_checks(case: MealCase, response: dict, expected: set[str
     }
 
 
+def _task_confidence_calibrated(case: MealCase, response: dict) -> bool:
+    confidence = response.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        return False
+    confidence = float(confidence)
+    if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+        return False
+    if case.ambiguity == "high":
+        return confidence <= 0.65
+    if case.ambiguity == "low":
+        return confidence >= 0.55
+    return 0.35 <= confidence <= 0.9
+
+
 def _task_quality_score(case: MealCase, response: dict | None, schema_errors: list[str]) -> dict:
     if case.task_class in {"food_photo_nutrition", "meal_text_nutrition"}:
         return _quality_score(case, response, schema_errors)
@@ -887,32 +906,11 @@ def _task_quality_score(case: MealCase, response: dict | None, schema_errors: li
         observed_text = " ".join(_string_values(response))
     observed = _hint_tokens(observed_text)
     expected = _hint_tokens(case.expected_item_hint)
-    confidence = response.get("confidence")
-    confidence_calibrated = (
-        not isinstance(confidence, bool)
-        and isinstance(confidence, (int, float))
-        and math.isfinite(float(confidence))
-        and 0 <= float(confidence) <= 1
-    )
     joined = "\n".join(_string_values(response)).lower()
-    raw_trace_free = not any(
-        fragment in joined
-        for fragment in (
-            "task input:",
-            "meal input:",
-            "image_url",
-            "data:image",
-            "```",
-            "/tmp/",
-            ".jpg",
-            ".jpeg",
-            ".png",
-            ".heic",
-        )
-    )
+    raw_trace_free = not any(fragment in joined for fragment in RAW_TRACE_BLOCKED_FRAGMENTS)
     checks = {
         **_non_nutrition_task_checks(case, response, expected, observed),
-        "confidence_calibrated": confidence_calibrated,
+        "confidence_calibrated": _task_confidence_calibrated(case, response),
         "raw_trace_free": raw_trace_free,
     }
     checks["passed"] = all(checks.values())
