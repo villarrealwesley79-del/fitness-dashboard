@@ -548,6 +548,42 @@ def test_branded_food_quality_does_not_count_query_echo_as_hint_match():
     assert score["passed"] is False
 
 
+def test_branded_food_quality_requires_plausible_nutrition_bands():
+    module = _load_module()
+    case = module.BRANDED_FOOD_CASES[0]
+    zero_nutrition = {
+        "query": case.prompt,
+        "resolved_name": "McDonald's Quarter Pounder with Cheese",
+        "brand": "McDonald's",
+        "serving_description": "one sandwich",
+        "calories": 0,
+        "protein_g": 0,
+        "carbs_g": 0,
+        "fat_g": 0,
+        "sodium_mg": 0,
+        "confidence": 0.8,
+        "source": "model prior",
+        "notes": [],
+    }
+    plausible_nutrition = {
+        **zero_nutrition,
+        "calories": 520,
+        "protein_g": 30,
+        "carbs_g": 42,
+        "fat_g": 26,
+        "sodium_mg": 1150,
+    }
+
+    zero_score = module._task_quality_score(case, zero_nutrition, [])
+    plausible_score = module._task_quality_score(case, plausible_nutrition, [])
+
+    assert zero_score["response_hint_match"] is True
+    assert zero_score["branded_nutrition_plausible"] is False
+    assert zero_score["passed"] is False
+    assert plausible_score["branded_nutrition_plausible"] is True
+    assert plausible_score["passed"] is True
+
+
 def test_workout_quality_requires_actionable_adjustments_and_expected_readiness():
     module = _load_module()
     case = module.WORKOUT_CASES[0]

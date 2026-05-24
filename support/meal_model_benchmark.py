@@ -185,6 +185,12 @@ EXPECTED_WORKOUT_READINESS = {
     "workout-002": "high",
     "workout-003": "moderate",
 }
+EXPECTED_BRANDED_NUTRITION_BANDS = {
+    "brand-001": {"calories": (450, 750), "protein_g": (20, 45), "carbs_g": (30, 60), "fat_g": (20, 45), "sodium_mg": (700, 1600)},
+    "brand-002": {"calories": (80, 220), "protein_g": (8, 25), "carbs_g": (8, 35), "fat_g": (0, 8), "sodium_mg": (20, 180)},
+    "brand-003": {"calories": (150, 280), "protein_g": (15, 30), "carbs_g": (12, 35), "fat_g": (4, 16), "sodium_mg": (80, 400)},
+    "brand-004": {"calories": (500, 1200), "protein_g": (25, 70), "carbs_g": (45, 150), "fat_g": (10, 55), "sodium_mg": (600, 2600)},
+}
 PUBLIC_ESTIMATE_FIELDS = tuple(MEAL_ESTIMATE_RESPONSE_SCHEMA["properties"]) + ("source",)
 EXPECTED_CALORIE_BANDS = {
     "txt-001": (120, 450),
@@ -823,6 +829,17 @@ def _daily_focus_text(response: dict) -> str:
     )
 
 
+def _branded_nutrition_within_bands(case: MealCase, response: dict) -> bool:
+    bands = EXPECTED_BRANDED_NUTRITION_BANDS.get(case.case_id, {})
+    for key, (low, high) in bands.items():
+        value = response.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            return False
+        if not (low <= float(value) <= high):
+            return False
+    return bool(bands)
+
+
 def _non_nutrition_task_checks(case: MealCase, response: dict, expected: set[str], observed: set[str]) -> dict:
     if case.task_class == "workout_analysis_adjustment":
         adjustment_tokens = _hint_tokens(_workout_adjustment_text(response))
@@ -838,6 +855,11 @@ def _non_nutrition_task_checks(case: MealCase, response: dict, expected: set[str
             "response_hint_match": bool(expected & observed),
             "actionable_priorities": _non_empty_string_list(response.get("priorities")),
             "focus_matches": len(expected & focus_tokens) >= required_matches,
+        }
+    if case.task_class == "branded_food_resolution":
+        return {
+            "response_hint_match": bool(expected & observed),
+            "branded_nutrition_plausible": _branded_nutrition_within_bands(case, response),
         }
     return {
         "response_hint_match": bool(expected & observed),
