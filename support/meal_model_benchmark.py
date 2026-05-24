@@ -26,8 +26,20 @@ LM_STUDIO_URL = "http://127.0.0.1:1234"
 CALORIE_MAX = 5000
 MACRO_GRAM_MAX = 500
 SODIUM_MG_MAX = 12000
-TEXT_LATENCY_PASS_MS = 10000
-VISION_LATENCY_PASS_MS = 20000
+MEAL_TEXT_LATENCY_PASS_MS = 5000
+FOOD_PHOTO_LATENCY_PASS_MS = 15000
+WORKOUT_ANALYSIS_LATENCY_PASS_MS = 30000
+DAILY_BRIEF_LATENCY_PASS_MS = 30000
+BRANDED_FOOD_LATENCY_PASS_MS = 5000
+TEXT_LATENCY_PASS_MS = MEAL_TEXT_LATENCY_PASS_MS
+VISION_LATENCY_PASS_MS = FOOD_PHOTO_LATENCY_PASS_MS
+TASK_LATENCY_PASS_MS = {
+    "food_photo_nutrition": FOOD_PHOTO_LATENCY_PASS_MS,
+    "meal_text_nutrition": MEAL_TEXT_LATENCY_PASS_MS,
+    "workout_analysis_adjustment": WORKOUT_ANALYSIS_LATENCY_PASS_MS,
+    "daily_coaching_brief": DAILY_BRIEF_LATENCY_PASS_MS,
+    "branded_food_resolution": BRANDED_FOOD_LATENCY_PASS_MS,
+}
 MEAL_ESTIMATE_RESPONSE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -59,6 +71,125 @@ MEAL_ESTIMATE_RESPONSE_SCHEMA = {
         "ambiguous",
         "uncertainty_notes",
     ],
+}
+WORKOUT_ADJUSTMENT_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string"},
+        "readiness": {"type": "string", "enum": ["low", "moderate", "high"]},
+        "adjustments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "target": {"type": "string"},
+                    "action": {"type": "string"},
+                    "rationale": {"type": "string"},
+                },
+                "required": ["target", "action", "rationale"],
+            },
+        },
+        "risk_flags": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number"},
+    },
+    "required": ["summary", "readiness", "adjustments", "risk_flags", "confidence"],
+}
+DAILY_COACHING_BRIEF_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string"},
+        "priorities": {"type": "array", "items": {"type": "string"}},
+        "training_focus": {"type": "string"},
+        "nutrition_focus": {"type": "string"},
+        "recovery_focus": {"type": "string"},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number"},
+    },
+    "required": [
+        "summary",
+        "priorities",
+        "training_focus",
+        "nutrition_focus",
+        "recovery_focus",
+        "warnings",
+        "confidence",
+    ],
+}
+BRANDED_FOOD_RESOLUTION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "query": {"type": "string"},
+        "resolved_name": {"type": "string"},
+        "brand": {"type": ["string", "null"]},
+        "serving_description": {"type": ["string", "null"]},
+        "calories": {"type": "number"},
+        "protein_g": {"type": "number"},
+        "carbs_g": {"type": "number"},
+        "fat_g": {"type": "number"},
+        "sodium_mg": {"type": "number"},
+        "confidence": {"type": "number"},
+        "source": {"type": "string"},
+        "notes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "query",
+        "resolved_name",
+        "brand",
+        "serving_description",
+        "calories",
+        "protein_g",
+        "carbs_g",
+        "fat_g",
+        "sodium_mg",
+        "confidence",
+        "source",
+        "notes",
+    ],
+}
+TASK_SCHEMAS = {
+    "food_photo_nutrition": MEAL_ESTIMATE_RESPONSE_SCHEMA,
+    "meal_text_nutrition": MEAL_ESTIMATE_RESPONSE_SCHEMA,
+    "workout_analysis_adjustment": WORKOUT_ADJUSTMENT_RESPONSE_SCHEMA,
+    "daily_coaching_brief": DAILY_COACHING_BRIEF_RESPONSE_SCHEMA,
+    "branded_food_resolution": BRANDED_FOOD_RESOLUTION_RESPONSE_SCHEMA,
+}
+TASK_SCHEMA_NAMES = {
+    "food_photo_nutrition": "meal_estimate",
+    "meal_text_nutrition": "meal_estimate",
+    "workout_analysis_adjustment": "workout_adjustment",
+    "daily_coaching_brief": "daily_coaching_brief",
+    "branded_food_resolution": "branded_food_resolution",
+}
+TASK_NUMBER_BOUNDS = {
+    "workout_analysis_adjustment": {
+        "confidence": (0, 1),
+    },
+    "daily_coaching_brief": {
+        "confidence": (0, 1),
+    },
+    "branded_food_resolution": {
+        "calories": (0, CALORIE_MAX),
+        "protein_g": (0, MACRO_GRAM_MAX),
+        "carbs_g": (0, MACRO_GRAM_MAX),
+        "fat_g": (0, MACRO_GRAM_MAX),
+        "sodium_mg": (0, SODIUM_MG_MAX),
+        "confidence": (0, 1),
+    },
+}
+EXPECTED_WORKOUT_READINESS = {
+    "workout-001": "low",
+    "workout-002": "high",
+    "workout-003": "moderate",
+}
+EXPECTED_BRANDED_NUTRITION_BANDS = {
+    "brand-001": {"calories": (450, 750), "protein_g": (20, 45), "carbs_g": (30, 60), "fat_g": (20, 45), "sodium_mg": (700, 1600)},
+    "brand-002": {"calories": (80, 220), "protein_g": (8, 25), "carbs_g": (8, 35), "fat_g": (0, 8), "sodium_mg": (20, 180)},
+    "brand-003": {"calories": (150, 280), "protein_g": (15, 30), "carbs_g": (12, 35), "fat_g": (4, 16), "sodium_mg": (80, 400)},
+    "brand-004": {"calories": (500, 1200), "protein_g": (25, 70), "carbs_g": (45, 150), "fat_g": (10, 55), "sodium_mg": (600, 2600)},
 }
 PUBLIC_ESTIMATE_FIELDS = tuple(MEAL_ESTIMATE_RESPONSE_SCHEMA["properties"]) + ("source",)
 EXPECTED_CALORIE_BANDS = {
@@ -160,6 +291,7 @@ class MealCase:
     expected_item_hint: str
     ambiguity: str
     notes: str = ""
+    task_class: str = "meal_text_nutrition"
 
 
 TEXT_CASES = [
@@ -186,7 +318,7 @@ TEXT_CASES = [
 ]
 
 PHOTO_CASES = [
-    MealCase(f"photo-{i:03d}", "photo", prompt, hint, ambiguity)
+    MealCase(f"photo-{i:03d}", "photo", prompt, hint, ambiguity, task_class="food_photo_nutrition")
     for i, (prompt, hint, ambiguity) in enumerate(
         [
             ("plate photo: chicken rice vegetables", "chicken rice", "medium"),
@@ -215,7 +347,7 @@ PHOTO_CASES = [
 ]
 
 PACKAGED_CASES = [
-    MealCase(f"pkg-{i:03d}", "packaged_photo", prompt, hint, ambiguity)
+    MealCase(f"pkg-{i:03d}", "packaged_photo", prompt, hint, ambiguity, task_class="food_photo_nutrition")
     for i, (prompt, hint, ambiguity) in enumerate(
         [
             ("packaged food photo: protein bar front", "protein bar", "low"),
@@ -234,21 +366,114 @@ PACKAGED_CASES = [
 ]
 
 AMBIGUOUS_CASES = [
-    MealCase("amb-001", "photo", "photo: shared half burger and some fries", "burger fries", "high"),
-    MealCase("amb-002", "photo", "photo: buffet plate", "buffet", "high"),
-    MealCase("amb-003", "photo", "photo: potluck snacks", "snacks", "high"),
-    MealCase("amb-004", "photo", "photo: a few bites of pasta", "pasta", "high"),
-    MealCase("amb-005", "photo", "photo: partially eaten plate", "partial plate", "high"),
-    MealCase("amb-006", "photo", "photo: family style shared meal", "shared meal", "high"),
-    MealCase("amb-007", "photo", "photo: dark restaurant plate", "restaurant meal", "high"),
-    MealCase("amb-008", "photo", "photo: sauce-heavy restaurant meal", "restaurant meal", "high"),
-    MealCase("amb-009", "photo", "photo: drink with no label", "drink", "high"),
-    MealCase("amb-010", "photo", "photo: leftovers from last night", "leftovers", "high"),
+    MealCase("amb-001", "photo", "photo: shared half burger and some fries", "burger fries", "high", task_class="food_photo_nutrition"),
+    MealCase("amb-002", "photo", "photo: buffet plate", "buffet", "high", task_class="food_photo_nutrition"),
+    MealCase("amb-003", "photo", "photo: potluck snacks", "snacks", "high", task_class="food_photo_nutrition"),
+    MealCase("amb-004", "photo", "photo: a few bites of pasta", "pasta", "high", task_class="food_photo_nutrition"),
+    MealCase("amb-005", "photo", "photo: partially eaten plate", "partial plate", "high", task_class="food_photo_nutrition"),
+    MealCase("amb-006", "photo", "photo: family style shared meal", "shared meal", "high", task_class="food_photo_nutrition"),
+    MealCase("amb-007", "photo", "photo: dark restaurant plate", "restaurant meal", "high", task_class="food_photo_nutrition"),
+    MealCase("amb-008", "photo", "photo: sauce-heavy restaurant meal", "restaurant meal", "high", task_class="food_photo_nutrition"),
+    MealCase("amb-009", "photo", "photo: drink with no label", "drink", "high", task_class="food_photo_nutrition"),
+    MealCase("amb-010", "photo", "photo: leftovers from last night", "leftovers", "high", task_class="food_photo_nutrition"),
+]
+
+WORKOUT_CASES = [
+    MealCase(
+        "workout-001",
+        "workout",
+        "Planned: heavy lower day with squats 5x5 and RDL 4x8. Signals: sleep 5h, legs sore 8/10, HRV down, yesterday intervals.",
+        "reduce lower volume",
+        "high",
+        task_class="workout_analysis_adjustment",
+    ),
+    MealCase(
+        "workout-002",
+        "workout",
+        "Planned: upper hypertrophy. Signals: sleep 8h, soreness low, last bench RPE 7, calories on target.",
+        "progress upper workout",
+        "low",
+        task_class="workout_analysis_adjustment",
+    ),
+    MealCase(
+        "workout-003",
+        "workout",
+        "Planned: tempo run. Signals: resting HR elevated, knee pain 4/10, missed carbs at lunch.",
+        "swap run",
+        "medium",
+        task_class="workout_analysis_adjustment",
+    ),
+]
+
+DAILY_BRIEF_CASES = [
+    MealCase(
+        "brief-001",
+        "daily_brief",
+        "Today: strength day, protein behind by 45g, sleep 6h, soreness moderate, steps low by 3000.",
+        "protein strength recovery",
+        "medium",
+        task_class="daily_coaching_brief",
+    ),
+    MealCase(
+        "brief-002",
+        "daily_brief",
+        "Today: rest day, calories high yesterday, hydration low, HRV normal, long walk planned.",
+        "rest hydration walk",
+        "medium",
+        task_class="daily_coaching_brief",
+    ),
+    MealCase(
+        "brief-003",
+        "daily_brief",
+        "Today: interval session, carbs low at breakfast, sleep good, calf tightness mild.",
+        "carbs interval calf",
+        "medium",
+        task_class="daily_coaching_brief",
+    ),
+]
+
+BRANDED_FOOD_CASES = [
+    MealCase(
+        "brand-001",
+        "branded_food",
+        "Resolve branded food: McDonald's Quarter Pounder with Cheese, one sandwich.",
+        "quarter pounder mcdonald",
+        "low",
+        task_class="branded_food_resolution",
+    ),
+    MealCase(
+        "brand-002",
+        "branded_food",
+        "Resolve branded food: Chobani Greek Yogurt strawberry cup, one single-serve container.",
+        "chobani yogurt",
+        "low",
+        task_class="branded_food_resolution",
+    ),
+    MealCase(
+        "brand-003",
+        "branded_food",
+        "Resolve branded food: Quest chocolate chip cookie dough protein bar.",
+        "quest protein bar",
+        "low",
+        task_class="branded_food_resolution",
+    ),
+    MealCase(
+        "brand-004",
+        "branded_food",
+        "Resolve branded food: Chipotle chicken burrito bowl with white rice and black beans.",
+        "chipotle chicken bowl",
+        "medium",
+        task_class="branded_food_resolution",
+    ),
 ]
 
 
-def all_cases() -> list[MealCase]:
+def nutrition_cases() -> list[MealCase]:
     return TEXT_CASES + PHOTO_CASES + PACKAGED_CASES + AMBIGUOUS_CASES
+
+
+def all_cases() -> list[MealCase]:
+    return nutrition_cases() + WORKOUT_CASES + DAILY_BRIEF_CASES + BRANDED_FOOD_CASES
 
 
 def probe_lm_studio(url: str = LM_STUDIO_URL, timeout: float = 2.0) -> dict:
@@ -309,13 +534,56 @@ def image_capable_cases() -> list[MealCase]:
     return [case for case in all_cases() if case.input_type in {"photo", "packaged_photo"}]
 
 
+def task_class_counts(cases: list[MealCase] | None = None) -> dict[str, int]:
+    counts = {task_class: 0 for task_class in TASK_LATENCY_PASS_MS}
+    selected_cases = all_cases() if cases is None else cases
+    for case in selected_cases:
+        counts[case.task_class] = counts.get(case.task_class, 0) + 1
+    return counts
+
+
+def requires_image(case: MealCase) -> bool:
+    return case.input_type in {"photo", "packaged_photo"}
+
+
+def _schema_for_case(case: MealCase) -> dict:
+    return TASK_SCHEMAS[case.task_class]
+
+
+def _schema_name_for_case(case: MealCase) -> str:
+    return TASK_SCHEMA_NAMES[case.task_class]
+
+
+def _task_instruction(case: MealCase) -> str:
+    if case.task_class in {"food_photo_nutrition", "meal_text_nutrition"}:
+        return (
+            "Estimate this meal as JSON only with keys item_name, portion_description, "
+            "meal_type, calories, protein_g, carbs_g, fat_g, sodium_mg, fiber_g, confidence, "
+            "ambiguous, uncertainty_notes. Use low confidence for unclear portions."
+        )
+    if case.task_class == "workout_analysis_adjustment":
+        return (
+            "Analyze the planned workout and readiness signals. Return JSON only with keys "
+            "summary, readiness, adjustments, risk_flags, confidence. Use adjustments as an "
+            "array of target/action/rationale objects."
+        )
+    if case.task_class == "daily_coaching_brief":
+        return (
+            "Create a concise daily coaching brief. Return JSON only with keys summary, "
+            "priorities, training_focus, nutrition_focus, recovery_focus, warnings, confidence."
+        )
+    if case.task_class == "branded_food_resolution":
+        return (
+            "Resolve the branded food query to one likely nutrition entry. Return JSON only with "
+            "keys query, resolved_name, brand, serving_description, calories, protein_g, carbs_g, "
+            "fat_g, sodium_mg, confidence, source, notes."
+        )
+    raise ValueError(f"unsupported task class: {case.task_class}")
+
+
 def _chat_payload(case: MealCase, model: str, image_path: str | None = None) -> dict:
-    instruction = (
-        "Estimate this meal as JSON only with keys item_name, portion_description, "
-        "meal_type, calories, protein_g, carbs_g, fat_g, sodium_mg, fiber_g, confidence, "
-        "ambiguous, uncertainty_notes. Use low confidence for unclear portions."
-    )
-    content: str | list[dict] = f"{instruction}\n\nMeal input: {case.prompt}"
+    instruction = _task_instruction(case)
+    content: str | list[dict] = f"{instruction}\n\nTask input: {case.prompt}"
     if image_path:
         mime_type = mimetypes.guess_type(image_path)[0] or "image/jpeg"
         with open(image_path, "rb") as handle:
@@ -332,8 +600,8 @@ def _chat_payload(case: MealCase, model: str, image_path: str | None = None) -> 
         "response_format": {
             "type": "json_schema",
             "json_schema": {
-                "name": "meal_estimate",
-                "schema": MEAL_ESTIMATE_RESPONSE_SCHEMA,
+                "name": _schema_name_for_case(case),
+                "schema": _schema_for_case(case),
                 "strict": True,
             },
         },
@@ -442,6 +710,7 @@ def _raw_trace_free(estimate: dict) -> bool:
     joined = "\n".join(snippets).lower()
     blocked_fragments = (
         "meal input:",
+        "task input:",
         "attached image",
         "image_url",
         "data:image",
@@ -454,6 +723,200 @@ def _raw_trace_free(estimate: dict) -> bool:
         "\"calories\"",
     )
     return not any(fragment in joined for fragment in blocked_fragments)
+
+
+def _string_values(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        values: list[str] = []
+        for item in value:
+            values.extend(_string_values(item))
+        return values
+    if isinstance(value, dict):
+        values = []
+        for item in value.values():
+            values.extend(_string_values(item))
+        return values
+    return []
+
+
+def _structured_response_schema_errors(response: dict | None, schema: dict) -> list[str]:
+    if not isinstance(response, dict):
+        return ["response_not_json_object"]
+    required = set(schema.get("required", []))
+    properties = schema.get("properties", {})
+    errors = [f"missing_{key}" for key in sorted(required - set(response))]
+    if schema.get("additionalProperties") is False:
+        errors.extend(f"unexpected_{key}" for key in sorted(set(response) - set(properties)))
+    for key, rules in properties.items():
+        if key not in response:
+            continue
+        if not _schema_value_valid(response[key], rules):
+            errors.append(f"invalid_{key}")
+    return errors
+
+
+def _schema_value_valid(value: object, rules: dict) -> bool:
+    if "enum" in rules:
+        try:
+            if value not in rules["enum"]:
+                return False
+        except TypeError:
+            return False
+    expected = rules.get("type")
+    if isinstance(expected, list):
+        return any(_schema_value_valid(value, {**rules, "type": item}) for item in expected)
+    if expected == "string":
+        if not isinstance(value, str):
+            return False
+        return bool(value.strip())
+    if expected == "null":
+        return value is None
+    if expected == "number":
+        return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(float(value))
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "array":
+        if not isinstance(value, list):
+            return False
+        item_rules = rules.get("items")
+        return not item_rules or all(_schema_value_valid(item, item_rules) for item in value)
+    if expected == "object":
+        if not isinstance(value, dict):
+            return False
+        return not _structured_response_schema_errors(value, rules)
+    return True
+
+
+def _task_response_schema_errors(case: MealCase, response: dict | None) -> list[str]:
+    if case.task_class in {"food_photo_nutrition", "meal_text_nutrition"}:
+        return _estimate_schema_errors(response)
+    errors = _structured_response_schema_errors(response, _schema_for_case(case))
+    if isinstance(response, dict):
+        errors.extend(_number_bounds_errors(response, TASK_NUMBER_BOUNDS.get(case.task_class, {})))
+    return list(dict.fromkeys(errors))
+
+
+def _number_bounds_errors(response: dict, bounds: dict[str, tuple[float, float]]) -> list[str]:
+    errors = []
+    for key, (minimum, maximum) in bounds.items():
+        value = response.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            continue
+        if not (minimum <= float(value) <= maximum):
+            errors.append(f"invalid_{key}")
+    return errors
+
+
+def _non_empty_string_list(value: object) -> bool:
+    return isinstance(value, list) and any(isinstance(item, str) and item.strip() for item in value)
+
+
+def _workout_adjustment_text(response: dict) -> str:
+    adjustments = response.get("adjustments")
+    if not isinstance(adjustments, list):
+        return ""
+    return " ".join(_string_values({"adjustments": adjustments}))
+
+
+def _daily_focus_text(response: dict) -> str:
+    return " ".join(
+        _string_values({
+            key: response.get(key)
+            for key in ("priorities", "training_focus", "nutrition_focus", "recovery_focus")
+        })
+    )
+
+
+def _branded_nutrition_within_bands(case: MealCase, response: dict) -> bool:
+    bands = EXPECTED_BRANDED_NUTRITION_BANDS.get(case.case_id, {})
+    for key, (low, high) in bands.items():
+        value = response.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            return False
+        if not (low <= float(value) <= high):
+            return False
+    return bool(bands)
+
+
+def _non_nutrition_task_checks(case: MealCase, response: dict, expected: set[str], observed: set[str]) -> dict:
+    if case.task_class == "workout_analysis_adjustment":
+        adjustment_tokens = _hint_tokens(_workout_adjustment_text(response))
+        return {
+            "response_hint_match": bool(expected & observed),
+            "actionable_adjustments": bool(response.get("adjustments")) and bool(expected & adjustment_tokens),
+            "readiness_matches": response.get("readiness") == EXPECTED_WORKOUT_READINESS.get(case.case_id),
+        }
+    if case.task_class == "daily_coaching_brief":
+        focus_tokens = _hint_tokens(_daily_focus_text(response))
+        required_matches = min(2, len(expected))
+        return {
+            "response_hint_match": bool(expected & observed),
+            "actionable_priorities": _non_empty_string_list(response.get("priorities")),
+            "focus_matches": len(expected & focus_tokens) >= required_matches,
+        }
+    if case.task_class == "branded_food_resolution":
+        return {
+            "response_hint_match": bool(expected & observed),
+            "branded_nutrition_plausible": _branded_nutrition_within_bands(case, response),
+        }
+    return {
+        "response_hint_match": bool(expected & observed),
+    }
+
+
+def _task_quality_score(case: MealCase, response: dict | None, schema_errors: list[str]) -> dict:
+    if case.task_class in {"food_photo_nutrition", "meal_text_nutrition"}:
+        return _quality_score(case, response, schema_errors)
+    if not response or schema_errors:
+        return {
+            "passed": False,
+            "response_hint_match": False,
+            "confidence_calibrated": False,
+            "raw_trace_free": False,
+        }
+    if case.task_class == "branded_food_resolution":
+        observed_text = " ".join(
+            _string_values({
+                key: response.get(key)
+                for key in ("resolved_name", "brand", "serving_description")
+            })
+        )
+    else:
+        observed_text = " ".join(_string_values(response))
+    observed = _hint_tokens(observed_text)
+    expected = _hint_tokens(case.expected_item_hint)
+    confidence = response.get("confidence")
+    confidence_calibrated = (
+        not isinstance(confidence, bool)
+        and isinstance(confidence, (int, float))
+        and math.isfinite(float(confidence))
+        and 0 <= float(confidence) <= 1
+    )
+    joined = "\n".join(_string_values(response)).lower()
+    raw_trace_free = not any(
+        fragment in joined
+        for fragment in (
+            "task input:",
+            "meal input:",
+            "image_url",
+            "data:image",
+            "```",
+            "/tmp/",
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".heic",
+        )
+    )
+    checks = {
+        **_non_nutrition_task_checks(case, response, expected, observed),
+        "confidence_calibrated": confidence_calibrated,
+        "raw_trace_free": raw_trace_free,
+    }
+    checks["passed"] = all(checks.values())
+    return checks
 
 
 def _quality_score(case: MealCase, estimate: dict | None, schema_errors: list[str]) -> dict:
@@ -573,19 +1036,23 @@ def run_model_case(
         message = first_choice.get("message") or {}
         content = message.get("content") or message.get("reasoning_content") or ""
         estimate = _extract_json_object(content)
-        errors = _estimate_schema_errors(estimate)
+        errors = _task_response_schema_errors(case, estimate)
         public_estimate = None
         if estimate:
-            public_estimate = {
-                key: estimate.get(key)
-                for key in PUBLIC_ESTIMATE_FIELDS
-                if key != "source"
-            }
-            public_estimate["source"] = "local_model_benchmark"
-        quality = _quality_score(case, estimate, errors)
+            if case.task_class in {"food_photo_nutrition", "meal_text_nutrition"}:
+                public_estimate = {
+                    key: estimate.get(key)
+                    for key in PUBLIC_ESTIMATE_FIELDS
+                    if key != "source"
+                }
+                public_estimate["source"] = "local_model_benchmark"
+            else:
+                public_estimate = estimate
+        quality = _task_quality_score(case, estimate, errors)
         return {
             "case_id": case.case_id,
             "input_type": case.input_type,
+            "task_class": case.task_class,
             "model": model,
             "has_image": bool(image_path),
             "ran_model": True,
@@ -602,13 +1069,14 @@ def run_model_case(
         return {
             "case_id": case.case_id,
             "input_type": case.input_type,
+            "task_class": case.task_class,
             "model": model,
             "has_image": bool(image_path),
             "ran_model": False,
             "latency_ms": int((time.time() - started) * 1000),
             "schema_valid": False,
             "schema_errors": [f"request_failed:{exc}"],
-            "quality": _quality_score(case, None, [f"request_failed:{exc}"]),
+            "quality": _task_quality_score(case, None, [f"request_failed:{exc}"]),
             "estimate": None,
             "expected_item_hint": case.expected_item_hint,
         }
@@ -617,7 +1085,9 @@ def run_model_case(
 def run_model_benchmark(
     cases: list[MealCase],
     *,
-    model: str,
+    model: str | None = None,
+    text_model: str | None = None,
+    vision_model: str | None = None,
     lm_studio_url: str = LM_STUDIO_URL,
     image_map: dict[str, str] | None = None,
 ) -> dict:
@@ -625,31 +1095,33 @@ def run_model_benchmark(
     image_map = image_map or {}
     for case in cases:
         image_path = image_map.get(case.case_id)
-        if case.input_type != "text" and not image_path:
+        if requires_image(case) and not image_path:
             results.append({
                 "case_id": case.case_id,
                 "input_type": case.input_type,
-                "model": model,
+                "task_class": case.task_class,
+                "model": vision_model or model,
                 "has_image": False,
                 "ran_model": False,
                 "latency_ms": None,
                 "schema_valid": False,
                 "schema_errors": ["missing_image_mapping"],
-                "quality": _quality_score(case, None, ["missing_image_mapping"]),
+                "quality": _task_quality_score(case, None, ["missing_image_mapping"]),
                 "estimate": None,
                 "confidence": None,
                 "ambiguous": None,
                 "expected_item_hint": case.expected_item_hint,
             })
             continue
-        results.append(
-            run_model_case(
-                case,
-                model=model,
-                lm_studio_url=lm_studio_url,
-                image_path=image_path,
-            )
+        case_model = _model_for_case(case, model=model, text_model=text_model, vision_model=vision_model)
+        result = run_model_case(
+            case,
+            model=case_model,
+            lm_studio_url=lm_studio_url,
+            image_path=image_path,
         )
+        result.setdefault("task_class", case.task_class)
+        results.append(result)
     valid_count = sum(1 for result in results if result["schema_valid"])
     quality_pass_count = sum(1 for result in results if result.get("quality", {}).get("passed"))
     latencies = [
@@ -663,7 +1135,13 @@ def run_model_benchmark(
         route_results = [
             result
             for result in results
-            if ("text" if result.get("input_type") == "text" else "vision") == route
+            if (
+                "vision"
+                if result.get("task_class") == "food_photo_nutrition"
+                else "text"
+                if result.get("task_class") == "meal_text_nutrition"
+                else "other"
+            ) == route
         ]
         route_latencies = [
             result["latency_ms"]
@@ -678,15 +1156,48 @@ def run_model_benchmark(
             "latency_limit_ms": limit,
             "latency_passed": route_avg is not None and route_avg <= limit,
         }
-    latency_passed = bool(latency_gates) and all(gate["latency_passed"] for gate in latency_gates.values())
+    task_latency_gates: dict[str, dict] = {}
+    for task_class, limit in TASK_LATENCY_PASS_MS.items():
+        task_results = [result for result in results if result.get("task_class") == task_class]
+        if not task_results:
+            continue
+        task_latencies = [
+            result["latency_ms"]
+            for result in task_results
+            if result.get("ran_model", True) and isinstance(result.get("latency_ms"), (int, float))
+        ]
+        task_avg = round(sum(task_latencies) / len(task_latencies), 1) if task_latencies else None
+        task_latency_gates[task_class] = {
+            "latency_ms_avg": task_avg,
+            "latency_limit_ms": limit,
+            "latency_passed": task_avg is not None and task_avg <= limit,
+        }
+    task_summary = {}
+    for task_class in sorted({case.task_class for case in cases} | set(TASK_LATENCY_PASS_MS)):
+        task_results = [result for result in results if result.get("task_class") == task_class]
+        if not task_results:
+            continue
+        task_summary[task_class] = {
+            "case_count": len(task_results),
+            "schema_valid_count": sum(1 for result in task_results if result["schema_valid"]),
+            "quality_pass_count": sum(1 for result in task_results if result.get("quality", {}).get("passed")),
+            "latency": task_latency_gates.get(task_class),
+        }
+    latency_passed = not latency_gates or all(gate["latency_passed"] for gate in latency_gates.values())
+    task_latency_passed = bool(task_latency_gates) and all(
+        gate["latency_passed"] for gate in task_latency_gates.values()
+    )
     latency_limit = (
         next(iter(latency_gates.values()))["latency_limit_ms"]
         if len(latency_gates) == 1
         else None
     )
     return {
-        "model": model,
+        "model": model or "per-task",
+        "text_model": text_model,
+        "vision_model": vision_model,
         "case_count": len(results),
+        "task_class_counts": task_class_counts(cases),
         "model_run_count": len(latencies),
         "missing_image_count": sum(1 for result in results if "missing_image_mapping" in result.get("schema_errors", [])),
         "schema_valid_count": valid_count,
@@ -697,14 +1208,34 @@ def run_model_benchmark(
         "latency_passed": latency_passed,
         "latency_limit_ms": latency_limit,
         "latency_gates": latency_gates,
+        "task_latency_passed": task_latency_passed,
+        "task_latency_gates": task_latency_gates,
+        "task_summary": task_summary,
         "candidate_passed": (
             bool(results)
             and valid_count == len(results)
             and quality_pass_count == len(results)
             and latency_passed
+            and task_latency_passed
         ),
         "results": results,
     }
+
+
+def _model_for_case(
+    case: MealCase,
+    *,
+    model: str | None,
+    text_model: str | None,
+    vision_model: str | None,
+) -> str:
+    if requires_image(case):
+        selected = vision_model or model
+    else:
+        selected = text_model or model
+    if not selected:
+        raise ValueError("model is required; provide --run-model or task-specific model flags")
+    return selected
 
 
 def _load_image_map(path: str | None) -> dict[str, str]:
@@ -723,9 +1254,20 @@ def main() -> int:
     parser.add_argument("--probe-only", action="store_true")
     parser.add_argument("--list-cases", action="store_true")
     parser.add_argument("--run-model", help="Run the benchmark against an OpenAI-compatible local chat model")
+    parser.add_argument("--text-model", help="Model used for non-image benchmark tasks")
+    parser.add_argument("--vision-model", help="Model used for image benchmark tasks")
     parser.add_argument(
         "--case-set",
-        choices=("all", "text", "vision"),
+        choices=(
+            "all",
+            "text",
+            "vision",
+            "meal_text",
+            "food_photo",
+            "workout",
+            "daily_brief",
+            "branded_food",
+        ),
         default="all",
         help="Case subset used with --run-model",
     )
@@ -738,6 +1280,16 @@ def main() -> int:
         cases = TEXT_CASES
     elif args.case_set == "vision":
         cases = image_capable_cases()
+    elif args.case_set == "meal_text":
+        cases = TEXT_CASES
+    elif args.case_set == "food_photo":
+        cases = PHOTO_CASES + PACKAGED_CASES + AMBIGUOUS_CASES
+    elif args.case_set == "workout":
+        cases = WORKOUT_CASES
+    elif args.case_set == "daily_brief":
+        cases = DAILY_BRIEF_CASES
+    elif args.case_set == "branded_food":
+        cases = BRANDED_FOOD_CASES
     output = {
         "hardware": mac_hardware_summary(),
         "lm_studio": probe,
@@ -746,9 +1298,15 @@ def main() -> int:
             "photo": len(PHOTO_CASES),
             "packaged_photo": len(PACKAGED_CASES),
             "ambiguous": len(AMBIGUOUS_CASES),
+            "workout": len(WORKOUT_CASES),
+            "daily_brief": len(DAILY_BRIEF_CASES),
+            "branded_food": len(BRANDED_FOOD_CASES),
             "image_capable": len(image_capable_cases()),
+            "nutrition_total": len(nutrition_cases()),
             "total": len(all_cases()),
         },
+        "task_class_counts": task_class_counts(),
+        "latency_targets_ms": TASK_LATENCY_PASS_MS,
         "routing_recommendation": routing_recommendation(probe.get("models") or []),
     }
     if args.list_cases:
@@ -756,12 +1314,20 @@ def main() -> int:
     if args.probe_only:
         print(json.dumps(output, indent=2, sort_keys=True))
         return 0
-    if args.run_model:
+    if args.run_model or args.text_model or args.vision_model:
+        image_map = _load_image_map(args.image_map)
+        if not args.run_model:
+            if args.vision_model and any(not requires_image(case) for case in cases) and not args.text_model:
+                parser.error("--text-model is required for selected non-image cases when --run-model is not provided")
+            if args.text_model and not args.vision_model and any(case.case_id in image_map for case in cases if requires_image(case)):
+                parser.error("--vision-model is required for selected image cases with image-map entries when --run-model is not provided")
         output["benchmark"] = run_model_benchmark(
             cases,
             model=args.run_model,
+            text_model=args.text_model,
+            vision_model=args.vision_model,
             lm_studio_url=args.lm_studio_url,
-            image_map=_load_image_map(args.image_map),
+            image_map=image_map,
         )
     print(json.dumps(output, indent=2, sort_keys=True))
     return 0
