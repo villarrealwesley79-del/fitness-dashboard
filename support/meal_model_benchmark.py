@@ -180,6 +180,11 @@ TASK_NUMBER_BOUNDS = {
         "confidence": (0, 1),
     },
 }
+EXPECTED_WORKOUT_READINESS = {
+    "workout-001": "low",
+    "workout-002": "high",
+    "workout-003": "moderate",
+}
 PUBLIC_ESTIMATE_FIELDS = tuple(MEAL_ESTIMATE_RESPONSE_SCHEMA["properties"]) + ("source",)
 EXPECTED_CALORIE_BANDS = {
     "txt-001": (120, 450),
@@ -798,6 +803,47 @@ def _number_bounds_errors(response: dict, bounds: dict[str, tuple[float, float]]
     return errors
 
 
+def _non_empty_string_list(value: object) -> bool:
+    return isinstance(value, list) and any(isinstance(item, str) and item.strip() for item in value)
+
+
+def _workout_adjustment_text(response: dict) -> str:
+    adjustments = response.get("adjustments")
+    if not isinstance(adjustments, list):
+        return ""
+    return " ".join(_string_values({"adjustments": adjustments}))
+
+
+def _daily_focus_text(response: dict) -> str:
+    return " ".join(
+        _string_values({
+            key: response.get(key)
+            for key in ("priorities", "training_focus", "nutrition_focus", "recovery_focus")
+        })
+    )
+
+
+def _non_nutrition_task_checks(case: MealCase, response: dict, expected: set[str], observed: set[str]) -> dict:
+    if case.task_class == "workout_analysis_adjustment":
+        adjustment_tokens = _hint_tokens(_workout_adjustment_text(response))
+        return {
+            "response_hint_match": bool(expected & observed),
+            "actionable_adjustments": bool(response.get("adjustments")) and bool(expected & adjustment_tokens),
+            "readiness_matches": response.get("readiness") == EXPECTED_WORKOUT_READINESS.get(case.case_id),
+        }
+    if case.task_class == "daily_coaching_brief":
+        focus_tokens = _hint_tokens(_daily_focus_text(response))
+        required_matches = min(2, len(expected))
+        return {
+            "response_hint_match": bool(expected & observed),
+            "actionable_priorities": _non_empty_string_list(response.get("priorities")),
+            "focus_matches": len(expected & focus_tokens) >= required_matches,
+        }
+    return {
+        "response_hint_match": bool(expected & observed),
+    }
+
+
 def _task_quality_score(case: MealCase, response: dict | None, schema_errors: list[str]) -> dict:
     if case.task_class in {"food_photo_nutrition", "meal_text_nutrition"}:
         return _quality_score(case, response, schema_errors)
@@ -843,7 +889,7 @@ def _task_quality_score(case: MealCase, response: dict | None, schema_errors: li
         )
     )
     checks = {
-        "response_hint_match": bool(expected & observed),
+        **_non_nutrition_task_checks(case, response, expected, observed),
         "confidence_calibrated": confidence_calibrated,
         "raw_trace_free": raw_trace_free,
     }

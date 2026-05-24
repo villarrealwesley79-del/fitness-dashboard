@@ -548,6 +548,76 @@ def test_branded_food_quality_does_not_count_query_echo_as_hint_match():
     assert score["passed"] is False
 
 
+def test_workout_quality_requires_actionable_adjustments_and_expected_readiness():
+    module = _load_module()
+    case = module.WORKOUT_CASES[0]
+    weak_response = {
+        "summary": "Reduce lower volume.",
+        "readiness": "high",
+        "adjustments": [],
+        "risk_flags": [],
+        "confidence": 0.8,
+    }
+    strong_response = {
+        "summary": "Reduce lower volume.",
+        "readiness": "low",
+        "adjustments": [
+            {
+                "target": "lower body work",
+                "action": "reduce squat and RDL volume",
+                "rationale": "sleep, soreness, and HRV point to poor recovery",
+            }
+        ],
+        "risk_flags": ["high leg soreness"],
+        "confidence": 0.8,
+    }
+
+    weak_score = module._task_quality_score(case, weak_response, [])
+    strong_score = module._task_quality_score(case, strong_response, [])
+
+    assert weak_score["response_hint_match"] is True
+    assert weak_score["actionable_adjustments"] is False
+    assert weak_score["readiness_matches"] is False
+    assert weak_score["passed"] is False
+    assert strong_score["actionable_adjustments"] is True
+    assert strong_score["readiness_matches"] is True
+    assert strong_score["passed"] is True
+
+
+def test_daily_brief_quality_requires_priorities_and_expected_focus():
+    module = _load_module()
+    case = module.DAILY_BRIEF_CASES[0]
+    weak_response = {
+        "summary": "Protein strength recovery.",
+        "priorities": [],
+        "training_focus": "keep training normal",
+        "nutrition_focus": "balanced meals",
+        "recovery_focus": "easy evening",
+        "warnings": [],
+        "confidence": 0.8,
+    }
+    strong_response = {
+        "summary": "Prioritize strength support and recovery.",
+        "priorities": ["add protein at the next meal", "keep strength work conservative"],
+        "training_focus": "strength",
+        "nutrition_focus": "protein",
+        "recovery_focus": "recovery",
+        "warnings": [],
+        "confidence": 0.8,
+    }
+
+    weak_score = module._task_quality_score(case, weak_response, [])
+    strong_score = module._task_quality_score(case, strong_response, [])
+
+    assert weak_score["response_hint_match"] is True
+    assert weak_score["actionable_priorities"] is False
+    assert weak_score["focus_matches"] is False
+    assert weak_score["passed"] is False
+    assert strong_score["actionable_priorities"] is True
+    assert strong_score["focus_matches"] is True
+    assert strong_score["passed"] is True
+
+
 def test_non_nutrition_schema_rejects_out_of_range_numeric_values():
     module = _load_module()
     branded_case = module.BRANDED_FOOD_CASES[0]
