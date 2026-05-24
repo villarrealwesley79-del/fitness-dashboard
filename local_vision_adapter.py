@@ -43,6 +43,22 @@ OLLAMA_MODEL = _env_first("VISION_OLLAMA_MODEL", "OLLAMA_VISION_MODEL", default=
 TIMEOUT_SECONDS = float(_env_first("VISION_LOCAL_TIMEOUT_SEC", default="25"))
 DEFAULT_VISION_TEMPERATURE = 0.1
 SCHEMA_RETRY_LIMIT = 2
+LM_STUDIO_REQUIRED_FIELDS = (
+    "item_name",
+    "portion_description",
+    "meal_type",
+    "calories",
+    "protein_g",
+    "carbs_g",
+    "fat_g",
+    "sodium_mg",
+    "fiber_g",
+    "confidence",
+    "ambiguous",
+    "uncertainty_notes",
+    "items",
+)
+LM_STUDIO_ITEM_REQUIRED_FIELDS = ("item_name", "quantity", "brand", "modifiers", "portion_hint")
 
 
 class LocalVisionError(RuntimeError):
@@ -293,6 +309,7 @@ def _parse_lm_studio_meal_estimate(content: str) -> dict[str, Any]:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise LocalVisionError("invalid JSON response") from exc
+    _validate_lm_studio_schema_fields(parsed)
     try:
         estimate = sanitize_meal_estimate(
             parsed,
@@ -305,6 +322,26 @@ def _parse_lm_studio_meal_estimate(content: str) -> dict[str, Any]:
     if items:
         estimate["items"] = items
     return estimate
+
+
+def _validate_lm_studio_schema_fields(parsed: Any) -> None:
+    if not isinstance(parsed, dict):
+        raise LocalVisionError("invalid meal estimate: estimate must be an object")
+    missing = [field for field in LM_STUDIO_REQUIRED_FIELDS if field not in parsed]
+    if missing:
+        raise LocalVisionError(f"invalid meal estimate: missing required fields: {', '.join(missing)}")
+    if parsed.get("meal_type") not in ALLOWED_MEAL_TYPES:
+        raise LocalVisionError("invalid meal estimate: invalid meal_type")
+    if not isinstance(parsed.get("items"), list):
+        raise LocalVisionError("invalid meal estimate: items must be an array")
+    for index, item in enumerate(parsed["items"]):
+        if not isinstance(item, dict):
+            raise LocalVisionError(f"invalid meal estimate: items[{index}] must be an object")
+        missing_item_fields = [field for field in LM_STUDIO_ITEM_REQUIRED_FIELDS if field not in item]
+        if missing_item_fields:
+            raise LocalVisionError(
+                f"invalid meal estimate: items[{index}] missing required fields: {', '.join(missing_item_fields)}"
+            )
 
 
 def _sanitize_lm_studio_items(raw_items: Any) -> list[dict[str, Any]]:

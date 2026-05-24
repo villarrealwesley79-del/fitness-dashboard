@@ -286,6 +286,38 @@ def test_local_lm_studio_adapter_retries_invalid_schema(monkeypatch):
     assert len(attempts) == 3
 
 
+def test_local_lm_studio_adapter_retries_when_required_schema_fields_missing(monkeypatch):
+    attempts = []
+
+    def fake_urlopen(req, timeout):
+        attempts.append(json.loads(req.data.decode("utf-8")))
+        if len(attempts) == 1:
+            return _Response({"choices": [{"message": {"content": json.dumps({
+                "item_name": "Bill Miller BBQ breakfast tacos",
+                "portion_description": "1 taco and 2 sandwiches",
+                "calories": 720,
+                "protein_g": 34,
+                "carbs_g": 68,
+                "fat_g": 32,
+                "sodium_mg": 1280,
+                "fiber_g": 4,
+                "confidence": 0.81,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+            })}}]})
+        if len(attempts) == 2:
+            return _Response({"choices": [{"message": {"content": json.dumps(_meal_estimate_payload(items="not-array"))}}]})
+        return _Response({"choices": [{"message": {"content": json.dumps(_meal_estimate_payload())}}]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = local_vision_adapter.describe_food_photo(b"fake-image", provider="lm_studio")
+
+    assert result["item_description"] == "Bill Miller BBQ breakfast tacos"
+    assert result["_meta"]["schema_retries"] == 2
+    assert len(attempts) == 3
+
+
 def test_local_lm_studio_adapter_falls_back_after_primary_failure(monkeypatch):
     attempts = []
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_URL", "http://primary.test")
