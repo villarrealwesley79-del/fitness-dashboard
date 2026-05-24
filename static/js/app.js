@@ -4923,6 +4923,7 @@
     }
 
     const SYNC_QUEUE_KEY = 'fit51:sync-queue:v1';
+    const WORKOUT_QUEUE_RETRYABLE_STATUSES = new Set(['pending', 'auth_required']);
     let _syncFlushInFlight = false;
     // FIT-145: meal-intake offline queue. Metadata and photo blobs live
     // together in IndexedDB so reloads preserve queued meals without
@@ -5002,9 +5003,36 @@
             return { ok: true, status: res.status, body, syncStatus: (body && body.sync_status) || 'inserted' };
         }
         const err = body && body.error;
-        const syncStatus = (err && err.details && err.details.sync_status) || (res.status === 409 ? 'conflicted' : 'rejected');
-        const reason = err && err.message;
+        let syncStatus = err && err.details && err.details.sync_status;
+        if (!syncStatus) {
+            if (res.status === 401 || res.status === 403) syncStatus = 'auth_required';
+            else if (res.status === 409) syncStatus = 'conflicted';
+            else if (res.status >= 500) syncStatus = 'pending';
+            else syncStatus = 'rejected';
+        }
+        const reason = (err && err.message) || `Workout sync failed (${res.status}).`;
         return { ok: false, status: res.status, body, syncStatus, reason };
+    }
+
+    function annotateWorkoutSyncReason(rawReason, syncStatus) {
+        const base = String(rawReason || '').trim();
+        if (syncStatus === 'pending') {
+            const note = 'Will retry automatically when the app can reach the server.';
+            return base ? `${base} ${note}` : note;
+        }
+        if (syncStatus === 'auth_required') {
+            const note = 'Sign in with the account that saved this workout, then retry. The workout remains on this device.';
+            return base ? `${base} ${note}` : note;
+        }
+        if (syncStatus === 'rejected') {
+            const note = 'The server did not accept this workout. Review the queue before discarding it.';
+            return base ? `${base} ${note}` : note;
+        }
+        if (syncStatus === 'conflicted') {
+            const note = 'Conflict reported by the server. Discard this entry, or retry later if you think it should go through.';
+            return base ? `${base} ${note}` : note;
+        }
+        return base || null;
     }
 
     async function syncSingleEntry(clientId) {
@@ -5026,7 +5054,7 @@
                 last_attempt_at: attemptedAt,
                 attempts,
                 server_response: result.body || null,
-                reject_reason: result.reason || null,
+                reject_reason: annotateWorkoutSyncReason(result.reason, result.syncStatus || (result.ok ? 'pending' : 'rejected')),
             });
             return { ok: false, status: result.syncStatus };
         } catch (e) {
@@ -5034,6 +5062,7 @@
                 last_status: 'pending',
                 last_attempt_at: new Date().toISOString(),
                 attempts: (entry.attempts || 0) + 1,
+                reject_reason: annotateWorkoutSyncReason((e && e.message) || 'Could not reach the server.', 'pending'),
             });
             return { ok: false, status: 'pending', error: e && e.message };
         }
@@ -5044,7 +5073,7 @@
         _syncFlushInFlight = true;
         try {
             const ids = loadSyncQueue()
-                .filter((e) => e.last_status === 'pending')
+                .filter((e) => WORKOUT_QUEUE_RETRYABLE_STATUSES.has(e.last_status || 'pending'))
                 .map((e) => e.client_workout_id);
             for (const id of ids) {
                 await syncSingleEntry(id);
@@ -5502,7 +5531,7 @@
         if (!banner || !textEl) return;
         const queue = loadSyncQueue();
         listMealQueueEntries().catch(() => []).then((mealQueue) => {
-            const pending = queue.filter((e) => e.last_status === 'pending').length
+            const pending = queue.filter((e) => (e.last_status || 'pending') === 'pending').length
                 + mealQueue.filter((e) => (e.last_status || 'pending') === 'pending').length;
             const failedStatuses = new Set(['rejected', 'conflicted', 'eviction_failed', 'auth_required']);
             const failed = queue.filter((e) => failedStatuses.has(e.last_status)).length
@@ -5534,7 +5563,15 @@
             host.innerHTML = '<div class="empty">No queued meals or workouts.</div>';
             return;
         }
-        const statusLabels = { pending: 'Pending', conflicted: 'Conflict', rejected: 'Rejected', eviction_failed: 'Cleanup failed', inserted: 'Synced', already_synced: 'Synced' };
+        const statusLabels = {
+            pending: 'Waiting to sync',
+            auth_required: 'Sign-in needed',
+            conflicted: 'Conflict',
+            rejected: 'Needs review',
+            eviction_failed: 'Cleanup failed',
+            inserted: 'Synced',
+            already_synced: 'Synced',
+        };
         queue.forEach((entry) => {
             const status = entry.last_status || 'pending';
             const row = document.createElement('div');
@@ -5628,7 +5665,7 @@
             btn.addEventListener('click', () => {
                 const clientId = btn.dataset.syncDiscard;
                 const entry = loadSyncQueue().find((e) => e.client_workout_id === clientId);
-                const needsConfirm = entry && (entry.last_status === 'rejected' || entry.last_status === 'conflicted');
+                const needsConfirm = entry && ['rejected', 'conflicted', 'auth_required'].includes(entry.last_status);
                 if (needsConfirm && !window.confirm('Discard this queued workout permanently?')) return;
                 removeQueueEntry(clientId);
                 renderSyncQueueModal();
@@ -5790,21 +5827,26 @@
                 loadTab(state.currentTab);
                 openWorkoutSavedConfirm(summary);
             } else {
-                // Backend reported conflicted or rejected — enqueue so user can retry/discard.
+                if (result.syncStatus === 'pending') {
+                    settleQueued('Server unavailable — queued for another sync attempt.');
+                    return;
+                }
+                // Backend could not save it yet — enqueue so user can retry/discard.
                 enqueueOfflineWorkout(completePayload, result.syncStatus || 'rejected');
                 updateQueueEntry(clientWorkoutId, {
                     last_status: result.syncStatus || 'rejected',
                     last_attempt_at: new Date().toISOString(),
                     attempts: 1,
                     server_response: result.body || null,
-                    reject_reason: result.reason || null,
+                    reject_reason: annotateWorkoutSyncReason(result.reason, result.syncStatus || 'rejected'),
                 });
-                const msg = result.syncStatus === 'conflicted'
-                    ? 'Server reported a conflict — see the sync queue.'
-                    : `Save rejected — ${result.reason || 'see the sync queue'}.`;
+                let msg;
+                if (result.syncStatus === 'conflicted') msg = 'Server reported a conflict — see the sync queue.';
+                else if (result.syncStatus === 'auth_required') msg = 'Sign in, then retry the workout from the sync queue.';
+                else msg = `Save needs review — ${result.reason || 'see the sync queue'}.`;
                 aw.saveState = { message: msg, variant: 'err' };
                 setActiveWorkoutStatus(msg, 'err');
-                toast(result.syncStatus === 'conflicted' ? 'Sync conflict' : 'Save rejected', 'err');
+                toast(result.syncStatus === 'conflicted' ? 'Sync conflict' : 'Workout queued for review', 'err');
             }
         } catch (e) {
             console.error(e);
