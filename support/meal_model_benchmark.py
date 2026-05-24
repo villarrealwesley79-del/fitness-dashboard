@@ -525,7 +525,8 @@ def image_capable_cases() -> list[MealCase]:
 
 def task_class_counts(cases: list[MealCase] | None = None) -> dict[str, int]:
     counts = {task_class: 0 for task_class in TASK_LATENCY_PASS_MS}
-    for case in cases or all_cases():
+    selected_cases = all_cases() if cases is None else cases
+    for case in selected_cases:
         counts[case.task_class] = counts.get(case.task_class, 0) + 1
     return counts
 

@@ -84,6 +84,21 @@ def test_model_benchmark_summarizes_schema_validity(monkeypatch):
     assert summary["latency_ms_avg"] == 125
 
 
+def test_model_benchmark_preserves_empty_case_counts():
+    module = _load_module()
+
+    summary = module.run_model_benchmark([], text_model="text-model")
+
+    assert summary["case_count"] == 0
+    assert summary["task_class_counts"] == {
+        "food_photo_nutrition": 0,
+        "meal_text_nutrition": 0,
+        "workout_analysis_adjustment": 0,
+        "daily_coaching_brief": 0,
+        "branded_food_resolution": 0,
+    }
+
+
 def test_schema_validation_requires_sodium_and_fiber():
     module = _load_module()
 
