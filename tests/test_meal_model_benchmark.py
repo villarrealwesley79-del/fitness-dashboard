@@ -538,8 +538,8 @@ def test_branded_food_quality_does_not_count_query_echo_as_hint_match():
         "fat_g": 3,
         "sodium_mg": 160,
         "confidence": 0.8,
-        "source": "package lookup",
-        "notes": ["no direct brand match"],
+        "source": "McDonald's nutrition page",
+        "notes": ["not a quarter pounder match"],
     }
 
     score = module._task_quality_score(case, response, [])

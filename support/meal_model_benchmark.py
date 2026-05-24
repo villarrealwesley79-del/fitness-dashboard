@@ -812,7 +812,7 @@ def _task_quality_score(case: MealCase, response: dict | None, schema_errors: li
         observed_text = " ".join(
             _string_values({
                 key: response.get(key)
-                for key in ("resolved_name", "brand", "serving_description", "source", "notes")
+                for key in ("resolved_name", "brand", "serving_description")
             })
         )
     else:
