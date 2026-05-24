@@ -3677,6 +3677,10 @@
         return generic ? fallbackLabel : raw;
     }
 
+    function _aiFallbackHostName(fallback) {
+        return fallback ? _aiHostName(fallback, AI_FALLBACK_HOST_DEFAULT) : 'No distinct fallback';
+    }
+
     function _setAiCoachUnavailable(message) {
         // Degraded mode: the rest of Settings keeps working. Acceptance
         // criterion: "Metrics refresh periodically without breaking the
@@ -3743,7 +3747,7 @@
         const fallback = (health && health.fallback) || null;
         const activeRole = (health && health.active_role) || null;
         const primaryHost = _aiHostName(primary, AI_PRIMARY_HOST_DEFAULT);
-        const fallbackHost = _aiHostName(fallback, AI_FALLBACK_HOST_DEFAULT);
+        const fallbackHost = _aiFallbackHostName(fallback);
         const primaryOk = !!(primary && primary.reachable && primary.model_loaded);
         const fallbackOk = !!(fallback && fallback.reachable && fallback.model_loaded);
 
@@ -3771,7 +3775,7 @@
         }
         return {
             stateText: 'AI offline',
-            hostText: `${primaryHost} & ${fallbackHost} unavailable`,
+            hostText: fallback ? `${primaryHost} & ${fallbackHost} unavailable` : `${primaryHost} unavailable`,
             chipText: 'Offline',
             chipCls: 'state-chip stale',
             dotCls: 'int-dot',
@@ -3802,7 +3806,7 @@
         const primaryHostEl = $('ai-primary-host');
         const fallbackHostEl = $('ai-fallback-host');
         const primaryHost = _aiHostName(primary, AI_PRIMARY_HOST_DEFAULT);
-        const fallbackHost = _aiHostName(fallback, AI_FALLBACK_HOST_DEFAULT);
+        const fallbackHost = _aiFallbackHostName(fallback);
         if (primaryHostEl) primaryHostEl.textContent = primaryHost;
         if (fallbackHostEl) fallbackHostEl.textContent = fallbackHost;
 

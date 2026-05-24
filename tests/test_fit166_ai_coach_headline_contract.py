@@ -133,6 +133,19 @@ def test_fallback_detail_distinguishes_model_not_loaded_from_unreachable():
     assert "${_aiPrimaryUnavailableReason(primary, primaryHost)}" in headline_fn
 
 
+def test_absent_fallback_is_not_labeled_mac_studio():
+    """When the backend reports no distinct fallback route, preserve
+    that meaning instead of inventing a Mac Studio host."""
+    fallback_helper_fn = _slice_function(APP_JS, "function _aiFallbackHostName")
+    headline_fn = _slice_function(APP_JS, "function _aiCoachHeadlineFromHealth")
+    render_fields_fn = _slice_function(APP_JS, "function _renderAiHealthFields")
+
+    assert "fallback ? _aiHostName(fallback, AI_FALLBACK_HOST_DEFAULT) : 'No distinct fallback'" in fallback_helper_fn
+    assert "const fallbackHost = _aiFallbackHostName(fallback);" in headline_fn
+    assert "fallback ? `${primaryHost} & ${fallbackHost} unavailable` : `${primaryHost} unavailable`" in headline_fn
+    assert "const fallbackHost = _aiFallbackHostName(fallback);" in render_fields_fn
+
+
 def test_setaicoachunavailable_writes_headline_stale():
     """When neither /api/ai/health nor /api/ai/metrics responds, the
     headline must degrade to the stale "AI offline" state — not just
