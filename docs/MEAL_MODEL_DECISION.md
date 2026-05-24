@@ -1,6 +1,6 @@
 # Local Meal Model Decision
 
-Linear: FIT-58
+Linear: FIT-58, FIT-164, FIT-175
 
 ## Verified Environment
 
@@ -15,6 +15,11 @@ Verified on this Mac during the FIT-58 pass:
 User-reported but not directly reachable from this repo run:
 
 - ASUS GX10 available for heavier local model work.
+
+Later FIT-164 evidence came from the ASUS GX10 vision route rather than this
+Mac mini FIT-58 pass. The committed summary artifact is
+`docs/meal-model-benchmark-qwen3vl-30b-vs-32b-2026-05-24.json`; raw photos and
+the private image map remain intentionally excluded from Git.
 
 ## Benchmark Harness
 
@@ -40,6 +45,25 @@ Photo cases are scenario metadata only. Do not commit private food photos to the
 
 ## Decision
 
+Current FIT-164 vision route:
+
+- Keep `qwen3-vl-30b-a3b-instruct@q4_k_xl` as the served vision model.
+- Retain the FIT-164 scale-cue prompt for that 30B-A3B model.
+- Configure the served environment with `VISION_LM_STUDIO_MODEL` or
+  `LM_STUDIO_VISION_MODEL` set to `qwen3-vl-30b-a3b-instruct@q4_k_xl`. This
+  decision doc records the served route target; it does not change the adapter's
+  unset-env fallback.
+- The adapter fallback remains `qwen2.5-vl-7b-instruct` when those environment
+  variables are blank, pending a separate config/default change.
+- Do not promote `qwen3-vl-32b-instruct` because it still exceeded the 25%
+  macro-MAPE threshold and averaged 8.44x slower latency than the 30B baseline.
+- Treat FIT-164 as a promotion of the served local VLM route, not as a claim
+  that food-photo macro accuracy is finished. The same artifact records 35.82%
+  aggregate macro MAPE after the scale-cue rerun, so follow-up accuracy work
+  should focus on portion and package-label outliers.
+
+Historical FIT-58 text and local-model evidence:
+
 Benchmark evidence:
 
 - This PR commits the repeatable benchmark harness, case set, local hardware probe, and routing criteria.
@@ -48,7 +72,9 @@ Benchmark evidence:
 - `qwen/qwen3.6-35b-a3b` ran all 20 text cases, produced 20 valid strict JSON estimates, passed 14/20 quality checks, and averaged 23560.8 ms.
 - `google/gemma-4-31b` attempted all 20 text cases, timed out on 2 cases, produced 18 valid strict JSON estimates, passed 10/20 quality checks after raw-trace screening, and averaged 15822.8 ms across completed model calls.
 - The local vision evidence is committed in `docs/meal-model-benchmark-vision-unavailable-2026-05-19.json`: LM Studio had no loaded VLM candidate and the repo has no private image map, so 40/40 image-capable cases were recorded as not runnable instead of being treated as photo-model proof.
-- No local model is promoted as the final production winner until it passes the shared schema, quality, and route-specific latency gates.
+- At FIT-58 time, no local model was promoted as the final production winner.
+  FIT-164 later selected the Qwen3-VL 30B-A3B served vision route based on the
+  dedicated ASUS GX10 comparison artifact named above.
 
 Primary text route:
 
@@ -58,12 +84,14 @@ Primary text route:
 
 Primary vision route:
 
-- Use a dedicated local VLM candidate; do not rely on the text-only model to infer nutrition from photos.
-- First benchmark candidate: Qwen2.5-VL 7B on the ASUS GX10 or LM Studio if available.
-- Second benchmark candidate: Qwen2.5-VL 32B only if memory and latency are acceptable.
-- Optional comparison candidate: Gemma 3 27B vision if the local runtime exposes it cleanly.
-- InternVL-family models can be benchmarked only if LM Studio or the GX10 runtime supports them without custom glue.
-- No vision model is promoted by this PR because no VLM candidate was loaded or benchmarkable from this Mac run.
+- Use `qwen3-vl-30b-a3b-instruct@q4_k_xl` with the FIT-164 scale-cue prompt
+  for the served local vision route when the deployment sets the vision model
+  environment variable to that model.
+- Do not switch the served route to `qwen3-vl-32b-instruct` without new
+  evidence that clears both the macro-accuracy threshold and the route latency
+  tradeoff. FIT-164's 32B comparison improved aggregate macro MAPE to 25.83%
+  but did not clear the 25% threshold and averaged 23196.1 ms.
+- Do not rely on text-only models to infer nutrition from photos.
 
 Fallback route:
 
@@ -93,7 +121,7 @@ Local model acceptance:
 - Latency target for text: average <= 10000 ms for the 20-case text set.
 - Latency target for vision: average <= 20000 ms for the 40-case image set; otherwise keep the result pending and let the user move on.
 
-## Routing Defaults for FIT-5
+## Served Route Target for FIT-5
 
 ```json
 {
@@ -101,17 +129,21 @@ Local model acceptance:
   "text_candidate_not_promoted": "qwen/qwen3.6-35b-a3b: 20/20 schema-valid, 14/20 quality, 23560.8 ms average",
   "text_candidate_not_promoted_2": "google/gemma-4-31b: 18/20 schema-valid, 10/20 quality, 15822.8 ms average across completed calls",
   "text_fallback": "deterministic parser fallback, pending_review",
-  "vision_primary": "manual/pending-review fallback until a local VLM passes the vision benchmark",
-  "vision_candidate_pending": "Qwen2.5-VL 7B local VLM, preferably on ASUS GX10 for photo work; not loaded in this Mac run",
-  "vision_secondary": "Qwen2.5-VL 32B only after latency/memory proof",
+  "vision_served_model_env": "VISION_LM_STUDIO_MODEL or LM_STUDIO_VISION_MODEL = qwen3-vl-30b-a3b-instruct@q4_k_xl",
+  "vision_adapter_unset_env_fallback": "qwen2.5-vl-7b-instruct",
+  "vision_served_prompt": "FIT-164 scale-cue prompt",
+  "vision_decision_artifact": "docs/meal-model-benchmark-qwen3vl-30b-vs-32b-2026-05-24.json",
+  "vision_not_promoted": "qwen3-vl-32b-instruct: 50/50 schema-valid, 25.83% macro MAPE, 23196.1 ms average, 8.44x slower than 30B baseline",
   "cloud_fallback": "disabled_by_default"
 }
 ```
 
-## Follow-up Proof Before Replacing the Photo Stub
+## Follow-up Proof Before Further Vision Promotion
 
 - Find or configure a faster text candidate that returns valid strict JSON estimates and rerun the 20 text cases.
-- Install or expose a local VLM endpoint, likely on the ASUS GX10 if that is where the vision model fits best.
-- Run the 40 image-capable cases with private local images through the same harness.
+- Keep the Qwen3-VL 30B-A3B scale-cue route as the served local VLM until a
+  follow-up benchmark clears both the macro-accuracy and latency gates.
+- Run image-capable cases with private local images through the same harness.
 - Record schema validity, confidence calibration, quality subchecks, and latency.
-- Keep the current image path pending-review/fallback behavior until that evidence exists.
+- Keep uncertain image estimates pending-review/fallback instead of silently
+  auto-logging ambiguous photo results.
