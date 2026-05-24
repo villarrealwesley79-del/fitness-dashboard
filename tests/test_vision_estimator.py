@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 
 import pytest
@@ -22,6 +23,41 @@ class _Response:
 
     def read(self):
         return json.dumps(self.payload).encode("utf-8")
+
+
+def _meal_estimate_payload(**overrides):
+    payload = {
+        "item_name": "Bill Miller BBQ breakfast tacos",
+        "portion_description": "1 taco and 2 sandwiches",
+        "meal_type": "breakfast",
+        "calories": 720,
+        "protein_g": 34,
+        "carbs_g": 68,
+        "fat_g": 32,
+        "sodium_mg": 1280,
+        "fiber_g": 4,
+        "confidence": 0.81,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "items": [
+            {
+                "brand": "Bill Miller BBQ",
+                "item_name": "Bacon & Egg Taco",
+                "quantity": 1,
+                "modifiers": [],
+                "portion_hint": None,
+            },
+            {
+                "brand": "Bill Miller BBQ",
+                "item_name": "Breakfast Sandwich",
+                "quantity": 2,
+                "modifiers": ["egg"],
+                "portion_hint": None,
+            },
+        ],
+    }
+    payload.update(overrides)
+    return payload
 
 
 def test_vision_estimator_can_be_disabled_explicitly(monkeypatch):
@@ -160,22 +196,14 @@ def test_local_lm_studio_adapter_posts_image_and_parses_json(monkeypatch):
         captured["url"] = req.full_url
         captured["timeout"] = timeout
         captured["model"] = body["model"]
+        captured["temperature"] = body["temperature"]
+        captured["response_format"] = body["response_format"]
         captured["content"] = body["messages"][0]["content"]
         return _Response({
             "choices": [
                 {
                     "message": {
-                        "content": json.dumps({
-                            "item_description": "Bill Miller BBQ order with breakfast items",
-                            "portion_hint": "1 taco and 2 sandwiches",
-                            "confidence": 0.91,
-                            "ambiguous": False,
-                            "uncertainty_notes": [],
-                            "items": [
-                                {"brand": "Bill Miller BBQ", "item_name": "Bacon & Egg Taco", "quantity": 1},
-                                {"brand": "Bill Miller BBQ", "item_name": "Breakfast Sandwich", "quantity": 2},
-                            ],
-                        })
+                        "content": json.dumps(_meal_estimate_payload())
                     }
                 }
             ]
@@ -189,12 +217,164 @@ def test_local_lm_studio_adapter_posts_image_and_parses_json(monkeypatch):
         provider="lm_studio",
     )
 
+    assert result["item_description"] == "Bill Miller BBQ breakfast tacos"
+    assert result["portion_hint"] == "1 taco and 2 sandwiches"
+    assert result["macro_estimate"]["calories"] == 720
     assert result["items"][1]["quantity"] == 2
     assert captured["url"].endswith("/v1/chat/completions")
     assert captured["timeout"] == local_vision_adapter.TIMEOUT_SECONDS
     assert captured["model"] == local_vision_adapter.LM_STUDIO_MODEL
+    assert captured["temperature"] == 0.1
+    assert captured["response_format"]["type"] == "json_schema"
+    assert captured["response_format"]["json_schema"]["strict"] is True
+    schema = captured["response_format"]["json_schema"]["schema"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {
+        "item_name",
+        "portion_description",
+        "meal_type",
+        "calories",
+        "protein_g",
+        "carbs_g",
+        "fat_g",
+        "sodium_mg",
+        "fiber_g",
+        "confidence",
+        "ambiguous",
+        "uncertainty_notes",
+        "items",
+    }
+    item_schema = schema["properties"]["items"]["items"]
+    assert item_schema["additionalProperties"] is False
+    assert set(item_schema["required"]) == {"item_name", "quantity", "brand", "modifiers", "portion_hint"}
     assert captured["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert "Return JSON only with item_name" in captured["content"][0]["text"]
     assert "Do not collapse a multi-item cart" in captured["content"][0]["text"]
+
+
+def test_local_lm_studio_adapter_uses_temperature_env(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        body = json.loads(req.data.decode("utf-8"))
+        captured["temperature"] = body["temperature"]
+        return _Response({"choices": [{"message": {"content": json.dumps(_meal_estimate_payload())}}]})
+
+    monkeypatch.setenv("VISION_TEMPERATURE", "0.23")
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    local_vision_adapter.describe_food_photo(b"fake-image", provider="lm_studio")
+
+    assert captured["temperature"] == 0.23
+
+
+def test_local_lm_studio_adapter_retries_invalid_schema(monkeypatch):
+    attempts = []
+
+    def fake_urlopen(req, timeout):
+        attempts.append(json.loads(req.data.decode("utf-8")))
+        if len(attempts) < 3:
+            return _Response({"choices": [{"message": {"content": json.dumps({"item_name": "missing fields"})}}]})
+        return _Response({"choices": [{"message": {"content": json.dumps(_meal_estimate_payload())}}]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = local_vision_adapter.describe_food_photo(b"fake-image", provider="lm_studio")
+
+    assert result["item_description"] == "Bill Miller BBQ breakfast tacos"
+    assert result["_meta"]["schema_retries"] == 2
+    assert len(attempts) == 3
+
+
+def test_local_lm_studio_adapter_retries_when_required_schema_fields_missing(monkeypatch):
+    attempts = []
+
+    def fake_urlopen(req, timeout):
+        attempts.append(json.loads(req.data.decode("utf-8")))
+        if len(attempts) == 1:
+            return _Response({"choices": [{"message": {"content": json.dumps({
+                "item_name": "Bill Miller BBQ breakfast tacos",
+                "portion_description": "1 taco and 2 sandwiches",
+                "calories": 720,
+                "protein_g": 34,
+                "carbs_g": 68,
+                "fat_g": 32,
+                "sodium_mg": 1280,
+                "fiber_g": 4,
+                "confidence": 0.81,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+            })}}]})
+        if len(attempts) == 2:
+            return _Response({"choices": [{"message": {"content": json.dumps(_meal_estimate_payload(items="not-array"))}}]})
+        return _Response({"choices": [{"message": {"content": json.dumps(_meal_estimate_payload())}}]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = local_vision_adapter.describe_food_photo(b"fake-image", provider="lm_studio")
+
+    assert result["item_description"] == "Bill Miller BBQ breakfast tacos"
+    assert result["_meta"]["schema_retries"] == 2
+    assert len(attempts) == 3
+
+
+def test_local_lm_studio_adapter_falls_back_after_primary_failure(monkeypatch):
+    attempts = []
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_URL", "http://primary.test")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_MODEL", "primary-vision")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_URL", "http://fallback.test")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_MODEL", "fallback-vision")
+
+    def fake_urlopen(req, timeout):
+        attempts.append(req.full_url)
+        if "primary.test" in req.full_url:
+            raise urllib.error.URLError("primary down")
+        return _Response({"choices": [{"message": {"content": json.dumps(_meal_estimate_payload())}}]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = local_vision_adapter.describe_food_photo(b"fake-image", provider="lm_studio")
+
+    assert attempts == [
+        "http://primary.test/v1/chat/completions",
+        "http://fallback.test/v1/chat/completions",
+    ]
+    assert result["_meta"]["role"] == "fallback"
+    assert result["_meta"]["model"] == "fallback-vision"
+    assert result["_meta"]["fallback_used"] is True
+
+
+def test_local_lm_studio_adapter_reports_missing_fallback_config(monkeypatch):
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_URL", "http://primary.test")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_MODEL", "primary-vision")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_URL", "")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_MODEL", "")
+
+    def fake_urlopen(req, timeout):
+        raise urllib.error.URLError("primary down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(local_vision_adapter.LocalVisionError, match="all LM Studio vision endpoints failed"):
+        local_vision_adapter.describe_food_photo(b"fake-image", provider="lm_studio")
+
+
+def test_local_lm_studio_result_does_not_leak_raw_inputs(monkeypatch):
+    def fake_urlopen(req, timeout):
+        return _Response({"choices": [{"message": {"content": json.dumps(_meal_estimate_payload())}}]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = local_vision_adapter.describe_food_photo(
+        b"fake-image",
+        context_text="/tmp/private-food.jpg data:image/png;base64,abc",
+        provider="lm_studio",
+    )
+
+    serialized = json.dumps(result)
+    assert "data:image" not in serialized
+    assert "base64" not in serialized
+    assert "/tmp/private-food" not in serialized
 
 
 def test_local_adapter_blank_env_values_fall_back(monkeypatch):
@@ -326,13 +506,10 @@ def test_lm_studio_adapter_emits_n_image_urls_for_multi_image(monkeypatch):
         captured["content"] = body["messages"][0]["content"]
         return _Response({
             "choices": [
-                {"message": {"content": json.dumps({
-                    "item_description": "two-photo meal",
-                    "portion_hint": "1 plate",
-                    "confidence": 0.8,
-                    "ambiguous": False,
-                    "uncertainty_notes": [],
-                })}}
+                {"message": {"content": json.dumps(_meal_estimate_payload(
+                    item_name="two-photo meal",
+                    portion_description="1 plate",
+                ))}}
             ]
         })
 
