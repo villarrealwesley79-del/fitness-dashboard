@@ -24,8 +24,19 @@ def test_benchmark_case_counts_match_fit58_contract():
     assert len(module.PHOTO_CASES) == 20
     assert len(module.PACKAGED_CASES) == 10
     assert len(module.AMBIGUOUS_CASES) == 10
+    assert len(module.nutrition_cases()) == 60
     assert len(module.image_capable_cases()) == 40
-    assert len(module.all_cases()) == 60
+    assert len(module.WORKOUT_CASES) == 3
+    assert len(module.DAILY_BRIEF_CASES) == 3
+    assert len(module.BRANDED_FOOD_CASES) == 4
+    assert len(module.all_cases()) == 70
+    assert module.task_class_counts() == {
+        "food_photo_nutrition": 40,
+        "meal_text_nutrition": 20,
+        "workout_analysis_adjustment": 3,
+        "daily_coaching_brief": 3,
+        "branded_food_resolution": 4,
+    }
 
 
 def test_routing_recommendation_lists_loaded_qwen_as_candidate_not_primary():
@@ -125,6 +136,27 @@ def test_chat_payload_uses_lm_studio_supported_json_schema_response_format():
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["strict"] is True
     assert response_format["json_schema"]["schema"]["required"] == list(module.MEAL_ESTIMATE_RESPONSE_SCHEMA["required"])
+
+
+def test_non_nutrition_payloads_use_task_specific_strict_schemas():
+    module = _load_module()
+
+    workout_payload = module._chat_payload(module.WORKOUT_CASES[0], "local-model")
+    brief_payload = module._chat_payload(module.DAILY_BRIEF_CASES[0], "local-model")
+    branded_payload = module._chat_payload(module.BRANDED_FOOD_CASES[0], "local-model")
+
+    assert workout_payload["response_format"]["json_schema"]["name"] == "workout_adjustment"
+    assert workout_payload["response_format"]["json_schema"]["schema"]["required"] == [
+        "summary",
+        "readiness",
+        "adjustments",
+        "risk_flags",
+        "confidence",
+    ]
+    assert brief_payload["response_format"]["json_schema"]["name"] == "daily_coaching_brief"
+    assert "nutrition_focus" in brief_payload["response_format"]["json_schema"]["schema"]["required"]
+    assert branded_payload["response_format"]["json_schema"]["name"] == "branded_food_resolution"
+    assert "resolved_name" in branded_payload["response_format"]["json_schema"]["schema"]["required"]
 
 
 def test_vision_payload_does_not_leak_expected_food_label(tmp_path):
@@ -350,6 +382,213 @@ def test_model_benchmark_enforces_text_and_vision_latency_gates_separately(monke
     assert summary["latency_gates"]["vision"]["latency_passed"] is True
     assert summary["latency_passed"] is False
     assert summary["candidate_passed"] is False
+
+
+def test_model_benchmark_reports_per_task_latency_gates(monkeypatch):
+    module = _load_module()
+
+    def mixed_task_case(case, *, model, lm_studio_url, image_path=None, timeout=60.0):
+        latency_ms = {
+            "meal_text_nutrition": module.MEAL_TEXT_LATENCY_PASS_MS,
+            "workout_analysis_adjustment": module.WORKOUT_ANALYSIS_LATENCY_PASS_MS + 1,
+            "daily_coaching_brief": 100,
+            "branded_food_resolution": 100,
+        }[case.task_class]
+        return {
+            "case_id": case.case_id,
+            "input_type": case.input_type,
+            "task_class": case.task_class,
+            "model": model,
+            "has_image": False,
+            "ran_model": True,
+            "latency_ms": latency_ms,
+            "schema_valid": True,
+            "schema_errors": [],
+            "quality": {"passed": True},
+            "estimate": {},
+            "confidence": 0.8,
+            "ambiguous": False,
+            "expected_item_hint": case.expected_item_hint,
+        }
+
+    monkeypatch.setattr(module, "run_model_case", mixed_task_case)
+
+    summary = module.run_model_benchmark(
+        [
+            module.TEXT_CASES[0],
+            module.WORKOUT_CASES[0],
+            module.DAILY_BRIEF_CASES[0],
+            module.BRANDED_FOOD_CASES[0],
+        ],
+        text_model="text-model",
+        vision_model="vision-model",
+    )
+
+    assert summary["model"] == "per-task"
+    assert summary["task_class_counts"]["workout_analysis_adjustment"] == 1
+    assert summary["task_latency_gates"]["meal_text_nutrition"]["latency_passed"] is True
+    assert summary["task_latency_gates"]["workout_analysis_adjustment"]["latency_passed"] is False
+    assert summary["task_summary"]["daily_coaching_brief"]["schema_valid_count"] == 1
+    assert summary["task_latency_passed"] is False
+    assert summary["candidate_passed"] is False
+
+
+def test_non_nutrition_task_latency_does_not_fail_legacy_text_route(monkeypatch):
+    module = _load_module()
+
+    def mixed_task_case(case, *, model, lm_studio_url, image_path=None, timeout=60.0):
+        latency_ms = {
+            "meal_text_nutrition": 100,
+            "workout_analysis_adjustment": 10_000,
+            "daily_coaching_brief": 9_000,
+            "branded_food_resolution": 4_000,
+        }[case.task_class]
+        return {
+            "case_id": case.case_id,
+            "input_type": case.input_type,
+            "task_class": case.task_class,
+            "model": model,
+            "has_image": False,
+            "ran_model": True,
+            "latency_ms": latency_ms,
+            "schema_valid": True,
+            "schema_errors": [],
+            "quality": {"passed": True},
+            "estimate": {},
+            "confidence": 0.8,
+            "ambiguous": False,
+            "expected_item_hint": case.expected_item_hint,
+        }
+
+    monkeypatch.setattr(module, "run_model_case", mixed_task_case)
+
+    summary = module.run_model_benchmark(
+        [
+            module.TEXT_CASES[0],
+            module.WORKOUT_CASES[0],
+            module.DAILY_BRIEF_CASES[0],
+            module.BRANDED_FOOD_CASES[0],
+        ],
+        text_model="text-model",
+    )
+
+    assert set(summary["latency_gates"]) == {"text"}
+    assert summary["latency_gates"]["text"]["latency_passed"] is True
+    assert summary["task_latency_passed"] is True
+    assert summary["candidate_passed"] is True
+
+
+def test_per_task_only_run_can_pass_without_legacy_route_gate(monkeypatch):
+    module = _load_module()
+
+    def passing_case(case, *, model, lm_studio_url, image_path=None, timeout=60.0):
+        return {
+            "case_id": case.case_id,
+            "input_type": case.input_type,
+            "task_class": case.task_class,
+            "model": model,
+            "has_image": False,
+            "ran_model": True,
+            "latency_ms": 100,
+            "schema_valid": True,
+            "schema_errors": [],
+            "quality": {"passed": True},
+            "estimate": {},
+            "confidence": 0.8,
+            "ambiguous": False,
+            "expected_item_hint": case.expected_item_hint,
+        }
+
+    monkeypatch.setattr(module, "run_model_case", passing_case)
+
+    summary = module.run_model_benchmark(module.BRANDED_FOOD_CASES[:1], text_model="text-model")
+
+    assert summary["latency_gates"] == {}
+    assert summary["latency_passed"] is True
+    assert summary["task_latency_passed"] is True
+    assert summary["candidate_passed"] is True
+
+
+def test_branded_food_quality_does_not_count_query_echo_as_hint_match():
+    module = _load_module()
+    case = module.BRANDED_FOOD_CASES[0]
+    response = {
+        "query": case.expected_item_hint,
+        "resolved_name": "plain crackers",
+        "brand": "generic",
+        "serving_description": "one serving",
+        "calories": 120,
+        "protein_g": 2,
+        "carbs_g": 20,
+        "fat_g": 3,
+        "sodium_mg": 160,
+        "confidence": 0.8,
+        "source": "package lookup",
+        "notes": ["no direct brand match"],
+    }
+
+    score = module._task_quality_score(case, response, [])
+
+    assert score["response_hint_match"] is False
+    assert score["passed"] is False
+
+
+def test_non_nutrition_schema_rejects_out_of_range_numeric_values():
+    module = _load_module()
+    branded_case = module.BRANDED_FOOD_CASES[0]
+    branded_response = {
+        "query": branded_case.prompt,
+        "resolved_name": "McDonald's Quarter Pounder with Cheese",
+        "brand": "McDonald's",
+        "serving_description": "one sandwich",
+        "calories": module.CALORIE_MAX + 1,
+        "protein_g": module.MACRO_GRAM_MAX + 1,
+        "carbs_g": 45,
+        "fat_g": 28,
+        "sodium_mg": -1,
+        "confidence": 1.2,
+        "source": "package lookup",
+        "notes": [],
+    }
+    daily_response = {
+        "summary": "Prioritize recovery.",
+        "priorities": ["hydrate"],
+        "training_focus": "walk",
+        "nutrition_focus": "protein",
+        "recovery_focus": "sleep",
+        "warnings": [],
+        "confidence": -0.1,
+    }
+
+    branded_errors = module._task_response_schema_errors(branded_case, branded_response)
+    daily_errors = module._task_response_schema_errors(module.DAILY_BRIEF_CASES[0], daily_response)
+
+    assert "invalid_calories" in branded_errors
+    assert "invalid_protein_g" in branded_errors
+    assert "invalid_sodium_mg" in branded_errors
+    assert "invalid_confidence" in branded_errors
+    assert "invalid_confidence" in daily_errors
+    assert module._task_quality_score(branded_case, branded_response, branded_errors)["passed"] is False
+
+
+def test_text_case_set_keeps_legacy_text_subset(monkeypatch, capsys):
+    module = _load_module()
+    captured = {}
+
+    def fake_run_model_benchmark(cases, **_kwargs):
+        captured["cases"] = cases
+        return {"case_count": len(cases)}
+
+    monkeypatch.setattr(sys, "argv", ["meal_model_benchmark.py", "--run-model", "local-model", "--case-set", "text"])
+    monkeypatch.setattr(module, "probe_lm_studio", lambda _url: {"reachable": True, "models": []})
+    monkeypatch.setattr(module, "run_model_benchmark", fake_run_model_benchmark)
+
+    assert module.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["benchmark"]["case_count"] == 20
+    assert captured["cases"] == module.TEXT_CASES
+    assert {case.task_class for case in captured["cases"]} == {"meal_text_nutrition"}
 
 
 def test_quality_score_rejects_high_confidence_ambiguous_case():
