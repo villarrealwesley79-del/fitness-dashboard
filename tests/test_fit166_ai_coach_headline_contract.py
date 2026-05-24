@@ -119,6 +119,20 @@ def test_fallback_active_requires_loaded_fallback_model():
     assert "fallbackOk || activeRole === 'fallback'" not in headline_fn
 
 
+def test_fallback_detail_distinguishes_model_not_loaded_from_unreachable():
+    """Fallback-active detail copy must not call a reachable ASUS host
+    unreachable just because its target model is not loaded."""
+    helper_fn = _slice_function(APP_JS, "function _aiPrimaryUnavailableReason")
+    headline_fn = _slice_function(APP_JS, "function _aiCoachHeadlineFromHealth")
+
+    assert "if (!primary || !primary.reachable)" in helper_fn
+    assert "`${primaryHost} unreachable`" in helper_fn
+    assert "if (!primary.model_loaded)" in helper_fn
+    assert "`${primaryHost} model not loaded`" in helper_fn
+    assert "`${primaryHost} not serving traffic`" in helper_fn
+    assert "${_aiPrimaryUnavailableReason(primary, primaryHost)}" in headline_fn
+
+
 def test_setaicoachunavailable_writes_headline_stale():
     """When neither /api/ai/health nor /api/ai/metrics responds, the
     headline must degrade to the stale "AI offline" state — not just

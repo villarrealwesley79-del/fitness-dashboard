@@ -3728,6 +3728,12 @@
         if (detail) detail.textContent = parts.detail || '';
     }
 
+    function _aiPrimaryUnavailableReason(primary, primaryHost) {
+        if (!primary || !primary.reachable) return `${primaryHost} unreachable`;
+        if (!primary.model_loaded) return `${primaryHost} model not loaded`;
+        return `${primaryHost} not serving traffic`;
+    }
+
     function _aiCoachHeadlineFromHealth(health) {
         // Three states the FIT-166 acceptance criteria call out:
         //   1. Primary healthy           → "Ready · <primary host>"        (ok)
@@ -3759,7 +3765,7 @@
                 chipText: 'Fallback',
                 chipCls: 'state-chip warn',
                 dotCls: 'int-dot',
-                detail: `${primaryHost} unreachable — ${fallbackHost} is serving traffic.`,
+                detail: `${_aiPrimaryUnavailableReason(primary, primaryHost)} — ${fallbackHost} is serving traffic.`,
                 showSep: true,
             };
         }
