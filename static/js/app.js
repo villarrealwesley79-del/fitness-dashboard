@@ -3706,7 +3706,7 @@
         // FIT-166: card-level headline degrades to "unavailable" too,
         // matching the existing per-row chips so the card doesn't look
         // half-painted when the health route is unreachable.
-        _renderAiCoachHeadline({
+        const unavailableHeadline = {
             stateText: 'AI offline',
             hostText: 'health endpoint unreachable',
             chipText: 'Offline',
@@ -3714,7 +3714,9 @@
             dotCls: 'int-dot',
             detail: message || 'Health endpoint unreachable',
             showSep: true,
-        });
+        };
+        _renderAiCoachHeadline(unavailableHeadline);
+        _announceAiCoachHeadline(unavailableHeadline);
     }
 
     function _renderAiCoachHeadline(parts) {
@@ -3730,6 +3732,27 @@
         if (chip) { chip.textContent = parts.chipText; chip.className = parts.chipCls; }
         if (dot) dot.className = parts.dotCls;
         if (detail) detail.textContent = parts.detail || '';
+    }
+
+    // FIT-177: Screen-reader announcement for AI Coach headline state
+    // changes. _renderAiCoachHeadline stays as the visual DOM paint; the
+    // polite live region writes through this helper. The semantic key
+    // intentionally excludes `detail` so a copy tweak in the detail line
+    // (e.g. swapping the model name) doesn't re-announce an unchanged
+    // host-routing state. `undefined` is the first-transition sentinel
+    // (vs. `''` which is "we already announced empty"), so the very
+    // first render announces. Early return when unchanged keeps the
+    // 30-second poll from re-announcing the same state.
+    let _lastAiCoachAnnouncementKey;
+
+    function _announceAiCoachHeadline(parts) {
+        const key = `${parts.stateText}|${parts.hostText}|${parts.chipText}`;
+        if (_lastAiCoachAnnouncementKey === key) return;
+        _lastAiCoachAnnouncementKey = key;
+        const region = $('ai-coach-headline-announcement');
+        if (!region) return;
+        const sep = parts.hostText ? ' · ' : '';
+        region.textContent = `AI coach: ${parts.stateText}${sep}${parts.hostText}`;
     }
 
     function _aiPrimaryUnavailableReason(primary, primaryHost) {
@@ -3834,7 +3857,9 @@
         if (primaryDot) primaryDot.className = 'int-dot' + (primary && primary.reachable && primary.model_loaded ? ' int-dot-on' : '');
         if (fallbackDot) fallbackDot.className = 'int-dot' + (fallback && fallback.reachable && fallback.model_loaded ? ' int-dot-on' : '');
 
-        _renderAiCoachHeadline(_aiCoachHeadlineFromHealth(health));
+        const headlineParts = _aiCoachHeadlineFromHealth(health);
+        _renderAiCoachHeadline(headlineParts);
+        _announceAiCoachHeadline(headlineParts);
     }
 
     function _renderAiMetricsFields(metrics) {
@@ -3903,7 +3928,7 @@
             // FIT-166: keep the headline coherent when /api/ai/health
             // is reachable enough to give us a 0-byte / non-JSON
             // response but /api/ai/metrics still succeeded.
-            _renderAiCoachHeadline({
+            const offlineHeadline = {
                 stateText: 'AI offline',
                 hostText: 'health endpoint unreachable',
                 chipText: 'Offline',
@@ -3911,7 +3936,9 @@
                 dotCls: 'int-dot',
                 detail: 'Health endpoint unreachable',
                 showSep: true,
-            });
+            };
+            _renderAiCoachHeadline(offlineHeadline);
+            _announceAiCoachHeadline(offlineHeadline);
         }
         if (metrics) {
             _renderAiMetricsFields(metrics);
