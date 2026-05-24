@@ -2724,6 +2724,126 @@ def _filtered_exercise_library(preference: str):
     )
 
 
+def _same_exercise_definition(left, right):
+    if not left or not right:
+        return False
+    return _normalize_exercise_name(left.get("name")) == _normalize_exercise_name(right.get("name"))
+
+
+def _swap_resolution_candidates(old_ex, equipment_pref):
+    old_muscle = (old_ex.get("muscle") or "").lower()
+    old_definition = _resolve_exercise_definition(old_ex.get("exercise"))
+    candidates = []
+    for exercise in _filtered_exercise_library(equipment_pref):
+        if exercise.get("muscle") != old_muscle:
+            continue
+        if old_definition and _same_exercise_definition(exercise, old_definition):
+            continue
+        candidates.append(exercise)
+    return candidates
+
+
+def _swap_candidate_token_sets(exercise):
+    values = [exercise.get("name")]
+    values.extend(exercise.get("aliases") or [])
+    token_sets = []
+    for value in values:
+        tokens = _swap_match_tokens(value)
+        if tokens:
+            token_sets.append(tokens)
+    return token_sets
+
+
+def _swap_match_tokens(name):
+    tokens = set()
+    for token in _exercise_name_tokens(name):
+        tokens.add(token)
+        if len(token) > 3 and token.endswith("s"):
+            tokens.add(token[:-1])
+    return tokens
+
+
+def _deterministic_swap_candidate(typed_name, candidates):
+    typed_tokens = _swap_match_tokens(typed_name)
+    if not typed_tokens:
+        return None
+
+    scored = []
+    for exercise in candidates:
+        best = None
+        for candidate_tokens in _swap_candidate_token_sets(exercise):
+            shared = typed_tokens.intersection(candidate_tokens)
+            if not shared:
+                continue
+            is_superset = typed_tokens.issubset(candidate_tokens)
+            coverage = len(shared) / len(typed_tokens)
+            candidate_coverage = len(shared) / len(candidate_tokens)
+            score = (100 if is_superset else 0) + (coverage * 20) + (candidate_coverage * 5)
+            token_score = {
+                "score": score,
+                "shared": shared,
+                "is_superset": is_superset,
+            }
+            if not best or token_score["score"] > best["score"]:
+                best = token_score
+        if not best:
+            continue
+        if best["is_superset"] or len(best["shared"]) >= min(2, len(typed_tokens)):
+            scored.append(
+                {
+                    "exercise": exercise,
+                    "score": best["score"],
+                    "brand_rank": _exercise_brand_preference_rank(exercise),
+                }
+            )
+
+    if not scored:
+        return None
+
+    scored.sort(key=lambda item: (-item["score"], item["brand_rank"], item["exercise"].get("name", "")))
+    return scored[0]["exercise"]
+
+
+def _resolve_custom_swap_exercise(typed_name, old_ex, equipment_pref):
+    candidates = _swap_resolution_candidates(old_ex, equipment_pref)
+    deterministic = _deterministic_swap_candidate(typed_name, candidates)
+    if deterministic:
+        return deterministic
+
+    if not _lm_studio or not hasattr(_lm_studio, "resolve_swap_candidate") or not candidates:
+        return None
+
+    candidate_payload = [
+        {
+            "name": exercise.get("name"),
+            "equipment": exercise.get("equipment"),
+            "aliases": exercise.get("aliases") or [],
+            "compound": bool(exercise.get("compound")),
+        }
+        for exercise in candidates
+    ]
+    try:
+        resolution = _lm_studio.resolve_swap_candidate(
+            typed_name,
+            current_exercise=old_ex.get("exercise") or "",
+            target_muscle=(old_ex.get("muscle") or "").lower(),
+            candidates=candidate_payload,
+        )
+    except _lm_studio.LmStudioError as exc:
+        print(f"WARN: swap resolver LLM failed: {exc}")
+        return None
+
+    canonical_name = resolution.get("canonical_name") if isinstance(resolution, dict) else None
+    if not canonical_name:
+        return None
+
+    wanted = _normalize_exercise_name(canonical_name)
+    for exercise in candidates:
+        if _normalize_exercise_name(exercise.get("name")) == wanted:
+            return exercise
+    return None
+
+
 def _build_exercise_entry(
     exercise_name,
     muscle,
@@ -7333,15 +7453,21 @@ def swap_workout_exercise():
     if not (0 <= exercise_index < len(exercises)):
         return api_error("exercise_index out of range", 404, code="not_found")
 
-    new_ex = EXERCISE_LOOKUP.get(new_name)
+    old_ex = exercises[exercise_index]
+    old_muscle = (old_ex.get("muscle") or "").lower()
+    equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
+
+    new_ex = _resolve_exercise_definition(new_name)
+    if not new_ex:
+        new_ex = _resolve_custom_swap_exercise(new_name, old_ex, equipment_pref)
     if not new_ex:
         return api_error("Unknown exercise name", 404, code="not_found")
 
-    old_ex = exercises[exercise_index]
-    old_muscle = (old_ex.get("muscle") or "").lower()
+    old_definition = _resolve_exercise_definition(old_ex.get("exercise"))
+    if old_definition and _same_exercise_definition(new_ex, old_definition):
+        return api_error("New exercise must be different from the current exercise", 400, code="invalid_field")
     if new_ex.get("muscle") != old_muscle:
         return api_error("New exercise must match the same muscle group", 400, code="invalid_field")
-    equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
     if not _equipment_allowed(new_ex, equipment_pref):
         return api_error("New exercise is not allowed by the current equipment preference", 400, code="invalid_field")
     if not _exercise_user_allowed(new_ex):

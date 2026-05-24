@@ -35,6 +35,7 @@ LM_STUDIO_FALLBACK_URL = os.environ.get("LM_STUDIO_FALLBACK_URL", "http://127.0.
 LM_STUDIO_FALLBACK_MODEL = os.environ.get("LM_STUDIO_FALLBACK_MODEL", "qwen/qwen3.6-35b-a3b")
 LM_STUDIO_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_TIMEOUT_SEC", "8"))
 LM_STUDIO_ANALYZE_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_ANALYZE_TIMEOUT_SEC", "25"))
+LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC", "2.5"))
 LM_STUDIO_PREFLIGHT_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_PREFLIGHT_TIMEOUT_SEC", "1.5"))
 # Backwards-compatible names used by app.py cache keys.
 LM_STUDIO_URL = LM_STUDIO_PRIMARY_URL
@@ -346,6 +347,134 @@ ADJUST_SCHEMA = {
     },
     "required": ["summary", "intent"],
 }
+
+
+SWAP_RESOLVE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "canonical_name": {"type": ["string", "null"]},
+        "confidence": {"type": "number"},
+        "reason": {"type": "string"},
+    },
+    "required": ["canonical_name", "confidence", "reason"],
+}
+
+
+_SWAP_RESOLVE_SYSTEM = (
+    "You map a typed workout swap request to one safe exercise-library option.\n"
+    "\n"
+    "Rules:\n"
+    "- Return ONLY JSON matching the provided schema. No prose, no markdown.\n"
+    "- Choose canonical_name only from candidate_names. Never invent exercise names.\n"
+    "- If no candidate is a clear semantic match, return canonical_name null.\n"
+    "- NEVER prescribe weights, sets, reps, RPE, or load. Python infers load.\n"
+    "- Err toward null when the typed phrase is vague or unsafe."
+)
+
+
+def _validate_swap_resolution(parsed):
+    if not isinstance(parsed, dict):
+        raise LmStudioError(f"response is not an object: {type(parsed).__name__}")
+    canonical_name = parsed.get("canonical_name")
+    if canonical_name is not None and not isinstance(canonical_name, str):
+        raise LmStudioError("canonical_name must be string or null")
+    confidence = parsed.get("confidence")
+    if not isinstance(confidence, (int, float)):
+        raise LmStudioError("confidence must be number")
+    if not isinstance(parsed.get("reason"), str):
+        raise LmStudioError("reason must be string")
+
+
+def _normalize_candidate_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+
+
+def resolve_swap_candidate(
+    typed_name: str,
+    *,
+    current_exercise: str,
+    target_muscle: str,
+    candidates: list[dict],
+    timeout: float | None = None,
+    preflighted_candidate: dict | None = None,
+) -> dict:
+    """Ask the LLM to map typed swap text to a bounded candidate name only."""
+    timeout = timeout if timeout is not None else LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC
+    candidate_names = [
+        str(candidate.get("name") or "").strip()
+        for candidate in (candidates or [])
+        if str(candidate.get("name") or "").strip()
+    ]
+    if not candidate_names:
+        raise LmStudioError("no swap candidates provided")
+    candidate_lookup = {_normalize_candidate_name(name): name for name in candidate_names}
+
+    messages = [
+        {"role": "system", "content": _SWAP_RESOLVE_SYSTEM},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "typed_name": str(typed_name or "").strip(),
+                    "current_exercise": str(current_exercise or "").strip(),
+                    "target_muscle": str(target_muscle or "").strip(),
+                    "candidate_names": candidate_names,
+                    "candidates": [
+                        {
+                            "name": candidate.get("name"),
+                            "equipment": candidate.get("equipment"),
+                            "aliases": candidate.get("aliases") or [],
+                            "compound": bool(candidate.get("compound")),
+                        }
+                        for candidate in candidates
+                    ],
+                }
+            ),
+        },
+    ]
+
+    payload = {
+        "model": LM_STUDIO_MODEL,
+        "temperature": 0,
+        "max_tokens": 220,
+        "messages": messages,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "swap_resolution",
+                "schema": SWAP_RESOLVE_SCHEMA,
+                "strict": True,
+            },
+        },
+    }
+
+    acquired = _INFERENCE_LOCK.acquire(timeout=timeout + 1)
+    if not acquired:
+        raise LmStudioError("busy: another inference request is still in flight")
+
+    def validate(parsed):
+        _validate_swap_resolution(parsed)
+        canonical_name = parsed.get("canonical_name")
+        if canonical_name is None:
+            return
+        normalized = _normalize_candidate_name(canonical_name)
+        if normalized not in candidate_lookup:
+            raise LmStudioError("canonical_name is not in candidate_names")
+        parsed["canonical_name"] = candidate_lookup[normalized]
+
+    try:
+        parsed = _completion_json(
+            "/v1/chat/completions",
+            payload,
+            timeout=timeout,
+            validate=validate,
+            preflighted_candidate=preflighted_candidate,
+        )
+    finally:
+        _INFERENCE_LOCK.release()
+
+    return parsed
 
 
 _ADJUST_SYSTEM = (
