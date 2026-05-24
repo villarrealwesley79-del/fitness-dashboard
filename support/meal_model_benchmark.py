@@ -746,8 +746,12 @@ def _structured_response_schema_errors(response: dict | None, schema: dict) -> l
 
 
 def _schema_value_valid(value: object, rules: dict) -> bool:
-    if "enum" in rules and value not in set(rules["enum"]):
-        return False
+    if "enum" in rules:
+        try:
+            if value not in rules["enum"]:
+                return False
+        except TypeError:
+            return False
     expected = rules.get("type")
     if isinstance(expected, list):
         return any(_schema_value_valid(value, {**rules, "type": item}) for item in expected)

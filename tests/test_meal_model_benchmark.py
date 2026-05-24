@@ -571,6 +571,21 @@ def test_non_nutrition_schema_rejects_out_of_range_numeric_values():
     assert module._task_quality_score(branded_case, branded_response, branded_errors)["passed"] is False
 
 
+def test_non_nutrition_schema_rejects_unhashable_enum_values_without_crashing():
+    module = _load_module()
+    response = {
+        "summary": "Reduce intensity.",
+        "readiness": ["low"],
+        "adjustments": [{"target": "squats", "action": "reduce load", "rationale": "fatigue"}],
+        "risk_flags": [],
+        "confidence": 0.6,
+    }
+
+    errors = module._task_response_schema_errors(module.WORKOUT_CASES[0], response)
+
+    assert "invalid_readiness" in errors
+
+
 def test_text_case_set_keeps_legacy_text_subset(monkeypatch, capsys):
     module = _load_module()
     captured = {}
