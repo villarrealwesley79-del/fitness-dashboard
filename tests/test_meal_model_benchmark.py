@@ -606,6 +606,50 @@ def test_text_case_set_keeps_legacy_text_subset(monkeypatch, capsys):
     assert {case.task_class for case in captured["cases"]} == {"meal_text_nutrition"}
 
 
+def test_main_rejects_vision_model_without_text_model_for_mixed_cases(monkeypatch, capsys):
+    module = _load_module()
+    monkeypatch.setattr(sys, "argv", ["meal_model_benchmark.py", "--vision-model", "vision-model"])
+    monkeypatch.setattr(module, "probe_lm_studio", lambda _url: {"reachable": True, "models": []})
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("partial task-specific model flags should fail argument validation")
+
+    assert "--text-model is required" in capsys.readouterr().err
+
+
+def test_main_rejects_text_model_for_mapped_vision_cases_without_vision_model(monkeypatch, tmp_path, capsys):
+    module = _load_module()
+    image_map = tmp_path / "private-image-map.json"
+    image_map.write_text(json.dumps({module.PHOTO_CASES[0].case_id: "/tmp/private-photo.jpg"}), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "meal_model_benchmark.py",
+            "--text-model",
+            "text-model",
+            "--case-set",
+            "vision",
+            "--image-map",
+            str(image_map),
+        ],
+    )
+    monkeypatch.setattr(module, "probe_lm_studio", lambda _url: {"reachable": True, "models": []})
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("mapped image cases need a vision model or fallback run model")
+
+    assert "--vision-model is required" in capsys.readouterr().err
+
+
 def test_quality_score_rejects_high_confidence_ambiguous_case():
     module = _load_module()
     estimate = {

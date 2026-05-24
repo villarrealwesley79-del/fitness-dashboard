@@ -1246,13 +1246,19 @@ def main() -> int:
         print(json.dumps(output, indent=2, sort_keys=True))
         return 0
     if args.run_model or args.text_model or args.vision_model:
+        image_map = _load_image_map(args.image_map)
+        if not args.run_model:
+            if args.vision_model and any(not requires_image(case) for case in cases) and not args.text_model:
+                parser.error("--text-model is required for selected non-image cases when --run-model is not provided")
+            if args.text_model and not args.vision_model and any(case.case_id in image_map for case in cases if requires_image(case)):
+                parser.error("--vision-model is required for selected image cases with image-map entries when --run-model is not provided")
         output["benchmark"] = run_model_benchmark(
             cases,
             model=args.run_model,
             text_model=args.text_model,
             vision_model=args.vision_model,
             lm_studio_url=args.lm_studio_url,
-            image_map=_load_image_map(args.image_map),
+            image_map=image_map,
         )
     print(json.dumps(output, indent=2, sort_keys=True))
     return 0
