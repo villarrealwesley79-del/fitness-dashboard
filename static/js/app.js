@@ -3981,6 +3981,21 @@
         renderSettingsGroupSummaries();
     }
 
+    function _pushSetTestResult(message, toastVariant = null) {
+        const row = $('push-test-row');
+        const result = $('push-test-result');
+        if (row) row.hidden = false;
+        if (result) result.textContent = message;
+        if (toastVariant) toast(message, toastVariant);
+    }
+
+    function _pushResponseMessage(body, fallback) {
+        if (body && body.error && body.error.message) return body.error.message;
+        if (body && typeof body.error === 'string') return body.error;
+        if (body && typeof body.message === 'string') return body.message;
+        return fallback;
+    }
+
     function _wirePushButtons() {
         const enableBtn = $('btn-push-enable');
         if (enableBtn && !enableBtn.dataset.wired) {
@@ -4000,10 +4015,8 @@
     }
 
     async function _pushGetVapidKey() {
-        // Server hasn't published a VAPID public-key endpoint yet (FIT-39
-        // explicitly deferred delivery). Try to fetch one; on 404 / network
-        // error, fall through — subscribe will likely fail in Chrome but
-        // we surface that as the "granted_inactive" UI state cleanly.
+        // Server may not have published a VAPID public-key endpoint yet.
+        // Return null so Enable can show a visible setup error.
         try {
             const res = await fetch('/api/push/vapid-public-key');
             if (!res.ok) return null;
@@ -4045,22 +4058,36 @@
         // requires that on most browsers.
         const enableBtn = $('btn-push-enable');
         if (enableBtn) enableBtn.disabled = true;
+        _pushSetTestResult('Enabling notifications...');
         try {
             try {
+                if (!_pushSupported()) {
+                    _pushSetTestResult('This browser does not support web push notifications.', 'err');
+                    return;
+                }
+                if (_pushIsIOS() && !_pushIsStandalone()) {
+                    _pushSetTestResult('Install the app to the Home Screen, reopen it, then enable notifications.', 'err');
+                    return;
+                }
                 const perm = await Notification.requestPermission();
-                if (perm !== 'granted') return;
+                if (perm !== 'granted') {
+                    _pushSetTestResult('Notifications permission was not granted. Re-enable it in browser or OS settings, then try again.', 'err');
+                    return;
+                }
                 const reg = await navigator.serviceWorker.ready;
                 const vapid = await _pushGetVapidKey();
+                if (!vapid) {
+                    _pushSetTestResult('Push delivery is not configured: VAPID public key is missing. Configure VAPID keys, then enable notifications again.', 'err');
+                    return;
+                }
                 const opts = { userVisibleOnly: true };
-                if (vapid) opts.applicationServerKey = _pushUrlBase64ToUint8(vapid);
+                opts.applicationServerKey = _pushUrlBase64ToUint8(vapid);
                 let subscription = null;
                 try {
                     subscription = await reg.pushManager.subscribe(opts);
                 } catch (err) {
-                    // Chrome rejects subscribe without applicationServerKey. We
-                    // surface this as the "granted_inactive" state — permission
-                    // is granted but server delivery isn't configured.
                     console.warn('pushManager.subscribe failed:', err);
+                    _pushSetTestResult(`Push subscription failed: ${String((err && err.message) || err || 'service worker or push manager rejected the request')}.`, 'err');
                 }
                 if (subscription) {
                     let serverSaved = false;
@@ -4077,6 +4104,7 @@
                         serverSaved = true;
                     } catch (err) {
                         console.warn('POST /api/push/subscriptions failed:', err);
+                        _pushSetTestResult(`Subscription was created locally, but the server could not save it: ${apiErrorMessage(err, 'server save failed')}.`, 'err');
                     }
                     // If the server save failed, tear down the browser-side
                     // subscription so we don't leave a dangling push channel
@@ -4084,6 +4112,8 @@
                     if (!serverSaved) {
                         try { await subscription.unsubscribe(); }
                         catch (err) { console.warn('rollback unsubscribe failed:', err); }
+                    } else {
+                        _pushSetTestResult('Notifications enabled. Send a test notification to verify delivery.', 'ok');
                     }
                 }
             } catch (err) {
@@ -4091,10 +4121,14 @@
                 // serviceWorker.ready promise, VAPID-key decoding, and any
                 // other unexpected throw before the inner try blocks.
                 console.warn('enablePush failed:', err);
+                _pushSetTestResult(`Notifications could not be enabled: ${String((err && err.message) || err || 'unknown error')}.`, 'err');
             }
-            await renderPushSection();
         } finally {
-            if (enableBtn) enableBtn.disabled = false;
+            try {
+                await renderPushSection();
+            } finally {
+                if (enableBtn) enableBtn.disabled = false;
+            }
         }
     }
 
@@ -4128,15 +4162,18 @@
 
     async function sendPushTest() {
         const testBtn = $('btn-push-test');
-        const row = $('push-test-row');
-        const result = $('push-test-result');
         if (testBtn) testBtn.disabled = true;
-        if (row) row.hidden = false;
-        if (result) result.textContent = 'Sending test notification...';
+        _pushSetTestResult('Sending test notification...');
         try {
+            const state = await _pushDetectState();
+            if (state.name !== 'granted_active' || !state.subs || state.subs.length === 0) {
+                _pushSetTestResult('Enable notifications first, then send a test notification.', 'err');
+                await renderPushSection();
+                return;
+            }
             const endpointHash = await _pushCurrentEndpointHash();
             if (!endpointHash) {
-                if (result) result.textContent = 'No active subscription on this device. Re-enable notifications here, then send a test.';
+                _pushSetTestResult('No active subscription on this device. Re-enable notifications here, then send a test.', 'err');
                 await renderPushSection();
                 return;
             }
@@ -4147,18 +4184,18 @@
                 body: JSON.stringify({ endpoint_hash: endpointHash }),
             });
             const body = await res.json().catch(() => ({}));
-            if (res.ok && body.status === 'delivered') {
-                if (result) result.textContent = 'Delivered. This device should show the test notification now.';
+            if (res.ok && body.status === 'delivered' && body.delivered !== false) {
+                _pushSetTestResult('Delivered. This device should show the test notification now.');
                 toast('Test notification sent');
             } else if (res.status === 410 || body.status === 'gone') {
-                if (result) result.textContent = 'Subscription expired. Re-enable notifications to create a fresh one.';
+                _pushSetTestResult('Subscription expired. Re-enable notifications to create a fresh one.', 'err');
                 await renderPushSection();
             } else {
-                const msg = body && body.error && body.error.message ? body.error.message : (body.error || 'Server could not send the test notification.');
-                if (result) result.textContent = `Not delivered: ${msg}`;
+                const msg = _pushResponseMessage(body, 'Server could not send the test notification.');
+                _pushSetTestResult(`Not delivered: ${msg}`, 'err');
             }
         } catch (err) {
-            if (result) result.textContent = 'Not delivered: network or server error.';
+            _pushSetTestResult('Not delivered: network or server error.', 'err');
             console.warn('push test failed:', err);
         } finally {
             if (testBtn) testBtn.disabled = false;
