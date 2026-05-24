@@ -180,6 +180,7 @@ def test_workouts_endpoint_preserves_basketball_and_filters_other(monkeypatch):
                     "duration_minutes": 95.3,
                     "total_energy_kcal": 1035.4,
                     "distance_m": 4.25,
+                    "avgHeartRate": {"qty": 164},
                 },
                 {
                     "date": "2026-05-21",
@@ -200,6 +201,7 @@ def test_workouts_endpoint_preserves_basketball_and_filters_other(monkeypatch):
     assert payload["workouts"][0]["activity"] == "Basketball"
     assert payload["workouts"][0]["activity_type"] == "Basketball"
     assert payload["workouts"][0]["duration_min"] == 95.3
+    assert payload["workouts"][0]["avg_heart_rate"] == 164
 
     summary = client.get("/api/apple-health/summary").get_json()
     assert summary["workouts_total"] == 1
