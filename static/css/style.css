@@ -1502,6 +1502,31 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 .state-chip.stale { color: #f87171; background: rgba(248,113,113,0.1); border-color: rgba(248,113,113,0.35); }
 .state-chip.unknown { color: var(--fg-dimmer); background: rgba(51,65,85,0.25); border-color: var(--border-2); font-style: italic; }
 
+/* FIT-166: AI coach card headline row. Surfaces the active host's
+   friendly name (ASUS GX10 / Mac Studio) alongside a one-word state
+   chip so the operator can read routing health at a glance. Sits
+   above the per-host rows; keeps the same density as other settings
+   rows so the card stays scannable at 390x844. */
+.ai-coach-headline-row { padding-top: 10px; padding-bottom: 12px; }
+.ai-coach-headline {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg-0);
+    flex-wrap: wrap;
+}
+.ai-coach-headline-sep { color: var(--fg-dimmer); padding: 0 1px; }
+.ai-role-pill {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    padding: 1px 6px;
+    border: 1px solid var(--border-2);
+    border-radius: 4px;
+    background: rgba(51,65,85,0.25);
+}
+
 /* FIT-111: smaller chip variant used in settings group headers
    (e.g. "2 fresh · 0 stale"). Keeps the same color tokens as the
    full-size chip but fits beside group labels. */

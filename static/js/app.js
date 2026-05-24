@@ -3662,6 +3662,21 @@
         }, AI_COACH_REFRESH_MS);
     }
 
+    // FIT-166: friendly host names rendered on the AI coach card.
+    // The adapter returns generic role names ("primary"/"fallback"), so
+    // the UI maps them to the deployment's real hosts. If the adapter
+    // ever starts returning a non-generic name, prefer it over the
+    // default — this keeps the UI honest if hardware changes.
+    const AI_PRIMARY_HOST_DEFAULT = 'ASUS GX10';
+    const AI_FALLBACK_HOST_DEFAULT = 'Mac Studio';
+
+    function _aiHostName(check, fallbackLabel) {
+        if (!check) return fallbackLabel;
+        const raw = (check.name || '').trim();
+        const generic = raw === '' || raw === 'primary' || raw === 'fallback';
+        return generic ? fallbackLabel : raw;
+    }
+
     function _setAiCoachUnavailable(message) {
         // Degraded mode: the rest of Settings keeps working. Acceptance
         // criterion: "Metrics refresh periodically without breaking the
@@ -3684,6 +3699,79 @@
         if (warnRow) warnRow.hidden = true;
         if (primaryDot) primaryDot.className = 'int-dot';
         if (fallbackDot) fallbackDot.className = 'int-dot';
+        // FIT-166: card-level headline degrades to "unavailable" too,
+        // matching the existing per-row chips so the card doesn't look
+        // half-painted when the health route is unreachable.
+        _renderAiCoachHeadline({
+            stateText: 'AI offline',
+            hostText: 'health endpoint unreachable',
+            chipText: 'Offline',
+            chipCls: 'state-chip stale',
+            dotCls: 'int-dot',
+            detail: message || 'Health endpoint unreachable',
+            showSep: true,
+        });
+    }
+
+    function _renderAiCoachHeadline(parts) {
+        const state = $('ai-coach-headline-state');
+        const host = $('ai-coach-headline-host');
+        const sep = $('ai-coach-headline-sep');
+        const chip = $('ai-coach-headline-chip');
+        const dot = $('ai-coach-headline-dot');
+        const detail = $('ai-coach-headline-detail');
+        if (state) state.textContent = parts.stateText;
+        if (host) host.textContent = parts.hostText;
+        if (sep) sep.hidden = !parts.showSep;
+        if (chip) { chip.textContent = parts.chipText; chip.className = parts.chipCls; }
+        if (dot) dot.className = parts.dotCls;
+        if (detail) detail.textContent = parts.detail || '';
+    }
+
+    function _aiCoachHeadlineFromHealth(health) {
+        // Three states the FIT-166 acceptance criteria call out:
+        //   1. Primary healthy           → "Ready · <primary host>"        (ok)
+        //   2. Primary down, fallback up → "Fallback active · <fallback host>" (warn)
+        //   3. Both down / unavailable   → "AI offline"                    (stale)
+        const primary = (health && health.primary) || null;
+        const fallback = (health && health.fallback) || null;
+        const activeRole = (health && health.active_role) || null;
+        const primaryHost = _aiHostName(primary, AI_PRIMARY_HOST_DEFAULT);
+        const fallbackHost = _aiHostName(fallback, AI_FALLBACK_HOST_DEFAULT);
+        const primaryOk = !!(primary && primary.reachable && primary.model_loaded);
+        const fallbackOk = !!(fallback && fallback.reachable && fallback.model_loaded);
+
+        if (primaryOk && activeRole !== 'fallback') {
+            return {
+                stateText: 'Ready',
+                hostText: primaryHost,
+                chipText: 'Online',
+                chipCls: 'state-chip ok',
+                dotCls: 'int-dot int-dot-on',
+                detail: `Serving from ${primaryHost}.`,
+                showSep: true,
+            };
+        }
+        if (fallbackOk) {
+            return {
+                stateText: 'Fallback active',
+                hostText: fallbackHost,
+                chipText: 'Fallback',
+                chipCls: 'state-chip warn',
+                dotCls: 'int-dot',
+                detail: `${primaryHost} unreachable — ${fallbackHost} is serving traffic.`,
+                showSep: true,
+            };
+        }
+        return {
+            stateText: 'AI offline',
+            hostText: `${primaryHost} & ${fallbackHost} unavailable`,
+            chipText: 'Offline',
+            chipCls: 'state-chip stale',
+            dotCls: 'int-dot',
+            detail: 'No AI host is serving traffic — deterministic plan remains the source of truth.',
+            showSep: true,
+        };
     }
 
     function _aiCheckLabel(check) {
@@ -3704,6 +3792,13 @@
         const fallbackDetail = $('ai-fallback-detail');
         const primaryDot = $('ai-primary-dot');
         const fallbackDot = $('ai-fallback-dot');
+        // FIT-166: friendly host labels alongside the role tag.
+        const primaryHostEl = $('ai-primary-host');
+        const fallbackHostEl = $('ai-fallback-host');
+        const primaryHost = _aiHostName(primary, AI_PRIMARY_HOST_DEFAULT);
+        const fallbackHost = _aiHostName(fallback, AI_FALLBACK_HOST_DEFAULT);
+        if (primaryHostEl) primaryHostEl.textContent = primaryHost;
+        if (fallbackHostEl) fallbackHostEl.textContent = fallbackHost;
 
         const pLabel = _aiCheckLabel(primary);
         const fLabel = fallback ? _aiCheckLabel(fallback) : { text: 'Same as primary', cls: 'state-chip unknown' };
@@ -3728,6 +3823,8 @@
         }
         if (primaryDot) primaryDot.className = 'int-dot' + (primary && primary.reachable && primary.model_loaded ? ' int-dot-on' : '');
         if (fallbackDot) fallbackDot.className = 'int-dot' + (fallback && fallback.reachable && fallback.model_loaded ? ' int-dot-on' : '');
+
+        _renderAiCoachHeadline(_aiCoachHeadlineFromHealth(health));
     }
 
     function _renderAiMetricsFields(metrics) {
@@ -3793,6 +3890,18 @@
             const fallbackState = $('ai-fallback-state');
             if (primaryState) { primaryState.textContent = 'Unavailable'; primaryState.className = 'state-chip unknown'; }
             if (fallbackState) { fallbackState.textContent = 'Unavailable'; fallbackState.className = 'state-chip unknown'; }
+            // FIT-166: keep the headline coherent when /api/ai/health
+            // is reachable enough to give us a 0-byte / non-JSON
+            // response but /api/ai/metrics still succeeded.
+            _renderAiCoachHeadline({
+                stateText: 'AI offline',
+                hostText: 'health endpoint unreachable',
+                chipText: 'Offline',
+                chipCls: 'state-chip stale',
+                dotCls: 'int-dot',
+                detail: 'Health endpoint unreachable',
+                showSep: true,
+            });
         }
         if (metrics) {
             _renderAiMetricsFields(metrics);
