@@ -59,6 +59,13 @@ LM_STUDIO_REQUIRED_FIELDS = (
     "items",
 )
 LM_STUDIO_ITEM_REQUIRED_FIELDS = ("item_name", "quantity", "brand", "modifiers", "portion_hint")
+SCALE_CUE_INSTRUCTION = (
+    "Before estimating calories or macros, use visible scale cues: count pieces, compare "
+    "food volume to plates, bowls, wrappers, labels, utensils, hands, and containers, and "
+    "separate each visible component before summing macros. If neither the image nor user "
+    "context provides a usable portion cue, assume a typical single serving, lower confidence, "
+    "set ambiguous=true, and explain the portion uncertainty."
+)
 
 
 class LocalVisionError(RuntimeError):
@@ -74,6 +81,7 @@ def _prompt(context_text: str | None = None) -> str:
         "line-item names, modifiers, and quantities into items. Each item must have item_name, "
         "quantity, optional brand, optional modifiers array, and optional portion_hint. Do not "
         "collapse a multi-item cart into one generic meal. Do not use prices as nutrition facts. "
+        f"{SCALE_CUE_INSTRUCTION} "
         "Do not include raw image data, file paths, or chain of thought."
     )
     if context_text:
@@ -91,7 +99,8 @@ def _lm_studio_prompt(context_text: str | None = None) -> str:
         "modifiers, and quantities into items. Use an empty items array for a single "
         "unstructured plate. Do not collapse a multi-item cart into one generic meal. "
         "Use low confidence and ambiguous=true when the portion, ingredients, or item "
-        "identity are unclear. Do not include raw image data, file paths, prompts, markdown, "
+        f"identity are unclear. {SCALE_CUE_INSTRUCTION} Do not include raw image data, "
+        "file paths, prompts, markdown, "
         "or chain of thought."
     )
     if context_text:

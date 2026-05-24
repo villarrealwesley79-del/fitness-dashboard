@@ -250,6 +250,9 @@ def test_local_lm_studio_adapter_posts_image_and_parses_json(monkeypatch):
     assert captured["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
     assert "Return JSON only with item_name" in captured["content"][0]["text"]
     assert "Do not collapse a multi-item cart" in captured["content"][0]["text"]
+    assert "use visible scale cues" in captured["content"][0]["text"]
+    assert "nor user context provides a usable portion cue" in captured["content"][0]["text"]
+    assert "ambiguous=true" in captured["content"][0]["text"]
 
 
 def test_local_lm_studio_adapter_uses_temperature_env(monkeypatch):
@@ -555,3 +558,11 @@ def test_ollama_adapter_emits_n_base64_images_for_multi_image(monkeypatch):
     msg = captured["message"]
     assert len(msg["images"]) == 2
     assert "2 photos" in msg["content"]
+    assert "use visible scale cues" in msg["content"]
+
+
+def test_ollama_single_image_prompt_includes_scale_cues():
+    prompt = local_vision_adapter._multi_image_prompt("lunch", 1)
+
+    assert "use visible scale cues" in prompt
+    assert "User context: lunch" in prompt
