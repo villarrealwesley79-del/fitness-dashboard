@@ -69,10 +69,14 @@ def _lm_studio_prompt(context_text: str | None = None) -> str:
     prompt = (
         "Estimate the food in this image for a fitness food log. Return JSON only with "
         "item_name, portion_description, meal_type, calories, protein_g, carbs_g, fat_g, "
-        "sodium_mg, fiber_g, confidence, ambiguous, and uncertainty_notes. Use the meal_type "
-        "enum breakfast/lunch/dinner/snack. Use low confidence and ambiguous=true when the "
-        "portion, ingredients, or item identity are unclear. Do not include raw image data, "
-        "file paths, prompts, markdown, or chain of thought."
+        "sodium_mg, fiber_g, confidence, ambiguous, uncertainty_notes, and items. Use the "
+        "meal_type enum breakfast/lunch/dinner/snack. For restaurant cart, receipt, "
+        "delivery-app, or order screenshots, OCR the visible brand, line-item names, "
+        "modifiers, and quantities into items. Use an empty items array for a single "
+        "unstructured plate. Do not collapse a multi-item cart into one generic meal. "
+        "Use low confidence and ambiguous=true when the portion, ingredients, or item "
+        "identity are unclear. Do not include raw image data, file paths, prompts, markdown, "
+        "or chain of thought."
     )
     if context_text:
         prompt += f"\nUser context: {context_text[:500]}"
@@ -246,6 +250,21 @@ def _meal_estimate_response_schema() -> dict[str, Any]:
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "ambiguous": {"type": "boolean"},
             "uncertainty_notes": {"type": "array", "items": {"type": "string"}},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "item_name": {"type": "string"},
+                        "quantity": {"type": "number", "minimum": 0},
+                        "brand": {"type": ["string", "null"]},
+                        "modifiers": {"type": "array", "items": {"type": "string"}},
+                        "portion_hint": {"type": ["string", "null"]},
+                    },
+                    "required": ["item_name", "quantity", "brand", "modifiers", "portion_hint"],
+                },
+            },
         },
         "required": [
             "item_name",
@@ -260,6 +279,7 @@ def _meal_estimate_response_schema() -> dict[str, Any]:
             "confidence",
             "ambiguous",
             "uncertainty_notes",
+            "items",
         ],
     }
 
@@ -274,17 +294,52 @@ def _parse_lm_studio_meal_estimate(content: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise LocalVisionError("invalid JSON response") from exc
     try:
-        return sanitize_meal_estimate(
+        estimate = sanitize_meal_estimate(
             parsed,
             source="vision_lm_studio_estimate",
             plausible_ranges=True,
         )
     except MealEstimateValidationError as exc:
         raise LocalVisionError(f"invalid meal estimate: {exc}") from exc
+    items = _sanitize_lm_studio_items(parsed.get("items"))
+    if items:
+        estimate["items"] = items
+    return estimate
+
+
+def _sanitize_lm_studio_items(raw_items: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for raw in raw_items[:10]:
+        if not isinstance(raw, dict):
+            continue
+        item_name = str(raw.get("item_name") or "").strip()
+        if not item_name:
+            continue
+        item: dict[str, Any] = {"item_name": item_name[:120]}
+        quantity = raw.get("quantity", 1)
+        if isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or quantity <= 0:
+            quantity = 1
+        quantity = min(float(quantity), 20.0)
+        item["quantity"] = int(quantity) if quantity.is_integer() else round(quantity, 2)
+        brand = raw.get("brand")
+        if isinstance(brand, str) and brand.strip():
+            item["brand"] = brand.strip()[:80]
+        modifiers = raw.get("modifiers")
+        if isinstance(modifiers, list):
+            cleaned_modifiers = [str(mod).strip()[:80] for mod in modifiers if str(mod).strip()]
+            if cleaned_modifiers:
+                item["modifiers"] = cleaned_modifiers[:10]
+        portion_hint = raw.get("portion_hint")
+        if isinstance(portion_hint, str) and portion_hint.strip():
+            item["portion_hint"] = portion_hint.strip()[:160]
+        items.append(item)
+    return items
 
 
 def _meal_estimate_to_description(estimate: dict[str, Any]) -> dict[str, Any]:
-    return {
+    description = {
         "item_description": estimate["item_name"],
         "portion_hint": estimate.get("portion_description"),
         "confidence": estimate["confidence"],
@@ -300,6 +355,9 @@ def _meal_estimate_to_description(estimate: dict[str, Any]) -> dict[str, Any]:
             "fiber_g": estimate["fiber_g"],
         },
     }
+    if estimate.get("items"):
+        description["items"] = estimate["items"]
+    return description
 
 
 def _describe_ollama(

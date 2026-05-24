@@ -39,6 +39,22 @@ def _meal_estimate_payload(**overrides):
         "confidence": 0.81,
         "ambiguous": False,
         "uncertainty_notes": [],
+        "items": [
+            {
+                "brand": "Bill Miller BBQ",
+                "item_name": "Bacon & Egg Taco",
+                "quantity": 1,
+                "modifiers": [],
+                "portion_hint": None,
+            },
+            {
+                "brand": "Bill Miller BBQ",
+                "item_name": "Breakfast Sandwich",
+                "quantity": 2,
+                "modifiers": ["egg"],
+                "portion_hint": None,
+            },
+        ],
     }
     payload.update(overrides)
     return payload
@@ -204,6 +220,7 @@ def test_local_lm_studio_adapter_posts_image_and_parses_json(monkeypatch):
     assert result["item_description"] == "Bill Miller BBQ breakfast tacos"
     assert result["portion_hint"] == "1 taco and 2 sandwiches"
     assert result["macro_estimate"]["calories"] == 720
+    assert result["items"][1]["quantity"] == 2
     assert captured["url"].endswith("/v1/chat/completions")
     assert captured["timeout"] == local_vision_adapter.TIMEOUT_SECONDS
     assert captured["model"] == local_vision_adapter.LM_STUDIO_MODEL
@@ -225,9 +242,14 @@ def test_local_lm_studio_adapter_posts_image_and_parses_json(monkeypatch):
         "confidence",
         "ambiguous",
         "uncertainty_notes",
+        "items",
     }
+    item_schema = schema["properties"]["items"]["items"]
+    assert item_schema["additionalProperties"] is False
+    assert set(item_schema["required"]) == {"item_name", "quantity", "brand", "modifiers", "portion_hint"}
     assert captured["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
     assert "Return JSON only with item_name" in captured["content"][0]["text"]
+    assert "Do not collapse a multi-item cart" in captured["content"][0]["text"]
 
 
 def test_local_lm_studio_adapter_uses_temperature_env(monkeypatch):
