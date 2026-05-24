@@ -229,6 +229,288 @@ def test_swap_accepts_custom_typed_same_muscle_exercise_name(fitness_app, monkey
     assert "Swapped from Seated Row" in exercise["rationale"]
 
 
+def test_swap_resolves_semantic_triceps_extension_and_uses_backend_load(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Cable Pushdown",
+                "muscle": "triceps",
+                "is_compound": False,
+                "target_weight": 55,
+                "target_reps": 12,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "exercise_index": 0,
+            "new_exercise_name": "Tricep extension",
+        },
+    )
+
+    assert response.status_code == 200
+    exercise = response.get_json()["recommendation"]["exercises"][0]
+    assert exercise["exercise"] == "Overhead Tricep Extension"
+    assert exercise["target_weight"] > 0
+    assert exercise["load_source"] in {"hardcoded", "baseline_json", "progression", "similar_history"}
+    assert "Swapped from Cable Pushdown" in exercise["rationale"]
+
+
+def test_swap_resolves_plural_triceps_extension_deterministically(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Cable Pushdown",
+                "muscle": "triceps",
+                "is_compound": False,
+                "target_weight": 55,
+                "target_reps": 12,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("plural triceps extension should resolve before LLM fallback")
+
+    monkeypatch.setattr(fitness_app._lm_studio, "resolve_swap_candidate", fail_if_called)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "exercise_index": 0,
+            "new_exercise_name": "Triceps extension",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["recommendation"]["exercises"][0]["exercise"] == "Overhead Tricep Extension"
+
+
+def test_swap_uses_adapter_fallback_for_inconclusive_free_text(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Cable Pushdown",
+                "muscle": "triceps",
+                "is_compound": False,
+                "target_weight": 55,
+                "target_reps": 12,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    calls = {}
+
+    def fake_resolve(typed_name, *, current_exercise, target_muscle, candidates, **_kwargs):
+        calls["typed_name"] = typed_name
+        calls["current_exercise"] = current_exercise
+        calls["target_muscle"] = target_muscle
+        calls["candidate_names"] = [candidate["name"] for candidate in candidates]
+        return {"canonical_name": "Overhead Tricep Extension", "confidence": 0.88, "reason": "mock"}
+
+    monkeypatch.setattr(fitness_app._lm_studio, "resolve_swap_candidate", fake_resolve)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "exercise_index": 0,
+            "new_exercise_name": "arm straightener",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["recommendation"]["exercises"][0]["exercise"] == "Overhead Tricep Extension"
+    assert calls == {
+        "typed_name": "arm straightener",
+        "current_exercise": "Cable Pushdown",
+        "target_muscle": "triceps",
+        "candidate_names": ["Seated Dip", "Overhead Tricep Extension", "Tricep Pushdown"],
+    }
+
+
+def test_swap_adapter_failure_preserves_structured_not_found(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Cable Pushdown",
+                "muscle": "triceps",
+                "is_compound": False,
+                "target_weight": 55,
+                "target_reps": 12,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    def fail_resolve(*_args, **_kwargs):
+        raise fitness_app._lm_studio.LmStudioError("timeout")
+
+    monkeypatch.setattr(fitness_app._lm_studio, "resolve_swap_candidate", fail_resolve)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "exercise_index": 0,
+            "new_exercise_name": "arm straightener",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["error"] == {"code": "not_found", "message": "Unknown exercise name"}
+
+
+def test_swap_adapter_candidate_outside_prefilter_is_rejected(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Cable Pushdown",
+                "muscle": "triceps",
+                "is_compound": False,
+                "target_weight": 55,
+                "target_reps": 12,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    def bad_resolve(*_args, **_kwargs):
+        return {"canonical_name": "Lateral Raise", "confidence": 0.9, "reason": "wrong muscle"}
+
+    monkeypatch.setattr(fitness_app._lm_studio, "resolve_swap_candidate", bad_resolve)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "exercise_index": 0,
+            "new_exercise_name": "arm straightener",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["error"]["message"] == "Unknown exercise name"
+
+
+def test_swap_adapter_normalizes_candidate_membership(fitness_app, monkeypatch):
+    validations = []
+
+    def fake_completion(_path, _payload, timeout, validate, preflighted_candidate=None):
+        bad = {"canonical_name": "Lateral Raise", "confidence": 0.9, "reason": "wrong muscle"}
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(bad)
+        good = {"canonical_name": " overhead tricep extension ", "confidence": 0.9, "reason": "case"}
+        validate(good)
+        validations.append(good)
+        return good
+
+    monkeypatch.setattr(lm_studio_adapter, "_completion_json", fake_completion)
+    result = lm_studio_adapter.resolve_swap_candidate(
+        "arm straightener",
+        current_exercise="Cable Pushdown",
+        target_muscle="triceps",
+        candidates=[
+            {"name": "Seated Dip", "equipment": "machine", "aliases": [], "compound": True},
+            {"name": "Overhead Tricep Extension", "equipment": "cable", "aliases": [], "compound": False},
+        ],
+    )
+
+    assert result["canonical_name"] == "Overhead Tricep Extension"
+    assert validations == [{"canonical_name": "Overhead Tricep Extension", "confidence": 0.9, "reason": "case"}]
+
+
+def test_swap_prefilters_equipment_before_adapter_resolution(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_only"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Cable Pushdown",
+                "muscle": "triceps",
+                "is_compound": False,
+                "target_weight": 55,
+                "target_reps": 12,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    seen = {}
+
+    def fake_resolve(*_args, candidates, **_kwargs):
+        seen["candidate_names"] = [candidate["name"] for candidate in candidates]
+        return {"canonical_name": "Overhead Tricep Extension", "confidence": 0.9, "reason": "mock"}
+
+    monkeypatch.setattr(fitness_app._lm_studio, "resolve_swap_candidate", fake_resolve)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "exercise_index": 0,
+            "new_exercise_name": "cable triceps extension",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["error"]["message"] == "Unknown exercise name"
+    assert seen["candidate_names"] == ["Seated Dip"]
+
+
+def test_swap_rejects_current_exercise_no_op(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Cable Pushdown",
+                "muscle": "triceps",
+                "is_compound": False,
+                "target_weight": 55,
+                "target_reps": 12,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "exercise_index": 0,
+            "new_exercise_name": "Cable Pushdown",
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["error"]["code"] == "invalid_field"
+    assert "different from the current exercise" in body["error"]["message"]
+
+
 def test_swap_rejects_excluded_preacher_curl(fitness_app, monkeypatch):
     recommendation = {
         "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
