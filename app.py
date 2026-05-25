@@ -3428,7 +3428,7 @@ def calculate_personal_records(workouts: list) -> dict:
 def calculate_training_consistency(workouts: list) -> dict:
     """Calculate training streaks and consistency metrics."""
     if not workouts:
-        return {"current_streak": 0, "longest_streak": 0, "weekly_avg": 0, "consistency_pct": 0}
+        return {"current_streak": 0, "longest_streak": 0, "weekly_avg": 0, "consistency_pct": 0, "days_since_last": None}
 
     dates = sorted([datetime.strptime(w["date"], '%Y-%m-%d') for w in workouts])
 
@@ -3943,11 +3943,11 @@ def calculate_recovery_bonus(recovery_data: list, hours: int = 48) -> dict:
     }
 
 
-# Initialize with real data if available, otherwise use sample data
+# Initialize with real data if available, otherwise start empty.
 # Data loading priority:
 # 1. JSON files (user's saved data) - these persist across restarts
 # 2. Markdown workout log (initial import)
-# 3. Sample data (demo mode)
+# 3. Explicit sample data opt-in (demo mode)
 if WORKOUTS:
     print(f"Loaded {len(WORKOUTS)} workouts from saved JSON data")
 else:
@@ -3960,9 +3960,12 @@ else:
         # Save to JSON for future use
         save_json(WORKOUTS_FILE, WORKOUTS)
         save_json(SORENESS_FILE, SORENESS_DATA)
-    else:
-        print("No saved data found, using sample data")
+    elif os.environ.get("FIT_LOAD_SAMPLE_DATA") == "1":
+        print("FIT_LOAD_SAMPLE_DATA=1, using sample data")
         WORKOUTS, SORENESS_DATA = get_sample_data()
+    else:
+        print("No saved data found, starting empty")
+        WORKOUTS, SORENESS_DATA = [], []
 
 
 @app.route('/')
@@ -11221,9 +11224,14 @@ def key_insights():
     insights = []
 
     # Progression insights
-    improving = [ex for ex, d in progression.items() if d["status"] == "On Track"]
-    plateaus = [ex for ex, d in progression.items() if d["status"] == "Plateau"]
-    regressions = [ex for ex, d in progression.items() if d["status"] == "Regression"]
+    enough_history = {
+        ex: d
+        for ex, d in progression.items()
+        if len(d.get("history", []) or []) >= 2
+    }
+    improving = [ex for ex, d in enough_history.items() if d["status"] == "On Track"]
+    plateaus = [ex for ex, d in enough_history.items() if d["status"] == "Plateau"]
+    regressions = [ex for ex, d in enough_history.items() if d["status"] == "Regression"]
 
     if improving:
         insights.append({
@@ -11261,6 +11269,7 @@ def key_insights():
         })
 
     # Consistency insight
+    days_since_last = consistency.get("days_since_last")
     if consistency["current_streak"] >= 4:
         insights.append({
             "type": "positive",
@@ -11268,16 +11277,16 @@ def key_insights():
             "title": f"{consistency['current_streak']} session streak!",
             "detail": "Keep up the consistency"
         })
-    elif consistency["days_since_last"] > 7:
+    elif days_since_last is not None and days_since_last > 7:
         insights.append({
             "type": "warning",
             "icon": "schedule",
             "title": "Time to train!",
-            "detail": f"{consistency['days_since_last']} days since last workout"
+            "detail": f"{days_since_last} days since last workout"
         })
 
     # Balance insight
-    if push_pull["color"] == "red":
+    if (push_pull["push_sets"] + push_pull["pull_sets"]) > 0 and push_pull["color"] == "red":
         insights.append({
             "type": "warning",
             "icon": "balance",
