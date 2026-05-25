@@ -4819,6 +4819,59 @@
         };
     }
 
+    // FIT-179: merge an adjusted recommendation into an in-progress active
+    // workout without losing the user's logged work. Same-name slots carry
+    // every logged row through (the existing buildActiveExercise path). When
+    // the exercise at a slot changes, we keep only the *completed* rows
+    // (weight/reps/notes/done) and rebuild the remaining rows from the new
+    // recommendation's target weight/reps so incomplete stale rows don't
+    // mislead the user with the prior exercise's targets.
+    function buildAdjustedLoggedSets(newEx, previousSets) {
+        const prevList = Array.isArray(previousSets) ? previousSets : [];
+        const completed = prevList
+            .filter((s) => s && s.done)
+            .map((s) => ({
+                reps: s.reps != null ? s.reps : '',
+                weight: s.weight != null ? s.weight : '',
+                done: true,
+                notes: s.notes != null ? s.notes : '',
+            }));
+        const targetReps = recommendedRepsValue(newEx);
+        const targetWeight = recommendedWeightValue(newEx);
+        const targetCount = setCountForExercise(newEx);
+        const rowCount = Math.max(targetCount, completed.length);
+        return Array.from({ length: rowCount }, (_, idx) => {
+            if (idx < completed.length) return completed[idx];
+            return { reps: targetReps, weight: targetWeight, done: false, notes: '' };
+        });
+    }
+
+    function applyAdjustedRecommendationToActiveWorkout(nw, previousExercises = []) {
+        if (!nw) return;
+        const existing = state.activeWorkout || {};
+        const exercises = (nw.exercises || []).map((ex, i) => {
+            const prev = previousExercises[i];
+            const prevName = prev ? exerciseName(prev) : '';
+            const nextName = exerciseName(ex);
+            if (prev && prevName && nextName && prevName === nextName) {
+                return buildActiveExercise(ex, prev);
+            }
+            return {
+                ...ex,
+                logged_sets: buildAdjustedLoggedSets(ex, prev && prev.logged_sets),
+            };
+        });
+        state.activeWorkout = {
+            id: existing.id || nw.workout_id || newWorkoutId(nw.id),
+            recommendation_id: nw.id || existing.recommendation_id || null,
+            focus: nw.focus || nw.goal_name || existing.focus || 'Workout',
+            exercises,
+            cardio: buildActiveCardio(nw.cardio, existing.cardio),
+            saveState: existing.saveState || null,
+            dirty: true,
+        };
+    }
+
     function hasRecommendedCardio(cardio) {
         return Boolean(cardio && cardio.include_cardio !== false && (cardio.type || cardio.machine || Number(cardio.duration_minutes || 0) > 0));
     }
@@ -5151,7 +5204,14 @@
         const nw = state.adjustedWorkout || (state.dashboard && state.dashboard.next_workout);
         if (!nw) { toast('No adjusted workout available', 'err'); return; }
         if ($('modal-adjust')) $('modal-adjust').hidden = true;
-        setActiveWorkoutFromRecommendation(nw);
+        // FIT-179: if the user is already mid-workout, route through the
+        // preservation helper so completed sets aren't reset to fresh
+        // recommendation rows.
+        if (state.activeWorkout && Array.isArray(state.activeWorkout.exercises)) {
+            applyAdjustedRecommendationToActiveWorkout(nw, state.activeWorkout.exercises);
+        } else {
+            setActiveWorkoutFromRecommendation(nw);
+        }
         renderActiveWorkout();
     }
 
@@ -6615,6 +6675,19 @@
             state.dashboard.next_workout = payload.recommendation;
             state.adjustedWorkout = payload.recommendation;
             renderAdjustedPlanPreview(payload.recommendation);
+            // FIT-179: when the user is mid-workout, fold the adjusted plan
+            // into the active workout so completed sets survive (preserved
+            // by slot index even across a renamed exercise) instead of
+            // being wiped when the adjusted plan applies. Only worth doing
+            // when something actually changed.
+            if (state.activeWorkout && kind === 'changed') {
+                const previous = Array.isArray(state.activeWorkout.exercises)
+                    ? state.activeWorkout.exercises
+                    : [];
+                applyAdjustedRecommendationToActiveWorkout(payload.recommendation, previous);
+                renderActiveWorkout();
+                if (typeof toast === 'function') toast('Adjusted plan applied — completed sets kept.', 'ok');
+            }
         }
         if (state.currentTab === 'tab-workout') {
             renderNextWorkout();
@@ -6720,6 +6793,8 @@
         $('btn-start-workout-2') && $('btn-start-workout-2').addEventListener('click', startWorkout);
         $('btn-adjust-plan') && $('btn-adjust-plan').addEventListener('click', openAdjust);
         $('btn-adjust-plan-2') && $('btn-adjust-plan-2').addEventListener('click', openAdjust);
+        // FIT-179: Adjust Plan entry point from inside the active workout.
+        $('btn-adjust-plan-active') && $('btn-adjust-plan-active').addEventListener('click', openAdjust);
         $('btn-adjust-submit') && $('btn-adjust-submit').addEventListener('click', submitAdjust);
         $('btn-adjust-discard') && $('btn-adjust-discard').addEventListener('click', discardSavedAdjust);
         qsa('.chip-preset').forEach((b) => b.addEventListener('click', () => {
