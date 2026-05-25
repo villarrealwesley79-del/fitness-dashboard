@@ -1,6 +1,6 @@
 // Fitness Dashboard Service Worker
 
-const CACHE_NAME = 'fitness-dashboard-v20260525-fit181-fast-workout';
+const CACHE_NAME = 'fitness-dashboard-v20260525-fit181-gym-now';
 const STATIC_ASSETS = [
     '/',
     '/static/css/style.css',
@@ -84,7 +84,32 @@ self.addEventListener('fetch', event => {
         return;
     }
 
-    // Static assets - cache first, network fallback
+    // Navigation/app-shell requests must be network first. This prevents an
+    // installed PWA from pinning a broken dashboard shell during live repair.
+    if (event.request.mode === 'navigate') {
+        event.respondWith(
+            fetch(event.request).catch(() => caches.match('/'))
+        );
+        return;
+    }
+
+    // Static JS/CSS must also be network first so urgent app fixes take effect
+    // on the next open instead of the second reload.
+    const url = new URL(event.request.url);
+    if (url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname === '/sw.js') {
+        event.respondWith(
+            fetch(event.request).then(response => {
+                if (response.ok) {
+                    const responseClone = response.clone();
+                    caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseClone));
+                }
+                return response;
+            }).catch(() => caches.match(event.request))
+        );
+        return;
+    }
+
+    // Other static assets - cache first, network fallback
     event.respondWith(
         caches.match(event.request)
             .then(cachedResponse => {

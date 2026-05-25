@@ -173,8 +173,12 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "healthkit_samples_workout_*.json" in app_py
     assert "training_recommendation=_current_workout_training_recommendation()" in app_py
     assert "api('/api/next-workout', { timeoutMs: 10000 })" in app_js
-    assert "app.js?v=20260525-fit181-fast-workout" in template
-    assert "fitness-dashboard-v20260525-fit181-fast-workout" in sw
+    assert "app.js?v=20260525-fit181-gym-now" in template
+    assert "fitness-dashboard-v20260525-fit181-gym-now" in sw
+    assert "@app.route('/gym-now')" in app_py
+    assert "Cache-Control\": \"no-store\"" in app_py
+    assert "event.request.mode === 'navigate'" in sw
+    assert "url.pathname.endsWith('.js')" in sw
 
 
 def test_next_workout_caches_clear_after_plan_inputs_change():

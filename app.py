@@ -16,6 +16,7 @@ import socket
 import sqlite3
 import hashlib
 import glob
+import html
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -4131,6 +4132,67 @@ def api_next_workout():
         )
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
     return jsonify({"next_workout": LAST_WORKOUT_RECOMMENDATION})
+
+
+@app.route('/gym-now')
+def gym_now():
+    """Emergency no-app-shell workout view for stale mobile/PWA caches."""
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
+    fingerprint = _workout_recommendation_fingerprint()
+    if not LAST_WORKOUT_RECOMMENDATION or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint:
+        LAST_WORKOUT_RECOMMENDATION = generate_next_workout(
+            WORKOUTS,
+            SORENESS_DATA,
+            training_recommendation=_current_workout_training_recommendation(),
+            consume_cardio_rotation=False,
+        )
+        LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+    workout = LAST_WORKOUT_RECOMMENDATION or {}
+    focus = html.escape(str(workout.get("focus") or workout.get("title") or "Workout"))
+    estimated = workout.get("estimated_minutes") or workout.get("estimated_duration") or workout.get("available_time")
+    rows = []
+    for idx, ex in enumerate(workout.get("exercises") or [], 1):
+        name = html.escape(str(ex.get("exercise") or ex.get("name") or ex.get("machine") or "Exercise"))
+        muscle = html.escape(str(ex.get("muscle") or ex.get("muscle_group") or "").upper())
+        sets = html.escape(str(ex.get("target_sets") or ex.get("sets") or "-"))
+        reps = html.escape(str(ex.get("target_reps") or ex.get("reps") or "-"))
+        weight = html.escape(str(ex.get("target_weight") or ex.get("target_weight_lbs") or "-"))
+        rpe = html.escape(str(ex.get("rpe_target") or ex.get("rpe") or "-"))
+        rows.append(
+            f"<li><strong>{idx}. {name}</strong><span>{muscle}</span>"
+            f"<div>{sets} x {reps} @ {weight} lb · RPE {rpe}</div></li>"
+        )
+    body = "\n".join(rows) or "<li>No workout generated. Try refreshing.</li>"
+    page = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <title>Gym Now</title>
+  <style>
+    body {{ margin:0; background:#050815; color:#f8fafc; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }}
+    main {{ max-width:680px; margin:0 auto; padding:22px 18px 40px; }}
+    h1 {{ font-size:30px; margin:10px 0 2px; letter-spacing:0; }}
+    .meta {{ color:#a7b0c4; margin-bottom:18px; }}
+    ol {{ list-style:none; padding:0; margin:0; display:grid; gap:10px; }}
+    li {{ background:#111827; border:1px solid #263148; border-radius:8px; padding:14px; }}
+    strong {{ display:block; font-size:18px; margin-bottom:4px; }}
+    span {{ display:inline-block; color:#93c5fd; font-size:12px; letter-spacing:.08em; margin-bottom:8px; }}
+    div {{ color:#dbeafe; font-size:16px; }}
+    a {{ color:#93c5fd; }}
+  </style>
+</head>
+<body>
+  <main>
+    <a href="/?v=fit181-force-live">Back to app</a>
+    <h1>{focus}</h1>
+    <div class="meta">{html.escape(str(estimated or ''))} min · live server-rendered workout</div>
+    <ol>{body}</ol>
+  </main>
+</body>
+</html>"""
+    return Response(page, mimetype="text/html", headers={"Cache-Control": "no-store"})
 
 
 @app.route('/api/dashboard')
