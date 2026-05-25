@@ -96,6 +96,45 @@ def test_ai_health_returns_adapter_payload(monkeypatch):
     assert body["primary"]["model"] == "qwen/qwen3-30b"
 
 
+def test_ai_health_reload_gate_skips_non_browser_clients(monkeypatch):
+    module = _client(monkeypatch)
+
+    class FakeAdapter:
+        def health(self):
+            return {"reachable": True, "model_loaded": True}
+
+    monkeypatch.setattr(module, "_lm_studio", FakeAdapter(), raising=False)
+    client = module.app.test_client(use_cookies=False)
+
+    res = client.get(
+        "/api/ai/health",
+        headers={
+            "Cookie": "session=smoke-test-session",
+            "User-Agent": "curl/8.0",
+        },
+    )
+
+    assert res.status_code == 200
+    assert res.get_json()["reachable"] is True
+
+
+def test_ai_health_reload_gate_still_refreshes_browser_shell(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(module, "_lm_studio", None, raising=False)
+    client = module.app.test_client(use_cookies=False)
+
+    res = client.get(
+        "/api/ai/health",
+        headers={
+            "Cookie": "session=browser-session",
+            "User-Agent": "Mozilla/5.0",
+        },
+    )
+
+    assert res.status_code == 401
+    assert res.get_json() == {"error": "reload_required", "reload": True}
+
+
 def test_ai_health_response_does_not_leak_model_traces(monkeypatch):
     """Stable contract: the health payload must never include free-text
     completions, prompt content, or chain-of-thought. The fields it can

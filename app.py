@@ -8892,11 +8892,22 @@ def _shell_reload_required_response():
     return response
 
 
+def _is_browser_app_shell_request():
+    user_agent = request.headers.get("User-Agent", "")
+    if "Mozilla/" in user_agent:
+        return True
+    return any(
+        request.headers.get(header)
+        for header in ("Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site")
+    )
+
+
 @app.route('/api/ai/health')
 def ai_health():
     if (
         request.cookies.get("session")
         and request.cookies.get(APP_SHELL_RELOAD_COOKIE) != APP_SHELL_RELOAD_VERSION
+        and _is_browser_app_shell_request()
     ):
         return _shell_reload_required_response()
     if not _lm_studio:
