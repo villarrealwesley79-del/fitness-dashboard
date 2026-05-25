@@ -192,6 +192,19 @@ def test_vision_payload_does_not_leak_expected_food_label(tmp_path):
     assert "attached image" in joined_text
 
 
+def test_image_payloads_are_limited_to_food_photo_tasks(tmp_path):
+    module = _load_module()
+    image_path = tmp_path / "private-photo.jpg"
+    image_path.write_bytes(b"fake-jpeg")
+
+    try:
+        module._chat_payload(module.WORKOUT_CASES[0], "local-model", image_path=str(image_path))
+    except ValueError as exc:
+        assert "food_photo_nutrition" in str(exc)
+    else:
+        raise AssertionError("non-photo task should reject image payloads")
+
+
 def test_schema_validation_rejects_malformed_field_types():
     module = _load_module()
 
@@ -330,6 +343,7 @@ def test_quality_score_rejects_prompt_and_image_trace_leakage():
 
     score = module._quality_score(module.TEXT_CASES[6], estimate, [])
 
+    assert "attached image" in module.RAW_TRACE_BLOCKED_FRAGMENTS
     assert score["raw_trace_free"] is False
     assert score["passed"] is False
 
@@ -605,7 +619,7 @@ def test_workout_quality_requires_actionable_adjustments_and_expected_readiness(
             }
         ],
         "risk_flags": ["high leg soreness"],
-        "confidence": 0.8,
+        "confidence": 0.55,
     }
 
     weak_score = module._task_quality_score(case, weak_response, [])
@@ -614,9 +628,11 @@ def test_workout_quality_requires_actionable_adjustments_and_expected_readiness(
     assert weak_score["response_hint_match"] is True
     assert weak_score["actionable_adjustments"] is False
     assert weak_score["readiness_matches"] is False
+    assert weak_score["confidence_calibrated"] is False
     assert weak_score["passed"] is False
     assert strong_score["actionable_adjustments"] is True
     assert strong_score["readiness_matches"] is True
+    assert strong_score["confidence_calibrated"] is True
     assert strong_score["passed"] is True
 
 
@@ -652,6 +668,27 @@ def test_daily_brief_quality_requires_priorities_and_expected_focus():
     assert strong_score["actionable_priorities"] is True
     assert strong_score["focus_matches"] is True
     assert strong_score["passed"] is True
+
+
+def test_daily_brief_quality_rejects_overconfident_medium_ambiguity():
+    module = _load_module()
+    case = module.DAILY_BRIEF_CASES[0]
+    response = {
+        "summary": "Prioritize strength support and recovery.",
+        "priorities": ["add protein at the next meal", "keep strength work conservative"],
+        "training_focus": "strength",
+        "nutrition_focus": "protein",
+        "recovery_focus": "recovery",
+        "warnings": [],
+        "confidence": 0.99,
+    }
+
+    score = module._task_quality_score(case, response, [])
+
+    assert score["actionable_priorities"] is True
+    assert score["focus_matches"] is True
+    assert score["confidence_calibrated"] is False
+    assert score["passed"] is False
 
 
 def test_non_nutrition_schema_rejects_out_of_range_numeric_values():
