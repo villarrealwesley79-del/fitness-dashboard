@@ -3833,6 +3833,8 @@
         denied: 'Notifications are blocked in browser or OS settings.',
     };
 
+    let pushSetupDetailOverride = '';
+
     function _pushSupported() {
         return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
     }
@@ -3970,6 +3972,10 @@
         _pushApplyChip(state.name);
         _pushApplyButtons(state);
         _pushApplyDetail(state.name);
+        if (pushSetupDetailOverride && state.name !== 'granted_active') {
+            const detail = $('push-state-detail');
+            if (detail) detail.textContent = pushSetupDetailOverride;
+        }
         _pushApplyHintRows(state.name);
         _pushApplyDot(state.name);
         _wirePushButtons();
@@ -3987,6 +3993,11 @@
         if (row) row.hidden = false;
         if (result) result.textContent = message;
         if (toastVariant) toast(message, toastVariant);
+    }
+
+    function _pushSetSetupResult(message, toastVariant = null) {
+        pushSetupDetailOverride = message;
+        _pushSetTestResult(message, toastVariant);
     }
 
     function _pushResponseMessage(body, fallback) {
@@ -4015,16 +4026,45 @@
     }
 
     async function _pushGetVapidKey() {
-        // Server may not have published a VAPID public-key endpoint yet.
-        // Return null so Enable can show a visible setup error.
         try {
-            const res = await fetch('/api/push/vapid-public-key');
-            if (!res.ok) return null;
-            const body = await res.json();
-            return (body && body.public_key) || null;
-        } catch {
-            return null;
+            const res = await fetch('/api/push/vapid-public-key', {
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json' },
+            });
+            const body = await res.json().catch(() => ({}));
+            if (res.status === 401 || res.status === 403) {
+                return {
+                    ok: false,
+                    message: 'Sign in to this installed app, then enable notifications again.',
+                };
+            }
+            if (!res.ok) {
+                return {
+                    ok: false,
+                    message: _pushResponseMessage(body, 'Push delivery is not configured: VAPID public key is missing. Configure VAPID keys, then enable notifications again.'),
+                };
+            }
+            const publicKey = body && body.public_key;
+            if (!publicKey) {
+                return {
+                    ok: false,
+                    message: 'Push delivery is not configured: VAPID public key is missing. Configure VAPID keys, then enable notifications again.',
+                };
+            }
+            return { ok: true, publicKey };
+        } catch (err) {
+            console.warn('GET /api/push/vapid-public-key failed:', err);
+            return {
+                ok: false,
+                message: 'Could not check push setup: network or server error.',
+            };
         }
+    }
+
+    function _pushTimeout(ms, message) {
+        return new Promise((_, reject) => {
+            window.setTimeout(() => reject(new Error(message)), ms);
+        });
     }
 
     function _pushUrlBase64ToUint8(base64) {
@@ -4058,6 +4098,7 @@
         // requires that on most browsers.
         const enableBtn = $('btn-push-enable');
         if (enableBtn) enableBtn.disabled = true;
+        pushSetupDetailOverride = '';
         _pushSetTestResult('Enabling notifications...');
         try {
             try {
@@ -4074,20 +4115,26 @@
                     _pushSetTestResult('Notifications permission was not granted. Re-enable it in browser or OS settings, then try again.', 'err');
                     return;
                 }
-                const reg = await navigator.serviceWorker.ready;
+                const reg = await Promise.race([
+                    navigator.serviceWorker.ready,
+                    _pushTimeout(10000, 'service worker did not become ready'),
+                ]);
                 const vapid = await _pushGetVapidKey();
-                if (!vapid) {
-                    _pushSetTestResult('Push delivery is not configured: VAPID public key is missing. Configure VAPID keys, then enable notifications again.', 'err');
+                if (!vapid.ok) {
+                    _pushSetSetupResult(vapid.message, 'err');
                     return;
                 }
                 const opts = { userVisibleOnly: true };
-                opts.applicationServerKey = _pushUrlBase64ToUint8(vapid);
+                opts.applicationServerKey = _pushUrlBase64ToUint8(vapid.publicKey);
                 let subscription = null;
                 try {
-                    subscription = await reg.pushManager.subscribe(opts);
+                    subscription = await Promise.race([
+                        reg.pushManager.subscribe(opts),
+                        _pushTimeout(10000, 'push subscription did not complete'),
+                    ]);
                 } catch (err) {
                     console.warn('pushManager.subscribe failed:', err);
-                    _pushSetTestResult(`Push subscription failed: ${String((err && err.message) || err || 'service worker or push manager rejected the request')}.`, 'err');
+                    _pushSetSetupResult(`Push subscription failed: ${String((err && err.message) || err || 'service worker or push manager rejected the request')}.`, 'err');
                 }
                 if (subscription) {
                     let serverSaved = false;
@@ -4104,7 +4151,7 @@
                         serverSaved = true;
                     } catch (err) {
                         console.warn('POST /api/push/subscriptions failed:', err);
-                        _pushSetTestResult(`Subscription was created locally, but the server could not save it: ${apiErrorMessage(err, 'server save failed')}.`, 'err');
+                        _pushSetSetupResult(`Subscription was created locally, but the server could not save it: ${apiErrorMessage(err, 'server save failed')}.`, 'err');
                     }
                     // If the server save failed, tear down the browser-side
                     // subscription so we don't leave a dangling push channel
@@ -4113,6 +4160,7 @@
                         try { await subscription.unsubscribe(); }
                         catch (err) { console.warn('rollback unsubscribe failed:', err); }
                     } else {
+                        pushSetupDetailOverride = '';
                         _pushSetTestResult('Notifications enabled. Send a test notification to verify delivery.', 'ok');
                     }
                 }
@@ -4121,7 +4169,7 @@
                 // serviceWorker.ready promise, VAPID-key decoding, and any
                 // other unexpected throw before the inner try blocks.
                 console.warn('enablePush failed:', err);
-                _pushSetTestResult(`Notifications could not be enabled: ${String((err && err.message) || err || 'unknown error')}.`, 'err');
+                _pushSetSetupResult(`Notifications could not be enabled: ${String((err && err.message) || err || 'unknown error')}.`, 'err');
             }
         } finally {
             try {
