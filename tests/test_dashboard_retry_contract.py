@@ -170,11 +170,14 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "\"oura\": {" in app_py
     assert "get_oura_daily_range(OURA_DB_FILE" in app_py
     assert "\"weather\": {" in app_py
+    assert "\"open_wearables\": {" in app_py
+    assert "_open_wearables_workout_inputs_live()" in app_py
+    assert '"configured": _open_wearables_workout_inputs_live()' in app_py
     assert "\"apple_health\": {" in app_py
     assert "file_marker(_apple_health_sync_db_file())" in app_py
     assert "healthkit_samples_workout_*.json" in app_py
     assert "training_recommendation=_current_workout_training_recommendation()" in app_py
-    assert "api('/api/next-workout', { timeoutMs: 10000 })" in app_js
+    assert "api('/api/next-workout', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS })" in app_js
     assert "app.js?v=20260525-fit181-controller-reload" in template
     assert "fitness-dashboard-v20260525-fit181-controller-reload" in sw
     assert "const STATIC_ASSETS" not in sw

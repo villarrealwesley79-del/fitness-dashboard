@@ -716,7 +716,7 @@
     }
     async function getNextWorkout(force = false) {
         if (!force && state.nextWorkout) return state.nextWorkout;
-        const payload = await api('/api/next-workout', { timeoutMs: 10000 });
+        const payload = await api('/api/next-workout', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
         state.nextWorkout = payload && payload.next_workout ? payload.next_workout : null;
         return state.nextWorkout;
     }

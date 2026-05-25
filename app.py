@@ -4030,6 +4030,10 @@ def _current_workout_training_recommendation():
     return recommendation
 
 
+def _open_wearables_workout_inputs_live():
+    return not _missing_open_wearables_config()
+
+
 def _workout_recommendation_fingerprint():
     """Fingerprint inputs that should force a new next-workout plan."""
     today_s = _today_str()
@@ -4088,6 +4092,10 @@ def _workout_recommendation_fingerprint():
             "data": _WEATHER_CACHE.get("data"),
             "error": _WEATHER_CACHE.get("error"),
         },
+        "open_wearables": {
+            "configured": _open_wearables_workout_inputs_live(),
+            "user_id": bool(OPEN_WEARABLES_USER_ID),
+        },
         "apple_health": {
             "enabled": _apple_health_recommendation_enabled(),
             "hr_intensity_enabled": _apple_health_hr_intensity_enabled(),
@@ -4130,7 +4138,11 @@ def api_next_workout():
     """Return only the active workout prescription for gym execution."""
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    if not LAST_WORKOUT_RECOMMENDATION or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint:
+    if (
+        _open_wearables_workout_inputs_live()
+        or not LAST_WORKOUT_RECOMMENDATION
+        or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint
+    ):
         LAST_WORKOUT_RECOMMENDATION = generate_next_workout(
             WORKOUTS,
             SORENESS_DATA,
@@ -4146,7 +4158,11 @@ def gym_now():
     """Emergency no-app-shell workout view for stale mobile/PWA caches."""
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    if not LAST_WORKOUT_RECOMMENDATION or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint:
+    if (
+        _open_wearables_workout_inputs_live()
+        or not LAST_WORKOUT_RECOMMENDATION
+        or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint
+    ):
         LAST_WORKOUT_RECOMMENDATION = generate_next_workout(
             WORKOUTS,
             SORENESS_DATA,
