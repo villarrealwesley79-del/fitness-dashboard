@@ -162,6 +162,10 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
 
     assert "@app.route('/api/next-workout')" in app_py
     assert "def _current_workout_training_recommendation():" in app_py
+    assert "def _workout_recommendation_fingerprint():" in app_py
+    assert "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint" in app_py
+    assert "\"day\": today_s" in app_py
+    assert "\"oura\": {" in app_py
     assert "training_recommendation=_current_workout_training_recommendation()" in app_py
     assert "api('/api/next-workout', { timeoutMs: 10000 })" in app_js
     assert "app.js?v=20260525-fit181-fast-workout" in template

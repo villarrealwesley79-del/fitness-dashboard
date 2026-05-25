@@ -352,6 +352,7 @@ TIME_OPTIONS = [
 WORKOUT_RECOMMENDATIONS = []  # Stores what was recommended
 COMPLETED_WORKOUTS = []  # Stores what was actually done
 LAST_WORKOUT_RECOMMENDATION = None  # Most recent recommendation for swap actions
+LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
 
 # ==================== CARDIO RECOMMENDATIONS ====================
 # Heart rate zones based on % of max HR (220 - age, assume age 30 for now = 190 max HR)
@@ -4020,17 +4021,65 @@ def _current_workout_training_recommendation():
     return recommendation
 
 
+def _workout_recommendation_fingerprint():
+    """Fingerprint inputs that should force a new next-workout plan."""
+    today_s = _today_str()
+    cached_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
+
+    def latest_marker(rows):
+        markers = [
+            str((row or {}).get("created_at") or (row or {}).get("date") or "")
+            for row in (rows or [])
+        ]
+        return max(markers) if markers else ""
+
+    settings_fields = [
+        "training_goal",
+        "sessions_per_week_target",
+        "available_time_minutes",
+        "fatigue_threshold",
+        "equipment_preference",
+        "preferred_equipment_brands",
+        "excluded_exercises",
+        "volume_landmarks",
+    ]
+    payload = {
+        "day": today_s,
+        "workouts_count": len(WORKOUTS or []),
+        "workouts_latest": latest_marker(WORKOUTS),
+        "soreness_count": len(SORENESS_DATA or []),
+        "soreness_latest": latest_marker(SORENESS_DATA),
+        "cardio_count": len(CARDIO_DATA or []),
+        "cardio_latest": latest_marker(CARDIO_DATA),
+        "recovery_count": len(RECOVERY_DATA or []),
+        "recovery_latest": latest_marker(RECOVERY_DATA),
+        "settings": {field: USER_SETTINGS.get(field) for field in settings_fields},
+        "oura": {
+            "day": cached_oura.get("day"),
+            "readiness_score": cached_oura.get("readiness_score"),
+            "sleep_score": cached_oura.get("sleep_score"),
+            "hrv": cached_oura.get("hrv"),
+            "sleep_duration_min": cached_oura.get("sleep_duration_min"),
+            "resting_hr": cached_oura.get("resting_hr"),
+        },
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 @app.route('/api/next-workout')
 def api_next_workout():
     """Return only the active workout prescription for gym execution."""
-    global LAST_WORKOUT_RECOMMENDATION
-    if not LAST_WORKOUT_RECOMMENDATION:
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
+    fingerprint = _workout_recommendation_fingerprint()
+    if not LAST_WORKOUT_RECOMMENDATION or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint:
         LAST_WORKOUT_RECOMMENDATION = generate_next_workout(
             WORKOUTS,
             SORENESS_DATA,
             training_recommendation=_current_workout_training_recommendation(),
             consume_cardio_rotation=False,
         )
+        LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
     return jsonify({"next_workout": LAST_WORKOUT_RECOMMENDATION})
 
 
@@ -4187,8 +4236,9 @@ def api_dashboard():
         training_recommendation=dashboard_training_recommendation,
         consume_cardio_rotation=False,
     )
-    global LAST_WORKOUT_RECOMMENDATION
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     LAST_WORKOUT_RECOMMENDATION = next_workout
+    LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
     food_log_entries = _food_log_entries_for_context(since=today_s)
     nutrition_context = _nutrition_context_for_date(
         today_s,
@@ -7587,7 +7637,7 @@ def exercise_alternatives(muscle_group):
 
 @app.route('/api/workout/swap', methods=['POST'])
 def swap_workout_exercise():
-    global LAST_WORKOUT_RECOMMENDATION
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -7669,6 +7719,7 @@ def swap_workout_exercise():
     recommendation["exercises"] = exercises
     if recommendation is LAST_WORKOUT_RECOMMENDATION:
         LAST_WORKOUT_RECOMMENDATION = recommendation
+        LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
 
     return jsonify({"status": "success", "recommendation": recommendation})
 
@@ -8076,7 +8127,7 @@ def adjust_workout():
     the deterministic plan unchanged with status='fallback' so the UI can show
     a "AI coach unavailable" chip without breaking.
     """
-    global LAST_WORKOUT_RECOMMENDATION
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
 
     data, err = get_json_body(required=True)
     if err:
@@ -8100,6 +8151,7 @@ def adjust_workout():
     if not recommendation:
         recommendation = generate_next_workout(WORKOUTS, SORENESS_DATA)
         LAST_WORKOUT_RECOMMENDATION = recommendation
+        LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
 
     goal = recommendation.get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
     goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
@@ -8137,6 +8189,7 @@ def adjust_workout():
             # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
             if cached.get("recommendation"):
                 LAST_WORKOUT_RECOMMENDATION = cached["recommendation"]
+                LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
             return jsonify(cached)
 
     if route_candidate is None:
@@ -8254,6 +8307,7 @@ def adjust_workout():
     )
     _ai_cache_put(cache_write_key, payload)
     LAST_WORKOUT_RECOMMENDATION = patched
+    LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
     _ai_metric_log(
         "ok",
         latency_ms=raw_meta.get("elapsed_ms", 0),
