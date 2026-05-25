@@ -42,6 +42,7 @@ def test_headline_ids_present():
         'id="ai-coach-headline-detail"',
         'id="ai-primary-host"',
         'id="ai-fallback-host"',
+        'id="ai-fallback-role"',
     ):
         assert new_id in INDEX_HTML, f"FIT-166 introduced {new_id}; markup is missing it"
 
@@ -144,6 +145,67 @@ def test_absent_fallback_is_not_labeled_mac_studio():
     assert "const fallbackHost = _aiFallbackHostName(fallback);" in headline_fn
     assert "fallback ? `${primaryHost} & ${fallbackHost} unavailable` : `${primaryHost} unavailable`" in headline_fn
     assert "const fallbackHost = _aiFallbackHostName(fallback);" in render_fields_fn
+
+
+def test_fit180_no_distinct_fallback_row_copy_is_less_redundant():
+    """FIT-180: the no-distinct-fallback row used to read
+
+        host:   No distinct fallback
+        chip:   Same as primary
+        detail: No distinct fallback endpoint
+
+    which restated "fallback" three times. The host label stays so
+    FIT-166's headline math (which interpolates the host name) still
+    works, but the chip and detail switch to copy that doesn't repeat
+    the word "fallback" in every column."""
+    render_fields_fn = _slice_function(APP_JS, "function _renderAiHealthFields")
+    fallback_helper_fn = _slice_function(APP_JS, "function _aiFallbackHostName")
+
+    # Host label is unchanged — FIT-166 headline depends on it.
+    assert "'No distinct fallback'" in fallback_helper_fn
+    assert "const fallbackRoleEl = $('ai-fallback-role');" in render_fields_fn
+    assert "if (fallbackRoleEl) fallbackRoleEl.hidden = !fallback;" in render_fields_fn
+
+    # Chip copy: "Same as primary" replaced with a shorter non-redundant
+    # label, and the chip class stays the neutral 'unknown' bucket.
+    assert "'Same as primary'" not in render_fields_fn
+    assert (
+        "fallback ? _aiCheckLabel(fallback) : { text: 'Primary only', cls: 'state-chip unknown' }"
+        in render_fields_fn
+    )
+
+    # Detail copy: drop the redundant "No distinct fallback endpoint"
+    # phrasing in favor of a sentence that explains the routing.
+    assert "'No distinct fallback endpoint'" not in render_fields_fn
+    assert "'Fallback uses the primary route.'" in render_fields_fn
+
+    # The static "Fallback" role pill is hidden when there is no
+    # distinct fallback endpoint so the mobile row does not repeat
+    # fallback copy across every column.
+    assert 'id="ai-fallback-role">Fallback</span>' in INDEX_HTML
+
+
+def test_fit180_distinct_fallback_row_still_uses_mac_studio_semantics():
+    """FIT-180 must not regress the distinct-fallback path: when a
+    fallback check is reported, the row still surfaces the Mac Studio
+    host name and uses `_aiCheckLabel(fallback)` for its chip / detail
+    instead of the no-fallback copy."""
+    render_fields_fn = _slice_function(APP_JS, "function _renderAiHealthFields")
+    fallback_helper_fn = _slice_function(APP_JS, "function _aiFallbackHostName")
+
+    # Mac Studio host default is still wired through _aiFallbackHostName.
+    assert (
+        "fallback ? _aiHostName(fallback, AI_FALLBACK_HOST_DEFAULT) : 'No distinct fallback'"
+        in fallback_helper_fn
+    )
+    assert "AI_FALLBACK_HOST_DEFAULT = 'Mac Studio'" in APP_JS
+
+    # The fallback-present branch is still _aiCheckLabel(fallback) and
+    # the detail still surfaces fallback.model / fallback.url so the
+    # Mac Studio row reads like a real endpoint, not the "Primary only"
+    # placeholder.
+    assert "fallback ? _aiCheckLabel(fallback)" in render_fields_fn
+    assert "fallback.model || fallback.url" in render_fields_fn
 
 
 def test_setaicoachunavailable_writes_headline_stale():

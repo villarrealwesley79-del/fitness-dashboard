@@ -3805,13 +3805,15 @@
         // FIT-166: friendly host labels alongside the role tag.
         const primaryHostEl = $('ai-primary-host');
         const fallbackHostEl = $('ai-fallback-host');
+        const fallbackRoleEl = $('ai-fallback-role');
         const primaryHost = _aiHostName(primary, AI_PRIMARY_HOST_DEFAULT);
         const fallbackHost = _aiFallbackHostName(fallback);
         if (primaryHostEl) primaryHostEl.textContent = primaryHost;
         if (fallbackHostEl) fallbackHostEl.textContent = fallbackHost;
+        if (fallbackRoleEl) fallbackRoleEl.hidden = !fallback;
 
         const pLabel = _aiCheckLabel(primary);
-        const fLabel = fallback ? _aiCheckLabel(fallback) : { text: 'Same as primary', cls: 'state-chip unknown' };
+        const fLabel = fallback ? _aiCheckLabel(fallback) : { text: 'Primary only', cls: 'state-chip unknown' };
 
         if (primaryState) {
             primaryState.textContent = pLabel.text + (activeRole === 'primary' ? ' · active' : '');
@@ -3829,7 +3831,7 @@
         if (fallbackDetail) {
             fallbackDetail.textContent = fallback
                 ? (fallback.model || fallback.url || '')
-                : 'No distinct fallback endpoint';
+                : 'Fallback uses the primary route.';
         }
         if (primaryDot) primaryDot.className = 'int-dot' + (primary && primary.reachable && primary.model_loaded ? ' int-dot-on' : '');
         if (fallbackDot) fallbackDot.className = 'int-dot' + (fallback && fallback.reachable && fallback.model_loaded ? ' int-dot-on' : '');
