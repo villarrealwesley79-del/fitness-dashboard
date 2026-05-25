@@ -21,6 +21,7 @@
         settings: null,
         analytics: null,
         muscleFatigue: null,
+        nextWorkout: null,
         exercises: null,
         ranges: { history: 30, stats: 30 },
         historyTypeFilter: 'all',
@@ -710,7 +711,14 @@
     async function getDashboard(force = false) {
         if (!force && state.dashboard) return state.dashboard;
         state.dashboard = await api('/api/dashboard', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+        if (state.dashboard && state.dashboard.next_workout) state.nextWorkout = state.dashboard.next_workout;
         return state.dashboard;
+    }
+    async function getNextWorkout(force = false) {
+        if (!force && state.nextWorkout) return state.nextWorkout;
+        const payload = await api('/api/next-workout', { timeoutMs: 10000 });
+        state.nextWorkout = payload && payload.next_workout ? payload.next_workout : null;
+        return state.nextWorkout;
     }
     async function getVitals(force = false) {
         if (!force && state.vitals) return state.vitals;
@@ -801,7 +809,7 @@
     function invalidateCaches() {
         state.dashboard = state.vitals = state.oura = state.ouraSleep = null;
         state.ouraTrends = state.reco = state.insights = state.history = null;
-        state.body = state.settings = state.analytics = state.muscleFatigue = null;
+        state.body = state.settings = state.analytics = state.muscleFatigue = state.nextWorkout = null;
     }
 
     // --- Freshness chip rendering (FIT-2) -------------------------
@@ -1663,8 +1671,7 @@
     // --- Next Workout --------------------------------------------
     async function renderNextWorkout() {
         const gen = ++nextWorkoutRenderGen;
-        const dash = await getDashboard();
-        const nw = dash && dash.next_workout;
+        const nw = await getNextWorkout();
         if (!nw) {
             $('nw-title').textContent = 'Rest Day';
             $('nw-sub').textContent = 'Take recovery seriously today.';
@@ -5266,14 +5273,13 @@
     }
 
     async function startWorkout() {
-        let dash = null;
+        let nw = null;
         try {
-            dash = await getDashboard();
+            nw = await getNextWorkout();
         } catch (err) {
-            console.warn('start workout dashboard load failed', err);
-            dash = state.dashboard;
+            console.warn('start workout next-workout load failed', err);
+            nw = state.nextWorkout || (state.dashboard && state.dashboard.next_workout);
         }
-        const nw = dash && dash.next_workout;
         if (!nw) { toast('No workout planned', 'err'); return; }
         setActiveWorkoutFromRecommendation(nw);
         renderActiveWorkout();

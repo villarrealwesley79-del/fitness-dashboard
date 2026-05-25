@@ -3980,6 +3980,19 @@ def auth_scope():
     return jsonify({"auth_scope": f"user:{_current_data_user_id()}"})
 
 
+@app.route('/api/next-workout')
+def api_next_workout():
+    """Return only the active workout prescription for gym execution."""
+    global LAST_WORKOUT_RECOMMENDATION
+    if not LAST_WORKOUT_RECOMMENDATION:
+        LAST_WORKOUT_RECOMMENDATION = generate_next_workout(
+            WORKOUTS,
+            SORENESS_DATA,
+            consume_cardio_rotation=False,
+        )
+    return jsonify({"next_workout": LAST_WORKOUT_RECOMMENDATION})
+
+
 @app.route('/api/dashboard')
 def api_dashboard():
     """API endpoint for dashboard data."""

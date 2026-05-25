@@ -109,9 +109,9 @@ def test_next_workout_render_does_not_require_auxiliary_recommendation_calls():
     marker = "async function renderNextWorkout()"
     body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
 
-    assert "const dash = await getDashboard();" in body, (
-        "renderNextWorkout must load the dashboard plan as the required "
-        "contract before optional helper data"
+    assert "const nw = await getNextWorkout();" in body, (
+        "renderNextWorkout must load the lightweight workout-only contract "
+        "instead of the full dashboard payload"
     )
     assert "getReco().then(" in body and ".catch(() => {})" in body, (
         "renderNextWorkout must update /api/recommendation/smart reasoning "
@@ -131,6 +131,9 @@ def test_next_workout_render_does_not_require_auxiliary_recommendation_calls():
         "renderNextWorkout must not let optional helper failures abort the "
         "dashboard next_workout render"
     )
+    assert "await getDashboard()" not in body, (
+        "renderNextWorkout must not wait on the heavy /api/dashboard endpoint"
+    )
 
 
 def test_start_workout_falls_back_to_cached_dashboard_plan_on_fetch_failure():
@@ -141,12 +144,26 @@ def test_start_workout_falls_back_to_cached_dashboard_plan_on_fetch_failure():
     marker = "async function startWorkout()"
     body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
 
-    assert "try {" in body and "dash = await getDashboard();" in body
-    assert "catch (err)" in body, "startWorkout must handle dashboard fetch failures"
-    assert "dash = state.dashboard;" in body, (
-        "startWorkout must fall back to the cached dashboard plan before "
+    assert "try {" in body and "nw = await getNextWorkout();" in body
+    assert "catch (err)" in body, "startWorkout must handle next-workout fetch failures"
+    assert "state.nextWorkout || (state.dashboard && state.dashboard.next_workout)" in body, (
+        "startWorkout must fall back to cached workout plans before "
         "showing No workout planned"
     )
+
+
+def test_next_workout_endpoint_and_asset_bust_are_wired():
+    """FIT-181 urgent follow-up: gym execution must not wait on the heavy
+    dashboard endpoint, and phones must receive the new client bundle."""
+    app_py = (ROOT / "app.py").read_text()
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+    template = (ROOT / "templates" / "index.html").read_text()
+    sw = (ROOT / "static" / "js" / "sw.js").read_text()
+
+    assert "@app.route('/api/next-workout')" in app_py
+    assert "api('/api/next-workout', { timeoutMs: 10000 })" in app_js
+    assert "app.js?v=20260525-fit181-fast-workout" in template
+    assert "fitness-dashboard-v20260525-fit181-fast-workout" in sw
 
 
 def test_render_dashboard_resets_error_sentinels_and_maps_dashboard_to_reco():
