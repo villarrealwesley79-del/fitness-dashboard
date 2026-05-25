@@ -156,6 +156,7 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     """FIT-181 urgent follow-up: gym execution must not wait on the heavy
     dashboard endpoint, and phones must receive the new client bundle."""
     app_py = (ROOT / "app.py").read_text()
+    auth_py = (ROOT / "auth.py").read_text()
     app_js = (ROOT / "static" / "js" / "app.js").read_text()
     template = (ROOT / "templates" / "index.html").read_text()
     sw = (ROOT / "static" / "js" / "sw.js").read_text()
@@ -184,6 +185,14 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "navigator.serviceWorker.addEventListener('controllerchange'" in app_js
     assert "window.location.reload()" in app_js
     assert "reg.waiting.postMessage({ type: 'SKIP_WAITING' })" in app_js
+    assert 'APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"' in app_py
+    assert 'APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload"' in app_py
+    assert '"reload_required"' in app_py
+    assert "response.status_code = 401" in app_py
+    assert "response.set_cookie(" in app_py
+    assert 'request.cookies.get("session")' in app_py
+    assert "current_user.is_authenticated" in auth_py
+    assert 'request.args.get("next")' in auth_py
     assert "@app.route('/gym-now')" in app_py
     assert "Cache-Control\": \"no-store\"" in app_py
     assert "\"Cache-Control\": \"no-store, max-age=0\"" in app_py

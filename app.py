@@ -8812,8 +8812,33 @@ def analyze_workout():
     return jsonify(payload)
 
 
+APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"
+APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload"
+
+
+def _shell_reload_required_response():
+    response = jsonify({"error": "reload_required", "reload": True})
+    response.status_code = 401
+    response.headers["Cache-Control"] = "no-store"
+    response.set_cookie(
+        APP_SHELL_RELOAD_COOKIE,
+        APP_SHELL_RELOAD_VERSION,
+        max_age=86400,
+        httponly=True,
+        secure=request.is_secure,
+        samesite="Lax",
+        path="/",
+    )
+    return response
+
+
 @app.route('/api/ai/health')
 def ai_health():
+    if (
+        request.cookies.get("session")
+        and request.cookies.get(APP_SHELL_RELOAD_COOKIE) != APP_SHELL_RELOAD_VERSION
+    ):
+        return _shell_reload_required_response()
     if not _lm_studio:
         return jsonify({"reachable": False, "error": "adapter not loaded"})
     return jsonify(_lm_studio.health())
