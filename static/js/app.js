@@ -1467,8 +1467,14 @@
         const hrv = oura && oura.hrv;
         $('v-hrv').textContent = hrv != null ? Math.round(hrv) : '--';
         // HR zone (static approximation)
-        const zone = rhr ? (rhr < 58 ? 'Zone 2' : rhr < 68 ? 'Zone 2' : 'Zone 3') : '—';
-        $('v-hr-zone').textContent = zone;
+        if (rhr != null) {
+            const zone = rhr < 58 ? 'Zone 2' : rhr < 68 ? 'Zone 2' : 'Zone 3';
+            $('v-hr-zone').textContent = zone;
+            $('v-hr-zone-sub').textContent = '';
+        } else {
+            $('v-hr-zone').textContent = '--';
+            $('v-hr-zone-sub').textContent = '';
+        }
         // Body temp
         const tempDev = oura && oura.temperature_deviation;
         $('v-temp').textContent = tempDev != null ? (98.6 + Number(tempDev)).toFixed(1) : '--';
