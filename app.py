@@ -9244,6 +9244,8 @@ def _extract_open_wearables_sleep_events(payload):
         for k in ("end_time", "endTime", "end", "timestamp", "created_at", "start_time", "startTime", "start", "date"):
             dt = _parse_iso_date_or_datetime(ev.get(k))
             if dt:
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone().replace(tzinfo=None)
                 return dt
         return None
 

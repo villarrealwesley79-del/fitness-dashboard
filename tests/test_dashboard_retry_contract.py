@@ -1,4 +1,5 @@
 import importlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -237,6 +238,30 @@ def test_next_workout_endpoint_does_not_fetch_open_wearables(monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["next_workout"]["exercises"]
+
+
+def test_open_wearables_marker_tolerates_timezone_sleep_events():
+    """FIT-181 review: marker caching must not break successful OW fetches
+    when the bridge returns timezone-aware sleep timestamps."""
+    module = importlib.import_module("app")
+    payload = {
+        "sleep": {
+            "events": [
+                {
+                    "end_time": datetime.now(timezone.utc).isoformat(),
+                    "duration_min": 480,
+                    "avg_hr": 60,
+                }
+            ]
+        },
+        "workouts": {"events": []},
+        "activity_summary": {"summaries": []},
+    }
+
+    marker = module._store_open_wearables_recommendation_marker(payload)
+
+    assert marker["sleep"]["duration_min"] == 480
+    assert marker["sleep"]["recent"] is True
 
 
 def test_next_workout_caches_clear_after_plan_inputs_change():
