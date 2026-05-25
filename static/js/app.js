@@ -4745,7 +4745,7 @@
                 body: JSON.stringify(patch),
             });
             toast('Setting saved');
-            state.settings = null; state.dashboard = null;
+            state.settings = null; state.dashboard = null; state.nextWorkout = null;
             renderSettings();
         } catch (e) {
             console.error(e); toast('Save failed', 'err');
@@ -4761,6 +4761,7 @@
             toast('Equipment updated');
             state.settings = null;
             state.dashboard = null;
+            state.nextWorkout = null;
             state.reco = null;
             state.activeWorkout = null;
             await Promise.allSettled([renderSettings(), renderDashboard()]);
@@ -6395,6 +6396,7 @@
         if (resp && resp.recommendation) {
             if (!state.dashboard) state.dashboard = {};
             state.dashboard.next_workout = resp.recommendation;
+            state.nextWorkout = resp.recommendation;
         }
         $('modal-swap').hidden = true;
         toast(`Swapped ${oldName} → ${newName}`, 'ok');
@@ -6525,6 +6527,7 @@
         if (preview) { preview.hidden = true; preview.innerHTML = ''; }
         if (state.dashboard && state.dashboard.next_workout) {
             // Trigger a re-render so the user sees the current server-canonical plan.
+            state.nextWorkout = state.dashboard.next_workout;
             if (state.currentTab === 'tab-workout') renderNextWorkout();
         }
     }
@@ -6756,6 +6759,7 @@
         if (payload && payload.recommendation) {
             if (!state.dashboard) state.dashboard = {};
             state.dashboard.next_workout = payload.recommendation;
+            state.nextWorkout = payload.recommendation;
             state.adjustedWorkout = payload.recommendation;
             renderAdjustedPlanPreview(payload.recommendation);
         }

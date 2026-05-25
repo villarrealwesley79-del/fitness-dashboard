@@ -7351,6 +7351,7 @@ def protocols():
 @app.route('/api/settings', methods=['GET', 'POST'])
 def settings():
     """Get or update user settings including training goal and available time."""
+    global LAST_WORKOUT_RECOMMENDATION
     if request.method == 'GET':
         goal = USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
         goal_params = GOAL_PARAMETERS.get(goal, {})
@@ -7471,11 +7472,13 @@ def settings():
             USER_SETTINGS["excluded_exercises"] = normalized
 
         save_json(SETTINGS_FILE, USER_SETTINGS)  # Persist to file
+        LAST_WORKOUT_RECOMMENDATION = None
         return jsonify({"status": "success", "settings": USER_SETTINGS})
 
 
 @app.route('/api/settings/equipment', methods=['PUT'])
 def settings_equipment():
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -7488,6 +7491,7 @@ def settings_equipment():
 
     USER_SETTINGS["equipment_preference"] = pref
     save_json(SETTINGS_FILE, USER_SETTINGS)
+    LAST_WORKOUT_RECOMMENDATION = None
     return jsonify({"status": "success", "equipment_preference": pref})
 
 

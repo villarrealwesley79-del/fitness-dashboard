@@ -166,6 +166,36 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "fitness-dashboard-v20260525-fit181-fast-workout" in sw
 
 
+def test_next_workout_caches_clear_after_plan_inputs_change():
+    """FIT-181: the fast workout path must not keep serving stale plans
+    after settings, equipment, swap, or adjust flows mutate the canonical
+    recommendation."""
+    app_py = (ROOT / "app.py").read_text()
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+
+    settings_body = app_py.split("def settings():", 1)[1].split("@app.route('/api/settings/equipment'", 1)[0]
+    equipment_body = app_py.split("def settings_equipment():", 1)[1].split("@app.route('/api/personal-vocab'", 1)[0]
+    assert "global LAST_WORKOUT_RECOMMENDATION" in settings_body
+    assert "LAST_WORKOUT_RECOMMENDATION = None" in settings_body
+    assert "global LAST_WORKOUT_RECOMMENDATION" in equipment_body
+    assert "LAST_WORKOUT_RECOMMENDATION = None" in equipment_body
+
+    assert "state.settings = null; state.dashboard = null; state.nextWorkout = null;" in app_js
+    assert (
+        "state.dashboard = null;\n"
+        "            state.nextWorkout = null;\n"
+        "            state.reco = null;"
+    ) in app_js
+    assert (
+        "state.dashboard.next_workout = resp.recommendation;\n"
+        "            state.nextWorkout = resp.recommendation;"
+    ) in app_js
+    assert (
+        "state.dashboard.next_workout = payload.recommendation;\n"
+        "            state.nextWorkout = payload.recommendation;"
+    ) in app_js
+
+
 def test_render_dashboard_resets_error_sentinels_and_maps_dashboard_to_reco():
     """FIT-128 persistence + mapping (FIT-129 refactor): renderDashboard
     must reset all three error sentinels at the top (so a recovered card
