@@ -3407,9 +3407,9 @@
         const insights = await getInsights();
         const list = $('insights-list');
         list.innerHTML = '';
-        const items = (insights && insights.insights) || [];
+        const items = Array.isArray(insights && insights.insights) ? insights.insights : [];
         if (!items.length) {
-            list.innerHTML = '<div class="empty">No insights yet — log more workouts to unlock.</div>';
+            list.innerHTML = '<div class="empty">Log a few workouts to start tracking progress.</div>';
         } else {
             items.forEach((ins) => {
                 const card = document.createElement('div');
