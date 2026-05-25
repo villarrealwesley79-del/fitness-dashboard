@@ -198,6 +198,107 @@
         return dismiss;
     }
 
+    // FIT-139: surface backend-recorded food-log refresh events as a passive
+    // toast notice. The server is the only source of truth — no client-side
+    // row diffing — and acknowledged events are dismissed via the ack API so
+    // they stop appearing on subsequent polls.
+    const foodLogRefreshNoticeState = {
+        seen: new Set(),
+        fetching: false,
+    };
+
+    function foodLogRefreshDayLabel(date) {
+        if (!date) return '';
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(date));
+        if (m) {
+            const target = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const targetMid = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+            const diffDays = Math.round((targetMid - today) / (1000 * 60 * 60 * 24));
+            if (diffDays === 0) return "today's";
+            if (diffDays === -1) return "yesterday's";
+        }
+        return `${fmtDate(date)}'s`;
+    }
+
+    function foodLogRefreshNoticeCopy(event) {
+        const item = (event && event.item_name) ? String(event.item_name).trim() : 'meal';
+        const dayLabel = foodLogRefreshDayLabel(event && event.date);
+        const title = dayLabel
+            ? `Updated ${dayLabel} ${item} nutrition`
+            : `Updated ${item} nutrition`;
+        const sourceLabel = (event && event.source) ? String(event.source).trim() : 'verified source';
+        const detail = `Verified source: ${sourceLabel}`;
+        return { title, detail };
+    }
+
+    function showFoodLogRefreshNotice(event) {
+        const host = $('toast-host');
+        if (!host || !event || !event.id) return;
+        const el = document.createElement('div');
+        el.className = 'toast food-log-refresh-toast';
+        el.setAttribute('role', 'status');
+        el.setAttribute('aria-live', 'polite');
+
+        const body = document.createElement('div');
+        body.className = 'food-log-refresh-toast-body';
+
+        const { title, detail } = foodLogRefreshNoticeCopy(event);
+        const titleEl = document.createElement('div');
+        titleEl.className = 'food-log-refresh-toast-title';
+        titleEl.textContent = title;
+        body.appendChild(titleEl);
+
+        const detailEl = document.createElement('div');
+        detailEl.className = 'food-log-refresh-toast-detail';
+        detailEl.textContent = detail;
+        body.appendChild(detailEl);
+
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.className = 'food-log-refresh-toast-dismiss';
+        dismiss.setAttribute('aria-label', 'Dismiss refresh notice');
+        dismiss.textContent = 'Dismiss';
+
+        let dismissed = false;
+        dismiss.addEventListener('click', async () => {
+            if (dismissed) return;
+            dismissed = true;
+            dismiss.disabled = true;
+            try {
+                await api(`/api/food-log-refresh-events/${encodeURIComponent(event.id)}/ack`, { method: 'POST' });
+                el.remove();
+            } catch (err) {
+                dismissed = false;
+                dismiss.disabled = false;
+                foodLogRefreshNoticeState.seen.delete(event.id);
+                console.warn('food-log refresh ack failed:', err);
+            }
+        });
+
+        el.appendChild(body);
+        el.appendChild(dismiss);
+        host.appendChild(el);
+    }
+
+    async function fetchFoodLogRefreshNotices() {
+        if (foodLogRefreshNoticeState.fetching) return;
+        foodLogRefreshNoticeState.fetching = true;
+        try {
+            const payload = await api('/api/food-log-refresh-events?unacknowledged=true&limit=10');
+            const events = (payload && payload.events) || [];
+            for (const event of events) {
+                if (!event || !event.id) continue;
+                if (foodLogRefreshNoticeState.seen.has(event.id)) continue;
+                foodLogRefreshNoticeState.seen.add(event.id);
+                showFoodLogRefreshNotice(event);
+            }
+        } finally {
+            foodLogRefreshNoticeState.fetching = false;
+        }
+    }
+
     function newWorkoutId(recommendationId) {
         const suffix = Math.random().toString(36).slice(2, 8);
         return `w-${recommendationId || Date.now()}-${suffix}`;
@@ -1019,6 +1120,7 @@
         state.dashboard = null;
         const dash = await getDashboard(true);
         renderMacroCard(dash && dash.nutrition_today);
+        fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
     }
 
     // --- Dashboard render ----------------------------------------
@@ -2641,6 +2743,8 @@
                 loadDayMeals(row, slot, date);
             });
         });
+
+        fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
     }
 
     function renderFoodLogMealList(container, entries) {
@@ -9062,6 +9166,7 @@
         renderGreeting();
         wireEvents();
         switchTab('tab-dashboard');
+        fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
         refreshAiStatus();
         if (aiStatusTimer) clearInterval(aiStatusTimer);
         aiStatusTimer = setInterval(refreshAiStatus, 60_000);
