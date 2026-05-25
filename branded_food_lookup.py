@@ -845,9 +845,6 @@ def _off_serving_description(product: dict[str, Any]) -> str | None:
     quantity = _off_number_or_none(product.get("serving_quantity"))
     if quantity is not None:
         return f"{quantity:g} g"
-    value = product.get("quantity")
-    if isinstance(value, str) and value.strip():
-        return value.strip()
     return None
 
 

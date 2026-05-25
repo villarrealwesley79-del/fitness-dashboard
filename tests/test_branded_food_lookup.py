@@ -1434,3 +1434,38 @@ def test_open_food_facts_barcode_serving_quantity_precedes_package_quantity(monk
 
     assert estimate["portion_description"] == "30 g"
     assert estimate["calories"] == 150
+
+
+def test_open_food_facts_barcode_does_not_label_serving_macros_as_package_quantity(monkeypatch):
+    product = {
+        "code": "012345678905",
+        "product_name": "Snack Pack",
+        "brands": "Demo",
+        "url": "https://world.openfoodfacts.org/product/012345678905",
+        "countries_tags": ["en:united-states"],
+        "data_quality_tags": ["en:nutrition-data-complete"],
+        "quantity": "300 g",
+        "nutriments": {
+            "energy-kcal_serving": 150,
+            "proteins_serving": 4,
+            "carbohydrates_serving": 20,
+            "fat_serving": 6,
+            "energy-kcal_100g": 500,
+            "proteins_100g": 13.3,
+            "carbohydrates_100g": 66.7,
+            "fat_100g": 20,
+        },
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "get_product_by_barcode",
+        lambda *_a, **_kw: product,
+    )
+
+    estimate = branded_food_lookup.lookup_barcode("012345678905")
+
+    assert estimate["portion_description"] == "1 serving"
+    assert estimate["calories"] == 150
