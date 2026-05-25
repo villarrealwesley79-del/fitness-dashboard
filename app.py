@@ -15,6 +15,7 @@ import os
 import socket
 import sqlite3
 import hashlib
+import glob
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -4025,6 +4026,25 @@ def _workout_recommendation_fingerprint():
     """Fingerprint inputs that should force a new next-workout plan."""
     today_s = _today_str()
     cached_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
+    oura_rows = []
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=6)
+        oura_rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")) or []
+    except Exception:
+        oura_rows = []
+
+    def file_marker(path):
+        try:
+            stat = os.stat(path)
+            return {"path": path, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+        except OSError:
+            return {"path": path, "missing": True}
+
+    health_workout_files = sorted(
+        glob.glob(os.path.expanduser("~/Documents/Health/healthkit_samples_workout_*.json"))
+    )
+    apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness()
 
     def latest_marker(rows):
         markers = [
@@ -4054,6 +4074,23 @@ def _workout_recommendation_fingerprint():
         "recovery_count": len(RECOVERY_DATA or []),
         "recovery_latest": latest_marker(RECOVERY_DATA),
         "settings": {field: USER_SETTINGS.get(field) for field in settings_fields},
+        "weather": {
+            "ts": _WEATHER_CACHE.get("ts"),
+            "location": _WEATHER_CACHE.get("location"),
+            "data": _WEATHER_CACHE.get("data"),
+            "error": _WEATHER_CACHE.get("error"),
+        },
+        "apple_health": {
+            "enabled": _apple_health_recommendation_enabled(),
+            "hr_intensity_enabled": _apple_health_hr_intensity_enabled(),
+            "freshness": {
+                "status": apple_status,
+                "last_data": apple_last_data,
+                "last_sync": apple_last_sync,
+            },
+            "sync_db": file_marker(_apple_health_sync_db_file()),
+            "workout_files": [file_marker(path) for path in health_workout_files[-3:]],
+        },
         "oura": {
             "day": cached_oura.get("day"),
             "readiness_score": cached_oura.get("readiness_score"),
@@ -4061,6 +4098,19 @@ def _workout_recommendation_fingerprint():
             "hrv": cached_oura.get("hrv"),
             "sleep_duration_min": cached_oura.get("sleep_duration_min"),
             "resting_hr": cached_oura.get("resting_hr"),
+            "last_7_days": [
+                {
+                    "day": row.get("day"),
+                    "readiness_score": row.get("readiness_score"),
+                    "sleep_score": row.get("sleep_score"),
+                    "hrv": row.get("hrv"),
+                    "sleep_duration_min": row.get("sleep_duration_min"),
+                    "resting_hr": row.get("resting_hr"),
+                    "created_at": row.get("created_at"),
+                }
+                for row in oura_rows
+            ],
+            "db": file_marker(OURA_DB_FILE),
         },
     }
     raw = json.dumps(payload, sort_keys=True, default=str)
