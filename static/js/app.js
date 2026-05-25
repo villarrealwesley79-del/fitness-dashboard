@@ -8270,6 +8270,9 @@
             lastFollowupAnswered,
             text_hint: (existing && existing.text_hint) || ctx.textValue || '',
             imageFile: (existing && existing.imageFile) || ctx.imageFile || null,
+            local_timestamp: payload.local_timestamp || (existing && existing.local_timestamp) || null,
+            local_date: payload.local_date || (existing && existing.local_date) || null,
+            local_iso: payload.local_iso || (existing && existing.local_iso) || null,
         };
     }
 
@@ -8694,7 +8697,7 @@
     // this merge the user's edit silently fails to persist.
     function buildMealV2AcceptBody(entry) {
         const mealType = MEAL_TYPE_OPTIONS.includes(entry.meal_type) ? entry.meal_type : null;
-        return {
+        const body = {
             meal_id: entry.meal_id,
             meal_type: entry.meal_type,
             items: (entry.items || []).map((item) => {
@@ -8712,6 +8715,10 @@
                 };
             }),
         };
+        if (entry.local_timestamp) body.local_timestamp = entry.local_timestamp;
+        if (entry.local_date) body.local_date = entry.local_date;
+        if (entry.local_iso) body.local_iso = entry.local_iso;
+        return body;
     }
 
     async function acceptMealV2(mealId) {

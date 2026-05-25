@@ -441,3 +441,58 @@ def test_css_contains_v2_review_styles():
     ]
     missing = [s for s in expected if s not in APP_CSS]
     assert not missing, f"FIT-134 V2 styles missing from style.css: {missing}"
+
+
+# FIT-151: local_timestamp / local_date / local_iso thread-through
+
+def _normalize_body() -> str:
+    """Return the normalizeMealV2Entry function body."""
+    start = APP_JS.find("function normalizeMealV2Entry(payload, ctx = {}) {")
+    assert start != -1, "normalizeMealV2Entry not found"
+    end = APP_JS.find("\n    }", start) + len("\n    }")
+    return APP_JS[start:end]
+
+
+def _accept_body_builder() -> str:
+    """Return the buildMealV2AcceptBody function body."""
+    block = _v2_block()
+    start = block.find("function buildMealV2AcceptBody")
+    end = block.find("\n    async function acceptMealV2", start)
+    assert start != -1 and end != -1, "buildMealV2AcceptBody block not found"
+    return block[start:end]
+
+
+def test_normalize_includes_all_three_local_fields():
+    """normalizeMealV2Entry must include local_timestamp, local_date, and
+    local_iso in the returned entry so both hydrateMealPending and
+    applyMealV2Refresh carry these fields through the shared contract.
+    """
+    body = _normalize_body()
+    assert "local_timestamp:" in body, "local_timestamp missing from normalizeMealV2Entry"
+    assert "local_date:" in body, "local_date missing from normalizeMealV2Entry"
+    assert "local_iso:" in body, "local_iso missing from normalizeMealV2Entry"
+
+
+def test_normalize_payload_first_precedence_for_local_fields():
+    """Payload takes precedence over existing entry; existing is the fallback;
+    null is the default.  All three fields must follow this pattern.
+    """
+    body = _normalize_body()
+    for field in ("local_timestamp", "local_date", "local_iso"):
+        needle = (
+            f"{field}: payload.{field} || (existing && existing.{field}) || null"
+        )
+        assert needle in body, (
+            f"Expected payload-first precedence expression for {field!r}: {needle!r}"
+        )
+
+
+def test_accept_body_conditionally_forwards_local_fields():
+    """buildMealV2AcceptBody must forward all three local fields only when
+    truthy: no unconditional spread and no nullish assignment.
+    """
+    builder = _accept_body_builder()
+    for field in ("local_timestamp", "local_date", "local_iso"):
+        assert f"if (entry.{field}) body.{field} = entry.{field};" in builder, (
+            f"buildMealV2AcceptBody missing conditional forward for {field!r}"
+        )
