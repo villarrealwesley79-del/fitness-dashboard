@@ -228,6 +228,8 @@ def login():
         next_page = request.args.get("next") or url_for("index")
         if not next_page.startswith("/"):
             next_page = url_for("index")
+        if next_page == "/":
+            next_page = "/?fd_shell_reload=20260525-fit181-controller-reload-r2"
         return redirect(next_page)
 
     if request.method == "POST":

@@ -8813,7 +8813,7 @@ def analyze_workout():
 
 
 APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"
-APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload"
+APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload-r2"
 
 
 def _shell_reload_required_response():
