@@ -3980,6 +3980,46 @@ def auth_scope():
     return jsonify({"auth_scope": f"user:{_current_data_user_id()}"})
 
 
+def _current_workout_training_recommendation():
+    """Mirror the dashboard's readiness context for lightweight workout loads."""
+    today_s = _today_str()
+    cached_oura = get_oura_daily(OURA_DB_FILE, today_s)
+    readiness_val = cached_oura.get("readiness_score") if cached_oura else None
+    try:
+        readiness_val = int(readiness_val) if readiness_val is not None else None
+    except Exception:
+        readiness_val = None
+
+    recent_soreness = filter_recent_soreness(SORENESS_DATA, hours=24)
+    max_soreness = max((s.get("soreness_level") or 0) for s in recent_soreness) if recent_soreness else 0
+    signal = "TRAIN" if (readiness_val is not None and readiness_val >= 70 and max_soreness < 7) else "RECOVER"
+
+    hrv_trend = "unknown"
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=6)
+        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
+    except Exception:
+        pass
+
+    last_completed = summarize_recent_completion(WORKOUTS, hours=24)
+    last_hours_ago = last_completed.get("hours_ago") if last_completed else None
+    recommendation, _ = _training_recommendation_from_factors(
+        readiness_val,
+        recovery_bonus=calculate_recovery_bonus(RECOVERY_DATA, hours=48),
+        hrv_trend=hrv_trend,
+        sleep_debt=calculate_sleep_debt(OURA_DB_FILE, days=7),
+        acwr_data=calculate_acwr(WORKOUTS),
+        last_completed=last_completed,
+        last_hours_ago=last_hours_ago,
+        weather=_cached_wttr(_WEATHER_CACHE.get("location") or "San_Antonio"),
+    )
+    if signal == "RECOVER" and max_soreness >= 7:
+        recommendation = "recovery"
+    return recommendation
+
+
 @app.route('/api/next-workout')
 def api_next_workout():
     """Return only the active workout prescription for gym execution."""
@@ -3988,6 +4028,7 @@ def api_next_workout():
         LAST_WORKOUT_RECOMMENDATION = generate_next_workout(
             WORKOUTS,
             SORENESS_DATA,
+            training_recommendation=_current_workout_training_recommendation(),
             consume_cardio_rotation=False,
         )
     return jsonify({"next_workout": LAST_WORKOUT_RECOMMENDATION})
@@ -4388,6 +4429,7 @@ def add_workout():
 
     Prefer /api/complete-workout for the primary flow.
     """
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -4423,6 +4465,7 @@ def add_workout():
 
     WORKOUTS.append(entry)
     save_json(WORKOUTS_FILE, WORKOUTS)
+    LAST_WORKOUT_RECOMMENDATION = None
     _notify_workout_logged(entry)
     return jsonify({"status": "success", "workout": entry})
 
@@ -4430,6 +4473,7 @@ def add_workout():
 @app.route('/api/add-soreness', methods=['POST'])
 def add_soreness():
     """Add soreness data."""
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -4455,6 +4499,7 @@ def add_soreness():
 
     SORENESS_DATA.append(entry)
     save_json(SORENESS_FILE, SORENESS_DATA)  # Persist to file
+    LAST_WORKOUT_RECOMMENDATION = None
     return jsonify({"status": "success", "soreness": entry})
 
 
@@ -7128,6 +7173,7 @@ def ack_food_log_refresh_event(event_id: str):
 @app.route('/api/add-cardio', methods=['POST'])
 def add_cardio():
     """Add cardio session data."""
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -7160,12 +7206,14 @@ def add_cardio():
 
     CARDIO_DATA.append(entry)
     save_json(CARDIO_FILE, CARDIO_DATA)  # Persist to file
+    LAST_WORKOUT_RECOMMENDATION = None
     return jsonify({"status": "success", "cardio": entry})
 
 
 @app.route('/api/add-recovery', methods=['POST'])
 def add_recovery():
     """Add recovery session data (sauna, cold plunge, etc)."""
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -7194,6 +7242,7 @@ def add_recovery():
 
     RECOVERY_DATA.append(entry)
     save_json(RECOVERY_FILE, RECOVERY_DATA)  # Persist to file
+    LAST_WORKOUT_RECOMMENDATION = None
     return jsonify({"status": "success", "recovery": entry})
 
 
@@ -9428,6 +9477,7 @@ def oura_trends():
 @app.route('/api/oura/sync-sleep', methods=['POST'])
 def sync_oura_sleep():
     """Sync latest sleep data from Oura API."""
+    global LAST_WORKOUT_RECOMMENDATION
     from oura_sleep_sync import create_sleep_table, sync_sleep_data, get_latest_sleep
 
     data, err = get_json_body(required=False)
@@ -9458,6 +9508,7 @@ def sync_oura_sleep():
         # Return a summary only; raw wearable rows stay server-side.
         latest = get_latest_sleep(OURA_DB_FILE, days=7)
         latest_days = [r.get("day") for r in latest if r.get("day")]
+        LAST_WORKOUT_RECOMMENDATION = None
 
         return jsonify({
             "status": "success",

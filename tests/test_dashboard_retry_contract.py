@@ -161,6 +161,8 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     sw = (ROOT / "static" / "js" / "sw.js").read_text()
 
     assert "@app.route('/api/next-workout')" in app_py
+    assert "def _current_workout_training_recommendation():" in app_py
+    assert "training_recommendation=_current_workout_training_recommendation()" in app_py
     assert "api('/api/next-workout', { timeoutMs: 10000 })" in app_js
     assert "app.js?v=20260525-fit181-fast-workout" in template
     assert "fitness-dashboard-v20260525-fit181-fast-workout" in sw
@@ -194,6 +196,16 @@ def test_next_workout_caches_clear_after_plan_inputs_change():
         "state.dashboard.next_workout = payload.recommendation;\n"
         "            state.nextWorkout = payload.recommendation;"
     ) in app_js
+    for marker in [
+        "def add_workout():",
+        "def add_soreness():",
+        "def add_cardio():",
+        "def add_recovery():",
+        "def sync_oura_sleep():",
+    ]:
+        body = app_py.split(marker, 1)[1].split("\n\n@app.route", 1)[0]
+        assert "global LAST_WORKOUT_RECOMMENDATION" in body
+        assert "LAST_WORKOUT_RECOMMENDATION = None" in body
 
 
 def test_render_dashboard_resets_error_sentinels_and_maps_dashboard_to_reco():
