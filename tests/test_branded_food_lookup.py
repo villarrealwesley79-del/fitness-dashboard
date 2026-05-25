@@ -590,6 +590,43 @@ def test_lookup_does_not_duplicate_existing_brand_hint(monkeypatch):
     assert captured["query"] == "Chipotle chicken burrito"
 
 
+def test_lookup_does_not_duplicate_regional_brand_hint(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: captured.update({"query": query})
+        or _nutritionix_payload(food_name="brisket sandwich", brand_name="Bill Miller BBQ"),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    branded_food_lookup.lookup("Bill Miller brisket sandwich", brand_hint="bill miller")
+
+    assert captured["query"] == "Bill Miller brisket sandwich"
+
+
+def test_lookup_regional_brand_hint_cache_key_not_duplicated(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "save_branded_lookup_cache",
+        lambda normalized, *_a, **_kw: captured.update({"normalized": normalized}),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda _query: _nutritionix_payload(food_name="brisket sandwich", brand_name="Bill Miller BBQ"),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    branded_food_lookup.lookup("Bill Miller brisket sandwich", brand_hint="bill miller")
+
+    assert captured["normalized"] == "bill miller brisket sandwich"
+
+
 def test_customizable_item_without_modifier_goes_pending_review(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)

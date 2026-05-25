@@ -262,7 +262,7 @@ def _text_with_brand_hint(text: str, brand_hint: str | None) -> str:
     hint = normalize_meal_text(brand_hint or "")
     if not hint:
         return cleaned
-    if any(token in KNOWN_BRANDS for token in normalized_text.split()):
+    if _brand_from_text(normalized_text):
         return cleaned
     return f"{hint} {cleaned}".strip()
 
