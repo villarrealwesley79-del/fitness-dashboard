@@ -5382,6 +5382,48 @@ def _meal_terminal_idempotency_response(user_id: int, meal_id: str, has_image: b
     )
 
 
+def _meal_capture_idempotency_response(
+    *,
+    user_id: int,
+    client_id: str,
+    has_image: bool,
+    local_timestamp: str | None,
+    local_date: str | None,
+    local_iso: str | None,
+):
+    existing_snapshot = get_meal_review_snapshot(user_id, client_id)
+    if existing_snapshot:
+        return jsonify(existing_snapshot["payload"])
+    existing_food_log = _food_log_by_client_id(user_id, client_id)
+    if existing_food_log:
+        if _nutrition_entry_pending_review(existing_food_log):
+            pending = _meal_pending_review_payload(existing_food_log)
+            return jsonify({
+                "status": "pending_review",
+                "estimate": pending["estimate"],
+                "food_log": existing_food_log,
+                "photo_retention": _food_photo_retention_payload(
+                    has_image or bool(pending["estimate"].get("from_image"))
+                ),
+                "local_timestamp": local_timestamp,
+                "local_date": local_date,
+                "local_iso": local_iso,
+                "policy": pending["policy"],
+            })
+        return jsonify({
+            "status": "logged",
+            "estimate": dict(existing_food_log.get("original_estimate") or {}),
+            "food_log": existing_food_log,
+            "photo_retention": _food_photo_retention_payload(
+                has_image or _source_indicates_image(existing_food_log.get("source"))
+            ),
+            "local_timestamp": local_timestamp,
+            "local_date": local_date,
+            "local_iso": local_iso,
+        })
+    return _meal_terminal_idempotency_response(user_id, client_id, has_image)
+
+
 def _meal_totals(food_logs: list[dict]) -> dict:
     totals = {}
     for field in _MEAL_TOTAL_FIELDS:
@@ -6241,35 +6283,16 @@ def meal_intake():
         return jsonify({"error": {"message": "provide a meal description or photo"}}), 400
 
     user_id = _current_data_user_id()
-    existing_snapshot = get_meal_review_snapshot(user_id, client_id)
-    if existing_snapshot:
-        return jsonify(existing_snapshot["payload"])
-    existing_food_log = _food_log_by_client_id(user_id, client_id)
-    if existing_food_log:
-        if _nutrition_entry_pending_review(existing_food_log):
-            pending = _meal_pending_review_payload(existing_food_log)
-            return jsonify({
-                "status": "pending_review",
-                "estimate": pending["estimate"],
-                "food_log": existing_food_log,
-                "photo_retention": _food_photo_retention_payload(has_image or bool(pending["estimate"].get("from_image"))),
-                "local_timestamp": local_timestamp,
-                "local_date": local_date,
-                "local_iso": local_iso,
-                "policy": pending["policy"],
-            })
-        return jsonify({
-            "status": "logged",
-            "estimate": dict(existing_food_log.get("original_estimate") or {}),
-            "food_log": existing_food_log,
-            "photo_retention": _food_photo_retention_payload(has_image or _source_indicates_image(existing_food_log.get("source"))),
-            "local_timestamp": local_timestamp,
-            "local_date": local_date,
-            "local_iso": local_iso,
-        })
-    terminal_response = _meal_terminal_idempotency_response(user_id, client_id, has_image)
-    if terminal_response is not None:
-        return terminal_response
+    replay_response = _meal_capture_idempotency_response(
+        user_id=user_id,
+        client_id=client_id,
+        has_image=has_image,
+        local_timestamp=local_timestamp,
+        local_date=local_date,
+        local_iso=local_iso,
+    )
+    if replay_response is not None:
+        return replay_response
 
     response_extras: dict = {}
     if has_image:
@@ -6380,6 +6403,117 @@ def meal_intake():
         local_iso=local_iso,
         response_extras=response_extras,
         text_hint=text_raw or None,
+    )
+    saved_payload = _review_save_snapshot(
+        user_id,
+        client_id,
+        payload,
+        next_item_seq=2,
+        applied_refreshes={},
+        sync_pending=True,
+    )
+    return jsonify(saved_payload)
+
+
+@app.route("/api/meal-intake/barcode", methods=["POST"])
+def meal_intake_barcode():
+    """Accept a packaged-food barcode and route the estimate to pending review."""
+    if request.content_length is not None and request.content_length > _MEAL_INTAKE_MAX_AGGREGATE_BYTES:
+        return api_error("request exceeds 18 MB total", 413, code="payload_too_large")
+    if not request.is_json:
+        return api_error("application/json expected", 415, code="invalid_content_type")
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    client_id, err = _coerce_str(data.get("client_id"), "client_id", required=True, max_len=128)
+    if err:
+        return err
+    barcode_raw, err = _coerce_str(data.get("barcode"), "barcode", required=True, max_len=64)
+    if err:
+        return err
+    barcode = branded_food_lookup.normalize_barcode(barcode_raw)
+    if not barcode:
+        return api_error("barcode must be 8, 12, 13, or 14 digits", 400, code="invalid_barcode")
+    local_timestamp, err = _coerce_str(data.get("local_timestamp"), "local_timestamp", required=False, max_len=64)
+    if err:
+        return err
+    local_date, err = _coerce_str(data.get("local_date"), "local_date", required=False, max_len=10)
+    if err:
+        return err
+    local_iso, err = _coerce_str(data.get("local_iso"), "local_iso", required=False, max_len=64)
+    if err:
+        return err
+    allow_pending = data.get("allow_pending", False)
+    if not isinstance(allow_pending, bool):
+        return api_error("allow_pending must be boolean", 400, code="invalid_field")
+
+    user_id = _current_data_user_id()
+    replay_response = _meal_capture_idempotency_response(
+        user_id=user_id,
+        client_id=client_id,
+        has_image=False,
+        local_timestamp=local_timestamp or None,
+        local_date=local_date or None,
+        local_iso=local_iso or None,
+    )
+    if replay_response is not None:
+        return replay_response
+
+    estimate = branded_food_lookup.lookup_barcode(barcode, user_id=user_id)
+    pending_source = False
+    if estimate is None:
+        if not allow_pending:
+            return api_error("barcode not found", 404, code="barcode_not_found")
+        estimate = manual_review_estimate(text=f"Barcode {barcode}", source="barcode_pending_source")
+        estimate.update({
+            "portion_description": "Barcode pending source",
+            "confidence": 0.2,
+            "external_food_id": barcode,
+            "portion_basis": "Unverified barcode pending manual source",
+            "uncertainty_notes": [
+                "No verified barcode nutrition source was available; review manually before logging.",
+            ],
+        })
+        pending_source = True
+
+    source = estimate.get("source") or "barcode_pending_source"
+    cache_hit = source == "local_cache"
+    lookup_source = estimate.get("underlying_source") if cache_hit else source
+    response_extras = {
+        "barcode": barcode,
+        "lookup_source": lookup_source,
+        "cache_hit": cache_hit,
+        "pending_source": pending_source,
+    }
+    decision = evaluate_meal_log(estimate)
+    response_extras["policy"] = {
+        "confidence_band": decision["confidence_band"],
+        "reasons": decision["reasons"],
+    }
+    _merge_policy_reasons_into_uncertainty_notes(estimate, decision["reasons"])
+
+    food_log = _meal_intake_persist(
+        client_id,
+        estimate,
+        source=source,
+        has_image=False,
+        text_hint=f"barcode:{barcode}",
+        local_timestamp=local_timestamp or None,
+        local_date=local_date or None,
+        local_iso=local_iso or None,
+        correction_state=CORRECTION_STATE_PENDING_REVIEW,
+    )
+    payload = _review_payload_from_estimate(
+        meal_id=client_id,
+        estimate=estimate,
+        food_log=food_log,
+        has_image=False,
+        local_timestamp=local_timestamp or None,
+        local_date=local_date or None,
+        local_iso=local_iso or None,
+        response_extras=response_extras,
+        text_hint=f"barcode:{barcode}",
     )
     saved_payload = _review_save_snapshot(
         user_id,

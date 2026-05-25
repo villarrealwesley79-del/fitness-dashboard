@@ -3405,3 +3405,197 @@ def test_meal_intake_rejects_oversize_individual_image_in_multi(monkeypatch):
     )
     assert res.status_code == 413
     assert "6 MB" in res.get_json()["error"]["message"] or "exceeds" in res.get_json()["error"]["message"].lower()
+
+
+def _barcode_estimate(**overrides):
+    estimate = {
+        "item_name": "Barcode protein bar",
+        "portion_description": "1 bar (68 g)",
+        "meal_type": "snack",
+        "calories": 250,
+        "protein_g": 10,
+        "carbs_g": 43,
+        "fat_g": 5,
+        "sodium_mg": 190,
+        "fiber_g": 5,
+        "confidence": 0.88,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "nutritionix_barcode",
+        "external_food_id": "barcode-bar-1",
+        "portion_basis": "Nutritionix UPC label serving",
+    }
+    estimate.update(overrides)
+    return estimate
+
+
+def test_meal_intake_barcode_returns_pending_review_for_verified_lookup(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(
+        module.branded_food_lookup,
+        "lookup_barcode",
+        lambda barcode, **kwargs: _barcode_estimate(external_food_id=barcode),
+    )
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/barcode",
+        json={"client_id": "barcode-meal-1", "barcode": "0123-4567-8905", "local_date": "2026-05-24"},
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["barcode"] == "012345678905"
+    assert body["lookup_source"] == "nutritionix_barcode"
+    assert body["cache_hit"] is False
+    assert body["pending_source"] is False
+    assert body["estimate"]["source"] == "nutritionix_barcode"
+    assert body["food_log"]["client_id"] == "barcode-meal-1"
+    assert body["food_log"]["correction_state"] == "pending_review"
+
+
+def test_meal_intake_barcode_reports_cache_hit_metadata(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(
+        module.branded_food_lookup,
+        "lookup_barcode",
+        lambda *_a, **_kw: _barcode_estimate(source="local_cache", underlying_source="open_food_facts_barcode"),
+    )
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/barcode",
+        json={"client_id": "barcode-cache-1", "barcode": "012345678905"},
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["cache_hit"] is True
+    assert body["lookup_source"] == "open_food_facts_barcode"
+    assert body["estimate"]["source"] == "local_cache"
+
+
+def test_meal_intake_barcode_returns_404_for_unknown_without_pending(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(module.branded_food_lookup, "lookup_barcode", lambda *_a, **_kw: None)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/barcode",
+        json={"client_id": "barcode-miss-1", "barcode": "000000000000"},
+    )
+
+    assert res.status_code == 404
+    assert res.get_json()["error"]["code"] == "barcode_not_found"
+    assert data_store.get_food_logs(1) == []
+
+
+def test_meal_intake_barcode_allow_pending_creates_uncached_review_draft(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(module.branded_food_lookup, "lookup_barcode", lambda *_a, **_kw: None)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/barcode",
+        json={"client_id": "barcode-pending-1", "barcode": "000000000000", "allow_pending": True},
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["pending_source"] is True
+    assert body["cache_hit"] is False
+    assert body["lookup_source"] == "barcode_pending_source"
+    assert body["estimate"]["source"] == "barcode_pending_source"
+    assert body["estimate"]["external_food_id"] == "000000000000"
+    assert body["save_blocked_item_ids"] == ["item-1"]
+
+
+def test_meal_intake_barcode_validates_json_client_id_and_barcode(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+
+    form_res = client.post(
+        "/api/meal-intake/barcode",
+        data={"client_id": "barcode-invalid-1", "barcode": "012345678905"},
+    )
+    assert form_res.status_code == 415
+    assert form_res.get_json()["error"]["code"] == "invalid_content_type"
+
+    missing_client = client.post("/api/meal-intake/barcode", json={"barcode": "012345678905"})
+    assert missing_client.status_code == 400
+    assert missing_client.get_json()["error"]["code"] == "missing_field"
+
+    bad_barcode = client.post(
+        "/api/meal-intake/barcode",
+        json={"client_id": "barcode-invalid-2", "barcode": "abc"},
+    )
+    assert bad_barcode.status_code == 400
+    assert bad_barcode.get_json()["error"]["code"] == "invalid_barcode"
+
+    bad_pending = client.post(
+        "/api/meal-intake/barcode",
+        json={"client_id": "barcode-invalid-3", "barcode": "012345678905", "allow_pending": "yes"},
+    )
+    assert bad_pending.status_code == 400
+    assert bad_pending.get_json()["error"]["code"] == "invalid_field"
+
+
+def test_meal_intake_barcode_rejects_oversize_content_length(monkeypatch):
+    module = _client(monkeypatch)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/barcode",
+        data='{"client_id":"barcode-large-1","barcode":"012345678905"}',
+        content_type="application/json",
+        environ_overrides={"CONTENT_LENGTH": str(18 * 1024 * 1024 + 1)},
+    )
+
+    assert res.status_code == 413
+    assert res.get_json()["error"]["code"] == "payload_too_large"
+
+
+def test_meal_intake_barcode_replays_existing_snapshot_by_client_id(monkeypatch):
+    module = _client(monkeypatch)
+    calls = {"count": 0}
+
+    def lookup(*_a, **_kw):
+        calls["count"] += 1
+        return _barcode_estimate(calories=250)
+
+    monkeypatch.setattr(module.branded_food_lookup, "lookup_barcode", lookup)
+    client = module.app.test_client()
+
+    first = client.post(
+        "/api/meal-intake/barcode",
+        json={"client_id": "barcode-replay-1", "barcode": "012345678905"},
+    )
+    assert first.status_code == 200, first.get_data(as_text=True)
+    monkeypatch.setattr(
+        module.branded_food_lookup,
+        "lookup_barcode",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("idempotent replay should not re-query providers")),
+    )
+    second = client.post(
+        "/api/meal-intake/barcode",
+        json={"client_id": "barcode-replay-1", "barcode": "012345678905"},
+    )
+
+    assert second.status_code == 200, second.get_data(as_text=True)
+    assert second.get_json()["estimate"]["calories"] == 250
+    assert calls["count"] == 1
+
+
+def test_barcode_lookup_cache_round_trip_and_delete_user_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    response = _barcode_estimate()
+
+    data_store.save_barcode_lookup_cache("012345678905", "nutritionix_barcode", response, user_id=1)
+    data_store.save_barcode_lookup_cache("012345678905", "nutritionix_barcode", {**response, "item_name": "User 2 bar"}, user_id=2)
+
+    row = data_store.get_barcode_lookup_cache("012345678905", user_id=1)
+    assert row["source"] == "nutritionix_barcode"
+    assert row["response_json"] == response
+    assert data_store.get_barcode_lookup_cache("012345678905", user_id=2)["response_json"]["item_name"] == "User 2 bar"
+
+    data_store.delete_user_data(1)
+    assert data_store.get_barcode_lookup_cache("012345678905", user_id=1) is None
+    assert data_store.get_barcode_lookup_cache("012345678905", user_id=2)["response_json"]["item_name"] == "User 2 bar"

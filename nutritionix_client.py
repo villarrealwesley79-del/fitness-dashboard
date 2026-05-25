@@ -1,4 +1,4 @@
-"""Thin Nutritionix natural nutrients client for branded meal lookup."""
+"""Thin Nutritionix clients for branded meal lookup."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from urllib import error, request
 
 
 NUTRITIONIX_URL = "https://trackapi.nutritionix.com/v2/natural/nutrients"
+NUTRITIONIX_ITEM_URL = "https://trackapi.nutritionix.com/v2/search/item"
 TIMEOUT_SECONDS = 1.5
 
 
@@ -32,6 +33,30 @@ def natural_nutrients(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[s
         method="POST",
         headers={
             "Content-Type": "application/json",
+            "x-app-id": app_id,
+            "x-app-key": app_key,
+        },
+    )
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (OSError, error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError):
+        return None
+
+
+def search_item_by_upc(upc: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any] | None:
+    """Return Nutritionix item-search JSON for a UPC/GTIN, or None when unavailable."""
+    app_id = os.environ.get("NUTRITIONIX_APP_ID")
+    app_key = os.environ.get("NUTRITIONIX_APP_KEY")
+    cleaned = (upc or "").strip()
+    if not cleaned or not app_id or not app_key:
+        return None
+
+    req = request.Request(
+        f"{NUTRITIONIX_ITEM_URL}?upc={cleaned}&servings_per_container=true",
+        method="GET",
+        headers={
+            "Accept": "application/json",
             "x-app-id": app_id,
             "x-app-key": app_key,
         },

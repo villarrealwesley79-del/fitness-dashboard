@@ -17,6 +17,7 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 CACHE_TTL_DAYS = 180
 SOURCE_PRIORITY = ("cache", "heb_product_page", "nutritionix", "usda_fdc", "open_food_facts")
+BARCODE_LENGTHS = {8, 12, 13, 14}
 MULTI_ITEM_TOKENS = {"and", "with", "plus", "&", "+", "combo", "meal", "plate"}
 PORTION_MODIFIER_TOKENS = {"half"}
 EXACT_ONLY_BRANDS = {"h-e-b", "heb"}
@@ -226,6 +227,36 @@ def lookup(
     return None
 
 
+def normalize_barcode(value: str) -> str | None:
+    """Return a digit-only barcode when it matches supported UPC/EAN/GTIN lengths."""
+    cleaned = re.sub(r"[\s_.-]+", "", str(value or ""))
+    if cleaned.isdigit() and len(cleaned) in BARCODE_LENGTHS:
+        return cleaned
+    return None
+
+
+def lookup_barcode(barcode: str, *, user_id: int = 1) -> dict[str, Any] | None:
+    """Return a sanitized estimate from barcode cache or structured providers."""
+    normalized = normalize_barcode(barcode)
+    if not normalized:
+        return None
+    try:
+        cached = _barcode_cache_lookup(normalized, user_id=user_id)
+    except Exception:
+        cached = None
+    if cached:
+        return cached
+    for provider_lookup in (_nutritionix_barcode_lookup, _open_food_facts_barcode_lookup):
+        try:
+            estimate = provider_lookup(normalized)
+        except Exception:
+            estimate = None
+        if estimate:
+            _save_barcode_cache_best_effort(normalized, estimate["source"], estimate, user_id=user_id)
+            return estimate
+    return None
+
+
 def _text_with_brand_hint(text: str, brand_hint: str | None) -> str:
     cleaned = (text or "").strip()
     normalized_text = normalize_meal_text(cleaned)
@@ -294,6 +325,29 @@ def _save_cache_best_effort(normalized: str, source: str, estimate: dict[str, An
         return
 
 
+def _barcode_cache_lookup(barcode: str, *, user_id: int = 1) -> dict[str, Any] | None:
+    row = data_store.get_barcode_lookup_cache(barcode, user_id=user_id)
+    if not row:
+        return None
+    fetched_at = _parse_iso(row.get("fetched_at"))
+    if not fetched_at or datetime.now() - fetched_at > timedelta(days=CACHE_TTL_DAYS):
+        return None
+    payload = row.get("response_json")
+    if not isinstance(payload, dict):
+        return None
+    estimate = dict(payload)
+    estimate["source"] = "local_cache"
+    estimate.setdefault("underlying_source", row.get("source"))
+    return _sanitize_with_provenance(estimate)
+
+
+def _save_barcode_cache_best_effort(barcode: str, source: str, estimate: dict[str, Any], *, user_id: int) -> None:
+    try:
+        data_store.save_barcode_lookup_cache(barcode, source, estimate, user_id=user_id)
+    except Exception:
+        return
+
+
 def _nutritionix_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     payload = nutritionix_client.natural_nutrients(text)
     foods = payload.get("foods") if isinstance(payload, dict) else None
@@ -340,6 +394,43 @@ def _nutritionix_lookup(text: str, normalized: str) -> dict[str, Any] | None:
         "verified_source_url": "https://www.nutritionix.com/",
         "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
         "portion_basis": _portion_from_nutritionix_items(food_items),
+        "brand_id": _brand_from_text(normalize_meal_text(source_brand or "")),
+        "source_brand_name": source_brand,
+    }
+    return _sanitize_with_provenance(estimate)
+
+
+def _nutritionix_barcode_lookup(barcode: str) -> dict[str, Any] | None:
+    payload = nutritionix_client.search_item_by_upc(barcode)
+    foods = payload.get("foods") if isinstance(payload, dict) else None
+    if not foods:
+        return None
+    food_items = [food for food in foods if isinstance(food, dict)]
+    if not food_items or not _nutritionix_items_have_required_nutrients(food_items):
+        return None
+    food = food_items[0]
+    source_brand = str(food.get("brand_name") or "").strip() or None
+    item_name = _nutritionix_item_name([food], source_brand) or "Packaged food"
+    portion = _portion_from_nutritionix(food)
+    external_id = str(food.get("nix_item_id") or food.get("upc") or barcode).strip()
+    estimate = {
+        "item_name": item_name,
+        "portion_description": portion,
+        "meal_type": "snack",
+        "calories": food.get("nf_calories"),
+        "protein_g": food.get("nf_protein"),
+        "carbs_g": food.get("nf_total_carbohydrate"),
+        "fat_g": food.get("nf_total_fat"),
+        "sodium_mg": food.get("nf_sodium"),
+        "fiber_g": food.get("nf_dietary_fiber"),
+        "confidence": 0.88,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "nutritionix_barcode",
+        "external_food_id": external_id or barcode,
+        "verified_source_url": "https://www.nutritionix.com/",
+        "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
+        "portion_basis": "Nutritionix UPC label serving",
         "brand_id": _brand_from_text(normalize_meal_text(source_brand or "")),
         "source_brand_name": source_brand,
     }
@@ -432,6 +523,13 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
         except (TypeError, ValueError, OverflowError):
             continue
     return None
+
+
+def _open_food_facts_barcode_lookup(barcode: str) -> dict[str, Any] | None:
+    product = open_food_facts_client.get_product_by_barcode(barcode)
+    if not isinstance(product, dict) or not _off_quality_ok(product):
+        return None
+    return _open_food_facts_barcode_estimate(product)
 
 
 def _off_candidate_usable(
@@ -611,6 +709,55 @@ def _open_food_facts_estimate(product: dict[str, Any]) -> dict[str, Any]:
     return _sanitize_with_provenance(estimate)
 
 
+def _open_food_facts_barcode_estimate(product: dict[str, Any]) -> dict[str, Any]:
+    nutriments = product.get("nutriments") or {}
+    name = " ".join(
+        str(part).strip()
+        for part in (product.get("brands"), product.get("product_name"))
+        if part
+    ).strip()
+    serving = _off_serving_description(product)
+    serving_macros = _off_serving_macros(nutriments)
+    if serving_macros is None:
+        serving_macros = {
+            "calories": _off_energy_kcal(nutriments),
+            "protein_g": nutriments.get("proteins_100g"),
+            "carbs_g": nutriments.get("carbohydrates_100g"),
+            "fat_g": nutriments.get("fat_100g"),
+            "sodium_mg": _off_sodium_mg(nutriments),
+            "fiber_g": _off_optional_number(nutriments.get("fiber_100g")),
+        }
+        portion_description = "100 g"
+        portion_basis = "100 g Open Food Facts packaged-food reference"
+        confidence = 0.72
+    else:
+        portion_description = serving or "1 serving"
+        portion_basis = "Open Food Facts package serving"
+        confidence = 0.82
+    estimate = {
+        "item_name": name or product.get("product_name") or "Packaged food",
+        "portion_description": portion_description,
+        "meal_type": "snack",
+        "calories": serving_macros["calories"],
+        "protein_g": serving_macros["protein_g"],
+        "carbs_g": serving_macros["carbs_g"],
+        "fat_g": serving_macros["fat_g"],
+        "sodium_mg": serving_macros["sodium_mg"],
+        "fiber_g": serving_macros["fiber_g"],
+        "confidence": confidence,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "open_food_facts_barcode",
+        "external_food_id": product.get("code"),
+        "verified_source_url": product.get("url") or "https://world.openfoodfacts.org/",
+        "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
+        "portion_basis": portion_basis,
+        "source_brand_name": product.get("brands"),
+        "off_attribution": "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)",
+    }
+    return _sanitize_with_provenance(estimate)
+
+
 def _sanitize_with_provenance(estimate: dict[str, Any]) -> dict[str, Any]:
     sanitized = sanitize_meal_estimate(estimate, plausible_ranges=True)
     for key in (
@@ -686,6 +833,50 @@ def _off_sodium_mg(nutriments: dict[str, Any]) -> int:
             return int(round(sodium * 1000))
     if nutriments.get("salt_100g") is not None:
         salt = _off_number_or_none(nutriments["salt_100g"])
+        if salt is not None:
+            return int(round(salt * 393.4))
+    return 0
+
+
+def _off_serving_description(product: dict[str, Any]) -> str | None:
+    value = product.get("serving_size")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    quantity = _off_number_or_none(product.get("serving_quantity"))
+    if quantity is not None:
+        return f"{quantity:g} g"
+    value = product.get("quantity")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _off_serving_macros(nutriments: dict[str, Any]) -> dict[str, Any] | None:
+    required = (
+        "energy-kcal_serving",
+        "proteins_serving",
+        "carbohydrates_serving",
+        "fat_serving",
+    )
+    if any(nutriments.get(key) is None for key in required):
+        return None
+    return {
+        "calories": nutriments.get("energy-kcal_serving"),
+        "protein_g": nutriments.get("proteins_serving"),
+        "carbs_g": nutriments.get("carbohydrates_serving"),
+        "fat_g": nutriments.get("fat_serving"),
+        "sodium_mg": _off_serving_sodium_mg(nutriments),
+        "fiber_g": _off_optional_number(nutriments.get("fiber_serving")),
+    }
+
+
+def _off_serving_sodium_mg(nutriments: dict[str, Any]) -> int:
+    if nutriments.get("sodium_serving") is not None:
+        sodium = _off_number_or_none(nutriments["sodium_serving"])
+        if sodium is not None:
+            return int(round(sodium * 1000))
+    if nutriments.get("salt_serving") is not None:
+        salt = _off_number_or_none(nutriments["salt_serving"])
         if salt is not None:
             return int(round(salt * 393.4))
     return 0

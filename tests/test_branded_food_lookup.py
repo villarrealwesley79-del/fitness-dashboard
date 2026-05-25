@@ -1251,3 +1251,186 @@ def test_data_store_cache_round_trip(tmp_path, monkeypatch):
     data_store.delete_user_data(1)
     assert data_store.get_branded_lookup_cache("banana", user_id=1) is None
     assert data_store.get_branded_lookup_cache("banana", user_id=2)["response_json"]["item_name"] == "User 2 banana"
+
+
+def test_normalize_barcode_accepts_supported_digit_lengths():
+    assert branded_food_lookup.normalize_barcode("0123-4567-8905") == "012345678905"
+    assert branded_food_lookup.normalize_barcode(" 4006 3813 ") == "40063813"
+    assert branded_food_lookup.normalize_barcode("12345678901234") == "12345678901234"
+    assert branded_food_lookup.normalize_barcode("abc12345678") is None
+    assert branded_food_lookup.normalize_barcode("1234567") is None
+
+
+def test_lookup_barcode_uses_local_cache_first(monkeypatch):
+    cached = {
+        "item_name": "Cached chips",
+        "portion_description": "1 bag",
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 3,
+        "carbs_g": 25,
+        "fat_g": 11,
+        "sodium_mg": 280,
+        "fiber_g": 2,
+        "confidence": 0.88,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "nutritionix_barcode",
+        "external_food_id": "cached-id",
+    }
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "get_barcode_lookup_cache",
+        lambda barcode, **kwargs: {
+            "barcode": barcode,
+            "source": "nutritionix_barcode",
+            "response_json": cached,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "search_item_by_upc",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("provider should not run on cache hit")),
+    )
+
+    estimate = branded_food_lookup.lookup_barcode("012345678905", user_id=7)
+
+    assert estimate["source"] == "local_cache"
+    assert estimate["underlying_source"] == "nutritionix_barcode"
+    assert estimate["item_name"] == "Cached chips"
+    assert estimate["external_food_id"] == "cached-id"
+
+
+def test_lookup_barcode_uses_nutritionix_upc_and_saves_cache(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "save_barcode_lookup_cache",
+        lambda barcode, source, response, **kwargs: saved.update({
+            "barcode": barcode,
+            "source": source,
+            "response": response,
+            "user_id": kwargs.get("user_id"),
+        }),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "search_item_by_upc",
+        lambda *_a, **_kw: _nutritionix_payload(
+            "protein bar",
+            brand_name="Clif",
+            serving_qty=1,
+            serving_unit="bar",
+            serving_weight_grams=68,
+            nf_calories=250,
+            nf_protein=10,
+            nf_total_carbohydrate=43,
+            nf_total_fat=5,
+            nf_sodium=190,
+            nf_dietary_fiber=5,
+            nix_item_id="clif-bar-1",
+        ),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "get_product_by_barcode",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("OFF should not run after Nutritionix hit")),
+    )
+
+    estimate = branded_food_lookup.lookup_barcode("012345678905", user_id=42)
+
+    assert estimate["source"] == "nutritionix_barcode"
+    assert estimate["item_name"] == "Clif protein bar"
+    assert estimate["portion_description"] == "1 bar (68 g)"
+    assert estimate["calories"] == 250
+    assert estimate["external_food_id"] == "clif-bar-1"
+    assert estimate["portion_basis"] == "Nutritionix UPC label serving"
+    assert saved["barcode"] == "012345678905"
+    assert saved["source"] == "nutritionix_barcode"
+    assert saved["user_id"] == 42
+
+
+def test_lookup_barcode_uses_open_food_facts_serving_macros(monkeypatch):
+    saved = {}
+    product = {
+        "code": "500032837010",
+        "product_name": "Barcode Crisps",
+        "brands": "Walkers",
+        "url": "https://world.openfoodfacts.org/product/500032837010",
+        "countries_tags": ["en:united-kingdom"],
+        "data_quality_tags": ["en:nutrition-data-complete"],
+        "serving_size": "25 g",
+        "serving_quantity": 25,
+        "nutriments": {
+            "energy-kcal_serving": 132,
+            "proteins_serving": 1.5,
+            "carbohydrates_serving": 13,
+            "fat_serving": 8,
+            "sodium_serving": 0.16,
+            "fiber_serving": 1.2,
+            "energy-kcal_100g": 528,
+            "proteins_100g": 6,
+            "carbohydrates_100g": 52,
+            "fat_100g": 32,
+        },
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "save_barcode_lookup_cache",
+        lambda barcode, source, response, **kwargs: saved.update({"barcode": barcode, "source": source}),
+    )
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "get_product_by_barcode",
+        lambda *_a, **_kw: product,
+    )
+
+    estimate = branded_food_lookup.lookup_barcode("500032837010")
+
+    assert estimate["source"] == "open_food_facts_barcode"
+    assert estimate["portion_description"] == "25 g"
+    assert estimate["portion_basis"] == "Open Food Facts package serving"
+    assert estimate["confidence"] == 0.82
+    assert estimate["calories"] == 132
+    assert estimate["sodium_mg"] == 160
+    assert saved == {"barcode": "500032837010", "source": "open_food_facts_barcode"}
+
+
+def test_open_food_facts_barcode_serving_quantity_precedes_package_quantity(monkeypatch):
+    product = {
+        "code": "012345678905",
+        "product_name": "Snack Pack",
+        "brands": "Demo",
+        "url": "https://world.openfoodfacts.org/product/012345678905",
+        "countries_tags": ["en:united-states"],
+        "data_quality_tags": ["en:nutrition-data-complete"],
+        "serving_quantity": 30,
+        "quantity": "300 g",
+        "nutriments": {
+            "energy-kcal_serving": 150,
+            "proteins_serving": 4,
+            "carbohydrates_serving": 20,
+            "fat_serving": 6,
+            "energy-kcal_100g": 500,
+            "proteins_100g": 13.3,
+            "carbohydrates_100g": 66.7,
+            "fat_100g": 20,
+        },
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "get_product_by_barcode",
+        lambda *_a, **_kw: product,
+    )
+
+    estimate = branded_food_lookup.lookup_barcode("012345678905")
+
+    assert estimate["portion_description"] == "30 g"
+    assert estimate["calories"] == 150
