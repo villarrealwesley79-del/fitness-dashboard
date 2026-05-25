@@ -314,8 +314,10 @@
         const min = Math.min(...ys);
         const max = Math.max(...ys);
         const range = (max - min) || 1;
-        const minPad = min - range * 0.12;
-        const maxPad = max + range * 0.12;
+        const emptyMaxY = Number(opts.emptyMaxY) > 0 ? Number(opts.emptyMaxY) : 100;
+        const useEmptyDomain = opts.nonNegativeY && max <= 0;
+        const minPad = useEmptyDomain ? 0 : (opts.nonNegativeY ? Math.max(0, min - range * 0.12) : min - range * 0.12);
+        const maxPad = useEmptyDomain ? emptyMaxY : max + range * 0.12;
         const trueRange = maxPad - minPad || 1;
         const plotW = w - padL - padR;
         const plotH = h - padT - padB;
@@ -1908,7 +1910,7 @@
             $('chart-history-freq').innerHTML = '<div class="empty">Chart unavailable.</div>';
         }
         try {
-            lineChart($('chart-history-volume'), barBuckets.map((b) => ({ value: b.volume || 0, label: b.label })), { color: '#a78bfa' });
+            lineChart($('chart-history-volume'), barBuckets.map((b) => ({ value: b.volume || 0, label: b.label })), { color: '#a78bfa', nonNegativeY: true, emptyMaxY: 100 });
         } catch (e) {
             console.error('renderHistory: lineChart failed', e);
             $('chart-history-volume').innerHTML = '<div class="empty">Chart unavailable.</div>';
