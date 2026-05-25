@@ -60,10 +60,12 @@ def test_direct_lookup_gate_blocks_multi_item_generic_text():
 
 def test_direct_lookup_gate_allows_regional_restaurant_menu_queries():
     assert branded_food_lookup.should_attempt_direct_lookup("bill miller bacon and egg taco") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("bill miller bacon & egg taco") is True
     assert branded_food_lookup.should_attempt_direct_lookup("bill miller breakfast sandwich on biscuit") is True
     assert branded_food_lookup.should_attempt_direct_lookup("bill miller brisket sandwich") is True
     assert branded_food_lookup.should_attempt_direct_lookup("whataburger patty melt") is True
     assert branded_food_lookup.should_attempt_direct_lookup("taco cabana bean and cheese taco") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("taco cabana bean & cheese taco") is True
     assert branded_food_lookup.should_attempt_direct_lookup("torchys democrat taco") is True
     assert branded_food_lookup.should_attempt_direct_lookup("rudys brisket sandwich") is True
     assert branded_food_lookup.should_attempt_direct_lookup("p terrys cheeseburger") is True
@@ -95,6 +97,7 @@ def test_direct_lookup_gate_blocks_regional_restaurant_multi_item_queries():
     assert branded_food_lookup.should_attempt_direct_lookup("rudys brisket plate with sides") is False
     assert branded_food_lookup.should_attempt_direct_lookup("bill miller bacon egg taco meal") is False
     assert branded_food_lookup.should_attempt_direct_lookup("bill miller bacon and egg taco and fries") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("bill miller bacon & egg taco and fries") is False
     assert branded_food_lookup.should_attempt_direct_lookup("bill miller brisket sandwich and potato salad") is False
     assert branded_food_lookup.should_attempt_direct_lookup("torchys taco combo") is False
     assert branded_food_lookup.should_attempt_direct_lookup("taco cabana taco and burrito") is False

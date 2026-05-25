@@ -182,6 +182,8 @@ def normalize_meal_text(text: str) -> str:
     tokens = []
     for raw in re.sub(r"['\u2018\u2019]", "", (text or "").lower()).split():
         token = raw.strip(".,!?;:()[]{}\"")
+        if token == "&":
+            token = "and"
         token = PLURALS.get(token, token)
         for brand, typos in BRAND_TYPOS.items():
             if token in typos:
