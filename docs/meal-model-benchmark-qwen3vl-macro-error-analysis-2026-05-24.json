@@ -1,0 +1,267 @@
+{
+  "analysis_id": "fit-174-qwen3vl-macro-error-analysis",
+  "decision": {
+    "reason": "The dominant remaining macro error is low/zero gram macro denominator inflation, especially carbohydrates on single-item protein foods; prompt or parser changes cannot be honestly proven from the safe artifact without the private image set.",
+    "rejected_options": {
+      "package_label_parsing_rules": "Packaged labels are elevated, but not the largest remaining aggregate driver.",
+      "per_category_calibration": "Risky without a private rerun because it would alter real estimates from gold-only analysis.",
+      "prompt_changes": "Need a private-image rerun to prove before/after behavior.",
+      "small_reference_nutrition_lookup": "Useful later for branded/packaged foods, but the largest outliers are generic single-item foods."
+    },
+    "selected_next_fix": "metric_adjustment"
+  },
+  "linear_issue": "FIT-174",
+  "metric_adjustment": {
+    "calorie_denominator_floor": 50.0,
+    "description": "Replay the full safe 50-case result set with a 10g denominator floor for gram macros and a 50 kcal denominator floor for calories. This keeps absolute errors visible while removing pathological percentage inflation when gold carbohydrate, fat, or protein is near zero.",
+    "gram_denominator_floor": 10.0,
+    "name": "low_macro_floor_mape"
+  },
+  "model": "qwen3-vl-30b-a3b-instruct@q4_k_xl-scale-cue",
+  "privacy": {
+    "private_image_map_included": false,
+    "raw_images_included": false,
+    "uses_safe_case_results_only": true
+  },
+  "safe_replay": {
+    "adjusted_macro_mape_percent": 19.92,
+    "case_count": 50,
+    "category_summary": {
+      "multi_item_plate": {
+        "adjusted_macro_mape_percent": 16.71,
+        "case_count": 20,
+        "original_macro_mape_percent": 16.74
+      },
+      "packaged_label": {
+        "adjusted_macro_mape_percent": 21.46,
+        "case_count": 5,
+        "original_macro_mape_percent": 35.55
+      },
+      "restaurant_item": {
+        "adjusted_macro_mape_percent": 17.19,
+        "case_count": 5,
+        "original_macro_mape_percent": 17.19
+      },
+      "single_item_plate": {
+        "adjusted_macro_mape_percent": 23.43,
+        "case_count": 20,
+        "original_macro_mape_percent": 59.62
+      }
+    },
+    "macro_summary": {
+      "calories": {
+        "adjusted_mean_absolute_percentage_error": 17.98,
+        "original_mean_absolute_percentage_error": 17.98
+      },
+      "carbs_g": {
+        "adjusted_mean_absolute_percentage_error": 26.03,
+        "original_mean_absolute_percentage_error": 82.56
+      },
+      "fat_g": {
+        "adjusted_mean_absolute_percentage_error": 16.55,
+        "original_mean_absolute_percentage_error": 22.28
+      },
+      "protein_g": {
+        "adjusted_mean_absolute_percentage_error": 19.12,
+        "original_mean_absolute_percentage_error": 20.45
+      }
+    },
+    "original_macro_mape_percent": 35.82,
+    "schema_valid_count": 50,
+    "top_low_macro_outliers": [
+      {
+        "absolute_error": 18.0,
+        "adjusted_absolute_percentage_error": 180.0,
+        "case_id": "single-015",
+        "category": "single_item_plate",
+        "gold": 0,
+        "label": "grilled fish filet",
+        "macro": "carbs_g",
+        "original_absolute_percentage_error": 1800.0,
+        "predicted": 18.0
+      },
+      {
+        "absolute_error": 12.0,
+        "adjusted_absolute_percentage_error": 120.0,
+        "case_id": "single-007",
+        "category": "single_item_plate",
+        "gold": 0,
+        "label": "sirloin steak",
+        "macro": "carbs_g",
+        "original_absolute_percentage_error": 1200.0,
+        "predicted": 12.0
+      },
+      {
+        "absolute_error": 5.0,
+        "adjusted_absolute_percentage_error": 50.0,
+        "case_id": "packaged-003",
+        "category": "packaged_label",
+        "gold": 2,
+        "label": "greek yogurt cup",
+        "macro": "fat_g",
+        "original_absolute_percentage_error": 250.0,
+        "predicted": 7.0
+      },
+      {
+        "absolute_error": 2.0,
+        "adjusted_absolute_percentage_error": 20.0,
+        "case_id": "single-002",
+        "category": "single_item_plate",
+        "gold": 2,
+        "label": "beef burger patty",
+        "macro": "carbs_g",
+        "original_absolute_percentage_error": 100.0,
+        "predicted": 0.0
+      },
+      {
+        "absolute_error": 2.0,
+        "adjusted_absolute_percentage_error": 20.0,
+        "case_id": "single-003",
+        "category": "single_item_plate",
+        "gold": 3,
+        "label": "scrambled eggs",
+        "macro": "carbs_g",
+        "original_absolute_percentage_error": 66.67,
+        "predicted": 1.0
+      },
+      {
+        "absolute_error": 2.0,
+        "adjusted_absolute_percentage_error": 20.0,
+        "case_id": "single-010",
+        "category": "single_item_plate",
+        "gold": 4,
+        "label": "protein shake cup",
+        "macro": "fat_g",
+        "original_absolute_percentage_error": 50.0,
+        "predicted": 6.0
+      },
+      {
+        "absolute_error": 4.0,
+        "adjusted_absolute_percentage_error": 40.0,
+        "case_id": "single-016",
+        "category": "single_item_plate",
+        "gold": 8,
+        "label": "rice and beans bowl",
+        "macro": "fat_g",
+        "original_absolute_percentage_error": 50.0,
+        "predicted": 12.0
+      },
+      {
+        "absolute_error": 2.0,
+        "adjusted_absolute_percentage_error": 20.0,
+        "case_id": "packaged-002",
+        "category": "packaged_label",
+        "gold": 4,
+        "label": "potato chips bag",
+        "macro": "protein_g",
+        "original_absolute_percentage_error": 50.0,
+        "predicted": 2.0
+      },
+      {
+        "absolute_error": 2.0,
+        "adjusted_absolute_percentage_error": 20.0,
+        "case_id": "packaged-005",
+        "category": "packaged_label",
+        "gold": 5,
+        "label": "cereal box serving",
+        "macro": "protein_g",
+        "original_absolute_percentage_error": 40.0,
+        "predicted": 3.0
+      },
+      {
+        "absolute_error": 1.0,
+        "adjusted_absolute_percentage_error": 10.0,
+        "case_id": "packaged-005",
+        "category": "packaged_label",
+        "gold": 3,
+        "label": "cereal box serving",
+        "macro": "fat_g",
+        "original_absolute_percentage_error": 33.33,
+        "predicted": 2.0
+      }
+    ],
+    "top_original_cases": [
+      {
+        "adjusted_macro_mape_percent": 65.77,
+        "case_id": "single-015",
+        "category": "single_item_plate",
+        "improvement_points": 405.0,
+        "label": "grilled fish filet",
+        "original_macro_mape_percent": 470.77
+      },
+      {
+        "adjusted_macro_mape_percent": 37.43,
+        "case_id": "single-007",
+        "category": "single_item_plate",
+        "improvement_points": 270.0,
+        "label": "sirloin steak",
+        "original_macro_mape_percent": 307.43
+      },
+      {
+        "adjusted_macro_mape_percent": 25.83,
+        "case_id": "packaged-003",
+        "category": "packaged_label",
+        "improvement_points": 50.0,
+        "label": "greek yogurt cup",
+        "original_macro_mape_percent": 75.83
+      },
+      {
+        "adjusted_macro_mape_percent": 49.41,
+        "case_id": "single-020",
+        "category": "single_item_plate",
+        "improvement_points": 0.0,
+        "label": "vegetable stir fry",
+        "original_macro_mape_percent": 49.41
+      },
+      {
+        "adjusted_macro_mape_percent": 27.48,
+        "case_id": "single-002",
+        "category": "single_item_plate",
+        "improvement_points": 20.0,
+        "label": "beef burger patty",
+        "original_macro_mape_percent": 47.48
+      },
+      {
+        "adjusted_macro_mape_percent": 37.55,
+        "case_id": "packaged-002",
+        "category": "packaged_label",
+        "improvement_points": 7.5,
+        "label": "potato chips bag",
+        "original_macro_mape_percent": 45.05
+      },
+      {
+        "adjusted_macro_mape_percent": 43.12,
+        "case_id": "single-005",
+        "category": "single_item_plate",
+        "improvement_points": 0.0,
+        "label": "caesar salad bowl",
+        "original_macro_mape_percent": 43.12
+      },
+      {
+        "adjusted_macro_mape_percent": 42.0,
+        "case_id": "single-019",
+        "category": "single_item_plate",
+        "improvement_points": 0.0,
+        "label": "chicken wings",
+        "original_macro_mape_percent": 42.0
+      },
+      {
+        "adjusted_macro_mape_percent": 29.01,
+        "case_id": "packaged-005",
+        "category": "packaged_label",
+        "improvement_points": 10.83,
+        "label": "cereal box serving",
+        "original_macro_mape_percent": 39.84
+      },
+      {
+        "adjusted_macro_mape_percent": 27.04,
+        "case_id": "single-003",
+        "category": "single_item_plate",
+        "improvement_points": 11.66,
+        "label": "scrambled eggs",
+        "original_macro_mape_percent": 38.7
+      }
+    ]
+  },
+  "source_benchmark_id": "FIT-164-qwen3vl-30b-vs-32b-food-accuracy"
+}
