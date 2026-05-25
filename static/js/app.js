@@ -8371,7 +8371,7 @@
         const mealTypeChip = `
             <label class="meal-review-v2-meal-type" data-field-label="meal_type">
                 <span class="meal-review-v2-meal-type-label">Meal</span>
-                <select data-action="set-meal-type" aria-label="Meal type">
+                <select data-action="set-meal-type" aria-label="Meal type"${entry.pendingRefresh ? ' disabled' : ''}>
                     ${MEAL_TYPE_OPTIONS.map((mt) => `<option value="${mt}"${mt === entry.meal_type ? ' selected' : ''}>${mt.charAt(0).toUpperCase() + mt.slice(1)}</option>`).join('')}
                 </select>
             </label>
@@ -8391,7 +8391,7 @@
         ` : `
             <div class="meal-pending-actions meal-review-v2-actions">
                 <button type="button" class="btn btn-ghost" data-action="discard">Discard</button>
-                <button type="button" class="btn btn-primary" data-action="save"${(blocked || entry.pendingRefresh) ? ' disabled' : ''}>${blocked ? 'Resolve items to save' : 'Save'}</button>
+                <button type="button" class="btn btn-primary" data-action="save"${blocked ? ' disabled' : ''}>${blocked ? 'Resolve items to save' : 'Save'}</button>
             </div>
         `;
 
@@ -8403,9 +8403,9 @@
             <form class="meal-review-v2-followup" data-action="followup-form" role="region" aria-label="Follow-up question">
                 <div class="meal-review-v2-followup-q">${escapeHtml(entry.followup.question || '')}</div>
                 <div class="meal-review-v2-followup-row">
-                    <input type="text" data-field="followup-answer" placeholder="Type your answer" maxlength="240" required>
-                    <button type="submit" class="btn btn-primary">Submit</button>
-                    <button type="button" class="btn btn-ghost" data-action="followup-dismiss">Skip</button>
+                    <input type="text" data-field="followup-answer" placeholder="Type your answer" maxlength="240" required${entry.pendingRefresh ? ' disabled' : ''}>
+                    <button type="submit" class="btn btn-primary"${entry.pendingRefresh ? ' disabled' : ''}>Submit</button>
+                    <button type="button" class="btn btn-ghost" data-action="followup-dismiss"${entry.pendingRefresh ? ' disabled' : ''}>Skip</button>
                 </div>
             </form>
         ` : '';
@@ -8415,6 +8415,7 @@
                 ${entry.items.map((item) => buildMealReviewV2ItemHtml(item, {
                     blocked: blockedSet.has(item.item_id),
                     expanded: entry.expandedItems.has(item.item_id) || blockedSet.has(item.item_id),
+                    pendingRefresh: entry.pendingRefresh,
                 })).join('')}
             </div>
         ` : '<div class="meal-review-v2-empty">No items in this meal yet.</div>';
@@ -8423,9 +8424,9 @@
             <form class="meal-review-v2-add-item" data-action="add-item-form">
                 <label>
                     <span>Add an item (describe in your own words)</span>
-                    <input type="text" data-field="add-item-text" placeholder="e.g. a small side of rice, or a 16 oz coke" maxlength="240" required>
+                    <input type="text" data-field="add-item-text" placeholder="e.g. a small side of rice, or a 16 oz coke" maxlength="240" required${entry.pendingRefresh ? ' disabled' : ''}>
                 </label>
-                <button type="submit" class="btn btn-ghost">Add</button>
+                <button type="submit" class="btn btn-ghost"${entry.pendingRefresh ? ' disabled' : ''}>Add</button>
             </form>
         `;
 
@@ -8458,6 +8459,7 @@
         const isRemoved = status === 'skipped' || status === 'deleted';
         const blocked = !!opts.blocked && isIncluded;
         const expanded = !!opts.expanded || blocked;
+        const pendingRefresh = !!opts.pendingRefresh;
         const sourceLabel = (item.source && item.source.label) || 'AI estimate';
         const sourceKind = item.source && MEAL_V2_SOURCE_KINDS.includes(item.source.kind) ? item.source.kind : 'manual';
         const sourceLink = item.source && item.source.link ? String(item.source.link) : '';
@@ -8468,7 +8470,7 @@
             <div class="meal-review-v2-candidates" role="group" aria-label="Top choices">
                 <span class="meal-review-v2-candidates-label">Top choices</span>
                 ${candidates.map((c) => `
-                    <button type="button" class="meal-review-v2-candidate-chip" data-action="choose-candidate" data-candidate-id="${escapeHtml(c.candidate_id)}">
+                    <button type="button" class="meal-review-v2-candidate-chip" data-action="choose-candidate" data-candidate-id="${escapeHtml(c.candidate_id)}"${pendingRefresh ? ' disabled' : ''}>
                         ${escapeHtml(c.name || '')}${(c.portion || c.portion_description) ? ` · ${escapeHtml(c.portion || c.portion_description)}` : ''}
                     </button>
                 `).join('')}
@@ -8479,25 +8481,25 @@
             <form class="meal-review-v2-portion-edit" data-action="portion-edit-form" hidden>
                 <label>
                     <span>Edit portion (describe in your own words)</span>
-                    <input type="text" data-field="portion-text" placeholder="e.g. half the plate, or a 16 oz serving" maxlength="240" required>
+                    <input type="text" data-field="portion-text" placeholder="e.g. half the plate, or a 16 oz serving" maxlength="240" required${pendingRefresh ? ' disabled' : ''}>
                 </label>
                 <div class="meal-review-v2-portion-edit-actions">
-                    <button type="button" class="btn btn-ghost" data-action="portion-edit-cancel">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Update</button>
+                    <button type="button" class="btn btn-ghost" data-action="portion-edit-cancel"${pendingRefresh ? ' disabled' : ''}>Cancel</button>
+                    <button type="submit" class="btn btn-primary"${pendingRefresh ? ' disabled' : ''}>Update</button>
                 </div>
             </form>
         ` : '';
 
         const itemActions = isIncluded ? `
             <div class="meal-review-v2-item-actions">
-                <button type="button" class="btn btn-ghost meal-review-v2-portion-edit-toggle" data-action="portion-edit-open">Edit portion</button>
-                <button type="button" class="btn btn-ghost" data-action="skip-item">Skip</button>
-                <button type="button" class="btn btn-ghost" data-action="delete-item">Delete</button>
+                <button type="button" class="btn btn-ghost meal-review-v2-portion-edit-toggle" data-action="portion-edit-open"${pendingRefresh ? ' disabled' : ''}>Edit portion</button>
+                <button type="button" class="btn btn-ghost" data-action="skip-item"${pendingRefresh ? ' disabled' : ''}>Skip</button>
+                <button type="button" class="btn btn-ghost" data-action="delete-item"${pendingRefresh ? ' disabled' : ''}>Delete</button>
             </div>
         ` : `
             <div class="meal-review-v2-item-actions meal-review-v2-item-actions--removed">
                 <span class="meal-review-v2-item-removed-label">${status === 'skipped' ? 'Skipped' : 'Deleted'}</span>
-                <button type="button" class="btn btn-ghost meal-review-v2-undo" data-action="restore-item">Undo</button>
+                <button type="button" class="btn btn-ghost meal-review-v2-undo" data-action="restore-item"${pendingRefresh ? ' disabled' : ''}>Undo</button>
             </div>
         `;
 
