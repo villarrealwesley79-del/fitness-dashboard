@@ -17,7 +17,9 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 CACHE_TTL_DAYS = 180
 SOURCE_PRIORITY = ("cache", "heb_product_page", "nutritionix", "usda_fdc", "open_food_facts")
-MULTI_ITEM_TOKENS = {"and", "with", "plus", "&", "+", "combo", "meal", "plate"}
+MULTI_ITEM_HARD_TOKENS = {"with", "plus", "&", "+", "combo", "meal", "plate"}
+MULTI_ITEM_SOFT_TOKENS = {"and"}
+MULTI_ITEM_TOKENS = MULTI_ITEM_HARD_TOKENS | MULTI_ITEM_SOFT_TOKENS
 PORTION_MODIFIER_TOKENS = {"half"}
 EXACT_ONLY_BRANDS = {"h-e-b", "heb"}
 KNOWN_BRANDS = {
@@ -30,6 +32,21 @@ KNOWN_BRANDS = {
     "chick-fil-a",
     "chickfila",
 }
+REGIONAL_RESTAURANT_BRAND_PHRASES = (
+    ("bill", "miller"),
+    ("golden", "chick"),
+    ("la", "madeleine"),
+    ("p", "terrys"),
+    ("rudys",),
+    ("schlotzskys",),
+    ("taco", "cabana"),
+    ("torchys",),
+    ("whataburger",),
+)
+REGIONAL_RESTAURANT_SOFT_AND_PHRASES = (
+    ("bacon", "and", "egg", "taco"),
+    ("bean", "and", "cheese", "taco"),
+)
 BRAND_ALIASES = {
     "chickfila": "chick-fil-a",
     "heb": "h-e-b",
@@ -69,6 +86,17 @@ LUNCH_DINNER_TOKENS = {
     "sandwich",
     "wrap",
     "burger",
+}
+# Gate-only menu nouns for regional restaurant provider lookup eligibility.
+REGIONAL_RESTAURANT_ITEM_TOKENS = BREAKFAST_TOKENS | LUNCH_DINNER_TOKENS | {
+    "biscuit",
+    "cheeseburger",
+    "chips",
+    "fries",
+    "melt",
+    "nuggets",
+    "tenders",
+    "wings",
 }
 PROTEIN_TOKENS = {
     "chicken",
@@ -152,7 +180,7 @@ OFF_KNOWN_PACKAGED_PRODUCT_PHRASES = {
 def normalize_meal_text(text: str) -> str:
     """Normalize user text for cache keys and typo-tolerant source lookup."""
     tokens = []
-    for raw in (text or "").lower().replace("'", "").split():
+    for raw in re.sub(r"['\u2018\u2019]", "", (text or "").lower()).split():
         token = raw.strip(".,!?;:()[]{}\"")
         token = PLURALS.get(token, token)
         for brand, typos in BRAND_TYPOS.items():
@@ -245,6 +273,9 @@ def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) ->
         return False
     if any(token in tokens for token in PORTION_MODIFIER_TOKENS):
         return False
+    regional_brand = _regional_restaurant_brand_tokens(tokens)
+    if regional_brand:
+        return _regional_restaurant_direct_lookup_allowed(tokens, regional_brand)
     if any(token in tokens for token in MULTI_ITEM_TOKENS):
         return False
     expected_country_tag = _off_expected_country_tag(normalized)
@@ -255,6 +286,49 @@ def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) ->
     if brand_hint or _brand_from_text(normalized):
         return bool([token for token in tokens if token not in KNOWN_BRANDS])
     return len(tokens) == 1
+
+
+def _regional_restaurant_brand_tokens(tokens: list[str]) -> tuple[str, ...] | None:
+    for phrase in REGIONAL_RESTAURANT_BRAND_PHRASES:
+        phrase_len = len(phrase)
+        for idx in range(0, len(tokens) - phrase_len + 1):
+            if tuple(tokens[idx:idx + phrase_len]) == phrase:
+                return phrase
+    return None
+
+
+def _regional_restaurant_item_tokens(tokens: list[str], brand_tokens: tuple[str, ...]) -> list[str]:
+    remaining = list(tokens)
+    phrase_len = len(brand_tokens)
+    for idx in range(0, len(tokens) - phrase_len + 1):
+        if tuple(tokens[idx:idx + phrase_len]) == brand_tokens:
+            del remaining[idx:idx + phrase_len]
+            break
+    return remaining
+
+
+def _regional_restaurant_direct_lookup_allowed(tokens: list[str], brand_tokens: tuple[str, ...]) -> bool:
+    remaining = _regional_restaurant_item_tokens(tokens, brand_tokens)
+    if not remaining:
+        return False
+    if any(token in MULTI_ITEM_HARD_TOKENS for token in remaining):
+        return False
+    if "and" in _regional_restaurant_soft_and_stripped_tokens(remaining):
+        return False
+    return any(token in REGIONAL_RESTAURANT_ITEM_TOKENS for token in remaining)
+
+
+def _regional_restaurant_soft_and_stripped_tokens(tokens: list[str]) -> list[str]:
+    stripped = list(tokens)
+    for phrase in REGIONAL_RESTAURANT_SOFT_AND_PHRASES:
+        phrase_len = len(phrase)
+        idx = 0
+        while idx <= len(stripped) - phrase_len:
+            if tuple(stripped[idx:idx + phrase_len]) == phrase:
+                del stripped[idx:idx + phrase_len]
+            else:
+                idx += 1
+    return stripped
 
 
 def is_private_label_query(text: str) -> bool:
@@ -798,6 +872,9 @@ def _needs_modifier_review(normalized: str) -> bool:
 
 
 def _brand_from_text(normalized: str) -> str | None:
+    regional_brand = _regional_restaurant_brand_tokens((normalized or "").split())
+    if regional_brand:
+        return " ".join(regional_brand)
     for token in normalized.split():
         if token in KNOWN_BRANDS:
             return BRAND_ALIASES.get(token, token)
