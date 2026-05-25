@@ -66,8 +66,10 @@ from data_store import (
     list_personal_vocab_entries,
     delete_food_log_by_client_id,
     delete_food_logs_by_meal_id,
+    acknowledge_food_log_refresh_event,
     get_push_subscription_for_delivery,
     list_push_subscriptions,
+    list_food_log_refresh_events,
     revoke_push_subscription,
     save_push_subscription,
     save_meal_acceptance_event,
@@ -5186,6 +5188,28 @@ def _meal_pending_review_payload(entry: dict) -> dict:
     }
 
 
+def _meal_verified_refresh_event_metadata(
+    estimate: dict,
+    *,
+    correction_state: str,
+    source: str,
+    now_iso: str,
+) -> dict | None:
+    if correction_state != CORRECTION_STATE_ACCEPTED or not isinstance(estimate, dict):
+        return None
+    underlying_source = estimate.get("underlying_source")
+    source_url = estimate.get("verified_source_url")
+    external_food_id = estimate.get("external_food_id")
+    if not (underlying_source or source_url or external_food_id):
+        return None
+    return {
+        "source_label": underlying_source or source,
+        "source_url": source_url,
+        "refreshed_at": estimate.get("data_fetched_at") or now_iso,
+        "item_name": estimate.get("item_name"),
+    }
+
+
 def _meal_intake_persist(
     client_id,
     estimate,
@@ -5255,6 +5279,14 @@ def _meal_intake_persist(
         "item_index": item_index,
         "item_state": item_state,
     }
+    refresh_event = _meal_verified_refresh_event_metadata(
+        estimate,
+        correction_state=correction_state,
+        source=source,
+        now_iso=now_iso,
+    )
+    if refresh_event is not None:
+        record["source_refresh_event"] = refresh_event
     return add_food_log(_current_data_user_id(), record)
 
 
@@ -7015,6 +7047,66 @@ def food_logs_by_date(date):
 
     entries = [_project(e) for e in same_day]
     return jsonify({"date": date, "entries": entries, "count": len(entries)})
+
+
+def _project_food_log_refresh_event(event: dict) -> dict:
+    return {
+        "id": event.get("id"),
+        "client_id": event.get("client_id"),
+        "date": event.get("date"),
+        "item_name": event.get("item_name"),
+        "source": event.get("source"),
+        "source_url": event.get("source_url"),
+        "refreshed_at": event.get("refreshed_at"),
+        "acknowledged_at": event.get("acknowledged_at"),
+        "previous": {
+            "calories": event.get("prev_calories"),
+            "protein_g": event.get("prev_protein_g"),
+            "carbs_g": event.get("prev_carbs_g"),
+            "fat_g": event.get("prev_fat_g"),
+            "sodium_mg": event.get("prev_sodium_mg"),
+        },
+        "current": {
+            "calories": event.get("new_calories"),
+            "protein_g": event.get("new_protein_g"),
+            "carbs_g": event.get("new_carbs_g"),
+            "fat_g": event.get("new_fat_g"),
+            "sodium_mg": event.get("new_sodium_mg"),
+        },
+    }
+
+
+@app.route('/api/food-log-refresh-events')
+def food_log_refresh_events():
+    """Recent verified-source refresh events for non-blocking UI notices."""
+    unacknowledged_raw = str(request.args.get("unacknowledged", "true")).strip().lower()
+    unacknowledged = unacknowledged_raw not in {"0", "false", "no", "all"}
+    since, err = _coerce_str(request.args.get("since"), "since", required=False, max_len=64)
+    if err:
+        return err
+    limit_raw = request.args.get("limit", 50)
+    try:
+        limit = min(max(int(limit_raw), 1), 50)
+    except (TypeError, ValueError):
+        return api_error("limit must be an integer from 1 to 50", 400, code="invalid_field")
+    events = list_food_log_refresh_events(
+        _current_data_user_id(),
+        unacknowledged=unacknowledged,
+        since=since,
+        limit=limit,
+    )
+    projected = [_project_food_log_refresh_event(event) for event in events]
+    return jsonify({"events": projected, "count": len(projected)})
+
+
+@app.route('/api/food-log-refresh-events/<event_id>/ack', methods=["POST"])
+def ack_food_log_refresh_event(event_id: str):
+    event_id = (event_id or "").strip()
+    if not event_id or len(event_id) > 80:
+        return api_error("invalid refresh event id", 400, code="invalid_field")
+    if not acknowledge_food_log_refresh_event(_current_data_user_id(), event_id):
+        return api_error("refresh event not found", 404, code="not_found")
+    return jsonify({"status": "success", "id": event_id})
 
 
 @app.route('/api/add-cardio', methods=['POST'])
