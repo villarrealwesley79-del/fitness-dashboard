@@ -355,6 +355,7 @@ WORKOUT_RECOMMENDATIONS = []  # Stores what was recommended
 COMPLETED_WORKOUTS = []  # Stores what was actually done
 LAST_WORKOUT_RECOMMENDATION = None  # Most recent recommendation for swap actions
 LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
+OPEN_WEARABLES_WORKOUT_MARKER_CACHE = None
 
 # ==================== CARDIO RECOMMENDATIONS ====================
 # Heart rate zones based on % of max HR (220 - age, assume age 30 for now = 190 max HR)
@@ -4034,6 +4035,49 @@ def _open_wearables_workout_inputs_live():
     return not _missing_open_wearables_config()
 
 
+def _open_wearables_payload_marker(payload):
+    """Return a stable marker for live OW inputs without carrying timestamps."""
+    if payload is None:
+        return None
+    try:
+        raw = json.dumps(payload, sort_keys=True, default=str)
+    except TypeError:
+        raw = str(payload)
+    return {
+        "hash": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "bytes": len(raw),
+    }
+
+
+def _open_wearables_recommendation_marker():
+    global OPEN_WEARABLES_WORKOUT_MARKER_CACHE
+    if not _open_wearables_workout_inputs_live():
+        return {"configured": False}
+    try:
+        data = fetch_open_wearables_data()
+        sleep = _extract_open_wearables_sleep(data.get("sleep"))
+        marker = {
+            "configured": True,
+            "sleep": {
+                "duration_min": sleep.get("duration_min") if sleep else None,
+                "avg_hr": sleep.get("avg_hr") if sleep else None,
+                "event_time": sleep.get("event_time") if sleep else None,
+                "recent": sleep.get("recent") if sleep else None,
+            },
+            "workouts": _open_wearables_payload_marker(data.get("workouts")),
+            "activity_summary": _open_wearables_payload_marker(data.get("activity_summary")),
+        }
+        OPEN_WEARABLES_WORKOUT_MARKER_CACHE = marker
+        return marker
+    except Exception as exc:
+        if OPEN_WEARABLES_WORKOUT_MARKER_CACHE is not None:
+            return OPEN_WEARABLES_WORKOUT_MARKER_CACHE
+        return {
+            "configured": True,
+            "error_type": type(exc).__name__,
+        }
+
+
 def _workout_recommendation_fingerprint():
     """Fingerprint inputs that should force a new next-workout plan."""
     today_s = _today_str()
@@ -4095,6 +4139,7 @@ def _workout_recommendation_fingerprint():
         "open_wearables": {
             "configured": _open_wearables_workout_inputs_live(),
             "user_id": bool(OPEN_WEARABLES_USER_ID),
+            "marker": _open_wearables_recommendation_marker(),
         },
         "apple_health": {
             "enabled": _apple_health_recommendation_enabled(),
@@ -4139,8 +4184,7 @@ def api_next_workout():
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
     if (
-        _open_wearables_workout_inputs_live()
-        or not LAST_WORKOUT_RECOMMENDATION
+        not LAST_WORKOUT_RECOMMENDATION
         or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint
     ):
         LAST_WORKOUT_RECOMMENDATION = generate_next_workout(
@@ -4159,8 +4203,7 @@ def gym_now():
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
     if (
-        _open_wearables_workout_inputs_live()
-        or not LAST_WORKOUT_RECOMMENDATION
+        not LAST_WORKOUT_RECOMMENDATION
         or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint
     ):
         LAST_WORKOUT_RECOMMENDATION = generate_next_workout(

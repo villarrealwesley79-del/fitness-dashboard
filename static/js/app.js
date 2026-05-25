@@ -1671,7 +1671,13 @@
     // --- Next Workout --------------------------------------------
     async function renderNextWorkout() {
         const gen = ++nextWorkoutRenderGen;
-        const nw = await getNextWorkout(true);
+        let nw = null;
+        try {
+            nw = await getNextWorkout(true);
+        } catch (err) {
+            console.warn('next workout load failed', err);
+            nw = state.nextWorkout || (state.dashboard && state.dashboard.next_workout);
+        }
         if (!nw) {
             $('nw-title').textContent = 'Rest Day';
             $('nw-sub').textContent = 'Take recovery seriously today.';

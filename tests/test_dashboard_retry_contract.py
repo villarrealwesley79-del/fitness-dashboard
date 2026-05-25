@@ -109,10 +109,14 @@ def test_next_workout_render_does_not_require_auxiliary_recommendation_calls():
     marker = "async function renderNextWorkout()"
     body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
 
-    assert "const nw = await getNextWorkout(true);" in body, (
+    assert "nw = await getNextWorkout(true);" in body, (
         "renderNextWorkout must load the lightweight workout-only contract "
         "instead of the full dashboard payload, and must let the server "
         "fingerprint invalidate stale plans"
+    )
+    assert "catch (err)" in body and "state.nextWorkout || (state.dashboard && state.dashboard.next_workout)" in body, (
+        "renderNextWorkout must fall back to the last hydrated workout plan "
+        "when the lightweight endpoint has a transient failure"
     )
     assert "getReco().then(" in body and ".catch(() => {})" in body, (
         "renderNextWorkout must update /api/recommendation/smart reasoning "
@@ -173,6 +177,9 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "\"open_wearables\": {" in app_py
     assert "_open_wearables_workout_inputs_live()" in app_py
     assert '"configured": _open_wearables_workout_inputs_live()' in app_py
+    assert "def _open_wearables_recommendation_marker():" in app_py
+    assert '"marker": _open_wearables_recommendation_marker()' in app_py
+    assert "_open_wearables_workout_inputs_live()\n        or not LAST_WORKOUT_RECOMMENDATION" not in app_py
     assert "\"apple_health\": {" in app_py
     assert "file_marker(_apple_health_sync_db_file())" in app_py
     assert "healthkit_samples_workout_*.json" in app_py
