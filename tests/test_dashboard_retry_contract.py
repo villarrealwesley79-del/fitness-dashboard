@@ -173,12 +173,17 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "healthkit_samples_workout_*.json" in app_py
     assert "training_recommendation=_current_workout_training_recommendation()" in app_py
     assert "api('/api/next-workout', { timeoutMs: 10000 })" in app_js
-    assert "app.js?v=20260525-fit181-live-shell" in template
-    assert "fitness-dashboard-v20260525-fit181-live-shell" in sw
+    assert "app.js?v=20260525-fit181-controller-reload" in template
+    assert "fitness-dashboard-v20260525-fit181-controller-reload" in sw
     assert "const STATIC_ASSETS" not in sw
     assert "cache.addAll" not in sw
     assert "caches.keys()" in sw
     assert "keys.map(key => caches.delete(key))" in sw
+    assert "self.clients.matchAll({ type: 'window', includeUncontrolled: true })" in sw
+    assert "client.navigate(client.url)" in sw
+    assert "navigator.serviceWorker.addEventListener('controllerchange'" in app_js
+    assert "window.location.reload()" in app_js
+    assert "reg.waiting.postMessage({ type: 'SKIP_WAITING' })" in app_js
     assert "@app.route('/gym-now')" in app_py
     assert "Cache-Control\": \"no-store\"" in app_py
     assert "\"Cache-Control\": \"no-store, max-age=0\"" in app_py

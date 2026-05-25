@@ -1,12 +1,18 @@
 // Fitness Dashboard Service Worker
 
-const CACHE_NAME = 'fitness-dashboard-v20260525-fit181-live-shell';
+const CACHE_NAME = 'fitness-dashboard-v20260525-fit181-controller-reload';
 
 // Install - take control immediately, but do not precache the app shell.
 // The workout screen is gym-critical, and stale cached HTML/JS can strand the
 // user on placeholders even while the backend has a valid plan.
 self.addEventListener('install', event => {
     event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener('message', event => {
+    if (event.data && event.data.type === 'SKIP_WAITING') {
+        event.waitUntil(self.skipWaiting());
+    }
 });
 
 // Activate - clean every old app cache. The service worker no longer owns an
@@ -16,6 +22,12 @@ self.addEventListener('activate', event => {
         caches.keys()
             .then(keys => Promise.all(keys.map(key => caches.delete(key))))
             .then(() => self.clients.claim())
+            .then(() => self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+            .then(clients => Promise.all(
+                clients
+                    .filter(client => client.url && client.navigate)
+                    .map(client => client.navigate(client.url))
+            ))
     );
 });
 

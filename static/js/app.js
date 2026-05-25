@@ -9236,7 +9236,27 @@
         // (private browsing, file://) is non-fatal — the rest of the app
         // works without it; renderPushSection() reports "Unsupported".
         if (!('serviceWorker' in navigator)) return;
-        navigator.serviceWorker.register('/sw.js').catch((err) => {
+        let reloadingForController = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (reloadingForController) return;
+            reloadingForController = true;
+            window.location.reload();
+        });
+        navigator.serviceWorker.register('/sw.js').then((reg) => {
+            if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+            reg.addEventListener('updatefound', () => {
+                const worker = reg.installing;
+                if (!worker) return;
+                worker.addEventListener('statechange', () => {
+                    if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+                        worker.postMessage({ type: 'SKIP_WAITING' });
+                    }
+                });
+            });
+            reg.update().catch((err) => {
+                console.warn('Service worker update check failed:', err);
+            });
+        }).catch((err) => {
             console.warn('Service worker registration failed:', err);
         });
     }
