@@ -1671,7 +1671,7 @@
     // --- Next Workout --------------------------------------------
     async function renderNextWorkout() {
         const gen = ++nextWorkoutRenderGen;
-        const nw = await getNextWorkout();
+        const nw = await getNextWorkout(true);
         if (!nw) {
             $('nw-title').textContent = 'Rest Day';
             $('nw-sub').textContent = 'Take recovery seriously today.';
@@ -5276,7 +5276,7 @@
     async function startWorkout() {
         let nw = null;
         try {
-            nw = await getNextWorkout();
+            nw = await getNextWorkout(true);
         } catch (err) {
             console.warn('start workout next-workout load failed', err);
             nw = state.nextWorkout || (state.dashboard && state.dashboard.next_workout);

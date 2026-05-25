@@ -109,9 +109,10 @@ def test_next_workout_render_does_not_require_auxiliary_recommendation_calls():
     marker = "async function renderNextWorkout()"
     body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
 
-    assert "const nw = await getNextWorkout();" in body, (
+    assert "const nw = await getNextWorkout(true);" in body, (
         "renderNextWorkout must load the lightweight workout-only contract "
-        "instead of the full dashboard payload"
+        "instead of the full dashboard payload, and must let the server "
+        "fingerprint invalidate stale plans"
     )
     assert "getReco().then(" in body and ".catch(() => {})" in body, (
         "renderNextWorkout must update /api/recommendation/smart reasoning "
@@ -144,7 +145,7 @@ def test_start_workout_falls_back_to_cached_dashboard_plan_on_fetch_failure():
     marker = "async function startWorkout()"
     body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
 
-    assert "try {" in body and "nw = await getNextWorkout();" in body
+    assert "try {" in body and "nw = await getNextWorkout(true);" in body
     assert "catch (err)" in body, "startWorkout must handle next-workout fetch failures"
     assert "state.nextWorkout || (state.dashboard && state.dashboard.next_workout)" in body, (
         "startWorkout must fall back to cached workout plans before "
