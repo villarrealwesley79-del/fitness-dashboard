@@ -102,6 +102,53 @@ def test_fetchers_no_longer_write_error_sentinels():
         )
 
 
+def test_next_workout_render_does_not_require_auxiliary_recommendation_calls():
+    """FIT-181: the workout execution tab must still render the dashboard
+    plan when helper calls that only supply copy/chip context fail."""
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+    marker = "async function renderNextWorkout()"
+    body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
+
+    assert "const dash = await getDashboard();" in body, (
+        "renderNextWorkout must load the dashboard plan as the required "
+        "contract before optional helper data"
+    )
+    assert "getReco().then(" in body and ".catch(() => {})" in body, (
+        "renderNextWorkout must update /api/recommendation/smart reasoning "
+        "asynchronously so the Workout tab still renders during a reco "
+        "retry-chip state"
+    )
+    assert "getSettings().then(" in body and "settings unavailable for next workout render" in body, (
+        "renderNextWorkout must update /api/settings RPE context asynchronously; "
+        "settings only decorate the RPE chip"
+    )
+    assert "renderRpe(null);" in body, "renderNextWorkout must paint fallback RPE immediately"
+    assert "renderWhy(null);" in body, "renderNextWorkout must paint fallback reasoning immediately"
+    assert "gen !== nextWorkoutRenderGen" in body, (
+        "late optional helper responses must not overwrite a newer Workout tab render"
+    )
+    assert "Promise.all([getDashboard(), getReco(), getSettings()])" not in body, (
+        "renderNextWorkout must not let optional helper failures abort the "
+        "dashboard next_workout render"
+    )
+
+
+def test_start_workout_falls_back_to_cached_dashboard_plan_on_fetch_failure():
+    """FIT-181: Start Workout should use the already-rendered dashboard plan
+    if a fresh dashboard fetch fails while the user is trying to enter the
+    active workout flow."""
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+    marker = "async function startWorkout()"
+    body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
+
+    assert "try {" in body and "dash = await getDashboard();" in body
+    assert "catch (err)" in body, "startWorkout must handle dashboard fetch failures"
+    assert "dash = state.dashboard;" in body, (
+        "startWorkout must fall back to the cached dashboard plan before "
+        "showing No workout planned"
+    )
+
+
 def test_render_dashboard_resets_error_sentinels_and_maps_dashboard_to_reco():
     """FIT-128 persistence + mapping (FIT-129 refactor): renderDashboard
     must reset all three error sentinels at the top (so a recovered card

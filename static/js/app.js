@@ -37,6 +37,7 @@
     // retry success can no longer flip its sentinel back on).
     let dashboardRenderGen = 0;
     const dashboardSentinelGen = { ouraError: 0, recoError: 0, ouraSleepError: 0 };
+    let nextWorkoutRenderGen = 0;
 
     // --- helpers -------------------------------------------------
     const $ = (id) => document.getElementById(id);
@@ -1661,7 +1662,8 @@
 
     // --- Next Workout --------------------------------------------
     async function renderNextWorkout() {
-        const [dash, reco, st] = await Promise.all([getDashboard(), getReco(), getSettings()]);
+        const gen = ++nextWorkoutRenderGen;
+        const dash = await getDashboard();
         const nw = dash && dash.next_workout;
         if (!nw) {
             $('nw-title').textContent = 'Rest Day';
@@ -1674,13 +1676,30 @@
         $('nw-title').textContent = title;
         $('nw-sub').textContent = nw.goal_name || 'Moderate Intensity';
         $('nw-duration').textContent = (nw.estimated_minutes || nw.available_time || '—') + ' min';
-        const goalRpe = (st && st.goal_details && st.goal_details.rpe_target) || null;
-        const exRpes = (nw.exercises || []).map((e) => Number(e.rpe_target)).filter((v) => Number.isFinite(v));
-        const avgExRpe = exRpes.length ? Math.round((exRpes.reduce((a, b) => a + b, 0) / exRpes.length) * 10) / 10 : null;
-        const rpeTarget = goalRpe || avgExRpe;
-        $('nw-rpe').textContent = rpeTarget ? `RPE ${rpeTarget}` : 'RPE —';
-        const why = reco && reco.reasoning ? reco.reasoning : 'Your readiness is high and your plan optimizes strength while managing fatigue.';
-        $('nw-why').textContent = why;
+        const renderRpe = (st) => {
+            const goalRpe = (st && st.goal_details && st.goal_details.rpe_target) || null;
+            const exRpes = (nw.exercises || []).map((e) => Number(e.rpe_target)).filter((v) => Number.isFinite(v));
+            const avgExRpe = exRpes.length ? Math.round((exRpes.reduce((a, b) => a + b, 0) / exRpes.length) * 10) / 10 : null;
+            const rpeTarget = goalRpe || avgExRpe;
+            $('nw-rpe').textContent = rpeTarget ? `RPE ${rpeTarget}` : 'RPE —';
+        };
+        const renderWhy = (reco) => {
+            const why = reco && reco.reasoning ? reco.reasoning : 'Your readiness is high and your plan optimizes strength while managing fatigue.';
+            $('nw-why').textContent = why;
+        };
+        renderRpe(null);
+        renderWhy(null);
+
+        getReco().then((reco) => {
+            if (gen !== nextWorkoutRenderGen || state.currentTab !== 'tab-workout') return;
+            renderWhy(reco);
+        }).catch(() => {});
+        getSettings().then((st) => {
+            if (gen !== nextWorkoutRenderGen || state.currentTab !== 'tab-workout') return;
+            renderRpe(st);
+        }).catch((err) => {
+            console.warn('settings unavailable for next workout render', err);
+        });
 
         const list = $('nw-exercise-list');
         list.innerHTML = '';
@@ -5247,7 +5266,13 @@
     }
 
     async function startWorkout() {
-        const dash = await getDashboard();
+        let dash = null;
+        try {
+            dash = await getDashboard();
+        } catch (err) {
+            console.warn('start workout dashboard load failed', err);
+            dash = state.dashboard;
+        }
         const nw = dash && dash.next_workout;
         if (!nw) { toast('No workout planned', 'err'); return; }
         setActiveWorkoutFromRecommendation(nw);
