@@ -1,3 +1,4 @@
+import importlib
 from pathlib import Path
 
 
@@ -177,8 +178,9 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "\"open_wearables\": {" in app_py
     assert "_open_wearables_workout_inputs_live()" in app_py
     assert '"configured": _open_wearables_workout_inputs_live()' in app_py
-    assert "def _open_wearables_recommendation_marker():" in app_py
+    assert "def _open_wearables_recommendation_marker(refresh=False):" in app_py
     assert '"marker": _open_wearables_recommendation_marker()' in app_py
+    assert "include_open_wearables_readiness=False" in app_py
     assert "_open_wearables_workout_inputs_live()\n        or not LAST_WORKOUT_RECOMMENDATION" not in app_py
     assert "\"apple_health\": {" in app_py
     assert "file_marker(_apple_health_sync_db_file())" in app_py
@@ -212,6 +214,29 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "\"Cache-Control\": \"no-store, max-age=0\"" in app_py
     assert "event.request.mode === 'navigate'" in sw
     assert "url.pathname.endsWith('.js')" in sw
+
+
+def test_next_workout_endpoint_does_not_fetch_open_wearables(monkeypatch):
+    """FIT-181 review: the gym execution endpoint must stay fast even when
+    Open Wearables is configured but unavailable."""
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(
+        module,
+        "fetch_open_wearables_data",
+        lambda: (_ for _ in ()).throw(AssertionError("Open Wearables fetch should not run")),
+    )
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "test-user")
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT", None)
+    monkeypatch.setattr(module, "OPEN_WEARABLES_WORKOUT_MARKER_CACHE", None)
+
+    response = module.app.test_client().get("/api/next-workout")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["next_workout"]["exercises"]
 
 
 def test_next_workout_caches_clear_after_plan_inputs_change():

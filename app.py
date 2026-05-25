@@ -2618,7 +2618,7 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None, wo
     }
 
 
-def _get_oura_readiness_today():
+def _get_oura_readiness_today(include_open_wearables=True):
     today_s = _today_str()
     cached = get_oura_daily(OURA_DB_FILE, today_s)
     readiness = None
@@ -2630,11 +2630,12 @@ def _get_oura_readiness_today():
             readiness = None
 
     ow_sleep = None
-    try:
-        ow_data = fetch_open_wearables_data()
-        ow_sleep = _extract_open_wearables_sleep(ow_data.get("sleep"))
-    except Exception:
-        ow_sleep = None
+    if include_open_wearables:
+        try:
+            ow_data = fetch_open_wearables_data()
+            ow_sleep = _extract_open_wearables_sleep(ow_data.get("sleep"))
+        except Exception:
+            ow_sleep = None
 
     if not ow_sleep or not ow_sleep.get("recent"):
         return readiness
@@ -3102,6 +3103,7 @@ def generate_next_workout(
     persist=False,
     training_recommendation=None,
     consume_cardio_rotation=True,
+    include_open_wearables_readiness=True,
 ):
     """Generate optimal workout prescription based on training goal and available time.
 
@@ -3119,7 +3121,16 @@ def generate_next_workout(
     sessions_per_week = USER_SETTINGS.get("sessions_per_week_target", 3)
     meso_week = _get_mesocycle_week(workouts, sessions_per_week)
     meso_plan = MESOCYCLE_PLAN.get(meso_week, MESOCYCLE_PLAN[1])
-    oura_readiness = _get_oura_readiness_today()
+    try:
+        oura_readiness = _get_oura_readiness_today(
+            include_open_wearables=include_open_wearables_readiness
+        )
+    except TypeError:
+        # Several focused tests monkeypatch this hook with a no-arg lambda.
+        # Preserve that test hook while production can skip slow OW reads.
+        if getattr(_get_oura_readiness_today, "__name__", "") == "_get_oura_readiness_today":
+            raise
+        oura_readiness = _get_oura_readiness_today()
     equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
 
     # Calculate max exercises based on available time
@@ -4049,26 +4060,34 @@ def _open_wearables_payload_marker(payload):
     }
 
 
-def _open_wearables_recommendation_marker():
+def _store_open_wearables_recommendation_marker(data):
     global OPEN_WEARABLES_WORKOUT_MARKER_CACHE
+    sleep = _extract_open_wearables_sleep((data or {}).get("sleep"))
+    marker = {
+        "configured": True,
+        "sleep": {
+            "duration_min": sleep.get("duration_min") if sleep else None,
+            "avg_hr": sleep.get("avg_hr") if sleep else None,
+            "event_time": sleep.get("event_time") if sleep else None,
+            "recent": sleep.get("recent") if sleep else None,
+        },
+        "workouts": _open_wearables_payload_marker((data or {}).get("workouts")),
+        "activity_summary": _open_wearables_payload_marker((data or {}).get("activity_summary")),
+    }
+    OPEN_WEARABLES_WORKOUT_MARKER_CACHE = marker
+    return marker
+
+
+def _open_wearables_recommendation_marker(refresh=False):
     if not _open_wearables_workout_inputs_live():
         return {"configured": False}
+    if not refresh and OPEN_WEARABLES_WORKOUT_MARKER_CACHE is not None:
+        return OPEN_WEARABLES_WORKOUT_MARKER_CACHE
+    if not refresh:
+        return {"configured": True, "status": "unfetched"}
     try:
         data = fetch_open_wearables_data()
-        sleep = _extract_open_wearables_sleep(data.get("sleep"))
-        marker = {
-            "configured": True,
-            "sleep": {
-                "duration_min": sleep.get("duration_min") if sleep else None,
-                "avg_hr": sleep.get("avg_hr") if sleep else None,
-                "event_time": sleep.get("event_time") if sleep else None,
-                "recent": sleep.get("recent") if sleep else None,
-            },
-            "workouts": _open_wearables_payload_marker(data.get("workouts")),
-            "activity_summary": _open_wearables_payload_marker(data.get("activity_summary")),
-        }
-        OPEN_WEARABLES_WORKOUT_MARKER_CACHE = marker
-        return marker
+        return _store_open_wearables_recommendation_marker(data)
     except Exception as exc:
         if OPEN_WEARABLES_WORKOUT_MARKER_CACHE is not None:
             return OPEN_WEARABLES_WORKOUT_MARKER_CACHE
@@ -4192,6 +4211,7 @@ def api_next_workout():
             SORENESS_DATA,
             training_recommendation=_current_workout_training_recommendation(),
             consume_cardio_rotation=False,
+            include_open_wearables_readiness=False,
         )
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
     return jsonify({"next_workout": LAST_WORKOUT_RECOMMENDATION})
@@ -4211,6 +4231,7 @@ def gym_now():
             SORENESS_DATA,
             training_recommendation=_current_workout_training_recommendation(),
             consume_cardio_rotation=False,
+            include_open_wearables_readiness=False,
         )
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
     workout = LAST_WORKOUT_RECOMMENDATION or {}
@@ -9178,6 +9199,7 @@ def fetch_open_wearables_data():
         except Exception as e:
             result["errors"][key] = str(e)
             result[key] = None
+    _store_open_wearables_recommendation_marker(result)
     return result
 
 
