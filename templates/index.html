@@ -723,6 +723,12 @@
                             <span id="ai-coach-headline-chip" class="state-chip">—</span>
                         </div>
                     </div>
+                    <!-- FIT-177: polite live region announces host-routing
+                         state changes (Ready / Fallback active / AI offline)
+                         to screen readers. Sibling of the visible headline
+                         row so the announcement reaches the AT buffer
+                         without altering the visible layout above. -->
+                    <div id="ai-coach-headline-announcement" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
                     <div class="settings-row" id="ai-coach-warning-row" hidden>
                         <div class="settings-row-label settings-row-label-stack">
                             <span class="settings-row-label-main">⚠ AI coach is flaky</span>
