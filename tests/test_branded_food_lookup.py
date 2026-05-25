@@ -399,6 +399,76 @@ def test_lookup_attempts_provider_for_regional_restaurant_query(monkeypatch):
     assert estimate["confidence"] == 0.85
 
 
+def test_taco_cabana_brand_item_token_does_not_create_category_mismatch(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+
+    def natural_nutrients(query):
+        if "salad" in query:
+            return _nutritionix_payload(
+                food_name="Chicken Salad",
+                brand_name="Taco Cabana",
+                serving_unit="salad",
+                nf_calories=360,
+                nf_protein=24,
+                nf_total_carbohydrate=18,
+                nf_total_fat=21,
+                nf_sodium=980,
+                nf_dietary_fiber=5,
+            )
+        return _nutritionix_payload(
+            food_name="Bean and Cheese Burrito",
+            brand_name="Taco Cabana",
+            serving_unit="burrito",
+            nf_calories=500,
+            nf_protein=20,
+            nf_total_carbohydrate=70,
+            nf_total_fat=14,
+            nf_sodium=1200,
+            nf_dietary_fiber=8,
+        )
+
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", natural_nutrients)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    burrito = branded_food_lookup.lookup("taco cabana bean and cheese burrito")
+    salad = branded_food_lookup.lookup("taco cabana salad")
+
+    assert burrito["confidence"] == 0.85
+    assert burrito["ambiguous"] is False
+    assert not any("different item category" in note for note in burrito["uncertainty_notes"])
+    assert salad["confidence"] == 0.85
+    assert salad["ambiguous"] is False
+    assert not any("different item category" in note for note in salad["uncertainty_notes"])
+
+
+def test_taco_cabana_item_category_mismatch_still_requires_review(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(
+            food_name="Chicken Salad",
+            brand_name="Taco Cabana",
+            serving_unit="salad",
+            nf_calories=360,
+            nf_protein=24,
+            nf_total_carbohydrate=18,
+            nf_total_fat=21,
+            nf_sodium=980,
+            nf_dietary_fiber=5,
+        ),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    estimate = branded_food_lookup.lookup("taco cabana bean and cheese burrito")
+
+    assert estimate["confidence"] == 0.55
+    assert estimate["ambiguous"] is True
+    assert any("different item category" in note for note in estimate["uncertainty_notes"])
+
+
 def test_regional_restaurant_lookup_marks_wrong_chain_for_review(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)

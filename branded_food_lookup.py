@@ -838,12 +838,20 @@ def _matching_source_brand(foods: list[dict[str, Any]], requested_brand: str | N
 
 
 def _requested_item_mismatch(normalized: str, foods: list[dict[str, Any]]) -> bool:
-    requested_items = set(normalized.split()) & CUSTOMIZABLE_ITEM_TOKENS
+    requested_items = _customizable_item_tokens_for_mismatch(normalized)
     if not requested_items:
         return False
     returned_text = " ".join(str(food.get("food_name") or food.get("description") or "") for food in foods)
-    returned_items = set(normalize_meal_text(returned_text).split()) & CUSTOMIZABLE_ITEM_TOKENS
+    returned_items = _customizable_item_tokens_for_mismatch(normalize_meal_text(returned_text))
     return not returned_items or requested_items != returned_items
+
+
+def _customizable_item_tokens_for_mismatch(normalized: str) -> set[str]:
+    tokens = (normalized or "").split()
+    regional_brand = _regional_restaurant_brand_tokens(tokens)
+    if regional_brand:
+        tokens = _regional_restaurant_item_tokens(tokens, regional_brand)
+    return set(tokens) & CUSTOMIZABLE_ITEM_TOKENS
 
 
 def _matching_usda_source_brand(food: dict[str, Any], requested_brand: str | None) -> str | None:
