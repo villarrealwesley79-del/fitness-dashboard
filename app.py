@@ -8814,6 +8814,7 @@ def analyze_workout():
 
 APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"
 APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload-r2"
+APP_SHELL_RELOAD_COOKIE_MAX_AGE_S = 365 * 24 * 60 * 60
 
 
 def _shell_reload_required_response():
@@ -8823,7 +8824,7 @@ def _shell_reload_required_response():
     response.set_cookie(
         APP_SHELL_RELOAD_COOKIE,
         APP_SHELL_RELOAD_VERSION,
-        max_age=86400,
+        max_age=APP_SHELL_RELOAD_COOKIE_MAX_AGE_S,
         httponly=True,
         secure=request.is_secure,
         samesite="Lax",

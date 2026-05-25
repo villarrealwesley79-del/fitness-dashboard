@@ -187,6 +187,7 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "reg.waiting.postMessage({ type: 'SKIP_WAITING' })" in app_js
     assert 'APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"' in app_py
     assert 'APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload-r2"' in app_py
+    assert "APP_SHELL_RELOAD_COOKIE_MAX_AGE_S = 365 * 24 * 60 * 60" in app_py
     assert '"reload_required"' in app_py
     assert "response.status_code = 401" in app_py
     assert "response.set_cookie(" in app_py
