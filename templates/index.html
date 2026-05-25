@@ -703,6 +703,26 @@
 
                 <div class="settings-subtitle">AI coach</div>
                 <div class="card">
+                    <!-- FIT-166: card-level headline that surfaces the
+                         active host by friendly name (ASUS GX10 primary,
+                         Mac Studio fallback) so the operator can read
+                         the routing state at a glance without parsing
+                         each row's chip. Three states: Ready,
+                         Fallback active, AI offline. -->
+                    <div class="settings-row ai-coach-headline-row" id="ai-coach-headline-row">
+                        <div class="settings-row-label settings-row-label-stack">
+                            <span class="settings-row-label-main ai-coach-headline">
+                                <span class="int-dot" id="ai-coach-headline-dot"></span>
+                                <span id="ai-coach-headline-state">Checking…</span>
+                                <span class="ai-coach-headline-sep" id="ai-coach-headline-sep" aria-hidden="true">·</span>
+                                <span id="ai-coach-headline-host">AI coach</span>
+                            </span>
+                            <span id="ai-coach-headline-detail" class="settings-row-detail">Polling /api/ai/health…</span>
+                        </div>
+                        <div class="settings-row-control">
+                            <span id="ai-coach-headline-chip" class="state-chip">—</span>
+                        </div>
+                    </div>
                     <div class="settings-row" id="ai-coach-warning-row" hidden>
                         <div class="settings-row-label settings-row-label-stack">
                             <span class="settings-row-label-main">⚠ AI coach is flaky</span>
@@ -716,7 +736,8 @@
                         <div class="settings-row-label settings-row-label-stack">
                             <span class="settings-row-label-main">
                                 <span class="int-dot" id="ai-primary-dot"></span>
-                                Primary
+                                <span id="ai-primary-host">ASUS GX10</span>
+                                <span class="ai-role-pill">Primary</span>
                             </span>
                             <span id="ai-primary-detail" class="settings-row-detail">—</span>
                         </div>
@@ -728,7 +749,8 @@
                         <div class="settings-row-label settings-row-label-stack">
                             <span class="settings-row-label-main">
                                 <span class="int-dot" id="ai-fallback-dot"></span>
-                                Fallback
+                                <span id="ai-fallback-host">Mac Studio</span>
+                                <span class="ai-role-pill">Fallback</span>
                             </span>
                             <span id="ai-fallback-detail" class="settings-row-detail">—</span>
                         </div>
