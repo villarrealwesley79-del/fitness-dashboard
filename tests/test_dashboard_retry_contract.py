@@ -193,6 +193,7 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert 'request.cookies.get("session")' in app_py
     assert "current_user.is_authenticated" in auth_py
     assert 'request.args.get("next")' in auth_py
+    assert 'next_page.startswith("//")' in auth_py
     assert 'fd_shell_reload=20260525-fit181-controller-reload-r2' in auth_py
     assert "@app.route('/gym-now')" in app_py
     assert "Cache-Control\": \"no-store\"" in app_py

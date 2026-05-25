@@ -226,7 +226,7 @@ def load_user(user_id):
 def login():
     if request.method == "GET" and current_user.is_authenticated:
         next_page = request.args.get("next") or url_for("index")
-        if not next_page.startswith("/"):
+        if not next_page.startswith("/") or next_page.startswith("//"):
             next_page = url_for("index")
         if next_page == "/":
             next_page = "/?fd_shell_reload=20260525-fit181-controller-reload-r2"

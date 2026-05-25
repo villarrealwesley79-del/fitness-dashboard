@@ -73,7 +73,9 @@ def test_offline_submit_enqueues_with_original_client_id_and_timestamps():
     assert "form.append('local_timestamp', entry.local_timestamp);" in APP_JS
     assert "form.append('local_date', entry.local_date);" in APP_JS
     assert "form.append('local_iso', entry.local_iso);" in APP_JS
-    assert "return render_template('index.html')" in APP_PY
+    assert "return Response(" in APP_PY
+    assert "render_template('index.html')" in APP_PY
+    assert '"Cache-Control": "no-store, max-age=0"' in APP_PY
     assert "data-auth-scope" not in INDEX_HTML
     assert "const MEAL_QUEUE_AUTH_SCOPE_KEY = 'fit145:meal-queue-auth-scope:v1';" in APP_JS
     assert "let _mealQueueAuthScope = '';" in APP_JS
