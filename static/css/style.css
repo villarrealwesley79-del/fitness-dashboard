@@ -3796,6 +3796,9 @@ input[type=number] { -moz-appearance: textfield; }
 .meal-review-v2--refreshing {
     opacity: 0.85;
 }
+.meal-review-v2--refreshing :disabled {
+    pointer-events: none;
+}
 .meal-review-v2-collapsed {
     display: flex;
     flex-direction: column;

@@ -194,8 +194,9 @@ def test_blocked_save_auto_expands_offending_items():
     apply_section = block.split("function applyMealV2Refresh", 1)[1].split("}\n", 1)[0]
     assert "entry.save_blocked_item_ids" in apply_section
     assert "entry.expandedItems.add(id)" in apply_section
-    # Save button is disabled while any item is blocked.
-    assert "blocked || entry.pendingRefresh" in block
+    # Save button is disabled while any item is blocked; FIT-150 keeps it
+    # visually enabled during pendingRefresh because acceptMealV2 has its own guard.
+    assert "data-action=\"save\"${blocked ? ' disabled' : ''}" in block
     assert "Resolve items to save" in block
 
 
