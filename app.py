@@ -3974,7 +3974,14 @@ else:
 @app.route('/')
 def index():
     """Main dashboard page."""
-    return render_template('index.html')
+    return Response(
+        render_template('index.html'),
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.route('/api/auth/scope')

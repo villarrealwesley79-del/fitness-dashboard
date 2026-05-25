@@ -1,32 +1,21 @@
 // Fitness Dashboard Service Worker
 
-const CACHE_NAME = 'fitness-dashboard-v20260525-fit181-gym-now';
-const STATIC_ASSETS = [
-    '/',
-    '/static/css/style.css',
-    '/static/js/app.js',
-    '/manifest.json',
-    'https://cdn.jsdelivr.net/npm/chart.js'
-];
+const CACHE_NAME = 'fitness-dashboard-v20260525-fit181-live-shell';
 
-// Install - cache static assets
+// Install - take control immediately, but do not precache the app shell.
+// The workout screen is gym-critical, and stale cached HTML/JS can strand the
+// user on placeholders even while the backend has a valid plan.
 self.addEventListener('install', event => {
-    event.waitUntil(
-        caches.open(CACHE_NAME)
-            .then(cache => cache.addAll(STATIC_ASSETS))
-            .then(() => self.skipWaiting())
-    );
+    event.waitUntil(self.skipWaiting());
 });
 
-// Activate - clean old caches
+// Activate - clean every old app cache. The service worker no longer owns an
+// offline app shell cache; workout data and local queues live outside this cache.
 self.addEventListener('activate', event => {
     event.waitUntil(
-        caches.keys().then(keys => {
-            return Promise.all(
-                keys.filter(key => key !== CACHE_NAME)
-                    .map(key => caches.delete(key))
-            );
-        }).then(() => self.clients.claim())
+        caches.keys()
+            .then(keys => Promise.all(keys.map(key => caches.delete(key))))
+            .then(() => self.clients.claim())
     );
 });
 
@@ -68,7 +57,9 @@ self.addEventListener('notificationclick', event => {
     );
 });
 
-// Fetch - network first, fallback to cache
+// Fetch - network first for every app-owned route. Do not store HTML, JS, CSS,
+// or API responses in Cache Storage; a failed network should fail visibly
+// instead of serving a stale workout shell.
 self.addEventListener('fetch', event => {
     // Skip non-GET requests
     if (event.request.method !== 'GET') return;
@@ -78,6 +69,7 @@ self.addEventListener('fetch', event => {
         event.respondWith(
             fetch(event.request)
                 .catch(() => new Response(JSON.stringify({ error: 'Offline' }), {
+                    status: 503,
                     headers: { 'Content-Type': 'application/json' }
                 }))
         );
@@ -88,7 +80,10 @@ self.addEventListener('fetch', event => {
     // installed PWA from pinning a broken dashboard shell during live repair.
     if (event.request.mode === 'navigate') {
         event.respondWith(
-            fetch(event.request).catch(() => caches.match('/'))
+            fetch(event.request).catch(() => new Response(
+                '<!doctype html><title>Offline</title><body>Fitness Dashboard is offline. Reconnect and refresh.</body>',
+                { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+            ))
         );
         return;
     }
@@ -97,43 +92,9 @@ self.addEventListener('fetch', event => {
     // on the next open instead of the second reload.
     const url = new URL(event.request.url);
     if (url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname === '/sw.js') {
-        event.respondWith(
-            fetch(event.request).then(response => {
-                if (response.ok) {
-                    const responseClone = response.clone();
-                    caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseClone));
-                }
-                return response;
-            }).catch(() => caches.match(event.request))
-        );
+        event.respondWith(fetch(event.request));
         return;
     }
 
-    // Other static assets - cache first, network fallback
-    event.respondWith(
-        caches.match(event.request)
-            .then(cachedResponse => {
-                if (cachedResponse) {
-                    // Update cache in background
-                    fetch(event.request).then(response => {
-                        if (response.ok) {
-                            caches.open(CACHE_NAME).then(cache => {
-                                cache.put(event.request, response);
-                            });
-                        }
-                    });
-                    return cachedResponse;
-                }
-
-                return fetch(event.request).then(response => {
-                    if (response.ok) {
-                        const responseClone = response.clone();
-                        caches.open(CACHE_NAME).then(cache => {
-                            cache.put(event.request, responseClone);
-                        });
-                    }
-                    return response;
-                });
-            })
-    );
+    event.respondWith(fetch(event.request));
 });
