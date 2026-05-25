@@ -283,6 +283,54 @@ def test_dashboard_missing_readiness_does_not_force_recovery_cardio(fitness_app,
     assert cardio["zone"] == "Zone 3"
 
 
+def test_dashboard_recomp_command_uses_null_for_unavailable_readiness(fitness_app, monkeypatch):
+    monkeypatch.setattr(fitness_app, "get_oura_daily", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        fitness_app,
+        "_compute_data_freshness",
+        lambda *_args, **_kwargs: {
+            "oura": {"status": "missing"},
+            "apple_health": {"status": "missing"},
+            "food": {"status": "missing"},
+        },
+    )
+    monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
+    monkeypatch.setattr(fitness_app, "calculate_recovery_bonus", lambda *_args, **_kwargs: {"bonus_points": 0})
+    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
+    monkeypatch.setattr(fitness_app, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
+
+    response = fitness_app.app.test_client().get("/api/dashboard")
+
+    assert response.status_code == 200
+    command = response.get_json()["recomp_command"]
+    assert command["readiness"] is None
+    assert "Readiness unavailable" in command["reason"]
+
+
+def test_dashboard_recomp_command_preserves_real_zero_readiness(fitness_app, monkeypatch):
+    monkeypatch.setattr(fitness_app, "get_oura_daily", lambda *_args, **_kwargs: {"readiness_score": 0})
+    monkeypatch.setattr(
+        fitness_app,
+        "_compute_data_freshness",
+        lambda *_args, **_kwargs: {
+            "oura": {"status": "fresh"},
+            "apple_health": {"status": "missing"},
+            "food": {"status": "missing"},
+        },
+    )
+    monkeypatch.setattr(fitness_app, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0})
+    monkeypatch.setattr(fitness_app, "calculate_recovery_bonus", lambda *_args, **_kwargs: {"bonus_points": 0})
+    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
+    monkeypatch.setattr(fitness_app, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
+
+    response = fitness_app.app.test_client().get("/api/dashboard")
+
+    assert response.status_code == 200
+    command = response.get_json()["recomp_command"]
+    assert command["readiness"] == 0
+    assert "Readiness 0" in command["reason"]
+
+
 def test_dashboard_uses_final_smart_signal_for_visible_cardio(fitness_app, monkeypatch):
     monkeypatch.setattr(
         fitness_app,

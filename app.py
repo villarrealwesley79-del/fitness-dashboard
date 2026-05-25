@@ -4157,7 +4157,7 @@ def api_dashboard():
         "body_stats": body_stats,
         "recomp_command": {
             "signal": signal,
-            "readiness": readiness_val if readiness_val is not None else 0,
+            "readiness": readiness_val,
             "reason": "; ".join(reason_bits)
         },
         "nutrition_today": nutrition_today_payload,
