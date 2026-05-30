@@ -8,7 +8,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260520-fit109-cardio-why-v2">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260525-fit139-refresh-notices">
 </head>
 <body>
     <div class="app-shell">
@@ -38,7 +38,7 @@
         <main class="app-main">
 
         <!-- ============ DASHBOARD TAB ============ -->
-        <section id="tab-dashboard" class="tab-content active">
+        <section id="tab-dashboard" class="tab-content active" role="tabpanel" aria-labelledby="tab-btn-dashboard" aria-hidden="false">
             <div class="greeting-block">
                 <div class="greeting-title" id="greeting-title">Good morning.</div>
                 <div class="greeting-sub" id="greeting-sub">Here's your analysis for today.</div>
@@ -231,7 +231,7 @@
         </section>
 
         <!-- ============ VITALS TAB ============ -->
-        <section id="tab-vitals" class="tab-content">
+        <section id="tab-vitals" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-vitals" aria-hidden="true">
             <div class="tab-title-row"><h2 class="tab-title">Vitals</h2><span class="tab-sub" id="vitals-date">—</span></div>
 
             <div class="section-title">CORE METRICS</div>
@@ -249,7 +249,7 @@
                 <div class="metric-card">
                     <div class="metric-label">HR Zone</div>
                     <div class="metric-value"><span id="v-hr-zone">--</span></div>
-                    <div class="metric-delta" id="v-hr-zone-sub">Fat burn</div>
+                    <div class="metric-delta" id="v-hr-zone-sub"></div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">Body Temp</div>
@@ -315,7 +315,7 @@
         </section>
 
         <!-- ============ NEXT WORKOUT TAB ============ -->
-        <section id="tab-workout" class="tab-content">
+        <section id="tab-workout" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-workout" aria-hidden="true">
             <div class="tab-title-row"><h2 class="tab-title">Next Workout</h2><span class="tab-sub">AI-Designed Plan</span></div>
 
             <div class="card hero-card">
@@ -356,7 +356,7 @@
         </section>
 
         <!-- ============ LOG TAB ============ -->
-        <section id="tab-log" class="tab-content">
+        <section id="tab-log" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-log" aria-hidden="true">
             <div class="tab-title-row"><h2 class="tab-title">Log Workout</h2><span class="tab-sub" id="log-date-display">—</span></div>
 
             <div class="segmented">
@@ -469,7 +469,7 @@
         </section>
 
         <!-- ============ HISTORY TAB ============ -->
-        <section id="tab-history" class="tab-content">
+        <section id="tab-history" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-history" aria-hidden="true">
             <div class="tab-title-row"><h2 class="tab-title">History</h2><span class="tab-sub">Workouts &amp; Progress</span></div>
 
             <div class="range-chips" id="history-range-chips">
@@ -513,7 +513,7 @@
         </section>
 
         <!-- ============ BODY TAB ============ -->
-        <section id="tab-body" class="tab-content">
+        <section id="tab-body" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-body" aria-hidden="true">
             <div class="tab-title-row"><h2 class="tab-title">Body Composition</h2><span class="tab-sub" id="body-date">—</span></div>
 
             <div class="metric-grid-2">
@@ -589,7 +589,7 @@
         </section>
 
         <!-- ============ STATS TAB ============ -->
-        <section id="tab-stats" class="tab-content">
+        <section id="tab-stats" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-stats" aria-hidden="true">
             <div class="tab-title-row"><h2 class="tab-title">Stats &amp; Analytics</h2><span class="tab-sub">Performance</span></div>
 
             <div class="range-chips" id="stats-range-chips">
@@ -662,7 +662,7 @@
         </section>
 
         <!-- ============ SETTINGS TAB ============ -->
-        <section id="tab-settings" class="tab-content">
+        <section id="tab-settings" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-settings" aria-hidden="true">
             <div class="tab-title-row"><h2 class="tab-title">Settings</h2><span class="tab-sub">Preferences &amp; Integrations</span></div>
 
             <!-- FIT-111: settings re-grouped into four scannable sections. All
@@ -988,15 +988,15 @@
 
         </main>
 
-        <nav class="tab-bar" role="tablist">
-            <button class="tab-btn active" data-tab="tab-dashboard" type="button"><span class="tab-ico">◉</span><span class="tab-lbl">Dash</span></button>
-            <button class="tab-btn" data-tab="tab-vitals" type="button"><span class="tab-ico">♥</span><span class="tab-lbl">Vitals</span></button>
-            <button class="tab-btn" data-tab="tab-workout" type="button"><span class="tab-ico">▲</span><span class="tab-lbl">Next</span></button>
-            <button class="tab-btn" data-tab="tab-log" type="button"><span class="tab-ico">+</span><span class="tab-lbl">Log</span></button>
-            <button class="tab-btn" data-tab="tab-history" type="button"><span class="tab-ico">⟳</span><span class="tab-lbl">History</span></button>
-            <button class="tab-btn" data-tab="tab-body" type="button"><span class="tab-ico">◈</span><span class="tab-lbl">Body</span></button>
-            <button class="tab-btn" data-tab="tab-stats" type="button"><span class="tab-ico">⎔</span><span class="tab-lbl">Stats</span></button>
-            <button class="tab-btn" data-tab="tab-settings" type="button"><span class="tab-ico">⚙</span><span class="tab-lbl">Settings</span></button>
+        <nav class="tab-bar" role="tablist" aria-label="Primary sections">
+            <button id="tab-btn-dashboard" class="tab-btn active" data-tab="tab-dashboard" type="button" role="tab" aria-controls="tab-dashboard" aria-selected="true"><span class="tab-ico">◉</span><span class="tab-lbl">Dash</span></button>
+            <button id="tab-btn-vitals" class="tab-btn" data-tab="tab-vitals" type="button" role="tab" aria-controls="tab-vitals" aria-selected="false" tabindex="-1"><span class="tab-ico">♥</span><span class="tab-lbl">Vitals</span></button>
+            <button id="tab-btn-workout" class="tab-btn" data-tab="tab-workout" type="button" role="tab" aria-controls="tab-workout" aria-selected="false" tabindex="-1"><span class="tab-ico">▲</span><span class="tab-lbl">Next</span></button>
+            <button id="tab-btn-log" class="tab-btn" data-tab="tab-log" type="button" role="tab" aria-controls="tab-log" aria-selected="false" tabindex="-1"><span class="tab-ico">+</span><span class="tab-lbl">Log</span></button>
+            <button id="tab-btn-history" class="tab-btn" data-tab="tab-history" type="button" role="tab" aria-controls="tab-history" aria-selected="false" tabindex="-1"><span class="tab-ico">⟳</span><span class="tab-lbl">History</span></button>
+            <button id="tab-btn-body" class="tab-btn" data-tab="tab-body" type="button" role="tab" aria-controls="tab-body" aria-selected="false" tabindex="-1"><span class="tab-ico">◈</span><span class="tab-lbl">Body</span></button>
+            <button id="tab-btn-stats" class="tab-btn" data-tab="tab-stats" type="button" role="tab" aria-controls="tab-stats" aria-selected="false" tabindex="-1"><span class="tab-ico">⎔</span><span class="tab-lbl">Stats</span></button>
+            <button id="tab-btn-settings" class="tab-btn" data-tab="tab-settings" type="button" role="tab" aria-controls="tab-settings" aria-selected="false" tabindex="-1"><span class="tab-ico">⚙</span><span class="tab-lbl">Settings</span></button>
         </nav>
     </div>
 
@@ -1338,6 +1338,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app.js?v=20260520-fit109-cardio-why-v2"></script>
+    <script src="/static/js/app.js?v=20260530-fit192-a11y"></script>
 </body>
 </html>

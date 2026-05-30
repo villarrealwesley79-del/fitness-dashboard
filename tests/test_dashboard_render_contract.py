@@ -14,6 +14,14 @@ def _paint_body() -> str:
     return app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
 
 
+def _render_stats_body() -> str:
+    """Return the body of renderStats() for Stats-tab contract checks."""
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+    marker = "async function renderStats()"
+    assert marker in app_js, "renderStats not found"
+    return app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
+
+
 def test_render_dashboard_preserves_fit125_repaint_chains():
     """FIT-127 + FIT-129 must not regress FIT-125: each primary endpoint
     still gets its own .then chain in renderDashboard so a slow endpoint
@@ -259,4 +267,26 @@ def test_insight_card_paint_is_guarded_on_missing_reco():
     assert "$('insight-body').textContent = '';" in insight_section, (
         "insight-body must clear to empty when reco is null — skipping would "
         "leave a prior session's reasoning visible"
+    )
+
+
+def test_stats_insights_empty_state_resets_to_placeholder():
+    """FIT-148 AC: Stats Progress Insights must reset to the empty-state
+    placeholder when /api/insights returns no usable insight rows.
+    """
+    body = _render_stats_body()
+    section = body.split("// Insights list", 1)[1]
+
+    clear_idx = section.find("list.innerHTML = '';")
+    items_idx = section.find("const items = Array.isArray")
+    empty_idx = section.find("Log a few workouts to start tracking progress.")
+    append_idx = section.find("list.appendChild(card);")
+
+    assert clear_idx != -1, "Stats insights list must clear before repainting"
+    assert items_idx != -1, "Stats insights must guard null/non-array payloads with Array.isArray"
+    assert empty_idx != -1, "Stats insights empty-state copy must match FIT-148"
+    assert append_idx != -1, "Stats insight card append path missing"
+    assert clear_idx < items_idx < empty_idx < append_idx, (
+        "Stats insights must clear stale cards, normalize items, then render the "
+        "empty placeholder before the card-append branch"
     )

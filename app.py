@@ -8,6 +8,7 @@ from flask import Flask, render_template, jsonify, request, Response
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 from enum import Enum
+from contextlib import closing
 import copy
 import json
 import logging
@@ -66,8 +67,10 @@ from data_store import (
     list_personal_vocab_entries,
     delete_food_log_by_client_id,
     delete_food_logs_by_meal_id,
+    acknowledge_food_log_refresh_event,
     get_push_subscription_for_delivery,
     list_push_subscriptions,
+    list_food_log_refresh_events,
     revoke_push_subscription,
     save_push_subscription,
     save_meal_acceptance_event,
@@ -2780,7 +2783,17 @@ def _swap_match_tokens(name):
     return tokens
 
 
+_AMBIGUOUS_SWAP_TOKENS = {"press", "row", "curl"}
+
+
+def _is_ambiguous_single_swap_token(typed_name):
+    typed_base_tokens = _exercise_name_tokens(typed_name)
+    return len(typed_base_tokens) == 1 and bool(_swap_match_tokens(typed_name).intersection(_AMBIGUOUS_SWAP_TOKENS))
+
+
 def _deterministic_swap_candidate(typed_name, candidates):
+    if _is_ambiguous_single_swap_token(typed_name):
+        return None
     typed_tokens = _swap_match_tokens(typed_name)
     if not typed_tokens:
         return None
@@ -2826,6 +2839,8 @@ def _resolve_custom_swap_exercise(typed_name, old_ex, equipment_pref):
     deterministic = _deterministic_swap_candidate(typed_name, candidates)
     if deterministic:
         return deterministic
+    if _is_ambiguous_single_swap_token(typed_name):
+        return None
 
     if not _lm_studio or not hasattr(_lm_studio, "resolve_swap_candidate") or not candidates:
         return None
@@ -3598,7 +3613,7 @@ def calculate_personal_records(workouts: list) -> dict:
 def calculate_training_consistency(workouts: list) -> dict:
     """Calculate training streaks and consistency metrics."""
     if not workouts:
-        return {"current_streak": 0, "longest_streak": 0, "weekly_avg": 0, "consistency_pct": 0}
+        return {"current_streak": 0, "longest_streak": 0, "weekly_avg": 0, "consistency_pct": 0, "days_since_last": None}
 
     dates = sorted([datetime.strptime(w["date"], '%Y-%m-%d') for w in workouts])
 
@@ -4113,11 +4128,11 @@ def calculate_recovery_bonus(recovery_data: list, hours: int = 48) -> dict:
     }
 
 
-# Initialize with real data if available, otherwise use sample data
+# Initialize with real data if available, otherwise start empty.
 # Data loading priority:
 # 1. JSON files (user's saved data) - these persist across restarts
 # 2. Markdown workout log (initial import)
-# 3. Sample data (demo mode)
+# 3. Explicit sample data opt-in (demo mode)
 if WORKOUTS:
     print(f"Loaded {len(WORKOUTS)} workouts from saved JSON data")
 else:
@@ -4130,9 +4145,12 @@ else:
         # Save to JSON for future use
         save_json(WORKOUTS_FILE, WORKOUTS)
         save_json(SORENESS_FILE, SORENESS_DATA)
-    else:
-        print("No saved data found, using sample data")
+    elif os.environ.get("FIT_LOAD_SAMPLE_DATA") == "1":
+        print("FIT_LOAD_SAMPLE_DATA=1, using sample data")
         WORKOUTS, SORENESS_DATA = get_sample_data()
+    else:
+        print("No saved data found, starting empty")
+        WORKOUTS, SORENESS_DATA = [], []
 
 
 @app.route('/')
@@ -4329,7 +4347,7 @@ def api_dashboard():
         "body_stats": body_stats,
         "recomp_command": {
             "signal": signal,
-            "readiness": readiness_val if readiness_val is not None else 0,
+            "readiness": readiness_val,
             "reason": "; ".join(reason_bits)
         },
         "nutrition_today": nutrition_today_payload,
@@ -5358,6 +5376,28 @@ def _meal_pending_review_payload(entry: dict) -> dict:
     }
 
 
+def _meal_verified_refresh_event_metadata(
+    estimate: dict,
+    *,
+    correction_state: str,
+    source: str,
+    now_iso: str,
+) -> dict | None:
+    if correction_state != CORRECTION_STATE_ACCEPTED or not isinstance(estimate, dict):
+        return None
+    underlying_source = estimate.get("underlying_source")
+    source_url = estimate.get("verified_source_url")
+    external_food_id = estimate.get("external_food_id")
+    if not (underlying_source or source_url or external_food_id):
+        return None
+    return {
+        "source_label": underlying_source or source,
+        "source_url": source_url,
+        "refreshed_at": estimate.get("data_fetched_at") or now_iso,
+        "item_name": estimate.get("item_name"),
+    }
+
+
 def _meal_intake_persist(
     client_id,
     estimate,
@@ -5427,6 +5467,14 @@ def _meal_intake_persist(
         "item_index": item_index,
         "item_state": item_state,
     }
+    refresh_event = _meal_verified_refresh_event_metadata(
+        estimate,
+        correction_state=correction_state,
+        source=source,
+        now_iso=now_iso,
+    )
+    if refresh_event is not None:
+        record["source_refresh_event"] = refresh_event
     return add_food_log(_current_data_user_id(), record)
 
 
@@ -7189,6 +7237,66 @@ def food_logs_by_date(date):
     return jsonify({"date": date, "entries": entries, "count": len(entries)})
 
 
+def _project_food_log_refresh_event(event: dict) -> dict:
+    return {
+        "id": event.get("id"),
+        "client_id": event.get("client_id"),
+        "date": event.get("date"),
+        "item_name": event.get("item_name"),
+        "source": event.get("source"),
+        "source_url": event.get("source_url"),
+        "refreshed_at": event.get("refreshed_at"),
+        "acknowledged_at": event.get("acknowledged_at"),
+        "previous": {
+            "calories": event.get("prev_calories"),
+            "protein_g": event.get("prev_protein_g"),
+            "carbs_g": event.get("prev_carbs_g"),
+            "fat_g": event.get("prev_fat_g"),
+            "sodium_mg": event.get("prev_sodium_mg"),
+        },
+        "current": {
+            "calories": event.get("new_calories"),
+            "protein_g": event.get("new_protein_g"),
+            "carbs_g": event.get("new_carbs_g"),
+            "fat_g": event.get("new_fat_g"),
+            "sodium_mg": event.get("new_sodium_mg"),
+        },
+    }
+
+
+@app.route('/api/food-log-refresh-events')
+def food_log_refresh_events():
+    """Recent verified-source refresh events for non-blocking UI notices."""
+    unacknowledged_raw = str(request.args.get("unacknowledged", "true")).strip().lower()
+    unacknowledged = unacknowledged_raw not in {"0", "false", "no", "all"}
+    since, err = _coerce_str(request.args.get("since"), "since", required=False, max_len=64)
+    if err:
+        return err
+    limit_raw = request.args.get("limit", 50)
+    try:
+        limit = min(max(int(limit_raw), 1), 50)
+    except (TypeError, ValueError):
+        return api_error("limit must be an integer from 1 to 50", 400, code="invalid_field")
+    events = list_food_log_refresh_events(
+        _current_data_user_id(),
+        unacknowledged=unacknowledged,
+        since=since,
+        limit=limit,
+    )
+    projected = [_project_food_log_refresh_event(event) for event in events]
+    return jsonify({"events": projected, "count": len(projected)})
+
+
+@app.route('/api/food-log-refresh-events/<event_id>/ack', methods=["POST"])
+def ack_food_log_refresh_event(event_id: str):
+    event_id = (event_id or "").strip()
+    if not event_id or len(event_id) > 80:
+        return api_error("invalid refresh event id", 400, code="invalid_field")
+    if not acknowledge_food_log_refresh_event(_current_data_user_id(), event_id):
+        return api_error("refresh event not found", 404, code="not_found")
+    return jsonify({"status": "success", "id": event_id})
+
+
 @app.route('/api/add-cardio', methods=['POST'])
 def add_cardio():
     """Add cardio session data."""
@@ -7730,20 +7838,19 @@ def _ai_metric_log(outcome, latency_ms=0, constraint_len=0, model_version="", re
     """Record one /api/workout/adjust call. Swallow errors — metrics must
     never break the user-visible path."""
     try:
-        conn = sqlite3.connect(_ADJUST_CACHE_DB)
-        conn.execute(
-            "INSERT INTO adjust_metrics (ts, outcome, latency_ms, constraint_len, model_version, reason) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                datetime.now().isoformat(timespec="seconds"),
-                outcome,
-                int(latency_ms or 0),
-                int(constraint_len or 0),
-                model_version or "",
-                (reason or "")[:200],
-            ),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
+            conn.execute(
+                "INSERT INTO adjust_metrics (ts, outcome, latency_ms, constraint_len, model_version, reason) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    datetime.now().isoformat(timespec="seconds"),
+                    outcome,
+                    int(latency_ms or 0),
+                    int(constraint_len or 0),
+                    model_version or "",
+                    (reason or "")[:200],
+                ),
+            )
+            conn.commit()
     except Exception as exc:
         print(f"WARN: ai_metric_log failed: {exc}")
 
@@ -7808,11 +7915,10 @@ def _ai_cache_key(recommendation, constraint, readiness_date, model_version, equ
 
 def _ai_cache_get(key):
     try:
-        conn = sqlite3.connect(_ADJUST_CACHE_DB)
-        row = conn.execute(
-            "SELECT response_json FROM adjust_cache WHERE cache_key = ?", (key,)
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
+            row = conn.execute(
+                "SELECT response_json FROM adjust_cache WHERE cache_key = ?", (key,)
+            ).fetchone()
         return json.loads(row[0]) if row else None
     except Exception:
         return None
@@ -7820,13 +7926,12 @@ def _ai_cache_get(key):
 
 def _ai_cache_put(key, payload):
     try:
-        conn = sqlite3.connect(_ADJUST_CACHE_DB)
-        conn.execute(
-            "INSERT OR REPLACE INTO adjust_cache (cache_key, created_at, response_json) VALUES (?, ?, ?)",
-            (key, datetime.now().isoformat(), json.dumps(payload)),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO adjust_cache (cache_key, created_at, response_json) VALUES (?, ?, ?)",
+                (key, datetime.now().isoformat(), json.dumps(payload)),
+            )
+            conn.commit()
     except Exception as exc:
         print(f"WARN: adjust_cache write failed: {exc}")
 
@@ -7975,7 +8080,11 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
             continue
 
-        requested_exercise = _resolve_exercise_definition(sw.get("target_exercise"))
+        target_exercise_name = (sw.get("target_exercise") or "").strip()
+        requested_exercise = _resolve_exercise_definition(target_exercise_name)
+        if target_exercise_name and not requested_exercise:
+            notes.append(f"Ignored: unknown target exercise '{target_exercise_name}'")
+            continue
 
         # Pick a new exercise for target_muscle from the equipment-filtered library,
         # preferring compound movements and rotating off recently-trained exercises.
@@ -8725,16 +8834,15 @@ def ai_metrics():
 
     cutoff = (datetime.now() - timedelta(hours=hours)).isoformat(timespec="seconds")
     try:
-        conn = sqlite3.connect(_ADJUST_CACHE_DB)
-        rows = conn.execute(
-            "SELECT outcome, COUNT(*), COALESCE(AVG(NULLIF(latency_ms,0)),0) FROM adjust_metrics WHERE ts >= ? GROUP BY outcome",
-            (cutoff,),
-        ).fetchall()
-        last5 = conn.execute(
-            "SELECT ts, outcome, latency_ms, reason FROM adjust_metrics WHERE ts >= ? ORDER BY id DESC LIMIT 5",
-            (cutoff,),
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
+            rows = conn.execute(
+                "SELECT outcome, COUNT(*), COALESCE(AVG(NULLIF(latency_ms,0)),0) FROM adjust_metrics WHERE ts >= ? GROUP BY outcome",
+                (cutoff,),
+            ).fetchall()
+            last5 = conn.execute(
+                "SELECT ts, outcome, latency_ms, reason FROM adjust_metrics WHERE ts >= ? ORDER BY id DESC LIMIT 5",
+                (cutoff,),
+            ).fetchall()
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -11358,9 +11466,14 @@ def key_insights():
     insights = []
 
     # Progression insights
-    improving = [ex for ex, d in progression.items() if d["status"] == "On Track"]
-    plateaus = [ex for ex, d in progression.items() if d["status"] == "Plateau"]
-    regressions = [ex for ex, d in progression.items() if d["status"] == "Regression"]
+    enough_history = {
+        ex: d
+        for ex, d in progression.items()
+        if len(d.get("history", []) or []) >= 2
+    }
+    improving = [ex for ex, d in enough_history.items() if d["status"] == "On Track"]
+    plateaus = [ex for ex, d in enough_history.items() if d["status"] == "Plateau"]
+    regressions = [ex for ex, d in enough_history.items() if d["status"] == "Regression"]
 
     if improving:
         insights.append({
@@ -11398,6 +11511,7 @@ def key_insights():
         })
 
     # Consistency insight
+    days_since_last = consistency.get("days_since_last")
     if consistency["current_streak"] >= 4:
         insights.append({
             "type": "positive",
@@ -11405,16 +11519,16 @@ def key_insights():
             "title": f"{consistency['current_streak']} session streak!",
             "detail": "Keep up the consistency"
         })
-    elif consistency["days_since_last"] > 7:
+    elif days_since_last is not None and days_since_last > 7:
         insights.append({
             "type": "warning",
             "icon": "schedule",
             "title": "Time to train!",
-            "detail": f"{consistency['days_since_last']} days since last workout"
+            "detail": f"{days_since_last} days since last workout"
         })
 
     # Balance insight
-    if push_pull["color"] == "red":
+    if (push_pull["push_sets"] + push_pull["pull_sets"]) > 0 and push_pull["color"] == "red":
         insights.append({
             "type": "warning",
             "icon": "balance",
@@ -11747,28 +11861,27 @@ def sleep_analytics():
     rows = []
     try:
         import sqlite3 as _sq
-        _db = _sq.connect(os.path.join(DATA_DIR, 'oura_daily.sqlite3'))
-        _db.row_factory = _sq.Row
-        _cur = _db.execute("SELECT * FROM oura_sleep WHERE type='long_sleep' ORDER BY day")
-        for r in _cur.fetchall():
-            rows.append({
-                'date': r['day'],
-                'sleep_start': r['bedtime_start'],
-                'sleep_end': r['bedtime_end'],
-                'sleep_duration_min': r['total_sleep_min'],
-                'deep_sleep_min': r['deep_sleep_min'],
-                'rem_sleep_min': r['rem_sleep_min'],
-                'light_sleep_min': r['light_sleep_min'],
-                'awake_min': r['awake_time_min'],
-                'sleep_score': r['sleep_score'],
-                'efficiency': r['efficiency'],
-                'avg_heart_rate': r['avg_heart_rate'],
-                'avg_hrv': r['avg_hrv'],
-                'source': 'oura',
-            })
-        _db.close()
+        with closing(_sq.connect(os.path.join(DATA_DIR, 'oura_daily.sqlite3'))) as _db:
+            _db.row_factory = _sq.Row
+            _cur = _db.execute("SELECT * FROM oura_sleep WHERE type='long_sleep' ORDER BY day")
+            for r in _cur.fetchall():
+                rows.append({
+                    'date': r['day'],
+                    'sleep_start': r['bedtime_start'],
+                    'sleep_end': r['bedtime_end'],
+                    'sleep_duration_min': r['total_sleep_min'],
+                    'deep_sleep_min': r['deep_sleep_min'],
+                    'rem_sleep_min': r['rem_sleep_min'],
+                    'light_sleep_min': r['light_sleep_min'],
+                    'awake_min': r['awake_time_min'],
+                    'sleep_score': r['sleep_score'],
+                    'efficiency': r['efficiency'],
+                    'avg_heart_rate': r['avg_heart_rate'],
+                    'avg_hrv': r['avg_hrv'],
+                    'source': 'oura',
+                })
     except Exception:
-        pass
+        app.logger.warning("Oura sleep analytics SQLite read failed", exc_info=True)
     # Fall back to manual SLEEP_DATA if no Oura data
     if not rows:
         rows = sorted(SLEEP_DATA, key=lambda x: x.get('date'))

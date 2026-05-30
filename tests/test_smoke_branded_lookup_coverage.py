@@ -76,7 +76,7 @@ def test_coverage_records_nutritionix_hit(monkeypatch):
     assert result.calories == "610"
     assert result.source_url == "https://www.nutritionix.com/"
     assert result.confidence == "0.85"
-    assert "production direct-lookup gate would block this query" in result.notes
+    assert "production direct-lookup gate would block this query" not in result.notes
     assert saved == []
 
 
@@ -98,7 +98,7 @@ def test_wrong_chain_hit_continues_to_lower_priority_provider(monkeypatch):
 
     assert result.outcome == "usda_fdc"
     assert result.matched_item == "BRISKET SANDWICH"
-    assert "nutritionix returned Wrong Chain brisket sandwich without verifying expected chain bill miller" in result.notes
+    assert "nutritionix returned brisket sandwich without verifying expected chain bill miller" in result.notes
 
 
 def test_coverage_records_usda_fallback_when_nutritionix_misses(monkeypatch):
@@ -130,7 +130,7 @@ def test_coverage_accepts_usda_brand_metadata_for_expected_chain(monkeypatch):
 
     assert result.outcome == "usda_fdc"
     assert result.matched_item == "BRISKET SANDWICH"
-    assert "production direct-lookup gate would block this query" in result.notes
+    assert "production direct-lookup gate would block this query" not in result.notes
 
 
 def test_coverage_records_miss_without_lm_studio_or_cache_write(monkeypatch):
@@ -175,6 +175,7 @@ def test_missing_credentials_report_provider_unavailable(monkeypatch):
 
 
 def test_coverage_can_respect_production_direct_lookup_gate(monkeypatch):
+    blocked_query = (smoke.CoverageQuery("eggs and toast", "required", "test query"),)
     monkeypatch.setattr(smoke.branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         smoke.branded_food_lookup.nutritionix_client,
@@ -182,7 +183,7 @@ def test_coverage_can_respect_production_direct_lookup_gate(monkeypatch):
         lambda *_a: (_ for _ in ()).throw(AssertionError("provider lookup must not run")),
     )
 
-    result = smoke.run_coverage(_query(), respect_direct_lookup_gate=True)[0]
+    result = smoke.run_coverage(blocked_query, respect_direct_lookup_gate=True)[0]
 
     assert result.outcome == "miss/fallback gap"
     assert "production direct-lookup gate blocked provider lookup" in result.notes

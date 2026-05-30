@@ -12,7 +12,8 @@ Usage: scripts/install-worktree-guard.sh [--dry-run]
 Copies the branch-switch guard into this worktree's git metadata directory and
 sets this worktree's core.hooksPath to that stable path. This keeps the guard
 active even when checking out branches that do not contain the committed
-.githooks directory, without changing sibling worktrees.
+.githooks directory, without changing sibling worktrees. All committed hooks
+in .githooks are copied so the test gate and worktree guard stay together.
 USAGE
 }
 
@@ -48,7 +49,10 @@ run() {
 
 if [ "${DRY_RUN}" = "1" ]; then
     printf '[dry-run] mkdir -p %s\n' "${HOOKS_PATH}"
-    printf '[dry-run] install %s %s\n' "${ROOT}/.githooks/post-checkout" "${HOOKS_PATH}/post-checkout"
+    for hook in "${ROOT}/.githooks/"*; do
+        [ -f "${hook}" ] || continue
+        printf '[dry-run] install %s %s\n' "${hook}" "${HOOKS_PATH}/$(basename "${hook}")"
+    done
     printf '[dry-run] install %s %s\n' "${ROOT}/scripts/worktree-server-guard.sh" "${HOOKS_PATH}/worktree-server-guard.sh"
     printf '[dry-run] git config extensions.worktreeConfig true\n'
     printf '[dry-run] git config --worktree core.hooksPath %s\n' "${HOOKS_PATH}"
@@ -56,8 +60,11 @@ if [ "${DRY_RUN}" = "1" ]; then
 fi
 
 mkdir -p "${HOOKS_PATH}"
-install -m 0755 "${ROOT}/.githooks/post-checkout" "${HOOKS_PATH}/post-checkout"
+for hook in "${ROOT}/.githooks/"*; do
+    [ -f "${hook}" ] || continue
+    install -m 0755 "${hook}" "${HOOKS_PATH}/$(basename "${hook}")"
+done
 install -m 0755 "${ROOT}/scripts/worktree-server-guard.sh" "${HOOKS_PATH}/worktree-server-guard.sh"
 git config extensions.worktreeConfig true
 git config --worktree core.hooksPath "${HOOKS_PATH}"
-printf 'Installed worktree guard at %s\n' "${HOOKS_PATH}"
+printf 'Installed git hooks at %s\n' "${HOOKS_PATH}"

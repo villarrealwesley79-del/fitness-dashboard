@@ -17,7 +17,10 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 CACHE_TTL_DAYS = 180
 SOURCE_PRIORITY = ("cache", "heb_product_page", "nutritionix", "usda_fdc", "open_food_facts")
-MULTI_ITEM_TOKENS = {"and", "with", "plus", "&", "+", "combo", "meal", "plate"}
+KJ_PER_KCAL = 4.184
+MULTI_ITEM_HARD_TOKENS = {"with", "plus", "&", "+", "combo", "meal", "plate"}
+MULTI_ITEM_SOFT_TOKENS = {"and"}
+MULTI_ITEM_TOKENS = MULTI_ITEM_HARD_TOKENS | MULTI_ITEM_SOFT_TOKENS
 PORTION_MODIFIER_TOKENS = {"half"}
 EXACT_ONLY_BRANDS = {"h-e-b", "heb"}
 KNOWN_BRANDS = {
@@ -30,6 +33,21 @@ KNOWN_BRANDS = {
     "chick-fil-a",
     "chickfila",
 }
+REGIONAL_RESTAURANT_BRAND_PHRASES = (
+    ("bill", "miller"),
+    ("golden", "chick"),
+    ("la", "madeleine"),
+    ("p", "terrys"),
+    ("rudys",),
+    ("schlotzskys",),
+    ("taco", "cabana"),
+    ("torchys",),
+    ("whataburger",),
+)
+REGIONAL_RESTAURANT_SOFT_AND_PHRASES = (
+    ("bacon", "and", "egg", "taco"),
+    ("bean", "and", "cheese", "taco"),
+)
 BRAND_ALIASES = {
     "chickfila": "chick-fil-a",
     "heb": "h-e-b",
@@ -69,6 +87,17 @@ LUNCH_DINNER_TOKENS = {
     "sandwich",
     "wrap",
     "burger",
+}
+# Gate-only menu nouns for regional restaurant provider lookup eligibility.
+REGIONAL_RESTAURANT_ITEM_TOKENS = BREAKFAST_TOKENS | LUNCH_DINNER_TOKENS | {
+    "biscuit",
+    "cheeseburger",
+    "chips",
+    "fries",
+    "melt",
+    "nuggets",
+    "tenders",
+    "wings",
 }
 PROTEIN_TOKENS = {
     "chicken",
@@ -152,8 +181,10 @@ OFF_KNOWN_PACKAGED_PRODUCT_PHRASES = {
 def normalize_meal_text(text: str) -> str:
     """Normalize user text for cache keys and typo-tolerant source lookup."""
     tokens = []
-    for raw in (text or "").lower().replace("'", "").split():
+    for raw in re.sub(r"['\u2018\u2019]", "", (text or "").lower()).split():
         token = raw.strip(".,!?;:()[]{}\"")
+        if token == "&":
+            token = "and"
         token = PLURALS.get(token, token)
         for brand, typos in BRAND_TYPOS.items():
             if token in typos:
@@ -232,7 +263,7 @@ def _text_with_brand_hint(text: str, brand_hint: str | None) -> str:
     hint = normalize_meal_text(brand_hint or "")
     if not hint:
         return cleaned
-    if any(token in KNOWN_BRANDS for token in normalized_text.split()):
+    if _brand_from_text(normalized_text):
         return cleaned
     return f"{hint} {cleaned}".strip()
 
@@ -245,6 +276,9 @@ def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) ->
         return False
     if any(token in tokens for token in PORTION_MODIFIER_TOKENS):
         return False
+    regional_brand = _regional_restaurant_brand_tokens(tokens)
+    if regional_brand:
+        return _regional_restaurant_direct_lookup_allowed(tokens, regional_brand)
     if any(token in tokens for token in MULTI_ITEM_TOKENS):
         return False
     expected_country_tag = _off_expected_country_tag(normalized)
@@ -255,6 +289,49 @@ def should_attempt_direct_lookup(text: str, *, brand_hint: str | None = None) ->
     if brand_hint or _brand_from_text(normalized):
         return bool([token for token in tokens if token not in KNOWN_BRANDS])
     return len(tokens) == 1
+
+
+def _regional_restaurant_brand_tokens(tokens: list[str]) -> tuple[str, ...] | None:
+    for phrase in REGIONAL_RESTAURANT_BRAND_PHRASES:
+        phrase_len = len(phrase)
+        for idx in range(0, len(tokens) - phrase_len + 1):
+            if tuple(tokens[idx:idx + phrase_len]) == phrase:
+                return phrase
+    return None
+
+
+def _regional_restaurant_item_tokens(tokens: list[str], brand_tokens: tuple[str, ...]) -> list[str]:
+    remaining = list(tokens)
+    phrase_len = len(brand_tokens)
+    for idx in range(0, len(tokens) - phrase_len + 1):
+        if tuple(tokens[idx:idx + phrase_len]) == brand_tokens:
+            del remaining[idx:idx + phrase_len]
+            break
+    return remaining
+
+
+def _regional_restaurant_direct_lookup_allowed(tokens: list[str], brand_tokens: tuple[str, ...]) -> bool:
+    remaining = _regional_restaurant_item_tokens(tokens, brand_tokens)
+    if not remaining:
+        return False
+    if any(token in MULTI_ITEM_HARD_TOKENS for token in remaining):
+        return False
+    if "and" in _regional_restaurant_soft_and_stripped_tokens(remaining):
+        return False
+    return any(token in REGIONAL_RESTAURANT_ITEM_TOKENS for token in remaining)
+
+
+def _regional_restaurant_soft_and_stripped_tokens(tokens: list[str]) -> list[str]:
+    stripped = list(tokens)
+    for phrase in REGIONAL_RESTAURANT_SOFT_AND_PHRASES:
+        phrase_len = len(phrase)
+        idx = 0
+        while idx <= len(stripped) - phrase_len:
+            if tuple(stripped[idx:idx + phrase_len]) == phrase:
+                del stripped[idx:idx + phrase_len]
+            else:
+                idx += 1
+    return stripped
 
 
 def is_private_label_query(text: str) -> bool:
@@ -352,7 +429,8 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     if not foods:
         return None
     food = foods[0]
-    nutrients = {n.get("nutrientName"): n.get("value") for n in food.get("foodNutrients", []) if isinstance(n, dict)}
+    food_nutrients = [n for n in food.get("foodNutrients", []) if isinstance(n, dict)]
+    nutrients = {n.get("nutrientName"): n.get("value") for n in food_nutrients}
     fdc_id = food.get("fdcId")
     requested_brand = _brand_from_text(normalized)
     source_brand = _matching_usda_source_brand(food, requested_brand)
@@ -368,9 +446,7 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     if _requested_item_mismatch(normalized, [food]):
         ambiguous = True
         notes.append("USDA FDC returned a different item category; review before logging.")
-    calories = nutrients.get("Energy")
-    if calories is None:
-        calories = nutrients.get("Energy (Atwater General Factors)")
+    calories = _usda_energy_kcal(food_nutrients)
     estimate = {
         "item_name": food.get("description") or "Food",
         "portion_description": "100 g",
@@ -393,6 +469,34 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
         "source_brand_name": source_brand,
     }
     return _sanitize_with_provenance(estimate)
+
+
+def _usda_energy_kcal(food_nutrients: list[dict[str, Any]]) -> Any:
+    energy_rows = [
+        nutrient
+        for nutrient in food_nutrients
+        if nutrient.get("nutrientName") in {"Energy", "Energy (Atwater General Factors)"}
+    ]
+    for nutrient in energy_rows:
+        unit = str(nutrient.get("unitName") or "").strip().upper()
+        if unit == "KCAL":
+            return nutrient.get("value")
+    for nutrient in energy_rows:
+        unit = str(nutrient.get("unitName") or "").strip().upper()
+        if unit == "KJ":
+            value = _float_or_none(nutrient.get("value"))
+            return value / KJ_PER_KCAL if value is not None else None
+    for nutrient in energy_rows:
+        if not str(nutrient.get("unitName") or "").strip():
+            return nutrient.get("value")
+    return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
@@ -762,12 +866,20 @@ def _matching_source_brand(foods: list[dict[str, Any]], requested_brand: str | N
 
 
 def _requested_item_mismatch(normalized: str, foods: list[dict[str, Any]]) -> bool:
-    requested_items = set(normalized.split()) & CUSTOMIZABLE_ITEM_TOKENS
+    requested_items = _customizable_item_tokens_for_mismatch(normalized)
     if not requested_items:
         return False
     returned_text = " ".join(str(food.get("food_name") or food.get("description") or "") for food in foods)
-    returned_items = set(normalize_meal_text(returned_text).split()) & CUSTOMIZABLE_ITEM_TOKENS
+    returned_items = _customizable_item_tokens_for_mismatch(normalize_meal_text(returned_text))
     return not returned_items or requested_items != returned_items
+
+
+def _customizable_item_tokens_for_mismatch(normalized: str) -> set[str]:
+    tokens = (normalized or "").split()
+    regional_brand = _regional_restaurant_brand_tokens(tokens)
+    if regional_brand:
+        tokens = _regional_restaurant_item_tokens(tokens, regional_brand)
+    return set(tokens) & CUSTOMIZABLE_ITEM_TOKENS
 
 
 def _matching_usda_source_brand(food: dict[str, Any], requested_brand: str | None) -> str | None:
@@ -798,6 +910,9 @@ def _needs_modifier_review(normalized: str) -> bool:
 
 
 def _brand_from_text(normalized: str) -> str | None:
+    regional_brand = _regional_restaurant_brand_tokens((normalized or "").split())
+    if regional_brand:
+        return " ".join(regional_brand)
     for token in normalized.split():
         if token in KNOWN_BRANDS:
             return BRAND_ALIASES.get(token, token)

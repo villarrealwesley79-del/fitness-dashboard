@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import sys
@@ -168,14 +169,22 @@ def test_workouts_endpoint_preserves_basketball_and_filters_other(monkeypatch):
     parser = importlib.import_module("apple_health_parser")
     monkeypatch.setattr(parser, "parse_workouts", lambda: [])
     client = module.app.test_client()
+    recent_date = "2026-05-30"
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 5, 30, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(parser, "datetime", FrozenDateTime)
 
     response = client.post(
         "/api/apple-health/sync?token=fit29-health-token",
         json={
             "workouts": [
                 {
-                    "date": "2026-05-21",
-                    "startDate": "2026-05-21 12:28:05 -0500",
+                    "date": recent_date,
+                    "startDate": f"{recent_date} 12:28:05 -0500",
                     "workoutActivityType": 37,
                     "duration_minutes": 95.3,
                     "total_energy_kcal": 1035.4,
@@ -183,8 +192,8 @@ def test_workouts_endpoint_preserves_basketball_and_filters_other(monkeypatch):
                     "avgHeartRate": {"qty": 164},
                 },
                 {
-                    "date": "2026-05-21",
-                    "startDate": "2026-05-21 23:50:00 -0500",
+                    "date": recent_date,
+                    "startDate": f"{recent_date} 23:50:00 -0500",
                     "workoutActivityType": 25,
                     "duration_minutes": 14.0,
                     "total_energy_kcal": 67.5,
@@ -197,7 +206,7 @@ def test_workouts_endpoint_preserves_basketball_and_filters_other(monkeypatch):
     payload = client.get("/api/apple-health/workouts?days=0").get_json()
 
     assert payload["total"] == 1
-    assert payload["workouts"][0]["date"] == "2026-05-21"
+    assert payload["workouts"][0]["date"] == recent_date
     assert payload["workouts"][0]["activity"] == "Basketball"
     assert payload["workouts"][0]["activity_type"] == "Basketball"
     assert payload["workouts"][0]["duration_min"] == 95.3
