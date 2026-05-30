@@ -6948,7 +6948,7 @@
             // FIT-179: when the user is mid-workout, fold the adjusted plan
             // into the active workout so logged rows for exercises that remain
             // in the plan survive. Only worth doing when something changed.
-            if (state.activeWorkout && kind === 'changed') {
+            if (state.activeWorkout && kind === 'changed' && !opts.restored) {
                 const previous = Array.isArray(state.activeWorkout.exercises)
                     ? state.activeWorkout.exercises
                     : [];

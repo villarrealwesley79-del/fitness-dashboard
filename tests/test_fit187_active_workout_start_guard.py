@@ -12,6 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_JS = (ROOT / "static" / "js" / "app.js").read_text()
 
 
+def test_restored_adjust_preview_does_not_mutate_active_workout():
+    body = APP_JS.split("function renderAdjustResult(payload, opts = {})", 1)[1].split(
+        "async function submitAdjust()",
+        1,
+    )[0]
+
+    assert "renderAdjustResult(saved, { restored: true" in APP_JS
+    assert "state.activeWorkout && kind === 'changed' && !opts.restored" in body
+
+
 def test_start_workout_confirms_before_discarding_logged_active_sets():
     if not shutil.which("node"):
         pytest.skip("FIT-187 runtime regression requires node to execute app.js")
