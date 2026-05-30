@@ -3032,21 +3032,72 @@ def _swap_candidate_token_sets(exercise):
     token_sets = []
     for value in values:
         tokens = _swap_match_tokens(value)
+        tokens.update(_swap_match_tokens(exercise.get("match_tokens") or []))
+        if _swap_candidate_is_default(exercise):
+            tokens.update(_swap_match_tokens(exercise.get("equipment")))
+            tokens.update(_swap_match_tokens(exercise.get("muscle")))
         if tokens:
             token_sets.append(tokens)
     return token_sets
 
 
 def _swap_match_tokens(name):
+    if isinstance(name, (list, tuple, set)):
+        raw_values = name
+    else:
+        raw_values = [name]
     tokens = set()
-    for token in _exercise_name_tokens(name):
-        tokens.add(token)
-        if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
-            tokens.add(token[:-1])
+    for raw_value in raw_values:
+        raw_tokens = {
+            token
+            for token in re.split(r"[^a-z0-9]+", str(raw_value or "").lower())
+            if token
+        }
+        raw_tokens.update(_exercise_name_tokens(raw_value))
+        for token in raw_tokens:
+            tokens.add(token)
+            if token == "delt":
+                tokens.add("deltoid")
+            elif token == "deltoid":
+                tokens.add("delt")
+            if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+                tokens.add(token[:-1])
     return tokens
 
 
 _AMBIGUOUS_SWAP_TOKENS = {"press", "row", "curl"}
+_GENERIC_SWAP_CONTEXT_TOKENS = {
+    "machine",
+    "cable",
+    "seated",
+    "standing",
+    "chest",
+    "back",
+    "shoulder",
+    "shoulders",
+    "bicep",
+    "biceps",
+    "tricep",
+    "triceps",
+    "core",
+    "calf",
+    "calves",
+    "quad",
+    "quads",
+    "hamstring",
+    "hamstrings",
+    "glute",
+    "glutes",
+    "adductor",
+    "adductors",
+    "erector",
+    "erectors",
+    "upper",
+    "lower",
+    "mid",
+    "rear",
+    "front",
+}
 
 
 def _is_ambiguous_single_swap_token(typed_name):
@@ -3054,17 +3105,78 @@ def _is_ambiguous_single_swap_token(typed_name):
     return len(typed_base_tokens) == 1 and bool(_swap_match_tokens(typed_name).intersection(_AMBIGUOUS_SWAP_TOKENS))
 
 
+def _swap_exact_name_match(typed_name, exercise):
+    typed_norm = _normalize_exercise_name(typed_name)
+    if not typed_norm:
+        return False
+    values = [exercise.get("name")]
+    values.extend(exercise.get("aliases") or [])
+    return any(_normalize_exercise_name(value) == typed_norm for value in values)
+
+
+def _has_meaningful_swap_exercise_token(typed_tokens):
+    return any(token not in _GENERIC_SWAP_CONTEXT_TOKENS for token in typed_tokens)
+
+
+def _swap_candidate_is_default(exercise):
+    return "default" in str(exercise.get("disambiguation") or "").lower()
+
+
+def _swap_candidate_qualifier_tokens(exercise):
+    if _swap_candidate_is_default(exercise):
+        return set()
+    qualifiers = set()
+    qualifiers.update(_swap_match_tokens(exercise.get("match_tokens") or []))
+    qualifiers.update(_swap_match_tokens(exercise.get("shoulder_position")))
+    primary_emphasis = str(exercise.get("primary_emphasis") or "").lower()
+    if "upper" in primary_emphasis or "clavicular" in primary_emphasis:
+        qualifiers.update({"upper", "clavicular"})
+    if "long_head" in primary_emphasis:
+        qualifiers.update({"long", "head"})
+    if "soleus" in primary_emphasis:
+        qualifiers.add("soleus")
+    if "gastrocnemius" in primary_emphasis:
+        qualifiers.add("gastrocnemius")
+    if "rear" in primary_emphasis:
+        qualifiers.add("rear")
+    return {
+        token
+        for token in qualifiers
+        if token not in {"neutral", "general", "overall"}
+    }
+
+
+def _swap_qualifier_penalty(typed_tokens, exercise):
+    qualifiers = _swap_candidate_qualifier_tokens(exercise)
+    if not qualifiers:
+        return 0
+    return 75 if qualifiers.isdisjoint(typed_tokens) else 0
+
+
 def _deterministic_swap_candidate(typed_name, candidates):
-    if _is_ambiguous_single_swap_token(typed_name):
-        return None
     typed_tokens = _swap_match_tokens(typed_name)
     if not typed_tokens:
+        return None
+
+    exact_matches = [
+        exercise
+        for exercise in candidates
+        if _swap_exact_name_match(typed_name, exercise)
+    ]
+    if exact_matches:
+        exact_matches.sort(key=lambda exercise: (_exercise_brand_preference_rank(exercise), exercise.get("name", "")))
+        return exact_matches[0]
+
+    if not _has_meaningful_swap_exercise_token(typed_tokens):
         return None
 
     scored = []
     for exercise in candidates:
         best = None
+        qualifier_tokens = _swap_candidate_qualifier_tokens(exercise)
         for candidate_tokens in _swap_candidate_token_sets(exercise):
+            candidate_tokens = set(candidate_tokens)
+            candidate_tokens.update(qualifier_tokens)
             shared = typed_tokens.intersection(candidate_tokens)
             if not shared:
                 continue
@@ -3081,11 +3193,14 @@ def _deterministic_swap_candidate(typed_name, candidates):
                 best = token_score
         if not best:
             continue
+        qualifier_penalty = _swap_qualifier_penalty(typed_tokens, exercise)
+        adjusted_score = best["score"] - qualifier_penalty
         if best["is_superset"] or len(best["shared"]) >= min(2, len(typed_tokens)):
             scored.append(
                 {
                     "exercise": exercise,
-                    "score": best["score"],
+                    "score": adjusted_score,
+                    "qualifier_penalty": qualifier_penalty,
                     "brand_rank": _exercise_brand_preference_rank(exercise),
                 }
             )
@@ -3093,7 +3208,23 @@ def _deterministic_swap_candidate(typed_name, candidates):
     if not scored:
         return None
 
-    scored.sort(key=lambda item: (-item["score"], item["brand_rank"], item["exercise"].get("name", "")))
+    scored.sort(
+        key=lambda item: (
+            item["qualifier_penalty"],
+            -item["score"],
+            item["brand_rank"],
+            item["exercise"].get("name", ""),
+        )
+    )
+    if _is_ambiguous_single_swap_token(typed_name):
+        default_matches = [
+            item
+            for item in scored
+            if item["qualifier_penalty"] == 0 and _swap_candidate_is_default(item["exercise"])
+        ]
+        if len(default_matches) != 1:
+            return None
+        return default_matches[0]["exercise"]
     return scored[0]["exercise"]
 
 
@@ -8564,7 +8695,14 @@ def swap_workout_exercise():
         LAST_WORKOUT_RECOMMENDATION = recommendation
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
 
-    return jsonify({"status": "success", "recommendation": recommendation})
+    return jsonify({
+        "status": "success",
+        "recommendation": recommendation,
+        "requested_exercise_name": new_name,
+        "resolved_exercise_name": new_ex["name"],
+        "swapped_from": old_ex.get("exercise"),
+        "exercise_index": exercise_index,
+    })
 
 
 # ==================== AI COACH — ADJUST PLAN ====================

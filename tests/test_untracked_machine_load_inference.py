@@ -116,8 +116,12 @@ def test_swap_to_no_history_machine_infers_from_similar_history(monkeypatch):
     )
 
     assert response.status_code == 200
-    exercise = response.get_json()["recommendation"]["exercises"][0]
+    payload = response.get_json()
+    exercise = payload["recommendation"]["exercises"][0]
     assert exercise["exercise"] == "Machine Deltoid Raise"
+    assert payload["requested_exercise_name"] == "Machine Deltoid Raise"
+    assert payload["resolved_exercise_name"] == "Machine Deltoid Raise"
+    assert payload["swapped_from"] == "Shoulder Press"
     assert exercise["load_source"] == "similar_history"
     assert exercise["load_inference"]["source_exercise"] == "Lateral Raise"
     assert "Estimated from Lateral Raise history" in exercise["load_inference"]["message"]
@@ -371,6 +375,59 @@ def test_adjust_deterministic_parser_handles_must_pass_examples(monkeypatch):
     assert back_extension["replace_exercise"] == "Romanian Deadlift"
     assert chest_supported["target_exercise"] == "Chest-Supported Row"
     assert chest_supported["replace_exercise"] == "Seated Row"
+
+
+@pytest.mark.parametrize("preference", ["machines_only", "machines_and_cables", "all"])
+def test_deterministic_swap_exact_triceps_extension_prefers_machine(monkeypatch, preference):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "_lm_studio", None)
+    old_ex = _rec_exercise("Cable Pushdown", "triceps", 55)
+
+    resolved = module._resolve_custom_swap_exercise("triceps extension", old_ex, preference)
+
+    assert resolved["name"] == "Triceps Extension"
+
+
+@pytest.mark.parametrize("preference", ["machines_and_cables", "all"])
+def test_deterministic_swap_qualified_triceps_extension_prefers_overhead(monkeypatch, preference):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "_lm_studio", None)
+    old_ex = _rec_exercise("Cable Pushdown", "triceps", 55)
+
+    resolved = module._resolve_custom_swap_exercise("overhead triceps extension", old_ex, preference)
+
+    assert resolved["name"] == "Overhead Tricep Extension"
+
+
+@pytest.mark.parametrize(
+    ("typed", "old_exercise", "muscle", "expected"),
+    [
+        ("calf raise", "Calf Raise (Seated)", "calves", "Calf Raise"),
+        ("seated calf raise", "Calf Raise", "calves", "Calf Raise (Seated)"),
+        ("biceps curl", "Cable Biceps Curl", "biceps", "Biceps Curl"),
+        ("cable biceps curl", "Biceps Curl", "biceps", "Cable Biceps Curl"),
+        ("crunch", "Cable Crunch", "core", "Crunch Machine"),
+        ("cable crunch", "Crunch Machine", "core", "Cable Crunch"),
+        ("chest press", "Incline Press", "chest", "Chest Press"),
+        ("machine chest press", "Incline Press", "chest", "Chest Press"),
+        ("incline press", "Chest Press", "chest", "Incline Press"),
+        ("upper chest press", "Chest Press", "chest", "Incline Press"),
+        ("delt fly", "Rear Delt Fly", "shoulders", "Deltoid Fly"),
+        ("rear delt fly", "Deltoid Fly", "shoulders", "Rear Delt Fly"),
+        ("row", "Cable Row", "back", "Seated Row"),
+        ("back row", "Cable Row", "back", "Seated Row"),
+        ("machine row", "Cable Row", "back", "Seated Row"),
+        ("cable row", "Seated Row", "back", "Cable Row"),
+    ],
+)
+def test_deterministic_swap_demotes_missing_qualified_variants(monkeypatch, typed, old_exercise, muscle, expected):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "_lm_studio", None)
+    old_ex = _rec_exercise(old_exercise, muscle, 55)
+
+    resolved = module._resolve_custom_swap_exercise(typed, old_ex, "machines_and_cables")
+
+    assert resolved["name"] == expected
 
 
 def test_adjust_deterministic_tie_break_prefers_earlier_plan_slot(monkeypatch):
@@ -1083,6 +1140,26 @@ def test_swap_endpoint_rejects_single_generic_press_token(monkeypatch):
     response = module.app.test_client().post(
         "/api/workout/swap",
         json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "press"},
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["error"] == {"code": "not_found", "message": "Unknown exercise name"}
+
+
+@pytest.mark.parametrize("typed_name", ["machine", "chest", "triceps"])
+def test_swap_endpoint_rejects_context_only_tokens(monkeypatch, typed_name):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = (
+        _recommendation_for(module, [_rec_exercise("Cable Pushdown", "triceps", 55)])
+        if typed_name == "triceps"
+        else _chest_recommendation(module)
+    )
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    response = module.app.test_client().post(
+        "/api/workout/swap",
+        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": typed_name},
     )
 
     assert response.status_code == 404
