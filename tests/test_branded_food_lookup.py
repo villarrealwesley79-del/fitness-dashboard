@@ -1732,7 +1732,7 @@ def test_open_food_facts_barcode_serving_sodium_derives_from_100g(monkeypatch):
         "url": "https://world.openfoodfacts.org/product/012345678905",
         "countries_tags": ["en:united-states"],
         "data_quality_tags": ["en:nutrition-data-complete"],
-        "serving_quantity": 25,
+        "serving_size": "25 g",
         "nutriments": {
             "energy-kcal_serving": 150,
             "proteins_serving": 4,

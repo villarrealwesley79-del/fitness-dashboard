@@ -821,7 +821,7 @@ def _open_food_facts_barcode_estimate(product: dict[str, Any]) -> dict[str, Any]
         if part
     ).strip()
     serving = _off_serving_description(product)
-    serving_quantity = _off_number_or_none(product.get("serving_quantity"))
+    serving_quantity = _off_serving_quantity_g(product)
     serving_macros = _off_serving_macros(nutriments, serving_quantity_g=serving_quantity)
     if serving_macros is None:
         serving_macros = {
@@ -950,6 +950,20 @@ def _off_serving_description(product: dict[str, Any]) -> str | None:
     quantity = _off_number_or_none(product.get("serving_quantity"))
     if quantity is not None:
         return f"{quantity:g} g"
+    return None
+
+
+def _off_serving_quantity_g(product: dict[str, Any]) -> float | None:
+    quantity = _off_number_or_none(product.get("serving_quantity"))
+    if quantity is not None and quantity > 0:
+        return quantity
+    serving_size = product.get("serving_size")
+    if isinstance(serving_size, str):
+        match = re.search(r"(\d+(?:[.,]\d+)?)\s*g\b", serving_size, flags=re.IGNORECASE)
+        if match:
+            parsed = _off_number_or_none(match.group(1).replace(",", "."))
+            if parsed is not None and parsed > 0:
+                return parsed
     return None
 
 
