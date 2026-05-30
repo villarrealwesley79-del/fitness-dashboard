@@ -23,8 +23,8 @@ MACHINE_TO_MUSCLE = {
     "Seated Leg Curl": "hamstrings",
     "Calf Raise": "calves",
     "Crunch Machine": "core",
-    "Back Extension": "lower_back",
-    "Low Back": "lower_back",
+    "Back Extension": "erectors",
+    "Low Back": "erectors",
     "Adductor": "adductors",
 }
 
@@ -124,7 +124,7 @@ def parse_workout_log(filepath: str) -> tuple[list, list]:
         # Determine session type
         muscles_hit = set(e["muscle_group"] for e in exercises)
         upper_muscles = {"chest", "back", "shoulders", "biceps", "triceps"}
-        lower_muscles = {"quads", "hamstrings", "glutes", "calves", "adductors"}
+        lower_muscles = {"quads", "hamstrings", "erectors", "glutes", "calves", "adductors"}
 
         has_upper = bool(muscles_hit & upper_muscles)
         has_lower = bool(muscles_hit & lower_muscles)

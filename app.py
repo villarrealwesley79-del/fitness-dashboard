@@ -363,6 +363,34 @@ DEFAULT_SETTINGS = {
 }
 
 
+TRAINABLE_MUSCLES = [
+    "chest",
+    "back",
+    "quads",
+    "shoulders",
+    "hamstrings",
+    "erectors",
+    "glutes",
+    "adductors",
+    "biceps",
+    "triceps",
+    "core",
+    "calves",
+]
+
+UPPER_BODY_MUSCLES = {"chest", "back", "shoulders", "biceps", "triceps"}
+LOWER_BODY_MUSCLES = {"quads", "hamstrings", "erectors", "glutes", "calves", "adductors"}
+
+TRICEPS_EXTENSION_ALIAS_SPLIT_DATE = "2026-05-30"
+LEGACY_TRICEPS_EXTENSION_ALIASES = {
+    "tricep extension",
+    "triceps extension",
+    "tricep extensions",
+    "triceps extensions",
+}
+BASELINE_METADATA_KEY = "__baseline_metadata"
+
+
 def _settings_with_defaults(settings):
     merged = copy.deepcopy(DEFAULT_SETTINGS)
     merged.update(settings or {})
@@ -690,7 +718,7 @@ EXERCISE_DISAMBIGUATION_DISTINGUISHING_FIELDS = (
 )
 
 EXERCISE_DISAMBIGUATION_CLUSTERS = {
-    "triceps_extension": ("Overhead Tricep Extension",),
+    "triceps_extension": ("Triceps Extension", "Overhead Tricep Extension"),
     "calf_raise": ("Calf Raise", "Calf Raise (Seated)"),
     "biceps_curl": ("Biceps Curl", "Cable Biceps Curl"),
     "crunch": ("Crunch Machine", "Cable Crunch"),
@@ -730,7 +758,7 @@ EXERCISE_LIBRARY = [
     {"name": "Leg Extension", "muscle": "quads", "compound": False, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Romanian Deadlift", "muscle": "hamstrings", "compound": True, "baseline": 135, "equipment": "free_weight", "movement_patterns": ["hinge", "posterior_chain"]},
     {"name": "Leg Curl", "muscle": "hamstrings", "compound": False, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["knee_flexion", "hamstring_isolation"]},
-    {"name": "Back Extension", "muscle": "hamstrings", "compound": False, "baseline": 85, "equipment": "machine", "aliases": ["Low Back Extension", "Lower Back Extension"], "movement_patterns": ["hinge", "posterior_chain"]},
+    {"name": "Back Extension", "muscle": "erectors", "compound": False, "baseline": 85, "equipment": "machine", "aliases": ["Low Back", "Low Back Extension", "Lower Back Extension"], "joints_loaded": ["spine", "hip"], "movement_patterns": ["spinal_extension", "posterior_chain"], "movement_pattern": "spinal_extension", "body_position": "prone", "primary_emphasis": "spinal_erectors", "match_tokens": ["back", "extension", "low", "lower"], "disambiguation": "Lower-back extension machine for spinal erectors; not a hamstring curl or row."},
     {"name": "Calf Raise", "muscle": "calves", "compound": False, "baseline": 120, "equipment": "machine", "movement_pattern": "plantar_flexion", "body_position": "standing", "primary_emphasis": "gastrocnemius_bias", "match_tokens": ["standing"], "confusable_with": [{"name": "Calf Raise (Seated)", "distinction": "Standing calf raise biases gastrocnemius; seated calf raise biases soleus."}], "disambiguation": "Default for a bare calf raise: standing machine calf raise, not seated."},
     {"name": "Calf Raise (Seated)", "muscle": "calves", "compound": False, "baseline": 90, "equipment": "machine", "movement_pattern": "plantar_flexion", "body_position": "seated", "primary_emphasis": "soleus_bias", "match_tokens": ["seated"], "confusable_with": [{"name": "Calf Raise", "distinction": "Seated calf raise biases soleus; standing calf raise biases gastrocnemius."}], "disambiguation": "Pick only when seated calf raise is requested."},
     {"name": "Hip Abductor", "muscle": "glutes", "compound": False, "baseline": 100, "equipment": "machine"},
@@ -743,7 +771,8 @@ EXERCISE_LIBRARY = [
     {"name": "Seated Dip", "muscle": "triceps", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Tricep Pushdown", "muscle": "triceps", "compound": False, "baseline": 50, "equipment": "cable", "movement_patterns": ["elbow_extension", "triceps_extension"]},
     {"name": "Cable Pushdown", "muscle": "triceps", "compound": False, "baseline": 55, "equipment": "cable", "movement_patterns": ["elbow_extension", "triceps_extension"]},
-    {"name": "Overhead Tricep Extension", "muscle": "triceps", "compound": False, "baseline": 45, "equipment": "cable", "aliases": ["Tricep Extension", "Triceps Extension", "Tricep Extensions", "Triceps Extensions"], "movement_patterns": ["elbow_extension", "triceps_extension"], "movement_pattern": "elbow_extension", "body_position": "standing", "shoulder_position": "overhead", "primary_emphasis": "triceps_long_head", "match_tokens": ["overhead"], "confusable_with": [{"name": "Triceps Extension", "distinction": "Standing cable, arms overhead, long-head bias; the future seated machine entry has shoulders neutral."}], "disambiguation": "Pick only when 'overhead' is typed."},
+    {"name": "Triceps Extension", "muscle": "triceps", "compound": False, "baseline": 70, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "joints_loaded": ["elbow"], "aliases": ["Tricep Extension", "Machine Triceps Extension", "Seated Triceps Extension"], "movement_patterns": ["elbow_extension", "triceps_extension"], "movement_pattern": "elbow_extension", "body_position": "seated", "shoulder_position": "neutral", "primary_emphasis": "triceps_overall", "match_tokens": ["extension", "machine"], "confusable_with": [{"name": "Overhead Tricep Extension", "distinction": "SEATED machine, shoulders neutral; the overhead version is STANDING cable, arms overhead, long-head bias."}], "disambiguation": "Default for a bare 'triceps extension': seated machine, elbows on pad, shoulders neutral. NOT the overhead cable version."},
+    {"name": "Overhead Tricep Extension", "muscle": "triceps", "compound": False, "baseline": 45, "equipment": "cable", "aliases": ["Overhead Triceps Extension"], "movement_patterns": ["elbow_extension", "triceps_extension"], "movement_pattern": "elbow_extension", "body_position": "standing", "shoulder_position": "overhead", "primary_emphasis": "triceps_long_head", "match_tokens": ["overhead"], "confusable_with": [{"name": "Triceps Extension", "distinction": "Standing cable, arms overhead, long-head bias; the seated machine entry has shoulders neutral."}], "disambiguation": "Pick only when 'overhead' is typed."},
     # Core
     {"name": "Crunch Machine", "muscle": "core", "compound": False, "baseline": 60, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["trunk_flexion", "core_isolation"], "movement_pattern": "trunk_flexion", "body_position": "seated", "primary_emphasis": "rectus_abdominis_flexion", "match_tokens": ["machine"], "confusable_with": [{"name": "Cable Crunch", "distinction": "Selectorized crunch machine; cable crunch uses a cable station."}], "disambiguation": "Default for a bare crunch machine request; cable crunch needs 'cable'."},
     {"name": "Cable Crunch", "muscle": "core", "compound": False, "baseline": 55, "equipment": "cable", "movement_patterns": ["trunk_flexion", "core_isolation"], "movement_pattern": "trunk_flexion", "body_position": "kneeling", "primary_emphasis": "rectus_abdominis_flexion", "match_tokens": ["cable"], "confusable_with": [{"name": "Crunch Machine", "distinction": "Cable-station crunch; crunch machine is selectorized."}], "disambiguation": "Pick when 'cable crunch' is requested."},
@@ -782,6 +811,7 @@ for _exercise in EXERCISE_LIBRARY:
         "shoulders": ["shoulder", "elbow"],
         "quads": ["knee", "hip"],
         "hamstrings": ["hip", "knee"],
+        "erectors": ["spine", "hip"],
         "calves": ["ankle"],
         "glutes": ["hip"],
         "adductors": ["hip"],
@@ -933,6 +963,38 @@ def _exercise_movement_patterns(exercise):
     }
 
 
+def _same_disambiguation_cluster(left_name, right_name):
+    left = str(left_name or "")
+    right = str(right_name or "")
+    if not left or not right:
+        return False
+    for exercise_names in EXERCISE_DISAMBIGUATION_CLUSTERS.values():
+        if left in exercise_names and right in exercise_names:
+            return True
+    return False
+
+
+def _load_source_metadata_compatible(target_ex, source_ex):
+    if not target_ex or not source_ex:
+        return False
+    target_shoulder = target_ex.get("shoulder_position")
+    source_shoulder = source_ex.get("shoulder_position")
+    if target_shoulder and source_shoulder and target_shoulder != source_shoulder:
+        return False
+
+    same_cluster = _same_disambiguation_cluster(target_ex.get("name"), source_ex.get("name"))
+    if same_cluster:
+        return False
+
+    target_equipment = target_ex.get("equipment")
+    source_equipment = source_ex.get("equipment")
+    if target_equipment and source_equipment and target_equipment != source_equipment:
+        both_annotated = bool(target_ex.get("confusable_with")) and bool(source_ex.get("confusable_with"))
+        if both_annotated:
+            return False
+    return True
+
+
 def _similar_exercise_load_source(exercise_name, progression):
     target_ex = _resolve_exercise_definition(exercise_name)
     if not target_ex or not isinstance(progression, dict):
@@ -952,6 +1014,8 @@ def _similar_exercise_load_source(exercise_name, progression):
         if not source_ex or source_ex is target_ex:
             continue
         if source_ex.get("muscle") != target_ex.get("muscle"):
+            continue
+        if not _load_source_metadata_compatible(target_ex, source_ex):
             continue
         source_baseline = _positive_float(source_ex.get("baseline"))
         if source_baseline is None:
@@ -1006,11 +1070,108 @@ def _has_direct_exercise_progression(exercise_name, progression):
         return False
     wanted = _normalize_exercise_name(_canonical_exercise_name(exercise_name))
     for key, value in progression.items():
-        if _positive_float((value or {}).get("current_e1rm")) is None:
+        direct_value = _direct_progression_value_for_exercise(exercise_name, key, value)
+        if _positive_float((direct_value or {}).get("current_e1rm")) is None:
             continue
-        if _normalize_exercise_name(_canonical_exercise_name(key)) == wanted:
+        if (
+            _normalize_exercise_name(_canonical_exercise_name(key)) == wanted
+            or _is_legacy_triceps_extension_alias_key(exercise_name, key)
+        ):
             return True
     return False
+
+
+def _direct_progression_value_for_exercise(exercise_name, progression_key, progression_value):
+    if not isinstance(progression_value, dict):
+        return {}
+    if not _is_legacy_triceps_extension_alias_key(exercise_name, progression_key):
+        return progression_value
+    post_split_history = [
+        item
+        for item in (progression_value.get("history") or [])
+        if isinstance(item, dict)
+        and str(item.get("date") or "") >= TRICEPS_EXTENSION_ALIAS_SPLIT_DATE
+        and _positive_float(item.get("e1rm")) is not None
+    ]
+    if not post_split_history:
+        return {}
+    post_split_history = sorted(post_split_history, key=lambda item: str(item.get("date") or ""))
+    cleaned = copy.deepcopy(progression_value)
+    cleaned["history"] = post_split_history
+    cleaned["current_e1rm"] = round(float(post_split_history[-1]["e1rm"]), 1)
+    cleaned["peak_e1rm"] = round(max(float(item["e1rm"]) for item in post_split_history), 1)
+    cleaned["status"] = _progression_status_from_e1rm_history(post_split_history)
+    return cleaned
+
+
+def _progression_status_from_e1rm_history(history):
+    if len(history) < 2:
+        return "On Track"
+    current_e1rm = float(history[-1]["e1rm"])
+    peak_e1rm = max(float(item["e1rm"]) for item in history)
+    recent_3 = [float(item["e1rm"]) for item in history[-3:]]
+    if current_e1rm < peak_e1rm * 0.95:
+        return "Regression"
+    if len(recent_3) >= 3 and recent_3[-1] <= recent_3[0]:
+        return "Plateau"
+    return "On Track"
+
+
+def _is_legacy_triceps_extension_alias_key(exercise_name, key):
+    return (
+        _normalize_exercise_name(exercise_name) == _normalize_exercise_name("Triceps Extension")
+        and str(key or "").strip().lower() in LEGACY_TRICEPS_EXTENSION_ALIASES
+    )
+
+
+def _has_confirmed_triceps_extension_baseline(baseline_key):
+    metadata = BASELINES_DATA.get(BASELINE_METADATA_KEY)
+    if not isinstance(metadata, dict):
+        return False
+    marker = str(metadata.get(baseline_key) or "")
+    return marker >= TRICEPS_EXTENSION_ALIAS_SPLIT_DATE
+
+
+def _baseline_key_matches_exercise(baseline_key, exercise_name):
+    wanted = _normalize_exercise_name(_canonical_exercise_name(exercise_name))
+    candidate = _normalize_exercise_name(_canonical_exercise_name(baseline_key))
+    return candidate == wanted
+
+
+def _lookup_baseline_by_exercise_name(exercise_name):
+    if not isinstance(BASELINES_DATA, dict):
+        return None, None
+    candidates = []
+    if exercise_name in BASELINES_DATA:
+        candidates.append((exercise_name, BASELINES_DATA[exercise_name]))
+    for key, value in BASELINES_DATA.items():
+        if key == BASELINE_METADATA_KEY or key == exercise_name:
+            continue
+        if _baseline_key_matches_exercise(key, exercise_name):
+            candidates.append((key, value))
+
+    for key, value in candidates:
+        if (
+            _is_legacy_triceps_extension_alias_key(exercise_name, key)
+            and not _has_confirmed_triceps_extension_baseline(key)
+        ):
+            continue
+        return key, value
+    return None, None
+
+
+def _public_baselines_payload():
+    public = {}
+    for key, value in BASELINES_DATA.items():
+        if key == BASELINE_METADATA_KEY:
+            continue
+        if (
+            _is_legacy_triceps_extension_alias_key("Triceps Extension", key)
+            and not _has_confirmed_triceps_extension_baseline(key)
+        ):
+            continue
+        public[key] = value
+    return public
 
 
 def _select_recommendation_e1rm(exercise_name, ex_progression, progression=None):
@@ -1018,10 +1179,17 @@ def _select_recommendation_e1rm(exercise_name, ex_progression, progression=None)
     if not isinstance(ex_progression, dict):
         ex_progression = {}
     progression_key = exercise_name
+    ex_progression = _direct_progression_value_for_exercise(exercise_name, progression_key, ex_progression)
     if not ex_progression and isinstance(progression, dict):
         wanted = _normalize_exercise_name(_canonical_exercise_name(exercise_name))
         for key, value in progression.items():
-            if _normalize_exercise_name(_canonical_exercise_name(key)) == wanted:
+            if (
+                _normalize_exercise_name(_canonical_exercise_name(key)) == wanted
+                or _is_legacy_triceps_extension_alias_key(exercise_name, key)
+            ):
+                value = _direct_progression_value_for_exercise(exercise_name, key, value)
+                if not value:
+                    continue
                 progression_key = key
                 ex_progression = value if isinstance(value, dict) else {}
                 break
@@ -1029,7 +1197,7 @@ def _select_recommendation_e1rm(exercise_name, ex_progression, progression=None)
     progression_e1rm = _positive_float(ex_progression.get("current_e1rm"))
     progression_status = ex_progression.get("status", "On Track")
 
-    baseline_key, baseline_value = _lookup_by_exercise_name(BASELINES_DATA, exercise_name)
+    baseline_key, baseline_value = _lookup_baseline_by_exercise_name(exercise_name)
     baseline_e1rm = _positive_float(baseline_value)
 
     lookup_key, lookup_exercise = _lookup_by_exercise_name(EXERCISE_LOOKUP, exercise_name)
@@ -2267,6 +2435,15 @@ def calculate_progression_status(workouts):
     return results
 
 
+def _logged_exercise_muscle_group(exercise):
+    stored = (exercise.get("muscle_group") or exercise.get("muscle") or "unknown").strip().lower()
+    exercise_name = exercise.get("machine") or exercise.get("exercise") or exercise.get("name")
+    exercise_def = _resolve_exercise_definition(exercise_name)
+    if exercise_def and exercise_def.get("muscle"):
+        return str(exercise_def.get("muscle")).strip().lower()
+    return stored or "unknown"
+
+
 def calculate_volume(workouts, weeks=4):
     """Calculate volume load per muscle group over recent weeks."""
     workouts = _recommendation_workouts_with_apple_health(workouts, days=weeks * 7)
@@ -2288,7 +2465,7 @@ def calculate_volume(workouts, weeks=4):
         for exercise in workout.get("exercises", []) or []:
             if not isinstance(exercise, dict):
                 continue
-            muscle = (exercise.get("muscle_group") or "unknown")
+            muscle = _logged_exercise_muscle_group(exercise)
             if muscle not in muscle_volume:
                 muscle_volume[muscle] = {"sets": 0, "volume_load": 0, "last_trained": date_s}
 
@@ -2452,7 +2629,7 @@ def summarize_recent_completion(workouts, hours=24):
     for ex in w.get("exercises") or []:
         if not isinstance(ex, dict):
             continue
-        muscle = (ex.get("muscle_group") or "").strip().lower()
+        muscle = _logged_exercise_muscle_group(ex)
         sets = ex.get("sets") or []
         n_sets = len(sets)
         total_sets += n_sets
@@ -2561,7 +2738,7 @@ def _recent_muscle_performance_debt(muscle, workouts, hours=72):
         for exercise in workout.get("exercises") or []:
             if not isinstance(exercise, dict):
                 continue
-            if (exercise.get("muscle_group") or "").strip().lower() != muscle:
+            if _logged_exercise_muscle_group(exercise) != muscle:
                 continue
             sets = _completed_set_rows(exercise.get("sets"))
             target_sets = _positive_number(
@@ -2625,7 +2802,7 @@ def _muscles_trained_for_workout(workout):
     for exercise in workout.get("exercises") or []:
         if not isinstance(exercise, dict):
             continue
-        muscle = (exercise.get("muscle_group") or "").strip().lower()
+        muscle = _logged_exercise_muscle_group(exercise)
         if not muscle or muscle == "unknown":
             continue
         if _completed_set_rows(exercise.get("sets")):
@@ -3384,6 +3561,11 @@ def _get_last_exercise_performance(workouts, exercise_name):
         for ex in w.get("exercises", []) or []:
             if ex.get("machine") != exercise_name:
                 continue
+            if (
+                _is_legacy_triceps_extension_alias_key(exercise_name, ex.get("machine"))
+                and str(w.get("date") or "") < TRICEPS_EXTENSION_ALIAS_SPLIT_DATE
+            ):
+                continue
             sets = ex.get("sets", []) or []
             if not sets:
                 continue
@@ -3489,8 +3671,7 @@ def generate_next_workout(
     ]
 
     # If not enough muscles available, add default ones
-    default_muscles = ["chest", "back", "quads", "shoulders", "hamstrings", "glutes", "adductors", "biceps", "triceps", "core", "calves"]
-    for m in default_muscles:
+    for m in TRAINABLE_MUSCLES:
         if m in readiness_scores and (
             readiness_scores[m]["score"] < 5
             or (readiness_scores[m].get("performance_debt") and readiness_scores[m]["score"] <= 5)
@@ -3563,10 +3744,8 @@ def generate_next_workout(
         for m, r in readiness_scores.items() if r["score"] < 5
     ]
 
-    upper = {"chest", "back", "shoulders", "biceps", "triceps"}
-    lower = {"quads", "hamstrings", "glutes", "calves", "adductors"}
-    has_upper = any(m in upper for m in available_muscles)
-    has_lower = any(m in lower for m in available_muscles)
+    has_upper = any(m in UPPER_BODY_MUSCLES for m in available_muscles)
+    has_lower = any(m in LOWER_BODY_MUSCLES for m in available_muscles)
 
     if has_upper and has_lower:
         focus = "Full Body"
@@ -11125,8 +11304,8 @@ def smart_recommendation_api():
 
     effective_readiness = _effective_readiness_from(readiness, recovery_bonus)
 
-    upper = {"chest", "back", "shoulders", "biceps", "triceps"}
-    lower = {"quads", "hamstrings", "glutes", "calves", "adductors"}
+    upper = UPPER_BODY_MUSCLES
+    lower = LOWER_BODY_MUSCLES
     avoid_set = set(avoid)
 
     # `avoid_set` now mixes sore muscles with recently-trained muscles, so
@@ -11829,11 +12008,11 @@ def complete_workout():
         "Shoulder Press": "shoulders", "Deltoid Fly": "shoulders", "Machine Deltoid Raise": "shoulders", "Rear Delt Fly": "shoulders",
         "Leg Press": "quads", "Seated Leg Press": "quads", "Leg Extension": "quads",
         "Leg Curl": "hamstrings", "Seated Leg Curl": "hamstrings",
-        "Seated Dip": "triceps", "Tricep Pushdown": "triceps",
+        "Seated Dip": "triceps", "Tricep Pushdown": "triceps", "Triceps Extension": "triceps",
         "Biceps Curl": "biceps", "Calf Raise": "calves",
         "Pec Fly": "chest", "Chest Fly": "chest",
         "Crunch Machine": "core", "Hip Abductor": "glutes", "Hip Adductor": "adductors",
-        "Back Extension": "back", "Low Back": "back",
+        "Back Extension": "erectors", "Low Back": "erectors",
         "Cable Row": "back", "Seated Cable Row": "back",
     }
     for ex in actual_exercises:
@@ -12300,6 +12479,7 @@ def baselines():
         {"name": ex["name"], "muscle": ex["muscle"], "suggested": ex["baseline"]}
         for ex in EXERCISE_LIBRARY
     ]
+    public_baselines = _public_baselines_payload()
 
     if request.method == 'GET':
         # Get progression data to see which exercises have history
@@ -12308,7 +12488,7 @@ def baselines():
         exercises_with_status = []
         for ex in ALL_EXERCISES:
             has_history = ex["name"] in progression
-            baseline_weight = BASELINES_DATA.get(ex["name"])
+            baseline_weight = public_baselines.get(ex["name"])
             current_e1rm = progression.get(ex["name"], {}).get("current_e1rm")
 
             exercises_with_status.append({
@@ -12319,7 +12499,7 @@ def baselines():
                 "baseline_weight": baseline_weight or (current_e1rm if has_history else None),
             })
 
-        return jsonify({"exercises": exercises_with_status, "baselines": BASELINES_DATA})
+        return jsonify({"exercises": exercises_with_status, "baselines": public_baselines})
     else:
         # Save baselines
         data, err = get_json_body(required=True)
@@ -12331,6 +12511,8 @@ def baselines():
 
         cleaned = {}
         for k, v in new_baselines.items():
+            if k == BASELINE_METADATA_KEY:
+                continue
             if not isinstance(k, str) or not k.strip():
                 continue
             try:
@@ -12338,9 +12520,27 @@ def baselines():
             except Exception:
                 return api_error(f"Baseline for '{k}' must be a number", 400, code="invalid_field")
 
+        metadata = copy.deepcopy(BASELINES_DATA.get(BASELINE_METADATA_KEY) or {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        for k in cleaned:
+            if _normalize_exercise_name(_canonical_exercise_name(k)) == _normalize_exercise_name("Triceps Extension"):
+                prior_value = _positive_float(BASELINES_DATA.get(k))
+                same_unconfirmed_legacy_value = (
+                    prior_value is not None
+                    and prior_value == _positive_float(cleaned[k])
+                    and _is_legacy_triceps_extension_alias_key("Triceps Extension", k)
+                    and not _has_confirmed_triceps_extension_baseline(k)
+                )
+                if not same_unconfirmed_legacy_value:
+                    metadata[k] = datetime.now().strftime("%Y-%m-%d")
+
         BASELINES_DATA.update(cleaned)
+        if metadata:
+            BASELINES_DATA[BASELINE_METADATA_KEY] = metadata
         save_json(BASELINES_FILE, BASELINES_DATA)
-        return jsonify({"status": "success", "baselines": BASELINES_DATA})
+        public_baselines = _public_baselines_payload()
+        return jsonify({"status": "success", "baselines": public_baselines})
 
 
 @app.route('/api/muscle-fatigue')
@@ -12348,14 +12548,8 @@ def muscle_fatigue():
     """Get muscle fatigue/readiness data for muscle group calculations."""
     volume = calculate_volume(WORKOUTS, weeks=2)  # Last 2 weeks
 
-    # All muscle groups
-    all_muscles = [
-        "chest", "back", "shoulders", "biceps", "triceps",
-        "quads", "hamstrings", "glutes", "adductors", "calves", "core"
-    ]
-
     fatigue_data = {}
-    for muscle in all_muscles:
+    for muscle in TRAINABLE_MUSCLES:
         readiness = get_readiness_score(muscle, SORENESS_DATA, volume, CARDIO_DATA, WORKOUTS)
 
         # Calculate fatigue level (inverse of readiness)

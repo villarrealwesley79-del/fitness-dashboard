@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+from datetime import datetime
 
 import pytest
 import lm_studio_adapter
@@ -257,7 +258,7 @@ def test_swap_resolves_semantic_triceps_extension_and_uses_backend_load(fitness_
 
     assert response.status_code == 200
     exercise = response.get_json()["recommendation"]["exercises"][0]
-    assert exercise["exercise"] == "Overhead Tricep Extension"
+    assert exercise["exercise"] == "Triceps Extension"
     assert exercise["target_weight"] > 0
     assert exercise["load_source"] in {"hardcoded", "baseline_json", "progression", "similar_history"}
     assert "Swapped from Cable Pushdown" in exercise["rationale"]
@@ -295,7 +296,7 @@ def test_swap_resolves_plural_triceps_extension_deterministically(fitness_app, m
     )
 
     assert response.status_code == 200
-    assert response.get_json()["recommendation"]["exercises"][0]["exercise"] == "Overhead Tricep Extension"
+    assert response.get_json()["recommendation"]["exercises"][0]["exercise"] == "Triceps Extension"
 
 
 def test_swap_uses_adapter_fallback_for_inconclusive_free_text(fitness_app, monkeypatch):
@@ -340,7 +341,7 @@ def test_swap_uses_adapter_fallback_for_inconclusive_free_text(fitness_app, monk
         "typed_name": "arm straightener",
         "current_exercise": "Cable Pushdown",
         "target_muscle": "triceps",
-        "candidate_names": ["Seated Dip", "Overhead Tricep Extension", "Tricep Pushdown"],
+        "candidate_names": ["Seated Dip", "Triceps Extension", "Overhead Tricep Extension", "Tricep Pushdown"],
     }
 
 
@@ -470,13 +471,13 @@ def test_swap_prefilters_equipment_before_adapter_resolution(fitness_app, monkey
         "/api/workout/swap",
         json={
             "exercise_index": 0,
-            "new_exercise_name": "cable triceps extension",
+            "new_exercise_name": "arm straightener",
         },
     )
 
     assert response.status_code == 404
     assert response.get_json()["error"]["message"] == "Unknown exercise name"
-    assert seen["candidate_names"] == ["Seated Dip"]
+    assert seen["candidate_names"] == ["Seated Dip", "Triceps Extension"]
 
 
 def test_swap_rejects_current_exercise_no_op(fitness_app, monkeypatch):
@@ -622,6 +623,91 @@ def test_exercise_library_has_joint_loading_metadata(fitness_app):
     assert set(biceps_curl["joints_loaded"]) == {"elbow", "wrist"}
     assert set(romanian_deadlift["joints_loaded"]) == {"hip", "knee", "spine"}
     assert set(hanging_leg_raise["joints_loaded"]) == {"spine", "hip"}
+
+
+def test_swap_library_models_triceps_extension_and_erectors(fitness_app):
+    triceps_extension = fitness_app.EXERCISE_LOOKUP["Triceps Extension"]
+    overhead = fitness_app.EXERCISE_LOOKUP["Overhead Tricep Extension"]
+    back_extension = fitness_app.EXERCISE_LOOKUP["Back Extension"]
+
+    assert triceps_extension["equipment"] == "machine"
+    assert triceps_extension["joints_loaded"] == ["elbow"]
+    assert triceps_extension["shoulder_position"] == "neutral"
+    assert "Tricep Extension" in triceps_extension["aliases"]
+    assert "Tricep Extension" not in overhead.get("aliases", [])
+    assert "Triceps Extension" not in overhead.get("aliases", [])
+    assert overhead["shoulder_position"] == "overhead"
+    assert back_extension["muscle"] == "erectors"
+    assert set(back_extension["joints_loaded"]) == {"spine", "hip"}
+
+
+def test_generate_next_workout_programs_erectors_across_full_cycle(fitness_app):
+    recommendation = fitness_app.generate_next_workout(
+        [],
+        [],
+        goal=fitness_app.TrainingGoal.HYPERTROPHY.value,
+        available_time=120,
+        persist=False,
+        include_open_wearables_readiness=False,
+    )
+
+    exercises_by_muscle = {
+        exercise["muscle"]: exercise["exercise"]
+        for exercise in recommendation["exercises"]
+    }
+
+    assert exercises_by_muscle["erectors"] == "Back Extension"
+
+
+def test_legacy_back_extension_volume_counts_toward_erectors(fitness_app):
+    today = datetime.now().strftime("%Y-%m-%d")
+    volume = fitness_app.calculate_volume(
+        [
+            {
+                "date": today,
+                "exercises": [
+                    {
+                        "machine": "Back Extension",
+                        "muscle_group": "back",
+                        "sets": [
+                            {"weight_lbs": 80, "reps": 10},
+                            {"weight_lbs": 80, "reps": 10},
+                        ],
+                    }
+                ],
+            }
+        ],
+        weeks=4,
+    )
+
+    assert "erectors" in volume
+    assert "back" not in volume
+    assert volume["erectors"]["sets"] == 2
+
+
+def test_legacy_low_back_volume_counts_toward_erectors(fitness_app):
+    today = datetime.now().strftime("%Y-%m-%d")
+    volume = fitness_app.calculate_volume(
+        [
+            {
+                "date": today,
+                "exercises": [
+                    {
+                        "machine": "Low Back",
+                        "muscle_group": "back",
+                        "sets": [
+                            {"weight_lbs": 80, "reps": 10},
+                        ],
+                    }
+                ],
+            }
+        ],
+        weeks=4,
+    )
+
+    assert "erectors" in volume
+    assert "back" not in volume
+    assert volume["erectors"]["sets"] == 1
 
 
 def test_ai_adjust_removes_exercises_loading_side_specific_avoided_joint(fitness_app):
