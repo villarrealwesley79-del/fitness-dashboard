@@ -129,6 +129,21 @@
             if (timer) clearTimeout(timer);
         }
         if (res.status === 401) {
+            let reloadRequired = false;
+            try {
+                const body = await res.clone().json();
+                reloadRequired = Boolean(body && (body.reload === true || body.error === 'reload_required'));
+            } catch {
+                reloadRequired = false;
+            }
+            if (reloadRequired) {
+                if (activeWorkoutHasProgress()) {
+                    toast('Update ready after workout. Refresh when finished.', 'warn');
+                    throw new Error('reload required after workout');
+                }
+                window.location.reload();
+                throw new Error('reload required');
+            }
             window.location.href = '/login?next=' + encodeURIComponent(location.pathname);
             throw new Error('unauthorized');
         }

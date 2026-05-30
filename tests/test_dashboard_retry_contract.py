@@ -199,6 +199,8 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "if (activeWorkoutHasProgress())" in app_js
     assert "Update ready after workout. Refresh when finished." in app_js
     assert "window.location.reload()" in app_js
+    assert "body.error === 'reload_required'" in app_js
+    assert "throw new Error('reload required after workout')" in app_js
     assert "reg.waiting.postMessage({ type: 'SKIP_WAITING' })" in app_js
     assert 'APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"' in app_py
     assert 'APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload-r2"' in app_py
