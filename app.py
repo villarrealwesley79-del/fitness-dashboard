@@ -12,6 +12,7 @@ from contextlib import closing
 import copy
 import json
 import logging
+import math
 import os
 import socket
 import sqlite3
@@ -417,12 +418,110 @@ LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
 OPEN_WEARABLES_WORKOUT_MARKER_CACHE = None
 
 # ==================== CARDIO RECOMMENDATIONS ====================
-# Heart rate zones based on % of max HR (220 - age, assume age 30 for now = 190 max HR)
-# Zone 1: 50-60% - Recovery/Warmup (95-114 BPM)
-# Zone 2: 60-70% - Fat Burning/Endurance Base (114-133 BPM)
-# Zone 3: 70-80% - Aerobic/Cardio (133-152 BPM)
-# Zone 4: 80-90% - Threshold/Performance (152-171 BPM)
-# Zone 5: 90-100% - Maximum Effort (171-190 BPM)
+ACSM_HR_ZONE_BANDS = {
+    "z1": (None, 0.57),
+    "z2": (0.57, 0.63),
+    "z3": (0.64, 0.76),
+    "z4": (0.77, 0.95),
+    "z5": (0.96, None),
+}
+
+CARDIO_MISSING_DOB_HR_RANGE = "Set DOB in Settings for personalized HR range"
+
+
+def _parse_profile_date(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _age_from_date_of_birth(date_of_birth, as_of=None):
+    born = _parse_profile_date(date_of_birth)
+    if not born:
+        return None
+    if as_of is None:
+        today = datetime.now().date()
+    elif isinstance(as_of, str):
+        today = _parse_profile_date(as_of)
+    else:
+        today = as_of
+    if not today or born > today:
+        return None
+    return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+
+
+def _compute_hr_zones(date_of_birth=None, sex=None, as_of=None):
+    age = _age_from_date_of_birth(date_of_birth, as_of=as_of)
+    if age is None:
+        return {
+            "available": False,
+            "reason": CARDIO_MISSING_DOB_HR_RANGE,
+            "zones": {},
+        }
+
+    sex_key = str(sex or "").strip().lower()
+    if sex_key == "female":
+        formula = "gulati"
+        hrmax = 206 - (0.88 * age)
+    else:
+        formula = "tanaka"
+        hrmax = 208 - (0.7 * age)
+
+    zones = {}
+    for zone_key, (low_pct, high_pct) in ACSM_HR_ZONE_BANDS.items():
+        if low_pct is None:
+            zones[zone_key] = f"Below {math.ceil(hrmax * high_pct)} BPM"
+        elif high_pct is None:
+            zones[zone_key] = f"{math.ceil(hrmax * low_pct)}+ BPM"
+        else:
+            zones[zone_key] = f"{math.ceil(hrmax * low_pct)}-{math.ceil(hrmax * high_pct)} BPM"
+
+    return {
+        "available": True,
+        "age": age,
+        "formula": formula,
+        "hrmax_bpm": round(hrmax, 1),
+        "zones": zones,
+    }
+
+
+def _cardio_canonical_zone_key(display_zone):
+    zone = str(display_zone or "").strip().lower()
+    if not zone:
+        return None
+    if zone in {"zone 2", "zone 2-3", "zone 3"}:
+        return "z3"
+    if zone == "zone 1":
+        return "z1"
+    if zone == "zone 4":
+        return "z4"
+    if zone == "zone 5":
+        return "z5"
+    return None
+
+
+def _cardio_heart_rate_range_for_zone(display_zone, settings=None):
+    zone_key = _cardio_canonical_zone_key(display_zone)
+    if not zone_key:
+        return None
+    settings = settings or USER_SETTINGS
+    zones = _compute_hr_zones(
+        settings.get("date_of_birth"),
+        settings.get("sex"),
+    )
+    if not zones.get("available"):
+        return zones["reason"]
+    return zones["zones"].get(zone_key)
+
+
+def _apply_cardio_heart_rate_range(rec, settings=None):
+    if not rec.get("include_cardio"):
+        return rec
+    rec["heart_rate_range"] = _cardio_heart_rate_range_for_zone(rec.get("zone"), settings=settings)
+    return rec
 
 CARDIO_RECOMMENDATIONS = {
     TrainingGoal.STRENGTH.value: {
@@ -448,7 +547,7 @@ CARDIO_RECOMMENDATIONS = {
         "duration_minutes": 20,
         "zone": "Zone 2-3",
         "zone_description": "Fat Burning to Aerobic",
-        "heart_rate_range": "114-152 BPM",
+        "heart_rate_range": None,
         "intensity": "Steady state, conversational pace",
         "technique": "Full steps, engage glutes, maintain upright posture"
     },
@@ -459,7 +558,7 @@ CARDIO_RECOMMENDATIONS = {
         "duration_minutes": 15,
         "zone": "Zone 2",
         "zone_description": "Fat Burning Zone",
-        "heart_rate_range": "114-133 BPM",
+        "heart_rate_range": None,
         "intensity": "Steady, sustainable pace you can maintain",
         "technique": "Light grip on rails, step through heels, keep core engaged"
     },
@@ -470,7 +569,7 @@ CARDIO_RECOMMENDATIONS = {
         "duration_minutes": 10,
         "zone": "Zone 2",
         "zone_description": "Fat Burning Zone",
-        "heart_rate_range": "114-133 BPM",
+        "heart_rate_range": None,
         "intensity": "Easy, recovery pace",
         "technique": "Natural stride, minimal rail support"
     },
@@ -489,7 +588,7 @@ CARDIO_RECOMMENDATIONS = {
         "duration_minutes": 15,
         "zone": "Zone 2-3",
         "zone_description": "Fat Burning to Aerobic",
-        "heart_rate_range": "114-152 BPM",
+        "heart_rate_range": None,
         "intensity": "Moderate effort, slightly elevated breathing",
         "technique": "Skip every other step for glute emphasis, or single steps for quads"
     },
@@ -500,7 +599,7 @@ CARDIO_RECOMMENDATIONS = {
         "duration_minutes": 20,
         "zone": "Zone 2-3",
         "zone_description": "Fat Burning to Aerobic",
-        "heart_rate_range": "114-152 BPM",
+        "heart_rate_range": None,
         "intensity": "Moderate steady state with intervals",
         "technique": "Alternate 2 min easy / 1 min faster pace"
     }
@@ -669,7 +768,6 @@ def _choose_dynamic_cardio_recommendation(
             "duration_minutes": min(30, max(20, int(base_rec.get("duration_minutes") or 20))),
             "zone": "Zone 2",
             "zone_description": "Fat Burning / Recovery",
-            "heart_rate_range": "114-133 BPM",
             "intensity": "Easy conversational pace; leave fresher than you started",
             "technique": "Smooth cadence, nasal-breathing pace, no hard intervals",
         })
@@ -678,7 +776,6 @@ def _choose_dynamic_cardio_recommendation(
             "duration_minutes": min(20, max(12, int(base_rec.get("duration_minutes") or 15))),
             "zone": "Zone 4",
             "zone_description": "Threshold / Performance",
-            "heart_rate_range": "152-171 BPM",
             "intensity": "Intervals: hard efforts with full easy recoveries",
             "technique": "Keep reps crisp; stop intervals if form or breathing falls apart",
         })
@@ -686,14 +783,13 @@ def _choose_dynamic_cardio_recommendation(
         rec.update({
             "zone": "Zone 3",
             "zone_description": "Aerobic",
-            "heart_rate_range": "133-152 BPM",
             "intensity": "Steady state with controlled breathing",
             "technique": CARDIO_TECHNIQUE_BY_MODALITY.get(
                 _normalize_cardio_type(selected_type),
                 "Keep posture tall and effort controlled",
             ),
         })
-    return rec
+    return _apply_cardio_heart_rate_range(rec)
 
 # ==================== EXERCISE LIBRARY ====================
 
