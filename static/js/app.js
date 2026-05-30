@@ -5574,14 +5574,7 @@
         if (!nw) { toast('No adjusted workout available', 'err'); return; }
         if (!confirmDiscardActiveWorkoutForStart()) return;
         if ($('modal-adjust')) $('modal-adjust').hidden = true;
-        // FIT-179: if the user is already mid-workout, route through the
-        // preservation helper so completed sets aren't reset to fresh
-        // recommendation rows.
-        if (state.activeWorkout && Array.isArray(state.activeWorkout.exercises)) {
-            applyAdjustedRecommendationToActiveWorkout(nw, state.activeWorkout.exercises, { preserveDirty: false });
-        } else {
-            startActiveWorkoutFromRecommendation(nw);
-        }
+        startActiveWorkoutFromRecommendation(nw);
         renderActiveWorkout();
     }
 

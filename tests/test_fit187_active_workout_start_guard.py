@@ -62,6 +62,7 @@ def test_start_workout_confirms_before_discarding_logged_active_sets():
     adjusted_confirm = outputs["confirmAdjustedStart"]
     assert adjusted_confirm["activeName"] == "Hack Squat"
     assert adjusted_confirm["dirty"] is False
+    assert adjusted_confirm["oldNotesPresent"] is False
     assert adjusted_confirm["adjustModalHidden"] is True
     assert adjusted_confirm["renderCount"] == 1
 
@@ -263,6 +264,7 @@ async function run() {{
     confirmCalls: api.confirmCalls(),
     activeName: api.state.activeWorkout.exercises[0].exercise,
     dirty: api.state.activeWorkout.dirty,
+    oldNotesPresent: JSON.stringify(api.state.activeWorkout).includes('keep me'),
     adjustModalHidden: api.elements['modal-adjust'].hidden,
     renderCount: api.renderCount(),
   }};
