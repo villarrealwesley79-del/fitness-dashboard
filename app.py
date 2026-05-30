@@ -290,13 +290,13 @@ GOAL_PARAMETERS = {
     TrainingGoal.WEIGHT_LOSS.value: {
         "name": "Weight Loss",
         "description": "Calorie burn, circuit-style, minimal rest",
-        "rep_range": (12, 15),
+        "rep_range": (8, 12),
         "sets_per_exercise": 3,
-        "rest_minutes": "0.5",
+        "rest_minutes": "1.5-3",
         "rpe_target": 7,
-        "intensity_pct": 60,
+        "intensity_pct": 70,
         "volume_multiplier": 1.3,
-        "time_per_set_minutes": 1.5
+        "time_per_set_minutes": 3
     },
     TrainingGoal.HYBRID_STRENGTH_HYPERTROPHY.value: {
         "name": "Strength + Hypertrophy",
@@ -316,31 +316,31 @@ GOAL_PARAMETERS = {
         "sets_per_exercise": 4,
         "rest_minutes": "1-1.5",
         "rpe_target": 7,
-        "intensity_pct": 60,
+        "intensity_pct": 65,
         "volume_multiplier": 1.1,
         "time_per_set_minutes": 2.5  # Per set including rest
     },
     TrainingGoal.TONING.value: {
         "name": "Toning",
         "description": "Define muscles, moderate weight, higher reps",
-        "rep_range": (12, 20),
+        "rep_range": (8, 15),
         "sets_per_exercise": 3,
-        "rest_minutes": "0.75-1",
+        "rest_minutes": "1-2",
         "rpe_target": 6.5,
-        "intensity_pct": 55,
+        "intensity_pct": 65,
         "volume_multiplier": 1.0,
-        "time_per_set_minutes": 1.5
+        "time_per_set_minutes": 2
     },
     TrainingGoal.HYBRID_WEIGHT_LOSS_TONING.value: {
         "name": "Weight Loss + Toning",
         "description": "Burn fat while defining muscle",
-        "rep_range": (15, 20),
+        "rep_range": (8, 15),
         "sets_per_exercise": 3,
-        "rest_minutes": "0.5-0.75",
+        "rest_minutes": "1-2",
         "rpe_target": 7,
-        "intensity_pct": 50,
+        "intensity_pct": 65,
         "volume_multiplier": 1.2,
-        "time_per_set_minutes": 1.25
+        "time_per_set_minutes": 2
     }
 }
 
@@ -3202,7 +3202,7 @@ def _build_exercise_entry(
         target_reps = 45
         rationale = f"{goal_params['name']}: Timed core stability"
 
-    rest_label = "3-4 min" if is_compound else "60-90 sec"
+    rest_label = f"{rest_time} min"
     entry = {
         "exercise": exercise_name,
         "muscle": muscle,
@@ -3413,6 +3413,15 @@ def generate_next_workout(
             raise
         oura_readiness = _get_oura_readiness_today()
     equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
+    base_cardio_rec = CARDIO_RECOMMENDATIONS.get(goal, CARDIO_RECOMMENDATIONS[TrainingGoal.HYPERTROPHY.value])
+    cardio_rec = _choose_dynamic_cardio_recommendation(
+        goal,
+        base_cardio_rec,
+        oura_readiness=oura_readiness,
+        training_recommendation=training_recommendation,
+        consume_rotation=consume_cardio_rotation,
+        equipment_preference=equipment_pref,
+    )
 
     # Calculate max exercises based on available time
     # Account for warmup (5 min) and cooldown (5 min)
@@ -3423,7 +3432,16 @@ def generate_next_workout(
         volume_multiplier *= 0.8
     adjusted_sets_for_timing = max(2, round(sets_per_exercise * volume_multiplier))
     time_per_exercise = time_per_set * adjusted_sets_for_timing
-    max_exercises = max(2, int(effective_time / time_per_exercise))
+    cardio_duration = int(cardio_rec.get("duration_minutes") or 0)
+    minimum_resistance_time = 2 * time_per_exercise
+    cardio_reservation = 0
+    if cardio_rec.get("include_cardio") and cardio_duration >= 10:
+        if effective_time - cardio_duration >= minimum_resistance_time:
+            cardio_reservation = cardio_duration
+        elif effective_time - 10 >= minimum_resistance_time:
+            cardio_reservation = min(cardio_duration, effective_time - minimum_resistance_time)
+    resistance_time_budget = max(minimum_resistance_time, effective_time - cardio_reservation)
+    max_exercises = max(2, int(resistance_time_budget / time_per_exercise))
 
     volume_data = calculate_volume(workouts, weeks=4)
     muscle_groups = list(volume_data.keys()) or ["chest", "back", "quads", "shoulders"]
@@ -3531,21 +3549,10 @@ def generate_next_workout(
     total_exercise_time = sum(e.get("estimated_time", 10) for e in exercises)
     total_time = total_exercise_time + 10  # Add warmup/cooldown
 
-    # Get cardio recommendation for this goal
-    base_cardio_rec = CARDIO_RECOMMENDATIONS.get(goal, CARDIO_RECOMMENDATIONS[TrainingGoal.HYPERTROPHY.value])
-    cardio_rec = _choose_dynamic_cardio_recommendation(
-        goal,
-        base_cardio_rec,
-        oura_readiness=oura_readiness,
-        training_recommendation=training_recommendation,
-        consume_rotation=consume_cardio_rotation,
-        equipment_preference=equipment_pref,
-    )
     cardio_data = None
 
     # Calculate remaining time for cardio (ensure we don't exceed available time)
     remaining_time = available_time - total_time
-    cardio_duration = cardio_rec.get("duration_minutes", 0)
 
     if cardio_rec.get("include_cardio") and remaining_time >= 10:
         # Adjust cardio duration if needed to fit within time frame
