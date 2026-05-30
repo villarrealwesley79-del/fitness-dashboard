@@ -65,6 +65,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 REPO_DIR="$(cd "${REPO_DIR}" && pwd)"
+DATA_DIR="${DATA_DIR:-${REPO_DIR}}"
+PUBLIC_BASE_URL="${FITNESS_DASHBOARD_PUBLIC_BASE_URL:-}"
 if [ -z "${PYTHON_BIN}" ]; then
     if [ -x "${REPO_DIR}/.venv/bin/python" ]; then
         PYTHON_BIN="${REPO_DIR}/.venv/bin/python"
@@ -138,7 +140,7 @@ xml_escape() {
 }
 
 app_plist() {
-    local app_label repo_dir python_bin app_path app_log app_err app_host app_port app_debug
+    local app_label repo_dir python_bin app_path app_log app_err app_host app_port app_debug data_dir public_base_url
     app_label="$(xml_escape "${APP_LABEL}")"
     repo_dir="$(xml_escape "${REPO_DIR}")"
     python_bin="$(xml_escape "${PYTHON_BIN}")"
@@ -148,6 +150,8 @@ app_plist() {
     app_host="$(xml_escape "${APP_HOST}")"
     app_port="$(xml_escape "${APP_PORT}")"
     app_debug="$(xml_escape "${APP_FLASK_DEBUG}")"
+    data_dir="$(xml_escape "${DATA_DIR}")"
+    public_base_url="$(xml_escape "${PUBLIC_BASE_URL}")"
     cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -170,6 +174,10 @@ app_plist() {
     <string>${app_port}</string>
     <key>FLASK_DEBUG</key>
     <string>${app_debug}</string>
+    <key>DATA_DIR</key>
+    <string>${data_dir}</string>
+    <key>FITNESS_DASHBOARD_PUBLIC_BASE_URL</key>
+    <string>${public_base_url}</string>
     <key>PYTHONUNBUFFERED</key>
     <string>1</string>
   </dict>
@@ -187,14 +195,15 @@ PLIST
 }
 
 staleness_plist() {
-    local stale_label repo_dir script_path sync_db first_seen stale_log stale_err
+    local stale_label repo_dir script_path sync_db first_seen stale_log stale_err data_dir
     stale_label="$(xml_escape "${STALE_LABEL}")"
     repo_dir="$(xml_escape "${REPO_DIR}")"
     script_path="$(xml_escape "${REPO_DIR}/scripts/check-apple-health-staleness.sh")"
-    sync_db="$(xml_escape "${REPO_DIR}/apple_health_sync.db")"
-    first_seen="$(xml_escape "${REPO_DIR}/.apple-health-first-sync")"
+    sync_db="$(xml_escape "${DATA_DIR}/apple_health_sync.db")"
+    first_seen="$(xml_escape "${DATA_DIR}/.apple-health-first-sync")"
     stale_log="$(xml_escape "${STALE_LOG}")"
     stale_err="$(xml_escape "${STALE_ERR}")"
+    data_dir="$(xml_escape "${DATA_DIR}")"
     cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -215,6 +224,8 @@ staleness_plist() {
   <true/>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>DATA_DIR</key>
+    <string>${data_dir}</string>
     <key>APPLE_HEALTH_SYNC_DB</key>
     <string>${sync_db}</string>
     <key>APPLE_HEALTH_FIRST_SEEN_FILE</key>

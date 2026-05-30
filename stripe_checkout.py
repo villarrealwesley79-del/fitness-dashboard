@@ -126,14 +126,15 @@ def _revoke_user_pro(stripe_sub_id):
     if not stripe_sub_id:
         return
     try:
-        import sqlite3, os
-        auth_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth.db")
-        conn = sqlite3.connect(auth_db)
+        import sqlite3
+        from auth import AUTH_DB, User
+        conn = sqlite3.connect(AUTH_DB)
         conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT id FROM users WHERE stripe_sub=?", (stripe_sub_id,)).fetchone()
-        conn.close()
+        try:
+            row = conn.execute("SELECT id FROM users WHERE stripe_sub=?", (stripe_sub_id,)).fetchone()
+        finally:
+            conn.close()
         if row:
-            from auth import User
             User.revoke_pro(row["id"])
             current_app.logger.info(f'Pro revoked for user {row["id"]} (sub={stripe_sub_id})')
     except Exception as e:

@@ -20,6 +20,7 @@ from collections import defaultdict
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from flask import jsonify, request
+from runtime_config import clean_public_url, data_path, public_base_url
 
 HEALTH_DIR = os.path.expanduser("~/Documents/Health")
 PUBLIC_BASE_URL_ENV = "FITNESS_DASHBOARD_PUBLIC_BASE_URL"
@@ -77,7 +78,7 @@ def _local_date_from_iso(value) -> str:
 def _apple_health_sync_db_path() -> str:
     return (
         os.environ.get(APPLE_HEALTH_SYNC_DB_ENV)
-        or os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple_health_sync.db")
+        or data_path("apple_health_sync.db")
     )
 
 
@@ -93,12 +94,7 @@ def _load_json(pattern: str) -> dict:
 
 
 def _clean_public_url(value: str) -> str:
-    value = (value or "").strip().rstrip("/")
-    if not value:
-        return ""
-    if "://" not in value:
-        value = f"https://{value}"
-    return value
+    return clean_public_url(value)
 
 
 def _append_sync_token(url: str, token: str) -> str:
@@ -119,25 +115,7 @@ def _append_sync_token(url: str, token: str) -> str:
 
 
 def _public_base_url_from_request() -> str:
-    configured = _clean_public_url(os.environ.get(PUBLIC_BASE_URL_ENV, ""))
-    if configured:
-        return configured
-
-    host = (
-        request.headers.get("X-Forwarded-Host")
-        or request.headers.get("Host")
-        or request.host
-        or "127.0.0.1:5050"
-    ).split(",", 1)[0].strip()
-    scheme = (
-        request.headers.get("X-Forwarded-Proto")
-        or request.scheme
-        or "https"
-    ).split(",", 1)[0].strip()
-    hostname = host.rsplit(":", 1)[0].lower()
-    if hostname.endswith(".ts.net"):
-        scheme = "https"
-    return f"{scheme}://{host}".rstrip("/")
+    return public_base_url(request)
 
 
 def _apple_health_sync_endpoint() -> str:

@@ -8,6 +8,7 @@ import json
 import sqlite3
 import urllib.request
 from datetime import datetime, timedelta
+from runtime_config import data_path
 
 
 def create_sleep_table(db_path: str):
@@ -43,6 +44,10 @@ def create_sleep_table(db_path: str):
         print("✅ oura_sleep table created/verified")
     finally:
         conn.close()
+
+
+def default_db_path() -> str:
+    return data_path("oura_daily.sqlite3")
 
 
 def seconds_to_minutes(seconds):
@@ -263,7 +268,7 @@ def calculate_bedtime_variance(db_path: str, days: int = 7):
 if __name__ == "__main__":
     import sys
 
-    db_path = os.path.join(os.path.dirname(__file__), "oura_daily.sqlite3")
+    db_path = default_db_path()
     api_token = os.environ.get("OURA_API_TOKEN")
 
     if not api_token:
