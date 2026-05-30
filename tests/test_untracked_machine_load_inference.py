@@ -405,6 +405,20 @@ def test_adjust_deterministic_target_requires_compatible_plan_slot(monkeypatch):
     assert triceps is None
 
 
+def test_adjust_deterministic_target_rejects_negative_requests(monkeypatch):
+    module = _module(monkeypatch)
+    recommendation = _recommendation_for(
+        module,
+        [
+            _rec_exercise("Incline Press", "chest", 95),
+        ],
+    )
+
+    negative = module._build_deterministic_adjust_swap("do not do chest press", recommendation, "machines_and_cables")
+
+    assert negative is None
+
+
 def test_adjust_swap_revalidates_replace_index_after_removals(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "WORKOUTS", [])

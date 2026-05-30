@@ -5058,12 +5058,14 @@
             return Number.isFinite(n) ? String(n) : '';
         };
         const prevList = Array.isArray(previousSets) ? previousSets : [];
-        const completed = prevList
-            .filter((s) => s && s.done)
+        const count = Number(newEx.target_sets || newEx.sets || 3);
+        const targetCount = Number.isFinite(count) && count > 0 ? Math.round(count) : 3;
+        const preserved = prevList
+            .filter((s, idx) => s && (s.done || idx < targetCount))
             .map((s) => ({
                 reps: s.reps != null ? s.reps : '',
                 weight: s.weight != null ? s.weight : '',
-                done: true,
+                done: Boolean(s.done),
                 notes: s.notes != null ? s.notes : '',
             }));
         const targetReps = newEx.target_reps != null
@@ -5074,11 +5076,9 @@
         const targetWeight = newEx.target_weight != null
             ? targetInputValue(newEx.target_weight)
             : (newEx.target_weight_lbs != null ? targetInputValue(newEx.target_weight_lbs) : '');
-        const count = Number(newEx.target_sets || newEx.sets || 3);
-        const targetCount = Number.isFinite(count) && count > 0 ? Math.round(count) : 3;
-        const rowCount = Math.max(targetCount, completed.length);
+        const rowCount = Math.max(targetCount, preserved.length);
         return Array.from({ length: rowCount }, (_, idx) => {
-            if (idx < completed.length) return completed[idx];
+            if (idx < preserved.length) return preserved[idx];
             return { reps: targetReps, weight: targetWeight, done: false, notes: '' };
         });
     }
@@ -5108,7 +5108,10 @@
             const nextKey = normalizeExerciseIdentity(ex);
             const prev = takePreviousExerciseByIdentity(previousExercises, usedPrevious, nextKey, previousExercises[i]);
             if (prev) {
-                return buildActiveExercise(ex, prev);
+                return {
+                    ...ex,
+                    logged_sets: buildAdjustedLoggedSets(ex, prev.logged_sets),
+                };
             }
             return {
                 ...ex,

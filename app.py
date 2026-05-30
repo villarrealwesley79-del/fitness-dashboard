@@ -2890,6 +2890,8 @@ def _adjust_target_phrase(constraint):
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
             return _clean_adjust_target_phrase(match.group(1))
+    if re.search(r"(?:^|\b)(?:do\s+not|don't|dont|no|avoid|remove|skip|without)\b", text, flags=re.IGNORECASE):
+        return ""
     return _clean_adjust_target_phrase(text)
 
 

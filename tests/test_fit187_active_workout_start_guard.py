@@ -63,6 +63,12 @@ def test_start_workout_confirms_before_discarding_logged_active_sets():
     assert shifted["secondNotes"] == ""
     assert shifted["dirty"] is True
 
+    reduced = outputs["setReduction"]
+    assert reduced["rowCount"] == 3
+    assert reduced["firstNotes"] == "keep first"
+    assert reduced["completedNotes"] == "completed third"
+    assert reduced["droppedFourth"] is True
+
 
 def _run_start_guard_fixture() -> dict:
     helper_source = "function setActiveWorkoutFromRecommendation" + _slice_between(
@@ -255,6 +261,37 @@ async function run() {{
     secondName: api.state.activeWorkout.exercises[1].exercise,
     secondNotes: api.state.activeWorkout.exercises[1].logged_sets[0].notes,
     dirty: api.state.activeWorkout.dirty,
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = {{
+    id: 'reduced-existing',
+    recommendation_id: 'old-rec',
+    focus: 'Old',
+    dirty: true,
+    exercises: [{{
+      exercise: 'Seated Row',
+      logged_sets: [
+        {{ weight: '80', reps: '10', done: false, notes: 'keep first' }},
+        {{ weight: '82', reps: '9', done: false, notes: '' }},
+        {{ weight: '85', reps: '8', done: true, notes: 'completed third' }},
+        {{ weight: '87', reps: '7', done: false, notes: 'drop fourth' }},
+      ],
+    }}],
+  }};
+  api.applyAdjustedRecommendationToActiveWorkout({{
+    id: 'reduced-rec',
+    workout_id: 'reduced-workout',
+    focus: 'Adjusted',
+    exercises: [
+      {{ exercise: 'Seated Row', target_sets: 2, target_reps: 8, target_weight: 85 }},
+    ],
+  }}, api.state.activeWorkout.exercises);
+  outputs.setReduction = {{
+    rowCount: api.state.activeWorkout.exercises[0].logged_sets.length,
+    firstNotes: api.state.activeWorkout.exercises[0].logged_sets[0].notes,
+    completedNotes: api.state.activeWorkout.exercises[0].logged_sets[2].notes,
+    droppedFourth: !JSON.stringify(api.state.activeWorkout).includes('drop fourth'),
   }};
 
   process.stdout.write(JSON.stringify(outputs));
