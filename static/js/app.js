@@ -5239,9 +5239,10 @@
     }
 
     function mergeAdjustedActiveCardio(cardio, previous) {
-        const next = buildActiveCardio(cardio, previous);
+        const previousWithWork = activeCardioHasLoggedWork(previous) ? previous : null;
+        const next = buildActiveCardio(cardio, previousWithWork);
         if (next) return next;
-        return activeCardioHasLoggedWork(previous) ? previous : null;
+        return previousWithWork;
     }
 
     function buildActiveCardio(cardio, previous) {

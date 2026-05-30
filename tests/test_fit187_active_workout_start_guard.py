@@ -93,6 +93,12 @@ def test_start_workout_confirms_before_discarding_logged_active_sets():
         "notes": "done cardio",
         "duration": "10",
     }
+    assert outputs["freshCardioRecommendation"] == {
+        "completed": False,
+        "activity": "Bike",
+        "duration": "10",
+        "notes": "",
+    }
 
     reduced = outputs["setReduction"]
     assert reduced["rowCount"] == 3
@@ -145,6 +151,11 @@ const toast = () => {{}};
 const getDashboard = async () => ({{ next_workout: dashboardNext }});
 const newWorkoutId = (id) => 'new-' + (id || 'generated');
 const exerciseName = (ex) => ex.exercise || ex.name || ex.machine || '';
+const numericInputValue = (value) => {{
+  if (value == null || value === '') return '';
+  const n = Number(value);
+  return Number.isFinite(n) ? String(n) : '';
+}};
 const buildActiveExercise = (ex, previous) => ({{
   ...ex,
   logged_sets: previous && Array.isArray(previous.logged_sets)
@@ -388,6 +399,41 @@ async function run() {{
     completed: api.state.activeWorkout.cardio.completed,
     notes: api.state.activeWorkout.cardio.notes,
     duration: api.state.activeWorkout.cardio.duration_minutes,
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = {{
+    id: 'fresh-cardio-existing',
+    dirty: false,
+    exercises: [{{
+      exercise: 'Seated Row',
+      target_sets: 1,
+      target_reps: 10,
+      target_weight: 80,
+      logged_sets: [{{ weight: '80', reps: '10', done: false, notes: '' }}],
+    }}],
+    cardio: {{
+      recommendation: {{ type: 'Treadmill', duration_minutes: 20 }},
+      completed: false,
+      activity_type: 'Treadmill',
+      duration_minutes: '20',
+      notes: '',
+    }},
+  }};
+  api.applyAdjustedRecommendationToActiveWorkout({{
+    id: 'fresh-cardio-rec',
+    workout_id: 'fresh-cardio-workout',
+    focus: 'Adjusted',
+    exercises: [
+      {{ exercise: 'Seated Row', target_sets: 1, target_reps: 8, target_weight: 85 }},
+    ],
+    cardio: {{ type: 'Bike', duration_minutes: 10 }},
+  }}, api.state.activeWorkout.exercises);
+  outputs.freshCardioRecommendation = {{
+    completed: api.state.activeWorkout.cardio.completed,
+    activity: api.state.activeWorkout.cardio.activity_type,
+    duration: api.state.activeWorkout.cardio.duration_minutes,
+    notes: api.state.activeWorkout.cardio.notes,
   }};
 
   api.resetHarness();
