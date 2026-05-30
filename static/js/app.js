@@ -5104,8 +5104,30 @@
         return rows;
     }
 
+    const EXERCISE_IDENTITY_ALIAS_GROUPS = [
+        ['Pec Fly', ['Pectoral Fly']],
+        ['Chest-Supported Row', ['Chest Supported Row']],
+        ['Machine Deltoid Raise', ['Deltoid Raise', 'Rear Delt Raise']],
+        ['Back Extension', ['Low Back Extension', 'Lower Back Extension']],
+        ['Biceps Curl', ['Hoist Biceps Curl', 'Hoist Roc-It Biceps Curl', 'Nautilus Biceps Curl', 'Nautilus ONE Biceps Curl']],
+        ['Overhead Tricep Extension', ['Tricep Extension', 'Triceps Extension', 'Tricep Extensions', 'Triceps Extensions']],
+        ['Rotary Torso', ['Torso Rotation', 'Rotary Torso Machine']],
+    ];
+    const EXERCISE_IDENTITY_ALIASES = new Map();
+    function normalizeExerciseIdentityKey(name) {
+        return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    }
+    EXERCISE_IDENTITY_ALIAS_GROUPS.forEach(([canonical, aliases]) => {
+        const canonicalKey = normalizeExerciseIdentityKey(canonical);
+        EXERCISE_IDENTITY_ALIASES.set(canonicalKey, canonicalKey);
+        aliases.forEach((alias) => {
+            EXERCISE_IDENTITY_ALIASES.set(normalizeExerciseIdentityKey(alias), canonicalKey);
+        });
+    });
+
     function normalizeExerciseIdentity(ex) {
-        return exerciseName(ex).toLowerCase().trim();
+        const key = normalizeExerciseIdentityKey(exerciseName(ex));
+        return EXERCISE_IDENTITY_ALIASES.get(key) || key;
     }
 
     function takePreviousExerciseByIdentity(previousExercises, usedPrevious, nextKey, sameSlot) {

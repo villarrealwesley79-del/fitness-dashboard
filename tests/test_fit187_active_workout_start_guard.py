@@ -76,6 +76,13 @@ def test_start_workout_confirms_before_discarding_logged_active_sets():
     assert shifted["removedNotes"] == "chest done"
     assert shifted["dirty"] is True
 
+    assert outputs["aliasCanonicalAdjustment"] == {
+        "exerciseCount": 1,
+        "firstName": "Pec Fly",
+        "firstNotes": "alias done",
+        "firstWeight": "50",
+    }
+
     assert outputs["unstartedRemoval"] == {
         "exerciseCount": 1,
         "onlyName": "Seated Row",
@@ -289,6 +296,33 @@ async function run() {{
     removedName: api.state.activeWorkout.exercises[2].exercise,
     removedNotes: api.state.activeWorkout.exercises[2].logged_sets[0].notes,
     dirty: api.state.activeWorkout.dirty,
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = {{
+    id: 'alias-canonical-existing',
+    dirty: true,
+    exercises: [{{
+      exercise: 'Pectoral Fly',
+      target_sets: 1,
+      target_reps: 10,
+      target_weight: 50,
+      logged_sets: [{{ weight: '50', reps: '10', done: true, notes: 'alias done' }}],
+    }}],
+  }};
+  api.applyAdjustedRecommendationToActiveWorkout({{
+    id: 'alias-canonical-rec',
+    workout_id: 'alias-canonical-workout',
+    focus: 'Adjusted',
+    exercises: [
+      {{ exercise: 'Pec Fly', target_sets: 1, target_reps: 8, target_weight: 55 }},
+    ],
+  }}, api.state.activeWorkout.exercises);
+  outputs.aliasCanonicalAdjustment = {{
+    exerciseCount: api.state.activeWorkout.exercises.length,
+    firstName: api.state.activeWorkout.exercises[0].exercise,
+    firstNotes: api.state.activeWorkout.exercises[0].logged_sets[0].notes,
+    firstWeight: api.state.activeWorkout.exercises[0].logged_sets[0].weight,
   }};
 
   api.resetHarness();
