@@ -555,6 +555,50 @@ def test_adjust_explicit_target_already_in_plan_does_not_substitute(monkeypatch)
     assert notes == []
 
 
+def test_adjust_explicit_target_alias_already_in_plan_does_not_substitute(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = _recommendation_for(
+        module,
+        [
+            _rec_exercise("Chest Press", "chest", 100),
+            _rec_exercise("Pectoral Fly", "chest", 50),
+        ],
+    )
+    intent = {
+        "avoid_muscles": [],
+        "avoid_joints": [],
+        "swap": [
+            {
+                "replace_exercise": "Chest Press",
+                "target_muscle": "chest",
+                "target_exercise": "Pec Fly",
+                "reason": "explicit duplicate target alias",
+            }
+        ],
+        "rpe_delta": 0,
+        "sets_delta_pct": 0,
+        "duration_cap_min": 0,
+        "drop_cardio": False,
+    }
+
+    patched, notes = module._apply_intent_patch(
+        recommendation,
+        intent,
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_and_cables",
+    )
+
+    assert [ex["exercise"] for ex in patched["exercises"]] == [
+        "Chest Press",
+        "Pectoral Fly",
+    ]
+    assert notes == []
+
+
 def test_adjust_deterministic_fallback_leaves_unclassified_request_unchanged(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "_lm_studio", None)

@@ -8146,17 +8146,21 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment/joint constraints")
             continue
         # _filtered_exercise_library already applies brand, compound, and name ranking.
-        # Avoid picking something already in the plan
-        already = {(ex.get("exercise") or "").lower() for ex in exercises}
+        # Avoid picking something already in the plan, including aliases.
+        def _plan_already_contains(candidate):
+            return any(
+                _same_exercise_definition(_plan_exercise_definition(plan_ex), candidate)
+                for plan_ex in exercises
+            )
+
         if requested_exercise:
-            requested_name = requested_exercise["name"].lower()
             if requested_exercise not in library:
                 continue
-            if requested_name in already:
+            if _plan_already_contains(requested_exercise):
                 continue
             picked = requested_exercise
         else:
-            picked = next((e for e in library if e["name"].lower() not in already), library[0])
+            picked = next((e for e in library if not _plan_already_contains(e)), library[0])
 
         new_entry = _build_exercise_entry(
             exercise_name=picked["name"],
