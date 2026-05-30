@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import socket
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -23,6 +27,55 @@ class _Response:
 
     def read(self):
         return json.dumps(self.payload).encode("utf-8")
+
+
+class _FallbackLmStudioHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        return
+
+    def _send_json(self, payload, status=200):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        self.server.request_log.append(("GET", self.path))
+        if self.path == "/v1/models":
+            self._send_json({"data": [{"id": self.server.model_id}]})
+            return
+        self._send_json({"error": "not found"}, status=404)
+
+    def do_POST(self):
+        content_length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(content_length).decode("utf-8")
+        self.server.request_log.append(("POST", self.path, json.loads(raw_body)))
+        self._send_json({
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(_meal_estimate_payload())
+                    }
+                }
+            ]
+        })
+
+
+def _unused_loopback_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _start_lm_studio_server(model_id: str):
+    server = HTTPServer(("127.0.0.1", 0), _FallbackLmStudioHandler)
+    server.model_id = model_id
+    server.request_log = []
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, f"http://127.0.0.1:{server.server_port}"
 
 
 def _meal_estimate_payload(**overrides):
@@ -190,6 +243,7 @@ def test_claude_adapter_posts_image_and_parses_json(monkeypatch):
 
 def test_local_lm_studio_adapter_posts_image_and_parses_json(monkeypatch):
     captured = {}
+    monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
 
     def fake_urlopen(req, timeout):
         body = json.loads(req.data.decode("utf-8"))
@@ -257,6 +311,7 @@ def test_local_lm_studio_adapter_posts_image_and_parses_json(monkeypatch):
 
 def test_local_lm_studio_adapter_uses_temperature_env(monkeypatch):
     captured = {}
+    monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
 
     def fake_urlopen(req, timeout):
         body = json.loads(req.data.decode("utf-8"))
@@ -273,6 +328,7 @@ def test_local_lm_studio_adapter_uses_temperature_env(monkeypatch):
 
 def test_local_lm_studio_adapter_retries_invalid_schema(monkeypatch):
     attempts = []
+    monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
 
     def fake_urlopen(req, timeout):
         attempts.append(json.loads(req.data.decode("utf-8")))
@@ -291,6 +347,7 @@ def test_local_lm_studio_adapter_retries_invalid_schema(monkeypatch):
 
 def test_local_lm_studio_adapter_retries_when_required_schema_fields_missing(monkeypatch):
     attempts = []
+    monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
 
     def fake_urlopen(req, timeout):
         attempts.append(json.loads(req.data.decode("utf-8")))
@@ -323,6 +380,7 @@ def test_local_lm_studio_adapter_retries_when_required_schema_fields_missing(mon
 
 def test_local_lm_studio_adapter_falls_back_after_primary_failure(monkeypatch):
     attempts = []
+    monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_URL", "http://primary.test")
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_MODEL", "primary-vision")
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_URL", "http://fallback.test")
@@ -347,7 +405,37 @@ def test_local_lm_studio_adapter_falls_back_after_primary_failure(monkeypatch):
     assert result["_meta"]["fallback_used"] is True
 
 
+def test_local_lm_studio_preflight_skips_closed_primary_and_uses_fallback(monkeypatch):
+    fallback_model = "fallback-vision"
+    fallback_server, fallback_thread, fallback_url = _start_lm_studio_server(fallback_model)
+    primary_url = f"http://127.0.0.1:{_unused_loopback_port()}"
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_URL", primary_url)
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_MODEL", "primary-vision")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_URL", fallback_url)
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_MODEL", fallback_model)
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_PREFLIGHT_TIMEOUT_SEC", 0.2)
+
+    try:
+        started = time.monotonic()
+        result = local_vision_adapter.describe_food_photo(b"fake-image", provider="lm_studio")
+        elapsed = time.monotonic() - started
+    finally:
+        fallback_server.shutdown()
+        fallback_server.server_close()
+        fallback_thread.join(timeout=1)
+
+    assert elapsed < 2
+    assert result["_meta"]["role"] == "fallback"
+    assert result["_meta"]["model"] == fallback_model
+    assert result["_meta"]["fallback_used"] is True
+    assert [entry[:2] for entry in fallback_server.request_log] == [
+        ("GET", "/v1/models"),
+        ("POST", "/v1/chat/completions"),
+    ]
+
+
 def test_local_lm_studio_adapter_reports_missing_fallback_config(monkeypatch):
+    monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_URL", "http://primary.test")
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_MODEL", "primary-vision")
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_URL", "")
@@ -363,6 +451,8 @@ def test_local_lm_studio_adapter_reports_missing_fallback_config(monkeypatch):
 
 
 def test_local_lm_studio_result_does_not_leak_raw_inputs(monkeypatch):
+    monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
+
     def fake_urlopen(req, timeout):
         return _Response({"choices": [{"message": {"content": json.dumps(_meal_estimate_payload())}}]})
 
@@ -503,6 +593,7 @@ def test_lm_studio_adapter_emits_n_image_urls_for_multi_image(monkeypatch):
     """FIT-138: lm_studio adapter emits one OpenAI-style image_url block per
     image, with the text prompt first."""
     captured = {}
+    monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
 
     def fake_urlopen(req, timeout):
         body = json.loads(req.data.decode("utf-8"))

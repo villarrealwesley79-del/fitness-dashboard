@@ -37,6 +37,7 @@
     // intra-render retry race — an older same-render fetch landing after a
     // retry success can no longer flip its sentinel back on).
     let dashboardRenderGen = 0;
+    let modalOpenSeq = 0;
     const dashboardSentinelGen = { ouraError: 0, recoError: 0, ouraSleepError: 0 };
     let nextWorkoutRenderGen = 0;
 
@@ -94,6 +95,17 @@
     // FIT-128: dashboard fetchers pass timeoutMs so a hung endpoint
     // surfaces the per-card retry chip instead of sitting silent forever.
     const DASHBOARD_FETCH_TIMEOUT_MS = 30000;
+    const MODAL_FOCUS_SELECTOR = [
+        '[autofocus]',
+        '.modal-close:not([disabled])',
+        '[data-close-modal]:not([disabled])',
+        'button:not([disabled])',
+        '[href]',
+        'input:not([disabled]):not([type="hidden"])',
+        'select:not([disabled])',
+        'textarea:not([disabled])',
+        '[tabindex]:not([tabindex="-1"])',
+    ].join(',');
 
     async function api(path, opts = {}) {
         const { timeoutMs, ...fetchOpts } = opts;
@@ -683,10 +695,114 @@
     // --- tab switching -------------------------------------------
     function switchTab(tabId) {
         state.currentTab = tabId;
-        qsa('.tab-content').forEach((el) => el.classList.toggle('active', el.id === tabId));
-        qsa('.tab-btn').forEach((b) => b.classList.toggle('active', b.getAttribute('data-tab') === tabId));
+        qsa('.tab-content').forEach((el) => {
+            const active = el.id === tabId;
+            el.classList.toggle('active', active);
+            el.setAttribute('aria-hidden', active ? 'false' : 'true');
+        });
+        qsa('.tab-btn').forEach((b) => {
+            const active = b.getAttribute('data-tab') === tabId;
+            b.classList.toggle('active', active);
+            b.setAttribute('aria-selected', active ? 'true' : 'false');
+            b.tabIndex = active ? 0 : -1;
+        });
         loadTab(tabId);
         window.scrollTo({ top: 0, behavior: 'instant' });
+    }
+
+    function handleTabKeydown(e) {
+        const key = e.key;
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
+        const tabs = qsa('.tab-btn');
+        if (!tabs.length) return;
+        const current = tabs.indexOf(e.currentTarget);
+        if (current < 0) return;
+        let next = current;
+        if (key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+        else if (key === 'ArrowRight') next = (current + 1) % tabs.length;
+        else if (key === 'Home') next = 0;
+        else if (key === 'End') next = tabs.length - 1;
+        e.preventDefault();
+        tabs[next].focus();
+        switchTab(tabs[next].getAttribute('data-tab'));
+    }
+
+    function focusOpenModal(modal) {
+        if (!modal || modal.hidden || !modal.isConnected) return;
+        if (!modal.__fit192OpenedAt) modal.__fit192OpenedAt = ++modalOpenSeq;
+        if (!modal.__fit192ReturnFocus && document.activeElement && !modal.contains(document.activeElement)) {
+            modal.__fit192ReturnFocus = document.activeElement;
+        }
+        if (modal.contains(document.activeElement)) return;
+        const target = qs(MODAL_FOCUS_SELECTOR, modal);
+        if (target && typeof target.focus === 'function') {
+            target.focus({ preventScroll: true });
+        }
+    }
+
+    function restoreModalFocus(modal) {
+        const target = modal && modal.__fit192ReturnFocus;
+        if (modal) modal.__fit192ReturnFocus = null;
+        if (target && target.isConnected && !target.closest('[hidden]') && typeof target.focus === 'function') {
+            target.focus({ preventScroll: true });
+        }
+    }
+
+    function closeModal(modal) {
+        if (!modal || modal.id === 'modal-active') return;
+        if (typeof modal.__fit192Close === 'function') {
+            modal.__fit192Close();
+        } else {
+            modal.hidden = true;
+        }
+        restoreModalFocus(modal);
+    }
+
+    function getTopmostOpenModal() {
+        return qsa('.modal')
+            .filter((modal) => modal.id !== 'modal-active' && !modal.hidden && modal.isConnected)
+            .sort((a, b) => (a.__fit192OpenedAt || 0) - (b.__fit192OpenedAt || 0))
+            .pop() || null;
+    }
+
+    function handleModalEscape(e) {
+        if (e.key !== 'Escape') return;
+        const modal = getTopmostOpenModal();
+        if (!modal) return;
+        e.preventDefault();
+        closeModal(modal);
+    }
+
+    function collectOpenModals(node, seen) {
+        if (!node || node.nodeType !== 1) return;
+        if (node.classList.contains('modal') && !node.hidden) seen.add(node);
+        qsa('.modal', node).forEach((modal) => {
+            if (!modal.hidden) seen.add(modal);
+        });
+    }
+
+    function watchModalFocus() {
+        qsa('.modal').forEach(focusOpenModal);
+        document.addEventListener('keydown', handleModalEscape);
+        if (!('MutationObserver' in window)) return;
+        const observer = new MutationObserver((records) => {
+            const opened = new Set();
+            records.forEach((record) => {
+                if (record.type === 'attributes' && record.attributeName === 'hidden') {
+                    const modal = record.target;
+                    if (!modal.classList || !modal.classList.contains('modal')) return;
+                    if (!modal.hidden) opened.add(modal);
+                    else {
+                        modal.__fit192ReturnFocus = null;
+                        modal.__fit192OpenedAt = 0;
+                    }
+                } else if (record.type === 'childList') {
+                    record.addedNodes.forEach((node) => collectOpenModals(node, opened));
+                }
+            });
+            opened.forEach(focusOpenModal);
+        });
+        observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden'] });
     }
 
     async function loadTab(tabId) {
@@ -5286,9 +5402,18 @@
         } catch (err) {
             console.warn('start workout next-workout load failed', err);
             nw = state.nextWorkout || (state.dashboard && state.dashboard.next_workout);
+            if (!nw) {
+                try {
+                    const dash = await getDashboard();
+                    nw = dash && dash.next_workout;
+                } catch (dashErr) {
+                    console.warn('start workout dashboard fallback failed', dashErr);
+                }
+            }
         }
         if (!nw) { toast('No workout planned', 'err'); return; }
-        setActiveWorkoutFromRecommendation(nw);
+        if (!confirmDiscardActiveWorkoutForStart()) return;
+        startActiveWorkoutFromRecommendation(nw);
         renderActiveWorkout();
     }
 
@@ -5300,9 +5425,20 @@
     function startAdjustedWorkout() {
         const nw = state.adjustedWorkout || (state.dashboard && state.dashboard.next_workout);
         if (!nw) { toast('No adjusted workout available', 'err'); return; }
+        if (!confirmDiscardActiveWorkoutForStart()) return;
         if ($('modal-adjust')) $('modal-adjust').hidden = true;
-        setActiveWorkoutFromRecommendation(nw);
+        startActiveWorkoutFromRecommendation(nw);
         renderActiveWorkout();
+    }
+
+    function confirmDiscardActiveWorkoutForStart() {
+        if (!activeWorkoutHasProgress()) return true;
+        return window.confirm('You have an in-progress workout. Discard logged sets and restart?');
+    }
+
+    function startActiveWorkoutFromRecommendation(nw) {
+        state.activeWorkout = null;
+        setActiveWorkoutFromRecommendation(nw);
     }
 
     const SYNC_QUEUE_KEY = 'fit51:sync-queue:v1';
@@ -6300,7 +6436,7 @@
         const backdropHandler = (e) => {
             if (e.target === modal) {
                 e.stopImmediatePropagation();
-                dismissToHistory();
+                closeModal(modal);
             }
         };
         function detachBackdrop() {
@@ -6311,6 +6447,7 @@
             modal.hidden = true;
             switchTab('tab-history');
         }
+        modal.__fit192Close = dismissToHistory;
         const freshAnalyze = analyzeBtn.cloneNode(true);
         analyzeBtn.parentNode.replaceChild(freshAnalyze, analyzeBtn);
         freshAnalyze.addEventListener('click', () => {
@@ -6320,12 +6457,12 @@
         });
         const freshDismiss = dismissBtn.cloneNode(true);
         dismissBtn.parentNode.replaceChild(freshDismiss, dismissBtn);
-        freshDismiss.addEventListener('click', dismissToHistory);
+        freshDismiss.addEventListener('click', () => closeModal(modal));
         if (closeBtn) {
             const freshClose = closeBtn.cloneNode(true);
             freshClose.removeAttribute('data-close-modal');
             closeBtn.parentNode.replaceChild(freshClose, closeBtn);
-            freshClose.addEventListener('click', dismissToHistory);
+            freshClose.addEventListener('click', () => closeModal(modal));
         }
         modal.addEventListener('click', backdropHandler, true);
         modal.hidden = false;
@@ -6404,7 +6541,7 @@
             state.dashboard.next_workout = resp.recommendation;
             state.nextWorkout = resp.recommendation;
         }
-        $('modal-swap').hidden = true;
+        closeModal($('modal-swap'));
         toast(`Swapped ${oldName} → ${newName}`, 'ok');
         if (state.swapContext && state.swapContext.source === 'active' && resp && resp.recommendation) {
             const previous = (state.activeWorkout && state.activeWorkout.exercises) || [];
@@ -6827,6 +6964,7 @@
         // Tab nav
         qsa('.tab-btn').forEach((btn) => {
             btn.addEventListener('click', () => switchTab(btn.getAttribute('data-tab')));
+            btn.addEventListener('keydown', handleTabKeydown);
         });
 
         // Log segmented
@@ -6897,14 +7035,15 @@
         qsa('[data-close-modal]').forEach((b) => b.addEventListener('click', () => {
             const modal = b.closest('.modal');
             if (modal && modal.id === 'modal-active') return;
-            if (modal) modal.hidden = true;
+            if (modal) closeModal(modal);
         }));
         qsa('.modal').forEach((m) => {
             m.addEventListener('click', (e) => {
                 if (m.id === 'modal-active') return;
-                if (e.target === m) m.hidden = true;
+                if (e.target === m) closeModal(m);
             });
         });
+        watchModalFocus();
 
         // AI status button (top right)
         $('btn-ai-status') && $('btn-ai-status').addEventListener('click', toggleAiPopover);
@@ -8968,10 +9107,9 @@
         `;
         document.body.appendChild(modal);
         const close = () => modal.remove();
-        modal.querySelectorAll('[data-action="close-source"]').forEach((el) => el.addEventListener('click', close));
-        document.addEventListener('keydown', function onEsc(ev) {
-            if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc); }
-        });
+        modal.__fit192Close = close;
+        focusOpenModal(modal);
+        modal.querySelectorAll('[data-action="close-source"]').forEach((el) => el.addEventListener('click', () => closeModal(modal)));
     }
 
     function sanitizeMealV2SourceLink(link) {

@@ -1162,6 +1162,73 @@ def test_usda_lookup_preserves_zero_calorie_energy(monkeypatch):
     assert estimate["external_food_id"] == "174158"
 
 
+def test_usda_lookup_prefers_kcal_energy_over_kj(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a: {
+            "foods": [
+                {
+                    "fdcId": 24680,
+                    "description": "TEST FOOD",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "unitName": "kJ", "value": 2000.0},
+                        {"nutrientName": "Energy", "unitName": "KCAL", "value": 240},
+                        {"nutrientName": "Protein", "value": 8},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 30},
+                        {"nutrientName": "Total lipid (fat)", "value": 9},
+                    ],
+                }
+            ]
+        },
+    )
+
+    estimate = branded_food_lookup.lookup("test food", source_priority=("usda_fdc",))
+
+    assert estimate["source"] == "usda_fdc"
+    assert estimate["calories"] == 240
+    assert estimate["protein_g"] == 8
+    assert estimate["carbs_g"] == 30
+    assert estimate["fat_g"] == 9
+    assert estimate["external_food_id"] == "24680"
+
+
+def test_usda_lookup_converts_kj_energy_to_kcal(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a: {
+            "foods": [
+                {
+                    "fdcId": 13579,
+                    "description": "KJ ONLY FOOD",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "unitName": "kJ", "value": 836.8},
+                        {"nutrientName": "Protein", "value": 10},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 22},
+                        {"nutrientName": "Total lipid (fat)", "value": 8},
+                    ],
+                }
+            ]
+        },
+    )
+
+    estimate = branded_food_lookup.lookup("kj only food", source_priority=("usda_fdc",))
+
+    assert estimate["source"] == "usda_fdc"
+    assert estimate["calories"] == 200
+    assert estimate["protein_g"] == 10
+    assert estimate["carbs_g"] == 22
+    assert estimate["fat_g"] == 8
+    assert estimate["external_food_id"] == "13579"
+
+
 def test_branded_usda_fallback_without_verified_brand_is_pending_review(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)

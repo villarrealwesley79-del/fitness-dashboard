@@ -186,7 +186,7 @@ def test_meal_flush_has_duplicate_guards_and_online_hooks():
     assert "_mealSyncInFlightClientIds.has(clientId)" in APP_JS
     assert "window.addEventListener('online', () => {" in APP_JS
     assert "flushMealSyncQueue();" in APP_JS
-    assert "const CACHE_NAME = 'fitness-dashboard-v20260525-fit181-controller-reload';" in APP_SW
+    assert "const CACHE_NAME = 'fitness-dashboard-v20260530-fit192-a11y';" in APP_SW
     assert "cache.addAll" not in APP_SW
     assert "sync" not in APP_SW.lower()
 

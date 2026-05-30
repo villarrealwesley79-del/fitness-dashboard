@@ -55,7 +55,7 @@ PIDS="$("${PGREP}" -f '[p]ython' 2>/dev/null || true)"
 for pid in ${PIDS}; do
     [ "${pid}" = "$$" ] && continue
     cwd="$("${LSOF}" -a -p "${pid}" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
-    cmd="$(ps -p "${pid}" -o command= 2>/dev/null || true)"
+    cmd="$(ps -ww -p "${pid}" -o command= 2>/dev/null || ps -p "${pid}" -o command= 2>/dev/null || true)"
     case "${cmd}" in
         *app.py*|*serve_fit*.py*|*docs/qa/*serve*.py*)
             ;;
@@ -70,7 +70,7 @@ for pid in ${PIDS}; do
             ;;
     esac
     case "${cmd}" in
-        *"${ROOT}/app.py"*)
+        *"${ROOT}/app.py"*|*"${ROOT}/docs/qa/"*serve*.py*)
             FOUND="${FOUND}${pid} "
             ;;
     esac

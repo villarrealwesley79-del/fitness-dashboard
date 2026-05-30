@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *.log
 *.bak*
+*local-backup*
 *.tmp
 
 .env
