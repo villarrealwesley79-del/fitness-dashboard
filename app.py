@@ -2903,6 +2903,8 @@ def _adjust_source_phrase(constraint):
     if not text or _adjust_phrase_has_negation(text):
         return ""
     patterns = [
+        r"(?:^|\b)replace(?:\s+it)?\s+with\s+.+?\s+instead\s+of\s+(.+)$",
+        r"(?:^|\b)swap(?:\s+it)?\s+(?:to|with|for)\s+.+?\s+instead\s+of\s+(.+)$",
         r"(?:^|\b)replace\s+(.+?)\s+with\s+.+$",
         r"(?:^|\b)swap\s+(.+?)\s+(?:to|with|for)\s+.+$",
         r"(?:^|\b)use\s+.+?\s+instead\s+of\s+(.+)$",

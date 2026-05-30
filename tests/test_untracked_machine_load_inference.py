@@ -420,6 +420,24 @@ def test_adjust_deterministic_honors_explicit_source_exercise(monkeypatch):
     assert instead_of["replace_exercise"] == "Incline Press"
     assert instead_of["replace_index"] == 1
 
+    swap_instead_of = module._build_deterministic_adjust_swap(
+        "swap to Pec Fly instead of Incline Press",
+        recommendation,
+        "machines_and_cables",
+    )
+    replace_instead_of = module._build_deterministic_adjust_swap(
+        "replace with Pec Fly instead of Incline Press",
+        recommendation,
+        "machines_and_cables",
+    )
+
+    assert swap_instead_of["target_exercise"] == "Pec Fly"
+    assert swap_instead_of["replace_exercise"] == "Incline Press"
+    assert swap_instead_of["replace_index"] == 1
+    assert replace_instead_of["target_exercise"] == "Pec Fly"
+    assert replace_instead_of["replace_exercise"] == "Incline Press"
+    assert replace_instead_of["replace_index"] == 1
+
 
 def test_adjust_deterministic_honors_source_alias(monkeypatch):
     module = _module(monkeypatch)
