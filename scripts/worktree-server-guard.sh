@@ -70,7 +70,7 @@ for pid in ${PIDS}; do
             ;;
     esac
     case "${cmd}" in
-        *"${ROOT}/app.py"*)
+        *"${ROOT}/app.py"*|*"${ROOT}/docs/qa/"*serve*.py*)
             FOUND="${FOUND}${pid} "
             ;;
     esac
