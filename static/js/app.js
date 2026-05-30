@@ -40,6 +40,7 @@
     let modalOpenSeq = 0;
     const dashboardSentinelGen = { ouraError: 0, recoError: 0, ouraSleepError: 0 };
     let nextWorkoutRenderGen = 0;
+    const SWAP_RECOMMEND_CONFIDENCE_GATE = 0.75;
 
     // --- helpers -------------------------------------------------
     const $ = (id) => document.getElementById(id);
@@ -6680,12 +6681,159 @@
         modal.hidden = false;
     }
 
+    function swapRecommendLoadHtml(load) {
+        if (!load || load.weight == null) return '';
+        const parts = [`${Math.round(Number(load.weight))} lb`];
+        if (load.explanation) parts.push(escapeHtml(load.explanation));
+        else if (load.inferred_from) parts.push(`from ${escapeHtml(load.inferred_from)}`);
+        return `<div class="swap-recommend-load">Start: ${parts.join(' · ')}</div>`;
+    }
+
+    function swapRecommendCandidates(result) {
+        const byIndex = new Map();
+        const push = (slot) => {
+            if (!slot || slot.exercise_index == null || byIndex.has(slot.exercise_index)) return;
+            byIndex.set(slot.exercise_index, slot);
+        };
+        push(result && result.slot);
+        ((result && result.alternatives) || []).forEach(push);
+        return Array.from(byIndex.values());
+    }
+
+    function renderSwapRecommendModal(result) {
+        const modal = $('modal-swap');
+        const host = $('swap-alternatives');
+        const title = $('swap-modal-title');
+        const sub = $('swap-modal-sub');
+        const custom = qs('.swap-custom', modal);
+        const target = result && result.target_canonical;
+        const candidates = swapRecommendCandidates(result);
+        const highConfidence = result
+            && result.source === 'ai'
+            && Number(result.confidence || 0) >= SWAP_RECOMMEND_CONFIDENCE_GATE
+            && result.slot
+            && target;
+        const degraded = result && result.source === 'deterministic';
+        let selected = (highConfidence || degraded) ? (result && result.slot) : null;
+
+        state.swapContext = {
+            exIdx: selected && selected.exercise_index,
+            muscle: result && result.target_muscle,
+            currentName: selected && selected.name,
+            source: 'recommend',
+        };
+        if (custom) custom.hidden = true;
+        title.textContent = target ? `Swap to ${target}` : 'Choose a swap';
+        sub.textContent = highConfidence && selected
+            ? `Replace ${selected.name} with ${target}.`
+            : `Choose which slot should become ${target || 'the requested exercise'}.`;
+
+        const banner = degraded
+            ? '<div class="swap-recommend-banner">AI unavailable; using the best matching slot.</div>'
+            : '';
+        const loadHtml = swapRecommendLoadHtml(result && result.recommended_load);
+        host.innerHTML = `
+            ${banner}
+            <div class="swap-recommend-summary">
+                <div class="swap-recommend-title">${escapeHtml(target || 'No exact target found')}</div>
+                ${result && result.reason ? `<div class="swap-recommend-reason">${escapeHtml(result.reason)}</div>` : ''}
+                ${loadHtml}
+            </div>
+            <div id="swap-recommend-picks" class="swap-list"></div>
+            <div class="swap-recommend-actions">
+                <button type="button" id="swap-recommend-cancel" class="btn btn-ghost btn-sm">Cancel</button>
+                <button type="button" id="swap-recommend-confirm" class="btn btn-primary btn-sm"${selected ? '' : ' disabled'}>Confirm swap</button>
+            </div>
+        `;
+
+        const picks = $('swap-recommend-picks');
+        const confirmBtn = $('swap-recommend-confirm');
+        const renderRows = () => {
+            picks.innerHTML = '';
+            candidates.forEach((slot) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'swap-row' + (selected && selected.exercise_index === slot.exercise_index ? ' selected' : '');
+                const note = slot.reason || (slot.exercise_index === (result.slot && result.slot.exercise_index) ? result.reason : '');
+                btn.innerHTML = `
+                    <span class="swap-row-main">
+                        <span>${escapeHtml(slot.name || 'Exercise')}</span>
+                        ${note ? `<span class="swap-row-note">${escapeHtml(note)}</span>` : ''}
+                    </span>
+                    <span class="swap-row-equip">${escapeHtml(slot.muscle || result.target_muscle || 'slot')}</span>
+                `;
+                btn.addEventListener('click', () => {
+                    selected = slot;
+                    state.swapContext.exIdx = slot.exercise_index;
+                    state.swapContext.currentName = slot.name;
+                    confirmBtn.disabled = false;
+                    renderRows();
+                });
+                picks.appendChild(btn);
+            });
+        };
+        if (picks) renderRows();
+        $('swap-recommend-cancel').addEventListener('click', () => closeModal(modal));
+        confirmBtn.addEventListener('click', () => {
+            if (!selected || !target) return;
+            applySwap(selected.exercise_index, target, selected.name || 'exercise');
+        });
+        modal.hidden = false;
+    }
+
+    async function requestSwapRecommendation() {
+        const input = $('swap-recommend-input');
+        const status = $('swap-recommend-status');
+        const submit = $('swap-recommend-submit');
+        if (!input || !status || !submit) return;
+        const typed = (input.value || '').trim();
+        status.hidden = true;
+        status.textContent = '';
+        if (!typed) {
+            status.textContent = 'Enter the exercise you want.';
+            status.hidden = false;
+            input.focus();
+            return;
+        }
+        if (!/[a-z]/i.test(typed)) {
+            status.textContent = 'Enter an exercise name with letters.';
+            status.hidden = false;
+            input.focus();
+            return;
+        }
+        submit.disabled = true;
+        const original = submit.textContent;
+        submit.textContent = 'Finding…';
+        try {
+            await getNextWorkout(true);
+            const result = await api('/api/workout/swap/recommend', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workout_index: 0, typed_target: typed }),
+            });
+            input.value = '';
+            renderSwapRecommendModal(result);
+        } catch (e) {
+            console.error('requestSwapRecommendation', e);
+            const msg = String((e && e.message) || e || '');
+            status.textContent = msg.toLowerCase().includes('same-muscle') || msg.toLowerCase().includes('no_match')
+                ? 'No matching slot is available in this plan.'
+                : `Could not suggest a swap: ${msg}`;
+            status.hidden = false;
+        } finally {
+            submit.disabled = false;
+            submit.textContent = original;
+        }
+    }
+
     async function openSwap(exIdx, muscle, currentName, source = 'plan') {
         state.swapContext = { exIdx, muscle, currentName, source };
         const modal = $('modal-swap');
         const host = $('swap-alternatives');
         const title = $('swap-modal-title');
         const sub = $('swap-modal-sub');
+        const custom = qs('.swap-custom', modal);
+        if (custom) custom.hidden = false;
         title.textContent = `Swap: ${currentName}`;
         sub.textContent = muscle
             ? `Pick a replacement from the ${muscle} library (equipment-filtered).`
@@ -7234,6 +7382,13 @@
         $('btn-start-workout-2') && $('btn-start-workout-2').addEventListener('click', startWorkout);
         $('btn-adjust-plan') && $('btn-adjust-plan').addEventListener('click', openAdjust);
         $('btn-adjust-plan-2') && $('btn-adjust-plan-2').addEventListener('click', openAdjust);
+        const swapRecommendForm = $('swap-recommend-form');
+        if (swapRecommendForm) {
+            swapRecommendForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                requestSwapRecommendation();
+            });
+        }
         // FIT-179: Adjust Plan entry point from inside the active workout.
         $('btn-adjust-plan-active') && $('btn-adjust-plan-active').addEventListener('click', openAdjust);
         $('btn-adjust-submit') && $('btn-adjust-submit').addEventListener('click', submitAdjust);
