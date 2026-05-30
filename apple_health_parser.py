@@ -830,64 +830,66 @@ def register_apple_health_routes(flask_app):
 
         _init_ah_sync_db()
         conn = sqlite3.connect(_apple_health_sync_db_path())
-        inserted = 0
-        skipped = 0
+        try:
+            inserted = 0
+            skipped = 0
 
-        for record_type in ("workouts", "heart_rate", "hrv", "sleep", "steps", "active_energy"):
-            records = data.get(record_type)
-            if not records or not isinstance(records, list):
-                continue
-            for rec in records:
-                # Each record must have a 'date' field
-                rec_date = _local_date_from_iso(rec.get("date") or rec.get("startDate"))
-                if not rec_date:
-                    skipped += 1
+            for record_type in ("workouts", "heart_rate", "hrv", "sleep", "steps", "active_energy"):
+                records = data.get(record_type)
+                if not records or not isinstance(records, list):
                     continue
-                try:
-                    stored_rec = dict(rec)
-                    stored_rec["date"] = rec_date
-                    rec_key = _record_key(record_type, stored_rec)
-                    if record_type == "sleep":
-                        stored_rec = _merge_existing_sleep_record(conn, rec_date, rec_key, stored_rec)
-                    cur = conn.execute(
-                        """
-                        INSERT INTO ah_sync_log
-                            (source, record_type, record_date, record_key, data_json)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(source, record_type, record_date, record_key)
-                        DO UPDATE SET
-                            data_json = excluded.data_json,
-                            created_at = datetime('now')
-                        WHERE ah_sync_log.data_json IS NOT excluded.data_json
-                        """,
-                        ("health_auto_export", record_type, rec_date, rec_key, json.dumps(stored_rec, default=str))
-                    )
-                    # cursor.rowcount is 1 on insert/update, 0 when an exact
-                    # duplicate resend made no data change.
-                    if cur.rowcount and cur.rowcount > 0:
-                        inserted += 1
-                    else:
+                for rec in records:
+                    # Each record must have a 'date' field
+                    rec_date = _local_date_from_iso(rec.get("date") or rec.get("startDate"))
+                    if not rec_date:
                         skipped += 1
-                except Exception:
-                    skipped += 1
+                        continue
+                    try:
+                        stored_rec = dict(rec)
+                        stored_rec["date"] = rec_date
+                        rec_key = _record_key(record_type, stored_rec)
+                        if record_type == "sleep":
+                            stored_rec = _merge_existing_sleep_record(conn, rec_date, rec_key, stored_rec)
+                        cur = conn.execute(
+                            """
+                            INSERT INTO ah_sync_log
+                                (source, record_type, record_date, record_key, data_json)
+                            VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT(source, record_type, record_date, record_key)
+                            DO UPDATE SET
+                                data_json = excluded.data_json,
+                                created_at = datetime('now')
+                            WHERE ah_sync_log.data_json IS NOT excluded.data_json
+                            """,
+                            ("health_auto_export", record_type, rec_date, rec_key, json.dumps(stored_rec, default=str))
+                        )
+                        # cursor.rowcount is 1 on insert/update, 0 when an exact
+                        # duplicate resend made no data change.
+                        if cur.rowcount and cur.rowcount > 0:
+                            inserted += 1
+                        else:
+                            skipped += 1
+                    except Exception:
+                        skipped += 1
 
-        conn.execute(
-            """INSERT INTO ah_sync_events
-               (source, inserted_count, skipped_count, total_count, remote_addr)
-               VALUES (?, ?, ?, ?, ?)""",
-            (
-                "health_auto_export",
-                inserted,
-                skipped,
-                inserted + skipped,
-                (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip(),
-            ),
-        )
-        conn.commit()
+            conn.execute(
+                """INSERT INTO ah_sync_events
+                   (source, inserted_count, skipped_count, total_count, remote_addr)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    "health_auto_export",
+                    inserted,
+                    skipped,
+                    inserted + skipped,
+                    (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip(),
+                ),
+            )
+            conn.commit()
 
-        # Return sync token (ISO timestamp) for incremental sync
-        now_iso = datetime.now(timezone.utc).isoformat()
-        conn.close()
+            # Return sync token (ISO timestamp) for incremental sync
+            now_iso = datetime.now(timezone.utc).isoformat()
+        finally:
+            conn.close()
 
         return jsonify({
             "status": "ok",
