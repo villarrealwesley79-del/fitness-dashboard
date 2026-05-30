@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request, redirect, url_for, render_template, flash, session
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
+from runtime_config import data_path
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # ── Rate limiting (in-memory, per-IP) ────────────────────
@@ -43,7 +44,7 @@ def _rate_reset(ip: str) -> None:
     _rate_fail_log.pop(ip, None)
 
 # ── DB setup ──────────────────────────────────────────────
-AUTH_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth.db")
+AUTH_DB = data_path("auth.db")
 
 login_manager = LoginManager()
 login_manager.login_view = "auth.login"

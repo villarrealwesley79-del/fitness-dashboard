@@ -4,7 +4,7 @@ Fitness Intelligence System - Mobile Web App
 Evidence-based resistance training optimization for iOS/Android.
 """
 
-from flask import Flask, render_template, jsonify, request, Response
+from flask import Flask, has_request_context, render_template, jsonify, request, Response
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -23,6 +23,8 @@ import base64
 import time
 import re
 import uuid
+import tempfile
+import threading
 
 try:
     from pywebpush import WebPushException, webpush
@@ -40,6 +42,7 @@ if os.path.exists(_env_path):
                 _k, _v = _line.split("=", 1)
                 os.environ.setdefault(_k.strip(), _v.strip())
 from data_loader import parse_workout_log, get_workout_summary
+from runtime_config import DATA_DIR, data_path, public_base_url as _runtime_public_base_url
 from oura_client import (
     OuraClient,
     init_oura_db,
@@ -125,18 +128,18 @@ except Exception as _e:
 
 
 # ==================== DATA PERSISTENCE ====================
-# Store data in JSON files in the same directory as the app
-DATA_DIR = os.path.dirname(os.path.abspath(__file__))
-WORKOUTS_FILE = os.path.join(DATA_DIR, "data_workouts.json")
-SORENESS_FILE = os.path.join(DATA_DIR, "data_soreness.json")
-SETTINGS_FILE = os.path.join(DATA_DIR, "data_settings.json")
-CARDIO_FILE = os.path.join(DATA_DIR, "data_cardio.json")
-RECOVERY_FILE = os.path.join(DATA_DIR, "data_recovery.json")
-BASELINES_FILE = os.path.join(DATA_DIR, "data_baselines.json")
-BODY_FILE = os.path.join(DATA_DIR, "data_body.json")
-SLEEP_FILE = os.path.join(DATA_DIR, "data_sleep.json")
-NUTRITION_FILE = os.path.join(DATA_DIR, "data_nutrition.json")
-OURA_DB_FILE = os.path.join(DATA_DIR, "oura_daily.sqlite3")
+# Store runtime data under DATA_DIR when configured, otherwise next to the app.
+JSON_DATA_LOCK = threading.RLock()
+WORKOUTS_FILE = data_path("data_workouts.json")
+SORENESS_FILE = data_path("data_soreness.json")
+SETTINGS_FILE = data_path("data_settings.json")
+CARDIO_FILE = data_path("data_cardio.json")
+RECOVERY_FILE = data_path("data_recovery.json")
+BASELINES_FILE = data_path("data_baselines.json")
+BODY_FILE = data_path("data_body.json")
+SLEEP_FILE = data_path("data_sleep.json")
+NUTRITION_FILE = data_path("data_nutrition.json")
+OURA_DB_FILE = data_path("oura_daily.sqlite3")
 
 # ==================== WEATHER (wttr.in) ====================
 # Lightweight cache to avoid hammering the free endpoint.
@@ -179,13 +182,41 @@ def load_json(filepath, default):
 
 def save_json(filepath, data):
     """Save data to JSON file (atomic best-effort)."""
+    tmp = None
     try:
-        tmp = f"{filepath}.tmp"
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str, ensure_ascii=False)
-        os.replace(tmp, filepath)
-    except IOError as e:
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        base = os.path.basename(filepath)
+        with JSON_DATA_LOCK:
+            fd, tmp = tempfile.mkstemp(
+                prefix=f".{base}.",
+                suffix=".tmp",
+                dir=os.path.dirname(os.path.abspath(filepath)),
+            )
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, default=str, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, filepath)
+            tmp = None
+    except OSError as e:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         print(f"Warning: Could not save {filepath}: {e}")
+
+
+def public_base_url():
+    return _runtime_public_base_url(request if has_request_context() else None)
+
+
+def _json_restore_sequence(target, value):
+    target.clear()
+    if isinstance(target, dict):
+        target.update(value)
+    else:
+        target.extend(value)
 
 
 def _notify_workout_logged(workout_entry):
@@ -9627,7 +9658,7 @@ def oura_sleep_summary():
 def _apple_health_sync_db_file():
     return (
         os.environ.get("APPLE_HEALTH_SYNC_DB")
-        or os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple_health_sync.db")
+        or data_path("apple_health_sync.db")
     )
 
 
@@ -9903,11 +9934,19 @@ def _push_vapid_private_key():
 
 
 def _push_vapid_claims():
-    subject = (
+    configured = (
         os.environ.get("FITNESS_PUSH_VAPID_SUBJECT")
         or os.environ.get("VAPID_SUBJECT")
-        or "mailto:admin@example.com"
+        or ""
     ).strip()
+    if configured:
+        return {"sub": configured}
+    base_url = public_base_url()
+    if base_url.startswith("https://"):
+        return {"sub": base_url}
+    subject = (
+        "mailto:admin@example.com"
+    )
     return {"sub": subject}
 
 
@@ -9916,7 +9955,7 @@ def _push_test_payload():
         "title": "Fitness Dashboard test",
         "body": "Push notifications are working. Scheduled reminders are not enabled yet.",
         "tag": "fitness-dashboard-test",
-        "url": "/",
+        "url": public_base_url() or "/",
         "safety_critical": False,
         "sent_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -11088,51 +11127,44 @@ def import_backup():
 
         data = backup_data["data"]
 
-        # Restore each data type if present
-        if "workouts" in data:
-            WORKOUTS.clear()
-            WORKOUTS.extend(data["workouts"])
-            save_json(WORKOUTS_FILE, WORKOUTS)
+        # Restore each JSON-backed data type under one lock so readers never see
+        # a clear/extend half-state between the in-memory update and disk write.
+        with JSON_DATA_LOCK:
+            if "workouts" in data:
+                _json_restore_sequence(WORKOUTS, data["workouts"])
+                save_json(WORKOUTS_FILE, WORKOUTS)
 
-        if "soreness" in data:
-            SORENESS_DATA.clear()
-            SORENESS_DATA.extend(data["soreness"])
-            save_json(SORENESS_FILE, SORENESS_DATA)
+            if "soreness" in data:
+                _json_restore_sequence(SORENESS_DATA, data["soreness"])
+                save_json(SORENESS_FILE, SORENESS_DATA)
 
-        if "cardio" in data:
-            CARDIO_DATA.clear()
-            CARDIO_DATA.extend(data["cardio"])
-            save_json(CARDIO_FILE, CARDIO_DATA)
+            if "cardio" in data:
+                _json_restore_sequence(CARDIO_DATA, data["cardio"])
+                save_json(CARDIO_FILE, CARDIO_DATA)
 
-        if "recovery" in data:
-            RECOVERY_DATA.clear()
-            RECOVERY_DATA.extend(data["recovery"])
-            save_json(RECOVERY_FILE, RECOVERY_DATA)
+            if "recovery" in data:
+                _json_restore_sequence(RECOVERY_DATA, data["recovery"])
+                save_json(RECOVERY_FILE, RECOVERY_DATA)
 
-        if "settings" in data:
-            USER_SETTINGS.clear()
-            USER_SETTINGS.update(_settings_with_defaults(data["settings"]))
-            save_json(SETTINGS_FILE, USER_SETTINGS)
+            if "settings" in data:
+                _json_restore_sequence(USER_SETTINGS, _settings_with_defaults(data["settings"]))
+                save_json(SETTINGS_FILE, USER_SETTINGS)
 
-        if "baselines" in data:
-            BASELINES_DATA.clear()
-            BASELINES_DATA.update(data["baselines"])
-            save_json(BASELINES_FILE, BASELINES_DATA)
+            if "baselines" in data:
+                _json_restore_sequence(BASELINES_DATA, data["baselines"])
+                save_json(BASELINES_FILE, BASELINES_DATA)
 
-        if "body" in data:
-            BODY_DATA.clear()
-            BODY_DATA.extend(data["body"])
-            save_json(BODY_FILE, BODY_DATA)
+            if "body" in data:
+                _json_restore_sequence(BODY_DATA, data["body"])
+                save_json(BODY_FILE, BODY_DATA)
 
-        if "sleep" in data:
-            SLEEP_DATA.clear()
-            SLEEP_DATA.extend(data["sleep"])
-            save_json(SLEEP_FILE, SLEEP_DATA)
+            if "sleep" in data:
+                _json_restore_sequence(SLEEP_DATA, data["sleep"])
+                save_json(SLEEP_FILE, SLEEP_DATA)
 
-        if "nutrition" in data:
-            NUTRITION_DATA.clear()
-            NUTRITION_DATA.extend(data["nutrition"])
-            save_json(NUTRITION_FILE, NUTRITION_DATA)
+            if "nutrition" in data:
+                _json_restore_sequence(NUTRITION_DATA, data["nutrition"])
+                save_json(NUTRITION_FILE, NUTRITION_DATA)
 
         if "food_logs" in data:
             user_id = _current_data_user_id()
@@ -11620,10 +11652,11 @@ def sleep_import():
             'sleep_end': r.get('sleep_end')
         }
         entries.append(e)
-    merged={x.get('date'):x for x in SLEEP_DATA}
-    for e in entries: merged[e['date']]=e
-    SLEEP_DATA.clear(); SLEEP_DATA.extend(sorted(merged.values(), key=lambda x:x.get('date')))
-    save_json(SLEEP_FILE, SLEEP_DATA)
+    with JSON_DATA_LOCK:
+        merged={x.get('date'):x for x in SLEEP_DATA}
+        for e in entries: merged[e['date']]=e
+        _json_restore_sequence(SLEEP_DATA, sorted(merged.values(), key=lambda x:x.get('date')))
+        save_json(SLEEP_FILE, SLEEP_DATA)
     return jsonify({'status':'success','imported':len(entries)})
 
 @app.route('/api/sleep/analytics')
@@ -11632,7 +11665,7 @@ def sleep_analytics():
     rows = []
     try:
         import sqlite3 as _sq
-        with closing(_sq.connect(os.path.join(DATA_DIR, 'oura_daily.sqlite3'))) as _db:
+        with closing(_sq.connect(OURA_DB_FILE)) as _db:
             _db.row_factory = _sq.Row
             _cur = _db.execute("SELECT * FROM oura_sleep WHERE type='long_sleep' ORDER BY day")
             for r in _cur.fetchall():

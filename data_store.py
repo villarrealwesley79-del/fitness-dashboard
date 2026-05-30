@@ -12,17 +12,16 @@ Created for Fitness Dashboard SaaS per-user isolation.
 """
 
 import json
-import os
 import sqlite3
 import hashlib
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Iterator, Optional
 import uuid
+from runtime_config import data_path
 
 # ── Config ────────────────────────────────────────────────────────────────────
-_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DB = os.path.join(_DIR, "fitness_data.db")
+DATA_DB = data_path("fitness_data.db")
 
 REFRESH_CALORIE_DELTA_THRESHOLD = 1
 REFRESH_MACRO_DELTA_THRESHOLD = 0.5
