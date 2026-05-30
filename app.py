@@ -3262,6 +3262,113 @@ def _resolve_custom_swap_exercise(typed_name, old_ex, equipment_pref):
     return None
 
 
+def _recommendation_for_workout_index(workout_index):
+    if WORKOUT_RECOMMENDATIONS and 0 <= workout_index < len(WORKOUT_RECOMMENDATIONS):
+        return WORKOUT_RECOMMENDATIONS[workout_index]
+    if LAST_WORKOUT_RECOMMENDATION:
+        return LAST_WORKOUT_RECOMMENDATION
+    return None
+
+
+def _swap_recommend_target_definition(typed_target, library_pool):
+    resolved = _resolve_exercise_definition(typed_target)
+    if resolved:
+        wanted = _normalize_exercise_name(resolved.get("name"))
+        for exercise in library_pool:
+            if _normalize_exercise_name(exercise.get("name")) == wanted:
+                return exercise
+    return _deterministic_swap_candidate(typed_target, library_pool)
+
+
+def _planned_swap_slot_payload(exercise, exercise_index):
+    return {
+        "exercise_index": exercise_index,
+        "exercise": exercise.get("exercise") or exercise.get("name") or exercise.get("machine"),
+        "name": exercise.get("exercise") or exercise.get("name") or exercise.get("machine"),
+        "muscle": exercise.get("muscle") or exercise.get("muscle_group"),
+        "is_compound": bool(exercise.get("is_compound") or exercise.get("compound")),
+        "compound": bool(exercise.get("is_compound") or exercise.get("compound")),
+    }
+
+
+def _planned_swap_slots_for_target(recommendation, target_definition):
+    target_muscle = str(target_definition.get("muscle") or "").strip().lower()
+    target_name = target_definition.get("name")
+    slots = []
+    for index, exercise in enumerate(recommendation.get("exercises") or []):
+        slot_muscle = str(exercise.get("muscle") or exercise.get("muscle_group") or "").strip().lower()
+        if slot_muscle != target_muscle:
+            continue
+        old_definition = _resolve_exercise_definition(exercise.get("exercise") or exercise.get("name"))
+        if old_definition and _normalize_exercise_name(old_definition.get("name")) == _normalize_exercise_name(target_name):
+            continue
+        slots.append(_planned_swap_slot_payload(exercise, index))
+    return slots
+
+
+def _swap_recommend_slot_response(slot, reason=""):
+    if not slot:
+        return None
+    payload = {
+        "exercise_index": slot["exercise_index"],
+        "name": slot.get("name") or slot.get("exercise"),
+        "muscle": str(slot.get("muscle") or "").strip().lower(),
+    }
+    if reason:
+        payload["reason"] = reason
+    return payload
+
+
+def _deterministic_swap_recommendation(target_definition, planned_slots, reason):
+    if not target_definition or not planned_slots:
+        return None
+    slot = planned_slots[0]
+    alternatives = [
+        _swap_recommend_slot_response(candidate, "Also matches the target muscle.")
+        for candidate in planned_slots[1:4]
+    ]
+    return {
+        "source": "deterministic",
+        "target_canonical": target_definition.get("name"),
+        "target_muscle": target_definition.get("muscle"),
+        "slot": _swap_recommend_slot_response(slot),
+        "confidence": 0.0,
+        "reason": reason,
+        "alternatives": alternatives,
+    }
+
+
+def _classify_swap_recommend_failure(exc):
+    message = str(exc or "").lower()
+    return "busy" if "busy" in message else "outage"
+
+
+def _swap_recommend_response(recommendation, workout_index, target_definition, resolution, plan_fingerprint):
+    slot = resolution.get("slot") or {}
+    target_canonical = resolution.get("target_canonical")
+    slot_payload = _swap_recommend_slot_response(slot)
+    commit = None
+    if slot_payload and target_canonical:
+        commit = {
+            "workout_index": workout_index,
+            "exercise_index": slot_payload["exercise_index"],
+            "new_exercise_name": target_canonical,
+        }
+    return {
+        "status": "success",
+        "source": resolution.get("source"),
+        "target_canonical": target_canonical,
+        "target_muscle": str((target_definition or {}).get("muscle") or "").strip().lower(),
+        "slot": slot_payload,
+        "confidence": float(resolution.get("confidence") or 0.0),
+        "reason": resolution.get("reason") or "",
+        "recommended_load": None,
+        "alternatives": resolution.get("alternatives") or [],
+        "plan_fingerprint": plan_fingerprint,
+        "commit": commit,
+    }
+
+
 def _adjust_target_phrase(constraint):
     text = re.sub(r"\s+", " ", str(constraint or "").strip())
     if not text:
@@ -8599,6 +8706,127 @@ def exercise_alternatives(muscle_group):
         if ex.get("muscle") == muscle
     ]
     return jsonify({"muscle": muscle, "equipment_preference": equipment_pref, "alternatives": options})
+
+
+@app.route('/api/workout/swap/recommend', methods=['POST'])
+def recommend_workout_swap():
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+
+    workout_index, err2 = _coerce_int(data.get("workout_index", 0), "workout_index", min_v=0, max_v=10_000)
+    if err2:
+        return err2
+    typed_target, err2 = _coerce_str(data.get("typed_target"), "typed_target", required=True, max_len=128)
+    if err2:
+        return err2
+
+    recommendation = _recommendation_for_workout_index(workout_index)
+    if not recommendation:
+        return api_error("No recent workout recommendation available", 404, code="not_found")
+
+    equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
+    library_pool = _filtered_exercise_library(equipment_pref)
+    target_definition = _swap_recommend_target_definition(typed_target, library_pool)
+    if not target_definition:
+        return api_error("No same-muscle swap target found", 422, code="no_match")
+
+    target_muscle = str(target_definition.get("muscle") or "").strip().lower()
+    same_muscle_pool = [
+        exercise
+        for exercise in library_pool
+        if str(exercise.get("muscle") or "").strip().lower() == target_muscle
+    ]
+    planned_slots = _planned_swap_slots_for_target(recommendation, target_definition)
+    if not same_muscle_pool or not planned_slots:
+        return api_error("No same-muscle planned slot is available for this swap target", 422, code="no_match")
+
+    source = "deterministic"
+    resolution = None
+    deterministic_reason = "AI unavailable - used best match, confirm?"
+    started_at = time.monotonic()
+    if _lm_studio and hasattr(_lm_studio, "recommend_swap_target"):
+        try:
+            ai_resolution = _lm_studio.recommend_swap_target(
+                typed_target,
+                planned_exercises=planned_slots,
+                library_candidates=same_muscle_pool,
+                equipment_pref=equipment_pref,
+            )
+            target_name = ai_resolution.get("target_canonical") if isinstance(ai_resolution, dict) else None
+            slot_index = ai_resolution.get("slot_index") if isinstance(ai_resolution, dict) else None
+            target_lookup = {
+                _normalize_exercise_name(exercise.get("name")): exercise
+                for exercise in same_muscle_pool
+            }
+            ai_target = target_lookup.get(_normalize_exercise_name(target_name))
+            if ai_target and isinstance(slot_index, int) and not isinstance(slot_index, bool) and 0 <= slot_index < len(planned_slots):
+                source = "ai"
+                target_definition = ai_target
+                slot = planned_slots[slot_index]
+                alternatives = []
+                seen = {slot_index}
+                for alternative in ai_resolution.get("alternatives") or []:
+                    alt_index = alternative.get("slot_index") if isinstance(alternative, dict) else None
+                    if not isinstance(alt_index, int) or isinstance(alt_index, bool):
+                        continue
+                    if alt_index in seen or not (0 <= alt_index < len(planned_slots)):
+                        continue
+                    seen.add(alt_index)
+                    alternatives.append(
+                        _swap_recommend_slot_response(
+                            planned_slots[alt_index],
+                            str(alternative.get("reason") or ""),
+                        )
+                    )
+                    if len(alternatives) >= 3:
+                        break
+                resolution = {
+                    "source": source,
+                    "target_canonical": ai_target.get("name"),
+                    "target_muscle": ai_target.get("muscle"),
+                    "slot": slot,
+                    "confidence": ai_resolution.get("confidence") or 0.0,
+                    "reason": ai_resolution.get("reason") or "",
+                    "alternatives": alternatives,
+                }
+                _ai_metric_log(
+                    "ok",
+                    latency_ms=int((time.monotonic() - started_at) * 1000),
+                    constraint_len=len(typed_target),
+                    reason="swap_recommend",
+                )
+            else:
+                _ai_metric_log(
+                    "fallback",
+                    latency_ms=int((time.monotonic() - started_at) * 1000),
+                    constraint_len=len(typed_target),
+                    reason="swap_recommend: no_match",
+                )
+        except _lm_studio.LmStudioError as exc:
+            failure = _classify_swap_recommend_failure(exc)
+            _ai_metric_log(
+                "fallback",
+                latency_ms=int((time.monotonic() - started_at) * 1000),
+                constraint_len=len(typed_target),
+                reason=f"swap_recommend: {failure}",
+            )
+            deterministic_reason = f"AI {failure} - used best match, confirm?"
+    else:
+        _ai_metric_log(
+            "fallback",
+            latency_ms=0,
+            constraint_len=len(typed_target),
+            reason="swap_recommend: adapter_missing",
+        )
+
+    if resolution is None:
+        resolution = _deterministic_swap_recommendation(target_definition, planned_slots, deterministic_reason)
+    if not resolution:
+        return api_error("No same-muscle swap target found", 422, code="no_match")
+
+    plan_fingerprint = _workout_recommendation_fingerprint()
+    return jsonify(_swap_recommend_response(recommendation, workout_index, target_definition, resolution, plan_fingerprint))
 
 
 @app.route('/api/workout/swap', methods=['POST'])
