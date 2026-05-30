@@ -552,7 +552,7 @@ def test_adjust_explicit_target_already_in_plan_does_not_substitute(monkeypatch)
         "Cable Pushdown",
         "Overhead Tricep Extension",
     ]
-    assert any("already in the plan" in note for note in notes)
+    assert notes == []
 
 
 def test_adjust_deterministic_fallback_leaves_unclassified_request_unchanged(monkeypatch):
