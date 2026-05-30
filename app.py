@@ -347,6 +347,8 @@ GOAL_PARAMETERS = {
 # Default user settings
 DEFAULT_SETTINGS = {
     "training_goal": TrainingGoal.HYBRID_STRENGTH_HYPERTROPHY.value,
+    "date_of_birth": "",
+    "sex": "",
     "sessions_per_week_target": 3,
     "available_time_minutes": 75,
     "target_weight_lbs": 175,
@@ -367,6 +369,31 @@ def _settings_with_defaults(settings):
     merged = copy.deepcopy(DEFAULT_SETTINGS)
     merged.update(settings or {})
     return merged
+
+
+def _coerce_profile_date_of_birth(value):
+    if value is None:
+        return ""
+    cleaned = str(value).strip()
+    if not cleaned:
+        return ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned):
+        return None
+    try:
+        parsed = datetime.strptime(cleaned, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    if parsed > datetime.now().date():
+        return None
+    return parsed.isoformat()
+
+
+def _coerce_profile_sex(value):
+    if value is None:
+        return ""
+    cleaned = str(value).strip().lower()
+    allowed = {"", "female", "male", "nonbinary", "prefer_not_to_say"}
+    return cleaned if cleaned in allowed else None
 
 
 # Load user settings from file (or use defaults)
@@ -4411,6 +4438,8 @@ def _workout_recommendation_fingerprint():
 
     settings_fields = [
         "training_goal",
+        "date_of_birth",
+        "sex",
         "sessions_per_week_target",
         "available_time_minutes",
         "fatigue_threshold",
@@ -8071,6 +8100,8 @@ def settings():
         return jsonify({
             "training_goal": goal,
             "goal_details": goal_params,
+            "date_of_birth": USER_SETTINGS.get("date_of_birth", ""),
+            "sex": USER_SETTINGS.get("sex", ""),
             "sessions_per_week_target": USER_SETTINGS.get("sessions_per_week_target", 3),
             "available_time_minutes": USER_SETTINGS.get("available_time_minutes", 60),
             "target_weight_lbs": USER_SETTINGS.get("target_weight_lbs", 180),
@@ -8091,70 +8122,90 @@ def settings():
                 {"value": "machines_only", "label": "Machine"},
                 {"value": "machines_and_cables", "label": "Machine + Cable"},
                 {"value": "all", "label": "All Equipment"},
-            ]
+            ],
+            "sex_options": [
+                {"value": "", "label": "Not set"},
+                {"value": "female", "label": "Female"},
+                {"value": "male", "label": "Male"},
+                {"value": "nonbinary", "label": "Nonbinary / another option"},
+                {"value": "prefer_not_to_say", "label": "Prefer not to say"},
+            ],
         })
     else:
         data, err = get_json_body(required=True)
         if err:
             return err
+        updated_settings = copy.deepcopy(USER_SETTINGS)
 
         if "training_goal" in data:
             goal = data.get("training_goal")
             if goal not in GOAL_PARAMETERS:
                 return api_error("Invalid training_goal", 400, code="invalid_field")
-            USER_SETTINGS["training_goal"] = goal
+            updated_settings["training_goal"] = goal
+
+        if "date_of_birth" in data:
+            dob = _coerce_profile_date_of_birth(data.get("date_of_birth"))
+            if dob is None:
+                return api_error("Invalid date_of_birth", 400, code="invalid_field")
+            updated_settings["date_of_birth"] = dob
+
+        if "sex" in data:
+            sex = _coerce_profile_sex(data.get("sex"))
+            if sex is None:
+                return api_error("Invalid sex", 400, code="invalid_field")
+            updated_settings["sex"] = sex
 
         if "sessions_per_week_target" in data:
             s, err2 = _coerce_int(data.get("sessions_per_week_target"), "sessions_per_week_target", min_v=1, max_v=14)
             if err2:
                 return err2
-            USER_SETTINGS["sessions_per_week_target"] = s
+            updated_settings["sessions_per_week_target"] = s
 
         if "available_time_minutes" in data:
             t, err2 = _coerce_int(data.get("available_time_minutes"), "available_time_minutes", min_v=10, max_v=240)
             if err2:
                 return err2
-            USER_SETTINGS["available_time_minutes"] = t
+            updated_settings["available_time_minutes"] = t
 
         if "target_weight_lbs" in data:
             tw, err2 = _coerce_float(data.get("target_weight_lbs"), "target_weight_lbs", min_v=80, max_v=500)
             if err2:
                 return err2
-            USER_SETTINGS["target_weight_lbs"] = tw
+            updated_settings["target_weight_lbs"] = tw
 
         if "target_body_fat_pct" in data:
             tbf, err2 = _coerce_float(data.get("target_body_fat_pct"), "target_body_fat_pct", min_v=4, max_v=60)
             if err2:
                 return err2
-            USER_SETTINGS["target_body_fat_pct"] = tbf
+            updated_settings["target_body_fat_pct"] = tbf
 
         if "daily_calorie_target" in data:
             cal, err2 = _coerce_int(data.get("daily_calorie_target"), "daily_calorie_target", min_v=500, max_v=6000)
             if err2:
                 return err2
-            USER_SETTINGS["daily_calorie_target"] = cal
+            updated_settings["daily_calorie_target"] = cal
 
         if "daily_protein_target_g" in data:
             prot, err2 = _coerce_float(data.get("daily_protein_target_g"), "daily_protein_target_g", min_v=50, max_v=400)
             if err2:
                 return err2
-            USER_SETTINGS["daily_protein_target_g"] = round(prot, 1)
+            updated_settings["daily_protein_target_g"] = round(prot, 1)
 
         if "fatigue_threshold" in data:
             ft, err2 = _coerce_int(data.get("fatigue_threshold"), "fatigue_threshold", min_v=40, max_v=95)
             if err2:
                 return err2
-            USER_SETTINGS["fatigue_threshold"] = ft
+            updated_settings["fatigue_threshold"] = ft
 
         if "volume_landmarks" in data and isinstance(data.get("volume_landmarks"), dict):
-            USER_SETTINGS["volume_landmarks"] = data.get("volume_landmarks")
+            updated_settings["volume_landmarks"] = data.get("volume_landmarks")
         if "equipment_preference" in data:
             pref, err2 = _coerce_str(data.get("equipment_preference"), "equipment_preference", required=True, max_len=64)
             if err2:
                 return err2
             if pref not in ("machines_only", "machines_and_cables", "all"):
                 return api_error("Invalid equipment_preference", 400, code="invalid_field")
-            USER_SETTINGS["equipment_preference"] = pref
+            updated_settings["equipment_preference"] = pref
         if "preferred_equipment_brands" in data:
             brands = data.get("preferred_equipment_brands")
             if not isinstance(brands, list) or not all(isinstance(b, str) for b in brands):
@@ -8167,7 +8218,7 @@ def settings():
                 if cleaned and key not in seen_brands:
                     normalized_brands.append(cleaned)
                     seen_brands.add(key)
-            USER_SETTINGS["preferred_equipment_brands"] = normalized_brands[:20]
+            updated_settings["preferred_equipment_brands"] = normalized_brands[:20]
         if "excluded_exercises" in data:
             excluded = data.get("excluded_exercises")
             if not isinstance(excluded, list) or not all(isinstance(e, str) for e in excluded):
@@ -8182,8 +8233,10 @@ def settings():
                 canonical = known.get(cleaned)
                 if canonical and canonical not in normalized:
                     normalized.append(canonical)
-            USER_SETTINGS["excluded_exercises"] = normalized
+            updated_settings["excluded_exercises"] = normalized
 
+        USER_SETTINGS.clear()
+        USER_SETTINGS.update(updated_settings)
         save_json(SETTINGS_FILE, USER_SETTINGS)  # Persist to file
         LAST_WORKOUT_RECOMMENDATION = None
         return jsonify({"status": "success", "settings": USER_SETTINGS})
