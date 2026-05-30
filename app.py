@@ -670,29 +670,59 @@ def _choose_dynamic_cardio_recommendation(
 
 # ==================== EXERCISE LIBRARY ====================
 
+EXERCISE_DISAMBIGUATION_METADATA_FIELDS = (
+    "movement_pattern",
+    "body_position",
+    "shoulder_position",
+    "primary_emphasis",
+    "match_tokens",
+    "confusable_with",
+    "disambiguation",
+)
+
+EXERCISE_DISAMBIGUATION_DISTINGUISHING_FIELDS = (
+    "movement_pattern",
+    "body_position",
+    "shoulder_position",
+    "primary_emphasis",
+    "confusable_with",
+    "disambiguation",
+)
+
+EXERCISE_DISAMBIGUATION_CLUSTERS = {
+    "triceps_extension": ("Overhead Tricep Extension",),
+    "calf_raise": ("Calf Raise", "Calf Raise (Seated)"),
+    "biceps_curl": ("Biceps Curl", "Cable Biceps Curl"),
+    "crunch": ("Crunch Machine", "Cable Crunch"),
+    "back_row": ("Seated Row", "Mid Row", "Cable Row", "Chest-Supported Row"),
+    "chest_press": ("Chest Press", "Incline Press"),
+    "shoulder_press": ("Shoulder Press", "Arnold Press"),
+    "shoulder_delt_fly": ("Deltoid Fly", "Rear Delt Fly"),
+}
+
 EXERCISE_LIBRARY = [
     # Chest
-    {"name": "Chest Press", "muscle": "chest", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["horizontal_press"]},
-    {"name": "Incline Press", "muscle": "chest", "compound": True, "baseline": 95, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["incline_press", "horizontal_press"]},
+    {"name": "Chest Press", "muscle": "chest", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["horizontal_press"], "movement_pattern": "horizontal_press", "body_position": "seated", "shoulder_position": "neutral", "primary_emphasis": "chest_sternal", "match_tokens": ["flat", "horizontal"], "confusable_with": [{"name": "Incline Press", "distinction": "Horizontal machine press; the incline variant biases the upper chest."}], "disambiguation": "Default for a bare chest press: horizontal machine press, not the incline variant."},
+    {"name": "Incline Press", "muscle": "chest", "compound": True, "baseline": 95, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["incline_press", "horizontal_press"], "movement_pattern": "incline_press", "body_position": "incline", "shoulder_position": "incline", "primary_emphasis": "chest_upper_clavicular", "match_tokens": ["incline"], "confusable_with": [{"name": "Chest Press", "distinction": "Incline machine press; choose only when incline or upper-chest language is present."}], "disambiguation": "Pick when 'incline' or upper-chest press is requested."},
     {"name": "Cable Crossover", "muscle": "chest", "compound": False, "baseline": 40, "equipment": "cable", "movement_patterns": ["fly", "chest_isolation"]},
     {"name": "Pec Fly", "muscle": "chest", "compound": False, "baseline": 50, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "aliases": ["Pectoral Fly"], "movement_patterns": ["fly", "chest_isolation"]},
     {"name": "Dips", "muscle": "chest", "compound": True, "baseline": 50, "equipment": "bodyweight"},
     # Back
     {"name": "Lat Pulldown", "muscle": "back", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["vertical_pull"]},
-    {"name": "Seated Row", "muscle": "back", "compound": True, "baseline": 90, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["horizontal_pull", "row"]},
-    {"name": "Mid Row", "muscle": "back", "compound": True, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["horizontal_pull", "row"]},
-    {"name": "Cable Row", "muscle": "back", "compound": False, "baseline": 70, "equipment": "cable", "movement_patterns": ["horizontal_pull", "row"]},
-    {"name": "Chest-Supported Row", "muscle": "back", "compound": True, "baseline": 85, "equipment": "machine", "aliases": ["Chest Supported Row"], "movement_patterns": ["horizontal_pull", "row"]},
+    {"name": "Seated Row", "muscle": "back", "compound": True, "baseline": 90, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["horizontal_pull", "row"], "movement_pattern": "horizontal_pull", "body_position": "seated", "primary_emphasis": "mid_back_lats", "match_tokens": ["seated"], "confusable_with": [{"name": "Mid Row", "distinction": "Seated row machine; mid row uses a different machine geometry."}, {"name": "Cable Row", "distinction": "Seated row machine; cable row is a cable station row."}, {"name": "Chest-Supported Row", "distinction": "Seated row machine; chest-supported row fixes the torso against a pad."}], "disambiguation": "Default machine row when the user says seated row."},
+    {"name": "Mid Row", "muscle": "back", "compound": True, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["horizontal_pull", "row"], "movement_pattern": "horizontal_pull", "body_position": "seated", "primary_emphasis": "mid_back_lats", "match_tokens": ["mid"], "confusable_with": [{"name": "Seated Row", "distinction": "Mid-row machine geometry, distinct from the generic seated row."}, {"name": "Cable Row", "distinction": "Mid-row machine, not a cable row."}, {"name": "Chest-Supported Row", "distinction": "Mid-row machine; chest-supported row fixes the torso against a pad."}], "disambiguation": "Pick when 'mid row' is requested."},
+    {"name": "Cable Row", "muscle": "back", "compound": False, "baseline": 70, "equipment": "cable", "movement_patterns": ["horizontal_pull", "row"], "movement_pattern": "horizontal_pull", "body_position": "seated", "primary_emphasis": "mid_back_lats", "match_tokens": ["cable"], "confusable_with": [{"name": "Seated Row", "distinction": "Cable-station row, not the machine row."}, {"name": "Mid Row", "distinction": "Cable-station row, not the mid-row machine."}, {"name": "Chest-Supported Row", "distinction": "Cable-station row; chest-supported row fixes the torso against a pad."}], "disambiguation": "Pick when 'cable row' is requested."},
+    {"name": "Chest-Supported Row", "muscle": "back", "compound": True, "baseline": 85, "equipment": "machine", "aliases": ["Chest Supported Row"], "movement_patterns": ["horizontal_pull", "row"], "movement_pattern": "horizontal_pull", "body_position": "chest_supported", "primary_emphasis": "mid_back_lats", "match_tokens": ["chest-supported", "supported"], "confusable_with": [{"name": "Seated Row", "distinction": "Torso is fixed against a chest pad, unlike the generic seated row."}, {"name": "Mid Row", "distinction": "Torso is fixed against a chest pad, unlike the mid-row machine."}, {"name": "Cable Row", "distinction": "Chest-supported machine row, not a cable station row."}], "disambiguation": "Pick when chest-supported row is requested."},
     {"name": "Face Pulls", "muscle": "back", "compound": False, "baseline": 35, "equipment": "cable"},
     {"name": "Pullups", "muscle": "back", "compound": True, "baseline": 50, "equipment": "bodyweight"},
     # Shoulders
-    {"name": "Shoulder Press", "muscle": "shoulders", "compound": True, "baseline": 60, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
-    {"name": "Arnold Press", "muscle": "shoulders", "compound": False, "baseline": 50, "equipment": "free_weight"},
+    {"name": "Shoulder Press", "muscle": "shoulders", "compound": True, "baseline": 60, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_pattern": "vertical_press", "body_position": "seated", "shoulder_position": "overhead", "match_tokens": ["shoulder"], "confusable_with": [{"name": "Arnold Press", "distinction": "Machine shoulder press; Arnold press is a free-weight rotational press."}], "disambiguation": "Default for a bare shoulder press: machine shoulder press, not Arnold press."},
+    {"name": "Arnold Press", "muscle": "shoulders", "compound": False, "baseline": 50, "equipment": "free_weight", "movement_pattern": "rotational_vertical_press", "body_position": "seated", "shoulder_position": "overhead", "match_tokens": ["arnold"], "confusable_with": [{"name": "Shoulder Press", "distinction": "Free-weight rotational press; choose only when Arnold is requested."}], "disambiguation": "Pick only when 'Arnold' is typed."},
     {"name": "Lateral Raise", "muscle": "shoulders", "compound": False, "baseline": 20, "equipment": "cable"},
     {"name": "Front Raise", "muscle": "shoulders", "compound": False, "baseline": 20, "equipment": "cable"},
-    {"name": "Deltoid Fly", "muscle": "shoulders", "compound": False, "baseline": 30, "equipment": "cable"},
+    {"name": "Deltoid Fly", "muscle": "shoulders", "compound": False, "baseline": 30, "equipment": "cable", "movement_pattern": "shoulder_fly", "body_position": "standing", "match_tokens": ["deltoid"], "confusable_with": [{"name": "Rear Delt Fly", "distinction": "General cable deltoid fly; rear delt fly is the rear-delt-specific variant."}], "disambiguation": "Default for a bare deltoid fly; rear-delt wording should pick Rear Delt Fly."},
     {"name": "Machine Deltoid Raise", "muscle": "shoulders", "compound": False, "baseline": 30, "equipment": "machine", "aliases": ["Deltoid Raise", "Rear Delt Raise"]},
-    {"name": "Rear Delt Fly", "muscle": "shoulders", "compound": False, "baseline": 25, "equipment": "cable"},
+    {"name": "Rear Delt Fly", "muscle": "shoulders", "compound": False, "baseline": 25, "equipment": "cable", "movement_pattern": "shoulder_fly", "body_position": "standing", "primary_emphasis": "rear_delts", "match_tokens": ["rear"], "confusable_with": [{"name": "Deltoid Fly", "distinction": "Rear-delt-specific fly; choose when rear delt is requested."}], "disambiguation": "Pick when 'rear delt' or posterior-delt fly is requested."},
     # Legs
     {"name": "Leg Press", "muscle": "quads", "compound": True, "baseline": 180, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["squat", "knee_dominant"]},
     {"name": "Hack Squat", "muscle": "quads", "compound": True, "baseline": 135, "equipment": "machine", "movement_patterns": ["squat", "knee_dominant"]},
@@ -701,26 +731,46 @@ EXERCISE_LIBRARY = [
     {"name": "Romanian Deadlift", "muscle": "hamstrings", "compound": True, "baseline": 135, "equipment": "free_weight", "movement_patterns": ["hinge", "posterior_chain"]},
     {"name": "Leg Curl", "muscle": "hamstrings", "compound": False, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["knee_flexion", "hamstring_isolation"]},
     {"name": "Back Extension", "muscle": "hamstrings", "compound": False, "baseline": 85, "equipment": "machine", "aliases": ["Low Back Extension", "Lower Back Extension"], "movement_patterns": ["hinge", "posterior_chain"]},
-    {"name": "Calf Raise", "muscle": "calves", "compound": False, "baseline": 120, "equipment": "machine"},
-    {"name": "Calf Raise (Seated)", "muscle": "calves", "compound": False, "baseline": 90, "equipment": "machine"},
+    {"name": "Calf Raise", "muscle": "calves", "compound": False, "baseline": 120, "equipment": "machine", "movement_pattern": "plantar_flexion", "body_position": "standing", "primary_emphasis": "gastrocnemius_bias", "match_tokens": ["standing"], "confusable_with": [{"name": "Calf Raise (Seated)", "distinction": "Standing calf raise biases gastrocnemius; seated calf raise biases soleus."}], "disambiguation": "Default for a bare calf raise: standing machine calf raise, not seated."},
+    {"name": "Calf Raise (Seated)", "muscle": "calves", "compound": False, "baseline": 90, "equipment": "machine", "movement_pattern": "plantar_flexion", "body_position": "seated", "primary_emphasis": "soleus_bias", "match_tokens": ["seated"], "confusable_with": [{"name": "Calf Raise", "distinction": "Seated calf raise biases soleus; standing calf raise biases gastrocnemius."}], "disambiguation": "Pick only when seated calf raise is requested."},
     {"name": "Hip Abductor", "muscle": "glutes", "compound": False, "baseline": 100, "equipment": "machine"},
     {"name": "Hip Adductor", "muscle": "adductors", "compound": False, "baseline": 100, "equipment": "machine"},
     # Arms
-    {"name": "Biceps Curl", "muscle": "biceps", "compound": False, "baseline": 50, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "aliases": ["Hoist Biceps Curl", "Hoist Roc-It Biceps Curl", "Nautilus Biceps Curl", "Nautilus ONE Biceps Curl"]},
-    {"name": "Cable Biceps Curl", "muscle": "biceps", "compound": False, "baseline": 45, "equipment": "cable"},
+    {"name": "Biceps Curl", "muscle": "biceps", "compound": False, "baseline": 50, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "aliases": ["Hoist Biceps Curl", "Hoist Roc-It Biceps Curl", "Nautilus Biceps Curl", "Nautilus ONE Biceps Curl"], "movement_pattern": "elbow_flexion", "body_position": "seated", "primary_emphasis": "biceps_general", "match_tokens": ["machine"], "confusable_with": [{"name": "Cable Biceps Curl", "distinction": "Selectorized machine curl; cable biceps curl uses a cable station."}], "disambiguation": "Default for a bare biceps curl when machines are available; cable variant needs 'cable'."},
+    {"name": "Cable Biceps Curl", "muscle": "biceps", "compound": False, "baseline": 45, "equipment": "cable", "movement_pattern": "elbow_flexion", "body_position": "standing", "primary_emphasis": "biceps_general", "match_tokens": ["cable"], "confusable_with": [{"name": "Biceps Curl", "distinction": "Cable-station curl; machine biceps curl is selectorized."}], "disambiguation": "Pick when 'cable biceps curl' is requested."},
     {"name": "Hammer Curl", "muscle": "biceps", "compound": False, "baseline": 40, "equipment": "free_weight"},
     {"name": "Preacher Curl", "muscle": "biceps", "compound": False, "baseline": 45, "equipment": "machine", "disabled_by_default": True, "avoid_reason": "User does not perform preacher curls"},
     {"name": "Seated Dip", "muscle": "triceps", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
     {"name": "Tricep Pushdown", "muscle": "triceps", "compound": False, "baseline": 50, "equipment": "cable", "movement_patterns": ["elbow_extension", "triceps_extension"]},
     {"name": "Cable Pushdown", "muscle": "triceps", "compound": False, "baseline": 55, "equipment": "cable", "movement_patterns": ["elbow_extension", "triceps_extension"]},
-    {"name": "Overhead Tricep Extension", "muscle": "triceps", "compound": False, "baseline": 45, "equipment": "cable", "aliases": ["Tricep Extension", "Triceps Extension", "Tricep Extensions", "Triceps Extensions"], "movement_patterns": ["elbow_extension", "triceps_extension"]},
+    {"name": "Overhead Tricep Extension", "muscle": "triceps", "compound": False, "baseline": 45, "equipment": "cable", "aliases": ["Tricep Extension", "Triceps Extension", "Tricep Extensions", "Triceps Extensions"], "movement_patterns": ["elbow_extension", "triceps_extension"], "movement_pattern": "elbow_extension", "body_position": "standing", "shoulder_position": "overhead", "primary_emphasis": "triceps_long_head", "match_tokens": ["overhead"], "confusable_with": [{"name": "Triceps Extension", "distinction": "Standing cable, arms overhead, long-head bias; the future seated machine entry has shoulders neutral."}], "disambiguation": "Pick only when 'overhead' is typed."},
     # Core
-    {"name": "Crunch Machine", "muscle": "core", "compound": False, "baseline": 60, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["trunk_flexion", "core_isolation"]},
-    {"name": "Cable Crunch", "muscle": "core", "compound": False, "baseline": 55, "equipment": "cable", "movement_patterns": ["trunk_flexion", "core_isolation"]},
+    {"name": "Crunch Machine", "muscle": "core", "compound": False, "baseline": 60, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["trunk_flexion", "core_isolation"], "movement_pattern": "trunk_flexion", "body_position": "seated", "primary_emphasis": "rectus_abdominis_flexion", "match_tokens": ["machine"], "confusable_with": [{"name": "Cable Crunch", "distinction": "Selectorized crunch machine; cable crunch uses a cable station."}], "disambiguation": "Default for a bare crunch machine request; cable crunch needs 'cable'."},
+    {"name": "Cable Crunch", "muscle": "core", "compound": False, "baseline": 55, "equipment": "cable", "movement_patterns": ["trunk_flexion", "core_isolation"], "movement_pattern": "trunk_flexion", "body_position": "kneeling", "primary_emphasis": "rectus_abdominis_flexion", "match_tokens": ["cable"], "confusable_with": [{"name": "Crunch Machine", "distinction": "Cable-station crunch; crunch machine is selectorized."}], "disambiguation": "Pick when 'cable crunch' is requested."},
     {"name": "Rotary Torso", "muscle": "core", "compound": False, "baseline": 60, "equipment": "machine", "aliases": ["Torso Rotation", "Rotary Torso Machine"], "movement_patterns": ["rotation", "core_isolation"]},
     {"name": "Hanging Leg Raise", "muscle": "core", "compound": True, "baseline": 40, "equipment": "bodyweight", "movement_patterns": ["hip_flexion", "core"]},
     {"name": "Plank", "muscle": "core", "compound": False, "baseline": 0, "equipment": "bodyweight", "movement_patterns": ["isometric", "core"]},
 ]
+
+
+def _exercise_disambiguation_annotation_gaps(library=None):
+    exercises_by_name = {
+        exercise.get("name"): exercise
+        for exercise in (library or EXERCISE_LIBRARY)
+    }
+    gaps = []
+    for cluster_name, exercise_names in EXERCISE_DISAMBIGUATION_CLUSTERS.items():
+        for exercise_name in exercise_names:
+            exercise = exercises_by_name.get(exercise_name)
+            if not exercise:
+                gaps.append((cluster_name, exercise_name, "missing_entry"))
+                continue
+            if not exercise.get("match_tokens"):
+                gaps.append((cluster_name, exercise_name, "match_tokens"))
+            if not any(exercise.get(field) for field in EXERCISE_DISAMBIGUATION_DISTINGUISHING_FIELDS):
+                gaps.append((cluster_name, exercise_name, "distinguishing_field"))
+    return gaps
+
 
 EXERCISE_LOOKUP = {}
 for _exercise in EXERCISE_LIBRARY:
@@ -8416,6 +8466,13 @@ def _exercise_library_hash(preference: str) -> str:
                 "joints_loaded": ex.get("joints_loaded", []),
                 "aliases": ex.get("aliases", []),
                 "movement_patterns": ex.get("movement_patterns", []),
+                "movement_pattern": ex.get("movement_pattern", ""),
+                "body_position": ex.get("body_position", ""),
+                "shoulder_position": ex.get("shoulder_position", ""),
+                "primary_emphasis": ex.get("primary_emphasis", ""),
+                "match_tokens": ex.get("match_tokens", []),
+                "confusable_with": ex.get("confusable_with", []),
+                "disambiguation": ex.get("disambiguation", ""),
             }
             for ex in _filtered_exercise_library(preference)
         ],
