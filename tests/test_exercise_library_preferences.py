@@ -271,7 +271,7 @@ def test_swap_recommend_endpoint_deterministic_without_lm_studio(fitness_app, mo
     metrics = []
     monkeypatch.setattr(fitness_app, "_lm_studio", None)
     monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
-    monkeypatch.setattr(fitness_app, "_workout_recommendation_fingerprint", lambda: "fp-test")
+    monkeypatch.setattr(fitness_app, "_workout_plan_content_fingerprint", lambda _recommendation: "fp-test")
     monkeypatch.setattr(
         fitness_app,
         "_ai_metric_log",
@@ -297,12 +297,236 @@ def test_swap_recommend_endpoint_deterministic_without_lm_studio(fitness_app, mo
         "workout_index": 0,
         "exercise_index": 1,
         "new_exercise_name": "Triceps Extension",
+        "plan_fingerprint": "fp-test",
     }
     assert body["recommended_load"] is None
     assert body["plan_fingerprint"] == "fp-test"
     assert recommendation == original
     assert metrics[0][0] == "fallback"
     assert metrics[0][1]["reason"] == "swap_recommend: adapter_missing"
+
+
+def test_swap_endpoint_rejects_stale_recommendation_fingerprint(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Chest Press",
+                "muscle": "chest",
+                "is_compound": True,
+                "target_weight": 90,
+                "target_reps": 10,
+                "target_sets": 3,
+            }
+        ],
+    }
+    original = copy.deepcopy(recommendation)
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "workout_index": 0,
+            "exercise_index": 0,
+            "new_exercise_name": "Incline Press",
+            "plan_fingerprint": "old-plan",
+        },
+    )
+
+    assert response.status_code == 409
+    body = response.get_json()
+    assert body["error"]["code"] == "stale_plan"
+    assert "Refresh the recommendation" in body["error"]["message"]
+    assert recommendation == original
+
+
+def test_swap_endpoint_allows_matching_recommendation_fingerprint(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Chest Press",
+                "muscle": "chest",
+                "is_compound": True,
+                "target_weight": 90,
+                "target_reps": 10,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    current_plan = fitness_app._workout_plan_content_fingerprint(recommendation)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "workout_index": 0,
+            "exercise_index": 0,
+            "new_exercise_name": "Incline Press",
+            "plan_fingerprint": current_plan,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["resolved_exercise_name"] == "Incline Press"
+    assert body["recommendation"]["exercises"][0]["exercise"] == "Incline Press"
+
+
+def test_swap_endpoint_validates_fingerprint_against_indexed_recommendation(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    indexed_recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Chest Press",
+                "muscle": "chest",
+                "is_compound": True,
+                "target_weight": 90,
+                "target_reps": 10,
+                "target_sets": 3,
+            }
+        ],
+    }
+    different_last = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Lat Pulldown",
+                "muscle": "back",
+                "is_compound": True,
+                "target_weight": 70,
+                "target_reps": 8,
+                "target_sets": 4,
+            }
+        ],
+    }
+    indexed_plan = fitness_app._workout_plan_content_fingerprint(indexed_recommendation)
+    monkeypatch.setattr(fitness_app, "WORKOUT_RECOMMENDATIONS", [indexed_recommendation])
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", different_last)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "workout_index": 0,
+            "exercise_index": 0,
+            "new_exercise_name": "Incline Press",
+            "plan_fingerprint": indexed_plan,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["recommendation"]["exercises"][0]["exercise"] == "Incline Press"
+    assert different_last["exercises"][0]["exercise"] == "Lat Pulldown"
+
+
+def test_swap_endpoint_rejects_plan_mutated_after_recommendation_fingerprint(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Chest Press",
+                "muscle": "chest",
+                "is_compound": True,
+                "target_weight": 90,
+                "target_reps": 10,
+                "target_sets": 3,
+            }
+        ],
+    }
+    stale_plan = fitness_app._workout_plan_content_fingerprint(recommendation)
+    recommendation["exercises"][0]["exercise"] = "Pec Fly"
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "workout_index": 0,
+            "exercise_index": 0,
+            "new_exercise_name": "Incline Press",
+            "plan_fingerprint": stale_plan,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "stale_plan"
+
+
+def test_swap_endpoint_rejects_mesocycle_mutated_after_recommendation_fingerprint(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Chest Press",
+                "muscle": "chest",
+                "is_compound": True,
+                "target_weight": 90,
+                "target_reps": 10,
+                "target_sets": 3,
+            }
+        ],
+    }
+    stale_plan = fitness_app._workout_plan_content_fingerprint(recommendation)
+    recommendation["mesocycle"] = {"week": 4}
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "workout_index": 0,
+            "exercise_index": 0,
+            "new_exercise_name": "Incline Press",
+            "plan_fingerprint": stale_plan,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "stale_plan"
+
+
+def test_swap_endpoint_rejects_any_recommendation_content_mutation(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Chest Press",
+                "muscle": "chest",
+                "is_compound": True,
+                "target_weight": 90,
+                "target_reps": 10,
+                "target_sets": 3,
+                "rationale": "original plan",
+            }
+        ],
+    }
+    stale_plan = fitness_app._workout_plan_content_fingerprint(recommendation)
+    recommendation["exercises"][0]["rationale"] = "newer plan content"
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap",
+        json={
+            "workout_index": 0,
+            "exercise_index": 0,
+            "new_exercise_name": "Incline Press",
+            "plan_fingerprint": stale_plan,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "stale_plan"
 
 
 def test_swap_recommend_endpoint_projects_planned_exercise_keys_to_adapter(fitness_app, monkeypatch):
