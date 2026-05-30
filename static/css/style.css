@@ -2483,6 +2483,67 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 }
 .toast.ok { border-color: rgba(34,197,94,0.4); color: #a7f3d0; }
 .toast.err { border-color: rgba(239,68,68,0.45); color: #fecaca; }
+.food-log-refresh-toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    width: min(92vw, 420px);
+    max-width: min(92vw, 420px);
+    padding: 12px 14px;
+    border-radius: 12px;
+    text-align: left;
+    border-color: rgba(96,165,250,0.45);
+    color: var(--fg-0);
+    white-space: normal;
+    overflow-wrap: anywhere;
+    box-sizing: border-box;
+}
+.food-log-refresh-toast-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.food-log-refresh-toast-title {
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+.food-log-refresh-toast-detail {
+    color: var(--fg-2);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+.food-log-refresh-toast-dismiss {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: 0 0 auto;
+    align-self: flex-start;
+    background: rgba(96,165,250,0.14);
+    color: var(--fg-0);
+    border: 1px solid rgba(96,165,250,0.38);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.2;
+    cursor: pointer;
+    min-height: 32px;
+}
+.food-log-refresh-toast-dismiss:hover,
+.food-log-refresh-toast-dismiss:focus-visible {
+    outline: none;
+    background: rgba(96,165,250,0.22);
+    border-color: rgba(147,197,253,0.7);
+}
+.food-log-refresh-toast-dismiss:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
 .toast-undo {
     display: inline-flex;
     align-items: center;
@@ -2540,6 +2601,13 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 @keyframes toast-in {
     from { transform: translateY(8px); opacity: 0; }
     to   { transform: translateY(0);   opacity: 1; }
+}
+@media (max-width: 480px) {
+    .food-log-refresh-toast {
+        width: min(94vw, 420px);
+        max-width: min(94vw, 420px);
+        padding: 10px 12px;
+    }
 }
 
 /* ======================= ACTIVE WORKOUT SET ROWS ======================= */
@@ -3727,6 +3795,9 @@ input[type=number] { -moz-appearance: textfield; }
 }
 .meal-review-v2--refreshing {
     opacity: 0.85;
+}
+.meal-review-v2--refreshing :disabled {
+    pointer-events: none;
 }
 .meal-review-v2-collapsed {
     display: flex;

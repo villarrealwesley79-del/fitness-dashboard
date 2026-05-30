@@ -30,6 +30,13 @@ def test_normalize_plural_and_brand_typos():
     assert branded_food_lookup.normalize_meal_text("starbuks wraps") == "starbucks wrap"
     assert branded_food_lookup.normalize_meal_text("mcdonals sandwiches") == "mcdonalds sandwich"
     assert branded_food_lookup.normalize_meal_text("herb chicken") == "herb chicken"
+    assert branded_food_lookup.normalize_meal_text("Torchy\u2019s democrat taco") == "torchys democrat taco"
+    assert branded_food_lookup.normalize_meal_text("Rudy\u2019s brisket sandwich") == "rudys brisket sandwich"
+    assert branded_food_lookup.normalize_meal_text("P. Terry\u2019s cheeseburger") == "p terrys cheeseburger"
+    assert (
+        branded_food_lookup.normalize_meal_text("Schlotzsky\u2019s original sandwich")
+        == "schlotzskys original sandwich"
+    )
 
 
 def test_direct_lookup_gate_blocks_multi_item_generic_text():
@@ -49,6 +56,53 @@ def test_direct_lookup_gate_blocks_multi_item_generic_text():
     assert branded_food_lookup.should_attempt_direct_lookup("chicken with rice") is False
     assert branded_food_lookup.should_attempt_direct_lookup("half Chipotle chicken burrito") is False
     assert branded_food_lookup.should_attempt_direct_lookup("herb chicken") is False
+
+
+def test_direct_lookup_gate_allows_regional_restaurant_menu_queries():
+    assert branded_food_lookup.should_attempt_direct_lookup("bill miller bacon and egg taco") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("bill miller bacon & egg taco") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("bill miller breakfast sandwich on biscuit") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("bill miller brisket sandwich") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("whataburger patty melt") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("taco cabana bean and cheese taco") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("taco cabana bean & cheese taco") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("torchys democrat taco") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("rudys brisket sandwich") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("p terrys cheeseburger") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("schlotzskys original sandwich") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("Torchy\u2019s democrat taco") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("Rudy\u2019s brisket sandwich") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("P. Terry\u2019s cheeseburger") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("Schlotzsky\u2019s original sandwich") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("golden chick chicken tenders") is True
+    assert branded_food_lookup.should_attempt_direct_lookup("la madeleine chicken caesar salad") is True
+
+
+def test_direct_lookup_gate_requires_regional_restaurant_item_tokens():
+    assert branded_food_lookup.should_attempt_direct_lookup("bill miller") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("Bill Miller BBQ") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("Bill Miller Bar-B-Q") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("whataburger") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("Whataburger Restaurant") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("Whataburger Texas") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("half bill miller brisket sandwich") is False
+
+
+def test_direct_lookup_gate_blocks_regional_restaurant_multi_item_queries():
+    assert branded_food_lookup.should_attempt_direct_lookup("whataburger patty melt with fries") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("whataburger #1 with fries") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("whataburger burger and large fries") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("whataburger fries and tenders") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("rudys brisket plate") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("rudys brisket plate with sides") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("bill miller bacon egg taco meal") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("bill miller bacon and egg taco and fries") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("bill miller bacon & egg taco and fries") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("bill miller brisket sandwich and potato salad") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("torchys taco combo") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("taco cabana taco and burrito") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("schlotzskys turkey sandwich and chips") is False
+    assert branded_food_lookup.should_attempt_direct_lookup("schlotzskys turkey sandwich and bag of chips") is False
 
 
 def test_lookup_uses_open_food_facts_for_heb_private_label_when_other_sources_do_not_verify_brand(monkeypatch):
@@ -314,6 +368,136 @@ def test_lookup_uses_nutritionix_and_records_provenance(monkeypatch):
     assert saved["user_id"] == 1
 
 
+def test_lookup_attempts_provider_for_regional_restaurant_query(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: captured.update({"query": query}) or _nutritionix_payload(
+            food_name="brisket sandwich",
+            brand_name="Bill Miller Bar-B-Q",
+            serving_unit="sandwich",
+            nf_calories=610,
+            nf_protein=32,
+            nf_total_carbohydrate=58,
+            nf_total_fat=27,
+            nf_sodium=1450,
+            nf_dietary_fiber=3,
+            nix_item_id="bill-miller-brisket-sandwich",
+        ),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    estimate = branded_food_lookup.lookup("bill miller brisket sandwich")
+
+    assert captured["query"] == "bill miller brisket sandwich"
+    assert estimate["source"] == "nutritionix"
+    assert estimate["item_name"] == "Bill Miller Bar-B-Q brisket sandwich"
+    assert estimate["calories"] == 610
+    assert estimate["confidence"] == 0.85
+
+
+def test_taco_cabana_brand_item_token_does_not_create_category_mismatch(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+
+    def natural_nutrients(query):
+        if "salad" in query:
+            return _nutritionix_payload(
+                food_name="Chicken Salad",
+                brand_name="Taco Cabana",
+                serving_unit="salad",
+                nf_calories=360,
+                nf_protein=24,
+                nf_total_carbohydrate=18,
+                nf_total_fat=21,
+                nf_sodium=980,
+                nf_dietary_fiber=5,
+            )
+        return _nutritionix_payload(
+            food_name="Bean and Cheese Burrito",
+            brand_name="Taco Cabana",
+            serving_unit="burrito",
+            nf_calories=500,
+            nf_protein=20,
+            nf_total_carbohydrate=70,
+            nf_total_fat=14,
+            nf_sodium=1200,
+            nf_dietary_fiber=8,
+        )
+
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", natural_nutrients)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    burrito = branded_food_lookup.lookup("taco cabana bean and cheese burrito")
+    salad = branded_food_lookup.lookup("taco cabana salad")
+
+    assert burrito["confidence"] == 0.85
+    assert burrito["ambiguous"] is False
+    assert not any("different item category" in note for note in burrito["uncertainty_notes"])
+    assert salad["confidence"] == 0.85
+    assert salad["ambiguous"] is False
+    assert not any("different item category" in note for note in salad["uncertainty_notes"])
+
+
+def test_taco_cabana_item_category_mismatch_still_requires_review(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(
+            food_name="Chicken Salad",
+            brand_name="Taco Cabana",
+            serving_unit="salad",
+            nf_calories=360,
+            nf_protein=24,
+            nf_total_carbohydrate=18,
+            nf_total_fat=21,
+            nf_sodium=980,
+            nf_dietary_fiber=5,
+        ),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    estimate = branded_food_lookup.lookup("taco cabana bean and cheese burrito")
+
+    assert estimate["confidence"] == 0.55
+    assert estimate["ambiguous"] is True
+    assert any("different item category" in note for note in estimate["uncertainty_notes"])
+
+
+def test_regional_restaurant_lookup_marks_wrong_chain_for_review(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: _nutritionix_payload(
+            food_name="brisket sandwich",
+            brand_name="Other BBQ",
+            serving_unit="sandwich",
+            nf_calories=610,
+            nf_protein=32,
+            nf_total_carbohydrate=58,
+            nf_total_fat=27,
+            nf_sodium=1450,
+            nf_dietary_fiber=3,
+        ),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    estimate = branded_food_lookup.lookup("bill miller brisket sandwich")
+
+    assert estimate["confidence"] == 0.55
+    assert any(
+        "Nutritionix did not verify the requested brand" in note
+        for note in estimate["uncertainty_notes"]
+    )
+
+
 def test_lookup_infers_breakfast_meal_type_for_external_result(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
@@ -404,6 +588,43 @@ def test_lookup_does_not_duplicate_existing_brand_hint(monkeypatch):
     branded_food_lookup.lookup("Chipotle chicken burrito", brand_hint="chipotle")
 
     assert captured["query"] == "Chipotle chicken burrito"
+
+
+def test_lookup_does_not_duplicate_regional_brand_hint(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda query: captured.update({"query": query})
+        or _nutritionix_payload(food_name="brisket sandwich", brand_name="Bill Miller BBQ"),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    branded_food_lookup.lookup("Bill Miller brisket sandwich", brand_hint="bill miller")
+
+    assert captured["query"] == "Bill Miller brisket sandwich"
+
+
+def test_lookup_regional_brand_hint_cache_key_not_duplicated(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "save_branded_lookup_cache",
+        lambda normalized, *_a, **_kw: captured.update({"normalized": normalized}),
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.nutritionix_client,
+        "natural_nutrients",
+        lambda _query: _nutritionix_payload(food_name="brisket sandwich", brand_name="Bill Miller BBQ"),
+    )
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
+
+    branded_food_lookup.lookup("Bill Miller brisket sandwich", brand_hint="bill miller")
+
+    assert captured["normalized"] == "bill miller brisket sandwich"
 
 
 def test_customizable_item_without_modifier_goes_pending_review(monkeypatch):
@@ -939,6 +1160,73 @@ def test_usda_lookup_preserves_zero_calorie_energy(monkeypatch):
     assert estimate["source"] == "usda_fdc"
     assert estimate["calories"] == 0
     assert estimate["external_food_id"] == "174158"
+
+
+def test_usda_lookup_prefers_kcal_energy_over_kj(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a: {
+            "foods": [
+                {
+                    "fdcId": 24680,
+                    "description": "TEST FOOD",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "unitName": "kJ", "value": 2000.0},
+                        {"nutrientName": "Energy", "unitName": "KCAL", "value": 240},
+                        {"nutrientName": "Protein", "value": 8},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 30},
+                        {"nutrientName": "Total lipid (fat)", "value": 9},
+                    ],
+                }
+            ]
+        },
+    )
+
+    estimate = branded_food_lookup.lookup("test food", source_priority=("usda_fdc",))
+
+    assert estimate["source"] == "usda_fdc"
+    assert estimate["calories"] == 240
+    assert estimate["protein_g"] == 8
+    assert estimate["carbs_g"] == 30
+    assert estimate["fat_g"] == 9
+    assert estimate["external_food_id"] == "24680"
+
+
+def test_usda_lookup_converts_kj_energy_to_kcal(monkeypatch):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a: {
+            "foods": [
+                {
+                    "fdcId": 13579,
+                    "description": "KJ ONLY FOOD",
+                    "foodNutrients": [
+                        {"nutrientName": "Energy", "unitName": "kJ", "value": 836.8},
+                        {"nutrientName": "Protein", "value": 10},
+                        {"nutrientName": "Carbohydrate, by difference", "value": 22},
+                        {"nutrientName": "Total lipid (fat)", "value": 8},
+                    ],
+                }
+            ]
+        },
+    )
+
+    estimate = branded_food_lookup.lookup("kj only food", source_priority=("usda_fdc",))
+
+    assert estimate["source"] == "usda_fdc"
+    assert estimate["calories"] == 200
+    assert estimate["protein_g"] == 10
+    assert estimate["carbs_g"] == 22
+    assert estimate["fat_g"] == 8
+    assert estimate["external_food_id"] == "13579"
 
 
 def test_branded_usda_fallback_without_verified_brand_is_pending_review(monkeypatch):

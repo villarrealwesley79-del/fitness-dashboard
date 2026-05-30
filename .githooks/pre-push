@@ -1,0 +1,24 @@
+#!/bin/bash
+# Block pushes when the pytest suite is not green.
+
+set -euo pipefail
+
+if [ "${FITNESS_SKIP_PRE_PUSH_TESTS:-0}" = "1" ]; then
+    echo "Skipping pre-push pytest suite because FITNESS_SKIP_PRE_PUSH_TESTS=1." >&2
+    exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "${ROOT}"
+
+if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+else
+    echo "Unable to run pre-push pytest suite: python/python3 not found." >&2
+    exit 1
+fi
+
+echo "Running pre-push pytest suite: ${PYTHON_BIN} -m pytest -q" >&2
+"${PYTHON_BIN}" -m pytest -q

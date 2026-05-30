@@ -15,20 +15,41 @@ import json
 import os
 import sqlite3
 import hashlib
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Optional
+from typing import Iterator, Optional
+import uuid
 
 # ── Config ────────────────────────────────────────────────────────────────────
 _DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DB = os.path.join(_DIR, "fitness_data.db")
 
+REFRESH_CALORIE_DELTA_THRESHOLD = 1
+REFRESH_MACRO_DELTA_THRESHOLD = 0.5
+REFRESH_SODIUM_DELTA_THRESHOLD = 1
+_REFRESH_EVENT_FIELDS = (
+    ("calories", REFRESH_CALORIE_DELTA_THRESHOLD),
+    ("protein_g", REFRESH_MACRO_DELTA_THRESHOLD),
+    ("carbs_g", REFRESH_MACRO_DELTA_THRESHOLD),
+    ("fat_g", REFRESH_MACRO_DELTA_THRESHOLD),
+    ("sodium_mg", REFRESH_SODIUM_DELTA_THRESHOLD),
+)
 
-def _get_db() -> sqlite3.Connection:
-    """Return a connection with row_factory set to sqlite3.Row."""
+
+@contextmanager
+def _get_db() -> Iterator[sqlite3.Connection]:
+    """Yield a SQLite connection and always close it after the operation."""
     conn = sqlite3.connect(DATA_DB)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _row_to_dict(row) -> dict:
@@ -301,6 +322,29 @@ def init_data_db():
                 UNIQUE(user_id, client_id)
             );
 
+            CREATE TABLE IF NOT EXISTS food_log_refresh_events (
+                id             TEXT PRIMARY KEY,
+                user_id        INTEGER NOT NULL,
+                client_id      TEXT    NOT NULL,
+                date           TEXT    NOT NULL,
+                item_name      TEXT,
+                source         TEXT,
+                source_url     TEXT,
+                prev_calories  INTEGER,
+                new_calories   INTEGER,
+                prev_protein_g REAL,
+                new_protein_g  REAL,
+                prev_carbs_g   REAL,
+                new_carbs_g    REAL,
+                prev_fat_g     REAL,
+                new_fat_g      REAL,
+                prev_sodium_mg INTEGER,
+                new_sodium_mg  INTEGER,
+                refreshed_at   TEXT    NOT NULL,
+                acknowledged_at TEXT,
+                created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS branded_lookup_cache (
                 user_id         INTEGER NOT NULL DEFAULT 1,
                 normalized_text TEXT NOT NULL,
@@ -487,6 +531,14 @@ def init_data_db():
             "CREATE INDEX IF NOT EXISTS ix_food_logs_user_meal_id "
             "ON food_logs(user_id, meal_id)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_food_log_refresh_events_user_ack "
+            "ON food_log_refresh_events(user_id, acknowledged_at, refreshed_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_food_log_refresh_events_user_client "
+            "ON food_log_refresh_events(user_id, client_id)"
+        )
         conn.commit()
 
 
@@ -601,6 +653,138 @@ def get_food_logs(user_id: int, limit: Optional[int] = None, since: Optional[str
     with _get_db() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [_food_log_row_to_dict(r) for r in rows]
+
+
+def _numeric_delta_reaches_threshold(before: object, after: object, threshold: float) -> bool:
+    if before in (None, "") and after in (None, ""):
+        return False
+    if before in (None, "") or after in (None, ""):
+        return True
+    try:
+        return abs(float(after) - float(before)) >= threshold
+    except (TypeError, ValueError):
+        return str(before) != str(after)
+
+
+def _food_log_refresh_materially_changed(before: dict | None, after: dict | None) -> bool:
+    if not before or not after:
+        return False
+    return any(
+        _numeric_delta_reaches_threshold(before.get(field), after.get(field), threshold)
+        for field, threshold in _REFRESH_EVENT_FIELDS
+    )
+
+
+def _refresh_event_metadata(record: dict) -> dict | None:
+    raw = (
+        record.get("refresh_event")
+        or record.get("source_refresh_event")
+        or record.get("verified_refresh_event")
+    )
+    if raw is True:
+        return {}
+    return raw if isinstance(raw, dict) else None
+
+
+def _insert_food_log_refresh_event(
+    conn: sqlite3.Connection,
+    user_id: int,
+    before: dict,
+    after: dict,
+    metadata: dict,
+    now_iso: str,
+) -> dict | None:
+    if not _food_log_refresh_materially_changed(before, after):
+        return None
+    event_id = str(uuid.uuid4())
+    source = (
+        metadata.get("source")
+        or metadata.get("source_label")
+        or metadata.get("underlying_source")
+        or after.get("source")
+    )
+    source_url = metadata.get("source_url") or metadata.get("verified_source_url")
+    refreshed_at = metadata.get("refreshed_at") or metadata.get("data_fetched_at") or now_iso
+    item_name = metadata.get("item_name") or after.get("item_name") or after.get("portion_description")
+    payload = {
+        "id": event_id,
+        "user_id": user_id,
+        "client_id": after.get("client_id"),
+        "date": after.get("date"),
+        "item_name": item_name,
+        "source": source,
+        "source_url": source_url,
+        "prev_calories": before.get("calories"),
+        "new_calories": after.get("calories"),
+        "prev_protein_g": before.get("protein_g"),
+        "new_protein_g": after.get("protein_g"),
+        "prev_carbs_g": before.get("carbs_g"),
+        "new_carbs_g": after.get("carbs_g"),
+        "prev_fat_g": before.get("fat_g"),
+        "new_fat_g": after.get("fat_g"),
+        "prev_sodium_mg": before.get("sodium_mg"),
+        "new_sodium_mg": after.get("sodium_mg"),
+        "refreshed_at": refreshed_at,
+    }
+    cols = list(payload.keys())
+    conn.execute(
+        f"INSERT INTO food_log_refresh_events ({', '.join(cols)}) "
+        f"VALUES ({', '.join(['?'] * len(cols))})",
+        [payload[col] for col in cols],
+    )
+    return payload
+
+
+def list_food_log_refresh_events(
+    user_id: int,
+    *,
+    unacknowledged: bool = True,
+    since: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return bounded source-refresh events for user-facing notifications."""
+    init_data_db()
+    safe_limit = min(max(int(limit or 50), 1), 50)
+    clauses = ["user_id = ?"]
+    params: list = [user_id]
+    if unacknowledged:
+        clauses.append("acknowledged_at IS NULL")
+    if since:
+        clauses.append("refreshed_at >= ?")
+        params.append(since)
+    where_sql = " AND ".join(clauses)
+    with _get_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+              FROM food_log_refresh_events
+             WHERE {where_sql}
+             ORDER BY refreshed_at DESC, created_at DESC
+             LIMIT ?
+            """,
+            [*params, safe_limit],
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def acknowledge_food_log_refresh_event(user_id: int, event_id: str) -> bool:
+    """Mark one refresh event acknowledged, scoped to the current user."""
+    if not event_id:
+        return False
+    init_data_db()
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    with _get_db() as conn:
+        cur = conn.execute(
+            """
+            UPDATE food_log_refresh_events
+               SET acknowledged_at = COALESCE(acknowledged_at, ?)
+             WHERE user_id = ?
+               AND id = ?
+            """,
+            (now_iso, user_id, event_id),
+        )
+        conn.commit()
+    return cur.rowcount > 0
 
 
 def get_branded_lookup_cache(normalized_text: str, *, user_id: int = 1) -> Optional[dict]:
@@ -1155,6 +1339,7 @@ def upsert_personal_vocab_entry(
 def clear_food_logs(user_id: int) -> None:
     """Delete accepted food logs for a user before a full backup restore."""
     with _get_db() as conn:
+        conn.execute("DELETE FROM food_log_refresh_events WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM food_logs WHERE user_id = ?", (user_id,))
         conn.commit()
 
@@ -1262,6 +1447,10 @@ def delete_food_log_by_client_id(user_id: int, client_id: str) -> bool:
     if not client_id:
         return False
     with _get_db() as conn:
+        conn.execute(
+            "DELETE FROM food_log_refresh_events WHERE user_id = ? AND client_id = ?",
+            (user_id, client_id),
+        )
         cursor = conn.execute(
             "DELETE FROM food_logs WHERE user_id = ? AND client_id = ?",
             (user_id, client_id),
@@ -1276,6 +1465,11 @@ def delete_food_logs_by_meal_id(user_id: int, meal_id: str) -> int:
     if not key:
         return 0
     with _get_db() as conn:
+        conn.execute(
+            "DELETE FROM food_log_refresh_events WHERE user_id = ? AND client_id IN "
+            "(SELECT client_id FROM food_logs WHERE user_id = ? AND meal_id = ?)",
+            (user_id, user_id, key),
+        )
         cursor = conn.execute(
             "DELETE FROM food_logs WHERE user_id = ? AND meal_id = ?",
             (user_id, key),
@@ -1316,7 +1510,14 @@ def add_food_log(user_id: int, record: dict) -> dict:
         "created_at": record.get("created_at") or now_iso,
         "updated_at": now_iso,
     }
+    refresh_metadata = _refresh_event_metadata(record)
     with _get_db() as conn:
+        previous_row = None
+        if refresh_metadata is not None and entry.get("client_id"):
+            previous_row = conn.execute(
+                "SELECT * FROM food_logs WHERE user_id = ? AND client_id = ? LIMIT 1",
+                (user_id, entry["client_id"]),
+            ).fetchone()
         cols = ["user_id"] + list(entry.keys())
         vals = [user_id] + [entry[c] for c in entry]
         placeholders = ", ".join(["?"] * len(cols))
@@ -1330,6 +1531,15 @@ def add_food_log(user_id: int, record: dict) -> dict:
             """,
             vals,
         ).fetchone()
+        if refresh_metadata is not None and previous_row is not None and row is not None:
+            _insert_food_log_refresh_event(
+                conn,
+                user_id,
+                _food_log_row_to_dict(previous_row),
+                _food_log_row_to_dict(row),
+                refresh_metadata,
+                now_iso,
+            )
         conn.commit()
     return _food_log_row_to_dict(row) if row else {k: v for k, v in entry.items() if not k.endswith("_json")}
 
@@ -1420,6 +1630,7 @@ def delete_user_data(user_id: int) -> None:
         "cardio_data",
         "nutrition_data",
         "food_logs",
+        "food_log_refresh_events",
         "personal_vocab",
         "meal_acceptance_events",
         "meal_review_snapshots",

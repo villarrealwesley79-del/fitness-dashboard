@@ -36,6 +36,7 @@
     // intra-render retry race — an older same-render fetch landing after a
     // retry success can no longer flip its sentinel back on).
     let dashboardRenderGen = 0;
+    let modalOpenSeq = 0;
     const dashboardSentinelGen = { ouraError: 0, recoError: 0, ouraSleepError: 0 };
 
     // --- helpers -------------------------------------------------
@@ -92,6 +93,17 @@
     // FIT-128: dashboard fetchers pass timeoutMs so a hung endpoint
     // surfaces the per-card retry chip instead of sitting silent forever.
     const DASHBOARD_FETCH_TIMEOUT_MS = 30000;
+    const MODAL_FOCUS_SELECTOR = [
+        '[autofocus]',
+        '.modal-close:not([disabled])',
+        '[data-close-modal]:not([disabled])',
+        'button:not([disabled])',
+        '[href]',
+        'input:not([disabled]):not([type="hidden"])',
+        'select:not([disabled])',
+        'textarea:not([disabled])',
+        '[tabindex]:not([tabindex="-1"])',
+    ].join(',');
 
     async function api(path, opts = {}) {
         const { timeoutMs, ...fetchOpts } = opts;
@@ -196,6 +208,107 @@
             });
         }
         return dismiss;
+    }
+
+    // FIT-139: surface backend-recorded food-log refresh events as a passive
+    // toast notice. The server is the only source of truth — no client-side
+    // row diffing — and acknowledged events are dismissed via the ack API so
+    // they stop appearing on subsequent polls.
+    const foodLogRefreshNoticeState = {
+        seen: new Set(),
+        fetching: false,
+    };
+
+    function foodLogRefreshDayLabel(date) {
+        if (!date) return '';
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(date));
+        if (m) {
+            const target = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const targetMid = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+            const diffDays = Math.round((targetMid - today) / (1000 * 60 * 60 * 24));
+            if (diffDays === 0) return "today's";
+            if (diffDays === -1) return "yesterday's";
+        }
+        return `${fmtDate(date)}'s`;
+    }
+
+    function foodLogRefreshNoticeCopy(event) {
+        const item = (event && event.item_name) ? String(event.item_name).trim() : 'meal';
+        const dayLabel = foodLogRefreshDayLabel(event && event.date);
+        const title = dayLabel
+            ? `Updated ${dayLabel} ${item} nutrition`
+            : `Updated ${item} nutrition`;
+        const sourceLabel = (event && event.source) ? String(event.source).trim() : 'verified source';
+        const detail = `Verified source: ${sourceLabel}`;
+        return { title, detail };
+    }
+
+    function showFoodLogRefreshNotice(event) {
+        const host = $('toast-host');
+        if (!host || !event || !event.id) return;
+        const el = document.createElement('div');
+        el.className = 'toast food-log-refresh-toast';
+        el.setAttribute('role', 'status');
+        el.setAttribute('aria-live', 'polite');
+
+        const body = document.createElement('div');
+        body.className = 'food-log-refresh-toast-body';
+
+        const { title, detail } = foodLogRefreshNoticeCopy(event);
+        const titleEl = document.createElement('div');
+        titleEl.className = 'food-log-refresh-toast-title';
+        titleEl.textContent = title;
+        body.appendChild(titleEl);
+
+        const detailEl = document.createElement('div');
+        detailEl.className = 'food-log-refresh-toast-detail';
+        detailEl.textContent = detail;
+        body.appendChild(detailEl);
+
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.className = 'food-log-refresh-toast-dismiss';
+        dismiss.setAttribute('aria-label', 'Dismiss refresh notice');
+        dismiss.textContent = 'Dismiss';
+
+        let dismissed = false;
+        dismiss.addEventListener('click', async () => {
+            if (dismissed) return;
+            dismissed = true;
+            dismiss.disabled = true;
+            try {
+                await api(`/api/food-log-refresh-events/${encodeURIComponent(event.id)}/ack`, { method: 'POST' });
+                el.remove();
+            } catch (err) {
+                dismissed = false;
+                dismiss.disabled = false;
+                foodLogRefreshNoticeState.seen.delete(event.id);
+                console.warn('food-log refresh ack failed:', err);
+            }
+        });
+
+        el.appendChild(body);
+        el.appendChild(dismiss);
+        host.appendChild(el);
+    }
+
+    async function fetchFoodLogRefreshNotices() {
+        if (foodLogRefreshNoticeState.fetching) return;
+        foodLogRefreshNoticeState.fetching = true;
+        try {
+            const payload = await api('/api/food-log-refresh-events?unacknowledged=true&limit=10');
+            const events = (payload && payload.events) || [];
+            for (const event of events) {
+                if (!event || !event.id) continue;
+                if (foodLogRefreshNoticeState.seen.has(event.id)) continue;
+                foodLogRefreshNoticeState.seen.add(event.id);
+                showFoodLogRefreshNotice(event);
+            }
+        } finally {
+            foodLogRefreshNoticeState.fetching = false;
+        }
     }
 
     function newWorkoutId(recommendationId) {
@@ -314,8 +427,10 @@
         const min = Math.min(...ys);
         const max = Math.max(...ys);
         const range = (max - min) || 1;
-        const minPad = min - range * 0.12;
-        const maxPad = max + range * 0.12;
+        const emptyMaxY = Number(opts.emptyMaxY) > 0 ? Number(opts.emptyMaxY) : 100;
+        const useEmptyDomain = opts.nonNegativeY && max <= 0;
+        const minPad = useEmptyDomain ? 0 : (opts.nonNegativeY ? Math.max(0, min - range * 0.12) : min - range * 0.12);
+        const maxPad = useEmptyDomain ? emptyMaxY : max + range * 0.12;
         const trueRange = maxPad - minPad || 1;
         const plotW = w - padL - padR;
         const plotH = h - padT - padB;
@@ -578,10 +693,114 @@
     // --- tab switching -------------------------------------------
     function switchTab(tabId) {
         state.currentTab = tabId;
-        qsa('.tab-content').forEach((el) => el.classList.toggle('active', el.id === tabId));
-        qsa('.tab-btn').forEach((b) => b.classList.toggle('active', b.getAttribute('data-tab') === tabId));
+        qsa('.tab-content').forEach((el) => {
+            const active = el.id === tabId;
+            el.classList.toggle('active', active);
+            el.setAttribute('aria-hidden', active ? 'false' : 'true');
+        });
+        qsa('.tab-btn').forEach((b) => {
+            const active = b.getAttribute('data-tab') === tabId;
+            b.classList.toggle('active', active);
+            b.setAttribute('aria-selected', active ? 'true' : 'false');
+            b.tabIndex = active ? 0 : -1;
+        });
         loadTab(tabId);
         window.scrollTo({ top: 0, behavior: 'instant' });
+    }
+
+    function handleTabKeydown(e) {
+        const key = e.key;
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
+        const tabs = qsa('.tab-btn');
+        if (!tabs.length) return;
+        const current = tabs.indexOf(e.currentTarget);
+        if (current < 0) return;
+        let next = current;
+        if (key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+        else if (key === 'ArrowRight') next = (current + 1) % tabs.length;
+        else if (key === 'Home') next = 0;
+        else if (key === 'End') next = tabs.length - 1;
+        e.preventDefault();
+        tabs[next].focus();
+        switchTab(tabs[next].getAttribute('data-tab'));
+    }
+
+    function focusOpenModal(modal) {
+        if (!modal || modal.hidden || !modal.isConnected) return;
+        if (!modal.__fit192OpenedAt) modal.__fit192OpenedAt = ++modalOpenSeq;
+        if (!modal.__fit192ReturnFocus && document.activeElement && !modal.contains(document.activeElement)) {
+            modal.__fit192ReturnFocus = document.activeElement;
+        }
+        if (modal.contains(document.activeElement)) return;
+        const target = qs(MODAL_FOCUS_SELECTOR, modal);
+        if (target && typeof target.focus === 'function') {
+            target.focus({ preventScroll: true });
+        }
+    }
+
+    function restoreModalFocus(modal) {
+        const target = modal && modal.__fit192ReturnFocus;
+        if (modal) modal.__fit192ReturnFocus = null;
+        if (target && target.isConnected && !target.closest('[hidden]') && typeof target.focus === 'function') {
+            target.focus({ preventScroll: true });
+        }
+    }
+
+    function closeModal(modal) {
+        if (!modal || modal.id === 'modal-active') return;
+        if (typeof modal.__fit192Close === 'function') {
+            modal.__fit192Close();
+        } else {
+            modal.hidden = true;
+        }
+        restoreModalFocus(modal);
+    }
+
+    function getTopmostOpenModal() {
+        return qsa('.modal')
+            .filter((modal) => modal.id !== 'modal-active' && !modal.hidden && modal.isConnected)
+            .sort((a, b) => (a.__fit192OpenedAt || 0) - (b.__fit192OpenedAt || 0))
+            .pop() || null;
+    }
+
+    function handleModalEscape(e) {
+        if (e.key !== 'Escape') return;
+        const modal = getTopmostOpenModal();
+        if (!modal) return;
+        e.preventDefault();
+        closeModal(modal);
+    }
+
+    function collectOpenModals(node, seen) {
+        if (!node || node.nodeType !== 1) return;
+        if (node.classList.contains('modal') && !node.hidden) seen.add(node);
+        qsa('.modal', node).forEach((modal) => {
+            if (!modal.hidden) seen.add(modal);
+        });
+    }
+
+    function watchModalFocus() {
+        qsa('.modal').forEach(focusOpenModal);
+        document.addEventListener('keydown', handleModalEscape);
+        if (!('MutationObserver' in window)) return;
+        const observer = new MutationObserver((records) => {
+            const opened = new Set();
+            records.forEach((record) => {
+                if (record.type === 'attributes' && record.attributeName === 'hidden') {
+                    const modal = record.target;
+                    if (!modal.classList || !modal.classList.contains('modal')) return;
+                    if (!modal.hidden) opened.add(modal);
+                    else {
+                        modal.__fit192ReturnFocus = null;
+                        modal.__fit192OpenedAt = 0;
+                    }
+                } else if (record.type === 'childList') {
+                    record.addedNodes.forEach((node) => collectOpenModals(node, opened));
+                }
+            });
+            opened.forEach(focusOpenModal);
+        });
+        observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden'] });
     }
 
     async function loadTab(tabId) {
@@ -1017,6 +1236,7 @@
         state.dashboard = null;
         const dash = await getDashboard(true);
         renderMacroCard(dash && dash.nutrition_today);
+        fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
     }
 
     // --- Dashboard render ----------------------------------------
@@ -1467,8 +1687,14 @@
         const hrv = oura && oura.hrv;
         $('v-hrv').textContent = hrv != null ? Math.round(hrv) : '--';
         // HR zone (static approximation)
-        const zone = rhr ? (rhr < 58 ? 'Zone 2' : rhr < 68 ? 'Zone 2' : 'Zone 3') : '—';
-        $('v-hr-zone').textContent = zone;
+        if (rhr != null) {
+            const zone = rhr < 58 ? 'Zone 2' : rhr < 68 ? 'Zone 2' : 'Zone 3';
+            $('v-hr-zone').textContent = zone;
+            $('v-hr-zone-sub').textContent = '';
+        } else {
+            $('v-hr-zone').textContent = '--';
+            $('v-hr-zone-sub').textContent = '';
+        }
         // Body temp
         const tempDev = oura && oura.temperature_deviation;
         $('v-temp').textContent = tempDev != null ? (98.6 + Number(tempDev)).toFixed(1) : '--';
@@ -1902,7 +2128,7 @@
             $('chart-history-freq').innerHTML = '<div class="empty">Chart unavailable.</div>';
         }
         try {
-            lineChart($('chart-history-volume'), barBuckets.map((b) => ({ value: b.volume || 0, label: b.label })), { color: '#a78bfa' });
+            lineChart($('chart-history-volume'), barBuckets.map((b) => ({ value: b.volume || 0, label: b.label })), { color: '#a78bfa', nonNegativeY: true, emptyMaxY: 100 });
         } catch (e) {
             console.error('renderHistory: lineChart failed', e);
             $('chart-history-volume').innerHTML = '<div class="empty">Chart unavailable.</div>';
@@ -2633,6 +2859,8 @@
                 loadDayMeals(row, slot, date);
             });
         });
+
+        fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
     }
 
     function renderFoodLogMealList(container, entries) {
@@ -3407,9 +3635,9 @@
         const insights = await getInsights();
         const list = $('insights-list');
         list.innerHTML = '';
-        const items = (insights && insights.insights) || [];
+        const items = Array.isArray(insights && insights.insights) ? insights.insights : [];
         if (!items.length) {
-            list.innerHTML = '<div class="empty">No insights yet — log more workouts to unlock.</div>';
+            list.innerHTML = '<div class="empty">Log a few workouts to start tracking progress.</div>';
         } else {
             items.forEach((ins) => {
                 const card = document.createElement('div');
@@ -5138,7 +5366,8 @@
         const dash = await getDashboard();
         const nw = dash && dash.next_workout;
         if (!nw) { toast('No workout planned', 'err'); return; }
-        setActiveWorkoutFromRecommendation(nw);
+        if (!confirmDiscardActiveWorkoutForStart()) return;
+        startActiveWorkoutFromRecommendation(nw);
         renderActiveWorkout();
     }
 
@@ -5150,9 +5379,20 @@
     function startAdjustedWorkout() {
         const nw = state.adjustedWorkout || (state.dashboard && state.dashboard.next_workout);
         if (!nw) { toast('No adjusted workout available', 'err'); return; }
+        if (!confirmDiscardActiveWorkoutForStart()) return;
         if ($('modal-adjust')) $('modal-adjust').hidden = true;
-        setActiveWorkoutFromRecommendation(nw);
+        startActiveWorkoutFromRecommendation(nw);
         renderActiveWorkout();
+    }
+
+    function confirmDiscardActiveWorkoutForStart() {
+        if (!activeWorkoutHasProgress()) return true;
+        return window.confirm('You have an in-progress workout. Discard logged sets and restart?');
+    }
+
+    function startActiveWorkoutFromRecommendation(nw) {
+        state.activeWorkout = null;
+        setActiveWorkoutFromRecommendation(nw);
     }
 
     const SYNC_QUEUE_KEY = 'fit51:sync-queue:v1';
@@ -6150,7 +6390,7 @@
         const backdropHandler = (e) => {
             if (e.target === modal) {
                 e.stopImmediatePropagation();
-                dismissToHistory();
+                closeModal(modal);
             }
         };
         function detachBackdrop() {
@@ -6161,6 +6401,7 @@
             modal.hidden = true;
             switchTab('tab-history');
         }
+        modal.__fit192Close = dismissToHistory;
         const freshAnalyze = analyzeBtn.cloneNode(true);
         analyzeBtn.parentNode.replaceChild(freshAnalyze, analyzeBtn);
         freshAnalyze.addEventListener('click', () => {
@@ -6170,12 +6411,12 @@
         });
         const freshDismiss = dismissBtn.cloneNode(true);
         dismissBtn.parentNode.replaceChild(freshDismiss, dismissBtn);
-        freshDismiss.addEventListener('click', dismissToHistory);
+        freshDismiss.addEventListener('click', () => closeModal(modal));
         if (closeBtn) {
             const freshClose = closeBtn.cloneNode(true);
             freshClose.removeAttribute('data-close-modal');
             closeBtn.parentNode.replaceChild(freshClose, closeBtn);
-            freshClose.addEventListener('click', dismissToHistory);
+            freshClose.addEventListener('click', () => closeModal(modal));
         }
         modal.addEventListener('click', backdropHandler, true);
         modal.hidden = false;
@@ -6253,7 +6494,7 @@
             if (!state.dashboard) state.dashboard = {};
             state.dashboard.next_workout = resp.recommendation;
         }
-        $('modal-swap').hidden = true;
+        closeModal($('modal-swap'));
         toast(`Swapped ${oldName} → ${newName}`, 'ok');
         if (state.swapContext && state.swapContext.source === 'active' && resp && resp.recommendation) {
             const previous = (state.activeWorkout && state.activeWorkout.exercises) || [];
@@ -6674,6 +6915,7 @@
         // Tab nav
         qsa('.tab-btn').forEach((btn) => {
             btn.addEventListener('click', () => switchTab(btn.getAttribute('data-tab')));
+            btn.addEventListener('keydown', handleTabKeydown);
         });
 
         // Log segmented
@@ -6744,14 +6986,15 @@
         qsa('[data-close-modal]').forEach((b) => b.addEventListener('click', () => {
             const modal = b.closest('.modal');
             if (modal && modal.id === 'modal-active') return;
-            if (modal) modal.hidden = true;
+            if (modal) closeModal(modal);
         }));
         qsa('.modal').forEach((m) => {
             m.addEventListener('click', (e) => {
                 if (m.id === 'modal-active') return;
-                if (e.target === m) m.hidden = true;
+                if (e.target === m) closeModal(m);
             });
         });
+        watchModalFocus();
 
         // AI status button (top right)
         $('btn-ai-status') && $('btn-ai-status').addEventListener('click', toggleAiPopover);
@@ -8270,6 +8513,9 @@
             lastFollowupAnswered,
             text_hint: (existing && existing.text_hint) || ctx.textValue || '',
             imageFile: (existing && existing.imageFile) || ctx.imageFile || null,
+            local_timestamp: payload.local_timestamp || (existing && existing.local_timestamp) || null,
+            local_date: payload.local_date || (existing && existing.local_date) || null,
+            local_iso: payload.local_iso || (existing && existing.local_iso) || null,
         };
     }
 
@@ -8371,7 +8617,7 @@
         const mealTypeChip = `
             <label class="meal-review-v2-meal-type" data-field-label="meal_type">
                 <span class="meal-review-v2-meal-type-label">Meal</span>
-                <select data-action="set-meal-type" aria-label="Meal type">
+                <select data-action="set-meal-type" aria-label="Meal type"${entry.pendingRefresh ? ' disabled' : ''}>
                     ${MEAL_TYPE_OPTIONS.map((mt) => `<option value="${mt}"${mt === entry.meal_type ? ' selected' : ''}>${mt.charAt(0).toUpperCase() + mt.slice(1)}</option>`).join('')}
                 </select>
             </label>
@@ -8391,7 +8637,7 @@
         ` : `
             <div class="meal-pending-actions meal-review-v2-actions">
                 <button type="button" class="btn btn-ghost" data-action="discard">Discard</button>
-                <button type="button" class="btn btn-primary" data-action="save"${(blocked || entry.pendingRefresh) ? ' disabled' : ''}>${blocked ? 'Resolve items to save' : 'Save'}</button>
+                <button type="button" class="btn btn-primary" data-action="save"${blocked ? ' disabled' : ''}>${blocked ? 'Resolve items to save' : 'Save'}</button>
             </div>
         `;
 
@@ -8403,9 +8649,9 @@
             <form class="meal-review-v2-followup" data-action="followup-form" role="region" aria-label="Follow-up question">
                 <div class="meal-review-v2-followup-q">${escapeHtml(entry.followup.question || '')}</div>
                 <div class="meal-review-v2-followup-row">
-                    <input type="text" data-field="followup-answer" placeholder="Type your answer" maxlength="240" required>
-                    <button type="submit" class="btn btn-primary">Submit</button>
-                    <button type="button" class="btn btn-ghost" data-action="followup-dismiss">Skip</button>
+                    <input type="text" data-field="followup-answer" placeholder="Type your answer" maxlength="240" required${entry.pendingRefresh ? ' disabled' : ''}>
+                    <button type="submit" class="btn btn-primary"${entry.pendingRefresh ? ' disabled' : ''}>Submit</button>
+                    <button type="button" class="btn btn-ghost" data-action="followup-dismiss"${entry.pendingRefresh ? ' disabled' : ''}>Skip</button>
                 </div>
             </form>
         ` : '';
@@ -8415,6 +8661,7 @@
                 ${entry.items.map((item) => buildMealReviewV2ItemHtml(item, {
                     blocked: blockedSet.has(item.item_id),
                     expanded: entry.expandedItems.has(item.item_id) || blockedSet.has(item.item_id),
+                    pendingRefresh: entry.pendingRefresh,
                 })).join('')}
             </div>
         ` : '<div class="meal-review-v2-empty">No items in this meal yet.</div>';
@@ -8423,9 +8670,9 @@
             <form class="meal-review-v2-add-item" data-action="add-item-form">
                 <label>
                     <span>Add an item (describe in your own words)</span>
-                    <input type="text" data-field="add-item-text" placeholder="e.g. a small side of rice, or a 16 oz coke" maxlength="240" required>
+                    <input type="text" data-field="add-item-text" placeholder="e.g. a small side of rice, or a 16 oz coke" maxlength="240" required${entry.pendingRefresh ? ' disabled' : ''}>
                 </label>
-                <button type="submit" class="btn btn-ghost">Add</button>
+                <button type="submit" class="btn btn-ghost"${entry.pendingRefresh ? ' disabled' : ''}>Add</button>
             </form>
         `;
 
@@ -8458,6 +8705,7 @@
         const isRemoved = status === 'skipped' || status === 'deleted';
         const blocked = !!opts.blocked && isIncluded;
         const expanded = !!opts.expanded || blocked;
+        const pendingRefresh = !!opts.pendingRefresh;
         const sourceLabel = (item.source && item.source.label) || 'AI estimate';
         const sourceKind = item.source && MEAL_V2_SOURCE_KINDS.includes(item.source.kind) ? item.source.kind : 'manual';
         const sourceLink = item.source && item.source.link ? String(item.source.link) : '';
@@ -8468,7 +8716,7 @@
             <div class="meal-review-v2-candidates" role="group" aria-label="Top choices">
                 <span class="meal-review-v2-candidates-label">Top choices</span>
                 ${candidates.map((c) => `
-                    <button type="button" class="meal-review-v2-candidate-chip" data-action="choose-candidate" data-candidate-id="${escapeHtml(c.candidate_id)}">
+                    <button type="button" class="meal-review-v2-candidate-chip" data-action="choose-candidate" data-candidate-id="${escapeHtml(c.candidate_id)}"${pendingRefresh ? ' disabled' : ''}>
                         ${escapeHtml(c.name || '')}${(c.portion || c.portion_description) ? ` · ${escapeHtml(c.portion || c.portion_description)}` : ''}
                     </button>
                 `).join('')}
@@ -8479,25 +8727,25 @@
             <form class="meal-review-v2-portion-edit" data-action="portion-edit-form" hidden>
                 <label>
                     <span>Edit portion (describe in your own words)</span>
-                    <input type="text" data-field="portion-text" placeholder="e.g. half the plate, or a 16 oz serving" maxlength="240" required>
+                    <input type="text" data-field="portion-text" placeholder="e.g. half the plate, or a 16 oz serving" maxlength="240" required${pendingRefresh ? ' disabled' : ''}>
                 </label>
                 <div class="meal-review-v2-portion-edit-actions">
-                    <button type="button" class="btn btn-ghost" data-action="portion-edit-cancel">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Update</button>
+                    <button type="button" class="btn btn-ghost" data-action="portion-edit-cancel"${pendingRefresh ? ' disabled' : ''}>Cancel</button>
+                    <button type="submit" class="btn btn-primary"${pendingRefresh ? ' disabled' : ''}>Update</button>
                 </div>
             </form>
         ` : '';
 
         const itemActions = isIncluded ? `
             <div class="meal-review-v2-item-actions">
-                <button type="button" class="btn btn-ghost meal-review-v2-portion-edit-toggle" data-action="portion-edit-open">Edit portion</button>
-                <button type="button" class="btn btn-ghost" data-action="skip-item">Skip</button>
-                <button type="button" class="btn btn-ghost" data-action="delete-item">Delete</button>
+                <button type="button" class="btn btn-ghost meal-review-v2-portion-edit-toggle" data-action="portion-edit-open"${pendingRefresh ? ' disabled' : ''}>Edit portion</button>
+                <button type="button" class="btn btn-ghost" data-action="skip-item"${pendingRefresh ? ' disabled' : ''}>Skip</button>
+                <button type="button" class="btn btn-ghost" data-action="delete-item"${pendingRefresh ? ' disabled' : ''}>Delete</button>
             </div>
         ` : `
             <div class="meal-review-v2-item-actions meal-review-v2-item-actions--removed">
                 <span class="meal-review-v2-item-removed-label">${status === 'skipped' ? 'Skipped' : 'Deleted'}</span>
-                <button type="button" class="btn btn-ghost meal-review-v2-undo" data-action="restore-item">Undo</button>
+                <button type="button" class="btn btn-ghost meal-review-v2-undo" data-action="restore-item"${pendingRefresh ? ' disabled' : ''}>Undo</button>
             </div>
         `;
 
@@ -8694,7 +8942,7 @@
     // this merge the user's edit silently fails to persist.
     function buildMealV2AcceptBody(entry) {
         const mealType = MEAL_TYPE_OPTIONS.includes(entry.meal_type) ? entry.meal_type : null;
-        return {
+        const body = {
             meal_id: entry.meal_id,
             meal_type: entry.meal_type,
             items: (entry.items || []).map((item) => {
@@ -8712,6 +8960,10 @@
                 };
             }),
         };
+        if (entry.local_timestamp) body.local_timestamp = entry.local_timestamp;
+        if (entry.local_date) body.local_date = entry.local_date;
+        if (entry.local_iso) body.local_iso = entry.local_iso;
+        return body;
     }
 
     async function acceptMealV2(mealId) {
@@ -8806,10 +9058,9 @@
         `;
         document.body.appendChild(modal);
         const close = () => modal.remove();
-        modal.querySelectorAll('[data-action="close-source"]').forEach((el) => el.addEventListener('click', close));
-        document.addEventListener('keydown', function onEsc(ev) {
-            if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc); }
-        });
+        modal.__fit192Close = close;
+        focusOpenModal(modal);
+        modal.querySelectorAll('[data-action="close-source"]').forEach((el) => el.addEventListener('click', () => closeModal(modal)));
     }
 
     function sanitizeMealV2SourceLink(link) {
@@ -9054,6 +9305,7 @@
         renderGreeting();
         wireEvents();
         switchTab('tab-dashboard');
+        fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
         refreshAiStatus();
         if (aiStatusTimer) clearInterval(aiStatusTimer);
         aiStatusTimer = setInterval(refreshAiStatus, 60_000);

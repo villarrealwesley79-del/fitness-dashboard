@@ -41,6 +41,11 @@ LM_STUDIO_FALLBACK_MODEL = os.environ.get("VISION_LM_STUDIO_FALLBACK_MODEL", "")
 OLLAMA_URL = _env_first("OLLAMA_URL", default="http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = _env_first("VISION_OLLAMA_MODEL", "OLLAMA_VISION_MODEL", default="llava:latest")
 TIMEOUT_SECONDS = float(_env_first("VISION_LOCAL_TIMEOUT_SEC", default="25"))
+LM_STUDIO_PREFLIGHT_TIMEOUT_SEC = float(_env_first(
+    "VISION_LM_STUDIO_PREFLIGHT_TIMEOUT_SEC",
+    "LM_STUDIO_PREFLIGHT_TIMEOUT_SEC",
+    default="1.5",
+))
 DEFAULT_VISION_TEMPERATURE = 0.1
 SCHEMA_RETRY_LIMIT = 2
 LM_STUDIO_REQUIRED_FIELDS = (
@@ -164,6 +169,11 @@ def _describe_lm_studio(
 ) -> dict[str, Any]:
     errors: list[str] = []
     for candidate in _lm_studio_candidates():
+        try:
+            _preflight_candidate(candidate)
+        except LocalVisionError as exc:
+            errors.append(f"{candidate['role']} preflight: {exc}")
+            continue
         for attempt in range(SCHEMA_RETRY_LIMIT + 1):
             payload = _lm_studio_payload(
                 images=images,
@@ -207,6 +217,44 @@ def _lm_studio_candidates() -> list[dict[str, str]]:
         if (fallback["url"], fallback["model"]) != (candidates[0]["url"], candidates[0]["model"]):
             candidates.append(fallback)
     return candidates
+
+
+def _model_version(model: str) -> str:
+    return (model or "").split("/")[-1]
+
+
+def _target_loaded(loaded: list[str], model: str) -> bool:
+    version = _model_version(model)
+    return any(model == loaded_model or model in loaded_model or version in loaded_model for loaded_model in loaded)
+
+
+def _models_for(candidate: dict[str, str], timeout: float = LM_STUDIO_PREFLIGHT_TIMEOUT_SEC) -> list[str]:
+    req = request.Request(f"{candidate['url']}/v1/models", method="GET")
+    with request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    models = data.get("data", []) if isinstance(data, dict) else []
+    loaded: list[str] = []
+    for model in models:
+        if isinstance(model, dict):
+            model_id = model.get("id")
+        else:
+            model_id = model
+        if model_id:
+            loaded.append(str(model_id))
+    return loaded
+
+
+def _preflight_candidate(candidate: dict[str, str]) -> None:
+    try:
+        loaded = _models_for(candidate, timeout=LM_STUDIO_PREFLIGHT_TIMEOUT_SEC)
+    except error.URLError as exc:
+        raise LocalVisionError(f"unreachable: {exc}") from exc
+    except TimeoutError as exc:
+        raise LocalVisionError("timeout") from exc
+    except Exception as exc:
+        raise LocalVisionError(f"preflight failed: {type(exc).__name__}") from exc
+    if not _target_loaded(loaded, candidate["model"]):
+        raise LocalVisionError(f"model not loaded: {candidate['model']}")
 
 
 def _vision_temperature() -> float:
