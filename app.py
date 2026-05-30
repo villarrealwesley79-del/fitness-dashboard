@@ -2947,6 +2947,9 @@ def _resolve_adjust_target_exercise(constraint, equipment_pref):
         if any(_normalize_exercise_name(name) == wanted for name in names):
             return exercise
 
+    if len(_exercise_name_tokens(phrase)) < 2:
+        return None
+
     return _deterministic_swap_candidate(phrase, candidates)
 
 
@@ -3015,15 +3018,23 @@ def _build_deterministic_adjust_swap(constraint, recommendation, equipment_pref)
         wanted_source = _normalize_exercise_name(source_phrase)
         source_definition = _resolve_exercise_definition(source_phrase)
         source_idx = None
+        exact_source_matches = []
+        partial_source_matches = []
         for idx, plan_ex in enumerate(exercises):
             if source_definition and _same_exercise_definition(_plan_exercise_definition(plan_ex), source_definition):
                 source_idx = idx
                 break
             source_name = plan_ex.get("exercise") or plan_ex.get("machine") or plan_ex.get("name") or ""
             source_norm = _normalize_exercise_name(source_name)
-            if source_norm == wanted_source or wanted_source in source_norm:
-                source_idx = idx
-                break
+            if source_norm == wanted_source:
+                exact_source_matches.append(idx)
+            elif wanted_source and wanted_source in source_norm:
+                partial_source_matches.append(idx)
+        if source_idx is None and not source_definition:
+            if len(exact_source_matches) == 1:
+                source_idx = exact_source_matches[0]
+            elif not exact_source_matches and len(partial_source_matches) == 1:
+                source_idx = partial_source_matches[0]
         if source_idx is None:
             return None
         if _same_exercise_definition(_plan_exercise_definition(exercises[source_idx]), target):

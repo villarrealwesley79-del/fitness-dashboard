@@ -390,6 +390,20 @@ def test_adjust_deterministic_tie_break_prefers_earlier_plan_slot(monkeypatch):
     assert pectoral["replace_index"] == 0
 
 
+def test_adjust_deterministic_rejects_bare_target_words(monkeypatch):
+    module = _module(monkeypatch)
+    recommendation = _recommendation_for(
+        module,
+        [
+            _rec_exercise("Chest Press", "chest", 100),
+            _rec_exercise("Seated Row", "back", 90),
+        ],
+    )
+
+    assert module._build_deterministic_adjust_swap("chest", recommendation, "machines_and_cables") is None
+    assert module._build_deterministic_adjust_swap("back", recommendation, "machines_and_cables") is None
+
+
 def test_adjust_deterministic_honors_explicit_source_exercise(monkeypatch):
     module = _module(monkeypatch)
     recommendation = _recommendation_for(
@@ -437,6 +451,14 @@ def test_adjust_deterministic_honors_explicit_source_exercise(monkeypatch):
     assert replace_instead_of["target_exercise"] == "Pec Fly"
     assert replace_instead_of["replace_exercise"] == "Incline Press"
     assert replace_instead_of["replace_index"] == 1
+
+    ambiguous_source = module._build_deterministic_adjust_swap(
+        "replace press with Pec Fly",
+        recommendation,
+        "machines_and_cables",
+    )
+
+    assert ambiguous_source is None
 
 
 def test_adjust_deterministic_honors_source_alias(monkeypatch):
