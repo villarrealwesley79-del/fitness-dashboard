@@ -8112,7 +8112,9 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     for sw in swap_requests:
         if not isinstance(sw, dict):
             continue
-        src_name = (sw.get("replace_exercise") or "").strip().lower()
+        raw_src_name = (sw.get("replace_exercise") or "").strip()
+        src_name = raw_src_name.lower()
+        src_definition = _resolve_exercise_definition(raw_src_name) if raw_src_name else None
         replace_index = sw.get("replace_index")
         target_muscle = (sw.get("target_muscle") or "").strip().lower()
         if not target_muscle or (not src_name and not isinstance(replace_index, int)):
@@ -8122,14 +8124,21 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             continue
 
         # Find the exercise to replace by name (case-insensitive, contains).
+        def _source_matches_plan_exercise(plan_ex):
+            if not src_name:
+                return True
+            if src_definition and _same_exercise_definition(_plan_exercise_definition(plan_ex), src_definition):
+                return True
+            plan_name = plan_ex.get("exercise") or plan_ex.get("machine") or plan_ex.get("name") or ""
+            return src_name in plan_name.lower()
+
         idx = None
         if isinstance(replace_index, int) and 0 <= replace_index < len(exercises):
-            indexed_name = (exercises[replace_index].get("exercise") or "").lower()
-            if not src_name or src_name in indexed_name:
+            if _source_matches_plan_exercise(exercises[replace_index]):
                 idx = replace_index
         if idx is None:
             for i, ex in enumerate(exercises):
-                if src_name in (ex.get("exercise") or "").lower():
+                if _source_matches_plan_exercise(ex):
                     idx = i
                     break
         if idx is None:

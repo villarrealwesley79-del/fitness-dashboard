@@ -460,6 +460,47 @@ def test_adjust_deterministic_honors_source_alias(monkeypatch):
     assert swap["replace_index"] == 0
 
 
+def test_adjust_intent_patch_honors_source_alias(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = _recommendation_for(
+        module,
+        [
+            _rec_exercise("Pec Fly", "chest", 50),
+            _rec_exercise("Seated Row", "back", 90),
+        ],
+    )
+    intent = {
+        "avoid_muscles": [],
+        "avoid_joints": [],
+        "swap": [
+            {
+                "replace_exercise": "Pectoral Fly",
+                "target_muscle": "chest",
+                "target_exercise": "Chest Press",
+                "reason": "source alias",
+            }
+        ],
+        "rpe_delta": 0,
+        "sets_delta_pct": 0,
+        "duration_cap_min": 0,
+        "drop_cardio": False,
+    }
+
+    patched, notes = module._apply_intent_patch(
+        recommendation,
+        intent,
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_and_cables",
+    )
+
+    assert [ex["exercise"] for ex in patched["exercises"]] == ["Chest Press", "Seated Row"]
+    assert any("Swapped: Pec Fly" in note and "Chest Press" in note for note in notes)
+
+
 def test_adjust_deterministic_target_requires_compatible_plan_slot(monkeypatch):
     module = _module(monkeypatch)
     recommendation = _recommendation_for(
