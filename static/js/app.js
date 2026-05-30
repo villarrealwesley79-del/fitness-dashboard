@@ -5051,7 +5051,7 @@
     // workout without losing logged work for exercises that remain in the plan.
     // Match by exercise identity, not array index, so removals/trims cannot
     // copy completed rows onto a different exercise after slots shift.
-    function buildAdjustedLoggedSets(newEx, previousSets) {
+    function buildAdjustedLoggedSets(newEx, previousSets, previousEx = null) {
         const targetInputValue = (value) => {
             if (value == null || value === '') return '';
             const n = Number(value);
@@ -5060,14 +5060,6 @@
         const prevList = Array.isArray(previousSets) ? previousSets : [];
         const count = Number(newEx.target_sets || newEx.sets || 3);
         const targetCount = Number.isFinite(count) && count > 0 ? Math.round(count) : 3;
-        const preserved = prevList
-            .filter((s, idx) => s && (s.done || idx < targetCount))
-            .map((s) => ({
-                reps: s.reps != null ? s.reps : '',
-                weight: s.weight != null ? s.weight : '',
-                done: Boolean(s.done),
-                notes: s.notes != null ? s.notes : '',
-            }));
         const targetReps = newEx.target_reps != null
             ? targetInputValue(newEx.target_reps)
             : (newEx.reps != null ? targetInputValue(newEx.reps) : (
@@ -5076,6 +5068,33 @@
         const targetWeight = newEx.target_weight != null
             ? targetInputValue(newEx.target_weight)
             : (newEx.target_weight_lbs != null ? targetInputValue(newEx.target_weight_lbs) : '');
+        const previousReps = previousEx ? (
+            previousEx.target_reps != null
+                ? targetInputValue(previousEx.target_reps)
+                : (previousEx.reps != null ? targetInputValue(previousEx.reps) : (
+                    Array.isArray(previousEx.rep_range) && previousEx.rep_range.length ? targetInputValue(previousEx.rep_range[0]) : ''
+                ))
+        ) : '';
+        const previousWeight = previousEx ? (
+            previousEx.target_weight != null
+                ? targetInputValue(previousEx.target_weight)
+                : (previousEx.target_weight_lbs != null ? targetInputValue(previousEx.target_weight_lbs) : '')
+        ) : '';
+        const editedSet = (s) => {
+            if (!s) return false;
+            if (s.done || (s.notes != null && String(s.notes).trim())) return true;
+            if (previousReps && String(s.reps ?? '') !== previousReps) return true;
+            if (previousWeight && String(s.weight ?? '') !== previousWeight) return true;
+            return false;
+        };
+        const preserved = prevList
+            .filter((s, idx) => s && (s.done || (idx < targetCount && editedSet(s))))
+            .map((s) => ({
+                reps: s.reps != null ? s.reps : '',
+                weight: s.weight != null ? s.weight : '',
+                done: Boolean(s.done),
+                notes: s.notes != null ? s.notes : '',
+            }));
         const rowCount = Math.max(targetCount, preserved.length);
         return Array.from({ length: rowCount }, (_, idx) => {
             if (idx < preserved.length) return preserved[idx];
@@ -5110,7 +5129,7 @@
             if (prev) {
                 return {
                     ...ex,
-                    logged_sets: buildAdjustedLoggedSets(ex, prev.logged_sets),
+                    logged_sets: buildAdjustedLoggedSets(ex, prev.logged_sets, prev),
                 };
             }
             return {

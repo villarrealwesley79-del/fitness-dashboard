@@ -74,10 +74,11 @@ def test_start_workout_confirms_before_discarding_logged_active_sets():
     assert shifted["dirty"] is True
 
     reduced = outputs["setReduction"]
-    assert reduced["rowCount"] == 3
+    assert reduced["rowCount"] == 2
     assert reduced["firstNotes"] == "keep first"
     assert reduced["completedNotes"] == "completed third"
     assert reduced["droppedFourth"] is True
+    assert outputs["freshTargets"] == {"weight": "85", "reps": "8", "rowCount": 1}
 
 
 def _run_start_guard_fixture() -> dict:
@@ -300,8 +301,34 @@ async function run() {{
   outputs.setReduction = {{
     rowCount: api.state.activeWorkout.exercises[0].logged_sets.length,
     firstNotes: api.state.activeWorkout.exercises[0].logged_sets[0].notes,
-    completedNotes: api.state.activeWorkout.exercises[0].logged_sets[2].notes,
+    completedNotes: api.state.activeWorkout.exercises[0].logged_sets[1].notes,
     droppedFourth: !JSON.stringify(api.state.activeWorkout).includes('drop fourth'),
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = {{
+    id: 'fresh-target-existing',
+    dirty: false,
+    exercises: [{{
+      exercise: 'Seated Row',
+      target_sets: 1,
+      target_reps: 10,
+      target_weight: 80,
+      logged_sets: [{{ weight: '80', reps: '10', done: false, notes: '' }}],
+    }}],
+  }};
+  api.applyAdjustedRecommendationToActiveWorkout({{
+    id: 'fresh-target-rec',
+    workout_id: 'fresh-target-workout',
+    focus: 'Adjusted',
+    exercises: [
+      {{ exercise: 'Seated Row', target_sets: 1, target_reps: 8, target_weight: 85 }},
+    ],
+  }}, api.state.activeWorkout.exercises);
+  outputs.freshTargets = {{
+    weight: api.state.activeWorkout.exercises[0].logged_sets[0].weight,
+    reps: api.state.activeWorkout.exercises[0].logged_sets[0].reps,
+    rowCount: api.state.activeWorkout.exercises[0].logged_sets.length,
   }};
 
   process.stdout.write(JSON.stringify(outputs));

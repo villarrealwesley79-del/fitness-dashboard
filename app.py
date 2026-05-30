@@ -8144,7 +8144,14 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         # _filtered_exercise_library already applies brand, compound, and name ranking.
         # Avoid picking something already in the plan
         already = {(ex.get("exercise") or "").lower() for ex in exercises}
-        if requested_exercise and requested_exercise in library and requested_exercise["name"].lower() not in already:
+        if requested_exercise:
+            requested_name = requested_exercise["name"].lower()
+            if requested_exercise not in library:
+                notes.append(f"Ignored: target exercise '{target_exercise_name}' is unavailable under current constraints")
+                continue
+            if requested_name in already:
+                notes.append(f"Ignored: target exercise '{requested_exercise['name']}' is already in the plan")
+                continue
             picked = requested_exercise
         else:
             picked = next((e for e in library if e["name"].lower() not in already), library[0])
