@@ -12,17 +12,16 @@ Created for Fitness Dashboard SaaS per-user isolation.
 """
 
 import json
-import os
 import sqlite3
 import hashlib
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Iterator, Optional
 import uuid
+from runtime_config import data_path
 
 # ── Config ────────────────────────────────────────────────────────────────────
-_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DB = os.path.join(_DIR, "fitness_data.db")
+DATA_DB = data_path("fitness_data.db")
 
 REFRESH_CALORIE_DELTA_THRESHOLD = 1
 REFRESH_MACRO_DELTA_THRESHOLD = 0.5
@@ -352,6 +351,15 @@ def init_data_db():
                 response_json   TEXT NOT NULL,
                 fetched_at      TEXT NOT NULL,
                 PRIMARY KEY(user_id, normalized_text)
+            );
+
+            CREATE TABLE IF NOT EXISTS barcode_lookup_cache (
+                user_id       INTEGER NOT NULL DEFAULT 1,
+                barcode       TEXT NOT NULL,
+                source        TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                fetched_at    TEXT NOT NULL,
+                PRIMARY KEY(user_id, barcode)
             );
 
             CREATE TABLE IF NOT EXISTS personal_vocab (
@@ -813,6 +821,50 @@ def save_branded_lookup_cache(normalized_text: str, source: str, response: dict,
             INSERT INTO branded_lookup_cache (user_id, normalized_text, source, response_json, fetched_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(user_id, normalized_text) DO UPDATE SET
+                source = excluded.source,
+                response_json = excluded.response_json,
+                fetched_at = excluded.fetched_at
+            """,
+            (user_id, key, source, _json_dumps_or_none(response), now_iso),
+        )
+        conn.commit()
+
+
+def get_barcode_lookup_cache(barcode: str, *, user_id: int = 1) -> Optional[dict]:
+    """Return a cached barcode-food lookup payload by barcode."""
+    key = (barcode or "").strip()
+    if not key:
+        return None
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT user_id, barcode, source, response_json, fetched_at
+              FROM barcode_lookup_cache
+             WHERE user_id = ? AND barcode = ?
+            """,
+            (user_id, key),
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["response_json"] = _json_loads_or_none(result.get("response_json"))
+    return result
+
+
+def save_barcode_lookup_cache(barcode: str, source: str, response: dict, *, user_id: int = 1) -> None:
+    """Persist a verified barcode lookup response for cache-first reuse."""
+    key = (barcode or "").strip()
+    if not key or not isinstance(response, dict):
+        return
+    init_data_db()
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    with _get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO barcode_lookup_cache (user_id, barcode, source, response_json, fetched_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, barcode) DO UPDATE SET
                 source = excluded.source,
                 response_json = excluded.response_json,
                 fetched_at = excluded.fetched_at
@@ -1588,6 +1640,7 @@ def delete_user_data(user_id: int) -> None:
         for table in tables:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM branded_lookup_cache WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM barcode_lookup_cache WHERE user_id = ?", (user_id,))
         conn.commit()
 
 

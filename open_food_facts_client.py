@@ -10,6 +10,7 @@ from urllib import error, parse, request
 
 
 OFF_SEARCH_URL = "https://world.openfoodfacts.org/cgi/search.pl"
+OFF_PRODUCT_URL = "https://world.openfoodfacts.org/api/v2/product"
 TIMEOUT_SECONDS = 5.0
 TOTAL_TIMEOUT_SECONDS = 6.0
 USER_AGENT = "FitnessDashboard/1.0 (https://github.com/villarrealwesley79-del/fitness-dashboard)"
@@ -187,3 +188,45 @@ def _search_products_once(
             return json.loads(resp.read().decode("utf-8"))
     except (OSError, error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError):
         return None
+
+
+def get_product_by_barcode(
+    barcode: str,
+    *,
+    timeout: float = TIMEOUT_SECONDS,
+) -> dict[str, Any] | None:
+    cleaned = (barcode or "").strip()
+    if not cleaned:
+        return None
+    params = {
+        "fields": ",".join(
+            [
+                "code",
+                "product_name",
+                "brands",
+                "url",
+                "nutriments",
+                "data_quality_tags",
+                "countries_tags",
+                "serving_size",
+                "serving_quantity",
+                "quantity",
+            ]
+        ),
+    }
+    req = request.Request(
+        f"{OFF_PRODUCT_URL}/{parse.quote(cleaned)}.json?{parse.urlencode(params)}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("status") != 1:
+        return None
+    product = payload.get("product")
+    return product if isinstance(product, dict) else None

@@ -1611,6 +1611,9 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 #modal-swap { z-index: 120; }
 #modal-meal-detail { z-index: 120; } /* FIT-107: stack above #modal-food-log (default 100) */
 #modal-delete-confirm { z-index: 130; }
+/* FIT-179: adjust modal can be opened from inside the active-workout modal,
+   so it must stack on top of #modal-active (default z-index: 100). */
+#modal-adjust { z-index: 115; }
 .modal[hidden] { display: none; }
 .modal-sheet {
     background: linear-gradient(180deg, #131f3a 0%, #0f172a 100%);

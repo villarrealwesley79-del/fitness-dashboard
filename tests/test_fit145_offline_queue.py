@@ -91,7 +91,7 @@ def test_meal_queue_replays_existing_meal_intake_form_contract():
 
     assert "fetch('/api/meal-intake'" in block
     assert "form.append('images', photo.blob, `meal-${idx + 1}.${extension}`);" in block
-    assert "headers: { 'Accept': 'application/json' }" in block
+    assert "headers: { 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE }" in block
     assert "credentials: 'same-origin'" in block
     assert "syncStatus = 'conflicted';" in block
     assert "syncStatus = 'pending';" in block

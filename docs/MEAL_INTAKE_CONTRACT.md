@@ -89,6 +89,54 @@ Accept request:
 
 The accept endpoint persists the supplied estimate through `food_logs` using the URL `client_id`. `estimate.calories` is required, and the rest of the estimate should keep the same schema returned by `POST /api/meal-intake`.
 
+## Barcode Intake
+
+`POST /api/meal-intake/barcode` accepts packaged-food UPC/EAN/GTIN values and returns the same pending-review v2 payload as text and photo capture.
+
+Content type: `application/json`.
+
+Request:
+
+```json
+{
+  "client_id": "meal-barcode-123",
+  "barcode": "012345678905",
+  "local_timestamp": "2026-05-24T12:30:00",
+  "local_date": "2026-05-24",
+  "local_iso": "2026-05-24T12:30:00-05:00",
+  "allow_pending": false
+}
+```
+
+Fields:
+
+- `client_id` string, required, max 128 chars. It is the same idempotency key used by text/photo meal intake.
+- `barcode` string, required. Whitespace, dots, underscores, and hyphens are ignored; the normalized value must be 8, 12, 13, or 14 digits.
+- `local_timestamp`, `local_date`, and `local_iso` are optional and follow the same length limits as text/photo intake.
+- `allow_pending` boolean, optional. When true and no verified provider match is available, the backend creates a low-confidence `barcode_pending_source` review draft instead of returning 404.
+
+Lookup order is local barcode cache, Nutritionix UPC item lookup, then Open Food Facts barcode lookup. Verified provider results are cached per user for future reuse. Pending-source fallbacks are never cached.
+
+Successful responses include the normal pending-review payload plus barcode metadata:
+
+```json
+{
+  "status": "pending_review",
+  "barcode": "012345678905",
+  "lookup_source": "nutritionix_barcode",
+  "cache_hit": false,
+  "pending_source": false,
+  "estimate": {}
+}
+```
+
+Errors:
+
+- `415 invalid_content_type` when the request is not JSON.
+- `413 payload_too_large` when `Content-Length` exceeds 18 MB.
+- `400 missing_field`, `invalid_field`, or `invalid_barcode` for malformed requests.
+- `404 barcode_not_found` when no verified provider result exists and `allow_pending` is false.
+
 ## Auto-Log Policy
 
 The backend policy is the source of truth:

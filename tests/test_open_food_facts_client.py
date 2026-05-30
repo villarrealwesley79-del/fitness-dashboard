@@ -224,6 +224,36 @@ def test_open_food_facts_client_bounds_variant_retry_time(monkeypatch):
     assert timeouts == [5.0, 1.0]
 
 
+def test_open_food_facts_client_get_product_by_barcode_uses_v2_endpoint(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        captured["ua"] = req.headers["User-agent"]
+        captured["accept"] = req.headers["Accept"]
+        return _Response({"status": 1, "product": _product("Barcode Crisps", code="012345678905")})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = open_food_facts_client.get_product_by_barcode("012345678905")
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(captured["url"]).query)
+
+    assert result["product_name"] == "Barcode Crisps"
+    assert captured["url"].startswith("https://world.openfoodfacts.org/api/v2/product/012345678905.json?")
+    assert "serving_size" in params["fields"][0]
+    assert "serving_quantity" in params["fields"][0]
+    assert captured["timeout"] == open_food_facts_client.TIMEOUT_SECONDS
+    assert captured["ua"] == open_food_facts_client.USER_AGENT
+    assert captured["accept"] == "application/json"
+
+
+def test_open_food_facts_client_get_product_by_barcode_returns_none_for_missing_status(monkeypatch):
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: _Response({"status": 0}))
+
+    assert open_food_facts_client.get_product_by_barcode("000000000000") is None
+
+
 def test_open_food_facts_client_passes_country_filter(monkeypatch):
     captured = {}
 
