@@ -74,11 +74,17 @@ def test_start_workout_confirms_before_discarding_logged_active_sets():
     assert shifted["dirty"] is True
 
     reduced = outputs["setReduction"]
-    assert reduced["rowCount"] == 2
+    assert reduced["rowCount"] == 3
     assert reduced["firstNotes"] == "keep first"
     assert reduced["completedNotes"] == "completed third"
     assert reduced["droppedFourth"] is True
     assert outputs["freshTargets"] == {"weight": "85", "reps": "8", "rowCount": 1}
+    assert outputs["indexedPreservation"] == {
+        "firstWeight": "85",
+        "firstNotes": "",
+        "secondWeight": "90",
+        "secondNotes": "second edit",
+    }
 
 
 def _run_start_guard_fixture() -> dict:
@@ -301,7 +307,7 @@ async function run() {{
   outputs.setReduction = {{
     rowCount: api.state.activeWorkout.exercises[0].logged_sets.length,
     firstNotes: api.state.activeWorkout.exercises[0].logged_sets[0].notes,
-    completedNotes: api.state.activeWorkout.exercises[0].logged_sets[1].notes,
+    completedNotes: api.state.activeWorkout.exercises[0].logged_sets[2].notes,
     droppedFourth: !JSON.stringify(api.state.activeWorkout).includes('drop fourth'),
   }};
 
@@ -329,6 +335,36 @@ async function run() {{
     weight: api.state.activeWorkout.exercises[0].logged_sets[0].weight,
     reps: api.state.activeWorkout.exercises[0].logged_sets[0].reps,
     rowCount: api.state.activeWorkout.exercises[0].logged_sets.length,
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = {{
+    id: 'indexed-existing',
+    dirty: true,
+    exercises: [{{
+      exercise: 'Seated Row',
+      target_sets: 2,
+      target_reps: 10,
+      target_weight: 80,
+      logged_sets: [
+        {{ weight: '80', reps: '10', done: false, notes: '' }},
+        {{ weight: '90', reps: '8', done: false, notes: 'second edit' }},
+      ],
+    }}],
+  }};
+  api.applyAdjustedRecommendationToActiveWorkout({{
+    id: 'indexed-rec',
+    workout_id: 'indexed-workout',
+    focus: 'Adjusted',
+    exercises: [
+      {{ exercise: 'Seated Row', target_sets: 2, target_reps: 8, target_weight: 85 }},
+    ],
+  }}, api.state.activeWorkout.exercises);
+  outputs.indexedPreservation = {{
+    firstWeight: api.state.activeWorkout.exercises[0].logged_sets[0].weight,
+    firstNotes: api.state.activeWorkout.exercises[0].logged_sets[0].notes,
+    secondWeight: api.state.activeWorkout.exercises[0].logged_sets[1].weight,
+    secondNotes: api.state.activeWorkout.exercises[0].logged_sets[1].notes,
   }};
 
   process.stdout.write(JSON.stringify(outputs));

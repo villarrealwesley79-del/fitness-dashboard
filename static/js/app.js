@@ -5087,19 +5087,21 @@
             if (previousWeight && String(s.weight ?? '') !== previousWeight) return true;
             return false;
         };
-        const preserved = prevList
-            .filter((s, idx) => s && (s.done || (idx < targetCount && editedSet(s))))
-            .map((s) => ({
-                reps: s.reps != null ? s.reps : '',
-                weight: s.weight != null ? s.weight : '',
-                done: Boolean(s.done),
-                notes: s.notes != null ? s.notes : '',
-            }));
-        const rowCount = Math.max(targetCount, preserved.length);
-        return Array.from({ length: rowCount }, (_, idx) => {
-            if (idx < preserved.length) return preserved[idx];
-            return { reps: targetReps, weight: targetWeight, done: false, notes: '' };
+        const copySet = (s) => ({
+            reps: s && s.reps != null ? s.reps : '',
+            weight: s && s.weight != null ? s.weight : '',
+            done: Boolean(s && s.done),
+            notes: s && s.notes != null ? s.notes : '',
         });
+        const freshSet = () => ({ reps: targetReps, weight: targetWeight, done: false, notes: '' });
+        const rows = Array.from({ length: targetCount }, (_, idx) => {
+            const prev = prevList[idx];
+            return editedSet(prev) ? copySet(prev) : freshSet();
+        });
+        prevList.forEach((prev, idx) => {
+            if (idx >= targetCount && prev && prev.done) rows.push(copySet(prev));
+        });
+        return rows;
     }
 
     function normalizeExerciseIdentity(ex) {
