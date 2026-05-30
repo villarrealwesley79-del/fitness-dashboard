@@ -154,12 +154,23 @@ def test_guard_detects_repo_qa_launcher_process(tmp_path):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    time.sleep(0.2)
+    result = None
+    deadline = time.time() + 5
     try:
-        result = _run([str(repo / "scripts" / "worktree-server-guard.sh")], repo)
+        while time.time() < deadline:
+            result = _run([str(repo / "scripts" / "worktree-server-guard.sh")], repo)
+            if result.returncode == 1:
+                break
+            if proc.poll() is not None:
+                break
+            time.sleep(0.1)
     finally:
         proc.terminate()
         proc.wait(timeout=5)
 
-    assert result.returncode == 1
+    assert result is not None
+    assert result.returncode == 1, (
+        "worktree guard did not detect the QA launcher before timeout; "
+        f"last returncode={result.returncode}, stderr={result.stderr!r}"
+    )
     assert f"PID {proc.pid}" in result.stderr
