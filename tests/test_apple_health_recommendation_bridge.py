@@ -4,6 +4,7 @@ import importlib
 import io
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -105,16 +106,29 @@ def _apple_health_walk(module, *, start_time: str = "07:00:00") -> dict:
     }
 
 
-def test_file_based_apple_health_workout_prefers_local_start_date(fitness_app):
-    day = _today(fitness_app)
-    stale_utc_day = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+def test_file_based_apple_health_workout_prefers_local_start_date(fitness_app, monkeypatch):
+    if not hasattr(time, "tzset"):
+        pytest.skip("requires process timezone control")
+    previous_tz = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "America/Chicago")
+    time.tzset()
 
-    workout = fitness_app._normalise_apple_health_workout({
-        "date": stale_utc_day,
-        "start": f"{day}T23:30:00-05:00",
-        "activity": "Walking",
-        "duration_min": 60,
-    })
+    try:
+        day = _today(fitness_app)
+        stale_utc_day = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        workout = fitness_app._normalise_apple_health_workout({
+            "date": stale_utc_day,
+            "start": f"{day}T23:30:00-05:00",
+            "activity": "Walking",
+            "duration_min": 60,
+        })
+    finally:
+        if previous_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous_tz
+        time.tzset()
 
     assert workout["date"] == day
 

@@ -1,9 +1,8 @@
 """Regression tests for FIT-23 sodium round-trip through the SQLite store.
 
-The JSON `/api/add-nutrition` endpoint persists `sodium_mg`; the JSON-to-SQLite
-migration path (`migrate_json_to_sqlite.add_nutrition_record`) must carry that
-field through to the SQLite store, and a pre-existing DB without the column
-must pick it up on `init_data_db()`.
+The JSON `/api/add-nutrition` endpoint persists `sodium_mg`; direct SQLite
+writes must carry that field through to the store, and a pre-existing DB without
+the column must pick it up on `init_data_db()`.
 """
 from __future__ import annotations
 
