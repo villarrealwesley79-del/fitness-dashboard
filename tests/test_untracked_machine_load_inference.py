@@ -373,6 +373,23 @@ def test_adjust_deterministic_parser_handles_must_pass_examples(monkeypatch):
     assert chest_supported["replace_exercise"] == "Seated Row"
 
 
+def test_adjust_deterministic_tie_break_prefers_earlier_plan_slot(monkeypatch):
+    module = _module(monkeypatch)
+    recommendation = _recommendation_for(
+        module,
+        [
+            _rec_exercise("Chest Press", "chest", 100),
+            _rec_exercise("Incline Press", "chest", 95),
+        ],
+    )
+
+    pectoral = module._build_deterministic_adjust_swap("pectoral fly", recommendation, "machines_and_cables")
+
+    assert pectoral["target_exercise"] == "Pec Fly"
+    assert pectoral["replace_exercise"] == "Chest Press"
+    assert pectoral["replace_index"] == 0
+
+
 def test_adjust_deterministic_fallback_leaves_unclassified_request_unchanged(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "_lm_studio", None)

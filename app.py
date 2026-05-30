@@ -2964,7 +2964,7 @@ def _select_adjust_replacement_slot(exercises, target_exercise):
         return None
 
     # Deterministic tie-break: later plan slots are treated as lower priority.
-    scored.sort(key=lambda item: (-item["score"], -item["idx"]))
+    scored.sort(key=lambda item: (-item["score"], item["idx"]))
     return scored[0]
 
 

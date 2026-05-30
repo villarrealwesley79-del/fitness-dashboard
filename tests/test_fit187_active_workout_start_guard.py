@@ -55,6 +55,14 @@ def test_start_workout_confirms_before_discarding_logged_active_sets():
     assert adjusted_confirm["adjustModalHidden"] is True
     assert adjusted_confirm["renderCount"] == 1
 
+    shifted = outputs["shiftedAdjustment"]
+    assert shifted["firstName"] == "Seated Row"
+    assert shifted["firstNotes"] == "row edit"
+    assert shifted["firstWeight"] == "80"
+    assert shifted["secondName"] == "Lat Pulldown"
+    assert shifted["secondNotes"] == ""
+    assert shifted["dirty"] is True
+
 
 def _run_start_guard_fixture() -> dict:
     helper_source = "function setActiveWorkoutFromRecommendation" + _slice_between(
@@ -93,9 +101,11 @@ const toast = () => {{}};
 const getDashboard = async () => ({{ next_workout: dashboardNext }});
 const newWorkoutId = (id) => 'new-' + (id || 'generated');
 const exerciseName = (ex) => ex.exercise || ex.name || ex.machine || '';
-const buildActiveExercise = (ex) => ({{
+const buildActiveExercise = (ex, previous) => ({{
   ...ex,
-  logged_sets: [{{ weight: ex.target_weight || '', reps: ex.target_reps || '', done: false, notes: '' }}],
+  logged_sets: previous && Array.isArray(previous.logged_sets)
+    ? previous.logged_sets
+    : [{{ weight: ex.target_weight || '', reps: ex.target_reps || '', done: false, notes: '' }}],
 }});
 ${{helperSource}}
 renderActiveWorkout = () => {{ renderCount += 1; }};
@@ -137,6 +147,7 @@ module.exports = {{
   elements,
   startWorkout,
   startAdjustedWorkout,
+  applyAdjustedRecommendationToActiveWorkout,
   activeWithProgress,
   plannedWorkout,
   resetHarness,
@@ -211,6 +222,39 @@ async function run() {{
     dirty: api.state.activeWorkout.dirty,
     adjustModalHidden: api.elements['modal-adjust'].hidden,
     renderCount: api.renderCount(),
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = {{
+    id: 'shifted-existing',
+    recommendation_id: 'old-rec',
+    focus: 'Old',
+    dirty: true,
+    exercises: [{{
+      exercise: 'Chest Press',
+      logged_sets: [{{ weight: '100', reps: '10', done: true, notes: 'chest done' }}],
+    }}, {{
+      exercise: 'Seated Row',
+      logged_sets: [{{ weight: '80', reps: '10', done: false, notes: 'row edit' }}],
+    }}],
+  }};
+  const previousExercises = api.state.activeWorkout.exercises;
+  api.applyAdjustedRecommendationToActiveWorkout({{
+    id: 'shifted-rec',
+    workout_id: 'shifted-workout',
+    focus: 'Adjusted',
+    exercises: [
+      {{ exercise: 'Seated Row', target_sets: 1, target_reps: 8, target_weight: 85 }},
+      {{ exercise: 'Lat Pulldown', target_sets: 1, target_reps: 10, target_weight: 70 }},
+    ],
+  }}, previousExercises);
+  outputs.shiftedAdjustment = {{
+    firstName: api.state.activeWorkout.exercises[0].exercise,
+    firstNotes: api.state.activeWorkout.exercises[0].logged_sets[0].notes,
+    firstWeight: api.state.activeWorkout.exercises[0].logged_sets[0].weight,
+    secondName: api.state.activeWorkout.exercises[1].exercise,
+    secondNotes: api.state.activeWorkout.exercises[1].logged_sets[0].notes,
+    dirty: api.state.activeWorkout.dirty,
   }};
 
   process.stdout.write(JSON.stringify(outputs));
