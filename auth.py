@@ -5,13 +5,16 @@ SQLite-backed, no SQLAlchemy. Minimal proof-of-concept for SaaS productization.
 
 import os
 import sqlite3
+import hmac
 import hashlib
+import re
 import secrets
 import time
 from collections import defaultdict
 from contextlib import contextmanager
 from flask import Blueprint, request, redirect, url_for, render_template, flash
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
+from werkzeug.security import check_password_hash, generate_password_hash
 
 # ── Rate limiting (in-memory, per-IP) ────────────────────
 # Tracks failed auth attempts: {ip: [(timestamp, ...), ...]}
@@ -46,6 +49,9 @@ login_manager.login_view = "auth.login"
 login_manager.login_message = "Please log in to access this page."
 
 auth_bp = Blueprint("auth", __name__)
+
+_PASSWORD_HASH_METHOD = "scrypt:32768:8:1"
+_LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 
 
 @contextmanager
@@ -93,8 +99,21 @@ def init_auth_db():
         conn.commit()
 
 
-def _hash_password(password: str, salt: str) -> str:
+def _legacy_hash_password(password: str, salt: str) -> str:
     return hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
+
+
+def _hash_password(password: str) -> str:
+    return generate_password_hash(password, method=_PASSWORD_HASH_METHOD)
+
+
+def _is_legacy_password_hash(stored_hash: str) -> bool:
+    return isinstance(stored_hash, str) and bool(_LEGACY_SHA256_RE.fullmatch(stored_hash))
+
+
+def _verify_legacy_password(password: str, salt: str, stored_hash: str) -> bool:
+    candidate = _legacy_hash_password(password, salt or "")
+    return hmac.compare_digest(candidate, stored_hash)
 
 
 # ── User model ────────────────────────────────────────────
@@ -146,18 +165,28 @@ class User(UserMixin):
                 "SELECT id, username, password, salt, email, is_pro, stripe_customer, stripe_sub FROM users WHERE username = ?",
                 (username,)
             ).fetchone()
-        if row and row["password"] == _hash_password(password, row["salt"]):
-            return User._from_row(row)
+            if not row:
+                return None
+            stored_hash = row["password"]
+            if _is_legacy_password_hash(stored_hash):
+                if not _verify_legacy_password(password, row["salt"], stored_hash):
+                    return None
+                conn.execute(
+                    "UPDATE users SET password = ?, salt = ? WHERE id = ?",
+                    (_hash_password(password), "", row["id"]),
+                )
+                return User._from_row(row)
+            if check_password_hash(stored_hash, password):
+                return User._from_row(row)
         return None
 
     @staticmethod
     def create(username: str, password: str, email: str = None):
-        salt = secrets.token_hex(16)
-        hashed = _hash_password(password, salt)
+        hashed = _hash_password(password)
         with _get_db() as conn:
             conn.execute(
                 "INSERT INTO users (username, password, salt, email) VALUES (?, ?, ?, ?)",
-                (username, hashed, salt, email),
+                (username, hashed, "", email),
             )
             conn.commit()
 
