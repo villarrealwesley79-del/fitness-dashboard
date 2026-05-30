@@ -66,12 +66,20 @@ def test_start_workout_confirms_before_discarding_logged_active_sets():
     assert adjusted_confirm["renderCount"] == 1
 
     shifted = outputs["shiftedAdjustment"]
+    assert shifted["exerciseCount"] == 3
     assert shifted["firstName"] == "Seated Row"
     assert shifted["firstNotes"] == "row edit"
     assert shifted["firstWeight"] == "80"
     assert shifted["secondName"] == "Lat Pulldown"
     assert shifted["secondNotes"] == ""
+    assert shifted["removedName"] == "Chest Press"
+    assert shifted["removedNotes"] == "chest done"
     assert shifted["dirty"] is True
+
+    assert outputs["unstartedRemoval"] == {
+        "exerciseCount": 1,
+        "onlyName": "Seated Row",
+    }
 
     reduced = outputs["setReduction"]
     assert reduced["rowCount"] == 3
@@ -272,12 +280,40 @@ async function run() {{
     ],
   }}, previousExercises);
   outputs.shiftedAdjustment = {{
+    exerciseCount: api.state.activeWorkout.exercises.length,
     firstName: api.state.activeWorkout.exercises[0].exercise,
     firstNotes: api.state.activeWorkout.exercises[0].logged_sets[0].notes,
     firstWeight: api.state.activeWorkout.exercises[0].logged_sets[0].weight,
     secondName: api.state.activeWorkout.exercises[1].exercise,
     secondNotes: api.state.activeWorkout.exercises[1].logged_sets[0].notes,
+    removedName: api.state.activeWorkout.exercises[2].exercise,
+    removedNotes: api.state.activeWorkout.exercises[2].logged_sets[0].notes,
     dirty: api.state.activeWorkout.dirty,
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = {{
+    id: 'unstarted-removed-existing',
+    dirty: false,
+    exercises: [{{
+      exercise: 'Chest Press',
+      target_sets: 1,
+      target_reps: 10,
+      target_weight: 100,
+      logged_sets: [{{ weight: '100', reps: '10', done: false, notes: '' }}],
+    }}],
+  }};
+  api.applyAdjustedRecommendationToActiveWorkout({{
+    id: 'unstarted-removed-rec',
+    workout_id: 'unstarted-removed-workout',
+    focus: 'Adjusted',
+    exercises: [
+      {{ exercise: 'Seated Row', target_sets: 1, target_reps: 8, target_weight: 85 }},
+    ],
+  }}, api.state.activeWorkout.exercises);
+  outputs.unstartedRemoval = {{
+    exerciseCount: api.state.activeWorkout.exercises.length,
+    onlyName: api.state.activeWorkout.exercises[0].exercise,
   }};
 
   api.resetHarness();

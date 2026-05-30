@@ -5121,6 +5121,46 @@
         return prev || null;
     }
 
+    function activeLoggedSetHasWork(ex, set) {
+        if (!set) return false;
+        if (set.done || (set.notes != null && String(set.notes).trim())) return true;
+
+        const targetValue = (value) => {
+            if (value == null || value === '') return '';
+            const n = Number(value);
+            return Number.isFinite(n) ? String(n) : '';
+        };
+        const plannedReps = ex ? (
+            ex.target_reps != null
+                ? targetValue(ex.target_reps)
+                : (ex.reps != null ? targetValue(ex.reps) : (
+                    Array.isArray(ex.rep_range) && ex.rep_range.length ? targetValue(ex.rep_range[0]) : ''
+                ))
+        ) : '';
+        const plannedWeight = ex ? (
+            ex.target_weight != null
+                ? targetValue(ex.target_weight)
+                : (ex.target_weight_lbs != null ? targetValue(ex.target_weight_lbs) : '')
+        ) : '';
+        const reps = set.reps != null ? String(set.reps) : '';
+        const weight = set.weight != null ? String(set.weight) : '';
+        if (plannedReps) {
+            if (reps && reps !== plannedReps) return true;
+        } else if (reps) {
+            return true;
+        }
+        if (plannedWeight) {
+            if (weight && weight !== plannedWeight) return true;
+        } else if (weight) {
+            return true;
+        }
+        return false;
+    }
+
+    function activeExerciseHasLoggedWork(ex) {
+        return Boolean(ex && Array.isArray(ex.logged_sets) && ex.logged_sets.some((set) => activeLoggedSetHasWork(ex, set)));
+    }
+
     function applyAdjustedRecommendationToActiveWorkout(nw, previousExercises = [], opts = {}) {
         if (!nw) return;
         const existing = state.activeWorkout || {};
@@ -5138,6 +5178,11 @@
                 ...ex,
                 logged_sets: buildAdjustedLoggedSets(ex, null),
             };
+        });
+        previousExercises.forEach((prev) => {
+            if (prev && !usedPrevious.has(prev) && activeExerciseHasLoggedWork(prev)) {
+                exercises.push({ ...prev });
+            }
         });
         state.activeWorkout = {
             id: existing.id || nw.workout_id || newWorkoutId(nw.id),
