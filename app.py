@@ -2761,12 +2761,22 @@ def _swap_match_tokens(name):
     tokens = set()
     for token in _exercise_name_tokens(name):
         tokens.add(token)
-        if len(token) > 3 and token.endswith("s"):
+        if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
             tokens.add(token[:-1])
     return tokens
 
 
+_AMBIGUOUS_SWAP_TOKENS = {"press", "row", "curl"}
+
+
+def _is_ambiguous_single_swap_token(typed_name):
+    typed_base_tokens = _exercise_name_tokens(typed_name)
+    return len(typed_base_tokens) == 1 and bool(_swap_match_tokens(typed_name).intersection(_AMBIGUOUS_SWAP_TOKENS))
+
+
 def _deterministic_swap_candidate(typed_name, candidates):
+    if _is_ambiguous_single_swap_token(typed_name):
+        return None
     typed_tokens = _swap_match_tokens(typed_name)
     if not typed_tokens:
         return None
@@ -2812,6 +2822,8 @@ def _resolve_custom_swap_exercise(typed_name, old_ex, equipment_pref):
     deterministic = _deterministic_swap_candidate(typed_name, candidates)
     if deterministic:
         return deterministic
+    if _is_ambiguous_single_swap_token(typed_name):
+        return None
 
     if not _lm_studio or not hasattr(_lm_studio, "resolve_swap_candidate") or not candidates:
         return None
@@ -7890,7 +7902,11 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
             continue
 
-        requested_exercise = _resolve_exercise_definition(sw.get("target_exercise"))
+        target_exercise_name = (sw.get("target_exercise") or "").strip()
+        requested_exercise = _resolve_exercise_definition(target_exercise_name)
+        if target_exercise_name and not requested_exercise:
+            notes.append(f"Ignored: unknown target exercise '{target_exercise_name}'")
+            continue
 
         # Pick a new exercise for target_muscle from the equipment-filtered library,
         # preferring compound movements and rotating off recently-trained exercises.
