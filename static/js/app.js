@@ -21,6 +21,7 @@
         settings: null,
         analytics: null,
         muscleFatigue: null,
+        nextWorkout: null,
         exercises: null,
         ranges: { history: 30, stats: 30 },
         historyTypeFilter: 'all',
@@ -38,6 +39,7 @@
     let dashboardRenderGen = 0;
     let modalOpenSeq = 0;
     const dashboardSentinelGen = { ouraError: 0, recoError: 0, ouraSleepError: 0 };
+    let nextWorkoutRenderGen = 0;
 
     // --- helpers -------------------------------------------------
     const $ = (id) => document.getElementById(id);
@@ -127,6 +129,21 @@
             if (timer) clearTimeout(timer);
         }
         if (res.status === 401) {
+            let reloadRequired = false;
+            try {
+                const body = await res.clone().json();
+                reloadRequired = Boolean(body && (body.reload === true || body.error === 'reload_required'));
+            } catch {
+                reloadRequired = false;
+            }
+            if (reloadRequired) {
+                if (activeWorkoutHasProgress()) {
+                    toast('Update ready after workout. Refresh when finished.', 'warn');
+                    throw new Error('reload required after workout');
+                }
+                window.location.reload();
+                throw new Error('reload required');
+            }
             window.location.href = '/login?next=' + encodeURIComponent(location.pathname);
             throw new Error('unauthorized');
         }
@@ -828,7 +845,14 @@
     async function getDashboard(force = false) {
         if (!force && state.dashboard) return state.dashboard;
         state.dashboard = await api('/api/dashboard', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+        if (state.dashboard && state.dashboard.next_workout) state.nextWorkout = state.dashboard.next_workout;
         return state.dashboard;
+    }
+    async function getNextWorkout(force = false) {
+        if (!force && state.nextWorkout) return state.nextWorkout;
+        const payload = await api('/api/next-workout', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+        state.nextWorkout = payload && payload.next_workout ? payload.next_workout : null;
+        return state.nextWorkout;
     }
     async function getVitals(force = false) {
         if (!force && state.vitals) return state.vitals;
@@ -919,7 +943,7 @@
     function invalidateCaches() {
         state.dashboard = state.vitals = state.oura = state.ouraSleep = null;
         state.ouraTrends = state.reco = state.insights = state.history = null;
-        state.body = state.settings = state.analytics = state.muscleFatigue = null;
+        state.body = state.settings = state.analytics = state.muscleFatigue = state.nextWorkout = null;
     }
 
     // --- Freshness chip rendering (FIT-2) -------------------------
@@ -1780,8 +1804,14 @@
 
     // --- Next Workout --------------------------------------------
     async function renderNextWorkout() {
-        const [dash, reco, st] = await Promise.all([getDashboard(), getReco(), getSettings()]);
-        const nw = dash && dash.next_workout;
+        const gen = ++nextWorkoutRenderGen;
+        let nw = null;
+        try {
+            nw = await getNextWorkout(true);
+        } catch (err) {
+            console.warn('next workout load failed', err);
+            nw = state.nextWorkout || (state.dashboard && state.dashboard.next_workout);
+        }
         if (!nw) {
             $('nw-title').textContent = 'Rest Day';
             $('nw-sub').textContent = 'Take recovery seriously today.';
@@ -1793,13 +1823,30 @@
         $('nw-title').textContent = title;
         $('nw-sub').textContent = nw.goal_name || 'Moderate Intensity';
         $('nw-duration').textContent = (nw.estimated_minutes || nw.available_time || '—') + ' min';
-        const goalRpe = (st && st.goal_details && st.goal_details.rpe_target) || null;
-        const exRpes = (nw.exercises || []).map((e) => Number(e.rpe_target)).filter((v) => Number.isFinite(v));
-        const avgExRpe = exRpes.length ? Math.round((exRpes.reduce((a, b) => a + b, 0) / exRpes.length) * 10) / 10 : null;
-        const rpeTarget = goalRpe || avgExRpe;
-        $('nw-rpe').textContent = rpeTarget ? `RPE ${rpeTarget}` : 'RPE —';
-        const why = reco && reco.reasoning ? reco.reasoning : 'Your readiness is high and your plan optimizes strength while managing fatigue.';
-        $('nw-why').textContent = why;
+        const renderRpe = (st) => {
+            const goalRpe = (st && st.goal_details && st.goal_details.rpe_target) || null;
+            const exRpes = (nw.exercises || []).map((e) => Number(e.rpe_target)).filter((v) => Number.isFinite(v));
+            const avgExRpe = exRpes.length ? Math.round((exRpes.reduce((a, b) => a + b, 0) / exRpes.length) * 10) / 10 : null;
+            const rpeTarget = goalRpe || avgExRpe;
+            $('nw-rpe').textContent = rpeTarget ? `RPE ${rpeTarget}` : 'RPE —';
+        };
+        const renderWhy = (reco) => {
+            const why = reco && reco.reasoning ? reco.reasoning : 'Your readiness is high and your plan optimizes strength while managing fatigue.';
+            $('nw-why').textContent = why;
+        };
+        renderRpe(null);
+        renderWhy(null);
+
+        getReco().then((reco) => {
+            if (gen !== nextWorkoutRenderGen || state.currentTab !== 'tab-workout') return;
+            renderWhy(reco);
+        }).catch(() => {});
+        getSettings().then((st) => {
+            if (gen !== nextWorkoutRenderGen || state.currentTab !== 'tab-workout') return;
+            renderRpe(st);
+        }).catch((err) => {
+            console.warn('settings unavailable for next workout render', err);
+        });
 
         const list = $('nw-exercise-list');
         list.innerHTML = '';
@@ -4838,7 +4885,7 @@
                 body: JSON.stringify(patch),
             });
             toast('Setting saved');
-            state.settings = null; state.dashboard = null;
+            state.settings = null; state.dashboard = null; state.nextWorkout = null;
             renderSettings();
         } catch (e) {
             console.error(e); toast('Save failed', 'err');
@@ -4854,6 +4901,7 @@
             toast('Equipment updated');
             state.settings = null;
             state.dashboard = null;
+            state.nextWorkout = null;
             state.reco = null;
             state.activeWorkout = null;
             await Promise.allSettled([renderSettings(), renderDashboard()]);
@@ -5560,8 +5608,21 @@
     }
 
     async function startWorkout() {
-        const dash = await getDashboard();
-        const nw = dash && dash.next_workout;
+        let nw = null;
+        try {
+            nw = await getNextWorkout(true);
+        } catch (err) {
+            console.warn('start workout next-workout load failed', err);
+            nw = state.nextWorkout || (state.dashboard && state.dashboard.next_workout);
+            if (!nw) {
+                try {
+                    const dash = await getDashboard();
+                    nw = dash && dash.next_workout;
+                } catch (dashErr) {
+                    console.warn('start workout dashboard fallback failed', dashErr);
+                }
+            }
+        }
         if (!nw) { toast('No workout planned', 'err'); return; }
         if (!confirmDiscardActiveWorkoutForStart()) return;
         startActiveWorkoutFromRecommendation(nw);
@@ -6690,6 +6751,7 @@
         if (resp && resp.recommendation) {
             if (!state.dashboard) state.dashboard = {};
             state.dashboard.next_workout = resp.recommendation;
+            state.nextWorkout = resp.recommendation;
         }
         closeModal($('modal-swap'));
         toast(`Swapped ${oldName} → ${newName}`, 'ok');
@@ -6820,6 +6882,7 @@
         if (preview) { preview.hidden = true; preview.innerHTML = ''; }
         if (state.dashboard && state.dashboard.next_workout) {
             // Trigger a re-render so the user sees the current server-canonical plan.
+            state.nextWorkout = state.dashboard.next_workout;
             if (state.currentTab === 'tab-workout') renderNextWorkout();
         }
     }
@@ -7051,6 +7114,7 @@
         if (payload && payload.recommendation) {
             if (!state.dashboard) state.dashboard = {};
             state.dashboard.next_workout = payload.recommendation;
+            state.nextWorkout = payload.recommendation;
             state.adjustedWorkout = payload.recommendation;
             renderAdjustedPlanPreview(payload.recommendation);
             // FIT-179: when the user is mid-workout, fold the adjusted plan
@@ -9541,7 +9605,31 @@
         // (private browsing, file://) is non-fatal — the rest of the app
         // works without it; renderPushSection() reports "Unsupported".
         if (!('serviceWorker' in navigator)) return;
-        navigator.serviceWorker.register('/sw.js').catch((err) => {
+        let reloadingForController = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (reloadingForController) return;
+            if (activeWorkoutHasProgress()) {
+                toast('Update ready after workout. Refresh when finished.');
+                return;
+            }
+            reloadingForController = true;
+            window.location.reload();
+        });
+        navigator.serviceWorker.register('/sw.js').then((reg) => {
+            if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+            reg.addEventListener('updatefound', () => {
+                const worker = reg.installing;
+                if (!worker) return;
+                worker.addEventListener('statechange', () => {
+                    if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+                        worker.postMessage({ type: 'SKIP_WAITING' });
+                    }
+                });
+            });
+            reg.update().catch((err) => {
+                console.warn('Service worker update check failed:', err);
+            });
+        }).catch((err) => {
             console.warn('Service worker registration failed:', err);
         });
     }

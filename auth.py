@@ -14,7 +14,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request, redirect, url_for, render_template, flash, session
-from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from runtime_config import data_path
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -266,6 +266,14 @@ def load_user(user_id):
 # ── Routes ────────────────────────────────────────────────
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():
+    if request.method == "GET" and current_user.is_authenticated:
+        next_page = request.args.get("next") or url_for("index")
+        if not next_page.startswith("/") or next_page.startswith("//"):
+            next_page = url_for("index")
+        if next_page == "/":
+            next_page = "/?fd_shell_reload=20260525-fit181-controller-reload-r2"
+        return redirect(next_page)
+
     if request.method == "POST":
         ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
         if not _rate_check(ip):

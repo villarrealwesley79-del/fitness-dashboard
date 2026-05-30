@@ -73,7 +73,9 @@ def test_offline_submit_enqueues_with_original_client_id_and_timestamps():
     assert "form.append('local_timestamp', entry.local_timestamp);" in APP_JS
     assert "form.append('local_date', entry.local_date);" in APP_JS
     assert "form.append('local_iso', entry.local_iso);" in APP_JS
-    assert "return render_template('index.html')" in APP_PY
+    assert "return Response(" in APP_PY
+    assert "render_template('index.html')" in APP_PY
+    assert '"Cache-Control": "no-store, max-age=0"' in APP_PY
     assert "data-auth-scope" not in INDEX_HTML
     assert "const MEAL_QUEUE_AUTH_SCOPE_KEY = 'fit145:meal-queue-auth-scope:v1';" in APP_JS
     assert "let _mealQueueAuthScope = '';" in APP_JS
@@ -185,6 +187,7 @@ def test_meal_flush_has_duplicate_guards_and_online_hooks():
     assert "window.addEventListener('online', () => {" in APP_JS
     assert "flushMealSyncQueue();" in APP_JS
     assert "const CACHE_NAME = 'fitness-dashboard-v20260530-fit192-a11y';" in APP_SW
+    assert "cache.addAll" not in APP_SW
     assert "sync" not in APP_SW.lower()
 
 

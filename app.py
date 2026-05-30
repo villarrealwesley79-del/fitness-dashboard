@@ -16,6 +16,8 @@ import os
 import socket
 import sqlite3
 import hashlib
+import glob
+import html
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -384,6 +386,8 @@ TIME_OPTIONS = [
 WORKOUT_RECOMMENDATIONS = []  # Stores what was recommended
 COMPLETED_WORKOUTS = []  # Stores what was actually done
 LAST_WORKOUT_RECOMMENDATION = None  # Most recent recommendation for swap actions
+LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
+OPEN_WEARABLES_WORKOUT_MARKER_CACHE = None
 
 # ==================== CARDIO RECOMMENDATIONS ====================
 # Heart rate zones based on % of max HR (220 - age, assume age 30 for now = 190 max HR)
@@ -2663,7 +2667,7 @@ def get_readiness_score(muscle, soreness_data, volume_data, cardio_data=None, wo
     }
 
 
-def _get_oura_readiness_today():
+def _get_oura_readiness_today(include_open_wearables=True):
     today_s = _today_str()
     cached = get_oura_daily(OURA_DB_FILE, today_s)
     readiness = None
@@ -2675,11 +2679,12 @@ def _get_oura_readiness_today():
             readiness = None
 
     ow_sleep = None
-    try:
-        ow_data = fetch_open_wearables_data()
-        ow_sleep = _extract_open_wearables_sleep(ow_data.get("sleep"))
-    except Exception:
-        ow_sleep = None
+    if include_open_wearables:
+        try:
+            ow_data = fetch_open_wearables_data()
+            ow_sleep = _extract_open_wearables_sleep(ow_data.get("sleep"))
+        except Exception:
+            ow_sleep = None
 
     if not ow_sleep or not ow_sleep.get("recent"):
         return readiness
@@ -3379,6 +3384,7 @@ def generate_next_workout(
     persist=False,
     training_recommendation=None,
     consume_cardio_rotation=True,
+    include_open_wearables_readiness=True,
 ):
     """Generate optimal workout prescription based on training goal and available time.
 
@@ -3396,7 +3402,16 @@ def generate_next_workout(
     sessions_per_week = USER_SETTINGS.get("sessions_per_week_target", 3)
     meso_week = _get_mesocycle_week(workouts, sessions_per_week)
     meso_plan = MESOCYCLE_PLAN.get(meso_week, MESOCYCLE_PLAN[1])
-    oura_readiness = _get_oura_readiness_today()
+    try:
+        oura_readiness = _get_oura_readiness_today(
+            include_open_wearables=include_open_wearables_readiness
+        )
+    except TypeError:
+        # Several focused tests monkeypatch this hook with a no-arg lambda.
+        # Preserve that test hook while production can skip slow OW reads.
+        if getattr(_get_oura_readiness_today, "__name__", "") == "_get_oura_readiness_today":
+            raise
+        oura_readiness = _get_oura_readiness_today()
     equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
 
     # Calculate max exercises based on available time
@@ -4252,13 +4267,300 @@ else:
 @app.route('/')
 def index():
     """Main dashboard page."""
-    return render_template('index.html')
+    return Response(
+        render_template('index.html'),
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.route('/api/auth/scope')
 def auth_scope():
     """Return the current signed-in scope for client-side queue ownership checks."""
     return jsonify({"auth_scope": f"user:{_current_data_user_id()}"})
+
+
+def _current_workout_training_recommendation():
+    """Mirror the dashboard's readiness context for lightweight workout loads."""
+    today_s = _today_str()
+    cached_oura = get_oura_daily(OURA_DB_FILE, today_s)
+    readiness_val = cached_oura.get("readiness_score") if cached_oura else None
+    try:
+        readiness_val = int(readiness_val) if readiness_val is not None else None
+    except Exception:
+        readiness_val = None
+
+    recent_soreness = filter_recent_soreness(SORENESS_DATA, hours=24)
+    max_soreness = max((s.get("soreness_level") or 0) for s in recent_soreness) if recent_soreness else 0
+    signal = "TRAIN" if (readiness_val is not None and readiness_val >= 70 and max_soreness < 7) else "RECOVER"
+
+    hrv_trend = "unknown"
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=6)
+        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
+    except Exception:
+        pass
+
+    last_completed = summarize_recent_completion(WORKOUTS, hours=24)
+    last_hours_ago = last_completed.get("hours_ago") if last_completed else None
+    recommendation, _ = _training_recommendation_from_factors(
+        readiness_val,
+        recovery_bonus=calculate_recovery_bonus(RECOVERY_DATA, hours=48),
+        hrv_trend=hrv_trend,
+        sleep_debt=calculate_sleep_debt(OURA_DB_FILE, days=7),
+        acwr_data=calculate_acwr(WORKOUTS),
+        last_completed=last_completed,
+        last_hours_ago=last_hours_ago,
+        weather=_cached_wttr(_WEATHER_CACHE.get("location") or "San_Antonio"),
+    )
+    if signal == "RECOVER" and max_soreness >= 7:
+        recommendation = "recovery"
+    return recommendation
+
+
+def _open_wearables_workout_inputs_live():
+    return not _missing_open_wearables_config()
+
+
+def _open_wearables_payload_marker(payload):
+    """Return a stable marker for live OW inputs without carrying timestamps."""
+    if payload is None:
+        return None
+    try:
+        raw = json.dumps(payload, sort_keys=True, default=str)
+    except TypeError:
+        raw = str(payload)
+    return {
+        "hash": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "bytes": len(raw),
+    }
+
+
+def _store_open_wearables_recommendation_marker(data):
+    global OPEN_WEARABLES_WORKOUT_MARKER_CACHE
+    sleep = _extract_open_wearables_sleep((data or {}).get("sleep"))
+    marker = {
+        "configured": True,
+        "sleep": {
+            "duration_min": sleep.get("duration_min") if sleep else None,
+            "avg_hr": sleep.get("avg_hr") if sleep else None,
+            "event_time": sleep.get("event_time") if sleep else None,
+            "recent": sleep.get("recent") if sleep else None,
+        },
+        "workouts": _open_wearables_payload_marker((data or {}).get("workouts")),
+        "activity_summary": _open_wearables_payload_marker((data or {}).get("activity_summary")),
+    }
+    OPEN_WEARABLES_WORKOUT_MARKER_CACHE = marker
+    return marker
+
+
+def _open_wearables_recommendation_marker(refresh=False):
+    if not _open_wearables_workout_inputs_live():
+        return {"configured": False}
+    if not refresh and OPEN_WEARABLES_WORKOUT_MARKER_CACHE is not None:
+        return OPEN_WEARABLES_WORKOUT_MARKER_CACHE
+    if not refresh:
+        return {"configured": True, "status": "unfetched"}
+    try:
+        data = fetch_open_wearables_data()
+        return _store_open_wearables_recommendation_marker(data)
+    except Exception as exc:
+        if OPEN_WEARABLES_WORKOUT_MARKER_CACHE is not None:
+            return OPEN_WEARABLES_WORKOUT_MARKER_CACHE
+        return {
+            "configured": True,
+            "error_type": type(exc).__name__,
+        }
+
+
+def _workout_recommendation_fingerprint():
+    """Fingerprint inputs that should force a new next-workout plan."""
+    today_s = _today_str()
+    cached_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
+    oura_rows = []
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=6)
+        oura_rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")) or []
+    except Exception:
+        oura_rows = []
+
+    def file_marker(path):
+        try:
+            stat = os.stat(path)
+            return {"path": path, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+        except OSError:
+            return {"path": path, "missing": True}
+
+    health_workout_files = sorted(
+        glob.glob(os.path.expanduser("~/Documents/Health/healthkit_samples_workout_*.json"))
+    )
+    apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness()
+
+    def latest_marker(rows):
+        markers = [
+            str((row or {}).get("created_at") or (row or {}).get("date") or "")
+            for row in (rows or [])
+        ]
+        return max(markers) if markers else ""
+
+    settings_fields = [
+        "training_goal",
+        "sessions_per_week_target",
+        "available_time_minutes",
+        "fatigue_threshold",
+        "equipment_preference",
+        "preferred_equipment_brands",
+        "excluded_exercises",
+        "volume_landmarks",
+    ]
+    payload = {
+        "day": today_s,
+        "workouts_count": len(WORKOUTS or []),
+        "workouts_latest": latest_marker(WORKOUTS),
+        "soreness_count": len(SORENESS_DATA or []),
+        "soreness_latest": latest_marker(SORENESS_DATA),
+        "cardio_count": len(CARDIO_DATA or []),
+        "cardio_latest": latest_marker(CARDIO_DATA),
+        "recovery_count": len(RECOVERY_DATA or []),
+        "recovery_latest": latest_marker(RECOVERY_DATA),
+        "settings": {field: USER_SETTINGS.get(field) for field in settings_fields},
+        "weather": {
+            "ts": _WEATHER_CACHE.get("ts"),
+            "location": _WEATHER_CACHE.get("location"),
+            "data": _WEATHER_CACHE.get("data"),
+            "error": _WEATHER_CACHE.get("error"),
+        },
+        "open_wearables": {
+            "configured": _open_wearables_workout_inputs_live(),
+            "user_id": bool(OPEN_WEARABLES_USER_ID),
+            "marker": _open_wearables_recommendation_marker(),
+        },
+        "apple_health": {
+            "enabled": _apple_health_recommendation_enabled(),
+            "hr_intensity_enabled": _apple_health_hr_intensity_enabled(),
+            "freshness": {
+                "status": apple_status,
+                "last_data": apple_last_data,
+                "last_sync": apple_last_sync,
+            },
+            "sync_db": file_marker(_apple_health_sync_db_file()),
+            "workout_files": [file_marker(path) for path in health_workout_files[-3:]],
+        },
+        "oura": {
+            "day": cached_oura.get("day"),
+            "readiness_score": cached_oura.get("readiness_score"),
+            "sleep_score": cached_oura.get("sleep_score"),
+            "hrv": cached_oura.get("hrv"),
+            "sleep_duration_min": cached_oura.get("sleep_duration_min"),
+            "resting_hr": cached_oura.get("resting_hr"),
+            "last_7_days": [
+                {
+                    "day": row.get("day"),
+                    "readiness_score": row.get("readiness_score"),
+                    "sleep_score": row.get("sleep_score"),
+                    "hrv": row.get("hrv"),
+                    "sleep_duration_min": row.get("sleep_duration_min"),
+                    "resting_hr": row.get("resting_hr"),
+                    "created_at": row.get("created_at"),
+                }
+                for row in oura_rows
+            ],
+            "db": file_marker(OURA_DB_FILE),
+        },
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+@app.route('/api/next-workout')
+def api_next_workout():
+    """Return only the active workout prescription for gym execution."""
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
+    fingerprint = _workout_recommendation_fingerprint()
+    if (
+        not LAST_WORKOUT_RECOMMENDATION
+        or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint
+    ):
+        LAST_WORKOUT_RECOMMENDATION = generate_next_workout(
+            WORKOUTS,
+            SORENESS_DATA,
+            training_recommendation=_current_workout_training_recommendation(),
+            consume_cardio_rotation=False,
+            include_open_wearables_readiness=False,
+        )
+        LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+    return jsonify({"next_workout": LAST_WORKOUT_RECOMMENDATION})
+
+
+@app.route('/gym-now')
+def gym_now():
+    """Emergency no-app-shell workout view for stale mobile/PWA caches."""
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
+    fingerprint = _workout_recommendation_fingerprint()
+    if (
+        not LAST_WORKOUT_RECOMMENDATION
+        or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint
+    ):
+        LAST_WORKOUT_RECOMMENDATION = generate_next_workout(
+            WORKOUTS,
+            SORENESS_DATA,
+            training_recommendation=_current_workout_training_recommendation(),
+            consume_cardio_rotation=False,
+            include_open_wearables_readiness=False,
+        )
+        LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+    workout = LAST_WORKOUT_RECOMMENDATION or {}
+    focus = html.escape(str(workout.get("focus") or workout.get("title") or "Workout"))
+    estimated = workout.get("estimated_minutes") or workout.get("estimated_duration") or workout.get("available_time")
+    rows = []
+    for idx, ex in enumerate(workout.get("exercises") or [], 1):
+        name = html.escape(str(ex.get("exercise") or ex.get("name") or ex.get("machine") or "Exercise"))
+        muscle = html.escape(str(ex.get("muscle") or ex.get("muscle_group") or "").upper())
+        sets = html.escape(str(ex.get("target_sets") or ex.get("sets") or "-"))
+        reps = html.escape(str(ex.get("target_reps") or ex.get("reps") or "-"))
+        weight = html.escape(str(ex.get("target_weight") or ex.get("target_weight_lbs") or "-"))
+        rpe = html.escape(str(ex.get("rpe_target") or ex.get("rpe") or "-"))
+        rows.append(
+            f"<li><strong>{idx}. {name}</strong><span>{muscle}</span>"
+            f"<div>{sets} x {reps} @ {weight} lb · RPE {rpe}</div></li>"
+        )
+    body = "\n".join(rows) or "<li>No workout generated. Try refreshing.</li>"
+    page = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <title>Gym Now</title>
+  <style>
+    body {{ margin:0; background:#050815; color:#f8fafc; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }}
+    main {{ max-width:680px; margin:0 auto; padding:22px 18px 40px; }}
+    h1 {{ font-size:30px; margin:10px 0 2px; letter-spacing:0; }}
+    .meta {{ color:#a7b0c4; margin-bottom:18px; }}
+    ol {{ list-style:none; padding:0; margin:0; display:grid; gap:10px; }}
+    li {{ background:#111827; border:1px solid #263148; border-radius:8px; padding:14px; }}
+    strong {{ display:block; font-size:18px; margin-bottom:4px; }}
+    span {{ display:inline-block; color:#93c5fd; font-size:12px; letter-spacing:.08em; margin-bottom:8px; }}
+    div {{ color:#dbeafe; font-size:16px; }}
+    a {{ color:#93c5fd; }}
+  </style>
+</head>
+<body>
+  <main>
+    <a href="/?v=fit181-force-live">Back to app</a>
+    <h1>{focus}</h1>
+    <div class="meta">{html.escape(str(estimated or ''))} min · live server-rendered workout</div>
+    <ol>{body}</ol>
+  </main>
+</body>
+</html>"""
+    return Response(page, mimetype="text/html", headers={"Cache-Control": "no-store"})
 
 
 @app.route('/api/dashboard')
@@ -4414,8 +4716,9 @@ def api_dashboard():
         training_recommendation=dashboard_training_recommendation,
         consume_cardio_rotation=False,
     )
-    global LAST_WORKOUT_RECOMMENDATION
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     LAST_WORKOUT_RECOMMENDATION = next_workout
+    LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
     food_log_entries = _food_log_entries_for_context(since=today_s)
     nutrition_context = _nutrition_context_for_date(
         today_s,
@@ -4656,6 +4959,7 @@ def add_workout():
 
     Prefer /api/complete-workout for the primary flow.
     """
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -4691,6 +4995,7 @@ def add_workout():
 
     WORKOUTS.append(entry)
     save_json(WORKOUTS_FILE, WORKOUTS)
+    LAST_WORKOUT_RECOMMENDATION = None
     _notify_workout_logged(entry)
     return jsonify({"status": "success", "workout": entry})
 
@@ -4698,6 +5003,7 @@ def add_workout():
 @app.route('/api/add-soreness', methods=['POST'])
 def add_soreness():
     """Add soreness data."""
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -4723,6 +5029,7 @@ def add_soreness():
 
     SORENESS_DATA.append(entry)
     save_json(SORENESS_FILE, SORENESS_DATA)  # Persist to file
+    LAST_WORKOUT_RECOMMENDATION = None
     return jsonify({"status": "success", "soreness": entry})
 
 
@@ -7530,6 +7837,7 @@ def ack_food_log_refresh_event(event_id: str):
 @app.route('/api/add-cardio', methods=['POST'])
 def add_cardio():
     """Add cardio session data."""
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -7562,12 +7870,14 @@ def add_cardio():
 
     CARDIO_DATA.append(entry)
     save_json(CARDIO_FILE, CARDIO_DATA)  # Persist to file
+    LAST_WORKOUT_RECOMMENDATION = None
     return jsonify({"status": "success", "cardio": entry})
 
 
 @app.route('/api/add-recovery', methods=['POST'])
 def add_recovery():
     """Add recovery session data (sauna, cold plunge, etc)."""
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -7596,6 +7906,7 @@ def add_recovery():
 
     RECOVERY_DATA.append(entry)
     save_json(RECOVERY_FILE, RECOVERY_DATA)  # Persist to file
+    LAST_WORKOUT_RECOMMENDATION = None
     return jsonify({"status": "success", "recovery": entry})
 
 
@@ -7753,6 +8064,7 @@ def protocols():
 @app.route('/api/settings', methods=['GET', 'POST'])
 def settings():
     """Get or update user settings including training goal and available time."""
+    global LAST_WORKOUT_RECOMMENDATION
     if request.method == 'GET':
         goal = USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
         goal_params = GOAL_PARAMETERS.get(goal, {})
@@ -7873,11 +8185,13 @@ def settings():
             USER_SETTINGS["excluded_exercises"] = normalized
 
         save_json(SETTINGS_FILE, USER_SETTINGS)  # Persist to file
+        LAST_WORKOUT_RECOMMENDATION = None
         return jsonify({"status": "success", "settings": USER_SETTINGS})
 
 
 @app.route('/api/settings/equipment', methods=['PUT'])
 def settings_equipment():
+    global LAST_WORKOUT_RECOMMENDATION
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -7890,6 +8204,7 @@ def settings_equipment():
 
     USER_SETTINGS["equipment_preference"] = pref
     save_json(SETTINGS_FILE, USER_SETTINGS)
+    LAST_WORKOUT_RECOMMENDATION = None
     return jsonify({"status": "success", "equipment_preference": pref})
 
 
@@ -7936,7 +8251,7 @@ def exercise_alternatives(muscle_group):
 
 @app.route('/api/workout/swap', methods=['POST'])
 def swap_workout_exercise():
-    global LAST_WORKOUT_RECOMMENDATION
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -8018,6 +8333,7 @@ def swap_workout_exercise():
     recommendation["exercises"] = exercises
     if recommendation is LAST_WORKOUT_RECOMMENDATION:
         LAST_WORKOUT_RECOMMENDATION = recommendation
+        LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
 
     return jsonify({"status": "success", "recommendation": recommendation})
 
@@ -8452,7 +8768,7 @@ def adjust_workout():
     the deterministic plan unchanged with status='fallback' so the UI can show
     a "AI coach unavailable" chip without breaking.
     """
-    global LAST_WORKOUT_RECOMMENDATION
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
 
     data, err = get_json_body(required=True)
     if err:
@@ -8466,6 +8782,7 @@ def adjust_workout():
     if not recommendation:
         recommendation = generate_next_workout(WORKOUTS, SORENESS_DATA)
         LAST_WORKOUT_RECOMMENDATION = recommendation
+        LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
 
     goal = recommendation.get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
     goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
@@ -8529,6 +8846,7 @@ def adjust_workout():
             # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
             if cached.get("recommendation"):
                 LAST_WORKOUT_RECOMMENDATION = cached["recommendation"]
+                LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
             return jsonify(cached)
 
     if route_candidate is None:
@@ -8681,6 +8999,7 @@ def adjust_workout():
     )
     _ai_cache_put(cache_write_key, payload)
     LAST_WORKOUT_RECOMMENDATION = patched
+    LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
     _ai_metric_log(
         "ok",
         latency_ms=raw_meta.get("elapsed_ms", 0),
@@ -9066,8 +9385,45 @@ def analyze_workout():
     return jsonify(payload)
 
 
+APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"
+APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload-r2"
+APP_SHELL_RELOAD_COOKIE_MAX_AGE_S = 365 * 24 * 60 * 60
+
+
+def _shell_reload_required_response():
+    response = jsonify({"error": "reload_required", "reload": True})
+    response.status_code = 401
+    response.headers["Cache-Control"] = "no-store"
+    response.set_cookie(
+        APP_SHELL_RELOAD_COOKIE,
+        APP_SHELL_RELOAD_VERSION,
+        max_age=APP_SHELL_RELOAD_COOKIE_MAX_AGE_S,
+        httponly=True,
+        secure=request.is_secure,
+        samesite="Lax",
+        path="/",
+    )
+    return response
+
+
+def _is_browser_app_shell_request():
+    user_agent = request.headers.get("User-Agent", "")
+    if "Mozilla/" in user_agent:
+        return True
+    return any(
+        request.headers.get(header)
+        for header in ("Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site")
+    )
+
+
 @app.route('/api/ai/health')
 def ai_health():
+    if (
+        request.cookies.get("session")
+        and request.cookies.get(APP_SHELL_RELOAD_COOKIE) != APP_SHELL_RELOAD_VERSION
+        and _is_browser_app_shell_request()
+    ):
+        return _shell_reload_required_response()
     if not _lm_studio:
         return jsonify({"reachable": False, "error": "adapter not loaded"})
     return jsonify(_lm_studio.health())
@@ -9335,6 +9691,7 @@ def fetch_open_wearables_data():
         except Exception as e:
             result["errors"][key] = str(e)
             result[key] = None
+    _store_open_wearables_recommendation_marker(result)
     return result
 
 
@@ -9379,6 +9736,8 @@ def _extract_open_wearables_sleep_events(payload):
         for k in ("end_time", "endTime", "end", "timestamp", "created_at", "start_time", "startTime", "start", "date"):
             dt = _parse_iso_date_or_datetime(ev.get(k))
             if dt:
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone().replace(tzinfo=None)
                 return dt
         return None
 
@@ -9903,6 +10262,7 @@ def oura_trends():
 @app.route('/api/oura/sync-sleep', methods=['POST'])
 def sync_oura_sleep():
     """Sync latest sleep data from Oura API."""
+    global LAST_WORKOUT_RECOMMENDATION
     from oura_sleep_sync import create_sleep_table, sync_sleep_data, get_latest_sleep
 
     data, err = get_json_body(required=False)
@@ -9933,6 +10293,7 @@ def sync_oura_sleep():
         # Return a summary only; raw wearable rows stay server-side.
         latest = get_latest_sleep(OURA_DB_FILE, days=7)
         latest_days = [r.get("day") for r in latest if r.get("day")]
+        LAST_WORKOUT_RECOMMENDATION = None
 
         return jsonify({
             "status": "success",

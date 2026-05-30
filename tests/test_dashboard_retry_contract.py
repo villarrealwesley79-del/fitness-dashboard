@@ -1,3 +1,5 @@
+import importlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -100,6 +102,209 @@ def test_fetchers_no_longer_write_error_sentinels():
             f"(renderVitals/renderNextWorkout/renderSettings) rely on the "
             f"swallow-on-failure contract"
         )
+
+
+def test_next_workout_render_does_not_require_auxiliary_recommendation_calls():
+    """FIT-181: the workout execution tab must still render the dashboard
+    plan when helper calls that only supply copy/chip context fail."""
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+    marker = "async function renderNextWorkout()"
+    body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
+
+    assert "nw = await getNextWorkout(true);" in body, (
+        "renderNextWorkout must load the lightweight workout-only contract "
+        "instead of the full dashboard payload, and must let the server "
+        "fingerprint invalidate stale plans"
+    )
+    assert "catch (err)" in body and "state.nextWorkout || (state.dashboard && state.dashboard.next_workout)" in body, (
+        "renderNextWorkout must fall back to the last hydrated workout plan "
+        "when the lightweight endpoint has a transient failure"
+    )
+    assert "getReco().then(" in body and ".catch(() => {})" in body, (
+        "renderNextWorkout must update /api/recommendation/smart reasoning "
+        "asynchronously so the Workout tab still renders during a reco "
+        "retry-chip state"
+    )
+    assert "getSettings().then(" in body and "settings unavailable for next workout render" in body, (
+        "renderNextWorkout must update /api/settings RPE context asynchronously; "
+        "settings only decorate the RPE chip"
+    )
+    assert "renderRpe(null);" in body, "renderNextWorkout must paint fallback RPE immediately"
+    assert "renderWhy(null);" in body, "renderNextWorkout must paint fallback reasoning immediately"
+    assert "gen !== nextWorkoutRenderGen" in body, (
+        "late optional helper responses must not overwrite a newer Workout tab render"
+    )
+    assert "Promise.all([getDashboard(), getReco(), getSettings()])" not in body, (
+        "renderNextWorkout must not let optional helper failures abort the "
+        "dashboard next_workout render"
+    )
+    assert "await getDashboard()" not in body, (
+        "renderNextWorkout must not wait on the heavy /api/dashboard endpoint"
+    )
+
+
+def test_start_workout_falls_back_to_cached_dashboard_plan_on_fetch_failure():
+    """FIT-181: Start Workout should use the already-rendered dashboard plan
+    if a fresh dashboard fetch fails while the user is trying to enter the
+    active workout flow."""
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+    marker = "async function startWorkout()"
+    body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
+
+    assert "try {" in body and "nw = await getNextWorkout(true);" in body
+    assert "catch (err)" in body, "startWorkout must handle next-workout fetch failures"
+    assert "state.nextWorkout || (state.dashboard && state.dashboard.next_workout)" in body, (
+        "startWorkout must fall back to cached workout plans before "
+        "showing No workout planned"
+    )
+
+
+def test_next_workout_endpoint_and_asset_bust_are_wired():
+    """FIT-181 urgent follow-up: gym execution must not wait on the heavy
+    dashboard endpoint, and phones must receive the new client bundle."""
+    app_py = (ROOT / "app.py").read_text()
+    auth_py = (ROOT / "auth.py").read_text()
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+    template = (ROOT / "templates" / "index.html").read_text()
+    sw = (ROOT / "static" / "js" / "sw.js").read_text()
+
+    assert "@app.route('/api/next-workout')" in app_py
+    assert "def _current_workout_training_recommendation():" in app_py
+    assert "def _workout_recommendation_fingerprint():" in app_py
+    assert "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint" in app_py
+    assert "\"day\": today_s" in app_py
+    assert "\"oura\": {" in app_py
+    assert "get_oura_daily_range(OURA_DB_FILE" in app_py
+    assert "\"weather\": {" in app_py
+    assert "\"open_wearables\": {" in app_py
+    assert "_open_wearables_workout_inputs_live()" in app_py
+    assert '"configured": _open_wearables_workout_inputs_live()' in app_py
+    assert "def _open_wearables_recommendation_marker(refresh=False):" in app_py
+    assert '"marker": _open_wearables_recommendation_marker()' in app_py
+    assert "include_open_wearables_readiness=False" in app_py
+    assert "_open_wearables_workout_inputs_live()\n        or not LAST_WORKOUT_RECOMMENDATION" not in app_py
+    assert "\"apple_health\": {" in app_py
+    assert "file_marker(_apple_health_sync_db_file())" in app_py
+    assert "healthkit_samples_workout_*.json" in app_py
+    assert "training_recommendation=_current_workout_training_recommendation()" in app_py
+    assert "api('/api/next-workout', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS })" in app_js
+    assert "app.js?v=20260530-fit192-a11y" in template
+    assert "fitness-dashboard-v20260530-fit192-a11y" in sw
+    assert "const STATIC_ASSETS" not in sw
+    assert "cache.addAll" not in sw
+    assert "caches.keys()" in sw
+    assert "keys.map(key => caches.delete(key))" in sw
+    assert "client.navigate(client.url)" not in sw
+    assert "navigator.serviceWorker.addEventListener('controllerchange'" in app_js
+    assert "if (activeWorkoutHasProgress())" in app_js
+    assert "Update ready after workout. Refresh when finished." in app_js
+    assert "window.location.reload()" in app_js
+    assert "body.error === 'reload_required'" in app_js
+    assert "throw new Error('reload required after workout')" in app_js
+    assert "reg.waiting.postMessage({ type: 'SKIP_WAITING' })" in app_js
+    assert 'APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"' in app_py
+    assert 'APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload-r2"' in app_py
+    assert "APP_SHELL_RELOAD_COOKIE_MAX_AGE_S = 365 * 24 * 60 * 60" in app_py
+    assert '"reload_required"' in app_py
+    assert "response.status_code = 401" in app_py
+    assert "response.set_cookie(" in app_py
+    assert 'request.cookies.get("session")' in app_py
+    assert "current_user.is_authenticated" in auth_py
+    assert 'request.args.get("next")' in auth_py
+    assert 'next_page.startswith("//")' in auth_py
+    assert 'fd_shell_reload=20260525-fit181-controller-reload-r2' in auth_py
+    assert "@app.route('/gym-now')" in app_py
+    assert "Cache-Control\": \"no-store\"" in app_py
+    assert "\"Cache-Control\": \"no-store, max-age=0\"" in app_py
+    assert "event.request.mode === 'navigate'" in sw
+    assert "url.pathname.endsWith('.js')" in sw
+
+
+def test_next_workout_endpoint_does_not_fetch_open_wearables(monkeypatch):
+    """FIT-181 review: the gym execution endpoint must stay fast even when
+    Open Wearables is configured but unavailable."""
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(
+        module,
+        "fetch_open_wearables_data",
+        lambda: (_ for _ in ()).throw(AssertionError("Open Wearables fetch should not run")),
+    )
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "test-user")
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT", None)
+    monkeypatch.setattr(module, "OPEN_WEARABLES_WORKOUT_MARKER_CACHE", None)
+
+    response = module.app.test_client().get("/api/next-workout")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["next_workout"]["exercises"]
+
+
+def test_open_wearables_marker_tolerates_timezone_sleep_events():
+    """FIT-181 review: marker caching must not break successful OW fetches
+    when the bridge returns timezone-aware sleep timestamps."""
+    module = importlib.import_module("app")
+    payload = {
+        "sleep": {
+            "events": [
+                {
+                    "end_time": datetime.now(timezone.utc).isoformat(),
+                    "duration_min": 480,
+                    "avg_hr": 60,
+                }
+            ]
+        },
+        "workouts": {"events": []},
+        "activity_summary": {"summaries": []},
+    }
+
+    marker = module._store_open_wearables_recommendation_marker(payload)
+
+    assert marker["sleep"]["duration_min"] == 480
+    assert marker["sleep"]["recent"] is True
+
+
+def test_next_workout_caches_clear_after_plan_inputs_change():
+    """FIT-181: the fast workout path must not keep serving stale plans
+    after settings, equipment, swap, or adjust flows mutate the canonical
+    recommendation."""
+    app_py = (ROOT / "app.py").read_text()
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+
+    settings_body = app_py.split("def settings():", 1)[1].split("@app.route('/api/settings/equipment'", 1)[0]
+    equipment_body = app_py.split("def settings_equipment():", 1)[1].split("@app.route('/api/personal-vocab'", 1)[0]
+    assert "global LAST_WORKOUT_RECOMMENDATION" in settings_body
+    assert "LAST_WORKOUT_RECOMMENDATION = None" in settings_body
+    assert "global LAST_WORKOUT_RECOMMENDATION" in equipment_body
+    assert "LAST_WORKOUT_RECOMMENDATION = None" in equipment_body
+
+    assert "state.settings = null; state.dashboard = null; state.nextWorkout = null;" in app_js
+    assert (
+        "state.dashboard = null;\n"
+        "            state.nextWorkout = null;\n"
+        "            state.reco = null;"
+    ) in app_js
+    assert (
+        "state.dashboard.next_workout = resp.recommendation;\n"
+        "            state.nextWorkout = resp.recommendation;"
+    ) in app_js
+    assert (
+        "state.dashboard.next_workout = payload.recommendation;\n"
+        "            state.nextWorkout = payload.recommendation;"
+    ) in app_js
+    for marker in [
+        "def add_workout():",
+        "def add_soreness():",
+        "def add_cardio():",
+        "def add_recovery():",
+        "def sync_oura_sleep():",
+    ]:
+        body = app_py.split(marker, 1)[1].split("\n\n@app.route", 1)[0]
+        assert "global LAST_WORKOUT_RECOMMENDATION" in body
+        assert "LAST_WORKOUT_RECOMMENDATION = None" in body
 
 
 def test_render_dashboard_resets_error_sentinels_and_maps_dashboard_to_reco():
