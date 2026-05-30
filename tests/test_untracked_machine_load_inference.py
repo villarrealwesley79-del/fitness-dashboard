@@ -66,6 +66,16 @@ def _recommendation(module):
     }
 
 
+def _chest_recommendation(module):
+    recommendation = copy.deepcopy(_recommendation(module))
+    recommendation["exercises"][0].update({
+        "exercise": "Chest Press",
+        "muscle": "chest",
+        "target_weight": 100,
+    })
+    return recommendation
+
+
 def test_swap_to_no_history_machine_infers_from_similar_history(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(
@@ -276,6 +286,85 @@ def test_ai_adjust_can_request_named_untracked_machine_and_get_inferred_load(mon
     assert exercise["load_source"] == "similar_history"
     assert exercise["load_inference"]["source_exercise"] == "Lateral Raise"
     assert any("Shoulder Press" in note and "Machine Deltoid Raise" in note for note in notes)
+
+
+def test_ai_adjust_rejects_unknown_dragon_press_target(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = _recommendation(module)
+    intent = {
+        "avoid_muscles": [],
+        "avoid_joints": [],
+        "swap": [
+            {
+                "replace_exercise": "Shoulder Press",
+                "target_muscle": "chest",
+                "target_exercise": "Dragon Press",
+                "reason": "user typed an unknown exercise",
+            }
+        ],
+        "rpe_delta": 0,
+        "sets_delta_pct": 0,
+        "duration_cap_min": 0,
+        "drop_cardio": False,
+    }
+
+    patched, notes = module._apply_intent_patch(
+        recommendation,
+        intent,
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_only",
+    )
+
+    assert patched["exercises"][0]["exercise"] == "Shoulder Press"
+    assert patched["exercises"][0]["exercise"] != "Chest Press"
+    assert any("unknown target exercise 'Dragon Press'" in note for note in notes)
+
+
+def test_swap_endpoint_rejects_single_generic_press_token(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+
+    response = module.app.test_client().post(
+        "/api/workout/swap",
+        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "press"},
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["error"] == {"code": "not_found", "message": "Unknown exercise name"}
+
+
+def test_swap_endpoint_allows_distinctive_single_token_incline(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+
+    response = module.app.test_client().post(
+        "/api/workout/swap",
+        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "incline"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["recommendation"]["exercises"][0]["exercise"] == "Incline Press"
+
+
+def test_swap_endpoint_allows_singular_one_word_plural_dip(monkeypatch):
+    module = _module(monkeypatch)
+    module.USER_SETTINGS["equipment_preference"] = "all"
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+
+    response = module.app.test_client().post(
+        "/api/workout/swap",
+        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "dip"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["recommendation"]["exercises"][0]["exercise"] == "Dips"
 
 
 def test_adjust_intent_schema_accepts_optional_target_exercise():

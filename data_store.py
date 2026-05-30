@@ -15,8 +15,9 @@ import json
 import os
 import sqlite3
 import hashlib
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Optional
+from typing import Iterator, Optional
 import uuid
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -35,12 +36,20 @@ _REFRESH_EVENT_FIELDS = (
 )
 
 
-def _get_db() -> sqlite3.Connection:
-    """Return a connection with row_factory set to sqlite3.Row."""
+@contextmanager
+def _get_db() -> Iterator[sqlite3.Connection]:
+    """Yield a SQLite connection and always close it after the operation."""
     conn = sqlite3.connect(DATA_DB)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _row_to_dict(row) -> dict:

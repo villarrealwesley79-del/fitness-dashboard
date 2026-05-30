@@ -8,6 +8,7 @@ from flask import Flask, render_template, jsonify, request, Response
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 from enum import Enum
+from contextlib import closing
 import copy
 import json
 import logging
@@ -2760,12 +2761,22 @@ def _swap_match_tokens(name):
     tokens = set()
     for token in _exercise_name_tokens(name):
         tokens.add(token)
-        if len(token) > 3 and token.endswith("s"):
+        if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
             tokens.add(token[:-1])
     return tokens
 
 
+_AMBIGUOUS_SWAP_TOKENS = {"press", "row", "curl"}
+
+
+def _is_ambiguous_single_swap_token(typed_name):
+    typed_base_tokens = _exercise_name_tokens(typed_name)
+    return len(typed_base_tokens) == 1 and bool(_swap_match_tokens(typed_name).intersection(_AMBIGUOUS_SWAP_TOKENS))
+
+
 def _deterministic_swap_candidate(typed_name, candidates):
+    if _is_ambiguous_single_swap_token(typed_name):
+        return None
     typed_tokens = _swap_match_tokens(typed_name)
     if not typed_tokens:
         return None
@@ -2811,6 +2822,8 @@ def _resolve_custom_swap_exercise(typed_name, old_ex, equipment_pref):
     deterministic = _deterministic_swap_candidate(typed_name, candidates)
     if deterministic:
         return deterministic
+    if _is_ambiguous_single_swap_token(typed_name):
+        return None
 
     if not _lm_studio or not hasattr(_lm_studio, "resolve_swap_candidate") or not candidates:
         return None
@@ -7653,20 +7666,19 @@ def _ai_metric_log(outcome, latency_ms=0, constraint_len=0, model_version="", re
     """Record one /api/workout/adjust call. Swallow errors — metrics must
     never break the user-visible path."""
     try:
-        conn = sqlite3.connect(_ADJUST_CACHE_DB)
-        conn.execute(
-            "INSERT INTO adjust_metrics (ts, outcome, latency_ms, constraint_len, model_version, reason) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                datetime.now().isoformat(timespec="seconds"),
-                outcome,
-                int(latency_ms or 0),
-                int(constraint_len or 0),
-                model_version or "",
-                (reason or "")[:200],
-            ),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
+            conn.execute(
+                "INSERT INTO adjust_metrics (ts, outcome, latency_ms, constraint_len, model_version, reason) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    datetime.now().isoformat(timespec="seconds"),
+                    outcome,
+                    int(latency_ms or 0),
+                    int(constraint_len or 0),
+                    model_version or "",
+                    (reason or "")[:200],
+                ),
+            )
+            conn.commit()
     except Exception as exc:
         print(f"WARN: ai_metric_log failed: {exc}")
 
@@ -7729,11 +7741,10 @@ def _ai_cache_key(recommendation, constraint, readiness_date, model_version, equ
 
 def _ai_cache_get(key):
     try:
-        conn = sqlite3.connect(_ADJUST_CACHE_DB)
-        row = conn.execute(
-            "SELECT response_json FROM adjust_cache WHERE cache_key = ?", (key,)
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
+            row = conn.execute(
+                "SELECT response_json FROM adjust_cache WHERE cache_key = ?", (key,)
+            ).fetchone()
         return json.loads(row[0]) if row else None
     except Exception:
         return None
@@ -7741,13 +7752,12 @@ def _ai_cache_get(key):
 
 def _ai_cache_put(key, payload):
     try:
-        conn = sqlite3.connect(_ADJUST_CACHE_DB)
-        conn.execute(
-            "INSERT OR REPLACE INTO adjust_cache (cache_key, created_at, response_json) VALUES (?, ?, ?)",
-            (key, datetime.now().isoformat(), json.dumps(payload)),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO adjust_cache (cache_key, created_at, response_json) VALUES (?, ?, ?)",
+                (key, datetime.now().isoformat(), json.dumps(payload)),
+            )
+            conn.commit()
     except Exception as exc:
         print(f"WARN: adjust_cache write failed: {exc}")
 
@@ -7892,7 +7902,11 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
             continue
 
-        requested_exercise = _resolve_exercise_definition(sw.get("target_exercise"))
+        target_exercise_name = (sw.get("target_exercise") or "").strip()
+        requested_exercise = _resolve_exercise_definition(target_exercise_name)
+        if target_exercise_name and not requested_exercise:
+            notes.append(f"Ignored: unknown target exercise '{target_exercise_name}'")
+            continue
 
         # Pick a new exercise for target_muscle from the equipment-filtered library,
         # preferring compound movements and rotating off recently-trained exercises.
@@ -8591,16 +8605,15 @@ def ai_metrics():
 
     cutoff = (datetime.now() - timedelta(hours=hours)).isoformat(timespec="seconds")
     try:
-        conn = sqlite3.connect(_ADJUST_CACHE_DB)
-        rows = conn.execute(
-            "SELECT outcome, COUNT(*), COALESCE(AVG(NULLIF(latency_ms,0)),0) FROM adjust_metrics WHERE ts >= ? GROUP BY outcome",
-            (cutoff,),
-        ).fetchall()
-        last5 = conn.execute(
-            "SELECT ts, outcome, latency_ms, reason FROM adjust_metrics WHERE ts >= ? ORDER BY id DESC LIMIT 5",
-            (cutoff,),
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
+            rows = conn.execute(
+                "SELECT outcome, COUNT(*), COALESCE(AVG(NULLIF(latency_ms,0)),0) FROM adjust_metrics WHERE ts >= ? GROUP BY outcome",
+                (cutoff,),
+            ).fetchall()
+            last5 = conn.execute(
+                "SELECT ts, outcome, latency_ms, reason FROM adjust_metrics WHERE ts >= ? ORDER BY id DESC LIMIT 5",
+                (cutoff,),
+            ).fetchall()
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -11619,28 +11632,27 @@ def sleep_analytics():
     rows = []
     try:
         import sqlite3 as _sq
-        _db = _sq.connect(os.path.join(DATA_DIR, 'oura_daily.sqlite3'))
-        _db.row_factory = _sq.Row
-        _cur = _db.execute("SELECT * FROM oura_sleep WHERE type='long_sleep' ORDER BY day")
-        for r in _cur.fetchall():
-            rows.append({
-                'date': r['day'],
-                'sleep_start': r['bedtime_start'],
-                'sleep_end': r['bedtime_end'],
-                'sleep_duration_min': r['total_sleep_min'],
-                'deep_sleep_min': r['deep_sleep_min'],
-                'rem_sleep_min': r['rem_sleep_min'],
-                'light_sleep_min': r['light_sleep_min'],
-                'awake_min': r['awake_time_min'],
-                'sleep_score': r['sleep_score'],
-                'efficiency': r['efficiency'],
-                'avg_heart_rate': r['avg_heart_rate'],
-                'avg_hrv': r['avg_hrv'],
-                'source': 'oura',
-            })
-        _db.close()
+        with closing(_sq.connect(os.path.join(DATA_DIR, 'oura_daily.sqlite3'))) as _db:
+            _db.row_factory = _sq.Row
+            _cur = _db.execute("SELECT * FROM oura_sleep WHERE type='long_sleep' ORDER BY day")
+            for r in _cur.fetchall():
+                rows.append({
+                    'date': r['day'],
+                    'sleep_start': r['bedtime_start'],
+                    'sleep_end': r['bedtime_end'],
+                    'sleep_duration_min': r['total_sleep_min'],
+                    'deep_sleep_min': r['deep_sleep_min'],
+                    'rem_sleep_min': r['rem_sleep_min'],
+                    'light_sleep_min': r['light_sleep_min'],
+                    'awake_min': r['awake_time_min'],
+                    'sleep_score': r['sleep_score'],
+                    'efficiency': r['efficiency'],
+                    'avg_heart_rate': r['avg_heart_rate'],
+                    'avg_hrv': r['avg_hrv'],
+                    'source': 'oura',
+                })
     except Exception:
-        pass
+        app.logger.warning("Oura sleep analytics SQLite read failed", exc_info=True)
     # Fall back to manual SLEEP_DATA if no Oura data
     if not rows:
         rows = sorted(SLEEP_DATA, key=lambda x: x.get('date'))

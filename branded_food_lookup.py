@@ -17,6 +17,7 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 CACHE_TTL_DAYS = 180
 SOURCE_PRIORITY = ("cache", "heb_product_page", "nutritionix", "usda_fdc", "open_food_facts")
+KJ_PER_KCAL = 4.184
 MULTI_ITEM_HARD_TOKENS = {"with", "plus", "&", "+", "combo", "meal", "plate"}
 MULTI_ITEM_SOFT_TOKENS = {"and"}
 MULTI_ITEM_TOKENS = MULTI_ITEM_HARD_TOKENS | MULTI_ITEM_SOFT_TOKENS
@@ -428,7 +429,8 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     if not foods:
         return None
     food = foods[0]
-    nutrients = {n.get("nutrientName"): n.get("value") for n in food.get("foodNutrients", []) if isinstance(n, dict)}
+    food_nutrients = [n for n in food.get("foodNutrients", []) if isinstance(n, dict)]
+    nutrients = {n.get("nutrientName"): n.get("value") for n in food_nutrients}
     fdc_id = food.get("fdcId")
     requested_brand = _brand_from_text(normalized)
     source_brand = _matching_usda_source_brand(food, requested_brand)
@@ -444,9 +446,7 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     if _requested_item_mismatch(normalized, [food]):
         ambiguous = True
         notes.append("USDA FDC returned a different item category; review before logging.")
-    calories = nutrients.get("Energy")
-    if calories is None:
-        calories = nutrients.get("Energy (Atwater General Factors)")
+    calories = _usda_energy_kcal(food_nutrients)
     estimate = {
         "item_name": food.get("description") or "Food",
         "portion_description": "100 g",
@@ -469,6 +469,34 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
         "source_brand_name": source_brand,
     }
     return _sanitize_with_provenance(estimate)
+
+
+def _usda_energy_kcal(food_nutrients: list[dict[str, Any]]) -> Any:
+    energy_rows = [
+        nutrient
+        for nutrient in food_nutrients
+        if nutrient.get("nutrientName") in {"Energy", "Energy (Atwater General Factors)"}
+    ]
+    for nutrient in energy_rows:
+        unit = str(nutrient.get("unitName") or "").strip().upper()
+        if unit == "KCAL":
+            return nutrient.get("value")
+    for nutrient in energy_rows:
+        unit = str(nutrient.get("unitName") or "").strip().upper()
+        if unit == "KJ":
+            value = _float_or_none(nutrient.get("value"))
+            return value / KJ_PER_KCAL if value is not None else None
+    for nutrient in energy_rows:
+        if not str(nutrient.get("unitName") or "").strip():
+            return nutrient.get("value")
+    return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
