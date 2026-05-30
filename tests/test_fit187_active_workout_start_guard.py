@@ -1,0 +1,236 @@
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+APP_JS = (ROOT / "static" / "js" / "app.js").read_text()
+
+
+def test_start_workout_confirms_before_discarding_logged_active_sets():
+    if not shutil.which("node"):
+        pytest.skip("FIT-187 runtime regression requires node to execute app.js")
+
+    outputs = _run_start_guard_fixture()
+
+    cancel = outputs["cancelStart"]
+    assert cancel["confirmCalls"] == [
+        "You have an in-progress workout. Discard logged sets and restart?"
+    ]
+    assert cancel["activeName"] == "Chest Press"
+    assert cancel["keptNotes"] == "keep me"
+    assert cancel["renderCount"] == 0
+
+    confirm = outputs["confirmStart"]
+    assert confirm["confirmCalls"] == [
+        "You have an in-progress workout. Discard logged sets and restart?"
+    ]
+    assert confirm["activeName"] == "Incline Press"
+    assert confirm["dirty"] is False
+    assert confirm["oldNotesPresent"] is False
+    assert confirm["renderCount"] == 1
+
+    no_progress = outputs["noProgressStart"]
+    assert no_progress["confirmCalls"] == []
+    assert no_progress["activeName"] == "Incline Press"
+    assert no_progress["renderCount"] == 1
+
+    adjusted_cancel = outputs["cancelAdjustedStart"]
+    assert adjusted_cancel["confirmCalls"] == [
+        "You have an in-progress workout. Discard logged sets and restart?"
+    ]
+    assert adjusted_cancel["activeName"] == "Chest Press"
+    assert adjusted_cancel["keptNotes"] == "keep me"
+    assert adjusted_cancel["adjustModalHidden"] is False
+    assert adjusted_cancel["renderCount"] == 0
+
+    adjusted_confirm = outputs["confirmAdjustedStart"]
+    assert adjusted_confirm["activeName"] == "Hack Squat"
+    assert adjusted_confirm["dirty"] is False
+    assert adjusted_confirm["adjustModalHidden"] is True
+    assert adjusted_confirm["renderCount"] == 1
+
+
+def _run_start_guard_fixture() -> dict:
+    helper_source = "function setActiveWorkoutFromRecommendation" + _slice_between(
+        APP_JS,
+        "function setActiveWorkoutFromRecommendation",
+        "const SYNC_QUEUE_KEY",
+    )
+    node_script = f"""
+const vm = require('node:vm');
+const helperSource = {json.dumps(helper_source)};
+const sandbox = {{ module: {{ exports: {{}} }} }};
+vm.runInNewContext(`
+const state = {{
+  activeWorkout: null,
+  adjustedWorkout: null,
+  dashboard: null,
+}};
+const elements = {{
+  'modal-adjust': {{ hidden: false }},
+  'active-workout-body': null,
+}};
+let confirmCalls = [];
+let confirmResponses = [];
+let renderCount = 0;
+let dashboardNext = null;
+const window = {{
+  confirm(message) {{
+    confirmCalls.push(message);
+    return confirmResponses.length ? confirmResponses.shift() : true;
+  }},
+}};
+const $ = (id) => elements[id] || null;
+const qs = () => ({{ value: '', checked: false }});
+const qsa = () => [];
+const toast = () => {{}};
+const getDashboard = async () => ({{ next_workout: dashboardNext }});
+const newWorkoutId = (id) => 'new-' + (id || 'generated');
+const exerciseName = (ex) => ex.exercise || ex.name || ex.machine || '';
+const buildActiveExercise = (ex) => ({{
+  ...ex,
+  logged_sets: [{{ weight: ex.target_weight || '', reps: ex.target_reps || '', done: false, notes: '' }}],
+}});
+${{helperSource}}
+renderActiveWorkout = () => {{ renderCount += 1; }};
+function activeWithProgress() {{
+  return {{
+    id: 'existing-workout',
+    recommendation_id: 'old-rec',
+    focus: 'Old',
+    dirty: true,
+    exercises: [{{
+      exercise: 'Chest Press',
+      logged_sets: [{{ weight: '100', reps: '10', done: true, notes: 'keep me' }}],
+    }}],
+    cardio: {{ completed: true, activity_type: 'Bike', duration_minutes: '10', notes: 'old cardio' }},
+  }};
+}}
+function plannedWorkout(name, id) {{
+  return {{
+    id,
+    workout_id: id + '-workout',
+    focus: 'Next',
+    exercises: [{{
+      exercise: name,
+      target_sets: 1,
+      target_reps: 8,
+      target_weight: 50,
+    }}],
+  }};
+}}
+function resetHarness() {{
+  confirmCalls = [];
+  confirmResponses = [];
+  renderCount = 0;
+  elements['modal-adjust'].hidden = false;
+  dashboardNext = null;
+}}
+module.exports = {{
+  state,
+  elements,
+  startWorkout,
+  startAdjustedWorkout,
+  activeWithProgress,
+  plannedWorkout,
+  resetHarness,
+  setConfirmResponses(values) {{ confirmResponses = values.slice(); }},
+  setDashboardNext(value) {{ dashboardNext = value; }},
+  confirmCalls() {{ return confirmCalls.slice(); }},
+  renderCount() {{ return renderCount; }},
+}};
+`, sandbox);
+const api = sandbox.module.exports;
+
+async function run() {{
+  const outputs = {{}};
+
+  api.resetHarness();
+  api.state.activeWorkout = api.activeWithProgress();
+  api.setDashboardNext(api.plannedWorkout('Incline Press', 'cancel-start'));
+  api.setConfirmResponses([false]);
+  await api.startWorkout();
+  outputs.cancelStart = {{
+    confirmCalls: api.confirmCalls(),
+    activeName: api.state.activeWorkout.exercises[0].exercise,
+    keptNotes: api.state.activeWorkout.exercises[0].logged_sets[0].notes,
+    renderCount: api.renderCount(),
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = api.activeWithProgress();
+  api.setDashboardNext(api.plannedWorkout('Incline Press', 'confirm-start'));
+  api.setConfirmResponses([true]);
+  await api.startWorkout();
+  outputs.confirmStart = {{
+    confirmCalls: api.confirmCalls(),
+    activeName: api.state.activeWorkout.exercises[0].exercise,
+    dirty: api.state.activeWorkout.dirty,
+    oldNotesPresent: JSON.stringify(api.state.activeWorkout).includes('keep me'),
+    renderCount: api.renderCount(),
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = null;
+  api.setDashboardNext(api.plannedWorkout('Incline Press', 'no-progress'));
+  api.setConfirmResponses([false]);
+  await api.startWorkout();
+  outputs.noProgressStart = {{
+    confirmCalls: api.confirmCalls(),
+    activeName: api.state.activeWorkout.exercises[0].exercise,
+    renderCount: api.renderCount(),
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = api.activeWithProgress();
+  api.state.adjustedWorkout = api.plannedWorkout('Hack Squat', 'cancel-adjusted');
+  api.setConfirmResponses([false]);
+  api.startAdjustedWorkout();
+  outputs.cancelAdjustedStart = {{
+    confirmCalls: api.confirmCalls(),
+    activeName: api.state.activeWorkout.exercises[0].exercise,
+    keptNotes: api.state.activeWorkout.exercises[0].logged_sets[0].notes,
+    adjustModalHidden: api.elements['modal-adjust'].hidden,
+    renderCount: api.renderCount(),
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = api.activeWithProgress();
+  api.state.adjustedWorkout = api.plannedWorkout('Hack Squat', 'confirm-adjusted');
+  api.setConfirmResponses([true]);
+  api.startAdjustedWorkout();
+  outputs.confirmAdjustedStart = {{
+    confirmCalls: api.confirmCalls(),
+    activeName: api.state.activeWorkout.exercises[0].exercise,
+    dirty: api.state.activeWorkout.dirty,
+    adjustModalHidden: api.elements['modal-adjust'].hidden,
+    renderCount: api.renderCount(),
+  }};
+
+  process.stdout.write(JSON.stringify(outputs));
+}}
+run().catch((err) => {{
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+}});
+"""
+    result = subprocess.run(
+        ["node", "-e", node_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _slice_between(source: str, start_marker: str, end_marker: str) -> str:
+    assert start_marker in source, f"{start_marker!r} missing from app.js"
+    assert end_marker in source, f"{end_marker!r} missing from app.js"
+    return source.split(start_marker, 1)[1].split(end_marker, 1)[0]

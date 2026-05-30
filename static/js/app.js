@@ -5366,7 +5366,8 @@
         const dash = await getDashboard();
         const nw = dash && dash.next_workout;
         if (!nw) { toast('No workout planned', 'err'); return; }
-        setActiveWorkoutFromRecommendation(nw);
+        if (!confirmDiscardActiveWorkoutForStart()) return;
+        startActiveWorkoutFromRecommendation(nw);
         renderActiveWorkout();
     }
 
@@ -5378,9 +5379,20 @@
     function startAdjustedWorkout() {
         const nw = state.adjustedWorkout || (state.dashboard && state.dashboard.next_workout);
         if (!nw) { toast('No adjusted workout available', 'err'); return; }
+        if (!confirmDiscardActiveWorkoutForStart()) return;
         if ($('modal-adjust')) $('modal-adjust').hidden = true;
-        setActiveWorkoutFromRecommendation(nw);
+        startActiveWorkoutFromRecommendation(nw);
         renderActiveWorkout();
+    }
+
+    function confirmDiscardActiveWorkoutForStart() {
+        if (!activeWorkoutHasProgress()) return true;
+        return window.confirm('You have an in-progress workout. Discard logged sets and restart?');
+    }
+
+    function startActiveWorkoutFromRecommendation(nw) {
+        state.activeWorkout = null;
+        setActiveWorkoutFromRecommendation(nw);
     }
 
     const SYNC_QUEUE_KEY = 'fit51:sync-queue:v1';
