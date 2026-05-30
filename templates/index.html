@@ -143,6 +143,10 @@
                                  combined context (validated client- and server-side). -->
                             <input type="file" id="meal-composer-image" accept="image/*" multiple hidden>
                         </label>
+                        <button type="button" class="meal-composer-scan" id="meal-composer-scan" title="Scan a packaged-food barcode">
+                            <span aria-hidden="true">Scan</span>
+                            <span class="visually-hidden">Scan a packaged-food barcode</span>
+                        </button>
                         <input
                             type="text"
                             class="meal-composer-input"
@@ -158,6 +162,26 @@
                     <!-- FIT-138: multi-photo thumb strip; each thumb has its own × remove. -->
                     <div class="meal-composer-thumbs" id="meal-composer-thumbs" hidden role="list" aria-label="Attached photos"></div>
                     <div class="meal-composer-retention" id="meal-composer-retention" hidden>Photos are discarded after extraction.</div>
+                    <div class="meal-composer-barcode" id="meal-composer-barcode" hidden>
+                        <div class="meal-composer-barcode-head">
+                            <span>Barcode lookup</span>
+                            <button type="button" class="meal-composer-barcode-close" id="meal-composer-barcode-close" aria-label="Close barcode lookup">Close</button>
+                        </div>
+                        <video class="meal-composer-barcode-video" id="meal-composer-barcode-video" playsinline muted hidden></video>
+                        <div class="meal-composer-barcode-manual" id="meal-composer-barcode-manual">
+                            <input
+                                type="text"
+                                id="meal-composer-barcode-input"
+                                inputmode="numeric"
+                                pattern="[0-9]*"
+                                maxlength="32"
+                                placeholder="Enter barcode"
+                                aria-label="Barcode number"
+                            >
+                            <button type="submit" class="btn btn-ghost" id="meal-composer-barcode-submit">Look up</button>
+                        </div>
+                        <div class="meal-composer-barcode-status" id="meal-composer-barcode-status" aria-live="polite"></div>
+                    </div>
                     <button type="button" class="meal-composer-retry" id="meal-composer-retry" hidden>Retry</button>
                     <div class="meal-composer-offline" id="meal-composer-offline" hidden aria-live="polite">You’re offline. Log is paused — tap <b>Save offline</b> to keep this meal on this device and sync it when you reconnect.</div>
                     <div class="meal-composer-error" id="meal-composer-error" hidden aria-live="polite"></div>
