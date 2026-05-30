@@ -87,6 +87,11 @@ def test_start_workout_confirms_before_discarding_logged_active_sets():
         "exerciseCount": 1,
         "onlyName": "Seated Row",
     }
+    assert outputs["completedCardioRemoval"] == {
+        "completed": True,
+        "notes": "done cardio",
+        "duration": "10",
+    }
 
     reduced = outputs["setReduction"]
     assert reduced["rowCount"] == 3
@@ -348,6 +353,39 @@ async function run() {{
   outputs.unstartedRemoval = {{
     exerciseCount: api.state.activeWorkout.exercises.length,
     onlyName: api.state.activeWorkout.exercises[0].exercise,
+  }};
+
+  api.resetHarness();
+  api.state.activeWorkout = {{
+    id: 'completed-cardio-existing',
+    dirty: true,
+    exercises: [{{
+      exercise: 'Seated Row',
+      target_sets: 1,
+      target_reps: 10,
+      target_weight: 80,
+      logged_sets: [{{ weight: '80', reps: '10', done: false, notes: '' }}],
+    }}],
+    cardio: {{
+      recommendation: {{ type: 'Bike', duration_minutes: 10 }},
+      completed: true,
+      activity_type: 'Bike',
+      duration_minutes: '10',
+      notes: 'done cardio',
+    }},
+  }};
+  api.applyAdjustedRecommendationToActiveWorkout({{
+    id: 'completed-cardio-rec',
+    workout_id: 'completed-cardio-workout',
+    focus: 'Adjusted',
+    exercises: [
+      {{ exercise: 'Seated Row', target_sets: 1, target_reps: 8, target_weight: 85 }},
+    ],
+  }}, api.state.activeWorkout.exercises);
+  outputs.completedCardioRemoval = {{
+    completed: api.state.activeWorkout.cardio.completed,
+    notes: api.state.activeWorkout.cardio.notes,
+    duration: api.state.activeWorkout.cardio.duration_minutes,
   }};
 
   api.resetHarness();

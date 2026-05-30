@@ -5211,7 +5211,7 @@
             recommendation_id: nw.id || existing.recommendation_id || null,
             focus: nw.focus || nw.goal_name || existing.focus || 'Workout',
             exercises,
-            cardio: buildActiveCardio(nw.cardio, existing.cardio),
+            cardio: mergeAdjustedActiveCardio(nw.cardio, existing.cardio),
             saveState: existing.saveState || null,
             dirty: opts.preserveDirty === false ? false : Boolean(existing.dirty),
         };
@@ -5219,6 +5219,29 @@
 
     function hasRecommendedCardio(cardio) {
         return Boolean(cardio && cardio.include_cardio !== false && (cardio.type || cardio.machine || Number(cardio.duration_minutes || 0) > 0));
+    }
+
+    function activeCardioHasLoggedWork(cardio) {
+        if (!cardio) return false;
+        if (cardio.completed || (cardio.notes != null && String(cardio.notes).trim())) return true;
+        const recommendation = cardio.recommendation || {};
+        const plannedActivity = recommendation.type || recommendation.machine || '';
+        const plannedDuration = numericInputValue(recommendation.duration_minutes);
+        const activity = cardio.activity_type != null ? String(cardio.activity_type) : '';
+        const duration = cardio.duration_minutes != null ? String(cardio.duration_minutes) : '';
+        if (plannedActivity && activity && activity !== plannedActivity) return true;
+        if (plannedDuration) {
+            if (duration && duration !== plannedDuration) return true;
+        } else if (duration) {
+            return true;
+        }
+        return false;
+    }
+
+    function mergeAdjustedActiveCardio(cardio, previous) {
+        const next = buildActiveCardio(cardio, previous);
+        if (next) return next;
+        return activeCardioHasLoggedWork(previous) ? previous : null;
     }
 
     function buildActiveCardio(cardio, previous) {
