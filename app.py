@@ -2880,6 +2880,8 @@ def _adjust_target_phrase(constraint):
     text = re.sub(r"\s+", " ", str(constraint or "").strip())
     if not text:
         return ""
+    if _adjust_phrase_has_negation(text):
+        return ""
     patterns = [
         r"(?:^|\b)replace(?:\s+.+?)?\s+with\s+(.+)$",
         r"(?:^|\b)swap(?:\s+.+?)?\s+(?:to|with|for)\s+(.+)$",
@@ -2889,10 +2891,33 @@ def _adjust_target_phrase(constraint):
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
-            return _clean_adjust_target_phrase(match.group(1))
-    if re.search(r"(?:^|\b)(?:do\s+not|don't|dont|no|avoid|remove|skip|without)\b", text, flags=re.IGNORECASE):
-        return ""
+            target = _clean_adjust_target_phrase(match.group(1))
+            return "" if _adjust_phrase_has_negation(target) else target
     return _clean_adjust_target_phrase(text)
+
+
+def _adjust_source_phrase(constraint):
+    text = re.sub(r"\s+", " ", str(constraint or "").strip())
+    if not text or _adjust_phrase_has_negation(text):
+        return ""
+    patterns = [
+        r"(?:^|\b)replace\s+(.+?)\s+with\s+.+$",
+        r"(?:^|\b)swap\s+(.+?)\s+(?:to|with|for)\s+.+$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            source = _clean_adjust_target_phrase(match.group(1))
+            return "" if _adjust_phrase_has_negation(source) else source
+    return ""
+
+
+def _adjust_phrase_has_negation(text):
+    return bool(re.search(
+        r"(?:^|\b)(?:do\s+not|don't|dont|not|no|avoid|remove|skip|without)\b",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    ))
 
 
 def _clean_adjust_target_phrase(phrase):
@@ -2978,9 +3003,25 @@ def _build_deterministic_adjust_swap(constraint, recommendation, equipment_pref)
         return None
 
     exercises = list((recommendation or {}).get("exercises") or [])
-    slot = _select_adjust_replacement_slot(exercises, target)
-    if not slot:
-        return None
+    source_phrase = _adjust_source_phrase(constraint)
+    if source_phrase:
+        wanted_source = _normalize_exercise_name(source_phrase)
+        source_idx = None
+        for idx, plan_ex in enumerate(exercises):
+            source_name = plan_ex.get("exercise") or plan_ex.get("machine") or plan_ex.get("name") or ""
+            source_norm = _normalize_exercise_name(source_name)
+            if source_norm == wanted_source or wanted_source in source_norm:
+                source_idx = idx
+                break
+        if source_idx is None:
+            return None
+        if _same_exercise_definition(_plan_exercise_definition(exercises[source_idx]), target):
+            return None
+        slot = {"idx": source_idx}
+    else:
+        slot = _select_adjust_replacement_slot(exercises, target)
+        if not slot:
+            return None
 
     old_ex = exercises[slot["idx"]]
     old_name = old_ex.get("exercise") or old_ex.get("machine") or old_ex.get("name") or ""

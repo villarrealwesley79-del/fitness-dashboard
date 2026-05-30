@@ -390,6 +390,27 @@ def test_adjust_deterministic_tie_break_prefers_earlier_plan_slot(monkeypatch):
     assert pectoral["replace_index"] == 0
 
 
+def test_adjust_deterministic_honors_explicit_source_exercise(monkeypatch):
+    module = _module(monkeypatch)
+    recommendation = _recommendation_for(
+        module,
+        [
+            _rec_exercise("Chest Press", "chest", 100),
+            _rec_exercise("Incline Press", "chest", 95),
+        ],
+    )
+
+    pectoral = module._build_deterministic_adjust_swap(
+        "replace Incline Press with Pec Fly",
+        recommendation,
+        "machines_and_cables",
+    )
+
+    assert pectoral["target_exercise"] == "Pec Fly"
+    assert pectoral["replace_exercise"] == "Incline Press"
+    assert pectoral["replace_index"] == 1
+
+
 def test_adjust_deterministic_target_requires_compatible_plan_slot(monkeypatch):
     module = _module(monkeypatch)
     recommendation = _recommendation_for(
@@ -415,8 +436,14 @@ def test_adjust_deterministic_target_rejects_negative_requests(monkeypatch):
     )
 
     negative = module._build_deterministic_adjust_swap("do not do chest press", recommendation, "machines_and_cables")
+    negated_target = module._build_deterministic_adjust_swap(
+        "replace with pec fly but not cable crossover",
+        recommendation,
+        "machines_and_cables",
+    )
 
     assert negative is None
+    assert negated_target is None
 
 
 def test_adjust_swap_revalidates_replace_index_after_removals(monkeypatch):
