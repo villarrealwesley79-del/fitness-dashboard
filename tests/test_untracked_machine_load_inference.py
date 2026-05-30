@@ -390,6 +390,65 @@ def test_adjust_deterministic_tie_break_prefers_earlier_plan_slot(monkeypatch):
     assert pectoral["replace_index"] == 0
 
 
+def test_adjust_deterministic_target_requires_compatible_plan_slot(monkeypatch):
+    module = _module(monkeypatch)
+    recommendation = _recommendation_for(
+        module,
+        [
+            _rec_exercise("Leg Press", "quads", 180),
+            _rec_exercise("Seated Row", "back", 90),
+        ],
+    )
+
+    triceps = module._build_deterministic_adjust_swap("tricep extensions", recommendation, "machines_and_cables")
+
+    assert triceps is None
+
+
+def test_adjust_swap_revalidates_replace_index_after_removals(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    recommendation = _recommendation_for(
+        module,
+        [
+            _rec_exercise("Chest Press", "chest", 100),
+            _rec_exercise("Leg Extension", "quads", 80),
+        ],
+    )
+    intent = {
+        "avoid_muscles": ["chest"],
+        "avoid_joints": [],
+        "swap": [
+            {
+                "replace_exercise": "Chest Press",
+                "replace_index": 0,
+                "target_muscle": "triceps",
+                "target_exercise": "Overhead Tricep Extension",
+                "reason": "stale deterministic index",
+            }
+        ],
+        "rpe_delta": 0,
+        "sets_delta_pct": 0,
+        "duration_cap_min": 0,
+        "drop_cardio": False,
+    }
+
+    patched, notes = module._apply_intent_patch(
+        recommendation,
+        intent,
+        module.GOAL_PARAMETERS[module.TrainingGoal.HYPERTROPHY.value],
+        1,
+        module.MESOCYCLE_PLAN[1],
+        None,
+        "machines_and_cables",
+    )
+
+    names = [ex["exercise"] for ex in patched["exercises"]]
+    assert names == ["Leg Extension"]
+    assert any("Removed: Chest Press" in note for note in notes)
+    assert any("could not locate 'Chest Press'" in note for note in notes)
+
+
 def test_adjust_deterministic_fallback_leaves_unclassified_request_unchanged(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "_lm_studio", None)

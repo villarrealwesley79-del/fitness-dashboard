@@ -2952,7 +2952,7 @@ def _select_adjust_replacement_slot(exercises, target_exercise):
         elif shared_patterns:
             score = 50 + len(shared_patterns)
         else:
-            score = 1
+            continue
         scored.append({
             "idx": idx,
             "score": score,
@@ -8070,8 +8070,10 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         # Find the exercise to replace by name (case-insensitive, contains).
         idx = None
         if isinstance(replace_index, int) and 0 <= replace_index < len(exercises):
-            idx = replace_index
-        else:
+            indexed_name = (exercises[replace_index].get("exercise") or "").lower()
+            if not src_name or src_name in indexed_name:
+                idx = replace_index
+        if idx is None:
             for i, ex in enumerate(exercises):
                 if src_name in (ex.get("exercise") or "").lower():
                     idx = i
