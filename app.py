@@ -956,11 +956,15 @@ def _exercise_name_tokens(name):
 
 
 def _exercise_movement_patterns(exercise):
-    return {
+    patterns = {
         str(pattern).strip().lower()
         for pattern in (exercise or {}).get("movement_patterns", [])
         if str(pattern).strip()
     }
+    singular = str((exercise or {}).get("movement_pattern") or "").strip().lower()
+    if singular:
+        patterns.add(singular)
+    return patterns
 
 
 def _same_disambiguation_cluster(left_name, right_name):
@@ -993,6 +997,50 @@ def _load_source_metadata_compatible(target_ex, source_ex):
         if both_annotated:
             return False
     return True
+
+
+def _similarity_load_adjustment(target_ex, source_ex, shared_patterns, shared_tokens):
+    target_equipment = target_ex.get("equipment")
+    source_equipment = source_ex.get("equipment")
+    if source_equipment == "free_weight" and target_equipment == "machine":
+        return {
+            "tier": "free_weight_to_machine",
+            "label": "free-weight to machine transfer",
+            "prediction_factor": 1.15,
+            "first_session_factor": 0.65,
+            "confidence": "low",
+        }
+    if source_equipment == "machine" and target_equipment == "free_weight":
+        return {
+            "tier": "machine_to_free_weight",
+            "label": "machine to free-weight transfer",
+            "prediction_factor": 0.80,
+            "first_session_factor": 0.65,
+            "confidence": "low",
+        }
+    if shared_patterns and target_equipment == source_equipment:
+        return {
+            "tier": "same_pattern_same_implement",
+            "label": "same movement pattern and implement",
+            "prediction_factor": 0.925,
+            "first_session_factor": 0.85,
+            "confidence": "medium",
+        }
+    if shared_patterns:
+        return {
+            "tier": "same_pattern_different_implement",
+            "label": "same movement pattern with a different implement",
+            "prediction_factor": 0.85,
+            "first_session_factor": 0.85,
+            "confidence": "medium",
+        }
+    return {
+        "tier": "novel_rom_or_partial_match",
+        "label": "partial exercise similarity",
+        "prediction_factor": 0.75,
+        "first_session_factor": 0.85,
+        "confidence": "low",
+    }
 
 
 def _similar_exercise_load_source(exercise_name, progression):
@@ -1037,7 +1085,8 @@ def _similar_exercise_load_source(exercise_name, progression):
         if score <= 0:
             continue
 
-        scaled_e1rm = source_e1rm * (target_baseline / source_baseline)
+        similarity = _similarity_load_adjustment(target_ex, source_ex, shared_patterns, shared_tokens)
+        scaled_e1rm = source_e1rm * (target_baseline / source_baseline) * similarity["prediction_factor"]
         candidates.append({
             "source_name": source_ex.get("name") or source_name,
             "source_e1rm": source_e1rm,
@@ -1045,6 +1094,7 @@ def _similar_exercise_load_source(exercise_name, progression):
             "score": score,
             "shared_tokens": shared_tokens,
             "shared_patterns": shared_patterns,
+            "similarity": similarity,
         })
 
     if not candidates:
@@ -1052,16 +1102,25 @@ def _similar_exercise_load_source(exercise_name, progression):
 
     candidates.sort(key=lambda item: (-item["score"], -item["source_e1rm"], item["source_name"]))
     best = candidates[0]
+    similarity = best["similarity"]
     return {
         "e1rm": best["estimated_e1rm"],
         "status": "Similar History",
         "source": "similar_history",
         "detail": (
             f"similar_history:{best['source_name']}->{target_ex.get('name')}; "
-            f"scaled {round(best['source_e1rm'], 1)} e1RM by baseline ratio"
+            f"{similarity['tier']} factor {similarity['prediction_factor']}"
         ),
         "inferred_from": best["source_name"],
-        "inference_confidence": "medium" if best["score"] >= 5 else "low",
+        "inference_confidence": similarity["confidence"] if best["score"] >= 5 else "low",
+        "prediction_factor": similarity["prediction_factor"],
+        "first_session_factor": similarity["first_session_factor"],
+        "similarity_tier": similarity["tier"],
+        "explanation": (
+            f"Started from your {best['source_name']} history, adjusted for "
+            f"{similarity['label']}, then used {int(round(similarity['first_session_factor'] * 100))}% "
+            "as the first-session start for RIR 3-4."
+        ),
     }
 
 
@@ -3348,7 +3407,27 @@ def _workout_plan_content_fingerprint(recommendation):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _swap_recommend_response(recommendation, workout_index, target_definition, resolution, plan_fingerprint):
+def _recommended_swap_load_payload(target_definition, recommendation, progression):
+    if not target_definition:
+        return None
+    target_name = target_definition.get("name")
+    load_source = _select_recommendation_e1rm(target_name, {}, progression)
+    if load_source.get("source") != "similar_history":
+        return None
+    goal = (recommendation or {}).get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
+    goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
+    intensity_pct = goal_params["intensity_pct"] / 100
+    weight = round(load_source["e1rm"] * intensity_pct * load_source.get("first_session_factor", 0.85), 0)
+    return {
+        "weight": max(5, weight),
+        "source": load_source["source"],
+        "inferred_from": load_source.get("inferred_from"),
+        "confidence": load_source.get("inference_confidence", "low"),
+        "explanation": load_source.get("explanation") or "Estimated from similar exercise history.",
+    }
+
+
+def _swap_recommend_response(recommendation, workout_index, target_definition, resolution, plan_fingerprint, recommended_load=None):
     slot = resolution.get("slot") or {}
     target_canonical = resolution.get("target_canonical")
     slot_payload = _swap_recommend_slot_response(slot)
@@ -3368,7 +3447,7 @@ def _swap_recommend_response(recommendation, workout_index, target_definition, r
         "slot": slot_payload,
         "confidence": float(resolution.get("confidence") or 0.0),
         "reason": resolution.get("reason") or "",
-        "recommended_load": None,
+        "recommended_load": recommended_load,
         "alternatives": resolution.get("alternatives") or [],
         "plan_fingerprint": plan_fingerprint,
         "commit": commit,
@@ -3633,7 +3712,7 @@ def _build_exercise_entry(
         rationale = f"{goal_params['name']}: Calibrated from saved baseline"
         sets = target_sets
     elif status == "Similar History":
-        target_weight = round(current_e1rm * intensity_pct * 0.9, 0)
+        target_weight = round(current_e1rm * intensity_pct * load_source.get("first_session_factor", 0.85), 0)
         source_name = load_source.get("inferred_from") or "similar history"
         rationale = f"{goal_params['name']}: Conservative estimate from {source_name}"
         sets = target_sets
@@ -3689,7 +3768,10 @@ def _build_exercise_entry(
         entry["load_inference"] = {
             "source_exercise": load_source["inferred_from"],
             "confidence": load_source.get("inference_confidence", "low"),
-            "message": f"Estimated from {load_source['inferred_from']} history; adjust after first set.",
+            "message": (
+                f"Estimated from {load_source['inferred_from']} history; "
+                f"{load_source.get('explanation') or 'adjust after first set.'}"
+            ),
         }
     return entry
 
@@ -8832,7 +8914,16 @@ def recommend_workout_swap():
         return api_error("No same-muscle swap target found", 422, code="no_match")
 
     plan_fingerprint = _workout_plan_content_fingerprint(recommendation)
-    return jsonify(_swap_recommend_response(recommendation, workout_index, target_definition, resolution, plan_fingerprint))
+    progression = calculate_progression_status(WORKOUTS)
+    recommended_load = _recommended_swap_load_payload(target_definition, recommendation, progression)
+    return jsonify(_swap_recommend_response(
+        recommendation,
+        workout_index,
+        target_definition,
+        resolution,
+        plan_fingerprint,
+        recommended_load,
+    ))
 
 
 @app.route('/api/workout/swap', methods=['POST'])
