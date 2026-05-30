@@ -821,7 +821,8 @@ def _open_food_facts_barcode_estimate(product: dict[str, Any]) -> dict[str, Any]
         if part
     ).strip()
     serving = _off_serving_description(product)
-    serving_macros = _off_serving_macros(nutriments)
+    serving_quantity = _off_number_or_none(product.get("serving_quantity"))
+    serving_macros = _off_serving_macros(nutriments, serving_quantity_g=serving_quantity)
     if serving_macros is None:
         serving_macros = {
             "calories": _off_energy_kcal(nutriments),
@@ -952,7 +953,7 @@ def _off_serving_description(product: dict[str, Any]) -> str | None:
     return None
 
 
-def _off_serving_macros(nutriments: dict[str, Any]) -> dict[str, Any] | None:
+def _off_serving_macros(nutriments: dict[str, Any], *, serving_quantity_g: float | None = None) -> dict[str, Any] | None:
     required = (
         "energy-kcal_serving",
         "proteins_serving",
@@ -966,12 +967,12 @@ def _off_serving_macros(nutriments: dict[str, Any]) -> dict[str, Any] | None:
         "protein_g": nutriments.get("proteins_serving"),
         "carbs_g": nutriments.get("carbohydrates_serving"),
         "fat_g": nutriments.get("fat_serving"),
-        "sodium_mg": _off_serving_sodium_mg(nutriments),
+        "sodium_mg": _off_serving_sodium_mg(nutriments, serving_quantity_g=serving_quantity_g),
         "fiber_g": _off_optional_number(nutriments.get("fiber_serving")),
     }
 
 
-def _off_serving_sodium_mg(nutriments: dict[str, Any]) -> int:
+def _off_serving_sodium_mg(nutriments: dict[str, Any], *, serving_quantity_g: float | None = None) -> int:
     if nutriments.get("sodium_serving") is not None:
         sodium = _off_number_or_none(nutriments["sodium_serving"])
         if sodium is not None:
@@ -980,6 +981,16 @@ def _off_serving_sodium_mg(nutriments: dict[str, Any]) -> int:
         salt = _off_number_or_none(nutriments["salt_serving"])
         if salt is not None:
             return int(round(salt * 393.4))
+    if serving_quantity_g is not None and serving_quantity_g > 0:
+        serving_factor = serving_quantity_g / 100
+        if nutriments.get("sodium_100g") is not None:
+            sodium = _off_number_or_none(nutriments["sodium_100g"])
+            if sodium is not None:
+                return int(round(sodium * 1000 * serving_factor))
+        if nutriments.get("salt_100g") is not None:
+            salt = _off_number_or_none(nutriments["salt_100g"])
+            if salt is not None:
+                return int(round(salt * 393.4 * serving_factor))
     return 0
 
 
