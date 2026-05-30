@@ -194,9 +194,10 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "cache.addAll" not in sw
     assert "caches.keys()" in sw
     assert "keys.map(key => caches.delete(key))" in sw
-    assert "self.clients.matchAll({ type: 'window', includeUncontrolled: true })" in sw
-    assert "client.navigate(client.url)" in sw
+    assert "client.navigate(client.url)" not in sw
     assert "navigator.serviceWorker.addEventListener('controllerchange'" in app_js
+    assert "if (activeWorkoutHasProgress())" in app_js
+    assert "Update ready after workout. Refresh when finished." in app_js
     assert "window.location.reload()" in app_js
     assert "reg.waiting.postMessage({ type: 'SKIP_WAITING' })" in app_js
     assert 'APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"' in app_py

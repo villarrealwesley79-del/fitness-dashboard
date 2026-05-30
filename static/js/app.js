@@ -9383,6 +9383,10 @@
         let reloadingForController = false;
         navigator.serviceWorker.addEventListener('controllerchange', () => {
             if (reloadingForController) return;
+            if (activeWorkoutHasProgress()) {
+                toast('Update ready after workout. Refresh when finished.');
+                return;
+            }
             reloadingForController = true;
             window.location.reload();
         });
