@@ -10,7 +10,7 @@ import secrets
 import time
 from collections import defaultdict
 from contextlib import contextmanager
-from flask import Blueprint, request, redirect, url_for, render_template, flash
+from flask import Blueprint, current_app, request, redirect, url_for, render_template, flash
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
 
 # ── Rate limiting (in-memory, per-IP) ────────────────────
@@ -231,7 +231,12 @@ def login():
             return render_template("login.html"), 429
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
-        user = User.authenticate(username, password)
+        try:
+            user = User.authenticate(username, password)
+        except sqlite3.Error:
+            current_app.logger.exception("Auth database error during login")
+            flash("Login service temporarily unavailable. Please try again shortly.")
+            return render_template("login.html"), 503
         if user:
             _rate_reset(ip)
             login_user(user)
