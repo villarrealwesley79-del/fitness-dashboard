@@ -7,10 +7,18 @@ from collections.abc import Iterator
 from urllib.parse import urlparse
 
 import pytest
+from flask.testing import FlaskClient
+from werkzeug.datastructures import Headers
 
 
 class BlockedNetworkError(RuntimeError):
     """Raised when a test attempts uncassetted external network access."""
+
+
+_CSRF_TEST_HEADER = "X-Requested-With"
+_CSRF_TEST_VALUE = "XMLHttpRequest"
+_CSRF_TEST_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_CSRF_TEST_OMIT_ENVIRON = "fitness_dashboard.omit_auto_csrf_header"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -51,6 +59,25 @@ def _request_host(req: object) -> object | None:
         return None
     parsed = urlparse(target)
     return parsed.hostname
+
+
+@pytest.fixture(autouse=True)
+def csrf_browser_header_for_test_clients(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Make Flask test-client mutations look like same-origin browser fetches."""
+    original_open = FlaskClient.open
+
+    def open_with_csrf_header(self: FlaskClient, *args: object, **kwargs: object) -> object:
+        method = str(kwargs.get("method") or "").upper()
+        environ_overrides = kwargs.get("environ_overrides") or {}
+        if method in _CSRF_TEST_MUTATING_METHODS and not environ_overrides.get(_CSRF_TEST_OMIT_ENVIRON):
+            headers = Headers(kwargs.get("headers") or {})
+            if _CSRF_TEST_HEADER not in headers:
+                headers.add(_CSRF_TEST_HEADER, _CSRF_TEST_VALUE)
+            kwargs["headers"] = headers
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(FlaskClient, "open", open_with_csrf_header)
+    yield
 
 
 @pytest.fixture(autouse=True)

@@ -93,6 +93,8 @@
     // FIT-128: dashboard fetchers pass timeoutMs so a hung endpoint
     // surfaces the per-card retry chip instead of sitting silent forever.
     const DASHBOARD_FETCH_TIMEOUT_MS = 30000;
+    const CSRF_HEADER_NAME = 'X-Requested-With';
+    const CSRF_HEADER_VALUE = 'XMLHttpRequest';
     const MODAL_FOCUS_SELECTOR = [
         '[autofocus]',
         '.modal-close:not([disabled])',
@@ -114,11 +116,12 @@
             fetchOpts.signal = controller.signal;
         }
         let res;
+        const headers = { 'Accept': 'application/json', ...(fetchOpts.headers || {}), [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE };
         try {
             res = await fetch(path, {
-                credentials: 'same-origin',
-                headers: { 'Accept': 'application/json', ...(fetchOpts.headers || {}) },
                 ...fetchOpts,
+                credentials: 'same-origin',
+                headers,
             });
         } finally {
             if (timer) clearTimeout(timer);
@@ -4405,7 +4408,7 @@
         try {
             const res = await fetch('/api/push/vapid-public-key', {
                 credentials: 'same-origin',
-                headers: { 'Accept': 'application/json' },
+                headers: { 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
             });
             const body = await res.json().catch(() => ({}));
             if (res.status === 401 || res.status === 403) {
@@ -4604,7 +4607,7 @@
             const res = await fetch('/api/push/test', {
                 method: 'POST',
                 credentials: 'same-origin',
-                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
                 body: JSON.stringify({ endpoint_hash: endpointHash }),
             });
             const body = await res.json().catch(() => ({}));
@@ -5468,7 +5471,7 @@
         const res = await fetch('/api/complete-workout', {
             method: 'POST',
             credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
             body: JSON.stringify(payload),
         });
         const body = await res.json().catch(() => null);
@@ -5641,7 +5644,7 @@
         try {
             const res = await fetch('/api/auth/scope', {
                 credentials: 'same-origin',
-                headers: { 'Accept': 'application/json' },
+                headers: { 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
             });
             if (res.status === 401 || res.status === 403) {
                 return {
@@ -5861,7 +5864,7 @@
         const res = await fetch('/api/meal-intake', {
             method: 'POST',
             credentials: 'same-origin',
-            headers: { 'Accept': 'application/json' },
+            headers: { 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
             body: queuedMealFormData(entry, photos),
         });
         const ct = res.headers.get('content-type') || '';
@@ -8103,7 +8106,7 @@
             const res = await fetch('/api/meal-intake', {
                 method: 'POST',
                 credentials: 'same-origin',
-                headers: { 'Accept': 'application/json' },
+                headers: { 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
                 body: form,
             });
             if (res.status === 404 || res.status === 501) {
@@ -8316,7 +8319,7 @@
             const res = await fetch('/api/meal-intake', {
                 method: 'POST',
                 credentials: 'same-origin',
-                headers: { 'Accept': 'application/json' },
+                headers: { 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
                 body: form,
             });
             if (res.status === 404 || res.status === 501) {

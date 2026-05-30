@@ -12,7 +12,8 @@ import secrets
 import time
 from collections import defaultdict
 from contextlib import contextmanager
-from flask import Blueprint, current_app, request, redirect, url_for, render_template, flash
+from urllib.parse import urlsplit
+from flask import Blueprint, current_app, jsonify, request, redirect, url_for, render_template, flash, session
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -50,6 +51,17 @@ login_manager.login_message = "Please log in to access this page."
 
 auth_bp = Blueprint("auth", __name__)
 
+CSRF_HEADER_NAME = "X-Requested-With"
+CSRF_HEADER_VALUE = "XMLHttpRequest"
+CSRF_FORM_FIELD = "csrf_token"
+CSRF_SESSION_KEY = "_auth_csrf_token"
+_CSRF_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_CSRF_EXEMPT_PATHS = {
+    # Health Auto Export / Shortcuts webhook: authenticated by HEALTH_SYNC_TOKEN.
+    "/api/apple-health/sync",
+    # Stripe webhook: unauthenticated by session, authenticated by Stripe-Signature.
+    "/webhook",
+}
 _PASSWORD_HASH_METHOD = "scrypt:32768:8:1"
 _LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 
@@ -340,6 +352,89 @@ def _is_public(path: str) -> bool:
     return False
 
 
+def _is_csrf_exempt(path: str) -> bool:
+    return path in _CSRF_EXEMPT_PATHS
+
+
+def _has_csrf_header() -> bool:
+    return request.headers.get(CSRF_HEADER_NAME) == CSRF_HEADER_VALUE
+
+
+def _first_forwarded_header(name: str) -> str:
+    return request.headers.get(name, "").split(",", 1)[0].strip()
+
+
+def _origin_parts(value: str):
+    parsed = urlsplit(value)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return parsed.scheme, parsed.netloc.lower()
+
+
+def _expected_origin_parts() -> set[tuple[str, str]]:
+    values = {request.host_url}
+    public_base = os.environ.get("FITNESS_DASHBOARD_PUBLIC_BASE_URL", "").strip()
+    if public_base:
+        values.add(public_base)
+
+    forwarded_host = _first_forwarded_header("X-Forwarded-Host")
+    if forwarded_host:
+        forwarded_proto = _first_forwarded_header("X-Forwarded-Proto") or request.scheme
+        if forwarded_proto in {"http", "https"}:
+            values.add(f"{forwarded_proto}://{forwarded_host}")
+
+    return {parts for value in values if (parts := _origin_parts(value))}
+
+
+def _same_origin_url(value: str) -> bool:
+    try:
+        candidate = _origin_parts(value)
+    except ValueError:
+        return False
+    return bool(candidate and candidate in _expected_origin_parts())
+
+
+def _has_cross_origin_browser_header() -> bool:
+    origin = request.headers.get("Origin", "").strip()
+    if origin and not _same_origin_url(origin):
+        return True
+    return request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site"
+
+
+def _has_same_origin_browser_header() -> bool:
+    if request.headers.get("Sec-Fetch-Site", "").strip().lower() == "same-origin":
+        return True
+    origin = request.headers.get("Origin", "").strip()
+    if origin:
+        return _same_origin_url(origin)
+    referer = request.headers.get("Referer", "").strip()
+    return bool(referer and _same_origin_url(referer))
+
+
+def _form_csrf_token() -> str:
+    token = session.get(CSRF_SESSION_KEY)
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session[CSRF_SESSION_KEY] = token
+    return token
+
+
+def _has_valid_form_csrf_token() -> bool:
+    expected = session.get(CSRF_SESSION_KEY)
+    submitted = request.form.get(CSRF_FORM_FIELD, "")
+    return bool(expected and submitted and secrets.compare_digest(str(expected), submitted))
+
+
+def _csrf_failure_response():
+    if request.path.startswith("/api/") or request.headers.get("Accept", "").startswith("application/json"):
+        return jsonify({
+            "error": "Forbidden",
+            "code": "csrf_required",
+            "message": f"Missing {CSRF_HEADER_NAME}: {CSRF_HEADER_VALUE}",
+        }), 403
+    return "Forbidden", 403
+
+
 # ── Init helper (called from app.py) ─────────────────────
 def init_auth(app):
     """Wire login_manager and auth blueprint into the Flask app."""
@@ -394,6 +489,23 @@ def init_auth(app):
     login_manager.init_app(app)
     app.register_blueprint(auth_bp)
     init_auth_db()
+
+    @app.context_processor
+    def inject_csrf_token():
+        return {CSRF_FORM_FIELD: _form_csrf_token()}
+
+    @app.before_request
+    def require_csrf_header():
+        """Reject cross-site form posts while exempting token/signed webhooks."""
+        if request.method not in _CSRF_MUTATING_METHODS:
+            return None
+        if _is_csrf_exempt(request.path):
+            return None
+        if _has_cross_origin_browser_header():
+            return _csrf_failure_response()
+        if _has_csrf_header() or _has_valid_form_csrf_token() or _has_same_origin_browser_header():
+            return None
+        return _csrf_failure_response()
 
     @app.before_request
     def require_login():
