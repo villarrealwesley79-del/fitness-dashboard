@@ -5050,8 +5050,202 @@
         };
     }
 
+    // FIT-179: merge an adjusted recommendation into an in-progress active
+    // workout without losing logged work for exercises that remain in the plan.
+    // Match by exercise identity, not array index, so removals/trims cannot
+    // copy completed rows onto a different exercise after slots shift.
+    function buildAdjustedLoggedSets(newEx, previousSets, previousEx = null) {
+        const targetInputValue = (value) => {
+            if (value == null || value === '') return '';
+            const n = Number(value);
+            return Number.isFinite(n) ? String(n) : '';
+        };
+        const prevList = Array.isArray(previousSets) ? previousSets : [];
+        const count = Number(newEx.target_sets || newEx.sets || 3);
+        const targetCount = Number.isFinite(count) && count > 0 ? Math.round(count) : 3;
+        const targetReps = newEx.target_reps != null
+            ? targetInputValue(newEx.target_reps)
+            : (newEx.reps != null ? targetInputValue(newEx.reps) : (
+                Array.isArray(newEx.rep_range) && newEx.rep_range.length ? targetInputValue(newEx.rep_range[0]) : ''
+            ));
+        const targetWeight = newEx.target_weight != null
+            ? targetInputValue(newEx.target_weight)
+            : (newEx.target_weight_lbs != null ? targetInputValue(newEx.target_weight_lbs) : '');
+        const previousReps = previousEx ? (
+            previousEx.target_reps != null
+                ? targetInputValue(previousEx.target_reps)
+                : (previousEx.reps != null ? targetInputValue(previousEx.reps) : (
+                    Array.isArray(previousEx.rep_range) && previousEx.rep_range.length ? targetInputValue(previousEx.rep_range[0]) : ''
+                ))
+        ) : '';
+        const previousWeight = previousEx ? (
+            previousEx.target_weight != null
+                ? targetInputValue(previousEx.target_weight)
+                : (previousEx.target_weight_lbs != null ? targetInputValue(previousEx.target_weight_lbs) : '')
+        ) : '';
+        const editedSet = (s) => {
+            if (!s) return false;
+            if (s.done || (s.notes != null && String(s.notes).trim())) return true;
+            if (previousReps && String(s.reps ?? '') !== previousReps) return true;
+            if (previousWeight && String(s.weight ?? '') !== previousWeight) return true;
+            return false;
+        };
+        const copySet = (s) => ({
+            reps: s && s.reps != null ? s.reps : '',
+            weight: s && s.weight != null ? s.weight : '',
+            done: Boolean(s && s.done),
+            notes: s && s.notes != null ? s.notes : '',
+        });
+        const freshSet = () => ({ reps: targetReps, weight: targetWeight, done: false, notes: '' });
+        const rows = Array.from({ length: targetCount }, (_, idx) => {
+            const prev = prevList[idx];
+            return editedSet(prev) ? copySet(prev) : freshSet();
+        });
+        prevList.forEach((prev, idx) => {
+            if (idx >= targetCount && prev && prev.done) rows.push(copySet(prev));
+        });
+        return rows;
+    }
+
+    const EXERCISE_IDENTITY_ALIAS_GROUPS = [
+        ['Pec Fly', ['Pectoral Fly']],
+        ['Chest-Supported Row', ['Chest Supported Row']],
+        ['Machine Deltoid Raise', ['Deltoid Raise', 'Rear Delt Raise']],
+        ['Back Extension', ['Low Back Extension', 'Lower Back Extension']],
+        ['Biceps Curl', ['Hoist Biceps Curl', 'Hoist Roc-It Biceps Curl', 'Nautilus Biceps Curl', 'Nautilus ONE Biceps Curl']],
+        ['Overhead Tricep Extension', ['Tricep Extension', 'Triceps Extension', 'Tricep Extensions', 'Triceps Extensions']],
+        ['Rotary Torso', ['Torso Rotation', 'Rotary Torso Machine']],
+    ];
+    const EXERCISE_IDENTITY_ALIASES = new Map();
+    function normalizeExerciseIdentityKey(name) {
+        return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    }
+    EXERCISE_IDENTITY_ALIAS_GROUPS.forEach(([canonical, aliases]) => {
+        const canonicalKey = normalizeExerciseIdentityKey(canonical);
+        EXERCISE_IDENTITY_ALIASES.set(canonicalKey, canonicalKey);
+        aliases.forEach((alias) => {
+            EXERCISE_IDENTITY_ALIASES.set(normalizeExerciseIdentityKey(alias), canonicalKey);
+        });
+    });
+
+    function normalizeExerciseIdentity(ex) {
+        const key = normalizeExerciseIdentityKey(exerciseName(ex));
+        return EXERCISE_IDENTITY_ALIASES.get(key) || key;
+    }
+
+    function takePreviousExerciseByIdentity(previousExercises, usedPrevious, nextKey, sameSlot) {
+        if (!nextKey) return null;
+        if (sameSlot && !usedPrevious.has(sameSlot) && normalizeExerciseIdentity(sameSlot) === nextKey) {
+            usedPrevious.add(sameSlot);
+            return sameSlot;
+        }
+        const prev = previousExercises.find((candidate) => {
+            return candidate && !usedPrevious.has(candidate) && normalizeExerciseIdentity(candidate) === nextKey;
+        });
+        if (prev) usedPrevious.add(prev);
+        return prev || null;
+    }
+
+    function activeLoggedSetHasWork(ex, set) {
+        if (!set) return false;
+        if (set.done || (set.notes != null && String(set.notes).trim())) return true;
+
+        const targetValue = (value) => {
+            if (value == null || value === '') return '';
+            const n = Number(value);
+            return Number.isFinite(n) ? String(n) : '';
+        };
+        const plannedReps = ex ? (
+            ex.target_reps != null
+                ? targetValue(ex.target_reps)
+                : (ex.reps != null ? targetValue(ex.reps) : (
+                    Array.isArray(ex.rep_range) && ex.rep_range.length ? targetValue(ex.rep_range[0]) : ''
+                ))
+        ) : '';
+        const plannedWeight = ex ? (
+            ex.target_weight != null
+                ? targetValue(ex.target_weight)
+                : (ex.target_weight_lbs != null ? targetValue(ex.target_weight_lbs) : '')
+        ) : '';
+        const reps = set.reps != null ? String(set.reps) : '';
+        const weight = set.weight != null ? String(set.weight) : '';
+        if (plannedReps) {
+            if (reps && reps !== plannedReps) return true;
+        } else if (reps) {
+            return true;
+        }
+        if (plannedWeight) {
+            if (weight && weight !== plannedWeight) return true;
+        } else if (weight) {
+            return true;
+        }
+        return false;
+    }
+
+    function activeExerciseHasLoggedWork(ex) {
+        return Boolean(ex && Array.isArray(ex.logged_sets) && ex.logged_sets.some((set) => activeLoggedSetHasWork(ex, set)));
+    }
+
+    function applyAdjustedRecommendationToActiveWorkout(nw, previousExercises = [], opts = {}) {
+        if (!nw) return;
+        const existing = state.activeWorkout || {};
+        const usedPrevious = new Set();
+        const exercises = (nw.exercises || []).map((ex, i) => {
+            const nextKey = normalizeExerciseIdentity(ex);
+            const prev = takePreviousExerciseByIdentity(previousExercises, usedPrevious, nextKey, previousExercises[i]);
+            if (prev) {
+                return {
+                    ...ex,
+                    logged_sets: buildAdjustedLoggedSets(ex, prev.logged_sets, prev),
+                };
+            }
+            return {
+                ...ex,
+                logged_sets: buildAdjustedLoggedSets(ex, null),
+            };
+        });
+        previousExercises.forEach((prev) => {
+            if (prev && !usedPrevious.has(prev) && activeExerciseHasLoggedWork(prev)) {
+                exercises.push({ ...prev });
+            }
+        });
+        state.activeWorkout = {
+            id: existing.id || nw.workout_id || newWorkoutId(nw.id),
+            recommendation_id: nw.id || existing.recommendation_id || null,
+            focus: nw.focus || nw.goal_name || existing.focus || 'Workout',
+            exercises,
+            cardio: mergeAdjustedActiveCardio(nw.cardio, existing.cardio),
+            saveState: existing.saveState || null,
+            dirty: opts.preserveDirty === false ? false : Boolean(existing.dirty),
+        };
+    }
+
     function hasRecommendedCardio(cardio) {
         return Boolean(cardio && cardio.include_cardio !== false && (cardio.type || cardio.machine || Number(cardio.duration_minutes || 0) > 0));
+    }
+
+    function activeCardioHasLoggedWork(cardio) {
+        if (!cardio) return false;
+        if (cardio.completed || (cardio.notes != null && String(cardio.notes).trim())) return true;
+        const recommendation = cardio.recommendation || {};
+        const plannedActivity = recommendation.type || recommendation.machine || '';
+        const plannedDuration = numericInputValue(recommendation.duration_minutes);
+        const activity = cardio.activity_type != null ? String(cardio.activity_type) : '';
+        const duration = cardio.duration_minutes != null ? String(cardio.duration_minutes) : '';
+        if (plannedActivity && activity && activity !== plannedActivity) return true;
+        if (plannedDuration) {
+            if (duration && duration !== plannedDuration) return true;
+        } else if (duration) {
+            return true;
+        }
+        return false;
+    }
+
+    function mergeAdjustedActiveCardio(cardio, previous) {
+        const previousWithWork = activeCardioHasLoggedWork(previous) ? previous : null;
+        const next = buildActiveCardio(cardio, previousWithWork);
+        if (next) return next;
+        return previousWithWork;
     }
 
     function buildActiveCardio(cardio, previous) {
@@ -6859,6 +7053,17 @@
             state.dashboard.next_workout = payload.recommendation;
             state.adjustedWorkout = payload.recommendation;
             renderAdjustedPlanPreview(payload.recommendation);
+            // FIT-179: when the user is mid-workout, fold the adjusted plan
+            // into the active workout so logged rows for exercises that remain
+            // in the plan survive. Only worth doing when something changed.
+            if (state.activeWorkout && kind === 'changed' && !opts.restored) {
+                const previous = Array.isArray(state.activeWorkout.exercises)
+                    ? state.activeWorkout.exercises
+                    : [];
+                applyAdjustedRecommendationToActiveWorkout(payload.recommendation, previous);
+                renderActiveWorkout();
+                if (typeof toast === 'function') toast('Adjusted plan applied.', 'ok');
+            }
         }
         if (state.currentTab === 'tab-workout') {
             renderNextWorkout();
@@ -6965,6 +7170,8 @@
         $('btn-start-workout-2') && $('btn-start-workout-2').addEventListener('click', startWorkout);
         $('btn-adjust-plan') && $('btn-adjust-plan').addEventListener('click', openAdjust);
         $('btn-adjust-plan-2') && $('btn-adjust-plan-2').addEventListener('click', openAdjust);
+        // FIT-179: Adjust Plan entry point from inside the active workout.
+        $('btn-adjust-plan-active') && $('btn-adjust-plan-active').addEventListener('click', openAdjust);
         $('btn-adjust-submit') && $('btn-adjust-submit').addEventListener('click', submitAdjust);
         $('btn-adjust-discard') && $('btn-adjust-discard').addEventListener('click', discardSavedAdjust);
         qsa('.chip-preset').forEach((b) => b.addEventListener('click', () => {

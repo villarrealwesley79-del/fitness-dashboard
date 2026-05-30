@@ -668,16 +668,17 @@ def _choose_dynamic_cardio_recommendation(
 
 EXERCISE_LIBRARY = [
     # Chest
-    {"name": "Chest Press", "muscle": "chest", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
-    {"name": "Incline Press", "muscle": "chest", "compound": True, "baseline": 95, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
-    {"name": "Cable Crossover", "muscle": "chest", "compound": False, "baseline": 40, "equipment": "cable"},
-    {"name": "Pec Fly", "muscle": "chest", "compound": False, "baseline": 50, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
+    {"name": "Chest Press", "muscle": "chest", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["horizontal_press"]},
+    {"name": "Incline Press", "muscle": "chest", "compound": True, "baseline": 95, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["incline_press", "horizontal_press"]},
+    {"name": "Cable Crossover", "muscle": "chest", "compound": False, "baseline": 40, "equipment": "cable", "movement_patterns": ["fly", "chest_isolation"]},
+    {"name": "Pec Fly", "muscle": "chest", "compound": False, "baseline": 50, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "aliases": ["Pectoral Fly"], "movement_patterns": ["fly", "chest_isolation"]},
     {"name": "Dips", "muscle": "chest", "compound": True, "baseline": 50, "equipment": "bodyweight"},
     # Back
-    {"name": "Lat Pulldown", "muscle": "back", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
-    {"name": "Seated Row", "muscle": "back", "compound": True, "baseline": 90, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
-    {"name": "Mid Row", "muscle": "back", "compound": True, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
-    {"name": "Cable Row", "muscle": "back", "compound": False, "baseline": 70, "equipment": "cable"},
+    {"name": "Lat Pulldown", "muscle": "back", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["vertical_pull"]},
+    {"name": "Seated Row", "muscle": "back", "compound": True, "baseline": 90, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["horizontal_pull", "row"]},
+    {"name": "Mid Row", "muscle": "back", "compound": True, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["horizontal_pull", "row"]},
+    {"name": "Cable Row", "muscle": "back", "compound": False, "baseline": 70, "equipment": "cable", "movement_patterns": ["horizontal_pull", "row"]},
+    {"name": "Chest-Supported Row", "muscle": "back", "compound": True, "baseline": 85, "equipment": "machine", "aliases": ["Chest Supported Row"], "movement_patterns": ["horizontal_pull", "row"]},
     {"name": "Face Pulls", "muscle": "back", "compound": False, "baseline": 35, "equipment": "cable"},
     {"name": "Pullups", "muscle": "back", "compound": True, "baseline": 50, "equipment": "bodyweight"},
     # Shoulders
@@ -689,12 +690,13 @@ EXERCISE_LIBRARY = [
     {"name": "Machine Deltoid Raise", "muscle": "shoulders", "compound": False, "baseline": 30, "equipment": "machine", "aliases": ["Deltoid Raise", "Rear Delt Raise"]},
     {"name": "Rear Delt Fly", "muscle": "shoulders", "compound": False, "baseline": 25, "equipment": "cable"},
     # Legs
-    {"name": "Leg Press", "muscle": "quads", "compound": True, "baseline": 180, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
-    {"name": "Hack Squat", "muscle": "quads", "compound": True, "baseline": 135, "equipment": "machine"},
+    {"name": "Leg Press", "muscle": "quads", "compound": True, "baseline": 180, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["squat", "knee_dominant"]},
+    {"name": "Hack Squat", "muscle": "quads", "compound": True, "baseline": 135, "equipment": "machine", "movement_patterns": ["squat", "knee_dominant"]},
     {"name": "Bulgarian Split Squat", "muscle": "quads", "compound": True, "baseline": 40, "equipment": "free_weight"},
     {"name": "Leg Extension", "muscle": "quads", "compound": False, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
-    {"name": "Romanian Deadlift", "muscle": "hamstrings", "compound": True, "baseline": 135, "equipment": "free_weight"},
-    {"name": "Leg Curl", "muscle": "hamstrings", "compound": False, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
+    {"name": "Romanian Deadlift", "muscle": "hamstrings", "compound": True, "baseline": 135, "equipment": "free_weight", "movement_patterns": ["hinge", "posterior_chain"]},
+    {"name": "Leg Curl", "muscle": "hamstrings", "compound": False, "baseline": 80, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["knee_flexion", "hamstring_isolation"]},
+    {"name": "Back Extension", "muscle": "hamstrings", "compound": False, "baseline": 85, "equipment": "machine", "aliases": ["Low Back Extension", "Lower Back Extension"], "movement_patterns": ["hinge", "posterior_chain"]},
     {"name": "Calf Raise", "muscle": "calves", "compound": False, "baseline": 120, "equipment": "machine"},
     {"name": "Calf Raise (Seated)", "muscle": "calves", "compound": False, "baseline": 90, "equipment": "machine"},
     {"name": "Hip Abductor", "muscle": "glutes", "compound": False, "baseline": 100, "equipment": "machine"},
@@ -705,14 +707,15 @@ EXERCISE_LIBRARY = [
     {"name": "Hammer Curl", "muscle": "biceps", "compound": False, "baseline": 40, "equipment": "free_weight"},
     {"name": "Preacher Curl", "muscle": "biceps", "compound": False, "baseline": 45, "equipment": "machine", "disabled_by_default": True, "avoid_reason": "User does not perform preacher curls"},
     {"name": "Seated Dip", "muscle": "triceps", "compound": True, "baseline": 100, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
-    {"name": "Tricep Pushdown", "muscle": "triceps", "compound": False, "baseline": 50, "equipment": "cable"},
-    {"name": "Cable Pushdown", "muscle": "triceps", "compound": False, "baseline": 55, "equipment": "cable"},
-    {"name": "Overhead Tricep Extension", "muscle": "triceps", "compound": False, "baseline": 45, "equipment": "cable"},
+    {"name": "Tricep Pushdown", "muscle": "triceps", "compound": False, "baseline": 50, "equipment": "cable", "movement_patterns": ["elbow_extension", "triceps_extension"]},
+    {"name": "Cable Pushdown", "muscle": "triceps", "compound": False, "baseline": 55, "equipment": "cable", "movement_patterns": ["elbow_extension", "triceps_extension"]},
+    {"name": "Overhead Tricep Extension", "muscle": "triceps", "compound": False, "baseline": 45, "equipment": "cable", "aliases": ["Tricep Extension", "Triceps Extension", "Tricep Extensions", "Triceps Extensions"], "movement_patterns": ["elbow_extension", "triceps_extension"]},
     # Core
-    {"name": "Crunch Machine", "muscle": "core", "compound": False, "baseline": 60, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"]},
-    {"name": "Cable Crunch", "muscle": "core", "compound": False, "baseline": 55, "equipment": "cable"},
-    {"name": "Hanging Leg Raise", "muscle": "core", "compound": True, "baseline": 40, "equipment": "bodyweight"},
-    {"name": "Plank", "muscle": "core", "compound": False, "baseline": 0, "equipment": "bodyweight"},
+    {"name": "Crunch Machine", "muscle": "core", "compound": False, "baseline": 60, "equipment": "machine", "equipment_brands": ["Hoist", "Nautilus"], "movement_patterns": ["trunk_flexion", "core_isolation"]},
+    {"name": "Cable Crunch", "muscle": "core", "compound": False, "baseline": 55, "equipment": "cable", "movement_patterns": ["trunk_flexion", "core_isolation"]},
+    {"name": "Rotary Torso", "muscle": "core", "compound": False, "baseline": 60, "equipment": "machine", "aliases": ["Torso Rotation", "Rotary Torso Machine"], "movement_patterns": ["rotation", "core_isolation"]},
+    {"name": "Hanging Leg Raise", "muscle": "core", "compound": True, "baseline": 40, "equipment": "bodyweight", "movement_patterns": ["hip_flexion", "core"]},
+    {"name": "Plank", "muscle": "core", "compound": False, "baseline": 0, "equipment": "bodyweight", "movement_patterns": ["isometric", "core"]},
 ]
 
 EXERCISE_LOOKUP = {}
@@ -734,8 +737,10 @@ for _exercise in EXERCISE_LIBRARY:
     }.get(_muscle, [])
     if ("raise" in _name and _muscle == "shoulders") or "fly" in _name or "crossover" in _name:
         _joints = ["shoulder"]
-    if "romanian deadlift" in _name:
+    if "romanian deadlift" in _name or "back extension" in _name:
         _joints = ["hip", "knee", "spine"]
+    if "rotary torso" in _name:
+        _joints = ["spine"]
     if "curl" in _name and _muscle == "biceps":
         _joints = ["elbow", "wrist"]
     if "leg extension" in _name or "leg curl" in _name:
@@ -866,6 +871,14 @@ def _exercise_name_tokens(name):
     return tokens
 
 
+def _exercise_movement_patterns(exercise):
+    return {
+        str(pattern).strip().lower()
+        for pattern in (exercise or {}).get("movement_patterns", [])
+        if str(pattern).strip()
+    }
+
+
 def _similar_exercise_load_source(exercise_name, progression):
     target_ex = _resolve_exercise_definition(exercise_name)
     if not target_ex or not isinstance(progression, dict):
@@ -875,6 +888,7 @@ def _similar_exercise_load_source(exercise_name, progression):
     if target_baseline is None:
         return None
     target_tokens = _exercise_name_tokens(target_ex.get("name"))
+    target_patterns = _exercise_movement_patterns(target_ex)
     candidates = []
     for source_name, source_progression in progression.items():
         source_e1rm = _positive_float((source_progression or {}).get("current_e1rm"))
@@ -890,10 +904,12 @@ def _similar_exercise_load_source(exercise_name, progression):
             continue
 
         source_tokens = _exercise_name_tokens(source_ex.get("name"))
+        source_patterns = _exercise_movement_patterns(source_ex)
         shared_tokens = sorted(target_tokens.intersection(source_tokens))
-        if not shared_tokens:
+        shared_patterns = sorted(target_patterns.intersection(source_patterns))
+        if not shared_tokens and not shared_patterns:
             continue
-        score = len(shared_tokens) * 2
+        score = len(shared_tokens) * 2 + len(shared_patterns) * 4
         if source_ex.get("compound") == target_ex.get("compound"):
             score += 3
         if source_ex.get("equipment") == target_ex.get("equipment"):
@@ -910,6 +926,7 @@ def _similar_exercise_load_source(exercise_name, progression):
             "estimated_e1rm": scaled_e1rm,
             "score": score,
             "shared_tokens": shared_tokens,
+            "shared_patterns": shared_patterns,
         })
 
     if not candidates:
@@ -2888,6 +2905,226 @@ def _resolve_custom_swap_exercise(typed_name, old_ex, equipment_pref):
         if _normalize_exercise_name(exercise.get("name")) == wanted:
             return exercise
     return None
+
+
+def _adjust_target_phrase(constraint):
+    text = re.sub(r"\s+", " ", str(constraint or "").strip())
+    if not text:
+        return ""
+    if _adjust_phrase_has_negation(text):
+        return ""
+    patterns = [
+        r"(?:^|\b)replace(?:\s+.+?)?\s+with\s+(.+)$",
+        r"(?:^|\b)swap(?:\s+.+?)?\s+(?:to|with|for)\s+(.+)$",
+        r"(?:^|\b)use\s+(.+?)\s+instead\s+of\s+.+$",
+        r"(?:^|\b)do\s+(.+?)\s+instead\s+of\s+.+$",
+        r"(?:^|\b)do\s+(.+?)\s+instead$",
+        r"(?:^|\b)use\s+(.+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            target = _clean_adjust_target_phrase(match.group(1))
+            return "" if _adjust_phrase_has_negation(target) else target
+    return _clean_adjust_target_phrase(text)
+
+
+def _adjust_source_phrase(constraint):
+    text = re.sub(r"\s+", " ", str(constraint or "").strip())
+    if not text or _adjust_phrase_has_negation(text):
+        return ""
+    patterns = [
+        r"(?:^|\b)replace(?:\s+it)?\s+with\s+.+?\s+instead\s+of\s+(.+)$",
+        r"(?:^|\b)swap(?:\s+it)?\s+(?:to|with|for)\s+.+?\s+instead\s+of\s+(.+)$",
+        r"(?:^|\b)replace\s+(.+?)\s+with\s+.+$",
+        r"(?:^|\b)swap\s+(.+?)\s+(?:to|with|for)\s+.+$",
+        r"(?:^|\b)use\s+.+?\s+instead\s+of\s+(.+)$",
+        r"(?:^|\b)do\s+.+?\s+instead\s+of\s+(.+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            source = _clean_adjust_target_phrase(match.group(1))
+            return "" if _adjust_phrase_has_negation(source) else source
+    return ""
+
+
+def _adjust_phrase_has_negation(text):
+    return bool(re.search(
+        r"(?:^|\b)(?:do\s+not|don't|dont|not|no|avoid|remove|skip|without)\b",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    ))
+
+
+def _clean_adjust_target_phrase(phrase):
+    phrase = re.sub(r"[.!?]+$", "", str(phrase or "").strip())
+    phrase = re.sub(r"\s+instead\s+of\s+.+$", "", phrase, flags=re.IGNORECASE).strip()
+    phrase = re.sub(r"\s+instead$", "", phrase, flags=re.IGNORECASE).strip()
+    phrase = re.sub(r"^(?:a|an|the)\s+", "", phrase, flags=re.IGNORECASE).strip()
+    return phrase[:128]
+
+
+def _resolve_adjust_target_exercise(constraint, equipment_pref):
+    phrase = _adjust_target_phrase(constraint)
+    if not phrase:
+        return None
+
+    candidates = _filtered_exercise_library(equipment_pref)
+    wanted = _normalize_exercise_name(phrase)
+    for exercise in candidates:
+        names = [exercise.get("name")]
+        names.extend(exercise.get("aliases") or [])
+        if any(_normalize_exercise_name(name) == wanted for name in names):
+            return exercise
+
+    if len(_exercise_name_tokens(phrase)) < 2:
+        return None
+
+    return _deterministic_swap_candidate(phrase, candidates)
+
+
+def _plan_exercise_definition(plan_ex):
+    resolved = _resolve_exercise_definition(
+        plan_ex.get("exercise") or plan_ex.get("machine") or plan_ex.get("name")
+    )
+    if resolved:
+        return resolved
+    return {
+        "name": plan_ex.get("exercise") or plan_ex.get("machine") or plan_ex.get("name") or "",
+        "muscle": plan_ex.get("muscle") or plan_ex.get("muscle_group") or "",
+        "compound": bool(plan_ex.get("is_compound")),
+        "movement_patterns": [],
+    }
+
+
+def _select_adjust_replacement_slot(exercises, target_exercise):
+    if not exercises or not target_exercise:
+        return None
+
+    target_muscle = (target_exercise.get("muscle") or "").lower()
+    target_patterns = _exercise_movement_patterns(target_exercise)
+    scored = []
+    for idx, plan_ex in enumerate(exercises):
+        current = _plan_exercise_definition(plan_ex)
+        if _same_exercise_definition(current, target_exercise):
+            continue
+        current_muscle = (current.get("muscle") or "").lower()
+        current_patterns = _exercise_movement_patterns(current)
+        shared_patterns = target_patterns.intersection(current_patterns)
+        score = 0
+        if current_muscle == target_muscle and shared_patterns:
+            score = 100 + len(shared_patterns)
+        elif current_muscle == target_muscle:
+            score = 80
+        elif shared_patterns:
+            score = 50 + len(shared_patterns)
+        else:
+            continue
+        scored.append({
+            "idx": idx,
+            "score": score,
+            "current": current,
+            "shared_patterns": sorted(shared_patterns),
+        })
+
+    if not scored:
+        return None
+
+    # Deterministic tie-break: later plan slots are treated as lower priority.
+    scored.sort(key=lambda item: (-item["score"], item["idx"]))
+    return scored[0]
+
+
+def _build_deterministic_adjust_swap(constraint, recommendation, equipment_pref):
+    target = _resolve_adjust_target_exercise(constraint, equipment_pref)
+    if not target:
+        return None
+    if not _equipment_allowed(target, equipment_pref) or not _exercise_user_allowed(target):
+        return None
+
+    exercises = list((recommendation or {}).get("exercises") or [])
+    source_phrase = _adjust_source_phrase(constraint)
+    if source_phrase:
+        wanted_source = _normalize_exercise_name(source_phrase)
+        source_definition = _resolve_exercise_definition(source_phrase)
+        source_idx = None
+        exact_source_matches = []
+        partial_source_matches = []
+        for idx, plan_ex in enumerate(exercises):
+            if source_definition and _same_exercise_definition(_plan_exercise_definition(plan_ex), source_definition):
+                source_idx = idx
+                break
+            source_name = plan_ex.get("exercise") or plan_ex.get("machine") or plan_ex.get("name") or ""
+            source_norm = _normalize_exercise_name(source_name)
+            if source_norm == wanted_source:
+                exact_source_matches.append(idx)
+            elif wanted_source and wanted_source in source_norm:
+                partial_source_matches.append(idx)
+        if source_idx is None and not source_definition:
+            if len(exact_source_matches) == 1:
+                source_idx = exact_source_matches[0]
+            elif not exact_source_matches and len(partial_source_matches) == 1:
+                source_idx = partial_source_matches[0]
+        if source_idx is None:
+            return None
+        if _same_exercise_definition(_plan_exercise_definition(exercises[source_idx]), target):
+            return None
+        slot = {"idx": source_idx}
+    else:
+        slot = _select_adjust_replacement_slot(exercises, target)
+        if not slot:
+            return None
+
+    old_ex = exercises[slot["idx"]]
+    old_name = old_ex.get("exercise") or old_ex.get("machine") or old_ex.get("name") or ""
+    if not old_name:
+        return None
+
+    return {
+        "replace_exercise": old_name,
+        "replace_index": slot["idx"],
+        "target_muscle": target.get("muscle"),
+        "target_exercise": target.get("name"),
+        "reason": "deterministic movement request",
+        "_deterministic": True,
+    }
+
+
+def _merge_deterministic_adjust_swap(intent, deterministic_swap):
+    merged = dict(intent or {})
+    if deterministic_swap:
+        merged["swap"] = [deterministic_swap]
+    return merged
+
+
+def _deterministic_adjust_payload(
+    recommendation,
+    constraint,
+    deterministic_swap,
+    goal_params,
+    meso_week,
+    meso_plan,
+    oura_readiness,
+    equipment_pref,
+    reason,
+):
+    patched = json.loads(json.dumps(recommendation, default=str))
+    intent = _merge_deterministic_adjust_swap({}, deterministic_swap)
+    patched, applied_notes = _apply_intent_patch(
+        patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
+    )
+    result_kind = "changed" if applied_notes else "unchanged"
+    return {
+        "status": "ok",
+        "result_kind": result_kind,
+        "recommendation": patched,
+        "summary": "Applied the recognized exercise request without the local coach model.",
+        "applied_notes": applied_notes,
+        "constraint": constraint,
+        "meta": {"mode": "deterministic_fallback", "reason": reason},
+        "cache_hit": False,
+    }
 
 
 def _build_exercise_entry(
@@ -7660,7 +7897,7 @@ def swap_workout_exercise():
 # - Cache by workout_id + constraint + readiness_date + model_version + schema/library hash.
 
 _ADJUST_CACHE_DB = os.path.join(DATA_DIR, "ai_coach_cache.sqlite3")
-_ADJUST_CACHE_VERSION = "fit103-target-exercise-v1"
+_ADJUST_CACHE_VERSION = "fit179-movement-resolution-v1"
 
 
 def _ai_cache_init():
@@ -7727,6 +7964,8 @@ def _exercise_library_hash(preference: str) -> str:
                 "equipment_brands": ex.get("equipment_brands", []),
                 "compound": bool(ex.get("compound")),
                 "joints_loaded": ex.get("joints_loaded", []),
+                "aliases": ex.get("aliases", []),
+                "movement_patterns": ex.get("movement_patterns", []),
             }
             for ex in _filtered_exercise_library(preference)
         ],
@@ -7915,20 +8154,35 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     for sw in swap_requests:
         if not isinstance(sw, dict):
             continue
-        src_name = (sw.get("replace_exercise") or "").strip().lower()
+        raw_src_name = (sw.get("replace_exercise") or "").strip()
+        src_name = raw_src_name.lower()
+        src_definition = _resolve_exercise_definition(raw_src_name) if raw_src_name else None
+        replace_index = sw.get("replace_index")
         target_muscle = (sw.get("target_muscle") or "").strip().lower()
-        if not src_name or not target_muscle:
+        if not target_muscle or (not src_name and not isinstance(replace_index, int)):
             continue
         if target_muscle in avoid_muscles:
             notes.append(f"Ignored: swap to {target_muscle} — muscle is avoided")
             continue
 
         # Find the exercise to replace by name (case-insensitive, contains).
+        def _source_matches_plan_exercise(plan_ex):
+            if not src_name:
+                return True
+            if src_definition and _same_exercise_definition(_plan_exercise_definition(plan_ex), src_definition):
+                return True
+            plan_name = plan_ex.get("exercise") or plan_ex.get("machine") or plan_ex.get("name") or ""
+            return src_name in plan_name.lower()
+
         idx = None
-        for i, ex in enumerate(exercises):
-            if src_name in (ex.get("exercise") or "").lower():
-                idx = i
-                break
+        if isinstance(replace_index, int) and 0 <= replace_index < len(exercises):
+            if _source_matches_plan_exercise(exercises[replace_index]):
+                idx = replace_index
+        if idx is None:
+            for i, ex in enumerate(exercises):
+                if _source_matches_plan_exercise(ex):
+                    idx = i
+                    break
         if idx is None:
             notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
             continue
@@ -7950,12 +8204,21 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment/joint constraints")
             continue
         # _filtered_exercise_library already applies brand, compound, and name ranking.
-        # Avoid picking something already in the plan
-        already = {(ex.get("exercise") or "").lower() for ex in exercises}
-        if requested_exercise and requested_exercise in library and requested_exercise["name"].lower() not in already:
+        # Avoid picking something already in the plan, including aliases.
+        def _plan_already_contains(candidate):
+            return any(
+                _same_exercise_definition(_plan_exercise_definition(plan_ex), candidate)
+                for plan_ex in exercises
+            )
+
+        if requested_exercise:
+            if requested_exercise not in library:
+                continue
+            if _plan_already_contains(requested_exercise):
+                continue
             picked = requested_exercise
         else:
-            picked = next((e for e in library if e["name"].lower() not in already), library[0])
+            picked = next((e for e in library if not _plan_already_contains(e)), library[0])
 
         new_entry = _build_exercise_entry(
             exercise_name=picked["name"],
@@ -8065,16 +8328,6 @@ def adjust_workout():
     if err2:
         return err2
 
-    if not _lm_studio:
-        _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
-        return jsonify({
-            "status": "fallback",
-            "reason": "LM Studio adapter not available on this server",
-            "recommendation": LAST_WORKOUT_RECOMMENDATION,
-            "summary": None,
-            "applied_notes": [],
-        })
-
     recommendation = LAST_WORKOUT_RECOMMENDATION
     if not recommendation:
         recommendation = generate_next_workout(WORKOUTS, SORENESS_DATA)
@@ -8087,6 +8340,32 @@ def adjust_workout():
     meso_plan = MESOCYCLE_PLAN.get(meso_week, MESOCYCLE_PLAN[1])
     oura_readiness = _get_oura_readiness_today()
     equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
+    deterministic_swap = _build_deterministic_adjust_swap(constraint, recommendation, equipment_pref)
+
+    if not _lm_studio:
+        if deterministic_swap:
+            payload = _deterministic_adjust_payload(
+                recommendation,
+                constraint,
+                deterministic_swap,
+                goal_params,
+                meso_week,
+                meso_plan,
+                oura_readiness,
+                equipment_pref,
+                "adapter_missing",
+            )
+            LAST_WORKOUT_RECOMMENDATION = payload["recommendation"]
+            _ai_metric_log("ok", reason="deterministic_fallback: adapter_missing", constraint_len=len(constraint))
+            return jsonify(payload)
+        _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
+        return jsonify({
+            "status": "fallback",
+            "reason": "LM Studio adapter not available on this server",
+            "recommendation": recommendation,
+            "summary": None,
+            "applied_notes": [],
+        })
 
     readiness_date = _today_str()
     route_candidate = _lm_studio.active_candidate()
@@ -8119,6 +8398,21 @@ def adjust_workout():
             return jsonify(cached)
 
     if route_candidate is None:
+        if deterministic_swap:
+            payload = _deterministic_adjust_payload(
+                recommendation,
+                constraint,
+                deterministic_swap,
+                goal_params,
+                meso_week,
+                meso_plan,
+                oura_readiness,
+                equipment_pref,
+                "preflight_unavailable",
+            )
+            LAST_WORKOUT_RECOMMENDATION = payload["recommendation"]
+            _ai_metric_log("ok", reason="deterministic_fallback: preflight_unavailable", constraint_len=len(constraint), model_version=route_model_version)
+            return jsonify(payload)
         _ai_metric_log(
             "fallback",
             constraint_len=len(constraint),
@@ -8149,6 +8443,26 @@ def adjust_workout():
         )
     except _lm_studio.LmStudioError as exc:
         reason_code = "timeout" if "timeout" in str(exc).lower() else "unreachable" if "unreachable" in str(exc).lower() else "invalid_json" if "json" in str(exc).lower() else "error"
+        if deterministic_swap:
+            payload = _deterministic_adjust_payload(
+                recommendation,
+                constraint,
+                deterministic_swap,
+                goal_params,
+                meso_week,
+                meso_plan,
+                oura_readiness,
+                equipment_pref,
+                reason_code,
+            )
+            LAST_WORKOUT_RECOMMENDATION = payload["recommendation"]
+            _ai_metric_log(
+                "ok",
+                constraint_len=len(constraint),
+                model_version=route_model_version,
+                reason=f"deterministic_fallback: {reason_code}",
+            )
+            return jsonify(payload)
         _ai_metric_log(
             "fallback",
             constraint_len=len(constraint),
@@ -8163,7 +8477,7 @@ def adjust_workout():
             "applied_notes": [],
         })
 
-    intent = raw_patch.get("intent") or {}
+    intent = _merge_deterministic_adjust_swap(raw_patch.get("intent") or {}, deterministic_swap)
     summary = raw_patch.get("summary") or ""
     raw_meta = raw_patch.get("_meta") or {}
     actual_model_version = raw_meta.get("model_version") or route_model_version
