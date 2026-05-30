@@ -411,6 +411,27 @@ def test_adjust_deterministic_honors_explicit_source_exercise(monkeypatch):
     assert pectoral["replace_index"] == 1
 
 
+def test_adjust_deterministic_honors_source_alias(monkeypatch):
+    module = _module(monkeypatch)
+    recommendation = _recommendation_for(
+        module,
+        [
+            _rec_exercise("Pec Fly", "chest", 50),
+            _rec_exercise("Seated Row", "back", 90),
+        ],
+    )
+
+    swap = module._build_deterministic_adjust_swap(
+        "replace Pectoral Fly with Chest Press",
+        recommendation,
+        "machines_and_cables",
+    )
+
+    assert swap["target_exercise"] == "Chest Press"
+    assert swap["replace_exercise"] == "Pec Fly"
+    assert swap["replace_index"] == 0
+
+
 def test_adjust_deterministic_target_requires_compatible_plan_slot(monkeypatch):
     module = _module(monkeypatch)
     recommendation = _recommendation_for(

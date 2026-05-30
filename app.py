@@ -3006,8 +3006,12 @@ def _build_deterministic_adjust_swap(constraint, recommendation, equipment_pref)
     source_phrase = _adjust_source_phrase(constraint)
     if source_phrase:
         wanted_source = _normalize_exercise_name(source_phrase)
+        source_definition = _resolve_exercise_definition(source_phrase)
         source_idx = None
         for idx, plan_ex in enumerate(exercises):
+            if source_definition and _same_exercise_definition(_plan_exercise_definition(plan_ex), source_definition):
+                source_idx = idx
+                break
             source_name = plan_ex.get("exercise") or plan_ex.get("machine") or plan_ex.get("name") or ""
             source_norm = _normalize_exercise_name(source_name)
             if source_norm == wanted_source or wanted_source in source_norm:
