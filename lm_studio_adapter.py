@@ -36,6 +36,8 @@ LM_STUDIO_FALLBACK_MODEL = os.environ.get("LM_STUDIO_FALLBACK_MODEL", "qwen/qwen
 LM_STUDIO_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_TIMEOUT_SEC", "8"))
 LM_STUDIO_ANALYZE_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_ANALYZE_TIMEOUT_SEC", "25"))
 LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC", "2.5"))
+LM_STUDIO_SWAP_RECOMMEND_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_SWAP_RECOMMEND_TIMEOUT_SEC", "3"))
+LM_STUDIO_SWAP_RECOMMEND_LOCK_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_SWAP_RECOMMEND_LOCK_TIMEOUT_SEC", "0.5"))
 LM_STUDIO_PREFLIGHT_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_PREFLIGHT_TIMEOUT_SEC", "1.5"))
 # Backwards-compatible names used by app.py cache keys.
 LM_STUDIO_URL = LM_STUDIO_PRIMARY_URL
@@ -353,11 +355,50 @@ SWAP_RESOLVE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
+        "action": {"type": "string", "enum": ["resolve", "clarify"]},
         "canonical_name": {"type": ["string", "null"]},
         "confidence": {"type": "number"},
         "reason": {"type": "string"},
+        "clarification_question": {"type": ["string", "null"]},
+        "options": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string"},
+                    "distinction": {"type": "string"},
+                },
+                "required": ["name", "distinction"],
+            },
+        },
     },
-    "required": ["canonical_name", "confidence", "reason"],
+    "required": ["action", "canonical_name", "confidence", "reason", "clarification_question", "options"],
+}
+
+
+SWAP_RECOMMEND_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "target_canonical": {"type": ["string", "null"]},
+        "slot_index": {"type": ["integer", "null"]},
+        "confidence": {"type": "number"},
+        "reason": {"type": "string"},
+        "alternatives": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "slot_index": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["slot_index", "reason"],
+            },
+        },
+    },
+    "required": ["target_canonical", "slot_index", "confidence", "reason", "alternatives"],
 }
 
 
@@ -367,27 +408,201 @@ _SWAP_RESOLVE_SYSTEM = (
     "Rules:\n"
     "- Return ONLY JSON matching the provided schema. No prose, no markdown.\n"
     "- Choose canonical_name only from candidate_names. Never invent exercise names.\n"
-    "- If no candidate is a clear semantic match, return canonical_name null.\n"
+    "- action must be resolve when one candidate is clear; clarify when two or more candidates need an explicit user choice.\n"
+    "- Bare terms name the plainest/default variant. Specialized variants such as overhead, incline, rear, cable, seated, or Arnold require that qualifier in the typed request.\n"
+    "- Use movement metadata, body position, shoulder position, equipment, primary emphasis, confusable_with, and disambiguation text to distinguish candidates.\n"
+    "- If no candidate is a clear semantic match, return action resolve with canonical_name null.\n"
+    "- If action is clarify, set canonical_name null, include a short clarification_question, and options from candidate_names only.\n"
     "- NEVER prescribe weights, sets, reps, RPE, or load. Python infers load.\n"
     "- Err toward null when the typed phrase is vague or unsafe."
+)
+
+_SWAP_RESOLVE_FEWSHOT = [
+    {
+        "role": "user",
+        "content": json.dumps({
+            "typed_name": "triceps extension",
+            "candidate_names": ["Triceps Extension", "Overhead Tricep Extension"],
+            "candidates": [
+                {"name": "Triceps Extension", "equipment": "machine", "body_position": "seated", "shoulder_position": "neutral", "disambiguation": "Default for a bare triceps extension."},
+                {"name": "Overhead Tricep Extension", "equipment": "cable", "body_position": "standing", "shoulder_position": "overhead", "disambiguation": "Pick only when overhead is typed."},
+            ],
+        }),
+    },
+    {
+        "role": "assistant",
+        "content": json.dumps({
+            "action": "resolve",
+            "canonical_name": "Triceps Extension",
+            "confidence": 0.93,
+            "reason": "Bare triceps extension maps to the seated machine default; overhead was not requested.",
+            "clarification_question": None,
+            "options": [],
+        }),
+    },
+    {
+        "role": "user",
+        "content": json.dumps({
+            "typed_name": "crunch",
+            "candidate_names": ["Crunch Machine", "Cable Crunch"],
+            "candidates": [
+                {"name": "Crunch Machine", "equipment": "machine", "disambiguation": "Default crunch machine."},
+                {"name": "Cable Crunch", "equipment": "cable", "disambiguation": "Pick when cable crunch is requested."},
+            ],
+        }),
+    },
+    {
+        "role": "assistant",
+        "content": json.dumps({
+            "action": "clarify",
+            "canonical_name": None,
+            "confidence": 0.45,
+            "reason": "Crunch can mean either a machine or cable station movement.",
+            "clarification_question": "Which crunch variation do you want?",
+            "options": [
+                {"name": "Crunch Machine", "distinction": "Selectorized machine crunch."},
+                {"name": "Cable Crunch", "distinction": "Cable-station crunch."},
+            ],
+        }),
+    },
+    {
+        "role": "user",
+        "content": json.dumps({
+            "typed_name": "overhead triceps extension",
+            "candidate_names": ["Triceps Extension", "Overhead Tricep Extension"],
+        }),
+    },
+    {
+        "role": "assistant",
+        "content": json.dumps({
+            "action": "resolve",
+            "canonical_name": "Overhead Tricep Extension",
+            "confidence": 0.94,
+            "reason": "The typed qualifier overhead selects the overhead cable variant.",
+            "clarification_question": None,
+            "options": [],
+        }),
+    },
+]
+
+
+_SWAP_RECOMMEND_SYSTEM = (
+    "You recommend which planned workout slot should be swapped for a desired target exercise.\n"
+    "\n"
+    "Rules:\n"
+    "- Return ONLY JSON matching the provided schema. No prose, no markdown.\n"
+    "- target_canonical must be null or exactly one candidate name from candidate_names.\n"
+    "- slot_index must be null or an integer index from planned_exercises.\n"
+    "- Recommend same-muscle replacements only. The server prefilters candidates and slots; stay inside those bounds.\n"
+    "- Return alternatives as other slot indexes from planned_exercises with short reasons, max 3.\n"
+    "- Never invent exercises or slots. Never prescribe weights, sets, reps, RPE, or load.\n"
+    "- If the target or slot is unclear, return null target_canonical and null slot_index with low confidence."
 )
 
 
 def _validate_swap_resolution(parsed):
     if not isinstance(parsed, dict):
         raise LmStudioError(f"response is not an object: {type(parsed).__name__}")
+    if parsed.get("action") not in {"resolve", "clarify"}:
+        raise LmStudioError("action must be resolve or clarify")
     canonical_name = parsed.get("canonical_name")
     if canonical_name is not None and not isinstance(canonical_name, str):
         raise LmStudioError("canonical_name must be string or null")
+    if parsed.get("action") == "clarify" and canonical_name is not None:
+        raise LmStudioError("clarify action must not include canonical_name")
     confidence = parsed.get("confidence")
     if not isinstance(confidence, (int, float)):
         raise LmStudioError("confidence must be number")
     if not isinstance(parsed.get("reason"), str):
         raise LmStudioError("reason must be string")
+    if parsed.get("clarification_question") is not None and not isinstance(parsed.get("clarification_question"), str):
+        raise LmStudioError("clarification_question must be string or null")
+    options = parsed.get("options")
+    if not isinstance(options, list):
+        raise LmStudioError("options must be array")
+    for option in options:
+        if not isinstance(option, dict):
+            raise LmStudioError("option must be object")
+        if not isinstance(option.get("name"), str) or not isinstance(option.get("distinction"), str):
+            raise LmStudioError("option name and distinction must be strings")
+        option["name"] = option["name"].strip()
+        option["distinction"] = option["distinction"].strip()
+        if not option["name"] or not option["distinction"]:
+            raise LmStudioError("option name and distinction must be non-empty")
+
+
+def _validate_swap_recommendation(parsed):
+    if not isinstance(parsed, dict):
+        raise LmStudioError(f"response is not an object: {type(parsed).__name__}")
+    target = parsed.get("target_canonical")
+    if target is not None and not isinstance(target, str):
+        raise LmStudioError("target_canonical must be string or null")
+    slot_index = parsed.get("slot_index")
+    if slot_index is not None and not _is_json_integer(slot_index):
+        raise LmStudioError("slot_index must be integer or null")
+    if (target is None) != (slot_index is None):
+        raise LmStudioError("target_canonical and slot_index must both be populated or both null")
+    confidence = parsed.get("confidence")
+    if not isinstance(confidence, (int, float)):
+        raise LmStudioError("confidence must be number")
+    if not isinstance(parsed.get("reason"), str):
+        raise LmStudioError("reason must be string")
+    alternatives = parsed.get("alternatives")
+    if not isinstance(alternatives, list):
+        raise LmStudioError("alternatives must be array")
+    for alternative in alternatives:
+        if not isinstance(alternative, dict):
+            raise LmStudioError("alternative must be object")
+        if not _is_json_integer(alternative.get("slot_index")):
+            raise LmStudioError("alternative slot_index must be integer")
+        if not isinstance(alternative.get("reason"), str):
+            raise LmStudioError("alternative reason must be string")
 
 
 def _normalize_candidate_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+
+
+def _is_json_integer(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+_SWAP_CANDIDATE_METADATA_FIELDS = [
+    "muscle",
+    "equipment",
+    "aliases",
+    "compound",
+    "movement_pattern",
+    "movement_patterns",
+    "body_position",
+    "shoulder_position",
+    "primary_emphasis",
+    "match_tokens",
+    "confusable_with",
+    "disambiguation",
+    "joints_loaded",
+]
+
+
+def _swap_candidate_payload(candidate: dict) -> dict:
+    payload = {"name": candidate.get("name")}
+    for field in _SWAP_CANDIDATE_METADATA_FIELDS:
+        value = candidate.get(field)
+        if value in (None, "", [], {}):
+            continue
+        payload[field] = value
+    if "compound" not in payload:
+        payload["compound"] = bool(candidate.get("compound"))
+    return payload
+
+
+def _planned_exercise_payload(exercise: dict, index: int) -> dict:
+    return {
+        "index": index,
+        "exercise": exercise.get("exercise") or exercise.get("name") or exercise.get("machine"),
+        "muscle": exercise.get("muscle") or exercise.get("muscle_group"),
+        "is_compound": bool(exercise.get("is_compound") or exercise.get("compound")),
+    }
 
 
 def resolve_swap_candidate(
@@ -412,6 +627,7 @@ def resolve_swap_candidate(
 
     messages = [
         {"role": "system", "content": _SWAP_RESOLVE_SYSTEM},
+        *_SWAP_RESOLVE_FEWSHOT,
         {
             "role": "user",
             "content": json.dumps(
@@ -420,15 +636,7 @@ def resolve_swap_candidate(
                     "current_exercise": str(current_exercise or "").strip(),
                     "target_muscle": str(target_muscle or "").strip(),
                     "candidate_names": candidate_names,
-                    "candidates": [
-                        {
-                            "name": candidate.get("name"),
-                            "equipment": candidate.get("equipment"),
-                            "aliases": candidate.get("aliases") or [],
-                            "compound": bool(candidate.get("compound")),
-                        }
-                        for candidate in candidates
-                    ],
+                    "candidates": [_swap_candidate_payload(candidate) for candidate in candidates],
                 }
             ),
         },
@@ -457,11 +665,152 @@ def resolve_swap_candidate(
         _validate_swap_resolution(parsed)
         canonical_name = parsed.get("canonical_name")
         if canonical_name is None:
+            if parsed.get("action") == "resolve":
+                return
+        if parsed.get("action") == "clarify":
+            if not str(parsed.get("clarification_question") or "").strip():
+                raise LmStudioError("clarify action requires a clarification_question")
+            normalized_options = []
+            seen = set()
+            for option in parsed.get("options") or []:
+                normalized = _normalize_candidate_name(option.get("name"))
+                if normalized not in candidate_lookup:
+                    raise LmStudioError("clarify option is not in candidate_names")
+                canonical_option = candidate_lookup[normalized]
+                if canonical_option in seen:
+                    continue
+                seen.add(canonical_option)
+                option["name"] = canonical_option
+                normalized_options.append(option)
+            parsed["options"] = normalized_options
+            if len(normalized_options) < 2:
+                raise LmStudioError("clarify action requires at least two distinct options")
             return
         normalized = _normalize_candidate_name(canonical_name)
         if normalized not in candidate_lookup:
             raise LmStudioError("canonical_name is not in candidate_names")
         parsed["canonical_name"] = candidate_lookup[normalized]
+
+    try:
+        parsed = _completion_json(
+            "/v1/chat/completions",
+            payload,
+            timeout=timeout,
+            validate=validate,
+            preflighted_candidate=preflighted_candidate,
+        )
+    finally:
+        _INFERENCE_LOCK.release()
+
+    return parsed
+
+
+def recommend_swap_target(
+    typed_target: str,
+    *,
+    planned_exercises: list[dict],
+    library_candidates: list[dict],
+    equipment_pref: str = "",
+    timeout: float | None = None,
+    preflighted_candidate: dict | None = None,
+) -> dict:
+    """Ask the LLM which planned slot should be swapped for a desired target."""
+    timeout = timeout if timeout is not None else LM_STUDIO_SWAP_RECOMMEND_TIMEOUT_SEC
+    candidate_names = [
+        str(candidate.get("name") or "").strip()
+        for candidate in (library_candidates or [])
+        if str(candidate.get("name") or "").strip()
+    ]
+    if not candidate_names:
+        raise LmStudioError("no swap recommendation candidates provided")
+    if not planned_exercises:
+        raise LmStudioError("no planned exercises provided")
+
+    candidate_lookup = {_normalize_candidate_name(name): name for name in candidate_names}
+    candidate_by_name = {
+        _normalize_candidate_name(candidate.get("name")): candidate
+        for candidate in library_candidates
+        if str(candidate.get("name") or "").strip()
+    }
+    max_slot_index = len(planned_exercises) - 1
+    planned_payload = [
+        _planned_exercise_payload(exercise, index)
+        for index, exercise in enumerate(planned_exercises)
+    ]
+
+    messages = [
+        {"role": "system", "content": _SWAP_RECOMMEND_SYSTEM},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "typed_target": str(typed_target or "").strip(),
+                    "equipment_pref": str(equipment_pref or "").strip(),
+                    "candidate_names": candidate_names,
+                    "library_candidates": [_swap_candidate_payload(candidate) for candidate in library_candidates],
+                    "planned_exercises": planned_payload,
+                }
+            ),
+        },
+    ]
+
+    payload = {
+        "model": LM_STUDIO_MODEL,
+        "temperature": 0,
+        "max_tokens": 420,
+        "messages": messages,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "swap_recommendation",
+                "schema": SWAP_RECOMMEND_SCHEMA,
+                "strict": True,
+            },
+        },
+    }
+
+    acquired = _INFERENCE_LOCK.acquire(timeout=LM_STUDIO_SWAP_RECOMMEND_LOCK_TIMEOUT_SEC)
+    if not acquired:
+        raise LmStudioError("busy: another inference request is still in flight")
+
+    def validate(parsed):
+        _validate_swap_recommendation(parsed)
+        target = parsed.get("target_canonical")
+        if target is not None:
+            normalized = _normalize_candidate_name(target)
+            if normalized not in candidate_lookup:
+                raise LmStudioError("target_canonical is not in candidate_names")
+            parsed["target_canonical"] = candidate_lookup[normalized]
+
+        slot_index = parsed.get("slot_index")
+        if slot_index is not None and not (0 <= slot_index <= max_slot_index):
+            raise LmStudioError("slot_index out of range")
+        target_muscle = ""
+        if target is not None and slot_index is not None:
+            target_candidate = candidate_by_name.get(_normalize_candidate_name(parsed["target_canonical"])) or {}
+            target_muscle = str(target_candidate.get("muscle") or "").strip().lower()
+            planned_slot = planned_exercises[slot_index] or {}
+            slot_muscle = str(planned_slot.get("muscle") or planned_slot.get("muscle_group") or "").strip().lower()
+            if target_muscle and slot_muscle and target_muscle != slot_muscle:
+                raise LmStudioError("target_canonical muscle does not match slot_index muscle")
+
+        alternatives = []
+        seen = set()
+        for alternative in parsed.get("alternatives") or []:
+            alt_index = alternative["slot_index"]
+            if not (0 <= alt_index <= max_slot_index):
+                raise LmStudioError("alternative slot_index out of range")
+            alt_slot = planned_exercises[alt_index] or {}
+            alt_muscle = str(alt_slot.get("muscle") or alt_slot.get("muscle_group") or "").strip().lower()
+            if target_muscle and alt_muscle and target_muscle != alt_muscle:
+                raise LmStudioError("alternative slot_index muscle does not match target_canonical muscle")
+            if alt_index in seen or alt_index == slot_index:
+                continue
+            seen.add(alt_index)
+            alternatives.append(alternative)
+            if len(alternatives) >= 3:
+                break
+        parsed["alternatives"] = alternatives
 
     try:
         parsed = _completion_json(
