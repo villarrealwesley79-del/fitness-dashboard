@@ -125,6 +125,8 @@ ${FITNESS_DASHBOARD_PUBLIC_BASE_URL}/api/apple-health/sync?token=<HEALTH_SYNC_TO
 
 Use `APPLE_HEALTH_WEBHOOK_URL` only when the sync endpoint is intentionally exposed at a different public path. The value should be the endpoint URL without the token; the setup route appends the token.
 
+Browser-initiated state-changing requests send `X-Requested-With: XMLHttpRequest`; the server also accepts browser same-origin metadata for cached app-shell rollouts and rejects mismatched browser origins before checking the CSRF header. The token-authenticated Apple Health sync endpoint and Stripe's signed webhook are explicitly exempt because they are called by external systems rather than the dashboard UI.
+
 ## Git Workflow
 
 `main` is the stable branch. Updates should go through focused branches and pull requests.

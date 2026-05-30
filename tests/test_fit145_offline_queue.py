@@ -89,7 +89,7 @@ def test_meal_queue_replays_existing_meal_intake_form_contract():
 
     assert "fetch('/api/meal-intake'" in block
     assert "form.append('images', photo.blob, `meal-${idx + 1}.${extension}`);" in block
-    assert "headers: { 'Accept': 'application/json' }" in block
+    assert "headers: { 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE }" in block
     assert "credentials: 'same-origin'" in block
     assert "syncStatus = 'conflicted';" in block
     assert "syncStatus = 'pending';" in block
@@ -184,7 +184,7 @@ def test_meal_flush_has_duplicate_guards_and_online_hooks():
     assert "_mealSyncInFlightClientIds.has(clientId)" in APP_JS
     assert "window.addEventListener('online', () => {" in APP_JS
     assert "flushMealSyncQueue();" in APP_JS
-    assert "const CACHE_NAME = 'fitness-dashboard-v20260525-fit139';" in APP_SW
+    assert "const CACHE_NAME = 'fitness-dashboard-v20260530-fit191-csrf';" in APP_SW
     assert "sync" not in APP_SW.lower()
 
 

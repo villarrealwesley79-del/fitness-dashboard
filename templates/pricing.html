@@ -93,6 +93,7 @@
         <li>Early access to new features</li>
       </ul>
       <form action="/create-checkout-session" method="POST">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="btn btn-accent">Upgrade to Pro</button>
       </form>
     </div>
