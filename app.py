@@ -2885,6 +2885,8 @@ def _adjust_target_phrase(constraint):
     patterns = [
         r"(?:^|\b)replace(?:\s+.+?)?\s+with\s+(.+)$",
         r"(?:^|\b)swap(?:\s+.+?)?\s+(?:to|with|for)\s+(.+)$",
+        r"(?:^|\b)use\s+(.+?)\s+instead\s+of\s+.+$",
+        r"(?:^|\b)do\s+(.+?)\s+instead\s+of\s+.+$",
         r"(?:^|\b)do\s+(.+?)\s+instead$",
         r"(?:^|\b)use\s+(.+)$",
     ]
@@ -2903,6 +2905,8 @@ def _adjust_source_phrase(constraint):
     patterns = [
         r"(?:^|\b)replace\s+(.+?)\s+with\s+.+$",
         r"(?:^|\b)swap\s+(.+?)\s+(?:to|with|for)\s+.+$",
+        r"(?:^|\b)use\s+.+?\s+instead\s+of\s+(.+)$",
+        r"(?:^|\b)do\s+.+?\s+instead\s+of\s+(.+)$",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -2922,6 +2926,7 @@ def _adjust_phrase_has_negation(text):
 
 def _clean_adjust_target_phrase(phrase):
     phrase = re.sub(r"[.!?]+$", "", str(phrase or "").strip())
+    phrase = re.sub(r"\s+instead\s+of\s+.+$", "", phrase, flags=re.IGNORECASE).strip()
     phrase = re.sub(r"\s+instead$", "", phrase, flags=re.IGNORECASE).strip()
     phrase = re.sub(r"^(?:a|an|the)\s+", "", phrase, flags=re.IGNORECASE).strip()
     return phrase[:128]
