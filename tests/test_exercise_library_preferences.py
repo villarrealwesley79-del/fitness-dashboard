@@ -231,6 +231,209 @@ def test_swap_accepts_custom_typed_same_muscle_exercise_name(fitness_app, monkey
     assert "Swapped from Seated Row" in exercise["rationale"]
 
 
+def _swap_recommendation_fixture(fitness_app):
+    return {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Chest Press",
+                "muscle": "chest",
+                "is_compound": True,
+                "target_weight": 90,
+                "target_reps": 10,
+                "target_sets": 3,
+            },
+            {
+                "exercise": "Tricep Pushdown",
+                "muscle": "triceps",
+                "is_compound": False,
+                "target_weight": 50,
+                "target_reps": 12,
+                "target_sets": 3,
+            },
+            {
+                "exercise": "Overhead Tricep Extension",
+                "muscle": "triceps",
+                "is_compound": False,
+                "target_weight": 35,
+                "target_reps": 12,
+                "target_sets": 3,
+            },
+        ],
+    }
+
+
+def test_swap_recommend_endpoint_deterministic_without_lm_studio(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = _swap_recommendation_fixture(fitness_app)
+    original = copy.deepcopy(recommendation)
+    metrics = []
+    monkeypatch.setattr(fitness_app, "_lm_studio", None)
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    monkeypatch.setattr(fitness_app, "_workout_recommendation_fingerprint", lambda: "fp-test")
+    monkeypatch.setattr(
+        fitness_app,
+        "_ai_metric_log",
+        lambda outcome, **kwargs: metrics.append((outcome, kwargs)),
+    )
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap/recommend",
+        json={"workout_index": 0, "typed_target": "tricep extension"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["source"] == "deterministic"
+    assert body["target_canonical"] == "Triceps Extension"
+    assert body["target_muscle"] == "triceps"
+    assert body["slot"] == {
+        "exercise_index": 1,
+        "name": "Tricep Pushdown",
+        "muscle": "triceps",
+    }
+    assert body["commit"] == {
+        "workout_index": 0,
+        "exercise_index": 1,
+        "new_exercise_name": "Triceps Extension",
+    }
+    assert body["recommended_load"] is None
+    assert body["plan_fingerprint"] == "fp-test"
+    assert recommendation == original
+    assert metrics[0][0] == "fallback"
+    assert metrics[0][1]["reason"] == "swap_recommend: adapter_missing"
+
+
+def test_swap_recommend_endpoint_projects_planned_exercise_keys_to_adapter(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = _swap_recommendation_fixture(fitness_app)
+    captured = {}
+
+    class FakeAdapter:
+        class LmStudioError(Exception):
+            pass
+
+        def recommend_swap_target(self, typed_target, *, planned_exercises, library_candidates, equipment_pref):
+            captured["typed_target"] = typed_target
+            captured["planned_exercises"] = planned_exercises
+            captured["library_candidates"] = library_candidates
+            captured["equipment_pref"] = equipment_pref
+            return {
+                "target_canonical": "Triceps Extension",
+                "slot_index": 0,
+                "confidence": 0.91,
+                "reason": "Closest triceps isolation slot.",
+                "alternatives": [{"slot_index": 1, "reason": "Also triceps isolation."}],
+            }
+
+    monkeypatch.setattr(fitness_app, "_lm_studio", FakeAdapter())
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    monkeypatch.setattr(fitness_app, "_workout_recommendation_fingerprint", lambda: "fp-ai")
+    monkeypatch.setattr(fitness_app, "_ai_metric_log", lambda *_args, **_kwargs: None)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap/recommend",
+        json={"workout_index": 0, "typed_target": "tricep extension"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["source"] == "ai"
+    assert body["target_canonical"] == "Triceps Extension"
+    assert body["slot"]["exercise_index"] == 1
+    assert body["alternatives"] == [
+        {
+            "exercise_index": 2,
+            "name": "Overhead Tricep Extension",
+            "muscle": "triceps",
+            "reason": "Also triceps isolation.",
+        }
+    ]
+    assert captured["typed_target"] == "tricep extension"
+    assert captured["equipment_pref"] == "machines_and_cables"
+    assert captured["planned_exercises"][0]["name"] == "Tricep Pushdown"
+    assert captured["planned_exercises"][0]["compound"] is False
+    assert captured["planned_exercises"][0]["exercise_index"] == 1
+    assert {candidate["muscle"] for candidate in captured["library_candidates"]} == {"triceps"}
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_reason", "expected_response_reason"),
+    [
+        ("busy: another inference request is still in flight", "swap_recommend: busy", "AI busy - used best match, confirm?"),
+        ("all endpoints failed", "swap_recommend: outage", "AI outage - used best match, confirm?"),
+    ],
+)
+def test_swap_recommend_endpoint_degrades_on_ai_failure(
+    fitness_app,
+    monkeypatch,
+    message,
+    expected_reason,
+    expected_response_reason,
+):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = _swap_recommendation_fixture(fitness_app)
+    metrics = []
+
+    class FakeAdapter:
+        class LmStudioError(Exception):
+            pass
+
+        def recommend_swap_target(self, *_args, **_kwargs):
+            raise self.LmStudioError(message)
+
+    monkeypatch.setattr(fitness_app, "_lm_studio", FakeAdapter())
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    monkeypatch.setattr(fitness_app, "_workout_recommendation_fingerprint", lambda: "fp-fallback")
+    monkeypatch.setattr(
+        fitness_app,
+        "_ai_metric_log",
+        lambda outcome, **kwargs: metrics.append((outcome, kwargs)),
+    )
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap/recommend",
+        json={"workout_index": 0, "typed_target": "tricep extension"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["source"] == "deterministic"
+    assert body["target_canonical"] == "Triceps Extension"
+    assert body["reason"] == expected_response_reason
+    assert metrics[0][0] == "fallback"
+    assert metrics[0][1]["reason"] == expected_reason
+
+
+def test_swap_recommend_endpoint_returns_no_match_without_same_muscle_slot(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Chest Press",
+                "muscle": "chest",
+                "is_compound": True,
+                "target_weight": 90,
+                "target_reps": 10,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "_lm_studio", None)
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap/recommend",
+        json={"workout_index": 0, "typed_target": "tricep extension"},
+    )
+
+    assert response.status_code == 422
+    assert response.get_json()["error"]["code"] == "no_match"
+
+
 def test_swap_resolves_semantic_triceps_extension_and_uses_backend_load(fitness_app, monkeypatch):
     fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
     recommendation = {
