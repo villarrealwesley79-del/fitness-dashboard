@@ -112,14 +112,18 @@ PROTEIN_TOKENS = {
 }
 OFF_REJECT_QUALITY_TAG_FRAGMENTS = (
     "nutrition-data-error",
-    "nutrition-energy-value-in-kcal-does-not-match",
-    "nutrition-energy-value-in-kcal-may-not-match",
-    "nutrition-packaging-as-sold-100g-energy-value-in-kcal-does-not-match",
-    "nutrition-packaging-as-sold-100g-energy-value-in-kcal-may-not-match",
     "nutrition-value-under-0-01-g-salt",
     "nutrition-packaging-as-sold-100g-value-under-0-01-g-salt",
     "nutrition-value-very-low-for-category-salt",
 )
+OFF_ENERGY_MISMATCH_TAG_FRAGMENTS = (
+    "nutrition-energy-value-in-kcal-does-not-match",
+    "nutrition-energy-value-in-kcal-may-not-match",
+    "nutrition-packaging-as-sold-100g-energy-value-in-kcal-does-not-match",
+    "nutrition-packaging-as-sold-100g-energy-value-in-kcal-may-not-match",
+)
+OFF_ENERGY_ATWATER_TOLERANCE_PCT = 0.12
+OFF_ENERGY_ATWATER_TOLERANCE_ABS_KCAL = 25.0
 OFF_LOCALE_COUNTRY_TAGS = {
     "australia": "en:australia",
     "australian": "en:australia",
@@ -892,11 +896,16 @@ def _off_quality_ok(product: dict[str, Any]) -> bool:
         return False
     nutriments = product.get("nutriments") or {}
     required = ("energy-kcal_100g", "proteins_100g", "carbohydrates_100g", "fat_100g")
-    return (
+    macros_present_and_plausible = (
         bool(product.get("product_name"))
         and all(nutriments.get(key) is not None for key in required)
         and _off_macros_plausible(nutriments)
     )
+    if not macros_present_and_plausible:
+        return False
+    if any(fragment in tag for tag in lowered_tags for fragment in OFF_ENERGY_MISMATCH_TAG_FRAGMENTS):
+        return _off_energy_consistent_with_macros(nutriments)
+    return True
 
 
 def _off_macros_plausible(nutriments: dict[str, Any]) -> bool:
@@ -908,6 +917,24 @@ def _off_macros_plausible(nutriments: dict[str, Any]) -> bool:
     except (TypeError, ValueError):
         return False
     return 0 <= calories <= 900 and all(0 <= value <= 100 for value in (protein, carbs, fat))
+
+
+def _off_energy_consistent_with_macros(nutriments: dict[str, Any]) -> bool:
+    try:
+        stated_kcal = float(nutriments.get("energy-kcal_100g"))
+        protein = float(nutriments.get("proteins_100g"))
+        carbs = float(nutriments.get("carbohydrates_100g"))
+        fat = float(nutriments.get("fat_100g"))
+    except (TypeError, ValueError):
+        return False
+    atwater_kcal = 4 * protein + 4 * carbs + 9 * fat
+    if atwater_kcal <= 0:
+        return False
+    tolerance = max(
+        OFF_ENERGY_ATWATER_TOLERANCE_ABS_KCAL,
+        OFF_ENERGY_ATWATER_TOLERANCE_PCT * atwater_kcal,
+    )
+    return abs(stated_kcal - atwater_kcal) <= tolerance
 
 
 def _off_energy_kcal(nutriments: dict[str, Any]) -> Any:

@@ -1688,6 +1688,165 @@ def test_lookup_barcode_uses_open_food_facts_serving_macros(monkeypatch):
     assert saved == {"barcode": "500032837010", "source": "open_food_facts_barcode"}
 
 
+ENERGY_MISMATCH_TAGS = [
+    "en:nutrition-packaging-as-sold-100g-energy-value-in-kcal-may-not-match-value-computed-from-other-nutrients",
+    "en:nutrition-packaging-as-sold-100g-energy-value-in-kcal-does-not-match-value-computed-from-other-nutrients",
+]
+
+
+def _off_barcode_product(
+    *,
+    code="3017620422003",
+    product_name="Nutella",
+    brands="Ferrero",
+    tags=None,
+    nutriments=None,
+):
+    return {
+        "code": code,
+        "product_name": product_name,
+        "brands": brands,
+        "url": f"https://world.openfoodfacts.org/product/{code}",
+        "countries_tags": ["en:france", "en:united-states"],
+        "data_quality_tags": tags or ["en:nutrition-completed"],
+        "nutriments": nutriments or {
+            "energy-kcal_100g": 539,
+            "proteins_100g": 6.3,
+            "carbohydrates_100g": 57.5,
+            "fat_100g": 30.9,
+        },
+    }
+
+
+def _mock_barcode_off(monkeypatch, product):
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "get_product_by_barcode",
+        lambda *_a, **_kw: product,
+    )
+
+
+def test_lookup_barcode_accepts_off_energy_mismatch_when_atwater_consistent(monkeypatch):
+    product = _off_barcode_product(tags=["en:nutrition-completed", *ENERGY_MISMATCH_TAGS])
+    _mock_barcode_off(monkeypatch, product)
+
+    estimate = branded_food_lookup.lookup_barcode("3017620422003")
+
+    assert estimate is not None
+    assert estimate["source"] == "open_food_facts_barcode"
+    assert estimate["item_name"] == "Ferrero Nutella"
+    assert estimate["calories"] == 539
+    assert estimate["protein_g"] == 6.3
+    assert estimate["carbs_g"] == 57.5
+    assert estimate["fat_g"] == 30.9
+    assert estimate["portion_basis"] == "100 g Open Food Facts packaged-food reference"
+
+
+def test_lookup_barcode_rejects_off_energy_mismatch_when_atwater_inconsistent(monkeypatch):
+    product = _off_barcode_product(
+        tags=["en:nutrition-completed", *ENERGY_MISMATCH_TAGS],
+        nutriments={
+            "energy-kcal_100g": 900,
+            "proteins_100g": 5,
+            "carbohydrates_100g": 5,
+            "fat_100g": 5,
+        },
+    )
+    _mock_barcode_off(monkeypatch, product)
+
+    assert branded_food_lookup.lookup_barcode("3017620422003") is None
+
+
+def test_lookup_barcode_rejects_off_energy_mismatch_with_missing_macro(monkeypatch):
+    product = _off_barcode_product(
+        tags=["en:nutrition-completed", *ENERGY_MISMATCH_TAGS],
+        nutriments={
+            "energy-kcal_100g": 539,
+            "proteins_100g": 6.3,
+            "carbohydrates_100g": 57.5,
+        },
+    )
+    _mock_barcode_off(monkeypatch, product)
+
+    assert branded_food_lookup.lookup_barcode("3017620422003") is None
+
+
+def test_off_quality_ok_still_rejects_nutrition_data_error():
+    product = _off_barcode_product(tags=["en:nutrition-completed", "en:nutrition-data-error"])
+
+    assert branded_food_lookup._off_quality_ok(product) is False
+
+
+def test_off_energy_consistent_with_macros():
+    assert branded_food_lookup._off_energy_consistent_with_macros({
+        "energy-kcal_100g": 539,
+        "proteins_100g": 6.3,
+        "carbohydrates_100g": 57.5,
+        "fat_100g": 30.9,
+    }) is True
+    assert branded_food_lookup._off_energy_consistent_with_macros({
+        "energy-kcal_100g": 1000,
+        "proteins_100g": 5,
+        "carbohydrates_100g": 5,
+        "fat_100g": 6.6666666667,
+    }) is False
+    assert branded_food_lookup._off_energy_consistent_with_macros({
+        "energy-kcal_100g": 125,
+        "proteins_100g": 25,
+        "carbohydrates_100g": 0,
+        "fat_100g": 0,
+    }) is True
+    assert branded_food_lookup._off_energy_consistent_with_macros({
+        "energy-kcal_100g": 126,
+        "proteins_100g": 25,
+        "carbohydrates_100g": 0,
+        "fat_100g": 0,
+    }) is False
+    assert branded_food_lookup._off_energy_consistent_with_macros({
+        "energy-kcal_100g": 539,
+        "proteins_100g": "not-a-number",
+        "carbohydrates_100g": 57.5,
+        "fat_100g": 30.9,
+    }) is False
+    assert branded_food_lookup._off_energy_consistent_with_macros({
+        "energy-kcal_100g": 0,
+        "proteins_100g": 0,
+        "carbohydrates_100g": 0,
+        "fat_100g": 0,
+    }) is False
+
+
+def test_lookup_barcode_without_energy_mismatch_tag_still_verifies(monkeypatch):
+    product = _off_barcode_product(
+        code="5449000000996",
+        product_name="Coca-Cola Original Taste",
+        brands="Coca-Cola",
+        tags=["en:nutrition-data-complete"],
+        nutriments={
+            "energy-kcal_100g": 42.1,
+            "proteins_100g": 0,
+            "carbohydrates_100g": 10.6,
+            "fat_100g": 0,
+            "energy-kcal_serving": 139,
+            "proteins_serving": 0,
+            "carbohydrates_serving": 35,
+            "fat_serving": 0,
+        },
+    )
+    product["serving_size"] = "330 ml"
+    _mock_barcode_off(monkeypatch, product)
+
+    estimate = branded_food_lookup.lookup_barcode("5449000000996")
+
+    assert estimate is not None
+    assert estimate["source"] == "open_food_facts_barcode"
+    assert estimate["item_name"] == "Coca-Cola Coca-Cola Original Taste"
+    assert estimate["calories"] == 139
+
+
 def test_open_food_facts_barcode_serving_quantity_precedes_package_quantity(monkeypatch):
     product = {
         "code": "012345678905",
