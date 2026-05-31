@@ -20,6 +20,7 @@ def test_swap_recommend_client_uses_read_only_endpoint_before_commit():
     assert "await getNextWorkout(true);" in source
     assert "api('/api/workout/swap/recommend'" in source
     assert "renderSwapRecommendModal(result)" in source
+    assert "swapRecommendLoadHtml(result && result.recommended_load)" in source
     assert "Confirm swap" in source
     assert "applySwap(selected.exercise_index, target, selected.name" in source
     assert "planFingerprint: result && result.plan_fingerprint" in source

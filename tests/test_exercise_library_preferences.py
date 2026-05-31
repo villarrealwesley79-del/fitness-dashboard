@@ -306,6 +306,120 @@ def test_swap_recommend_endpoint_deterministic_without_lm_studio(fitness_app, mo
     assert metrics[0][1]["reason"] == "swap_recommend: adapter_missing"
 
 
+def test_swap_recommend_endpoint_returns_similar_history_recommended_load(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Shoulder Press",
+                "muscle": "shoulders",
+                "is_compound": True,
+                "target_weight": 90,
+                "target_reps": 10,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "_lm_studio", None)
+    monkeypatch.setattr(fitness_app, "BASELINES_DATA", {})
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    monkeypatch.setattr(fitness_app, "_workout_plan_content_fingerprint", lambda _recommendation: "fp-load")
+    monkeypatch.setattr(
+        fitness_app,
+        "calculate_progression_status",
+        lambda _workouts: {"Lateral Raise": {"current_e1rm": 100, "status": "On Track"}},
+    )
+    monkeypatch.setattr(fitness_app, "_ai_metric_log", lambda *_args, **_kwargs: None)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap/recommend",
+        json={"workout_index": 0, "typed_target": "Machine Deltoid Raise"},
+    )
+
+    assert response.status_code == 200
+    recommended_load = response.get_json()["recommended_load"]
+    assert recommended_load == {
+        "weight": 67,
+        "source": "similar_history",
+        "inferred_from": "Lateral Raise",
+        "confidence": "low",
+        "explanation": (
+            "Started from your Lateral Raise history, adjusted for partial exercise "
+            "similarity, then used 85% as the first-session start for RIR 3-4."
+        ),
+    }
+
+
+def test_swap_recommend_endpoint_prefers_saved_baseline_over_similar_history_preview(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = {
+        "goal": fitness_app.TrainingGoal.HYPERTROPHY.value,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Shoulder Press",
+                "muscle": "shoulders",
+                "is_compound": True,
+                "target_weight": 90,
+                "target_reps": 10,
+                "target_sets": 3,
+            }
+        ],
+    }
+    monkeypatch.setattr(fitness_app, "_lm_studio", None)
+    monkeypatch.setattr(fitness_app, "BASELINES_DATA", {"Machine Deltoid Raise": 70})
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    monkeypatch.setattr(fitness_app, "_workout_plan_content_fingerprint", lambda _recommendation: "fp-baseline")
+    monkeypatch.setattr(
+        fitness_app,
+        "calculate_progression_status",
+        lambda _workouts: {"Lateral Raise": {"current_e1rm": 100, "status": "On Track"}},
+    )
+    monkeypatch.setattr(fitness_app, "_ai_metric_log", lambda *_args, **_kwargs: None)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap/recommend",
+        json={"workout_index": 0, "typed_target": "Machine Deltoid Raise"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["recommended_load"] is None
+
+
+def test_load_similarity_reads_singular_movement_pattern_metadata(fitness_app):
+    biceps = fitness_app._resolve_exercise_definition("Biceps Curl")
+    cable_biceps = fitness_app._resolve_exercise_definition("Cable Biceps Curl")
+
+    assert "elbow_flexion" in fitness_app._exercise_movement_patterns(biceps)
+    assert "elbow_flexion" in fitness_app._exercise_movement_patterns(cable_biceps)
+
+
+def test_swap_recommend_endpoint_does_not_cross_triceps_extension_load_contamination(fitness_app, monkeypatch):
+    fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    recommendation = _swap_recommendation_fixture(fitness_app)
+    monkeypatch.setattr(fitness_app, "_lm_studio", None)
+    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    monkeypatch.setattr(fitness_app, "_workout_plan_content_fingerprint", lambda _recommendation: "fp-triceps")
+    monkeypatch.setattr(
+        fitness_app,
+        "calculate_progression_status",
+        lambda _workouts: {"Overhead Tricep Extension": {"current_e1rm": 80, "status": "On Track"}},
+    )
+    monkeypatch.setattr(fitness_app, "_ai_metric_log", lambda *_args, **_kwargs: None)
+
+    response = fitness_app.app.test_client().post(
+        "/api/workout/swap/recommend",
+        json={"workout_index": 0, "typed_target": "tricep extension"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["target_canonical"] == "Triceps Extension"
+    assert body["recommended_load"] is None
+
+
 def test_swap_endpoint_rejects_stale_recommendation_fingerprint(fitness_app, monkeypatch):
     fitness_app.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
     recommendation = {
