@@ -5,6 +5,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 import time
 from typing import Any
 from urllib import error, request
@@ -53,6 +57,14 @@ LM_STUDIO_PREFLIGHT_TIMEOUT_SEC = float(_env_first(
 LM_STUDIO_LOAD_RETRY_LIMIT = int(_env_first("VISION_LM_STUDIO_LOAD_RETRY_LIMIT", default="2"))
 LM_STUDIO_LOAD_RETRY_BACKOFF_SEC = float(_env_first("VISION_LM_STUDIO_LOAD_RETRY_BACKOFF_SEC", default="1.0"))
 LM_STUDIO_WARMUP_TIMEOUT_SEC = float(_env_first("VISION_LM_STUDIO_WARMUP_TIMEOUT_SEC", default="45"))
+LM_STUDIO_MULTI_IMAGE_MAX_DIMENSION = int(_env_first(
+    "VISION_LM_STUDIO_MULTI_IMAGE_MAX_DIMENSION",
+    default="1024",
+))
+LM_STUDIO_MULTI_IMAGE_JPEG_QUALITY = int(_env_first(
+    "VISION_LM_STUDIO_MULTI_IMAGE_JPEG_QUALITY",
+    default="80",
+))
 DEFAULT_VISION_TEMPERATURE = 0.1
 SCHEMA_RETRY_LIMIT = 2
 LM_STUDIO_REQUIRED_FIELDS = (
@@ -320,6 +332,7 @@ def _lm_studio_payload(
     context_text: str | None,
     model: str,
 ) -> dict[str, Any]:
+    images = _lm_studio_payload_images(images)
     content: list[dict[str, Any]] = [{"type": "text", "text": _lm_studio_multi_image_prompt(context_text, len(images))}]
     for image_bytes, media_type in images:
         encoded = base64.b64encode(image_bytes).decode("ascii")
@@ -338,6 +351,56 @@ def _lm_studio_payload(
         },
         "messages": [{"role": "user", "content": content}],
     }
+
+
+def _lm_studio_payload_images(images: list[tuple[bytes, str]]) -> list[tuple[bytes, str]]:
+    if len(images) <= 1 or LM_STUDIO_MULTI_IMAGE_MAX_DIMENSION <= 0:
+        return images
+    return [_downscale_lm_studio_image(image_bytes, media_type) for image_bytes, media_type in images]
+
+
+def _downscale_lm_studio_image(image_bytes: bytes, media_type: str) -> tuple[bytes, str]:
+    sips = shutil.which("sips")
+    if not sips:
+        return image_bytes, media_type
+    quality = max(1, min(100, LM_STUDIO_MULTI_IMAGE_JPEG_QUALITY))
+    suffix = _image_suffix(media_type)
+    try:
+        with tempfile.TemporaryDirectory(prefix="fitness-vision-") as tmpdir:
+            path = Path(tmpdir) / f"image{suffix}"
+            path.write_bytes(image_bytes)
+            subprocess.run(
+                [
+                    sips,
+                    "-Z",
+                    str(LM_STUDIO_MULTI_IMAGE_MAX_DIMENSION),
+                    "-s",
+                    "format",
+                    "jpeg",
+                    "-s",
+                    "formatOptions",
+                    str(quality),
+                    str(path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=5,
+            )
+            resized = path.read_bytes()
+    except Exception:
+        return image_bytes, media_type
+    return (resized, "image/jpeg") if resized else (image_bytes, media_type)
+
+
+def _image_suffix(media_type: str) -> str:
+    normalized = (media_type or "").split(";", 1)[0].strip().lower()
+    if normalized == "image/png":
+        return ".png"
+    if normalized == "image/webp":
+        return ".webp"
+    if normalized == "image/gif":
+        return ".gif"
+    return ".jpg"
 
 
 def _lm_studio_message_content(body: dict[str, Any]) -> str:
