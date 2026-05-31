@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from typing import Any
 from urllib import error, request
 
@@ -27,6 +28,7 @@ def _env_first(*names: str, default: str) -> str:
 
 
 SERVED_VISION_MODEL = "qwen3-vl-30b-a3b-instruct@q4_k_xl"
+LOW_MEMORY_VISION_MODEL = "qwen3-vl-30b-a3b-instruct@q4_k_s"
 LM_STUDIO_URL = _env_first(
     "VISION_LM_STUDIO_URL",
     "LM_STUDIO_URL",
@@ -39,6 +41,7 @@ LM_STUDIO_MODEL = _env_first(
 )
 LM_STUDIO_FALLBACK_URL = os.environ.get("VISION_LM_STUDIO_FALLBACK_URL", "").strip().rstrip("/")
 LM_STUDIO_FALLBACK_MODEL = os.environ.get("VISION_LM_STUDIO_FALLBACK_MODEL", "").strip()
+LM_STUDIO_LOW_MEMORY_MODEL = os.environ.get("VISION_LM_STUDIO_LOW_MEMORY_MODEL", LOW_MEMORY_VISION_MODEL).strip()
 OLLAMA_URL = _env_first("OLLAMA_URL", default="http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = _env_first("VISION_OLLAMA_MODEL", "OLLAMA_VISION_MODEL", default="llava:latest")
 TIMEOUT_SECONDS = float(_env_first("VISION_LOCAL_TIMEOUT_SEC", default="25"))
@@ -47,6 +50,9 @@ LM_STUDIO_PREFLIGHT_TIMEOUT_SEC = float(_env_first(
     "LM_STUDIO_PREFLIGHT_TIMEOUT_SEC",
     default="1.5",
 ))
+LM_STUDIO_LOAD_RETRY_LIMIT = int(_env_first("VISION_LM_STUDIO_LOAD_RETRY_LIMIT", default="2"))
+LM_STUDIO_LOAD_RETRY_BACKOFF_SEC = float(_env_first("VISION_LM_STUDIO_LOAD_RETRY_BACKOFF_SEC", default="1.0"))
+LM_STUDIO_WARMUP_TIMEOUT_SEC = float(_env_first("VISION_LM_STUDIO_WARMUP_TIMEOUT_SEC", default="45"))
 DEFAULT_VISION_TEMPERATURE = 0.1
 SCHEMA_RETRY_LIMIT = 2
 LM_STUDIO_REQUIRED_FIELDS = (
@@ -182,7 +188,11 @@ def _describe_lm_studio(
                 model=candidate["model"],
             )
             try:
-                body = _post_json(f"{candidate['url']}/v1/chat/completions", payload, timeout=timeout)
+                body = _post_json_with_load_retries(
+                    f"{candidate['url']}/v1/chat/completions",
+                    payload,
+                    timeout=timeout,
+                )
                 content_out = _lm_studio_message_content(body)
                 estimate = _parse_lm_studio_meal_estimate(content_out)
                 result = _meal_estimate_to_description(estimate)
@@ -191,11 +201,11 @@ def _describe_lm_studio(
                     "model": candidate["model"],
                     "url": candidate["url"],
                     "schema_retries": attempt,
-                    "fallback_used": candidate["role"] == "fallback",
+                    "fallback_used": candidate["role"] != "primary",
                 }
                 return result
             except LocalVisionError as exc:
-                errors.append(f"{candidate['role']} attempt {attempt + 1}: {exc}")
+                errors.append(f"{candidate['role']} attempt {attempt + 1}: {_summarize_lm_studio_error(exc)}")
                 if not _schema_error(exc) or attempt >= SCHEMA_RETRY_LIMIT:
                     break
     raise LocalVisionError("all LM Studio vision endpoints failed: " + "; ".join(errors))
@@ -209,6 +219,14 @@ def _lm_studio_candidates() -> list[dict[str, str]]:
             "model": LM_STUDIO_MODEL,
         }
     ]
+    if LM_STUDIO_LOW_MEMORY_MODEL:
+        low_memory = {
+            "role": "low_memory",
+            "url": LM_STUDIO_URL.rstrip("/"),
+            "model": LM_STUDIO_LOW_MEMORY_MODEL,
+        }
+        if (low_memory["url"], low_memory["model"]) != (candidates[0]["url"], candidates[0]["model"]):
+            candidates.append(low_memory)
     if LM_STUDIO_FALLBACK_URL and LM_STUDIO_FALLBACK_MODEL:
         fallback = {
             "role": "fallback",
@@ -254,8 +272,36 @@ def _preflight_candidate(candidate: dict[str, str]) -> None:
         raise LocalVisionError("timeout") from exc
     except Exception as exc:
         raise LocalVisionError(f"preflight failed: {type(exc).__name__}") from exc
+    if _target_loaded(loaded, candidate["model"]):
+        return
+    try:
+        _warm_candidate(candidate)
+    except LocalVisionError as exc:
+        raise LocalVisionError(f"model warmup failed: {_summarize_lm_studio_error(exc)}") from exc
+    try:
+        loaded = _models_for(candidate, timeout=LM_STUDIO_PREFLIGHT_TIMEOUT_SEC)
+    except Exception:
+        return
     if not _target_loaded(loaded, candidate["model"]):
-        raise LocalVisionError(f"model not loaded: {candidate['model']}")
+        raise LocalVisionError(f"model warmup completed but model not loaded: {candidate['model']}")
+
+
+def _warm_candidate(candidate: dict[str, str]) -> None:
+    payload = _lm_studio_payload(
+        images=[(_WARMUP_PNG_BYTES, "image/png")],
+        context_text="warm up vision model; return a minimal valid food estimate for this blank image",
+        model=candidate["model"],
+    )
+    _post_json_with_load_retries(
+        f"{candidate['url']}/v1/chat/completions",
+        payload,
+        timeout=LM_STUDIO_WARMUP_TIMEOUT_SEC,
+    )
+
+
+_WARMUP_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+)
 
 
 def _vision_temperature() -> float:
@@ -494,13 +540,84 @@ def _post_json(url: str, payload: dict[str, Any], *, timeout: float) -> dict[str
         with request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
     except error.HTTPError as exc:
-        raise LocalVisionError(f"http {exc.code}") from exc
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            detail = ""
+        raise LocalVisionError(_safe_http_error_message(exc.code, detail)) from exc
     except (OSError, ValueError, error.URLError, TimeoutError) as exc:
         raise LocalVisionError(str(exc)) from exc
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise LocalVisionError("invalid response JSON") from exc
+
+
+def _post_json_with_load_retries(url: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+    attempts = max(1, LM_STUDIO_LOAD_RETRY_LIMIT + 1)
+    last_error: LocalVisionError | None = None
+    for attempt in range(attempts):
+        try:
+            return _post_json(url, payload, timeout=timeout)
+        except LocalVisionError as exc:
+            last_error = exc
+            if attempt >= attempts - 1 or not _transient_load_error(exc):
+                raise
+            time.sleep(LM_STUDIO_LOAD_RETRY_BACKOFF_SEC * (attempt + 1))
+    raise last_error or LocalVisionError("LM Studio request failed")
+
+
+def _transient_load_error(exc: LocalVisionError) -> bool:
+    message = str(exc).lower()
+    if "http 400" not in message:
+        return False
+    transient_markers = (
+        "insufficient system resources",
+        "operation canceled",
+        "operation cancelled",
+        "loading model",
+        "model is loading",
+        "server is busy",
+    )
+    return any(marker in message for marker in transient_markers)
+
+
+def _oom_error(exc: LocalVisionError) -> bool:
+    message = str(exc).lower()
+    return "oom" in message or "out of memory" in message or "not enough memory" in message
+
+
+def _summarize_lm_studio_error(exc: LocalVisionError) -> str:
+    if _oom_error(exc):
+        return f"out_of_memory: {exc}"
+    if _transient_load_error(exc):
+        return f"transient_load: {exc}"
+    return str(exc)
+
+
+def _safe_http_error_message(code: int, detail: str) -> str:
+    message = f"http {code}"
+    detail_lower = (detail or "").lower()
+    if not detail_lower:
+        return message
+    if "oom" in detail_lower or "out of memory" in detail_lower or "not enough memory" in detail_lower:
+        return f"{message}: out of memory"
+    transient_markers = [
+        marker
+        for marker in (
+            "insufficient system resources",
+            "operation canceled",
+            "operation cancelled",
+            "loading model",
+            "model is loading",
+            "server is busy",
+        )
+        if marker in detail_lower
+    ]
+    if transient_markers:
+        return f"{message}: {'; '.join(transient_markers[:2])}"
+    return message
 
 
 def _parse_json_content(content: str) -> dict[str, Any]:
