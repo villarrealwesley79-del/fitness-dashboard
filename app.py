@@ -3343,6 +3343,11 @@ def _classify_swap_recommend_failure(exc):
     return "busy" if "busy" in message else "outage"
 
 
+def _workout_plan_content_fingerprint(recommendation):
+    raw = json.dumps(recommendation or {}, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _swap_recommend_response(recommendation, workout_index, target_definition, resolution, plan_fingerprint):
     slot = resolution.get("slot") or {}
     target_canonical = resolution.get("target_canonical")
@@ -3353,6 +3358,7 @@ def _swap_recommend_response(recommendation, workout_index, target_definition, r
             "workout_index": workout_index,
             "exercise_index": slot_payload["exercise_index"],
             "new_exercise_name": target_canonical,
+            "plan_fingerprint": plan_fingerprint,
         }
     return {
         "status": "success",
@@ -8825,7 +8831,7 @@ def recommend_workout_swap():
     if not resolution:
         return api_error("No same-muscle swap target found", 422, code="no_match")
 
-    plan_fingerprint = _workout_recommendation_fingerprint()
+    plan_fingerprint = _workout_plan_content_fingerprint(recommendation)
     return jsonify(_swap_recommend_response(recommendation, workout_index, target_definition, resolution, plan_fingerprint))
 
 
@@ -8845,6 +8851,9 @@ def swap_workout_exercise():
     new_name, err2 = _coerce_str(data.get("new_exercise_name"), "new_exercise_name", required=True, max_len=128)
     if err2:
         return err2
+    plan_fingerprint, err2 = _coerce_str(data.get("plan_fingerprint"), "plan_fingerprint", required=False, max_len=128)
+    if err2:
+        return err2
 
     recommendation = None
     if WORKOUT_RECOMMENDATIONS and 0 <= workout_index < len(WORKOUT_RECOMMENDATIONS):
@@ -8853,6 +8862,13 @@ def swap_workout_exercise():
         recommendation = LAST_WORKOUT_RECOMMENDATION
     else:
         return api_error("No recent workout recommendation available", 404, code="not_found")
+    current_plan_fingerprint = _workout_plan_content_fingerprint(recommendation)
+    if plan_fingerprint and plan_fingerprint != current_plan_fingerprint:
+        return api_error(
+            "Workout plan changed. Refresh the recommendation before applying this swap.",
+            409,
+            code="stale_plan",
+        )
 
     exercises = recommendation.get("exercises") or []
     if not (0 <= exercise_index < len(exercises)):

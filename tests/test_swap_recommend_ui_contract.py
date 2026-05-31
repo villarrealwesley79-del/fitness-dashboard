@@ -22,6 +22,8 @@ def test_swap_recommend_client_uses_read_only_endpoint_before_commit():
     assert "renderSwapRecommendModal(result)" in source
     assert "Confirm swap" in source
     assert "applySwap(selected.exercise_index, target, selected.name" in source
+    assert "planFingerprint: result && result.plan_fingerprint" in source
+    assert "body.plan_fingerprint = opts.planFingerprint" in source
 
 
 def test_swap_recommend_low_confidence_requires_explicit_pick():

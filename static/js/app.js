@@ -6721,6 +6721,7 @@
             muscle: result && result.target_muscle,
             currentName: selected && selected.name,
             source: 'recommend',
+            planFingerprint: result && result.plan_fingerprint,
         };
         if (custom) custom.hidden = true;
         title.textContent = target ? `Swap to ${target}` : 'Choose a swap';
@@ -6776,7 +6777,9 @@
         $('swap-recommend-cancel').addEventListener('click', () => closeModal(modal));
         confirmBtn.addEventListener('click', () => {
             if (!selected || !target) return;
-            applySwap(selected.exercise_index, target, selected.name || 'exercise');
+            applySwap(selected.exercise_index, target, selected.name || 'exercise', {
+                planFingerprint: result && result.plan_fingerprint,
+            });
         });
         modal.hidden = false;
     }
@@ -6912,14 +6915,16 @@
         }
     }
 
-    async function applySwap(exIdx, newName, oldName) {
+    async function applySwap(exIdx, newName, oldName, opts = {}) {
         const host = $('swap-alternatives');
         host.innerHTML = '<div class="skeleton">Swapping…</div>';
+        const body = { workout_index: 0, exercise_index: exIdx, new_exercise_name: newName };
+        if (opts.planFingerprint) body.plan_fingerprint = opts.planFingerprint;
         try {
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workout_index: 0, exercise_index: exIdx, new_exercise_name: newName }),
+                body: JSON.stringify(body),
             });
             _finalizeSwap(resp, oldName, newName);
         } catch (e) {
