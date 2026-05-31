@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+from pathlib import Path
 
 import pytest
 import lm_studio_adapter
@@ -103,6 +104,83 @@ def test_settings_accept_case_insensitive_exercise_exclusions(fitness_app):
     assert response.status_code == 200
     assert response.get_json()["settings"]["preferred_equipment_brands"] == ["Hoist", "Nautilus"]
     assert response.get_json()["settings"]["excluded_exercises"] == ["Preacher Curl"]
+
+
+def test_settings_profile_fields_default_and_save(fitness_app, monkeypatch):
+    saved = {}
+    monkeypatch.setattr(
+        fitness_app,
+        "save_json",
+        lambda path, data: saved.update({"path": path, "settings": copy.deepcopy(data)}),
+    )
+
+    get_response = fitness_app.app.test_client().get("/api/settings")
+
+    assert get_response.status_code == 200
+    get_body = get_response.get_json()
+    assert get_body["date_of_birth"] == ""
+    assert get_body["sex"] == ""
+    assert {"value": "female", "label": "Female"} in get_body["sex_options"]
+
+    post_response = fitness_app.app.test_client().post(
+        "/api/settings",
+        json={
+            "date_of_birth": "1988-04-12",
+            "sex": "female",
+            "sessions_per_week_target": 4,
+        },
+    )
+
+    assert post_response.status_code == 200
+    settings = post_response.get_json()["settings"]
+    assert settings["date_of_birth"] == "1988-04-12"
+    assert settings["sex"] == "female"
+    assert settings["sessions_per_week_target"] == 4
+    assert saved["settings"]["date_of_birth"] == "1988-04-12"
+    assert saved["settings"]["sex"] == "female"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"date_of_birth": "04/12/1988"},
+        {"date_of_birth": "2999-01-01"},
+        {"sex": "other"},
+    ],
+)
+def test_settings_profile_fields_reject_invalid_values(fitness_app, payload):
+    response = fitness_app.app.test_client().post("/api/settings", json=payload)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_field"
+
+
+def test_settings_profile_fields_do_not_partially_apply_on_later_validation_error(fitness_app):
+    original_goal = fitness_app.USER_SETTINGS["training_goal"]
+    response = fitness_app.app.test_client().post(
+        "/api/settings",
+        json={
+            "training_goal": fitness_app.TrainingGoal.STRENGTH.value,
+            "date_of_birth": "1988-04-12",
+            "sex": "female",
+            "equipment_preference": "freeweights_only",
+        },
+    )
+
+    assert response.status_code == 400
+    assert fitness_app.USER_SETTINGS["training_goal"] == original_goal
+    assert fitness_app.USER_SETTINGS["date_of_birth"] == ""
+    assert fitness_app.USER_SETTINGS["sex"] == ""
+
+
+def test_settings_ui_exposes_profile_fields():
+    html = Path("templates/index.html").read_text()
+    js = Path("static/js/app.js").read_text()
+
+    assert 'id="settings-date-of-birth"' in html
+    assert 'id="settings-sex"' in html
+    assert "date_of_birth" in js
+    assert "sex_options" in js
 
 
 def test_next_workout_can_recommend_biceps_without_preacher_curl(fitness_app):

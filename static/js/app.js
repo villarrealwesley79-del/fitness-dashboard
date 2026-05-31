@@ -3763,6 +3763,21 @@
             host.appendChild(btn);
         });
 
+        const dobInput = $('settings-date-of-birth');
+        dobInput.value = st.date_of_birth || '';
+        dobInput.onchange = () => updateSetting({ date_of_birth: dobInput.value || '' });
+
+        const sexSel = $('settings-sex');
+        sexSel.innerHTML = '';
+        (st.sex_options || []).forEach((option) => {
+            const opt = document.createElement('option');
+            opt.value = option.value;
+            opt.textContent = option.label;
+            if (option.value === (st.sex || '')) opt.selected = true;
+            sexSel.appendChild(opt);
+        });
+        sexSel.onchange = () => updateSetting({ sex: sexSel.value || '' });
+
         const durSel = $('settings-duration');
         durSel.innerHTML = '';
         (st.time_options || []).forEach((t) => {
