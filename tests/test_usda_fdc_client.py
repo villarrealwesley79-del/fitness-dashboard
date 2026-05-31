@@ -51,6 +51,24 @@ def test_usda_search_adds_optional_api_key(monkeypatch):
     assert params["dataType"] == ["Branded,Foundation,SR Legacy"]
 
 
+def test_usda_barcode_search_limits_to_branded_foods(monkeypatch):
+    monkeypatch.setenv("USDA_FDC_API_KEY", "fdc-key")
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        return _Response({"foods": []})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    usda_fdc_client.search_foods_by_barcode("0123-4567-8905")
+
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(captured["url"]).query)
+    assert params["api_key"] == ["fdc-key"]
+    assert params["query"] == ["012345678905"]
+    assert params["dataType"] == ["Branded"]
+
+
 def test_usda_handles_network_errors(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("down")))
     assert usda_fdc_client.search_foods("banana") is None
