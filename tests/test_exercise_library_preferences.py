@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import json
 from datetime import datetime
 
 import pytest
@@ -419,10 +420,24 @@ def test_swap_adapter_normalizes_candidate_membership(fitness_app, monkeypatch):
     validations = []
 
     def fake_completion(_path, _payload, timeout, validate, preflighted_candidate=None):
-        bad = {"canonical_name": "Lateral Raise", "confidence": 0.9, "reason": "wrong muscle"}
+        bad = {
+            "action": "resolve",
+            "canonical_name": "Lateral Raise",
+            "confidence": 0.9,
+            "reason": "wrong muscle",
+            "clarification_question": None,
+            "options": [],
+        }
         with pytest.raises(lm_studio_adapter.LmStudioError):
             validate(bad)
-        good = {"canonical_name": " overhead tricep extension ", "confidence": 0.9, "reason": "case"}
+        good = {
+            "action": "resolve",
+            "canonical_name": " overhead tricep extension ",
+            "confidence": 0.9,
+            "reason": "case",
+            "clarification_question": None,
+            "options": [],
+        }
         validate(good)
         validations.append(good)
         return good
@@ -439,7 +454,300 @@ def test_swap_adapter_normalizes_candidate_membership(fitness_app, monkeypatch):
     )
 
     assert result["canonical_name"] == "Overhead Tricep Extension"
-    assert validations == [{"canonical_name": "Overhead Tricep Extension", "confidence": 0.9, "reason": "case"}]
+    assert validations == [
+        {
+            "action": "resolve",
+            "canonical_name": "Overhead Tricep Extension",
+            "confidence": 0.9,
+            "reason": "case",
+            "clarification_question": None,
+            "options": [],
+        }
+    ]
+
+
+def test_swap_adapter_accepts_clarify_payload_and_normalizes_options(monkeypatch):
+    def fake_completion(_path, _payload, timeout, validate, preflighted_candidate=None):
+        empty_options = {
+            "action": "clarify",
+            "canonical_name": None,
+            "confidence": 0.4,
+            "reason": "ambiguous crunch request",
+            "clarification_question": "Which crunch?",
+            "options": [],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(empty_options)
+
+        one_distinct_option = {
+            "action": "clarify",
+            "canonical_name": None,
+            "confidence": 0.4,
+            "reason": "ambiguous crunch request",
+            "clarification_question": "Which crunch?",
+            "options": [
+                {"name": "Cable Crunch", "distinction": "Cable station"},
+                {"name": " cable crunch ", "distinction": "Duplicate"},
+            ],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(one_distinct_option)
+
+        missing_question = {
+            "action": "clarify",
+            "canonical_name": None,
+            "confidence": 0.4,
+            "reason": "ambiguous crunch request",
+            "clarification_question": "",
+            "options": [
+                {"name": "Cable Crunch", "distinction": "Cable station"},
+                {"name": "Crunch Machine", "distinction": "Machine"},
+            ],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(missing_question)
+
+        blank_distinction = {
+            "action": "clarify",
+            "canonical_name": None,
+            "confidence": 0.4,
+            "reason": "ambiguous crunch request",
+            "clarification_question": "Which crunch?",
+            "options": [
+                {"name": "Cable Crunch", "distinction": " "},
+                {"name": "Crunch Machine", "distinction": "Machine"},
+            ],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(blank_distinction)
+
+        parsed = {
+            "action": "clarify",
+            "canonical_name": None,
+            "confidence": 0.4,
+            "reason": "ambiguous crunch request",
+            "clarification_question": "Which crunch?",
+            "options": [
+                {"name": " cable crunch ", "distinction": "Cable station"},
+                {"name": "Cable Crunch", "distinction": "Duplicate"},
+                {"name": "Crunch Machine", "distinction": "Machine"},
+            ],
+        }
+        validate(parsed)
+        return parsed
+
+    monkeypatch.setattr(lm_studio_adapter, "_completion_json", fake_completion)
+
+    result = lm_studio_adapter.resolve_swap_candidate(
+        "crunch",
+        current_exercise="Plank",
+        target_muscle="core",
+        candidates=[
+            {"name": "Crunch Machine", "equipment": "machine"},
+            {"name": "Cable Crunch", "equipment": "cable"},
+        ],
+    )
+
+    assert result["action"] == "clarify"
+    assert result["canonical_name"] is None
+    assert result["options"] == [
+        {"name": "Cable Crunch", "distinction": "Cable station"},
+        {"name": "Crunch Machine", "distinction": "Machine"},
+    ]
+
+
+def test_swap_adapter_payload_preserves_movement_metadata(monkeypatch):
+    seen = {}
+
+    def fake_completion(_path, payload, timeout, validate, preflighted_candidate=None):
+        seen["candidates"] = payload["messages"][-1]["content"]
+        parsed = {
+            "action": "resolve",
+            "canonical_name": "Triceps Extension",
+            "confidence": 0.9,
+            "reason": "metadata",
+            "clarification_question": None,
+            "options": [],
+        }
+        validate(parsed)
+        return parsed
+
+    monkeypatch.setattr(lm_studio_adapter, "_completion_json", fake_completion)
+
+    lm_studio_adapter.resolve_swap_candidate(
+        "triceps extension",
+        current_exercise="Cable Pushdown",
+        target_muscle="triceps",
+        candidates=[
+            {
+                "name": "Triceps Extension",
+                "equipment": "machine",
+                "aliases": ["Machine Triceps Extension"],
+                "compound": False,
+                "movement_pattern": "elbow_extension",
+                "body_position": "seated",
+                "shoulder_position": "neutral",
+                "primary_emphasis": "triceps_overall",
+                "match_tokens": ["machine"],
+                "confusable_with": [{"name": "Overhead Tricep Extension", "distinction": "not overhead"}],
+                "disambiguation": "Default machine variant.",
+            }
+        ],
+    )
+
+    payload = json.loads(seen["candidates"])
+    candidate = payload["candidates"][0]
+    assert candidate["movement_pattern"] == "elbow_extension"
+    assert candidate["body_position"] == "seated"
+    assert candidate["shoulder_position"] == "neutral"
+    assert candidate["confusable_with"][0]["name"] == "Overhead Tricep Extension"
+
+
+def test_swap_recommend_adapter_validates_and_dedupes_slots(monkeypatch):
+    seen = {}
+
+    def fake_completion(_path, payload, timeout, validate, preflighted_candidate=None):
+        seen["payload"] = payload
+        bad_target = {
+            "target_canonical": "Imaginary Press",
+            "slot_index": 0,
+            "confidence": 0.8,
+            "reason": "bad",
+            "alternatives": [],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(bad_target)
+
+        bad_slot = {
+            "target_canonical": "Triceps Extension",
+            "slot_index": 4,
+            "confidence": 0.8,
+            "reason": "bad",
+            "alternatives": [],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(bad_slot)
+
+        bool_slot = {
+            "target_canonical": "Triceps Extension",
+            "slot_index": True,
+            "confidence": 0.8,
+            "reason": "bad",
+            "alternatives": [],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(bool_slot)
+
+        bool_alternative = {
+            "target_canonical": "Triceps Extension",
+            "slot_index": 1,
+            "confidence": 0.8,
+            "reason": "bad",
+            "alternatives": [{"slot_index": False, "reason": "bad"}],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(bool_alternative)
+
+        partial_target = {
+            "target_canonical": "Triceps Extension",
+            "slot_index": None,
+            "confidence": 0.4,
+            "reason": "partial",
+            "alternatives": [],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(partial_target)
+
+        partial_slot = {
+            "target_canonical": None,
+            "slot_index": 1,
+            "confidence": 0.4,
+            "reason": "partial",
+            "alternatives": [],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(partial_slot)
+
+        wrong_muscle = {
+            "target_canonical": "Pec Fly",
+            "slot_index": 1,
+            "confidence": 0.8,
+            "reason": "wrong muscle",
+            "alternatives": [],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(wrong_muscle)
+
+        wrong_alternative_muscle = {
+            "target_canonical": "Triceps Extension",
+            "slot_index": 1,
+            "confidence": 0.8,
+            "reason": "wrong alt muscle",
+            "alternatives": [{"slot_index": 2, "reason": "chest slot"}],
+        }
+        with pytest.raises(lm_studio_adapter.LmStudioError):
+            validate(wrong_alternative_muscle)
+
+        good = {
+            "target_canonical": " triceps extension ",
+            "slot_index": 1,
+            "confidence": 0.86,
+            "reason": "replace isolation slot",
+            "alternatives": [
+                {"slot_index": 1, "reason": "duplicate selected slot"},
+                {"slot_index": 0, "reason": "other triceps slot"},
+                {"slot_index": 0, "reason": "duplicate"},
+            ],
+        }
+        validate(good)
+        return good
+
+    monkeypatch.setattr(lm_studio_adapter, "_completion_json", fake_completion)
+
+    result = lm_studio_adapter.recommend_swap_target(
+        "triceps extension",
+        planned_exercises=[
+            {"exercise": "Seated Dip", "muscle": "triceps", "is_compound": True},
+            {"exercise": "Cable Pushdown", "muscle": "triceps", "is_compound": False},
+            {"exercise": "Pec Fly", "muscle": "chest", "is_compound": False},
+        ],
+        library_candidates=[
+            {"name": "Triceps Extension", "muscle": "triceps", "equipment": "machine"},
+            {"name": "Overhead Tricep Extension", "muscle": "triceps", "equipment": "cable"},
+            {"name": "Pec Fly", "muscle": "chest", "equipment": "machine"},
+        ],
+        equipment_pref="machines_and_cables",
+    )
+
+    payload = json.loads(seen["payload"]["messages"][-1]["content"])
+    assert payload["library_candidates"][0]["muscle"] == "triceps"
+    assert result["target_canonical"] == "Triceps Extension"
+    assert result["slot_index"] == 1
+    assert result["alternatives"] == [{"slot_index": 0, "reason": "other triceps slot"}]
+
+
+def test_swap_recommend_adapter_allows_null_target_and_slot(monkeypatch):
+    def fake_completion(_path, _payload, timeout, validate, preflighted_candidate=None):
+        parsed = {
+            "target_canonical": None,
+            "slot_index": None,
+            "confidence": 0.1,
+            "reason": "unclear",
+            "alternatives": [],
+        }
+        validate(parsed)
+        return parsed
+
+    monkeypatch.setattr(lm_studio_adapter, "_completion_json", fake_completion)
+
+    result = lm_studio_adapter.recommend_swap_target(
+        "something unclear",
+        planned_exercises=[{"exercise": "Cable Pushdown", "muscle": "triceps"}],
+        library_candidates=[{"name": "Triceps Extension", "equipment": "machine"}],
+    )
+
+    assert result["target_canonical"] is None
+    assert result["slot_index"] is None
 
 
 def test_swap_prefilters_equipment_before_adapter_resolution(fitness_app, monkeypatch):
@@ -463,6 +771,7 @@ def test_swap_prefilters_equipment_before_adapter_resolution(fitness_app, monkey
 
     def fake_resolve(*_args, candidates, **_kwargs):
         seen["candidate_names"] = [candidate["name"] for candidate in candidates]
+        seen["triceps_extension"] = next(candidate for candidate in candidates if candidate["name"] == "Triceps Extension")
         return {"canonical_name": "Overhead Tricep Extension", "confidence": 0.9, "reason": "mock"}
 
     monkeypatch.setattr(fitness_app._lm_studio, "resolve_swap_candidate", fake_resolve)
@@ -478,6 +787,8 @@ def test_swap_prefilters_equipment_before_adapter_resolution(fitness_app, monkey
     assert response.status_code == 404
     assert response.get_json()["error"]["message"] == "Unknown exercise name"
     assert seen["candidate_names"] == ["Seated Dip", "Triceps Extension"]
+    assert seen["triceps_extension"]["shoulder_position"] == "neutral"
+    assert seen["triceps_extension"]["disambiguation"]
 
 
 def test_swap_rejects_current_exercise_no_op(fitness_app, monkeypatch):

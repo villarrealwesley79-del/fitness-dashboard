@@ -3239,15 +3239,7 @@ def _resolve_custom_swap_exercise(typed_name, old_ex, equipment_pref):
     if not _lm_studio or not hasattr(_lm_studio, "resolve_swap_candidate") or not candidates:
         return None
 
-    candidate_payload = [
-        {
-            "name": exercise.get("name"),
-            "equipment": exercise.get("equipment"),
-            "aliases": exercise.get("aliases") or [],
-            "compound": bool(exercise.get("compound")),
-        }
-        for exercise in candidates
-    ]
+    candidate_payload = [dict(exercise) for exercise in candidates]
     try:
         resolution = _lm_studio.resolve_swap_candidate(
             typed_name,
