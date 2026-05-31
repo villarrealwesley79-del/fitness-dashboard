@@ -338,7 +338,7 @@ def test_adjust_deterministic_fallback_accepts_bare_tricep_extensions(monkeypatc
     exercise = payload["recommendation"]["exercises"][0]
     assert payload["status"] == "ok"
     assert payload["meta"]["mode"] == "deterministic_fallback"
-    assert exercise["exercise"] == "Overhead Tricep Extension"
+    assert exercise["exercise"] == "Triceps Extension"
     assert exercise["load_source"] == "similar_history"
     assert exercise["load_inference"]["source_exercise"] == "Cable Pushdown"
 
@@ -754,7 +754,7 @@ def test_adjust_direct_history_wins_over_similar_pattern_inference(monkeypatch):
 
     response = module.app.test_client().post(
         "/api/workout/adjust",
-        json={"constraint": "replace with triceps extension"},
+        json={"constraint": "replace with overhead triceps extension"},
     )
 
     assert response.status_code == 200
@@ -762,6 +762,281 @@ def test_adjust_direct_history_wins_over_similar_pattern_inference(monkeypatch):
     assert exercise["exercise"] == "Overhead Tricep Extension"
     assert exercise["load_source"] == "progression"
     assert "load_inference" not in exercise
+
+
+def test_triceps_extension_load_does_not_cross_contaminate_from_overhead_variant(monkeypatch):
+    module = _module(monkeypatch)
+    module.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    monkeypatch.setattr(module, "_lm_studio", None)
+    monkeypatch.setattr(
+        module,
+        "WORKOUTS",
+        [
+            _workout("2026-05-08", "Overhead Tricep Extension", 40, muscle="triceps"),
+            _workout("2026-05-15", "Overhead Tricep Extension", 45, muscle="triceps"),
+        ],
+    )
+    monkeypatch.setattr(
+        module,
+        "LAST_WORKOUT_RECOMMENDATION",
+        _recommendation_for(module, [_rec_exercise("Cable Pushdown", "triceps", 55)]),
+    )
+
+    response = module.app.test_client().post(
+        "/api/workout/swap",
+        json={"exercise_index": 0, "new_exercise_name": "Triceps Extension"},
+    )
+
+    assert response.status_code == 200
+    exercise = response.get_json()["recommendation"]["exercises"][0]
+    assert exercise["exercise"] == "Triceps Extension"
+    assert exercise["load_source"] != "similar_history"
+    assert "load_inference" not in exercise
+
+
+@pytest.mark.parametrize("legacy_name", ["Tricep Extension", "Triceps Extension"])
+def test_triceps_extension_ignores_legacy_bare_alias_direct_history(monkeypatch, legacy_name):
+    module = _module(monkeypatch)
+    module.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    monkeypatch.setattr(module, "_lm_studio", None)
+    monkeypatch.setattr(
+        module,
+        "WORKOUTS",
+        [
+            _workout("2026-05-08", legacy_name, 40, muscle="triceps"),
+            _workout("2026-05-15", legacy_name, 45, muscle="triceps"),
+        ],
+    )
+    monkeypatch.setattr(
+        module,
+        "LAST_WORKOUT_RECOMMENDATION",
+        _recommendation_for(module, [_rec_exercise("Cable Pushdown", "triceps", 55)]),
+    )
+
+    response = module.app.test_client().post(
+        "/api/workout/swap",
+        json={"exercise_index": 0, "new_exercise_name": "Triceps Extension"},
+    )
+
+    assert response.status_code == 200
+    exercise = response.get_json()["recommendation"]["exercises"][0]
+    assert exercise["exercise"] == "Triceps Extension"
+    assert exercise["load_source"] != "progression"
+    assert exercise.get("load_source_detail") != f"progression:{legacy_name}"
+
+
+def test_triceps_extension_filters_mixed_legacy_and_new_alias_history(monkeypatch):
+    module = _module(monkeypatch)
+    progression = module.calculate_progression_status(
+        [
+            _workout("2026-05-08", "Triceps Extension", 120, muscle="triceps"),
+            _workout("2026-05-30", "Triceps Extension", 30, muscle="triceps"),
+        ]
+    )
+
+    load_source = module._select_recommendation_e1rm(
+        "Triceps Extension",
+        progression.get("Triceps Extension", {}),
+        progression,
+    )
+
+    assert load_source["source"] == "progression"
+    assert load_source["detail"] == "progression:Triceps Extension"
+    assert load_source["e1rm"] < 50
+
+
+def test_triceps_extension_filtered_history_preserves_regression_status(monkeypatch):
+    module = _module(monkeypatch)
+    progression = module.calculate_progression_status(
+        [
+            _workout("2026-05-08", "Triceps Extension", 120, muscle="triceps"),
+            _workout("2026-05-30", "Triceps Extension", 60, muscle="triceps"),
+            _workout("2026-06-06", "Triceps Extension", 40, muscle="triceps"),
+        ]
+    )
+
+    load_source = module._select_recommendation_e1rm(
+        "Triceps Extension",
+        progression.get("Triceps Extension", {}),
+        progression,
+    )
+
+    assert load_source["source"] == "progression"
+    assert load_source["status"] == "Regression"
+
+
+def test_triceps_extension_uses_post_split_plural_alias_progression(monkeypatch):
+    module = _module(monkeypatch)
+    progression = module.calculate_progression_status(
+        [
+            _workout("2026-05-30", "Triceps Extensions", 35, muscle="triceps"),
+            _workout("2026-06-06", "Triceps Extensions", 40, muscle="triceps"),
+        ]
+    )
+
+    load_source = module._select_recommendation_e1rm(
+        "Triceps Extension",
+        {},
+        progression,
+    )
+
+    assert load_source["source"] == "progression"
+    assert load_source["detail"] == "progression:Triceps Extensions"
+    assert load_source["e1rm"] > 0
+
+
+def test_triceps_extension_last_performance_ignores_pre_split_legacy_rows(monkeypatch):
+    module = _module(monkeypatch)
+    workouts = [
+        _workout("2026-05-29", "Triceps Extension", 200, muscle="triceps"),
+    ]
+
+    assert module._get_last_exercise_performance(workouts, "Triceps Extension") is None
+
+
+def test_triceps_extension_last_performance_uses_post_split_rows(monkeypatch):
+    module = _module(monkeypatch)
+    workouts = [
+        _workout("2026-05-30", "Triceps Extension", 95, muscle="triceps"),
+    ]
+
+    last_perf = module._get_last_exercise_performance(workouts, "Triceps Extension")
+
+    assert last_perf["max_weight"] == 95
+
+
+def test_triceps_extension_ignores_legacy_bare_alias_baseline(monkeypatch):
+    module = _module(monkeypatch)
+    module.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    monkeypatch.setattr(module, "_lm_studio", None)
+    monkeypatch.setattr(module, "BASELINES_DATA", {"Triceps Extension": 200})
+    monkeypatch.setattr(
+        module,
+        "LAST_WORKOUT_RECOMMENDATION",
+        _recommendation_for(module, [_rec_exercise("Cable Pushdown", "triceps", 55)]),
+    )
+
+    response = module.app.test_client().post(
+        "/api/workout/swap",
+        json={"exercise_index": 0, "new_exercise_name": "Triceps Extension"},
+    )
+
+    assert response.status_code == 200
+    exercise = response.get_json()["recommendation"]["exercises"][0]
+    assert exercise["exercise"] == "Triceps Extension"
+    assert exercise["load_source"] != "baseline_json"
+    assert exercise.get("load_source_detail") != "baseline_json:Triceps Extension"
+
+
+def test_triceps_extension_uses_newly_saved_machine_baseline(monkeypatch):
+    module = _module(monkeypatch)
+    module.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    monkeypatch.setattr(module, "_lm_studio", None)
+    monkeypatch.setattr(
+        module,
+        "LAST_WORKOUT_RECOMMENDATION",
+        _recommendation_for(module, [_rec_exercise("Cable Pushdown", "triceps", 55)]),
+    )
+
+    baseline_response = module.app.test_client().post(
+        "/api/baselines",
+        json={"baselines": {"Triceps Extension": 95}},
+    )
+    assert baseline_response.status_code == 200
+
+    response = module.app.test_client().post(
+        "/api/workout/swap",
+        json={"exercise_index": 0, "new_exercise_name": "Triceps Extension"},
+    )
+
+    assert response.status_code == 200
+    exercise = response.get_json()["recommendation"]["exercises"][0]
+    assert exercise["exercise"] == "Triceps Extension"
+    assert exercise["load_source"] == "baseline_json"
+    assert exercise["load_source_detail"] == "baseline_json:Triceps Extension"
+
+
+def test_triceps_extension_alias_baseline_does_not_confirm_stale_exact_key(monkeypatch):
+    module = _module(monkeypatch)
+    module.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    monkeypatch.setattr(module, "_lm_studio", None)
+    monkeypatch.setattr(module, "BASELINES_DATA", {"Triceps Extension": 200})
+    monkeypatch.setattr(
+        module,
+        "LAST_WORKOUT_RECOMMENDATION",
+        _recommendation_for(module, [_rec_exercise("Cable Pushdown", "triceps", 55)]),
+    )
+
+    baseline_response = module.app.test_client().post(
+        "/api/baselines",
+        json={"baselines": {"Machine Triceps Extension": 95}},
+    )
+    assert baseline_response.status_code == 200
+    assert "Triceps Extension" not in baseline_response.get_json()["baselines"]
+    assert baseline_response.get_json()["baselines"]["Machine Triceps Extension"] == 95
+
+    response = module.app.test_client().post(
+        "/api/workout/swap",
+        json={"exercise_index": 0, "new_exercise_name": "Triceps Extension"},
+    )
+
+    assert response.status_code == 200
+    exercise = response.get_json()["recommendation"]["exercises"][0]
+    assert exercise["exercise"] == "Triceps Extension"
+    assert exercise["load_source"] == "baseline_json"
+    assert exercise["load_source_detail"] == "baseline_json:Machine Triceps Extension"
+    assert exercise["target_weight"] < 200
+
+
+def test_triceps_extension_baseline_metadata_is_not_public_numeric_payload(monkeypatch):
+    module = _module(monkeypatch)
+    baseline_response = module.app.test_client().post(
+        "/api/baselines",
+        json={"baselines": {"Triceps Extension": 95}},
+    )
+    assert baseline_response.status_code == 200
+    assert module.BASELINE_METADATA_KEY not in baseline_response.get_json()["baselines"]
+
+    get_response = module.app.test_client().get("/api/baselines")
+    assert get_response.status_code == 200
+    returned_baselines = get_response.get_json()["baselines"]
+    assert module.BASELINE_METADATA_KEY not in returned_baselines
+
+    roundtrip_response = module.app.test_client().post(
+        "/api/baselines",
+        json={"baselines": returned_baselines},
+    )
+    assert roundtrip_response.status_code == 200
+
+
+def test_unconfirmed_triceps_extension_baseline_is_not_roundtrip_confirmed(monkeypatch):
+    module = _module(monkeypatch)
+    monkeypatch.setattr(module, "BASELINES_DATA", {"Triceps Extension": 200})
+    client = module.app.test_client()
+
+    get_response = client.get("/api/baselines")
+    assert get_response.status_code == 200
+    assert "Triceps Extension" not in get_response.get_json()["baselines"]
+
+    post_response = client.post(
+        "/api/baselines",
+        json={"baselines": {"Triceps Extension": 200}},
+    )
+    assert post_response.status_code == 200
+    assert "Triceps Extension" not in post_response.get_json()["baselines"]
+    assert module.BASELINE_METADATA_KEY not in module.BASELINES_DATA
+
+
+def test_same_equipment_confusable_variants_do_not_seed_load_inference(monkeypatch):
+    module = _module(monkeypatch)
+    progression = {
+        "Calf Raise": {
+            "current_e1rm": 180,
+            "status": "On Track",
+        }
+    }
+
+    assert module._similar_exercise_load_source("Calf Raise (Seated)", progression) is None
 
 
 def test_ai_adjust_rejects_unknown_dragon_press_target(monkeypatch):
