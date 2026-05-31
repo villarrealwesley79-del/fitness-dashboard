@@ -6639,14 +6639,39 @@ def _review_payload_from_estimate(
     response_extras: dict,
     text_hint: str | None,
 ) -> dict:
-    item = _review_item_from_estimate(
-        estimate,
-        item_id="item-1",
-        item_order=1,
-        status="included",
-        text=text_hint,
-        candidates=estimate.get("candidates") if isinstance(estimate, dict) else None,
-    )
+    raw_items = estimate.get("items") if isinstance(estimate, dict) else None
+    items = []
+    if isinstance(raw_items, list):
+        for index, raw_item in enumerate(raw_items[:8], start=1):
+            if not isinstance(raw_item, dict):
+                continue
+            raw_item_estimate = raw_item.get("estimate") if isinstance(raw_item.get("estimate"), dict) else raw_item
+            if has_image and isinstance(raw_item_estimate, dict):
+                raw_item_estimate = {**raw_item_estimate, "from_image": True}
+            item_id = _meal_safe_identifier(
+                raw_item.get("item_id") or raw_item.get("meal_item_id") or f"item-{index}",
+                fallback=f"item-{index}",
+                max_len=64,
+            )
+            item_text = _review_safe_str(raw_item.get("text") or raw_item.get("item_name") or text_hint)
+            items.append(_review_item_from_estimate(
+                raw_item_estimate,
+                item_id=item_id,
+                item_order=index,
+                status="included",
+                text=item_text,
+                candidates=raw_item.get("candidates"),
+                original_estimate=raw_item_estimate,
+            ))
+    if not items:
+        items = [_review_item_from_estimate(
+            estimate,
+            item_id="item-1",
+            item_order=1,
+            status="included",
+            text=text_hint,
+            candidates=estimate.get("candidates") if isinstance(estimate, dict) else None,
+        )]
     payload = {
         "status": "pending_review",
         "estimate": _review_strip_private_estimate_fields(dict(estimate)),
@@ -6656,9 +6681,9 @@ def _review_payload_from_estimate(
         "local_date": local_date,
         "local_iso": local_iso,
         "meal_id": meal_id,
-        "meal_type": item["estimate"].get("meal_type") or "snack",
+        "meal_type": items[0]["estimate"].get("meal_type") if items else "snack",
         "followup": _review_followup_default(),
-        "items": [item],
+        "items": items,
         "has_image": bool(has_image),
         **response_extras,
     }
@@ -7037,6 +7062,8 @@ def meal_intake():
                 if isinstance(raw_estimate, dict):
                     if isinstance(raw_estimate.get("candidates"), list):
                         estimate["candidates"] = raw_estimate.get("candidates")
+                    if isinstance(raw_estimate.get("items"), list):
+                        estimate["items"] = raw_estimate.get("items")
                     if isinstance(raw_estimate.get("clarification_question"), str):
                         estimate["clarification_question"] = raw_estimate["clarification_question"].strip()[:240]
             except MealEstimateValidationError:
@@ -7059,6 +7086,8 @@ def meal_intake():
             if isinstance(raw_estimate, dict):
                 if isinstance(raw_estimate.get("candidates"), list):
                     estimate["candidates"] = raw_estimate.get("candidates")
+                if isinstance(raw_estimate.get("items"), list):
+                    estimate["items"] = raw_estimate.get("items")
                 if isinstance(raw_estimate.get("clarification_question"), str):
                     estimate["clarification_question"] = raw_estimate["clarification_question"].strip()[:240]
         except MealEstimateValidationError:
@@ -7117,7 +7146,7 @@ def meal_intake():
         user_id,
         client_id,
         payload,
-        next_item_seq=2,
+        next_item_seq=max((int(item.get("item_order") or 0) for item in payload.get("items") or []), default=1) + 1,
         applied_refreshes={},
         sync_pending=True,
     )

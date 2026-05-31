@@ -75,12 +75,35 @@ _AMBIGUOUS_TOKENS = (
     "a few",
 )
 
+_AI_UNAVAILABLE_NOTE = "Rough estimate — AI didn't run; review before logging."
+
 
 # Deterministic preset table used when LM Studio is unreachable, returns
 # unparseable JSON, or fails schema validation. Shapes intentionally match
 # the FIT-60 stub presets so the swap is behavior-compatible for the common
 # cases the existing UI tests rely on.
 _FALLBACK_PRESETS: tuple[tuple[tuple[str, ...], tuple[str, ...], dict], ...] = (
+    (("poppers",), (),
+     dict(item_name="Bacon wrapped jalapeno poppers", meal_type="snack",
+          calories=130, protein_g=4, carbs_g=2, fat_g=12, sodium_mg=180, fiber_g=0)),
+    (("popper",), (),
+     dict(item_name="Bacon wrapped jalapeno popper", meal_type="snack",
+          calories=130, protein_g=4, carbs_g=2, fat_g=12, sodium_mg=180, fiber_g=0)),
+    (("jerky",), (),
+     dict(item_name="Beef jerky", meal_type="snack",
+          calories=80, protein_g=14, carbs_g=4, fat_g=1, sodium_mg=520, fiber_g=0)),
+    (("breakfast", "taco"), (),
+     dict(item_name="Breakfast taco", meal_type="breakfast",
+          calories=320, protein_g=14, carbs_g=28, fat_g=16, sodium_mg=620, fiber_g=3)),
+    (("egg", "taco"), (),
+     dict(item_name="Breakfast taco", meal_type="breakfast",
+          calories=320, protein_g=14, carbs_g=28, fat_g=16, sodium_mg=620, fiber_g=3)),
+    (("taco",), (),
+     dict(item_name="Taco", meal_type="lunch",
+          calories=220, protein_g=10, carbs_g=22, fat_g=10, sodium_mg=420, fiber_g=3)),
+    (("potato",), (),
+     dict(item_name="Potato", meal_type="snack",
+          calories=160, protein_g=4, carbs_g=37, fat_g=0, sodium_mg=20, fiber_g=4)),
     (("shake",), (),
      dict(item_name="Protein shake", meal_type="snack",
           calories=210, protein_g=30, carbs_g=14, fat_g=4, sodium_mg=180, fiber_g=2)),
@@ -143,22 +166,37 @@ _FALLBACK_DEFAULT = dict(
 )
 _NO_BRANDED_MATCH_NOTE = "Low confidence — no branded match found in Nutritionix, USDA, or Open Food Facts."
 _QUANTITY_WORDS = {
-    "one",
-    "two",
-    "three",
-    "four",
-    "five",
-    "six",
-    "seven",
-    "eight",
-    "nine",
-    "ten",
-    "eleven",
-    "twelve",
-    "dozen",
-    "couple",
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "dozen": 12,
+    "couple": 2,
 }
 _QUANTITY_RE = re.compile(r"\b(?:\d+(?:\.\d+)?|" + "|".join(sorted(_QUANTITY_WORDS)) + r")\b", re.I)
+_MULTI_ITEM_SPLIT_RE = re.compile(r"\s*(?:\band\b|\+)\s+", re.I)
+_QUANTITY_ONLY_TOKENS = {
+    "oz", "ounce", "ounces", "serving", "servings", "piece", "pieces",
+    "slice", "slices", "item", "items",
+}
+_MEASUREMENT_UNITS = {
+    "oz", "ounce", "ounces", "g", "gram", "grams", "lb", "lbs", "pound", "pounds",
+    "cup", "cups", "tbsp", "tablespoon", "tablespoons", "tsp", "teaspoon", "teaspoons",
+    "calorie", "calories", "kcal",
+}
+_COMBO_PRESET_TOKEN_SETS = (
+    {"egg", "toast"},
+    {"chicken", "rice"},
+)
+_NON_SCALABLE_FALLBACK_ITEMS = {"Eggs and toast", "Chicken and rice"}
 
 _FALLBACK_TOKEN_ALIASES = {
     "chipotole": "chipotle",
@@ -298,7 +336,109 @@ def _validate_estimate(parsed: dict) -> None:
             raise LmStudioError("uncertainty_notes must be array of strings")
 
 
-def _fallback_estimate(text: str) -> dict:
+def _fallback_quantity_factor(text: str) -> float:
+    match = _QUANTITY_RE.search(text or "")
+    if not match:
+        return 1.0
+    tail = (text or "")[match.end():]
+    if tail.lstrip().startswith("%"):
+        return 1.0
+    unit_match = re.match(r"\s*([a-zA-Z]+)\b", tail)
+    if unit_match and unit_match.group(1).lower() in _MEASUREMENT_UNITS:
+        return 1.0
+    raw = match.group(0).lower()
+    if raw in _QUANTITY_WORDS:
+        return float(_QUANTITY_WORDS[raw])
+    try:
+        value = float(raw)
+    except ValueError:
+        return 1.0
+    return max(0.25, min(value, 12.0))
+
+
+def _fallback_has_count_quantity(text: str) -> bool:
+    match = _QUANTITY_RE.search(text or "")
+    if not match:
+        return False
+    tail = (text or "")[match.end():]
+    if tail.lstrip().startswith("%"):
+        return False
+    unit_match = re.match(r"\s*([a-zA-Z]+)\b", tail)
+    return not (unit_match and unit_match.group(1).lower() in _MEASUREMENT_UNITS)
+
+
+def _fallback_parts_are_combo_preset(parts: list[str]) -> bool:
+    if len(parts) != 2:
+        return False
+    raw_tokens = set(re.findall(r"[a-z0-9]+", " ".join(parts).lower()))
+    tokens = {
+        token for token in raw_tokens
+        if token not in _QUANTITY_ONLY_TOKENS and token not in _MEASUREMENT_UNITS
+    }
+    quantity_tokens = set(_QUANTITY_WORDS) | {token for token in tokens if re.fullmatch(r"\d+(?:\.\d+)?", token)}
+    egg_toast_tokens = {"egg", "eggs", "toast"} | quantity_tokens
+    chicken_rice_tokens = {"chicken", "rice"} | quantity_tokens
+    return tokens <= egg_toast_tokens or tokens <= chicken_rice_tokens
+
+
+def _fallback_merge_combo_parts(parts: list[str]) -> list[str]:
+    merged: list[str] = []
+    index = 0
+    while index < len(parts):
+        if index + 1 < len(parts) and _fallback_parts_are_combo_preset([parts[index], parts[index + 1]]):
+            merged.append(f"{parts[index]} and {parts[index + 1]}")
+            index += 2
+        else:
+            merged.append(parts[index])
+            index += 1
+    return merged
+
+
+def _fallback_item_breakdown(text: str) -> list[dict]:
+    parts = []
+    for raw_part in _MULTI_ITEM_SPLIT_RE.split(text or ""):
+        part = raw_part.strip(" .;")
+        if not part:
+            continue
+        tokens = set(re.findall(r"[a-z0-9]+", part.lower()))
+        non_quantity_tokens = {
+            token for token in tokens
+            if token not in _QUANTITY_ONLY_TOKENS and token not in _QUANTITY_WORDS and not re.fullmatch(r"\d+(?:\.\d+)?", token)
+        }
+        if not non_quantity_tokens and parts:
+            parts[-1] = f"{parts[-1]} {part}".strip()
+            continue
+        parts.append(part)
+    parts = _fallback_merge_combo_parts(parts)
+    if len(parts) < 2:
+        return []
+    if _fallback_parts_are_combo_preset(parts):
+        return []
+    if not any(_fallback_has_count_quantity(part) for part in parts):
+        recognized_parts = [
+            _single_fallback_estimate(part, include_ai_note=False).get("item_name") != _FALLBACK_DEFAULT["item_name"]
+            for part in parts
+        ]
+        if not all(recognized_parts):
+            return []
+    items = []
+    for index, part in enumerate(parts[:6], start=1):
+        estimate = _single_fallback_estimate(part)
+        notes = estimate.setdefault("uncertainty_notes", [])
+        if "Multi-item fallback split from text; confirm each quantity." not in notes:
+            notes.append("Multi-item fallback split from text; confirm each quantity.")
+        quantity = _fallback_quantity_factor(part)
+        items.append({
+            "item_id": f"fallback-item-{index}",
+            "item_name": estimate["item_name"],
+            "quantity": int(quantity) if quantity.is_integer() else round(quantity, 2),
+            "portion_hint": estimate.get("portion_description"),
+            "estimate": estimate,
+        })
+    return items
+
+
+def _single_fallback_estimate(text: str, *, include_ai_note: bool = True) -> dict:
     """Deterministic estimate produced when the local LLM is unavailable.
 
     Keyword-matches a small preset table that mirrors the FIT-60 stub so
@@ -320,7 +460,20 @@ def _fallback_estimate(text: str) -> dict:
             estimate = dict(preset)
             matched = True
             break
+    preserve_combo_quantity = estimate.get("item_name") in _NON_SCALABLE_FALLBACK_ITEMS or any(
+        all(_has_fallback_token(tokens, token) for token in combo)
+        for combo in _COMBO_PRESET_TOKEN_SETS
+    )
+    quantity_factor = 1.0 if preserve_combo_quantity else _fallback_quantity_factor(norm)
     if "half" in norm:
+        quantity_factor *= 0.5
+    if quantity_factor != 1.0:
+        _scale_estimate_macros(estimate, quantity_factor)
+        if "half" in norm:
+            portion_description = "approx half portion"
+        else:
+            portion_description = f"approx {int(quantity_factor) if quantity_factor.is_integer() else round(quantity_factor, 2)} servings"
+    elif "half" in norm:
         _scale_estimate_macros(estimate, 0.5)
         portion_description = "approx half portion"
 
@@ -329,13 +482,15 @@ def _fallback_estimate(text: str) -> dict:
         confidence = 0.0
         ambiguous = True
     elif ambiguous:
-        confidence = 0.45
+        confidence = 0.3
     elif matched:
-        confidence = 0.6
+        confidence = 0.55
     else:
-        confidence = 0.5
+        confidence = 0.25
 
     notes: list[str] = []
+    if include_ai_note and norm:
+        notes.append(_AI_UNAVAILABLE_NOTE)
     if ambiguous:
         notes.append("Portion or items are unclear — confirm before it counts toward today.")
     if not matched and norm:
@@ -358,6 +513,27 @@ def _fallback_estimate(text: str) -> dict:
         "uncertainty_notes": notes,
         "source": "fallback_text_estimate",
     }
+
+
+def _fallback_estimate(text: str) -> dict:
+    items = _fallback_item_breakdown(text)
+    if not items:
+        return _single_fallback_estimate(text)
+    aggregate = _single_fallback_estimate(text)
+    aggregate["item_name"] = "; ".join(item["item_name"] for item in items)[:160]
+    aggregate["portion_description"] = "; ".join(
+        str(item.get("portion_hint") or item["item_name"]) for item in items
+    )[:300]
+    for key in ("calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g"):
+        total = sum(float(item["estimate"].get(key) or 0) for item in items)
+        aggregate[key] = int(round(total)) if key in {"calories", "sodium_mg"} else round(total, 1)
+    aggregate["confidence"] = min(float(aggregate.get("confidence") or 0), 0.55)
+    aggregate["ambiguous"] = True
+    notes = aggregate.setdefault("uncertainty_notes", [])
+    if "Multi-item fallback split from text; confirm each quantity." not in notes:
+        notes.append("Multi-item fallback split from text; confirm each quantity.")
+    aggregate["items"] = items
+    return aggregate
 
 
 def _scale_estimate_macros(estimate: dict, factor: float) -> None:

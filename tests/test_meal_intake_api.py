@@ -3583,6 +3583,182 @@ def test_meal_intake_barcode_replays_existing_snapshot_by_client_id(monkeypatch)
     assert calls["count"] == 1
 
 
+def test_meal_intake_text_preserves_parser_item_breakdown(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parse(_text, **_kw):
+        return {
+            "fallback_used": True,
+            "estimate": {
+                "item_name": "Protein shake; Breakfast taco",
+                "portion_description": "Protein shake; approx 2 servings",
+                "meal_type": "snack",
+                "calories": 850,
+                "protein_g": 58,
+                "carbs_g": 70,
+                "fat_g": 36,
+                "sodium_mg": 1420,
+                "fiber_g": 8,
+                "confidence": 0.55,
+                "ambiguous": True,
+                "uncertainty_notes": ["Rough estimate — AI didn't run; review before logging."],
+                "source": "fallback_text_estimate",
+                "items": [
+                    {
+                        "item_id": "fallback-item-1",
+                        "item_name": "Protein shake",
+                        "quantity": 1,
+                        "estimate": _accepted_estimate(
+                            item_name="Protein shake",
+                            meal_type="snack",
+                            calories=210,
+                            protein_g=30,
+                            carbs_g=14,
+                            fat_g=4,
+                            sodium_mg=180,
+                            fiber_g=2,
+                            confidence=0.55,
+                            ambiguous=False,
+                            uncertainty_notes=[
+                                "Rough estimate — AI didn't run; review before logging.",
+                                "Multi-item fallback split from text; confirm each quantity.",
+                            ],
+                            source="fallback_text_estimate",
+                        ),
+                    },
+                    {
+                        "item_id": "fallback-item-2",
+                        "item_name": "Breakfast taco",
+                        "quantity": 2,
+                        "portion_hint": "approx 2 servings",
+                        "estimate": _accepted_estimate(
+                            item_name="Breakfast taco",
+                            portion_description="approx 2 servings",
+                            meal_type="breakfast",
+                            calories=640,
+                            protein_g=28,
+                            carbs_g=56,
+                            fat_g=32,
+                            sodium_mg=1240,
+                            fiber_g=6,
+                            confidence=0.55,
+                            ambiguous=False,
+                            uncertainty_notes=[
+                                "Rough estimate — AI didn't run; review before logging.",
+                                "Multi-item fallback split from text; confirm each quantity.",
+                            ],
+                            source="fallback_text_estimate",
+                        ),
+                    },
+                ],
+            },
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parse)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "protein shake and 2 tacos", "client_id": "meal-text-items-1"},
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["fallback_used"] is True
+    assert [item["name"] for item in body["items"]] == ["Protein shake", "Breakfast taco"]
+    assert body["items"][1]["portion"] == "approx 2 servings"
+    assert body["meal_totals"]["calories"] == 850
+    assert body["save_blocked_item_ids"] == []
+    assert any("AI didn't run" in note for note in body["estimate"]["uncertainty_notes"])
+    assert any("Multi-item fallback" in note for note in body["estimate"]["uncertainty_notes"])
+    snapshot = data_store.get_meal_review_snapshot(1, "meal-text-items-1")
+    assert snapshot["next_item_seq"] == 3
+
+
+def test_meal_intake_photo_text_item_breakdown_preserves_image_origin(monkeypatch):
+    module = _client(monkeypatch)
+
+    monkeypatch.setattr(
+        module.vision_estimator,
+        "describe",
+        lambda *_a, **_kw: (_ for _ in ()).throw(module.vision_estimator.VisionEstimatorError("vision down")),
+    )
+
+    def fake_parse(_text, **_kw):
+        return {
+            "fallback_used": True,
+            "estimate": {
+                "item_name": "Protein shake; Breakfast taco",
+                "portion_description": "Protein shake; approx 2 servings",
+                "meal_type": "snack",
+                "calories": 850,
+                "protein_g": 58,
+                "carbs_g": 70,
+                "fat_g": 36,
+                "sodium_mg": 1420,
+                "fiber_g": 8,
+                "confidence": 0.55,
+                "ambiguous": True,
+                "uncertainty_notes": ["Rough estimate — AI didn't run; review before logging."],
+                "source": "fallback_text_estimate",
+                "items": [
+                    {
+                        "item_id": "fallback-item-1",
+                        "item_name": "Protein shake",
+                        "estimate": _accepted_estimate(
+                            item_name="Protein shake",
+                            meal_type="snack",
+                            calories=210,
+                            protein_g=30,
+                            carbs_g=14,
+                            fat_g=4,
+                            sodium_mg=180,
+                            fiber_g=2,
+                            confidence=0.55,
+                            ambiguous=False,
+                            source="fallback_text_estimate",
+                        ),
+                    },
+                    {
+                        "item_id": "fallback-item-2",
+                        "item_name": "Breakfast taco",
+                        "estimate": _accepted_estimate(
+                            item_name="Breakfast taco",
+                            meal_type="breakfast",
+                            calories=640,
+                            protein_g=28,
+                            carbs_g=56,
+                            fat_g=32,
+                            sodium_mg=1240,
+                            fiber_g=6,
+                            confidence=0.55,
+                            ambiguous=False,
+                            source="fallback_text_estimate",
+                        ),
+                    },
+                ],
+            },
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parse)
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "protein shake and 2 tacos",
+            "client_id": "meal-photo-text-items-1",
+            "image": (io.BytesIO(b"fake-image"), "meal.jpg"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["fallback_used"] is True
+    assert body["photo_retention"]["image_received"] is True
+    assert all(item["estimate"].get("from_image") is True for item in body["items"])
+
+
 def test_barcode_lookup_cache_round_trip_and_delete_user_data(tmp_path, monkeypatch):
     monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
     data_store.init_data_db()
