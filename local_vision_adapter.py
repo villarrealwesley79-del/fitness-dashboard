@@ -26,6 +26,7 @@ def _env_first(*names: str, default: str) -> str:
     return default
 
 
+SERVED_VISION_MODEL = "qwen3-vl-30b-a3b-instruct@q4_k_xl"
 LM_STUDIO_URL = _env_first(
     "VISION_LM_STUDIO_URL",
     "LM_STUDIO_URL",
@@ -34,7 +35,7 @@ LM_STUDIO_URL = _env_first(
 LM_STUDIO_MODEL = _env_first(
     "VISION_LM_STUDIO_MODEL",
     "LM_STUDIO_VISION_MODEL",
-    default="qwen2.5-vl-7b-instruct",
+    default=SERVED_VISION_MODEL,
 )
 LM_STUDIO_FALLBACK_URL = os.environ.get("VISION_LM_STUDIO_FALLBACK_URL", "").strip().rstrip("/")
 LM_STUDIO_FALLBACK_MODEL = os.environ.get("VISION_LM_STUDIO_FALLBACK_MODEL", "").strip()

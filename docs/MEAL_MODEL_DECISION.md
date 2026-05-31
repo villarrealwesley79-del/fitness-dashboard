@@ -50,11 +50,10 @@ Current FIT-164 vision route:
 - Keep `qwen3-vl-30b-a3b-instruct@q4_k_xl` as the served vision model.
 - Retain the FIT-164 scale-cue prompt for that 30B-A3B model.
 - Configure the served environment with `VISION_LM_STUDIO_MODEL` or
-  `LM_STUDIO_VISION_MODEL` set to `qwen3-vl-30b-a3b-instruct@q4_k_xl`. This
-  decision doc records the served route target; it does not change the adapter's
-  unset-env fallback.
-- The adapter fallback remains `qwen2.5-vl-7b-instruct` when those environment
-  variables are blank, pending a separate config/default change.
+  `LM_STUDIO_VISION_MODEL` set to `qwen3-vl-30b-a3b-instruct@q4_k_xl`.
+- FIT-202 pins the adapter's unset-env fallback to the same
+  `qwen3-vl-30b-a3b-instruct@q4_k_xl` route so a blank environment no longer
+  silently downgrades vision estimates to the old 7B model.
 - Do not promote `qwen3-vl-32b-instruct` because it still exceeded the 25%
   macro-MAPE threshold and averaged 8.44x slower latency than the 30B baseline.
 - Treat FIT-164 as a promotion of the served local VLM route, not as a claim
@@ -130,7 +129,7 @@ Local model acceptance:
   "text_candidate_not_promoted_2": "google/gemma-4-31b: 18/20 schema-valid, 10/20 quality, 15822.8 ms average across completed calls",
   "text_fallback": "deterministic parser fallback, pending_review",
   "vision_served_model_env": "VISION_LM_STUDIO_MODEL or LM_STUDIO_VISION_MODEL = qwen3-vl-30b-a3b-instruct@q4_k_xl",
-  "vision_adapter_unset_env_fallback": "qwen2.5-vl-7b-instruct",
+  "vision_adapter_unset_env_fallback": "qwen3-vl-30b-a3b-instruct@q4_k_xl",
   "vision_served_prompt": "FIT-164 scale-cue prompt",
   "vision_decision_artifact": "docs/meal-model-benchmark-qwen3vl-30b-vs-32b-2026-05-24.json",
   "vision_not_promoted": "qwen3-vl-32b-instruct: 50/50 schema-valid, 25.83% macro MAPE, 23196.1 ms average, 8.44x slower than 30B baseline",
