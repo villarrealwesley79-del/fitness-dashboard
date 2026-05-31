@@ -7378,6 +7378,15 @@
         draftClientId: null,
         lastSubmitFailedTransient: false,
         submitting: false,
+        barcodeSubmitting: false,
+        barcodeStream: null,
+        barcodeDetector: null,
+        barcodeScanRaf: null,
+        barcodeScanLastAt: 0,
+        barcodeScanToken: 0,
+        barcodeDraftClientId: null,
+        barcodeDraftValue: '',
+        barcodeUnavailable: false,
         backendUnavailable: false,
         pending: [],
     };
@@ -7387,6 +7396,13 @@
             form: $('meal-composer'),
             text: $('meal-composer-text'),
             image: $('meal-composer-image'),
+            scan: $('meal-composer-scan'),
+            barcodePanel: $('meal-composer-barcode'),
+            barcodeVideo: $('meal-composer-barcode-video'),
+            barcodeInput: $('meal-composer-barcode-input'),
+            barcodeSubmit: $('meal-composer-barcode-submit'),
+            barcodeClose: $('meal-composer-barcode-close'),
+            barcodeStatus: $('meal-composer-barcode-status'),
             submit: $('meal-composer-submit'),
             thumbs: $('meal-composer-thumbs'),
             retention: $('meal-composer-retention'),
@@ -7417,14 +7433,19 @@
         const hasText = text && text.value.trim().length > 0;
         const hasImage = mealComposerState.imageFiles.length > 0;
         const online = typeof navigator === 'undefined' || navigator.onLine !== false;
-        const enabled = (hasText || hasImage) && !mealComposerState.submitting && !mealComposerState.backendUnavailable;
+        const blocked = mealComposerState.submitting || mealComposerState.barcodeSubmitting || mealComposerState.backendUnavailable;
+        const enabled = (hasText || hasImage) && !blocked;
         submit.disabled = !enabled;
+        const { scan } = mealComposerEls();
+        if (scan) scan.disabled = blocked || mealComposerState.barcodeUnavailable;
         // FIT-138: surface multi-photo processing count while in-flight.
         // FIT-145: when offline, the submit path enqueues locally instead
         // of uploading, so reflect that in the loading label.
-        if (mealComposerState.submitting) {
+        if (mealComposerState.submitting || mealComposerState.barcodeSubmitting) {
             if (online) {
-                submit.textContent = hasImage
+                submit.textContent = mealComposerState.barcodeSubmitting
+                    ? 'Looking up…'
+                    : hasImage
                     ? `Processing ${mealComposerState.imageFiles.length} photo${mealComposerState.imageFiles.length === 1 ? '' : 's'}…`
                     : 'Logging…';
             } else {
@@ -7598,7 +7619,7 @@
 
     function setMealBackendUnavailable(message) {
         mealComposerState.backendUnavailable = true;
-        const { form, status, submit, text, image } = mealComposerEls();
+        const { form, status, submit, text, image, scan } = mealComposerEls();
         if (form) form.classList.add('meal-composer-disabled');
         if (status) {
             status.classList.remove('meal-composer-status--provenance');
@@ -7608,11 +7629,12 @@
         if (submit) submit.disabled = true;
         if (text) text.disabled = true;
         if (image) image.disabled = true;
+        if (scan) scan.disabled = true;
     }
 
     function setMealBackendAvailable() {
         mealComposerState.backendUnavailable = false;
-        const { form, status, text, image } = mealComposerEls();
+        const { form, status, text, image, scan } = mealComposerEls();
         if (form) form.classList.remove('meal-composer-disabled');
         if (status) {
             status.classList.remove('meal-composer-status--provenance');
@@ -7621,7 +7643,18 @@
         }
         if (text) text.disabled = false;
         if (image) image.disabled = false;
+        if (scan) scan.disabled = false;
         refreshMealSubmitState();
+    }
+
+    function setMealBarcodeUnavailable(message) {
+        mealComposerState.barcodeUnavailable = true;
+        stopMealBarcodeScanner();
+        const { scan, barcodeInput, barcodeSubmit } = mealComposerEls();
+        if (scan) scan.disabled = true;
+        if (barcodeInput) barcodeInput.disabled = true;
+        if (barcodeSubmit) barcodeSubmit.disabled = true;
+        setMealBarcodeStatus(message || 'Barcode lookup is not enabled yet. You can still log meals with text or photos.');
     }
 
     function clearMealComposerStatus(clientId = null) {
@@ -8504,9 +8537,255 @@
         offline.hidden = online;
     }
 
+    function normalizeMealBarcode(value) {
+        const digits = String(value || '').replace(/[\s_.-]+/g, '');
+        return (digits.length === 8 || digits.length === 12 || digits.length === 13 || digits.length === 14)
+            && /^\d+$/.test(digits)
+            ? digits
+            : '';
+    }
+
+    function setMealBarcodeStatus(message) {
+        const { barcodeStatus } = mealComposerEls();
+        if (!barcodeStatus) return;
+        barcodeStatus.textContent = message || '';
+    }
+
+    function stopMealBarcodeScanner() {
+        mealComposerState.barcodeScanToken += 1;
+        if (mealComposerState.barcodeScanRaf) {
+            cancelAnimationFrame(mealComposerState.barcodeScanRaf);
+            mealComposerState.barcodeScanRaf = null;
+        }
+        if (mealComposerState.barcodeStream) {
+            mealComposerState.barcodeStream.getTracks().forEach((track) => track.stop());
+            mealComposerState.barcodeStream = null;
+        }
+        const { barcodeVideo } = mealComposerEls();
+        if (barcodeVideo) {
+            barcodeVideo.pause();
+            barcodeVideo.srcObject = null;
+            barcodeVideo.hidden = true;
+        }
+    }
+
+    function mealBarcodeScanCancelled(scanToken) {
+        const { barcodePanel } = mealComposerEls();
+        return mealComposerState.barcodeScanToken !== scanToken || !barcodePanel || barcodePanel.hidden;
+    }
+
+    function closeMealBarcodePanel() {
+        const { barcodePanel } = mealComposerEls();
+        stopMealBarcodeScanner();
+        if (barcodePanel) barcodePanel.hidden = true;
+    }
+
+    function barcodeDetectorSupported() {
+        return typeof window !== 'undefined'
+            && typeof window.BarcodeDetector === 'function'
+            && typeof navigator !== 'undefined'
+            && navigator.mediaDevices
+            && typeof navigator.mediaDevices.getUserMedia === 'function';
+    }
+
+    async function startMealBarcodeScanner() {
+        const { barcodeVideo } = mealComposerEls();
+        if (!barcodeVideo || !barcodeDetectorSupported()) {
+            setMealBarcodeStatus('Camera scan is not available here. Enter the barcode number instead.');
+            return;
+        }
+        if (mealComposerState.barcodeStream || mealComposerState.barcodeScanRaf) {
+            stopMealBarcodeScanner();
+        }
+        mealComposerState.barcodeScanToken += 1;
+        const scanToken = mealComposerState.barcodeScanToken;
+        try {
+            mealComposerState.barcodeDetector = new window.BarcodeDetector({
+                formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'],
+            });
+        } catch (_) {
+            try { mealComposerState.barcodeDetector = new window.BarcodeDetector(); }
+            catch (e) {
+                setMealBarcodeStatus('Camera scan is not available here. Enter the barcode number instead.');
+                return;
+            }
+        }
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { ideal: 'environment' } },
+                audio: false,
+            });
+            if (mealBarcodeScanCancelled(scanToken)) {
+                stream.getTracks().forEach((track) => track.stop());
+                return;
+            }
+            mealComposerState.barcodeStream = stream;
+            barcodeVideo.srcObject = stream;
+            barcodeVideo.hidden = false;
+            await barcodeVideo.play();
+            if (mealBarcodeScanCancelled(scanToken)) {
+                stopMealBarcodeScanner();
+                return;
+            }
+            setMealBarcodeStatus('Point the camera at the barcode. Only the decoded number is sent.');
+            scanMealBarcodeFrame();
+        } catch (e) {
+            console.warn('Barcode camera unavailable:', e);
+            stopMealBarcodeScanner();
+            setMealBarcodeStatus('Camera permission unavailable. Enter the barcode number instead.');
+        }
+    }
+
+    async function scanMealBarcodeFrame(now = 0) {
+        const { barcodeVideo, barcodeInput } = mealComposerEls();
+        const detector = mealComposerState.barcodeDetector;
+        if (!barcodeVideo || !detector || !mealComposerState.barcodeStream || mealComposerState.barcodeSubmitting) return;
+        const scanToken = mealComposerState.barcodeScanToken;
+        if (now - mealComposerState.barcodeScanLastAt >= 450) {
+            mealComposerState.barcodeScanLastAt = now;
+            try {
+                const results = await detector.detect(barcodeVideo);
+                if (mealBarcodeScanCancelled(scanToken)) return;
+                const raw = results && results[0] && results[0].rawValue;
+                const barcode = normalizeMealBarcode(raw);
+                if (barcode) {
+                    if (barcodeInput) barcodeInput.value = barcode;
+                    stopMealBarcodeScanner();
+                    submitMealBarcode(barcode);
+                    return;
+                }
+            } catch (e) {
+                console.warn('Barcode detection failed:', e);
+                stopMealBarcodeScanner();
+                setMealBarcodeStatus('Camera scan stopped. Enter the barcode number instead.');
+                return;
+            }
+        }
+        mealComposerState.barcodeScanRaf = requestAnimationFrame(scanMealBarcodeFrame);
+    }
+
+    function openMealBarcodePanel() {
+        if (mealComposerState.backendUnavailable || mealComposerState.barcodeUnavailable || mealComposerState.submitting || mealComposerState.barcodeSubmitting) return;
+        const { barcodePanel, barcodeInput } = mealComposerEls();
+        if (!barcodePanel) return;
+        if (!barcodePanel.hidden) {
+            if (barcodeInput) barcodeInput.focus();
+            return;
+        }
+        barcodePanel.hidden = false;
+        setMealComposerError(null);
+        setMealBarcodeStatus('Starting barcode lookup…');
+        if (barcodeInput) barcodeInput.focus();
+        startMealBarcodeScanner();
+    }
+
+    async function postMealBarcodeLookup({ barcode, clientId, localTime, allowPending }) {
+        const res = await fetch('/api/meal-intake/barcode', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE,
+            },
+            body: JSON.stringify({
+                client_id: clientId,
+                barcode,
+                allow_pending: !!allowPending,
+                local_timestamp: localTime.local_timestamp,
+                local_date: localTime.local_date,
+                local_iso: localTime.local_iso,
+            }),
+        });
+        const ct = res.headers.get('content-type') || '';
+        const payload = ct.includes('application/json') ? await res.json() : null;
+        return { res, payload };
+    }
+
+    async function submitMealBarcode(rawValue) {
+        if (mealComposerState.submitting || mealComposerState.barcodeSubmitting || mealComposerState.backendUnavailable) return;
+        const barcode = normalizeMealBarcode(rawValue);
+        if (!barcode) {
+            setMealBarcodeStatus('Enter an 8, 12, 13, or 14 digit barcode.');
+            return;
+        }
+        const online = typeof navigator === 'undefined' || navigator.onLine !== false;
+        if (!online) {
+            setMealBarcodeStatus('You are offline. Barcode lookup needs the server; try again when you reconnect.');
+            return;
+        }
+        stopMealBarcodeScanner();
+        const { text } = mealComposerEls();
+        const textValue = text ? text.value.trim() : '';
+        const preserveComposerDraft = !!textValue || mealComposerState.imageFiles.length > 0;
+        if (!mealComposerState.barcodeDraftClientId || mealComposerState.barcodeDraftValue !== barcode) {
+            mealComposerState.barcodeDraftClientId = newMealClientId();
+            mealComposerState.barcodeDraftValue = barcode;
+        }
+        const clientId = mealComposerState.barcodeDraftClientId;
+        const localTime = browserLocalMealTime();
+        mealComposerState.barcodeSubmitting = true;
+        refreshMealSubmitState();
+        setMealComposerError(null);
+        setMealBarcodeStatus('Looking up barcode…');
+        try {
+            let { res, payload } = await postMealBarcodeLookup({
+                barcode,
+                clientId,
+                localTime,
+                allowPending: false,
+            });
+            if (res.status === 404 && payload && payload.error && payload.error.code === 'barcode_not_found') {
+                setMealBarcodeStatus('No verified barcode source found. Creating a manual review card.');
+                ({ res, payload } = await postMealBarcodeLookup({
+                    barcode,
+                    clientId,
+                    localTime,
+                    allowPending: true,
+                }));
+            }
+            if (res.status === 404 || res.status === 501) {
+                setMealBarcodeUnavailable('Barcode lookup is not enabled yet. You can still log meals with text or photos.');
+                mealComposerState.barcodeDraftClientId = null;
+                mealComposerState.barcodeDraftValue = '';
+                return;
+            }
+            if (!res.ok) {
+                const msg = (payload && payload.error && payload.error.message) || `Couldn’t look up barcode (${res.status}).`;
+                setMealComposerError(msg);
+                setMealBarcodeStatus(msg);
+                if (res.status < 500) {
+                    mealComposerState.barcodeDraftClientId = null;
+                    mealComposerState.barcodeDraftValue = '';
+                }
+                return;
+            }
+            handleMealIntakeResponse(payload, {
+                textValue,
+                clientId,
+                localTime,
+                barcode,
+                preserveComposerDraft,
+            });
+            mealComposerState.barcodeDraftClientId = null;
+            mealComposerState.barcodeDraftValue = '';
+            closeMealBarcodePanel();
+            toast(payload && payload.pending_source
+                ? 'Barcode added for manual review.'
+                : 'Barcode found. Review before saving.', payload && payload.pending_source ? 'warn' : 'ok');
+        } catch (e) {
+            console.error(e);
+            setMealComposerError('Couldn’t reach barcode lookup. Try again.');
+            setMealBarcodeStatus('Barcode lookup failed. Try again.');
+        } finally {
+            mealComposerState.barcodeSubmitting = false;
+            refreshMealSubmitState();
+        }
+    }
+
     async function submitMealComposer(ev) {
         if (ev) ev.preventDefault();
-        if (mealComposerState.submitting || mealComposerState.backendUnavailable) return;
+        if (mealComposerState.submitting || mealComposerState.barcodeSubmitting || mealComposerState.backendUnavailable) return;
         const { text } = mealComposerEls();
         const textValue = text ? text.value.trim() : '';
         const files = mealComposerState.imageFiles.slice();
@@ -8704,7 +8983,7 @@
                 imageFiles,
                 imagePreviewUrls,
             });
-            if (!ctx.fromQueue) {
+            if (!ctx.fromQueue && !ctx.preserveComposerDraft) {
                 clearMealComposerInputs();
                 clearMealDraft();
                 clearMealComposerStatus();
@@ -8813,8 +9092,10 @@
         if (!entry) return false;
         upsertMealV2Entry(entry);
         if (!ctx.fromQueue) {
-            clearMealComposerInputs();
-            clearMealDraft();
+            if (!ctx.preserveComposerDraft) {
+                clearMealComposerInputs();
+                clearMealDraft();
+            }
             clearMealComposerStatus();
         }
         renderMealPendingList();
@@ -9519,11 +9800,29 @@
     }
 
     function wireMealComposer() {
-        const { form, text, image, retry } = mealComposerEls();
+        const { form, text, image, scan, barcodeInput, barcodeSubmit, barcodeClose, retry } = mealComposerEls();
         if (!form) return;
         loadMealDraft();
         hydrateMealPending();
         form.addEventListener('submit', submitMealComposer);
+        if (scan) scan.addEventListener('click', openMealBarcodePanel);
+        if (barcodeClose) barcodeClose.addEventListener('click', closeMealBarcodePanel);
+        if (barcodeSubmit) {
+            barcodeSubmit.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                submitMealBarcode(barcodeInput ? barcodeInput.value : '');
+            });
+        }
+        if (barcodeInput) {
+            barcodeInput.addEventListener('keydown', (ev) => {
+                if (ev.key !== 'Enter') return;
+                ev.preventDefault();
+                submitMealBarcode(barcodeInput.value);
+            });
+            barcodeInput.addEventListener('input', () => {
+                setMealBarcodeStatus('');
+            });
+        }
         if (text) {
             text.addEventListener('input', () => {
                 clearMealComposerStatus();
