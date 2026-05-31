@@ -38,6 +38,61 @@ def _cardio_type(recommendation):
     return cardio["type"]
 
 
+def test_compute_hr_zones_tanaka_evidence_z3_targets(fitness_app):
+    age_25 = fitness_app._compute_hr_zones("2001-05-30", "", as_of="2026-05-30")
+    age_55 = fitness_app._compute_hr_zones("1971-05-30", "", as_of="2026-05-30")
+
+    assert age_25["formula"] == "tanaka"
+    assert age_25["hrmax_bpm"] == 190.5
+    assert age_25["zones"]["z3"] == "122-145 BPM"
+    assert age_55["formula"] == "tanaka"
+    assert age_55["hrmax_bpm"] == 169.5
+    assert age_55["zones"]["z3"] == "109-129 BPM"
+
+
+def test_compute_hr_zones_uses_gulati_for_female_profile(fitness_app):
+    zones = fitness_app._compute_hr_zones("1976-05-30", "female", as_of="2026-05-30")
+
+    assert zones["formula"] == "gulati"
+    assert zones["age"] == 50
+    assert zones["hrmax_bpm"] == 162.0
+
+
+def test_missing_dob_returns_prompt_instead_of_age_thirty_bpm(fitness_app):
+    zones = fitness_app._compute_hr_zones("", "")
+
+    assert zones["available"] is False
+    assert zones["reason"] == fitness_app.CARDIO_MISSING_DOB_HR_RANGE
+
+    recommendation = fitness_app.generate_next_workout(
+        [],
+        [],
+        goal=fitness_app.TrainingGoal.WEIGHT_LOSS.value,
+        available_time=120,
+        training_recommendation="moderate",
+    )
+
+    assert recommendation["cardio"]["heart_rate_range"] == fitness_app.CARDIO_MISSING_DOB_HR_RANGE
+    assert recommendation["cardio"]["heart_rate_range"] != "133-152 BPM"
+
+
+def test_cardio_recommendation_uses_profile_computed_hr_range(fitness_app):
+    fitness_app.USER_SETTINGS["date_of_birth"] = "2001-05-30"
+    fitness_app.USER_SETTINGS["sex"] = ""
+
+    recommendation = fitness_app.generate_next_workout(
+        [],
+        [],
+        goal=fitness_app.TrainingGoal.WEIGHT_LOSS.value,
+        available_time=120,
+        training_recommendation="moderate",
+    )
+
+    cardio = recommendation["cardio"]
+    assert cardio["zone"] == "Zone 3"
+    assert cardio["heart_rate_range"] == "122-145 BPM"
+
+
 def test_same_goal_rotates_cardio_without_completed_cardio(fitness_app):
     recommendations = [
         fitness_app.generate_next_workout([], [], goal=fitness_app.TrainingGoal.WEIGHT_LOSS.value, available_time=120)
@@ -62,7 +117,7 @@ def test_recovery_readiness_forces_zone_two_walk_class_cardio(fitness_app, monke
 
     cardio = recommendation["cardio"]
     assert cardio["zone"] == "Zone 2"
-    assert cardio["heart_rate_range"] == "114-133 BPM"
+    assert cardio["heart_rate_range"] == fitness_app.CARDIO_MISSING_DOB_HR_RANGE
     assert "walk" in cardio["type"].lower()
     assert 20 <= cardio["duration_minutes"] <= 30
 
@@ -80,7 +135,7 @@ def test_final_intensity_signal_forces_zone_four_even_with_mid_readiness(fitness
 
     cardio = recommendation["cardio"]
     assert cardio["zone"] == "Zone 4"
-    assert cardio["heart_rate_range"] == "152-171 BPM"
+    assert cardio["heart_rate_range"] == fitness_app.CARDIO_MISSING_DOB_HR_RANGE
 
 
 def test_final_intensity_signal_overrides_raw_low_readiness(fitness_app, monkeypatch):
@@ -96,7 +151,7 @@ def test_final_intensity_signal_overrides_raw_low_readiness(fitness_app, monkeyp
 
     cardio = recommendation["cardio"]
     assert cardio["zone"] == "Zone 4"
-    assert cardio["heart_rate_range"] == "152-171 BPM"
+    assert cardio["heart_rate_range"] == fitness_app.CARDIO_MISSING_DOB_HR_RANGE
 
 
 def test_final_moderate_signal_overrides_raw_low_readiness(fitness_app, monkeypatch):
@@ -112,7 +167,7 @@ def test_final_moderate_signal_overrides_raw_low_readiness(fitness_app, monkeypa
 
     cardio = recommendation["cardio"]
     assert cardio["zone"] == "Zone 3"
-    assert cardio["heart_rate_range"] == "133-152 BPM"
+    assert cardio["heart_rate_range"] == fitness_app.CARDIO_MISSING_DOB_HR_RANGE
 
 
 def test_hidden_context_generation_does_not_consume_cardio_rotation(fitness_app):
@@ -251,7 +306,7 @@ def test_dashboard_high_readiness_surfaces_intensity_cardio(fitness_app, monkeyp
     assert response.status_code == 200
     cardio = response.get_json()["next_workout"]["cardio"]
     assert cardio["zone"] == "Zone 4"
-    assert cardio["heart_rate_range"] == "152-171 BPM"
+    assert cardio["heart_rate_range"] == fitness_app.CARDIO_MISSING_DOB_HR_RANGE
     assert fitness_app.CARDIO_ROTATION_CURSOR == {}
 
     response = fitness_app.app.test_client().get("/api/dashboard")
