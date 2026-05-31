@@ -333,6 +333,14 @@
             </div>
 
             <div class="section-title">EXERCISES</div>
+            <form id="swap-recommend-form" class="swap-recommend-form" autocomplete="off" novalidate>
+                <label for="swap-recommend-input" class="swap-recommend-label">I want to do</label>
+                <div class="swap-recommend-row">
+                    <input type="text" id="swap-recommend-input" class="swap-recommend-input" placeholder="e.g. Triceps Extension" maxlength="128" aria-describedby="swap-recommend-status" />
+                    <button type="submit" id="swap-recommend-submit" class="btn btn-ghost btn-sm">Suggest swap</button>
+                </div>
+                <div id="swap-recommend-status" class="swap-recommend-status" role="status" hidden></div>
+            </form>
             <div id="nw-exercise-list" class="exercise-list">
                 <div class="skeleton">Loading exercises…</div>
             </div>
