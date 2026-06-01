@@ -8765,11 +8765,14 @@
                 mealComposerState.barcodeDraftValue = '';
                 return;
             }
-            // FIT-208: a residual 404 is recoverable (the feature is enabled;
-            // this barcode just didn't resolve). Surface a retryable message and
-            // clear the draft, but keep scan/input/submit enabled — only a true
-            // 501 (feature disabled) should disable the barcode controls.
-            if (res.status === 404) {
+            // FIT-208: a residual 404 carrying the barcode_not_found code is
+            // recoverable (the feature is enabled; this barcode just didn't
+            // resolve). Surface a retryable message and clear the draft, but
+            // keep scan/input/submit enabled — only a true 501 (feature
+            // disabled) should disable the barcode controls. Gating on the code
+            // keeps an unexpected 404 from being silently mislabeled as
+            // "not found"; it falls through to the generic error handler below.
+            if (res.status === 404 && payload && payload.error && payload.error.code === 'barcode_not_found') {
                 const msg = 'We couldn’t find that barcode. Double-check the digits and try again, or log it with text or a photo.';
                 setMealComposerError(msg);
                 setMealBarcodeStatus(msg);

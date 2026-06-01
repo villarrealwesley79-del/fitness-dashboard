@@ -98,15 +98,35 @@ def test_barcode_success_preserves_unsent_composer_draft():
 
 
 def test_missing_barcode_endpoint_does_not_disable_text_photo_composer():
+    # FIT-208: only a true 501 (feature disabled) flips into the "unavailable"
+    # state that disables the barcode controls. A residual 404 must NOT.
     block = _barcode_block()
     assert "barcodeUnavailable" in APP_JS
     assert "function setMealBarcodeUnavailable(message)" in APP_JS
-    unavailable_section = block.split("if (res.status === 404 || res.status === 501)", 1)[1].split("return;", 1)[0]
+    unavailable_section = block.split("if (res.status === 501)", 1)[1].split("return;", 1)[0]
     assert "setMealBarcodeUnavailable" in unavailable_section
     assert "setMealBackendUnavailable" not in unavailable_section
     refresh_section = APP_JS.split("function refreshMealSubmitState", 1)[1].split("\n    function saveMealDraft", 1)[0]
     assert "scan.disabled = blocked || mealComposerState.barcodeUnavailable" in refresh_section
     assert "const enabled = (hasText || hasImage) && !blocked;" in refresh_section
+
+
+def test_residual_404_keeps_barcode_controls_enabled():
+    # FIT-208: a residual 404 (feature enabled, barcode just didn't resolve)
+    # surfaces a retryable message and leaves scan/input/submit ENABLED. Only a
+    # true 501 disables the barcode controls.
+    block = _barcode_block()
+    gate = "res.status === 404 && payload && payload.error && payload.error.code === 'barcode_not_found'"
+    # The not-found gate appears twice: once to trigger the allow_pending retry,
+    # and once on the recoverable branch so an unexpected 404 is not silently
+    # treated as "barcode not found".
+    assert block.count(gate) >= 2
+    recoverable = block.split("find that barcode. Double-check the digits", 1)[1].split("return;", 1)[0]
+    assert "setMealComposerError" in recoverable
+    assert "setMealBarcodeStatus" in recoverable
+    # Recoverable path must never disable the controls.
+    assert "setMealBarcodeUnavailable" not in recoverable
+    assert "barcodeUnavailable = true" not in recoverable
 
 
 def test_barcode_lookup_preserves_idempotency_key_across_transient_retry():
