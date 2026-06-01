@@ -3679,6 +3679,13 @@ input[type=number] { -moz-appearance: textfield; }
     color: var(--fg-dim);
     font-variant-numeric: tabular-nums;
 }
+/* FIT-219 item 5: the confidence band was previously only in a title tooltip
+   (inaccessible to keyboard/AT users). It is now visible text next to the
+   percentage; dim it so it reads as secondary to the headline number. */
+.meal-pending-conf-band {
+    text-transform: capitalize;
+    opacity: 0.85;
+}
 /* FIT-6 AC1: source provenance chip in the review-card header. */
 .meal-pending-source-chip {
     font-size: 11px;
