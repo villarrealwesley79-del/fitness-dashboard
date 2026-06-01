@@ -533,52 +533,51 @@ def _usda_barcode_lookup(barcode: str) -> dict[str, Any] | None:
     foods = payload.get("foods") if isinstance(payload, dict) else None
     if not foods:
         return None
-    food = _matching_usda_barcode_food([food for food in foods if isinstance(food, dict)], barcode)
-    if not food:
-        return None
-    food_nutrients = [n for n in food.get("foodNutrients", []) if isinstance(n, dict)]
-    nutrients = {n.get("nutrientName"): n.get("value") for n in food_nutrients}
-    calories = _usda_energy_kcal(food_nutrients)
-    if calories is None or any(
-        nutrients.get(name) is None
-        for name in ("Protein", "Carbohydrate, by difference", "Total lipid (fat)")
-    ):
-        return None
-    fdc_id = food.get("fdcId")
-    source_brand = _matching_usda_source_brand(food, None)
-    item_name = " ".join(
-        part
-        for part in (source_brand, str(food.get("description") or "").strip())
-        if part
-    ).strip() or "Packaged food"
-    estimate = {
-        "item_name": item_name,
-        "portion_description": "100 g",
-        "meal_type": "snack",
-        "calories": calories,
-        "protein_g": nutrients.get("Protein"),
-        "carbs_g": nutrients.get("Carbohydrate, by difference"),
-        "fat_g": nutrients.get("Total lipid (fat)"),
-        "sodium_mg": nutrients.get("Sodium, Na") if nutrients.get("Sodium, Na") is not None else 0,
-        "fiber_g": nutrients.get("Fiber, total dietary") if nutrients.get("Fiber, total dietary") is not None else 0,
-        "confidence": 0.72,
-        "ambiguous": True,
-        "uncertainty_notes": [
-            "USDA FDC barcode data uses a 100 g reference portion; confirm serving size before logging."
-        ],
-        "source": "usda_fdc_barcode",
-        "external_food_id": str(fdc_id) if fdc_id is not None else barcode,
-        "verified_source_url": (
-            f"https://fdc.nal.usda.gov/fdc-app.html#/food-details/{fdc_id}/nutrients"
-            if fdc_id
-            else "https://fdc.nal.usda.gov/"
-        ),
-        "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
-        "portion_basis": "100 g USDA FoodData Central barcode reference portion",
-        "brand_id": _brand_from_text(normalize_meal_text(source_brand or "")),
-        "source_brand_name": source_brand,
-    }
-    return _sanitize_with_provenance(estimate)
+    for food in _matching_usda_barcode_foods([food for food in foods if isinstance(food, dict)], barcode):
+        food_nutrients = [n for n in food.get("foodNutrients", []) if isinstance(n, dict)]
+        nutrients = {n.get("nutrientName"): n.get("value") for n in food_nutrients}
+        calories = _usda_energy_kcal(food_nutrients)
+        if calories is None or any(
+            nutrients.get(name) is None
+            for name in ("Protein", "Carbohydrate, by difference", "Total lipid (fat)")
+        ):
+            continue
+        fdc_id = food.get("fdcId")
+        source_brand = _matching_usda_source_brand(food, None)
+        item_name = " ".join(
+            part
+            for part in (source_brand, str(food.get("description") or "").strip())
+            if part
+        ).strip() or "Packaged food"
+        estimate = {
+            "item_name": item_name,
+            "portion_description": "100 g",
+            "meal_type": "snack",
+            "calories": calories,
+            "protein_g": nutrients.get("Protein"),
+            "carbs_g": nutrients.get("Carbohydrate, by difference"),
+            "fat_g": nutrients.get("Total lipid (fat)"),
+            "sodium_mg": nutrients.get("Sodium, Na") if nutrients.get("Sodium, Na") is not None else 0,
+            "fiber_g": nutrients.get("Fiber, total dietary") if nutrients.get("Fiber, total dietary") is not None else 0,
+            "confidence": 0.72,
+            "ambiguous": True,
+            "uncertainty_notes": [
+                "USDA FDC barcode data uses a 100 g reference portion; confirm serving size before logging."
+            ],
+            "source": "usda_fdc_barcode",
+            "external_food_id": str(fdc_id) if fdc_id is not None else barcode,
+            "verified_source_url": (
+                f"https://fdc.nal.usda.gov/fdc-app.html#/food-details/{fdc_id}/nutrients"
+                if fdc_id
+                else "https://fdc.nal.usda.gov/"
+            ),
+            "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
+            "portion_basis": "100 g USDA FoodData Central barcode reference portion",
+            "brand_id": _brand_from_text(normalize_meal_text(source_brand or "")),
+            "source_brand_name": source_brand,
+        }
+        return _sanitize_with_provenance(estimate)
+    return None
 
 
 def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
@@ -629,13 +628,14 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     return _sanitize_with_provenance(estimate)
 
 
-def _matching_usda_barcode_food(foods: list[dict[str, Any]], barcode: str) -> dict[str, Any] | None:
+def _matching_usda_barcode_foods(foods: list[dict[str, Any]], barcode: str) -> list[dict[str, Any]]:
     requested = _barcode_match_variants(barcode)
+    matches = []
     for food in foods:
         values = _barcode_match_variants(food.get("gtinUpc") or food.get("upc") or food.get("gtin"))
         if requested.intersection(values):
-            return food
-    return None
+            matches.append(food)
+    return matches
 
 
 def _barcode_match_variants(value: Any) -> set[str]:

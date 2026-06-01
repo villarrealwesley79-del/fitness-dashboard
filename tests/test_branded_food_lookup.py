@@ -1693,6 +1693,51 @@ def test_lookup_barcode_uses_usda_before_open_food_facts(monkeypatch):
     assert saved == {"barcode": "801176022386", "source": "usda_fdc_barcode"}
 
 
+def test_lookup_barcode_skips_incomplete_duplicate_usda_match(monkeypatch):
+    incomplete = {
+        "fdcId": 111,
+        "description": "BRISKET BEEF JERKY INCOMPLETE",
+        "brandOwner": "J&K",
+        "gtinUpc": "801176022386",
+        "foodNutrients": [
+            {"nutrientName": "Energy", "unitName": "KCAL", "value": 286},
+            {"nutrientName": "Carbohydrate, by difference", "value": 10.7},
+            {"nutrientName": "Total lipid (fat)", "value": 3.6},
+        ],
+    }
+    complete = {
+        "fdcId": 222,
+        "description": "BRISKET BEEF JERKY",
+        "brandOwner": "J&K",
+        "gtinUpc": "801176022386",
+        "foodNutrients": [
+            {"nutrientName": "Energy", "unitName": "KCAL", "value": 286},
+            {"nutrientName": "Protein", "value": 57.1},
+            {"nutrientName": "Carbohydrate, by difference", "value": 10.7},
+            {"nutrientName": "Total lipid (fat)", "value": 3.6},
+        ],
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods_by_barcode",
+        lambda *_a, **_kw: {"foods": [incomplete, complete]},
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "get_product_by_barcode",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("OFF should not run after valid USDA duplicate")),
+    )
+
+    estimate = branded_food_lookup.lookup_barcode("801176022386")
+
+    assert estimate["source"] == "usda_fdc_barcode"
+    assert estimate["external_food_id"] == "222"
+    assert estimate["protein_g"] == 57.1
+
+
 def test_lookup_barcode_falls_through_to_off_after_usda_miss(monkeypatch):
     calls = []
     product = {
