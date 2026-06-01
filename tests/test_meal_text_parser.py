@@ -166,10 +166,157 @@ def test_parse_text_falls_back_when_lm_studio_unreachable(monkeypatch):
     result = parser.parse_meal_text("two eggs and toast")
     assert result["fallback_used"] is True
     assert result["estimate"]["source"] == "fallback_text_estimate"
-    # Deterministic preset hit for "egg" + "toast".
-    assert result["estimate"]["item_name"] == "Eggs and toast"
-    # Fallback confidence is intentionally below the LM Studio ceiling.
-    assert result["estimate"]["confidence"] < 0.65
+    # Fallback confidence is below the old 0.6 value but still saveable after review.
+    assert result["estimate"]["confidence"] == 0.55
+    assert any("AI didn't run" in note for note in result["estimate"]["uncertainty_notes"])
+
+
+def test_fallback_does_not_split_ingredient_conjunction_inside_one_dish(monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    _patch_completion(monkeypatch, lambda *_a, **_kw: (_ for _ in ()).throw(
+        adapter.LmStudioError("timeout")
+    ))
+
+    result = parser.parse_meal_text("potato and egg taco")
+    estimate = result["estimate"]
+    assert result["fallback_used"] is True
+    assert estimate["source"] == "fallback_text_estimate"
+    assert estimate["confidence"] == 0.55
+    assert "Eggs and toast" not in estimate["item_name"]
+    assert estimate["item_name"] == "Breakfast taco"
+    assert "items" not in estimate
+    assert any("AI didn't run" in note for note in estimate["uncertainty_notes"])
+
+
+def test_fallback_scales_quantity_words_and_numbers(monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    _patch_completion(monkeypatch, lambda *_a, **_kw: (_ for _ in ()).throw(
+        adapter.LmStudioError("timeout")
+    ))
+
+    poppers = parser.parse_meal_text("8 bacon wrapped jalapeno poppers")["estimate"]
+    assert poppers["item_name"] == "Bacon wrapped jalapeno poppers"
+    assert poppers["calories"] == 1040
+    assert poppers["portion_description"] == "approx 8 servings"
+    assert poppers["confidence"] == 0.55
+
+    jerky = parser.parse_meal_text("J&K brisket beef jerky, 1 oz")["estimate"]
+    assert jerky["item_name"] == "Beef jerky"
+    assert jerky["calories"] == 80
+    assert jerky["protein_g"] == 14
+
+    chicken = parser.parse_meal_text("8 oz chicken")["estimate"]
+    assert chicken["item_name"] == "Chicken and rice"
+    assert chicken["calories"] == 560
+
+    yogurt = parser.parse_meal_text("100 calorie yogurt")["estimate"]
+    assert yogurt["item_name"] == "Yogurt"
+    assert yogurt["calories"] == 180
+
+    percent_yogurt = parser.parse_meal_text("2% yogurt")["estimate"]
+    assert percent_yogurt["item_name"] == "Yogurt"
+    assert percent_yogurt["calories"] == 180
+
+
+def test_fallback_multi_item_metadata_keeps_quantities(monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    _patch_completion(monkeypatch, lambda *_a, **_kw: (_ for _ in ()).throw(
+        adapter.LmStudioError("timeout")
+    ))
+
+    estimate = parser.parse_meal_text("protein shake and 2 tacos")["estimate"]
+    items = estimate.get("items") or []
+    assert len(items) == 2
+    assert items[0]["quantity"] == 1
+    assert items[1]["quantity"] == 2
+    assert items[1]["item_name"] == "Taco"
+    assert any("AI didn't run" in note for note in items[0]["estimate"]["uncertainty_notes"])
+    assert any("Multi-item fallback" in note for note in items[1]["estimate"]["uncertainty_notes"])
+
+    reversed_estimate = parser.parse_meal_text("2 tacos and protein shake")["estimate"]
+    reversed_items = reversed_estimate.get("items") or []
+    assert [item["item_name"] for item in reversed_items] == ["Taco", "Protein shake"]
+    assert reversed_items[0]["quantity"] == 2
+
+    implicit_estimate = parser.parse_meal_text("protein shake and taco")["estimate"]
+    implicit_items = implicit_estimate.get("items") or []
+    assert [item["item_name"] for item in implicit_items] == ["Protein shake", "Taco"]
+    assert [item["quantity"] for item in implicit_items] == [1, 1]
+
+    unknown_side = parser.parse_meal_text("2 tacos and salsa")["estimate"]
+    assert unknown_side["item_name"] == "Taco; salsa"
+    assert [item["item_name"] for item in unknown_side["items"]] == ["Taco", "salsa"]
+    assert unknown_side["items"][1]["estimate"]["confidence"] == 0.0
+    assert unknown_side["items"][1]["estimate"]["calories"] == 0
+    assert unknown_side["calories"] == 440
+
+    mixed_unknown = parser.parse_meal_text("protein shake and 2 tacos and salsa")["estimate"]
+    assert mixed_unknown["item_name"] == "Protein shake; Taco; salsa"
+    assert [item["item_name"] for item in mixed_unknown["items"]] == ["Protein shake", "Taco", "salsa"]
+    assert [item["quantity"] for item in mixed_unknown["items"]] == [1, 2, 1]
+    assert mixed_unknown["items"][2]["estimate"]["confidence"] == 0.0
+    assert mixed_unknown["calories"] == 650
+
+    all_unknown = parser.parse_meal_text("mac and cheese")["estimate"]
+    assert all_unknown["item_name"] == "Meal"
+    assert "items" not in all_unknown
+    assert all_unknown["calories"] == 400
+
+
+def test_fallback_preserves_combo_presets_before_splitting(monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    _patch_completion(monkeypatch, lambda *_a, **_kw: (_ for _ in ()).throw(
+        adapter.LmStudioError("timeout")
+    ))
+
+    estimate = parser.parse_meal_text("two eggs and toast")["estimate"]
+    assert estimate["item_name"] == "Eggs and toast"
+    assert estimate["calories"] == 420
+    assert "items" not in estimate
+
+    pieces = parser.parse_meal_text("two eggs and two pieces toast")["estimate"]
+    assert pieces["item_name"] == "Eggs and toast"
+    assert pieces["calories"] == 420
+    assert "items" not in pieces
+
+    eggs_only = parser.parse_meal_text("2 eggs")["estimate"]
+    assert eggs_only["item_name"] == "Eggs and toast"
+    assert eggs_only["calories"] == 420
+
+
+def test_fallback_does_not_split_common_compound_dish_names(monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    _patch_completion(monkeypatch, lambda *_a, **_kw: (_ for _ in ()).throw(
+        adapter.LmStudioError("timeout")
+    ))
+
+    taco = parser.parse_meal_text("bacon and egg breakfast taco")["estimate"]
+    assert taco["item_name"] == "Breakfast taco"
+    assert "items" not in taco
+
+    fish_tacos = parser.parse_meal_text("fish tacos")["estimate"]
+    assert fish_tacos["item_name"] == "Taco"
+
+    burrito_modifier = parser.parse_meal_text("Chipotle chicken burrito, rice")["estimate"]
+    assert burrito_modifier["item_name"] == "Chipotle chicken burrito"
+    assert "items" not in burrito_modifier
+
+    larger_meal = parser.parse_meal_text("eggs and toast and 2 tacos")["estimate"]
+    items = larger_meal.get("items") or []
+    assert len(items) == 2
+    assert items[0]["item_name"] == "Eggs and toast"
+    assert items[-1]["item_name"] == "Taco"
+    assert items[-1]["quantity"] == 2
 
 
 @pytest.mark.parametrize(
@@ -404,6 +551,11 @@ def test_parse_text_fallback_flags_ambiguous_tokens(monkeypatch):
     # "Half" must have actually halved the preset macros.
     assert estimate["calories"] < 520
 
+    half_count = parser.parse_meal_text("half of 2 tacos")["estimate"]
+    assert half_count["item_name"] == "Taco"
+    assert half_count["calories"] == 220
+    assert half_count["portion_description"] == "approx 1 serving"
+
 
 # ──────────────────────────────────────────────────────────────────
 # Schema sanity — output is always usable downstream
@@ -436,8 +588,12 @@ def test_parse_text_output_conforms_to_estimate_schema_in_fallback(text, monkeyp
 
     result = parser.parse_meal_text(text)
     estimate = result["estimate"]
-    assert set(estimate.keys()) == REQUIRED_ESTIMATE_KEYS, (
-        f"missing/extra keys for {text!r}: {set(estimate.keys()) ^ REQUIRED_ESTIMATE_KEYS}"
+    allowed_keys = REQUIRED_ESTIMATE_KEYS | {"items"}
+    assert set(estimate.keys()) <= allowed_keys, (
+        f"extra keys for {text!r}: {set(estimate.keys()) - allowed_keys}"
+    )
+    assert REQUIRED_ESTIMATE_KEYS <= set(estimate.keys()), (
+        f"missing keys for {text!r}: {REQUIRED_ESTIMATE_KEYS - set(estimate.keys())}"
     )
     assert isinstance(estimate["item_name"], str) and estimate["item_name"]
     assert estimate["meal_type"] in parser.ALLOWED_MEAL_TYPES
