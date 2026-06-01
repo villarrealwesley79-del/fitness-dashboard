@@ -90,6 +90,8 @@ def _clean_description(result: dict[str, Any], *, provider: str) -> dict[str, An
     macro_estimate = result.get("macro_estimate")
     if isinstance(macro_estimate, dict):
         cleaned["macro_estimate"] = dict(macro_estimate)
+    if result.get("label_ocr") is True:
+        cleaned["label_ocr"] = True
     items = _clean_items(result.get("items"))
     if items:
         cleaned["items"] = items

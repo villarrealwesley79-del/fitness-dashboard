@@ -117,8 +117,12 @@ def _lm_studio_prompt(context_text: str | None = None) -> str:
     prompt = (
         "Estimate the food in this image for a fitness food log. Return JSON only with "
         "item_name, portion_description, meal_type, calories, protein_g, carbs_g, fat_g, "
-        "sodium_mg, fiber_g, confidence, ambiguous, uncertainty_notes, and items. Use the "
-        "meal_type enum breakfast/lunch/dinner/snack. For restaurant cart, receipt, "
+        "sodium_mg, fiber_g, confidence, ambiguous, uncertainty_notes, items, and optional "
+        "label_ocr. Use the meal_type enum breakfast/lunch/dinner/snack. If the image is "
+        "primarily a Nutrition Facts, Supplement Facts, or package nutrition panel, set "
+        "label_ocr=true, copy the printed serving size into portion_description, and use "
+        "the printed calories and macros instead of estimating from package pixels. For "
+        "restaurant cart, receipt, "
         "delivery-app, or order screenshots, OCR the visible brand, line-item names, "
         "modifiers, and quantities into items. Use an empty items array for a single "
         "unstructured plate. Do not collapse a multi-item cart into one generic meal. "
@@ -448,6 +452,7 @@ def _meal_estimate_response_schema() -> dict[str, Any]:
                     "required": ["item_name", "quantity", "brand", "modifiers", "portion_hint"],
                 },
             },
+            "label_ocr": {"type": "boolean"},
         },
         "required": [
             "item_name",
@@ -488,6 +493,8 @@ def _parse_lm_studio_meal_estimate(content: str) -> dict[str, Any]:
     items = _sanitize_lm_studio_items(parsed.get("items"))
     if items:
         estimate["items"] = items
+    if parsed.get("label_ocr") is True:
+        estimate["label_ocr"] = True
     return estimate
 
 
@@ -561,6 +568,8 @@ def _meal_estimate_to_description(estimate: dict[str, Any]) -> dict[str, Any]:
     }
     if estimate.get("items"):
         description["items"] = estimate["items"]
+    if estimate.get("label_ocr") is True:
+        description["label_ocr"] = True
     return description
 
 

@@ -5623,16 +5623,18 @@ def _meal_intake_vision_estimate(
     description = vision["item_description"]
     lookup_text = " ".join(part for part in (text_raw, description, vision.get("portion_hint")) if part)
     lookup = None
-    try:
-        lookup = _vision_structured_items_lookup(vision, user_id=user_id, text_raw=text_raw)
-    except Exception:
-        lookup = None
-    if _vision_lookup_allowed_for_text(text_raw, vision):
+    label_ocr = vision.get("label_ocr") is True and isinstance(vision.get("macro_estimate"), dict)
+    if not label_ocr:
         try:
-            if not lookup:
-                lookup = branded_food_lookup.lookup(lookup_text, user_id=user_id)
+            lookup = _vision_structured_items_lookup(vision, user_id=user_id, text_raw=text_raw)
         except Exception:
             lookup = None
+        if _vision_lookup_allowed_for_text(text_raw, vision):
+            try:
+                if not lookup:
+                    lookup = branded_food_lookup.lookup(lookup_text, user_id=user_id)
+            except Exception:
+                lookup = None
     provider = vision.get("provider") or vision_estimator.configured_provider()
     if lookup:
         estimate = dict(lookup)
@@ -5654,6 +5656,8 @@ def _meal_intake_vision_estimate(
 
     macro_estimate = vision.get("macro_estimate")
     if isinstance(macro_estimate, dict):
+        confidence_cap = 0.9 if label_ocr else 0.65
+        source_name = f"vision_{provider}_label_ocr" if label_ocr else f"vision_{provider}_estimate"
         raw = {
             "item_name": description,
             "portion_description": vision.get("portion_hint"),
@@ -5664,17 +5668,19 @@ def _meal_intake_vision_estimate(
             "fat_g": macro_estimate.get("fat_g"),
             "sodium_mg": macro_estimate.get("sodium_mg", 0),
             "fiber_g": macro_estimate.get("fiber_g", 0),
-            "confidence": min(float(vision.get("confidence") or 0), 0.65),
+            "confidence": min(float(vision.get("confidence") or 0), confidence_cap),
             "ambiguous": bool(vision.get("ambiguous", True)),
             "uncertainty_notes": vision.get("uncertainty_notes") or [
-                "Vision model estimated macros without a verified nutrition source."
+                "Nutrition label values were read from the photo; confirm serving size before logging."
+                if label_ocr else "Vision model estimated macros without a verified nutrition source."
             ],
-            "source": f"vision_{provider}_estimate",
+            "source": source_name,
+            "portion_basis": "Photo nutrition-label OCR" if label_ocr else None,
         }
         try:
             estimate = sanitize_meal_estimate(raw, plausible_ranges=True)
         except MealEstimateValidationError:
-            estimate = manual_review_estimate(text=description, source=f"vision_{provider}_estimate")
+            estimate = manual_review_estimate(text=description, source=source_name)
             estimate["confidence"] = min(float(vision.get("confidence") or 0), 0.45)
             estimate["uncertainty_notes"] = vision.get("uncertainty_notes") or [
                 "Vision model returned incomplete nutrition details; review before logging."
