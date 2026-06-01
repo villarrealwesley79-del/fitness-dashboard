@@ -7052,25 +7052,38 @@ def meal_intake():
                     },
                     "photo_retention": _food_photo_retention_payload(has_image),
                 }), 503
-            parsed = parse_meal_text(
-                text_raw,
-                timestamp=local_iso or local_timestamp,
-                user_id=user_id,
-            )
             try:
-                raw_estimate = parsed["estimate"]
-                estimate = sanitize_meal_estimate(raw_estimate)
-                _copy_meal_estimate_provenance(estimate, raw_estimate)
-                if isinstance(raw_estimate, dict):
-                    if isinstance(raw_estimate.get("candidates"), list):
-                        estimate["candidates"] = raw_estimate.get("candidates")
-                    if isinstance(raw_estimate.get("clarification_question"), str):
-                        estimate["clarification_question"] = raw_estimate["clarification_question"].strip()[:240]
-            except MealEstimateValidationError:
-                estimate = manual_review_estimate(text=text_raw, source="manual_text_review")
+                parsed = parse_meal_text(
+                    text_raw,
+                    timestamp=local_iso or local_timestamp,
+                    user_id=user_id,
+                )
+            except Exception:
                 parsed = {"fallback_used": True}
+                estimate = manual_review_estimate(text=text_raw, source="manual_text_review")
+                estimate["uncertainty_notes"] = [
+                    "Photo could not be read and text fallback could not estimate nutrition automatically; review before logging."
+                ]
+                response_extras["text_fallback_error"] = "text_parser_failed"
+            else:
+                try:
+                    raw_estimate = parsed["estimate"]
+                    estimate = sanitize_meal_estimate(raw_estimate)
+                    _copy_meal_estimate_provenance(estimate, raw_estimate)
+                    if isinstance(raw_estimate, dict):
+                        if isinstance(raw_estimate.get("candidates"), list):
+                            estimate["candidates"] = raw_estimate.get("candidates")
+                        if isinstance(raw_estimate.get("clarification_question"), str):
+                            estimate["clarification_question"] = raw_estimate["clarification_question"].strip()[:240]
+                except (KeyError, TypeError, MealEstimateValidationError):
+                    estimate = manual_review_estimate(text=text_raw, source="manual_text_review")
+                    parsed = {"fallback_used": True}
+            try:
+                parsed_fallback_used = parsed["fallback_used"]
+            except (KeyError, TypeError):
+                parsed_fallback_used = True
             source = estimate["source"]
-            response_extras["fallback_used"] = parsed["fallback_used"]
+            response_extras["fallback_used"] = parsed_fallback_used
             response_extras["vision_error"] = str(exc)
         estimate["from_image"] = True
     else:
