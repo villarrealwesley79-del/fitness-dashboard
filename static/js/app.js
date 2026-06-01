@@ -9201,8 +9201,12 @@
         const isManualReviewMeal = Array.isArray(entry.items)
             && entry.items.some((it) => it && it.source && it.source.kind === 'barcode_pending_source');
         if (isManualReviewMeal) row.setAttribute('data-source-kind', 'barcode_pending');
+        // role="note" + aria-label surfaces the manual-entry reason to assistive
+        // tech (a title tooltip alone is not discoverable to screen-reader or
+        // keyboard users). The accessible name keeps the visible "Manual review"
+        // label so it matches what sighted users read (WCAG Label in Name).
         const reviewBadgeHtml = isManualReviewMeal
-            ? '<span class="meal-pending-review-badge" title="No verified barcode nutrition source was available — review and edit the item before saving.">Manual review</span>'
+            ? '<span class="meal-pending-review-badge" role="note" aria-label="Manual review — no verified barcode nutrition source was available; review and edit the item before saving." title="No verified barcode nutrition source was available — review and edit the item before saving.">Manual review</span>'
             : '';
 
         const totals = entry.meal_totals || {};
