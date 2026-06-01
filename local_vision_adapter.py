@@ -28,7 +28,7 @@ def _env_first(*names: str, default: str) -> str:
 
 
 SERVED_VISION_MODEL = "qwen3-vl-30b-a3b-instruct@q4_k_xl"
-LOW_MEMORY_VISION_MODEL = "qwen3-vl-30b-a3b-instruct@q4_k_s"
+LOW_MEMORY_VISION_MODEL = ""
 LM_STUDIO_URL = _env_first(
     "VISION_LM_STUDIO_URL",
     "LM_STUDIO_URL",

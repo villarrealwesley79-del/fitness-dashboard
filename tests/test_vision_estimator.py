@@ -518,6 +518,10 @@ def test_local_lm_studio_candidates_include_low_memory_before_configured_fallbac
     ]
 
 
+def test_local_lm_studio_low_memory_default_is_opt_in():
+    assert local_vision_adapter.LOW_MEMORY_VISION_MODEL == ""
+
+
 def test_local_lm_studio_preflight_warms_unloaded_candidate(monkeypatch):
     models_calls = []
     warm_calls = []
