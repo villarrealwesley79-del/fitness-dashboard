@@ -1213,7 +1213,83 @@ def test_meal_intake_image_provider_failure_uses_text_fallback(monkeypatch):
     body = res.get_json()
     assert body["status"] == "pending_review"
     assert body["estimate"]["source"] == "ai_text_estimate"
-    assert body["vision_error"] == "provider down"
+    assert body["vision_error"] == "vision_estimator_failed"
+
+
+def test_meal_intake_image_provider_failure_handles_text_parser_exception(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(
+        module.vision_estimator,
+        "describe",
+        lambda *_a, **_kw: (_ for _ in ()).throw(module.vision_estimator.VisionEstimatorError("provider down")),
+    )
+    monkeypatch.setattr(
+        module,
+        "parse_meal_text",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("parser exploded")),
+    )
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: {"client_id": r["client_id"], **r})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "protein shake",
+            "client_id": "meal-vision-fallback-parser-error-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["fallback_used"] is True
+    assert body["vision_error"] == "vision_estimator_failed"
+    assert body["text_fallback_error"] == "text_parser_failed"
+    assert body["items"][0]["estimate"]["source"] == "manual_text_review"
+    assert body["estimate"]["from_image"] is True
+    assert body["photo_retention"]["image_received"] is True
+    assert body["photo_retention"]["raw_photo_retained"] is False
+    assert body["photo_retention"]["raw_model_trace_retained"] is False
+
+
+def test_meal_intake_image_provider_failure_marks_malformed_text_parser_output(monkeypatch):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(
+        module.vision_estimator,
+        "describe",
+        lambda *_a, **_kw: (_ for _ in ()).throw(module.vision_estimator.VisionEstimatorError(
+            "model warmup completed but model not loaded: qwen3-vl-30b-a3b-instruct@q4_k_xl"
+        )),
+    )
+    monkeypatch.setattr(
+        module,
+        "parse_meal_text",
+        lambda *_a, **_kw: {
+            "estimate": {"item_name": "broken", "source": "ai_text_estimate", "calories": "bad"},
+            "fallback_used": True,
+        },
+    )
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: {"client_id": r["client_id"], **r})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "shared movie popcorn",
+            "client_id": "meal-vision-fallback-malformed-parser-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["fallback_used"] is True
+    assert body["vision_error"] == "vision_estimator_failed"
+    assert body["text_fallback_error"] == "text_parser_failed"
+    assert "qwen3-vl" not in res.get_data(as_text=True)
+    assert body["items"][0]["estimate"]["source"] == "manual_text_review"
 
 
 def test_meal_intake_image_provider_failure_preserves_photo_origin_after_pending_reload(monkeypatch):
@@ -1304,6 +1380,7 @@ def test_meal_intake_image_provider_failure_without_text_returns_clear_error(mon
     assert res.status_code == 503
     body = res.get_json()
     assert "Add a meal description" in body["error"]["message"]
+    assert body["error"]["reason"] == "vision_estimator_failed"
     assert body["photo_retention"]["image_received"] is True
 
 
