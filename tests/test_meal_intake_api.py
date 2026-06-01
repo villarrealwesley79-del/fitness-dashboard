@@ -1075,6 +1075,51 @@ def test_meal_intake_image_lookup_failure_falls_back_to_macro_estimate(monkeypat
     assert body["food_log"]["correction_state"] == "pending_review"
 
 
+def test_meal_intake_image_label_ocr_uses_higher_confidence_cap(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "lm_studio",
+            "item_description": "Barbecue Jerky nutrition label",
+            "portion_hint": "1 oz (28 g)",
+            "confidence": 0.9,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "label_ocr": True,
+            "macro_estimate": {
+                "meal_type": "snack",
+                "calories": 110,
+                "protein_g": 7,
+                "carbs_g": 6,
+                "fat_g": 3,
+                "sodium_mg": 520,
+                "fiber_g": 0,
+            },
+        },
+    )
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-img-label-ocr-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "label.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["estimate"]["source"] == "vision_lm_studio_label_ocr"
+    assert body["estimate"]["confidence"] == 0.9
+    assert body["estimate"]["portion_basis"] == "Photo nutrition-label OCR"
+    assert body["estimate"]["calories"] == 110
+    assert body["food_log"]["correction_state"] == "pending_review"
+
+
 def test_meal_intake_image_preserves_cached_underlying_source(monkeypatch):
     module = _client(monkeypatch)
     captured = {}
