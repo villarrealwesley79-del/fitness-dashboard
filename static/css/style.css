@@ -3860,6 +3860,29 @@ input[type=number] { -moz-appearance: textfield; }
     pointer-events: none;
     background: rgba(15,23,42,0.45);
 }
+/* FIT-210: a manual-pending barcode meal (no verified nutrition source) must
+   read as visibly distinct from an ordinary amber review card. A standing
+   "Manual review" badge in the head plus a red left accent make the manual-
+   entry requirement obvious, and both persist across re-renders (the prior
+   signal was only a transient toast). Higher specificity than the base
+   .meal-pending-row rule so the red accent wins over the default amber. */
+.meal-pending-row[data-source-kind="barcode_pending"] {
+    border-color: rgba(239,68,68,0.5);
+    border-left: 3px solid rgba(239,68,68,0.7);
+    background: rgba(239,68,68,0.10);
+}
+.meal-pending-review-badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(239,68,68,0.18);
+    border: 1px solid rgba(239,68,68,0.55);
+    color: #fca5a5;
+    margin-right: auto;
+}
 
 @media (max-width: 640px) {
     .meal-composer-row { grid-template-columns: 38px 54px minmax(0, 1fr); }
