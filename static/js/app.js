@@ -7537,15 +7537,16 @@
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'meal-composer-thumb-remove';
-            remove.setAttribute('aria-label', `Remove photo ${i + 1}`);
+            // FIT-219 item 4: distinct, descriptive label per thumb so each
+            // remove button is individually identifiable (position + filename)
+            // rather than a shared generic "Remove photo N".
+            const fileName = (file && file.name) ? ` (${file.name})` : '';
+            remove.setAttribute('aria-label', `Remove photo ${i + 1} of ${count}${fileName}`);
             remove.textContent = '✕';
             remove.addEventListener('click', () => removeMealComposerImage(i));
             thumb.appendChild(img);
             thumb.appendChild(remove);
             thumbs.appendChild(thumb);
-            // Avoid an unused-var warning while keeping the File handy if
-            // future debugging needs it.
-            void file;
         }
     }
 
@@ -7737,17 +7738,105 @@
         }
     }
 
+    // FIT-219 (a11y items 1+2): the pending/review list is rebuilt via
+    // innerHTML on essentially every interaction, which destroyed whatever
+    // control had keyboard focus and dropped focus to <body> mid-task. Snapshot
+    // the focused control's identity (owning card + a within-card selector +
+    // text caret) before the rebuild and restore it after; and when a brand-new
+    // card is added, move focus to it so keyboard users land on the thing they
+    // just created.
+    function captureMealPendingFocus(pendingList) {
+        const active = document.activeElement;
+        if (!active || !pendingList.contains(active)) return null;
+        const card = active.closest('.meal-pending-row');
+        if (!card) return null;
+        const cardKey = card.getAttribute('data-meal-id')
+            ? `meal-id="${card.getAttribute('data-meal-id')}"`
+            : (card.getAttribute('data-client-id')
+                ? `client-id="${card.getAttribute('data-client-id')}"`
+                : null);
+        if (!cardKey) return null;
+        let controlSel = null;
+        if (active.hasAttribute('data-field')) {
+            controlSel = `[data-field="${active.getAttribute('data-field')}"]`;
+        } else if (active.hasAttribute('data-action')) {
+            controlSel = `[data-action="${active.getAttribute('data-action')}"]`;
+        } else if (active === card) {
+            controlSel = ':scope';
+        }
+        if (!controlSel) return null;
+        const itemEl = active.closest('.meal-review-v2-item');
+        const itemId = itemEl ? itemEl.getAttribute('data-item-id') : null;
+        let selStart = null;
+        let selEnd = null;
+        let value = null;
+        if (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') {
+            // Preserve the in-progress value so the innerHTML rebuild doesn't wipe
+            // a mid-edit text field out from under the user.
+            value = active.value;
+            // selectionStart throws on input types that don't support it (number).
+            try { selStart = active.selectionStart; selEnd = active.selectionEnd; } catch (_) {}
+        }
+        return { cardKey, controlSel, itemId, selStart, selEnd, value };
+    }
+
+    function restoreMealPendingFocus(pendingList, snap) {
+        if (!snap) return false;
+        const card = pendingList.querySelector(`.meal-pending-row[data-${snap.cardKey}]`);
+        if (!card) return false;
+        let scope = card;
+        if (snap.itemId) {
+            const itemEl = card.querySelector(`.meal-review-v2-item[data-item-id="${snap.itemId}"]`);
+            if (itemEl) scope = itemEl;
+        }
+        const target = snap.controlSel === ':scope' ? card : scope.querySelector(snap.controlSel);
+        if (!target) return false;
+        // Restore a mid-edit value before focusing so the caret lands correctly.
+        // Only when the rebuilt field came back empty/different and isn't disabled,
+        // so we never clobber a fresh value the re-render legitimately applied.
+        if (snap.value != null && !target.disabled
+            && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')
+            && target.value !== snap.value && target.value === '') {
+            target.value = snap.value;
+        }
+        try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
+        if (snap.selStart != null && typeof target.setSelectionRange === 'function') {
+            try { target.setSelectionRange(snap.selStart, snap.selEnd); } catch (_) {}
+        }
+        return true;
+    }
+
+    // Don't steal focus on the initial hydration render (page load); only move
+    // focus to a genuinely new card for user-initiated renders.
+    let mealPendingFirstRenderDone = false;
+
     function renderMealPendingList() {
         const { pendingList } = mealComposerEls();
         if (!pendingList) return;
-        pendingList.innerHTML = '';
-        mealComposerState.pending.forEach((entry) => {
-            if (entry && entry.__v2) {
-                pendingList.appendChild(buildMealReviewCardV2(entry));
-            } else {
-                pendingList.appendChild(buildMealPendingRow(entry));
-            }
+        const focusSnap = captureMealPendingFocus(pendingList);
+        const isFirstRender = !mealPendingFirstRenderDone;
+        mealPendingFirstRenderDone = true;
+        const priorKeys = new Set();
+        pendingList.querySelectorAll('.meal-pending-row').forEach((el) => {
+            const k = el.getAttribute('data-meal-id') || el.getAttribute('data-client-id');
+            if (k) priorKeys.add(k);
         });
+        pendingList.innerHTML = '';
+        let newestNewCard = null;
+        mealComposerState.pending.forEach((entry) => {
+            const card = (entry && entry.__v2)
+                ? buildMealReviewCardV2(entry)
+                : buildMealPendingRow(entry);
+            pendingList.appendChild(card);
+            const k = card.getAttribute('data-meal-id') || card.getAttribute('data-client-id');
+            if (k && !priorKeys.has(k)) newestNewCard = card;
+        });
+        const restored = restoreMealPendingFocus(pendingList, focusSnap);
+        // Move focus to a brand-new card only when the user wasn't already
+        // focused inside the list and this isn't the page-load hydration render.
+        if (!restored && newestNewCard && !isFirstRender) {
+            try { newestNewCard.focus({ preventScroll: true }); } catch (_) { newestNewCard.focus(); }
+        }
     }
 
     function padMealDatePart(value) {
@@ -8018,6 +8107,10 @@
         const row = document.createElement('div');
         row.className = 'meal-pending-row';
         row.setAttribute('data-client-id', entry.client_id);
+        // FIT-219 item 1: focus target for renderMealPendingList() on create.
+        row.setAttribute('tabindex', '-1');
+        row.setAttribute('role', 'group');
+        row.setAttribute('aria-label', 'Estimate to review before accepting');
         const est = entry.estimate || {};
         const policy = entry.policy || {};
         const conf = Number(est.confidence);
@@ -8056,7 +8149,7 @@
             <div class="meal-pending-head">
                 <span class="meal-pending-title">Review estimate</span>
                 <span class="meal-pending-source-chip" title="Source of this estimate">${escapeHtml(sourceLabel)}</span>
-                <span class="meal-pending-conf" title="${confTitle}">${escapeHtml(confLabel)}</span>
+                <span class="meal-pending-conf" aria-label="${confTitle}" title="${confTitle}">${escapeHtml(confLabel)}${Number.isFinite(conf) && policy.confidence_band ? `<span class="meal-pending-conf-band"> · ${escapeHtml(policy.confidence_band)}</span>` : ''}</span>
             </div>
             ${mealEstimateProvenanceHtml(est)}
             ${reasonChips ? `<div class="meal-pending-policy-reasons" aria-label="Why this needs review">${reasonChips}</div>` : ''}
@@ -9190,6 +9283,11 @@
         const row = document.createElement('div');
         row.className = 'meal-pending-row meal-review-v2';
         row.setAttribute('data-meal-id', entry.meal_id);
+        // FIT-219 item 1: make the card a programmatic focus target so
+        // renderMealPendingList() can move keyboard focus here on create.
+        row.setAttribute('tabindex', '-1');
+        row.setAttribute('role', 'group');
+        row.setAttribute('aria-label', 'Meal to review before saving');
         if (entry.pendingRefresh) row.classList.add('meal-review-v2--refreshing');
 
         // FIT-210: a barcode lookup with no verified nutrition source comes back
@@ -9264,6 +9362,7 @@
                     blocked: blockedSet.has(item.item_id),
                     expanded: entry.expandedItems.has(item.item_id) || blockedSet.has(item.item_id),
                     pendingRefresh: entry.pendingRefresh,
+                    mealId: entry.meal_id,
                 })).join('')}
             </div>
         ` : '<div class="meal-review-v2-empty">No items in this meal yet.</div>';
@@ -9287,10 +9386,10 @@
                 </div>
                 ${totalsHtml}
                 ${actionsHtml}
-                <button type="button" class="meal-review-v2-expand" data-action="toggle-expand" aria-expanded="${expanded}">${expanded ? 'Hide items' : 'Show items'}</button>
+                <button type="button" class="meal-review-v2-expand" id="meal-v2-expand-${escapeHtml(entry.meal_id)}" aria-controls="meal-v2-expanded-${escapeHtml(entry.meal_id)}" data-action="toggle-expand" aria-expanded="${expanded}">${expanded ? 'Hide items' : 'Show items'}</button>
                 ${entry.pendingRefresh ? '<div class="meal-review-v2-refreshing-note" role="status">Looking up…</div>' : ''}
             </div>
-            <div class="meal-review-v2-expanded"${expanded ? '' : ' hidden'}>
+            <div class="meal-review-v2-expanded" id="meal-v2-expanded-${escapeHtml(entry.meal_id)}"${expanded ? '' : ' hidden'}>
                 ${followupHtml}
                 ${itemsHtml}
                 ${addItemHtml}
@@ -9309,6 +9408,10 @@
         const blocked = !!opts.blocked && isIncluded;
         const expanded = !!opts.expanded || blocked;
         const pendingRefresh = !!opts.pendingRefresh;
+        // FIT-219 item 3: item_id is only unique within a meal, so namespace the
+        // toggle/body ids with the meal id to keep aria-controls targets globally
+        // unique across multiple review cards on the page.
+        const itemKey = `${opts.mealId || 'meal'}-${item.item_id}`;
         const sourceLabel = (item.source && item.source.label) || 'AI estimate';
         const sourceKind = item.source && MEAL_V2_SOURCE_KINDS.includes(item.source.kind) ? item.source.kind : 'manual';
         const sourceLink = item.source && item.source.link ? String(item.source.link) : '';
@@ -9363,14 +9466,14 @@
         return `
             <div class="meal-review-v2-item${isRemoved ? ' meal-review-v2-item--removed' : ''}${blocked ? ' meal-review-v2-item--blocked' : ''}${expanded ? ' meal-review-v2-item--expanded' : ''}" role="listitem" data-item-id="${escapeHtml(item.item_id)}" data-item-status="${escapeHtml(status)}">
                 <header class="meal-review-v2-item-head">
-                    <button type="button" class="meal-review-v2-item-toggle" data-action="toggle-item" aria-expanded="${expanded}">
+                    <button type="button" class="meal-review-v2-item-toggle" id="meal-v2-item-toggle-${escapeHtml(itemKey)}" aria-controls="meal-v2-item-body-${escapeHtml(itemKey)}" data-action="toggle-item" aria-expanded="${expanded}">
                         <span class="meal-review-v2-item-name">${escapeHtml(item.name || 'Item')}</span>
                         <span class="meal-review-v2-item-portion">${escapeHtml(item.portion || item.portion_description || '')}</span>
                     </button>
                     ${sourceChip}
                     ${confLabel ? `<span class="meal-review-v2-item-conf">${escapeHtml(confLabel)}</span>` : ''}
                 </header>
-                <div class="meal-review-v2-item-body"${expanded ? '' : ' hidden'}>
+                <div class="meal-review-v2-item-body" id="meal-v2-item-body-${escapeHtml(itemKey)}"${expanded ? '' : ' hidden'}>
                     <div class="meal-review-v2-item-macros">${escapeHtml(formatMealV2ItemMacros(item))}</div>
                     ${blockedNote}
                     ${candidatesHtml}
