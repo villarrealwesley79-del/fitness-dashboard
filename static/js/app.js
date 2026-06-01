@@ -9192,6 +9192,23 @@
         row.setAttribute('data-meal-id', entry.meal_id);
         if (entry.pendingRefresh) row.classList.add('meal-review-v2--refreshing');
 
+        // FIT-210: a barcode lookup with no verified nutrition source comes back
+        // as a manual-review meal (item source kind "barcode_pending_source").
+        // Stamp a persistent data-source-kind on the row and render a standing
+        // "Manual review" badge in the head so the card is visibly distinct from
+        // a verified one and the manual-entry requirement survives every
+        // re-render — unlike the prior transient toast.
+        const isManualReviewMeal = Array.isArray(entry.items)
+            && entry.items.some((it) => it && it.source && it.source.kind === 'barcode_pending_source');
+        if (isManualReviewMeal) row.setAttribute('data-source-kind', 'barcode_pending');
+        // role="note" + aria-label surfaces the manual-entry reason to assistive
+        // tech (a title tooltip alone is not discoverable to screen-reader or
+        // keyboard users). The accessible name keeps the visible "Manual review"
+        // label so it matches what sighted users read (WCAG Label in Name).
+        const reviewBadgeHtml = isManualReviewMeal
+            ? '<span class="meal-pending-review-badge" role="note" aria-label="Manual review — no verified barcode nutrition source was available; review and edit the item before saving." title="No verified barcode nutrition source was available — review and edit the item before saving.">Manual review</span>'
+            : '';
+
         const totals = entry.meal_totals || {};
         const includedItems = entry.items.filter((it) => it.status === 'included');
         const blockedSet = new Set(entry.save_blocked_item_ids || []);
@@ -9265,6 +9282,7 @@
             <div class="meal-review-v2-collapsed">
                 <div class="meal-pending-head">
                     <span class="meal-pending-title">Review meal</span>
+                    ${reviewBadgeHtml}
                     ${mealTypeChip}
                 </div>
                 ${totalsHtml}
