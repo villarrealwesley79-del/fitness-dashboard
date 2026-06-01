@@ -311,6 +311,36 @@ def test_local_lm_studio_adapter_posts_image_and_parses_json(monkeypatch):
     assert "ambiguous=true" in captured["content"][0]["text"]
 
 
+def test_lm_studio_adapter_preserves_label_ocr_flag(monkeypatch):
+    monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
+
+    def fake_urlopen(req, timeout):
+        return _Response({
+            "choices": [
+                {"message": {"content": json.dumps(_meal_estimate_payload(
+                    item_name="Nutrition Facts label",
+                    portion_description="1 oz (28 g)",
+                    calories=110,
+                    protein_g=7,
+                    carbs_g=6,
+                    fat_g=3,
+                    sodium_mg=520,
+                    fiber_g=0,
+                    confidence=0.92,
+                    label_ocr=True,
+                    items=[],
+                ))}}
+            ]
+        })
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = local_vision_adapter.describe_food_photo(b"fake-label", provider="lm_studio")
+
+    assert result["label_ocr"] is True
+    assert result["macro_estimate"]["calories"] == 110
+
+
 def test_local_lm_studio_adapter_uses_temperature_env(monkeypatch):
     captured = {}
     monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
