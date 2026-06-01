@@ -197,6 +197,12 @@ _COMBO_PRESET_TOKEN_SETS = (
     {"chicken", "rice"},
 )
 _NON_SCALABLE_FALLBACK_ITEMS = {"Eggs and toast", "Chicken and rice"}
+_DISH_MODIFIER_TOKENS = {
+    "bacon", "bean", "beans", "beef", "brisket", "cheese", "chicken",
+    "egg", "eggs", "fish", "jalapeno", "jalapenos", "potato", "potatoes",
+    "rice", "sausage", "steak",
+}
+_DISH_HEAD_TOKENS = {"taco", "tacos", "burrito", "burritos", "sandwich", "sandwiches"}
 
 _FALLBACK_TOKEN_ALIASES = {
     "chipotole": "chipotle",
@@ -381,11 +387,33 @@ def _fallback_parts_are_combo_preset(parts: list[str]) -> bool:
     return tokens <= egg_toast_tokens or tokens <= chicken_rice_tokens
 
 
+def _fallback_parts_are_single_dish_modifier(parts: list[str]) -> bool:
+    if len(parts) != 2:
+        return False
+    left, right = parts
+    if _fallback_has_count_quantity(left) or _fallback_has_count_quantity(right):
+        return False
+    left_tokens = {
+        token for token in _fallback_tokens(left)
+        if token not in _QUANTITY_ONLY_TOKENS and token not in _MEASUREMENT_UNITS
+    }
+    right_tokens = _fallback_tokens(right)
+    if not left_tokens or not (right_tokens & _DISH_HEAD_TOKENS):
+        return False
+    return left_tokens <= _DISH_MODIFIER_TOKENS
+
+
 def _fallback_merge_combo_parts(parts: list[str]) -> list[str]:
     merged: list[str] = []
     index = 0
     while index < len(parts):
-        if index + 1 < len(parts) and _fallback_parts_are_combo_preset([parts[index], parts[index + 1]]):
+        if (
+            index + 1 < len(parts)
+            and (
+                _fallback_parts_are_combo_preset([parts[index], parts[index + 1]])
+                or _fallback_parts_are_single_dish_modifier([parts[index], parts[index + 1]])
+            )
+        ):
             merged.append(f"{parts[index]} and {parts[index + 1]}")
             index += 2
         else:
@@ -414,20 +442,21 @@ def _fallback_item_breakdown(text: str) -> list[dict]:
         return []
     if _fallback_parts_are_combo_preset(parts):
         return []
-    if not any(_fallback_has_count_quantity(part) for part in parts):
-        recognized_parts = [
-            _single_fallback_estimate(part, include_ai_note=False).get("item_name") != _FALLBACK_DEFAULT["item_name"]
-            for part in parts
-        ]
-        if not all(recognized_parts):
-            return []
     items = []
-    for index, part in enumerate(parts[:6], start=1):
+    skipped_unknown = False
+    recognized_count = 0
+    for part in parts[:6]:
         estimate = _single_fallback_estimate(part)
+        if estimate.get("item_name") == _FALLBACK_DEFAULT["item_name"]:
+            skipped_unknown = True
+            estimate = _unknown_split_fallback_estimate(part)
+        else:
+            recognized_count += 1
         notes = estimate.setdefault("uncertainty_notes", [])
         if "Multi-item fallback split from text; confirm each quantity." not in notes:
             notes.append("Multi-item fallback split from text; confirm each quantity.")
         quantity = _fallback_quantity_factor(part)
+        index = len(items) + 1
         items.append({
             "item_id": f"fallback-item-{index}",
             "item_name": estimate["item_name"],
@@ -435,7 +464,37 @@ def _fallback_item_breakdown(text: str) -> list[dict]:
             "portion_hint": estimate.get("portion_description"),
             "estimate": estimate,
         })
+    if recognized_count == 0:
+        return []
+    if skipped_unknown:
+        note = "Some unrecognized text was left out of the fallback item split; review before logging."
+        for item in items:
+            notes = item["estimate"].setdefault("uncertainty_notes", [])
+            if note not in notes:
+                notes.append(note)
     return items
+
+
+def _unknown_split_fallback_estimate(text: str) -> dict:
+    item_name = re.sub(r"\s+", " ", str(text or "").strip(" .;"))[:80] or "Unrecognized item"
+    return {
+        "item_name": item_name,
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 0,
+        "protein_g": 0,
+        "carbs_g": 0,
+        "fat_g": 0,
+        "sodium_mg": 0,
+        "fiber_g": 0,
+        "confidence": 0.0,
+        "ambiguous": True,
+        "uncertainty_notes": [
+            _AI_UNAVAILABLE_NOTE,
+            "Text fallback could not estimate this item; enter nutrition manually before logging.",
+        ],
+        "source": "fallback_text_estimate",
+    }
 
 
 def _single_fallback_estimate(text: str, *, include_ai_note: bool = True) -> dict:
@@ -465,17 +524,20 @@ def _single_fallback_estimate(text: str, *, include_ai_note: bool = True) -> dic
         for combo in _COMBO_PRESET_TOKEN_SETS
     )
     quantity_factor = 1.0 if preserve_combo_quantity else _fallback_quantity_factor(norm)
-    if "half" in norm:
+    has_half = "half" in norm
+    if has_half:
         quantity_factor *= 0.5
     if quantity_factor != 1.0:
         _scale_estimate_macros(estimate, quantity_factor)
-        if "half" in norm:
+        if has_half:
             portion_description = "approx half portion"
         else:
             portion_description = f"approx {int(quantity_factor) if quantity_factor.is_integer() else round(quantity_factor, 2)} servings"
-    elif "half" in norm:
+    elif has_half and not _fallback_has_count_quantity(norm):
         _scale_estimate_macros(estimate, 0.5)
         portion_description = "approx half portion"
+    elif has_half:
+        portion_description = "approx 1 serving"
 
     ambiguous = any(token in norm for token in _AMBIGUOUS_TOKENS)
     if not norm:

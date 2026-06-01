@@ -171,7 +171,7 @@ def test_parse_text_falls_back_when_lm_studio_unreachable(monkeypatch):
     assert any("AI didn't run" in note for note in result["estimate"]["uncertainty_notes"])
 
 
-def test_fallback_does_not_present_potato_egg_taco_as_eggs_and_toast(monkeypatch):
+def test_fallback_does_not_split_ingredient_conjunction_inside_one_dish(monkeypatch):
     parser = _import_parser()
     adapter = importlib.import_module("lm_studio_adapter")
 
@@ -185,8 +185,8 @@ def test_fallback_does_not_present_potato_egg_taco_as_eggs_and_toast(monkeypatch
     assert estimate["source"] == "fallback_text_estimate"
     assert estimate["confidence"] == 0.55
     assert "Eggs and toast" not in estimate["item_name"]
-    assert estimate["item_name"] == "Potato; Breakfast taco"
-    assert [item["item_name"] for item in estimate["items"]] == ["Potato", "Breakfast taco"]
+    assert estimate["item_name"] == "Breakfast taco"
+    assert "items" not in estimate
     assert any("AI didn't run" in note for note in estimate["uncertainty_notes"])
 
 
@@ -248,6 +248,25 @@ def test_fallback_multi_item_metadata_keeps_quantities(monkeypatch):
     implicit_items = implicit_estimate.get("items") or []
     assert [item["item_name"] for item in implicit_items] == ["Protein shake", "Taco"]
     assert [item["quantity"] for item in implicit_items] == [1, 1]
+
+    unknown_side = parser.parse_meal_text("2 tacos and salsa")["estimate"]
+    assert unknown_side["item_name"] == "Taco; salsa"
+    assert [item["item_name"] for item in unknown_side["items"]] == ["Taco", "salsa"]
+    assert unknown_side["items"][1]["estimate"]["confidence"] == 0.0
+    assert unknown_side["items"][1]["estimate"]["calories"] == 0
+    assert unknown_side["calories"] == 440
+
+    mixed_unknown = parser.parse_meal_text("protein shake and 2 tacos and salsa")["estimate"]
+    assert mixed_unknown["item_name"] == "Protein shake; Taco; salsa"
+    assert [item["item_name"] for item in mixed_unknown["items"]] == ["Protein shake", "Taco", "salsa"]
+    assert [item["quantity"] for item in mixed_unknown["items"]] == [1, 2, 1]
+    assert mixed_unknown["items"][2]["estimate"]["confidence"] == 0.0
+    assert mixed_unknown["calories"] == 650
+
+    all_unknown = parser.parse_meal_text("mac and cheese")["estimate"]
+    assert all_unknown["item_name"] == "Meal"
+    assert "items" not in all_unknown
+    assert all_unknown["calories"] == 400
 
 
 def test_fallback_preserves_combo_presets_before_splitting(monkeypatch):
@@ -531,6 +550,11 @@ def test_parse_text_fallback_flags_ambiguous_tokens(monkeypatch):
     assert estimate["portion_description"] == "approx half portion"
     # "Half" must have actually halved the preset macros.
     assert estimate["calories"] < 520
+
+    half_count = parser.parse_meal_text("half of 2 tacos")["estimate"]
+    assert half_count["item_name"] == "Taco"
+    assert half_count["calories"] == 220
+    assert half_count["portion_description"] == "approx 1 serving"
 
 
 # ──────────────────────────────────────────────────────────────────

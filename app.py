@@ -5721,6 +5721,8 @@ def _copy_meal_estimate_provenance(estimate: dict, raw_estimate: dict) -> None:
             cleaned = value.strip()
             if cleaned:
                 estimate[key] = cleaned[:1000]
+    if isinstance(raw_estimate.get("items"), list):
+        estimate["items"] = raw_estimate.get("items")
 
 
 def _merge_policy_reasons_into_uncertainty_notes(estimate: dict, reasons: list) -> None:
@@ -7062,8 +7064,6 @@ def meal_intake():
                 if isinstance(raw_estimate, dict):
                     if isinstance(raw_estimate.get("candidates"), list):
                         estimate["candidates"] = raw_estimate.get("candidates")
-                    if isinstance(raw_estimate.get("items"), list):
-                        estimate["items"] = raw_estimate.get("items")
                     if isinstance(raw_estimate.get("clarification_question"), str):
                         estimate["clarification_question"] = raw_estimate["clarification_question"].strip()[:240]
             except MealEstimateValidationError:
@@ -7086,8 +7086,6 @@ def meal_intake():
             if isinstance(raw_estimate, dict):
                 if isinstance(raw_estimate.get("candidates"), list):
                     estimate["candidates"] = raw_estimate.get("candidates")
-                if isinstance(raw_estimate.get("items"), list):
-                    estimate["items"] = raw_estimate.get("items")
                 if isinstance(raw_estimate.get("clarification_question"), str):
                     estimate["clarification_question"] = raw_estimate["clarification_question"].strip()[:240]
         except MealEstimateValidationError:
