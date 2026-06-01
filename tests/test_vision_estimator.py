@@ -3,6 +3,7 @@ from __future__ import annotations
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
 import json
+from pathlib import Path
 import socket
 import threading
 import time
@@ -714,6 +715,7 @@ def test_lm_studio_adapter_emits_n_image_urls_for_multi_image(monkeypatch):
     image, with the text prompt first."""
     captured = {}
     monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
+    monkeypatch.setattr(local_vision_adapter.shutil, "which", lambda *_a, **_kw: None)
 
     def fake_urlopen(req, timeout):
         body = json.loads(req.data.decode("utf-8"))
@@ -740,6 +742,43 @@ def test_lm_studio_adapter_emits_n_image_urls_for_multi_image(monkeypatch):
     assert [part["type"] for part in content[1:]] == ["image_url", "image_url"]
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
     assert content[2]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_lm_studio_adapter_downscales_multi_image_before_request(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
+    monkeypatch.setattr(local_vision_adapter.shutil, "which", lambda name: "/usr/bin/sips" if name == "sips" else None)
+
+    def fake_run(args, **_kwargs):
+        Path(args[-1]).write_bytes(b"resized-jpeg")
+        return None
+
+    def fake_urlopen(req, timeout):
+        body = json.loads(req.data.decode("utf-8"))
+        captured["content"] = body["messages"][0]["content"]
+        return _Response({
+            "choices": [
+                {"message": {"content": json.dumps(_meal_estimate_payload(
+                    item_name="two-photo meal",
+                    portion_description="1 plate",
+                ))}}
+            ]
+        })
+
+    monkeypatch.setattr(local_vision_adapter.subprocess, "run", fake_run)
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = local_vision_adapter.describe_food_photo(
+        images=[(b"large-front", "image/png"), (b"large-side", "image/jpeg")],
+        context_text="dinner",
+        provider="lm_studio",
+    )
+
+    content = captured["content"]
+    assert result["_meta"]["fallback_used"] is False
+    assert [part["type"] for part in content[1:]] == ["image_url", "image_url"]
+    assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,cmVzaXplZC1qcGVn"
+    assert content[2]["image_url"]["url"] == "data:image/jpeg;base64,cmVzaXplZC1qcGVn"
 
 
 def test_ollama_adapter_emits_n_base64_images_for_multi_image(monkeypatch):
