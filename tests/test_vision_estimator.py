@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import io
 import json
 import socket
 import threading
@@ -383,6 +384,7 @@ def test_local_lm_studio_adapter_falls_back_after_primary_failure(monkeypatch):
     monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_URL", "http://primary.test")
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_MODEL", "primary-vision")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_LOW_MEMORY_MODEL", "")
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_URL", "http://fallback.test")
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_MODEL", "fallback-vision")
 
@@ -411,6 +413,7 @@ def test_local_lm_studio_preflight_skips_closed_primary_and_uses_fallback(monkey
     primary_url = f"http://127.0.0.1:{_unused_loopback_port()}"
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_URL", primary_url)
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_MODEL", "primary-vision")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_LOW_MEMORY_MODEL", "")
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_URL", fallback_url)
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_MODEL", fallback_model)
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_PREFLIGHT_TIMEOUT_SEC", 0.2)
@@ -438,6 +441,7 @@ def test_local_lm_studio_adapter_reports_missing_fallback_config(monkeypatch):
     monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_URL", "http://primary.test")
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_MODEL", "primary-vision")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_LOW_MEMORY_MODEL", "")
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_URL", "")
     monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_MODEL", "")
 
@@ -496,6 +500,122 @@ def test_local_adapter_vision_model_does_not_fall_back_to_text_model(monkeypatch
 def test_local_adapter_malformed_url_is_handled():
     with pytest.raises(local_vision_adapter.LocalVisionError):
         local_vision_adapter._post_json("/v1/chat/completions", {}, timeout=1)
+
+
+def test_local_lm_studio_candidates_include_low_memory_before_configured_fallback(monkeypatch):
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_URL", "http://primary.test")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_MODEL", "primary-vision")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_LOW_MEMORY_MODEL", "primary-vision-q4")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_URL", "http://fallback.test")
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_FALLBACK_MODEL", "oom-fallback")
+
+    candidates = local_vision_adapter._lm_studio_candidates()
+
+    assert [(c["role"], c["url"], c["model"]) for c in candidates] == [
+        ("primary", "http://primary.test", "primary-vision"),
+        ("low_memory", "http://primary.test", "primary-vision-q4"),
+        ("fallback", "http://fallback.test", "oom-fallback"),
+    ]
+
+
+def test_local_lm_studio_low_memory_default_is_opt_in():
+    assert local_vision_adapter.LOW_MEMORY_VISION_MODEL == ""
+
+
+def test_local_lm_studio_preflight_warms_unloaded_candidate(monkeypatch):
+    models_calls = []
+    warm_calls = []
+    candidate = {"role": "primary", "url": "http://primary.test", "model": "primary-vision"}
+
+    def fake_models_for(_candidate, timeout):
+        models_calls.append(timeout)
+        return [] if len(models_calls) == 1 else ["primary-vision"]
+
+    def fake_post_json_with_load_retries(url, payload, *, timeout):
+        warm_calls.append((url, payload["model"], timeout, payload["messages"][0]["content"]))
+        return {"choices": [{"message": {"content": json.dumps(_meal_estimate_payload())}}]}
+
+    monkeypatch.setattr(local_vision_adapter, "_models_for", fake_models_for)
+    monkeypatch.setattr(local_vision_adapter, "_post_json_with_load_retries", fake_post_json_with_load_retries)
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_WARMUP_TIMEOUT_SEC", 7)
+
+    local_vision_adapter._preflight_candidate(candidate)
+
+    assert len(models_calls) == 2
+    assert warm_calls[0][0] == "http://primary.test/v1/chat/completions"
+    assert warm_calls[0][1] == "primary-vision"
+    assert warm_calls[0][2] == 7
+    assert any(part.get("type") == "image_url" for part in warm_calls[0][3])
+
+
+def test_local_lm_studio_retries_transient_load_400(monkeypatch):
+    attempts = []
+
+    def fake_post_json(url, payload, *, timeout):
+        attempts.append(url)
+        if len(attempts) < 3:
+            raise local_vision_adapter.LocalVisionError(
+                "http 400: insufficient system resources: Operation canceled"
+            )
+        return {"ok": True}
+
+    monkeypatch.setattr(local_vision_adapter, "_post_json", fake_post_json)
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_LOAD_RETRY_LIMIT", 2)
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_LOAD_RETRY_BACKOFF_SEC", 0)
+
+    assert local_vision_adapter._post_json_with_load_retries(
+        "http://primary.test/v1/chat/completions",
+        {"model": "primary-vision"},
+        timeout=1,
+    ) == {"ok": True}
+    assert len(attempts) == 3
+
+
+def test_local_lm_studio_http_error_body_surfaces_oom(monkeypatch):
+    def fake_urlopen(_req, timeout):
+        raise urllib.error.HTTPError(
+            "http://fallback.test/v1/chat/completions",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(b'{"error":"out of memory: required 8.31 GB"}'),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(local_vision_adapter.LocalVisionError, match="out of memory"):
+        local_vision_adapter._post_json(
+            "http://fallback.test/v1/chat/completions",
+            {"model": "fallback-vision"},
+            timeout=1,
+        )
+    assert local_vision_adapter._oom_error(
+        local_vision_adapter.LocalVisionError("http 400: out of memory")
+    )
+
+
+def test_local_lm_studio_http_error_body_does_not_leak_request_detail(monkeypatch):
+    def fake_urlopen(_req, timeout):
+        raise urllib.error.HTTPError(
+            "http://primary.test/v1/chat/completions",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(b'{"error":"bad request echoed data:image/png;base64,SECRET_PROMPT"}'),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(local_vision_adapter.LocalVisionError) as excinfo:
+        local_vision_adapter._post_json(
+            "http://primary.test/v1/chat/completions",
+            {"model": "primary-vision"},
+            timeout=1,
+        )
+
+    assert str(excinfo.value) == "http 400"
+    assert "SECRET_PROMPT" not in str(excinfo.value)
+    assert "data:image" not in str(excinfo.value)
 
 
 # ──────────────────────────────────────────────────────────────────

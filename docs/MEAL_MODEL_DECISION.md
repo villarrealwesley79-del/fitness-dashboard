@@ -51,6 +51,10 @@ Current FIT-164 vision route:
 - Retain the FIT-164 scale-cue prompt for that 30B-A3B model.
 - Configure the served environment with `VISION_LM_STUDIO_MODEL` or
   `LM_STUDIO_VISION_MODEL` set to `qwen3-vl-30b-a3b-instruct@q4_k_xl`.
+- If the deployed host needs a low-memory candidate, set
+  `VISION_LM_STUDIO_LOW_MEMORY_MODEL` explicitly to a host-verified smaller VLM.
+  The adapter does not default this to another 30B quant because that is not a
+  reliable safety net on contended hosts.
 - FIT-202 pins the adapter's unset-env fallback to the same
   `qwen3-vl-30b-a3b-instruct@q4_k_xl` route so a blank environment no longer
   silently downgrades vision estimates to the old 7B model.
