@@ -17,6 +17,7 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 CACHE_TTL_DAYS = 180
 SOURCE_PRIORITY = ("cache", "heb_product_page", "nutritionix", "usda_fdc", "open_food_facts")
+BARCODE_SOURCE_PRIORITY = ("cache", "nutritionix_barcode", "usda_fdc_barcode", "open_food_facts_barcode")
 BARCODE_LENGTHS = {8, 12, 13, 14}
 KJ_PER_KCAL = 4.184
 MULTI_ITEM_HARD_TOKENS = {"with", "plus", "&", "+", "combo", "meal", "plate"}
@@ -275,13 +276,22 @@ def lookup_barcode(barcode: str, *, user_id: int = 1) -> dict[str, Any] | None:
     normalized = normalize_barcode(barcode)
     if not normalized:
         return None
-    try:
-        cached = _barcode_cache_lookup(normalized, user_id=user_id)
-    except Exception:
-        cached = None
-    if cached:
-        return cached
-    for provider_lookup in (_nutritionix_barcode_lookup, _open_food_facts_barcode_lookup):
+    for source in BARCODE_SOURCE_PRIORITY:
+        if source == "cache":
+            try:
+                cached = _barcode_cache_lookup(normalized, user_id=user_id)
+            except Exception:
+                cached = None
+            if cached:
+                return cached
+            continue
+        provider_lookup = {
+            "nutritionix_barcode": _nutritionix_barcode_lookup,
+            "usda_fdc_barcode": _usda_barcode_lookup,
+            "open_food_facts_barcode": _open_food_facts_barcode_lookup,
+        }.get(source)
+        if provider_lookup is None:
+            continue
         try:
             estimate = provider_lookup(normalized)
         except Exception:
@@ -518,6 +528,58 @@ def _nutritionix_barcode_lookup(barcode: str) -> dict[str, Any] | None:
     return _sanitize_with_provenance(estimate)
 
 
+def _usda_barcode_lookup(barcode: str) -> dict[str, Any] | None:
+    payload = usda_fdc_client.search_foods_by_barcode(barcode)
+    foods = payload.get("foods") if isinstance(payload, dict) else None
+    if not foods:
+        return None
+    for food in _matching_usda_barcode_foods([food for food in foods if isinstance(food, dict)], barcode):
+        food_nutrients = [n for n in food.get("foodNutrients", []) if isinstance(n, dict)]
+        nutrients = {n.get("nutrientName"): n.get("value") for n in food_nutrients}
+        calories = _usda_energy_kcal(food_nutrients)
+        if calories is None or any(
+            nutrients.get(name) is None
+            for name in ("Protein", "Carbohydrate, by difference", "Total lipid (fat)")
+        ):
+            continue
+        fdc_id = food.get("fdcId")
+        source_brand = _matching_usda_source_brand(food, None)
+        item_name = " ".join(
+            part
+            for part in (source_brand, str(food.get("description") or "").strip())
+            if part
+        ).strip() or "Packaged food"
+        estimate = {
+            "item_name": item_name,
+            "portion_description": "100 g",
+            "meal_type": "snack",
+            "calories": calories,
+            "protein_g": nutrients.get("Protein"),
+            "carbs_g": nutrients.get("Carbohydrate, by difference"),
+            "fat_g": nutrients.get("Total lipid (fat)"),
+            "sodium_mg": nutrients.get("Sodium, Na") if nutrients.get("Sodium, Na") is not None else 0,
+            "fiber_g": nutrients.get("Fiber, total dietary") if nutrients.get("Fiber, total dietary") is not None else 0,
+            "confidence": 0.72,
+            "ambiguous": True,
+            "uncertainty_notes": [
+                "USDA FDC barcode data uses a 100 g reference portion; confirm serving size before logging."
+            ],
+            "source": "usda_fdc_barcode",
+            "external_food_id": str(fdc_id) if fdc_id is not None else barcode,
+            "verified_source_url": (
+                f"https://fdc.nal.usda.gov/fdc-app.html#/food-details/{fdc_id}/nutrients"
+                if fdc_id
+                else "https://fdc.nal.usda.gov/"
+            ),
+            "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
+            "portion_basis": "100 g USDA FoodData Central barcode reference portion",
+            "brand_id": _brand_from_text(normalize_meal_text(source_brand or "")),
+            "source_brand_name": source_brand,
+        }
+        return _sanitize_with_provenance(estimate)
+    return None
+
+
 def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
     payload = usda_fdc_client.search_foods(text)
     foods = payload.get("foods") if isinstance(payload, dict) else None
@@ -564,6 +626,27 @@ def _usda_lookup(text: str, normalized: str) -> dict[str, Any] | None:
         "source_brand_name": source_brand,
     }
     return _sanitize_with_provenance(estimate)
+
+
+def _matching_usda_barcode_foods(foods: list[dict[str, Any]], barcode: str) -> list[dict[str, Any]]:
+    requested = _barcode_match_variants(barcode)
+    matches = []
+    for food in foods:
+        values = _barcode_match_variants(food.get("gtinUpc") or food.get("upc") or food.get("gtin"))
+        if requested.intersection(values):
+            matches.append(food)
+    return matches
+
+
+def _barcode_match_variants(value: Any) -> set[str]:
+    digits = re.sub(r"\D+", "", str(value or ""))
+    if not digits:
+        return set()
+    variants = {digits}
+    stripped = digits.lstrip("0")
+    if stripped:
+        variants.add(stripped)
+    return variants
 
 
 def _usda_energy_kcal(food_nutrients: list[dict[str, Any]]) -> Any:
@@ -635,7 +718,7 @@ def _open_food_facts_lookup(text: str) -> dict[str, Any] | None:
 
 def _open_food_facts_barcode_lookup(barcode: str) -> dict[str, Any] | None:
     product = open_food_facts_client.get_product_by_barcode(barcode)
-    if not isinstance(product, dict) or not _off_quality_ok(product):
+    if not isinstance(product, dict) or not _off_barcode_quality_ok(product):
         return None
     return _open_food_facts_barcode_estimate(product)
 
@@ -902,6 +985,26 @@ def _off_quality_ok(product: dict[str, Any]) -> bool:
         and _off_macros_plausible(nutriments)
     )
     if not macros_present_and_plausible:
+        return False
+    if any(fragment in tag for tag in lowered_tags for fragment in OFF_ENERGY_MISMATCH_TAG_FRAGMENTS):
+        return _off_energy_consistent_with_macros(nutriments)
+    return True
+
+
+def _off_barcode_quality_ok(product: dict[str, Any]) -> bool:
+    if _off_quality_ok(product):
+        return True
+    tags = product.get("data_quality_tags") or []
+    lowered_tags = [str(tag).lower() for tag in tags]
+    if any("error" in tag for tag in lowered_tags):
+        return False
+    if any(fragment in tag for tag in lowered_tags for fragment in OFF_REJECT_QUALITY_TAG_FRAGMENTS):
+        return False
+    nutriments = product.get("nutriments") or {}
+    required = ("energy-kcal_100g", "proteins_100g", "carbohydrates_100g", "fat_100g")
+    if not bool(product.get("product_name")) or any(nutriments.get(key) is None for key in required):
+        return False
+    if not _off_macros_plausible(nutriments):
         return False
     if any(fragment in tag for tag in lowered_tags for fragment in OFF_ENERGY_MISMATCH_TAG_FRAGMENTS):
         return _off_energy_consistent_with_macros(nutriments)

@@ -115,7 +115,7 @@ Fields:
 - `local_timestamp`, `local_date`, and `local_iso` are optional and follow the same length limits as text/photo intake.
 - `allow_pending` boolean, optional. When true and no verified provider match is available, the backend creates a low-confidence `barcode_pending_source` review draft instead of returning 404.
 
-Lookup order is local barcode cache, Nutritionix UPC item lookup, then Open Food Facts barcode lookup. Verified provider results are cached per user for future reuse. Pending-source fallbacks are never cached.
+Lookup order is local barcode cache, Nutritionix UPC item lookup, USDA FoodData Central branded barcode lookup, then Open Food Facts barcode lookup. Verified provider results are cached per user for future reuse. Pending-source fallbacks are never cached.
 
 Successful responses include the normal pending-review payload plus barcode metadata:
 

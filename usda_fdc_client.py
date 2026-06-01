@@ -11,9 +11,28 @@ from urllib import error, parse, request
 FDC_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 TIMEOUT_SECONDS = 1.5
 PREFERRED_DATA_TYPES = ("Branded", "Foundation", "SR Legacy")
+BARCODE_DATA_TYPES = ("Branded",)
 
 
 def search_foods(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any] | None:
+    """Return USDA FDC search JSON, or None when the source is unavailable."""
+    return _search_foods(query, data_types=PREFERRED_DATA_TYPES, timeout=timeout)
+
+
+def search_foods_by_barcode(barcode: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any] | None:
+    """Return USDA FDC branded-food search JSON for a barcode."""
+    cleaned = "".join(char for char in str(barcode or "") if char.isdigit())
+    if not cleaned:
+        return None
+    return _search_foods(cleaned, data_types=BARCODE_DATA_TYPES, timeout=timeout)
+
+
+def _search_foods(
+    query: str,
+    *,
+    data_types: tuple[str, ...],
+    timeout: float = TIMEOUT_SECONDS,
+) -> dict[str, Any] | None:
     """Return USDA FDC search JSON, or None when the source is unavailable."""
     cleaned = (query or "").strip()
     if not cleaned:
@@ -21,7 +40,7 @@ def search_foods(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, A
     params = {
         "query": cleaned,
         "pageSize": "5",
-        "dataType": ",".join(PREFERRED_DATA_TYPES),
+        "dataType": ",".join(data_types),
     }
     api_key = os.environ.get("USDA_FDC_API_KEY")
     if not api_key:

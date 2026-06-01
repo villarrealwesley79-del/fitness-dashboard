@@ -1640,6 +1640,190 @@ def test_lookup_barcode_uses_nutritionix_upc_and_saves_cache(monkeypatch):
     assert saved["user_id"] == 42
 
 
+def test_lookup_barcode_uses_usda_before_open_food_facts(monkeypatch):
+    calls = []
+    saved = {}
+    food = {
+        "fdcId": 987654,
+        "description": "BRISKET BEEF JERKY",
+        "brandOwner": "J&K",
+        "gtinUpc": "801176022386",
+        "foodNutrients": [
+            {"nutrientName": "Energy", "unitName": "KCAL", "value": 286},
+            {"nutrientName": "Protein", "value": 57.1},
+            {"nutrientName": "Carbohydrate, by difference", "value": 10.7},
+            {"nutrientName": "Total lipid (fat)", "value": 3.6},
+            {"nutrientName": "Sodium, Na", "value": 1786},
+        ],
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "save_barcode_lookup_cache",
+        lambda barcode, source, response, **kwargs: saved.update({"barcode": barcode, "source": source}),
+    )
+
+    def nutritionix_miss(*_a, **_kw):
+        calls.append("nutritionix")
+        return None
+
+    def usda_hit(*_a, **_kw):
+        calls.append("usda")
+        return {"foods": [food]}
+
+    def off_should_not_run(*_a, **_kw):
+        calls.append("off")
+        raise AssertionError("OFF should not run after USDA barcode hit")
+
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", nutritionix_miss)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods_by_barcode", usda_hit)
+    monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "get_product_by_barcode", off_should_not_run)
+
+    estimate = branded_food_lookup.lookup_barcode("801176022386")
+
+    assert calls == ["nutritionix", "usda"]
+    assert estimate["source"] == "usda_fdc_barcode"
+    assert estimate["item_name"] == "J&K BRISKET BEEF JERKY"
+    assert estimate["calories"] == 286
+    assert estimate["protein_g"] == 57.1
+    assert estimate["confidence"] == 0.72
+    assert estimate["ambiguous"] is True
+    assert estimate["external_food_id"] == "987654"
+    assert estimate["verified_source_url"].endswith("/987654/nutrients")
+    assert saved == {"barcode": "801176022386", "source": "usda_fdc_barcode"}
+
+
+def test_lookup_barcode_skips_incomplete_duplicate_usda_match(monkeypatch):
+    incomplete = {
+        "fdcId": 111,
+        "description": "BRISKET BEEF JERKY INCOMPLETE",
+        "brandOwner": "J&K",
+        "gtinUpc": "801176022386",
+        "foodNutrients": [
+            {"nutrientName": "Energy", "unitName": "KCAL", "value": 286},
+            {"nutrientName": "Carbohydrate, by difference", "value": 10.7},
+            {"nutrientName": "Total lipid (fat)", "value": 3.6},
+        ],
+    }
+    complete = {
+        "fdcId": 222,
+        "description": "BRISKET BEEF JERKY",
+        "brandOwner": "J&K",
+        "gtinUpc": "801176022386",
+        "foodNutrients": [
+            {"nutrientName": "Energy", "unitName": "KCAL", "value": 286},
+            {"nutrientName": "Protein", "value": 57.1},
+            {"nutrientName": "Carbohydrate, by difference", "value": 10.7},
+            {"nutrientName": "Total lipid (fat)", "value": 3.6},
+        ],
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.usda_fdc_client,
+        "search_foods_by_barcode",
+        lambda *_a, **_kw: {"foods": [incomplete, complete]},
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "get_product_by_barcode",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("OFF should not run after valid USDA duplicate")),
+    )
+
+    estimate = branded_food_lookup.lookup_barcode("801176022386")
+
+    assert estimate["source"] == "usda_fdc_barcode"
+    assert estimate["external_food_id"] == "222"
+    assert estimate["protein_g"] == 57.1
+
+
+def test_lookup_barcode_falls_through_to_off_after_usda_miss(monkeypatch):
+    calls = []
+    product = {
+        "code": "3017620422003",
+        "product_name": "Nutella",
+        "brands": "Ferrero",
+        "url": "https://world.openfoodfacts.org/product/3017620422003",
+        "countries_tags": ["en:france", "en:united-states"],
+        "data_quality_tags": ["en:nutrition-completed"],
+        "nutriments": {
+            "energy-kcal_100g": 539,
+            "proteins_100g": 6.3,
+            "carbohydrates_100g": 57.5,
+            "fat_100g": 30.9,
+        },
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
+
+    def nutritionix_miss(*_a, **_kw):
+        calls.append("nutritionix")
+        return None
+
+    def usda_miss(*_a, **_kw):
+        calls.append("usda")
+        return {"foods": []}
+
+    def off_hit(*_a, **_kw):
+        calls.append("off")
+        return product
+
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", nutritionix_miss)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods_by_barcode", usda_miss)
+    monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "get_product_by_barcode", off_hit)
+
+    estimate = branded_food_lookup.lookup_barcode("3017620422003")
+
+    assert calls == ["nutritionix", "usda", "off"]
+    assert estimate["source"] == "open_food_facts_barcode"
+    assert estimate["calories"] == 539
+
+
+def test_lookup_barcode_accepts_exact_off_product_with_nutrition_but_missing_complete_tag(monkeypatch):
+    product = {
+        "code": "0730742109487",
+        "product_name": "Picositas Belts",
+        "brands": "Alamo Candy Co.",
+        "url": "https://world.openfoodfacts.org/product/0730742109487",
+        "countries_tags": ["en:united-states"],
+        "data_quality_tags": [
+            "en:no-packaging-data",
+            "en:serving-quantity-defined-but-quantity-undefined",
+        ],
+        "serving_size": "28 g",
+        "serving_quantity": 28,
+        "nutriments": {
+            "energy-kcal_100g": 357.142857142857,
+            "proteins_100g": 3.57142857142857,
+            "carbohydrates_100g": 82.1428571428571,
+            "fat_100g": 0,
+            "sodium_100g": 1.10714285714286,
+            "fiber_100g": 0,
+            "energy-kcal_serving": 100,
+            "proteins_serving": 1,
+            "carbohydrates_serving": 23,
+            "fat_serving": 0,
+            "sodium_serving": 0.31,
+            "fiber_serving": 0,
+        },
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods_by_barcode", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "get_product_by_barcode", lambda *_a, **_kw: product)
+
+    estimate = branded_food_lookup.lookup_barcode("730742109487")
+
+    assert estimate["source"] == "open_food_facts_barcode"
+    assert estimate["item_name"] == "Alamo Candy Co. Picositas Belts"
+    assert estimate["portion_description"] == "28 g"
+    assert estimate["calories"] == 100
+    assert estimate["carbs_g"] == 23
+    assert estimate["confidence"] == 0.82
+
+
 def test_lookup_barcode_uses_open_food_facts_serving_macros(monkeypatch):
     saved = {}
     product = {
