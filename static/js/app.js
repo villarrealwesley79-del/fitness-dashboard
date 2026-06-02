@@ -331,6 +331,160 @@
         }
     }
 
+    // --- FIT-137: nutrition-driven workout-adaptation confirmation ----
+    // Read/display side of the FIT-136 seam. Mirrors the FIT-139 passive-notice
+    // contract: poll the backend event feed, ack on dismiss, no client-side
+    // row diffing. A confirmation renders ONLY when FIT-136 reports an applied
+    // change to *today's* plan. No-change / low-confidence events arrive with
+    // `silent: true` and render nothing; next-day effects surface solely as
+    // #nw-why reasoning when tomorrow's plan opens, never as a toast here. The
+    // full adaptation audit log is backend-only — this code never fetches or
+    // renders it, only the projected event's user-visible reason + signals.
+    const workoutAdaptationNoticeState = {
+        seen: new Set(),
+        fetching: false,
+    };
+
+    function workoutAdaptationIsRenderable(event) {
+        // Applied-change gate. Silent (no-change / low-confidence) events and
+        // next-day effects render nothing; only an applied change to today's
+        // plan produces a confirmation.
+        if (!event || !event.id) return false;
+        if (event.silent) return false;
+        if (event.status !== 'applied') return false;
+        if (event.change_type === 'none') return false;
+        if (event.applies_to !== 'today') return false;
+        return true;
+    }
+
+    function workoutAdaptationSignalLabels(event) {
+        const signals = (event && event.nutrition_context && event.nutrition_context.signals) || [];
+        return signals
+            .map((s) => (s && s.label ? String(s.label).trim() : ''))
+            .filter(Boolean);
+    }
+
+    function workoutAdaptationRemainingPlanRows(plan) {
+        const exercises = (plan && plan.exercises) || [];
+        if (!exercises.length) {
+            return '<div class="workout-adaptation-plan-empty">Recovery focus — no remaining strength sets.</div>';
+        }
+        return exercises.slice(0, 8).map((ex) => {
+            const name = ex && ex.name ? String(ex.name) : 'exercise';
+            const sets = ex && ex.target_sets != null ? String(ex.target_sets) : '—';
+            const reps = ex && ex.target_reps != null ? ` × ${escapeHtml(String(ex.target_reps))} reps` : '';
+            return `<div class="workout-adaptation-plan-row"><span class="workout-adaptation-plan-name">${escapeHtml(name)}</span><span class="workout-adaptation-plan-target">${escapeHtml(sets)} sets${reps}</span></div>`;
+        }).join('');
+    }
+
+    function applyWorkoutAdaptationToActiveWorkout(event) {
+        // AC: when a workout is active, fold the server-adapted remaining plan
+        // into the active workout via the FIT-179 identity-merge so completed
+        // sets survive. The backend has already patched its recommendation, so
+        // the freshest next-workout fetch carries the adapted remaining work.
+        if (!state.activeWorkout) return;
+        if (!(event.active_workout && event.active_workout.updated_live)) return;
+        getNextWorkout(true).then((nw) => {
+            if (!nw || !state.activeWorkout) return;
+            const previous = Array.isArray(state.activeWorkout.exercises)
+                ? state.activeWorkout.exercises
+                : [];
+            applyAdjustedRecommendationToActiveWorkout(nw, previous);
+            renderActiveWorkout();
+        }).catch((err) => console.warn('active workout adaptation merge failed:', err));
+    }
+
+    function showWorkoutAdaptationNotice(event) {
+        const host = $('workout-adaptation-host');
+        if (!host || !workoutAdaptationIsRenderable(event)) return;
+        const reason = (event.reason && String(event.reason).trim())
+            || 'Adjusted your remaining workout based on saved nutrition.';
+        const labels = workoutAdaptationSignalLabels(event);
+        const chips = labels.length
+            ? `<div class="workout-adaptation-chips">${labels.map((l) => `<span class="workout-adaptation-chip">${escapeHtml(l)}</span>`).join('')}</div>`
+            : '';
+        const planRows = workoutAdaptationRemainingPlanRows(event.after_remaining_plan);
+
+        const card = document.createElement('div');
+        card.className = 'card workout-adaptation-card';
+        card.setAttribute('role', 'status');
+        card.setAttribute('aria-live', 'polite');
+
+        const head = document.createElement('div');
+        head.className = 'workout-adaptation-head';
+        const kicker = document.createElement('span');
+        kicker.className = 'workout-adaptation-kicker';
+        kicker.textContent = 'Workout updated';
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.className = 'workout-adaptation-dismiss';
+        dismiss.setAttribute('aria-label', 'Dismiss workout update');
+        dismiss.textContent = 'Dismiss';
+        head.appendChild(kicker);
+        head.appendChild(dismiss);
+
+        const reasonEl = document.createElement('div');
+        reasonEl.className = 'workout-adaptation-reason';
+        reasonEl.textContent = reason;
+
+        // AC: per-meal/item specifics live behind a collapsed native <details>.
+        // Only the user-visible neutral signals + the updated remaining plan are
+        // shown — never the audit log.
+        const details = document.createElement('details');
+        details.className = 'workout-adaptation-details';
+        details.innerHTML = `
+            <summary class="workout-adaptation-summary">View details</summary>
+            ${chips}
+            <div class="workout-adaptation-plan-kicker">Updated remaining plan</div>
+            <div class="workout-adaptation-plan">${planRows}</div>
+        `;
+
+        card.appendChild(head);
+        card.appendChild(reasonEl);
+        card.appendChild(details);
+
+        let dismissed = false;
+        dismiss.addEventListener('click', async () => {
+            if (dismissed) return;
+            dismissed = true;
+            dismiss.disabled = true;
+            try {
+                await api(`/api/workout-adaptation-events/${encodeURIComponent(event.id)}/ack`, { method: 'POST' });
+                card.remove();
+                if (!host.children.length) host.hidden = true;
+            } catch (err) {
+                dismissed = false;
+                dismiss.disabled = false;
+                workoutAdaptationNoticeState.seen.delete(event.id);
+                console.warn('workout adaptation ack failed:', err);
+            }
+        });
+
+        host.hidden = false;
+        host.appendChild(card);
+        applyWorkoutAdaptationToActiveWorkout(event);
+    }
+
+    async function fetchWorkoutAdaptationNotices() {
+        if (workoutAdaptationNoticeState.fetching) return;
+        workoutAdaptationNoticeState.fetching = true;
+        try {
+            const payload = await api('/api/workout-adaptation-events?unacknowledged=true&limit=10');
+            const events = (payload && payload.events) || [];
+            for (const event of events) {
+                if (!event || !event.id) continue;
+                if (workoutAdaptationNoticeState.seen.has(event.id)) continue;
+                workoutAdaptationNoticeState.seen.add(event.id);
+                // Silent (no-change / low-confidence) and next-day events are
+                // intentionally swallowed — marked seen but never rendered.
+                if (!workoutAdaptationIsRenderable(event)) continue;
+                showWorkoutAdaptationNotice(event);
+            }
+        } finally {
+            workoutAdaptationNoticeState.fetching = false;
+        }
+    }
+
     function newWorkoutId(recommendationId) {
         const suffix = Math.random().toString(36).slice(2, 8);
         return `w-${recommendationId || Date.now()}-${suffix}`;
@@ -1264,6 +1418,7 @@
         const dash = await getDashboard(true);
         renderMacroCard(dash && dash.nutrition_today);
         fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
+        fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
     }
 
     // --- Dashboard render ----------------------------------------
@@ -2911,6 +3066,7 @@
         });
 
         fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
+        fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
     }
 
     function renderFoodLogMealList(container, entries) {
@@ -10030,6 +10186,7 @@
         wireEvents();
         switchTab('tab-dashboard');
         fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
+        fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
         refreshAiStatus();
         if (aiStatusTimer) clearInterval(aiStatusTimer);
         aiStatusTimer = setInterval(refreshAiStatus, 60_000);

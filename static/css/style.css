@@ -1949,6 +1949,115 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     gap: 8px;
     margin-top: 10px;
 }
+
+/* FIT-137: nutrition-driven workout-adaptation confirmation. Calm, passive
+   card mirroring the tone of the FIT-139 refresh notice — not a modal/alarm. */
+.workout-adaptation-host {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 12px 0;
+}
+.workout-adaptation-card {
+    border: 1px solid rgba(96,165,250,0.26);
+    background: rgba(96,165,250,0.07);
+}
+.workout-adaptation-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+.workout-adaptation-kicker {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent-green);
+}
+.workout-adaptation-dismiss {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--fg-1);
+    background: transparent;
+    border: 1px solid var(--border-2);
+    border-radius: var(--radius-pill);
+    padding: 3px 10px;
+    cursor: pointer;
+}
+.workout-adaptation-dismiss:disabled { opacity: 0.5; cursor: default; }
+.workout-adaptation-reason {
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--fg-0);
+    overflow-wrap: anywhere;
+}
+.workout-adaptation-details {
+    margin-top: 10px;
+}
+.workout-adaptation-summary {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--fg-1);
+    cursor: pointer;
+}
+.workout-adaptation-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 10px 0;
+}
+.workout-adaptation-chip {
+    font-size: 11px;
+    color: var(--fg-1);
+    background: rgba(20,184,166,0.10);
+    border: 1px solid rgba(20,184,166,0.24);
+    border-radius: var(--radius-pill);
+    padding: 3px 9px;
+    overflow-wrap: anywhere;
+}
+.workout-adaptation-plan-kicker {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    margin: 8px 0 6px;
+}
+.workout-adaptation-plan {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.workout-adaptation-plan-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 8px;
+    border-radius: 9px;
+    background: rgba(15,23,42,0.78);
+    border: 1px solid rgba(51,65,85,0.58);
+}
+.workout-adaptation-plan-name {
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--fg-0);
+    overflow-wrap: anywhere;
+}
+.workout-adaptation-plan-target {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--fg-dim);
+}
+.workout-adaptation-plan-empty {
+    font-size: 12px;
+    color: var(--fg-1);
+    padding: 7px 8px;
+}
+
 .analyze-section { margin-bottom: 14px; }
 .analyze-label {
     font-size: 10px;
