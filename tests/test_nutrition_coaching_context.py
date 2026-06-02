@@ -47,7 +47,8 @@ def test_nutrition_context_uses_only_accepted_entries_and_flags_next_day_context
     assert "food_pending_review" in warning_codes
     assert context["next_day_context"]["high_sodium"] is True
     assert context["next_day_context"]["late_meal"] is True
-    assert context["plan_adjustment"]["allowed"] is False
+    assert context["plan_adjustment"]["allowed"] is True
+    assert context["plan_adjustment"]["events_endpoint"] == "/api/workout-adaptation-events"
     assert context["uses_only_accepted_entries"] is True
 
 
@@ -213,7 +214,8 @@ def test_nutrition_today_exposes_remaining_targets_and_context(monkeypatch):
     assert "totals" not in payload["coaching_context"]
     assert "targets" not in payload["coaching_context"]
     assert "percentages" not in payload["coaching_context"]
-    assert payload["coaching_context"]["plan_adjustment"]["allowed"] is False
+    assert payload["coaching_context"]["plan_adjustment"]["allowed"] is True
+    assert payload["coaching_context"]["plan_adjustment"]["coalescing_window_seconds"] == 180
 
 
 def test_nutrition_today_top_level_uses_food_log_totals_when_json_is_empty(monkeypatch):
@@ -442,4 +444,5 @@ def test_smart_recommendation_keeps_plan_but_adds_under_fueled_context(monkeypat
     warning_codes = {warning["code"] for warning in payload["nutrition_context"]["warnings"]}
     assert payload["recommendation"] == "intensity"
     assert "under_fueled_hard_workout" in warning_codes
-    assert payload["nutrition_context"]["plan_adjustment"]["allowed"] is False
+    assert payload["nutrition_context"]["plan_adjustment"]["allowed"] is True
+    assert payload["nutrition_context"]["plan_adjustment"]["events_endpoint"] == "/api/workout-adaptation-events"

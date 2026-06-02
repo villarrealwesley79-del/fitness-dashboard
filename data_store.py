@@ -344,6 +344,41 @@ def init_data_db():
                 created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS workout_adaptation_pending (
+                id                  TEXT PRIMARY KEY,
+                user_id             INTEGER NOT NULL,
+                date                TEXT    NOT NULL,
+                window_started_at   TEXT    NOT NULL,
+                window_closes_at    TEXT    NOT NULL,
+                meal_ids_json       TEXT,
+                food_log_client_ids_json TEXT,
+                status              TEXT    NOT NULL DEFAULT 'pending',
+                processed_event_id  TEXT,
+                created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS workout_adaptation_events (
+                id                  TEXT PRIMARY KEY,
+                user_id             INTEGER NOT NULL,
+                date                TEXT    NOT NULL,
+                status              TEXT    NOT NULL,
+                silent              INTEGER NOT NULL DEFAULT 1,
+                change_type         TEXT    NOT NULL,
+                applies_to          TEXT    NOT NULL,
+                reason              TEXT,
+                confidence_json     TEXT,
+                trigger_json        TEXT,
+                nutrition_context_json TEXT,
+                patch_json          TEXT,
+                before_plan_json    TEXT,
+                after_plan_json     TEXT,
+                active_workout_json TEXT,
+                reason_metadata_json TEXT,
+                created_at          TEXT    NOT NULL,
+                acknowledged_at     TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS branded_lookup_cache (
                 user_id         INTEGER NOT NULL DEFAULT 1,
                 normalized_text TEXT NOT NULL,
@@ -537,6 +572,14 @@ def init_data_db():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_food_log_refresh_events_user_client "
             "ON food_log_refresh_events(user_id, client_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_workout_adaptation_pending_user_status "
+            "ON workout_adaptation_pending(user_id, status, window_closes_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_workout_adaptation_events_user_ack "
+            "ON workout_adaptation_events(user_id, acknowledged_at, created_at)"
         )
         conn.commit()
 
@@ -783,7 +826,292 @@ def acknowledge_food_log_refresh_event(user_id: int, event_id: str) -> bool:
             (now_iso, user_id, event_id),
         )
         conn.commit()
-    return cur.rowcount > 0
+        return cur.rowcount > 0
+
+
+def _workout_adaptation_pending_payload(row: sqlite3.Row | dict) -> dict:
+    payload = dict(row)
+    payload["meal_ids"] = _json_loads_or_none(payload.pop("meal_ids_json", None)) or []
+    payload["food_log_client_ids"] = (
+        _json_loads_or_none(payload.pop("food_log_client_ids_json", None)) or []
+    )
+    return payload
+
+
+def _workout_adaptation_event_payload(row: sqlite3.Row | dict) -> dict:
+    payload = dict(row)
+    payload["silent"] = bool(payload.get("silent"))
+    for column, key in (
+        ("confidence_json", "confidence"),
+        ("trigger_json", "trigger"),
+        ("nutrition_context_json", "nutrition_context"),
+        ("patch_json", "patch"),
+        ("before_plan_json", "before_remaining_plan"),
+        ("after_plan_json", "after_remaining_plan"),
+        ("active_workout_json", "active_workout"),
+        ("reason_metadata_json", "reason_metadata"),
+    ):
+        payload[key] = _json_loads_or_none(payload.pop(column, None))
+    return payload
+
+
+def enqueue_workout_adaptation_pending(
+    user_id: int,
+    *,
+    date: str,
+    meal_id: Optional[str],
+    food_log_client_ids: list[str],
+    window_started_at: str,
+    window_closes_at: str,
+) -> dict:
+    """Create or update the pending nutrition-to-workout adaptation window."""
+    init_data_db()
+    meal_ids = [str(meal_id)] if meal_id else []
+    client_ids = [str(item) for item in food_log_client_ids if item]
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    with _get_db() as conn:
+        for client_id in client_ids:
+            existing_trigger = conn.execute(
+                """
+                SELECT *
+                  FROM workout_adaptation_pending
+                 WHERE user_id = ?
+                   AND food_log_client_ids_json LIKE ?
+                 ORDER BY created_at ASC
+                 LIMIT 1
+                """,
+                (user_id, f'%"{client_id}"%'),
+            ).fetchone()
+            if existing_trigger:
+                return _workout_adaptation_pending_payload(existing_trigger)
+        row = conn.execute(
+            """
+            SELECT *
+              FROM workout_adaptation_pending
+             WHERE user_id = ?
+               AND date = ?
+               AND status = 'pending'
+               AND window_closes_at >= ?
+             ORDER BY window_started_at ASC
+             LIMIT 1
+            """,
+            (user_id, date, window_started_at),
+        ).fetchone()
+        if row:
+            existing = _workout_adaptation_pending_payload(row)
+            merged_meal_ids = sorted({*(existing.get("meal_ids") or []), *meal_ids})
+            merged_client_ids = sorted({*(existing.get("food_log_client_ids") or []), *client_ids})
+            conn.execute(
+                """
+                UPDATE workout_adaptation_pending
+                   SET meal_ids_json = ?,
+                       food_log_client_ids_json = ?,
+                       updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    _json_dumps_or_none(merged_meal_ids),
+                    _json_dumps_or_none(merged_client_ids),
+                    now_iso,
+                    existing["id"],
+                ),
+            )
+            updated = conn.execute(
+                "SELECT * FROM workout_adaptation_pending WHERE id = ?",
+                (existing["id"],),
+            ).fetchone()
+            return _workout_adaptation_pending_payload(updated)
+        pending_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO workout_adaptation_pending (
+                id, user_id, date, window_started_at, window_closes_at,
+                meal_ids_json, food_log_client_ids_json, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            """,
+            (
+                pending_id,
+                user_id,
+                date,
+                window_started_at,
+                window_closes_at,
+                _json_dumps_or_none(meal_ids),
+                _json_dumps_or_none(client_ids),
+                now_iso,
+                now_iso,
+            ),
+        )
+        inserted = conn.execute(
+            "SELECT * FROM workout_adaptation_pending WHERE id = ?",
+            (pending_id,),
+        ).fetchone()
+        return _workout_adaptation_pending_payload(inserted)
+
+
+def list_due_workout_adaptation_pending(user_id: int, *, now_iso: str) -> list[dict]:
+    """Return pending adaptation windows whose coalescing window has closed."""
+    init_data_db()
+    with _get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+              FROM workout_adaptation_pending
+             WHERE user_id = ?
+               AND status = 'pending'
+               AND window_closes_at <= ?
+             ORDER BY window_closes_at ASC, created_at ASC
+            """,
+            (user_id, now_iso),
+        ).fetchall()
+    return [_workout_adaptation_pending_payload(row) for row in rows]
+
+
+def list_pending_workout_adaptation_windows(user_id: int) -> list[dict]:
+    """Return open adaptation windows for tests and event polling."""
+    init_data_db()
+    with _get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+              FROM workout_adaptation_pending
+             WHERE user_id = ?
+               AND status = 'pending'
+             ORDER BY window_started_at ASC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [_workout_adaptation_pending_payload(row) for row in rows]
+
+
+def save_workout_adaptation_event(user_id: int, pending_id: str, event: dict) -> dict | None:
+    """Persist one evaluated workout adaptation audit/event row."""
+    init_data_db()
+    event_id = event.get("id") or str(uuid.uuid4())
+    created_at = event.get("created_at") or datetime.now().isoformat(timespec="seconds")
+    payload = {
+        "id": event_id,
+        "user_id": user_id,
+        "date": event.get("date"),
+        "status": event.get("status") or "no_change",
+        "silent": 1 if event.get("silent", True) else 0,
+        "change_type": event.get("change_type") or "none",
+        "applies_to": event.get("applies_to") or "today",
+        "reason": event.get("reason"),
+        "confidence_json": _json_dumps_or_none(event.get("confidence")),
+        "trigger_json": _json_dumps_or_none(event.get("trigger")),
+        "nutrition_context_json": _json_dumps_or_none(event.get("nutrition_context")),
+        "patch_json": _json_dumps_or_none(event.get("patch")),
+        "before_plan_json": _json_dumps_or_none(event.get("before_remaining_plan")),
+        "after_plan_json": _json_dumps_or_none(event.get("after_remaining_plan")),
+        "active_workout_json": _json_dumps_or_none(event.get("active_workout")),
+        "reason_metadata_json": _json_dumps_or_none(event.get("reason_metadata")),
+        "created_at": created_at,
+    }
+    cols = list(payload.keys())
+    with _get_db() as conn:
+        claim = conn.execute(
+            """
+            UPDATE workout_adaptation_pending
+               SET status = 'processing',
+                   updated_at = ?
+             WHERE user_id = ?
+               AND id = ?
+               AND status = 'pending'
+            """,
+            (created_at, user_id, pending_id),
+        )
+        if claim.rowcount == 0:
+            pending = conn.execute(
+                """
+                SELECT processed_event_id
+                  FROM workout_adaptation_pending
+                 WHERE user_id = ?
+                   AND id = ?
+                """,
+                (user_id, pending_id),
+            ).fetchone()
+            processed_event_id = pending["processed_event_id"] if pending else None
+            if processed_event_id:
+                existing = conn.execute(
+                    "SELECT * FROM workout_adaptation_events WHERE id = ?",
+                    (processed_event_id,),
+                ).fetchone()
+                return _workout_adaptation_event_payload(existing) if existing else None
+            return None
+        conn.execute(
+            f"INSERT INTO workout_adaptation_events ({', '.join(cols)}) "
+            f"VALUES ({', '.join(['?'] * len(cols))})",
+            [payload[col] for col in cols],
+        )
+        conn.execute(
+            """
+            UPDATE workout_adaptation_pending
+               SET status = 'processed',
+                   processed_event_id = ?,
+                   updated_at = ?
+             WHERE user_id = ?
+               AND id = ?
+               AND status = 'processing'
+            """,
+            (event_id, created_at, user_id, pending_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM workout_adaptation_events WHERE id = ?",
+            (event_id,),
+        ).fetchone()
+    return _workout_adaptation_event_payload(row)
+
+
+def list_workout_adaptation_events(
+    user_id: int,
+    *,
+    unacknowledged: bool = True,
+    since: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return bounded workout adaptation events for the FIT-137 UI contract."""
+    init_data_db()
+    safe_limit = min(max(int(limit or 50), 1), 50)
+    clauses = ["user_id = ?"]
+    params: list = [user_id]
+    if unacknowledged:
+        clauses.append("acknowledged_at IS NULL")
+    if since:
+        clauses.append("created_at >= ?")
+        params.append(since)
+    where_sql = " AND ".join(clauses)
+    with _get_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+              FROM workout_adaptation_events
+             WHERE {where_sql}
+             ORDER BY created_at DESC
+             LIMIT ?
+            """,
+            [*params, safe_limit],
+        ).fetchall()
+    return [_workout_adaptation_event_payload(row) for row in rows]
+
+
+def acknowledge_workout_adaptation_event(user_id: int, event_id: str) -> bool:
+    """Mark one workout adaptation event acknowledged, scoped to the current user."""
+    if not event_id:
+        return False
+    init_data_db()
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    with _get_db() as conn:
+        cur = conn.execute(
+            """
+            UPDATE workout_adaptation_events
+               SET acknowledged_at = COALESCE(acknowledged_at, ?)
+             WHERE user_id = ?
+               AND id = ?
+            """,
+            (now_iso, user_id, event_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def get_branded_lookup_cache(normalized_text: str, *, user_id: int = 1) -> Optional[dict]:
@@ -1338,6 +1666,8 @@ def upsert_personal_vocab_entry(
 def clear_food_logs(user_id: int) -> None:
     """Delete accepted food logs for a user before a full backup restore."""
     with _get_db() as conn:
+        conn.execute("DELETE FROM workout_adaptation_events WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM workout_adaptation_pending WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM food_log_refresh_events WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM food_logs WHERE user_id = ?", (user_id,))
         conn.commit()
@@ -1630,6 +1960,8 @@ def delete_user_data(user_id: int) -> None:
         "nutrition_data",
         "food_logs",
         "food_log_refresh_events",
+        "workout_adaptation_pending",
+        "workout_adaptation_events",
         "personal_vocab",
         "meal_acceptance_events",
         "meal_review_snapshots",

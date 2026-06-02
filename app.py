@@ -73,9 +73,11 @@ from data_store import (
     delete_food_log_by_client_id,
     delete_food_logs_by_meal_id,
     acknowledge_food_log_refresh_event,
+    acknowledge_workout_adaptation_event,
     get_push_subscription_for_delivery,
     list_push_subscriptions,
     list_food_log_refresh_events,
+    list_workout_adaptation_events,
     revoke_push_subscription,
     save_push_subscription,
     save_meal_acceptance_event,
@@ -89,6 +91,7 @@ from meal_estimate_schema import (
 import branded_food_lookup
 import personal_vocab
 import vision_estimator
+import workout_adaptation
 from meal_text_parser import parse_meal_text
 from meal_log_policy import (
     CALORIE_MAX,
@@ -1838,8 +1841,8 @@ def _nutrition_context_for_date(
 ):
     """Backend contract for food-aware daily coaching context.
 
-    This is advisory context only. Food data does not silently mutate the workout
-    plan, and pending/unaccepted estimates are excluded from totals.
+    FIT-136 allows accepted food logs to schedule workout adaptation; pending
+    and unaccepted estimates are still excluded from totals and adaptation.
     """
     food_log_day_entries = [
         entry for entry in (food_log_entries or [])
@@ -1964,10 +1967,7 @@ def _nutrition_context_for_date(
             "late_entries_count": late_entries_count,
             "notes": next_day_notes,
         },
-        "plan_adjustment": {
-            "allowed": False,
-            "reason": "Food context is advisory until a separate accepted plan-adjustment issue changes this behavior.",
-        },
+        "plan_adjustment": workout_adaptation.plan_adjustment_contract(),
         "uses_only_accepted_entries": True,
     }
 
@@ -2017,6 +2017,86 @@ def _nutrition_today_public_payload(date_s: str, nutrition_context: dict) -> dic
         "entries_count": totals["entries_count"],
         "coaching_context": _public_nutrition_coaching_context(nutrition_context),
     }
+
+
+def _apply_due_workout_adaptations_for_plan(
+    next_workout: dict,
+    *,
+    date_s: str,
+    food_log_entries: list[dict],
+    nutrition_context: dict,
+    active_workout_open: bool = False,
+    completed_sets_by_exercise: dict[str, int] | None = None,
+) -> tuple[dict, list[dict]]:
+    """Evaluate closed FIT-136 windows against a generated remaining plan."""
+    current_visible_plan = _fit136_visible_workout_plan(next_workout or {})
+    last_adapted_plan = (next_workout or {}).get("_fit136_last_adapted_plan")
+    cached_base = (next_workout or {}).get("_fit136_base_recommendation")
+    if cached_base and last_adapted_plan == current_visible_plan:
+        adaptation_base = copy.deepcopy(cached_base)
+    else:
+        adaptation_base = copy.deepcopy(current_visible_plan)
+    try:
+        patched, events = workout_adaptation.apply_due_adaptations(
+            _current_data_user_id(),
+            adaptation_base,
+            food_log_entries=food_log_entries,
+            nutrition_context=nutrition_context,
+            settings=USER_SETTINGS,
+            plan_date=date_s,
+            active_workout_open=active_workout_open,
+            completed_sets_by_exercise=completed_sets_by_exercise or {},
+        )
+        if not events:
+            return next_workout, []
+        if any(event.get("status") == "applied" for event in events):
+            patched["_fit136_base_recommendation"] = adaptation_base
+            patched["_fit136_last_adapted_plan"] = _fit136_visible_workout_plan(patched)
+        elif events:
+            return next_workout, events
+        return patched, events
+    except Exception:
+        app.logger.warning("workout adaptation evaluation failed", exc_info=True)
+        return next_workout, []
+
+
+def _fit136_visible_workout_plan(plan: dict) -> dict:
+    if not isinstance(plan, dict):
+        return {}
+    return {
+        key: copy.deepcopy(value)
+        for key, value in plan.items()
+        if not str(key).startswith("_fit136_")
+    }
+
+
+def _enqueue_workout_adaptation_after_accept(user_id: int, food_logs: list[dict]) -> dict | None:
+    """Schedule FIT-136 adaptation from accepted/saved normalized food rows only."""
+    try:
+        return workout_adaptation.enqueue_accepted_food_logs(user_id, food_logs)
+    except Exception:
+        app.logger.warning("workout adaptation enqueue failed", exc_info=True)
+        return None
+
+
+def _completed_sets_query_param(raw_value: str | None) -> dict[str, int]:
+    if not raw_value:
+        return {}
+    try:
+        payload = json.loads(raw_value)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    completed: dict[str, int] = {}
+    for key, value in payload.items():
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        if key and count > 0:
+            completed[str(key)] = count
+    return completed
 
 
 def _workout_looks_hard(recommendation) -> bool:
@@ -4578,10 +4658,35 @@ def api_next_workout():
             SORENESS_DATA,
             training_recommendation=_current_workout_training_recommendation(),
             consume_cardio_rotation=False,
-            include_open_wearables_readiness=False,
         )
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
-    return jsonify({"next_workout": LAST_WORKOUT_RECOMMENDATION})
+    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
+    active_open_requested = active_open_raw in {"1", "true", "yes"}
+    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
+    can_evaluate_active = not active_open_requested or bool(completed_sets_by_exercise)
+    today_s = _today_str()
+    food_log_entries = _food_log_entries_for_context(since=today_s)
+    adaptation_food_entries = _food_log_entries_for_context()
+    nutrition_context = _nutrition_context_for_date(
+        today_s,
+        hard_training_planned=_workout_looks_hard(LAST_WORKOUT_RECOMMENDATION or {}),
+        food_log_entries=food_log_entries,
+    )
+    workout_adaptation_events = []
+    if can_evaluate_active:
+        LAST_WORKOUT_RECOMMENDATION, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
+            LAST_WORKOUT_RECOMMENDATION or {},
+            date_s=today_s,
+            food_log_entries=adaptation_food_entries,
+            nutrition_context=nutrition_context,
+            active_workout_open=active_open_requested,
+            completed_sets_by_exercise=completed_sets_by_exercise,
+        )
+    LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+    return jsonify({
+        "next_workout": LAST_WORKOUT_RECOMMENDATION,
+        "workout_adaptation_events": [workout_adaptation.project_event(event) for event in workout_adaptation_events],
+    })
 
 
 @app.route('/gym-now')
@@ -4600,7 +4705,9 @@ def gym_now():
             consume_cardio_rotation=False,
             include_open_wearables_readiness=False,
         )
+        LAST_WORKOUT_RECOMMENDATION["_fit136_lightweight_no_ow"] = True
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+    LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
     workout = LAST_WORKOUT_RECOMMENDATION or {}
     focus = html.escape(str(workout.get("focus") or workout.get("title") or "Workout"))
     estimated = workout.get("estimated_minutes") or workout.get("estimated_duration") or workout.get("available_time")
@@ -4796,21 +4903,49 @@ def api_dashboard():
     )
     if signal == "RECOVER" and max_soreness >= 7:
         dashboard_training_recommendation = "recovery"
-    next_workout = generate_next_workout(
-        WORKOUTS,
-        SORENESS_DATA,
-        training_recommendation=dashboard_training_recommendation,
-        consume_cardio_rotation=False,
-    )
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
-    LAST_WORKOUT_RECOMMENDATION = next_workout
-    LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
+    fingerprint = _workout_recommendation_fingerprint()
+    if (
+        LAST_WORKOUT_RECOMMENDATION
+        and LAST_WORKOUT_RECOMMENDATION_FINGERPRINT == fingerprint
+        and not LAST_WORKOUT_RECOMMENDATION.get("_fit136_lightweight_no_ow")
+    ):
+        next_workout = LAST_WORKOUT_RECOMMENDATION
+    else:
+        next_workout = generate_next_workout(
+            WORKOUTS,
+            SORENESS_DATA,
+            training_recommendation=dashboard_training_recommendation,
+            consume_cardio_rotation=False,
+        )
     food_log_entries = _food_log_entries_for_context(since=today_s)
+    adaptation_food_entries = _food_log_entries_for_context()
     nutrition_context = _nutrition_context_for_date(
         today_s,
         hard_training_planned=_workout_looks_hard(next_workout),
         food_log_entries=food_log_entries,
     )
+    workout_adaptation_events = []
+    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
+    active_open_requested = active_open_raw in {"1", "true", "yes"}
+    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
+    if not active_open_requested or completed_sets_by_exercise:
+        next_workout, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
+            next_workout,
+            date_s=today_s,
+            food_log_entries=adaptation_food_entries,
+            nutrition_context=nutrition_context,
+            active_workout_open=active_open_requested,
+            completed_sets_by_exercise=completed_sets_by_exercise,
+        )
+        if workout_adaptation_events:
+            nutrition_context = _nutrition_context_for_date(
+                today_s,
+                hard_training_planned=_workout_looks_hard(next_workout),
+                food_log_entries=food_log_entries,
+            )
+    LAST_WORKOUT_RECOMMENDATION = next_workout
+    LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
     nutrition_today_payload = _nutrition_today_public_payload(today_s, nutrition_context)
     return jsonify({
         "headline": {
@@ -4824,6 +4959,7 @@ def api_dashboard():
         "exercises": exercise_data,
         "alerts": generate_alerts(WORKOUTS, SORENESS_DATA),
         "next_workout": next_workout,
+        "workout_adaptation_events": [workout_adaptation.project_event(event) for event in workout_adaptation_events],
         "readiness_factors": {
             "acwr": acwr,
             "sleep_debt": sleep_debt,
@@ -5215,6 +5351,8 @@ def add_nutrition():
         "client_id": client_id,
         "original_estimate": data.get("original_estimate") or data.get("estimate"),
     })
+    if _nutrition_entry_accepted(food_log):
+        _enqueue_workout_adaptation_after_accept(_current_data_user_id(), [food_log])
 
     previous_nutrition_data = list(NUTRITION_DATA)
     try:
@@ -6939,6 +7077,8 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
         deleted_count=deleted_count,
         feedback_fingerprint=feedback_fingerprint,
     )
+    if not replaying_existing_event:
+        _enqueue_workout_adaptation_after_accept(user_id, rows)
     return _meal_multi_response(meal_id, rows, len(rows), skipped_count, deleted_count, has_image)
 
 
@@ -7652,6 +7792,7 @@ def meal_intake_accept(client_id: str):
             personal_vocab.record_accept(user_id, vocab_phrase, estimate)
     if "estimate" in data:
         delete_meal_review_snapshot(user_id, client_id)
+    _enqueue_workout_adaptation_after_accept(user_id, [food_log])
     return jsonify({
         "status": "logged",
         "food_log": food_log,
@@ -7973,6 +8114,77 @@ def ack_food_log_refresh_event(event_id: str):
         return api_error("invalid refresh event id", 400, code="invalid_field")
     if not acknowledge_food_log_refresh_event(_current_data_user_id(), event_id):
         return api_error("refresh event not found", 404, code="not_found")
+    return jsonify({"status": "success", "id": event_id})
+
+
+@app.route('/api/workout-adaptation-events')
+def workout_adaptation_events():
+    """Pollable FIT-137 event feed for nutrition-based workout adaptations."""
+    unacknowledged_raw = str(request.args.get("unacknowledged", "true")).strip().lower()
+    unacknowledged = unacknowledged_raw not in {"0", "false", "no", "all"}
+    since, err = _coerce_str(request.args.get("since"), "since", required=False, max_len=64)
+    if err:
+        return err
+    limit_raw = request.args.get("limit", 50)
+    try:
+        limit = min(max(int(limit_raw), 1), 50)
+    except (TypeError, ValueError):
+        return api_error("limit must be an integer from 1 to 50", 400, code="invalid_field")
+
+    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
+    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
+    active_open_requested = active_open_raw in {"1", "true", "yes"}
+    active_workout_open = active_open_requested and bool(completed_sets_by_exercise)
+    today_s = _today_str()
+    food_log_entries = _food_log_entries_for_context(since=today_s)
+    adaptation_food_entries = _food_log_entries_for_context()
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
+    fingerprint = _workout_recommendation_fingerprint()
+    if LAST_WORKOUT_RECOMMENDATION and LAST_WORKOUT_RECOMMENDATION_FINGERPRINT == fingerprint:
+        next_workout = LAST_WORKOUT_RECOMMENDATION
+    else:
+        next_workout = generate_next_workout(
+            WORKOUTS,
+            SORENESS_DATA,
+            training_recommendation=_current_workout_training_recommendation(),
+            consume_cardio_rotation=False,
+        )
+        LAST_WORKOUT_RECOMMENDATION = next_workout
+        LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+    nutrition_context = _nutrition_context_for_date(
+        today_s,
+        hard_training_planned=_workout_looks_hard(next_workout),
+        food_log_entries=food_log_entries,
+    )
+    if not active_open_requested or completed_sets_by_exercise:
+        next_workout, _events = _apply_due_workout_adaptations_for_plan(
+            next_workout,
+            date_s=today_s,
+            food_log_entries=adaptation_food_entries,
+            nutrition_context=nutrition_context,
+            active_workout_open=active_workout_open,
+            completed_sets_by_exercise=completed_sets_by_exercise,
+        )
+        LAST_WORKOUT_RECOMMENDATION = next_workout
+        LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+
+    events = list_workout_adaptation_events(
+        _current_data_user_id(),
+        unacknowledged=unacknowledged,
+        since=since,
+        limit=limit,
+    )
+    projected = [workout_adaptation.project_event(event) for event in events]
+    return jsonify({"events": projected, "count": len(projected)})
+
+
+@app.route('/api/workout-adaptation-events/<event_id>/ack', methods=["POST"])
+def ack_workout_adaptation_event(event_id: str):
+    event_id = (event_id or "").strip()
+    if not event_id or len(event_id) > 80:
+        return api_error("invalid workout adaptation event id", 400, code="invalid_field")
+    if not acknowledge_workout_adaptation_event(_current_data_user_id(), event_id):
+        return api_error("workout adaptation event not found", 404, code="not_found")
     return jsonify({"status": "success", "id": event_id})
 
 
@@ -11365,11 +11577,35 @@ def smart_recommendation_api():
         consume_cardio_rotation=False,
     )
     freshness = _compute_data_freshness()
+    food_log_entries = _food_log_entries_for_context(since=today)
+    adaptation_food_entries = _food_log_entries_for_context()
     nutrition_context = _nutrition_context_for_date(
         today,
         hard_training_planned=_workout_looks_hard(next_workout),
-        food_log_entries=_food_log_entries_for_context(since=today),
+        food_log_entries=food_log_entries,
     )
+    workout_adaptation_events = []
+    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
+    active_open_requested = active_open_raw in {"1", "true", "yes"}
+    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
+    if not active_open_requested or completed_sets_by_exercise:
+        next_workout, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
+            next_workout,
+            date_s=today,
+            food_log_entries=adaptation_food_entries,
+            nutrition_context=nutrition_context,
+            active_workout_open=active_open_requested,
+            completed_sets_by_exercise=completed_sets_by_exercise,
+        )
+        if workout_adaptation_events:
+            global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
+            LAST_WORKOUT_RECOMMENDATION = next_workout
+            LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
+            nutrition_context = _nutrition_context_for_date(
+                today,
+                hard_training_planned=_workout_looks_hard(next_workout),
+                food_log_entries=food_log_entries,
+            )
     confidence_level = _confidence_level_from(effective_readiness, freshness)
     return jsonify({
         "recommendation": recommendation,
@@ -11393,6 +11629,8 @@ def smart_recommendation_api():
         "reasoning": "; ".join(reason_bits) if reason_bits else "No Oura/soreness data available",
         "freshness": freshness,
         "nutrition_context": nutrition_context,
+        "next_workout": next_workout,
+        "workout_adaptation_events": [workout_adaptation.project_event(event) for event in workout_adaptation_events],
         "confidence_level": confidence_level,
     })
 
