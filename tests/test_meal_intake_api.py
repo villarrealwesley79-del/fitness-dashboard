@@ -73,7 +73,15 @@ def _accepted_estimate(**overrides):
     return estimate
 
 
-def _stub_parser(monkeypatch, module, *, estimate, source="ai_text_estimate", fallback_used=False):
+def _stub_parser(
+    monkeypatch,
+    module,
+    *,
+    estimate,
+    source="ai_text_estimate",
+    fallback_used=False,
+    fallback_reason=None,
+):
     """Replace meal_text_parser.parse_meal_text with a deterministic stub
     so endpoint tests exercise the wiring, not the parser internals.
 
@@ -84,7 +92,10 @@ def _stub_parser(monkeypatch, module, *, estimate, source="ai_text_estimate", fa
     def fake(_text, **_kw):
         e = dict(estimate)
         e["source"] = source
-        return {"estimate": e, "fallback_used": fallback_used}
+        parsed = {"estimate": e, "fallback_used": fallback_used}
+        if fallback_reason:
+            parsed["fallback_reason"] = fallback_reason
+        return parsed
 
     monkeypatch.setattr(module, "parse_meal_text", fake)
 
@@ -440,6 +451,111 @@ def test_meal_intake_text_response_omits_meta_and_traces(monkeypatch):
     for forbidden in ("_meta", "raw", "trace", "prompt", "chain_of_thought"):
         assert forbidden not in estimate, f"{forbidden} leaked into estimate"
         assert forbidden not in body, f"{forbidden} leaked into response"
+
+
+def test_meal_intake_text_response_includes_public_fallback_reason(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate={
+            "item_name": "Eggs and toast",
+            "portion_description": None,
+            "meal_type": "breakfast",
+            "calories": 420,
+            "protein_g": 24,
+            "carbs_g": 36,
+            "fat_g": 18,
+            "sodium_mg": 520,
+            "fiber_g": 4,
+            "confidence": 0.55,
+            "ambiguous": True,
+            "uncertainty_notes": ["Rough estimate — AI didn't run; review before logging."],
+        },
+        source="fallback_text_estimate",
+        fallback_used=True,
+        fallback_reason="all_endpoints_failed",
+    )
+    monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {
+        "client_id": "meal-fallback-reason-1", "id": 1,
+    })
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={"text": "two eggs and toast", "client_id": "meal-fallback-reason-1"},
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["fallback_used"] is True
+    assert body["fallback_reason"] == "all_endpoints_failed"
+    assert body["fallback_reason"] in module.FALLBACK_REASON_VALUES
+    assert "qwen" not in body["fallback_reason"]
+
+
+def test_review_estimate_from_text_preserves_public_fallback_reason(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parse(_text, **_kw):
+        return {
+            "fallback_used": True,
+            "fallback_reason": "timeout",
+            "estimate": {
+                "item_name": "Eggs and toast",
+                "portion_description": None,
+                "meal_type": "breakfast",
+                "calories": 420,
+                "protein_g": 24,
+                "carbs_g": 36,
+                "fat_g": 18,
+                "sodium_mg": 520,
+                "fiber_g": 4,
+                "confidence": 0.55,
+                "ambiguous": True,
+                "uncertainty_notes": ["Rough estimate — AI didn't run; review before logging."],
+                "source": "fallback_text_estimate",
+            },
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parse)
+
+    estimate = module._review_estimate_from_text("two eggs and toast", user_id=1)
+
+    assert estimate["source"] == "fallback_text_estimate"
+    assert estimate["fallback_reason"] == "timeout"
+    item = module._review_item_from_estimate(
+        estimate,
+        item_id="item-1",
+        item_order=1,
+        status="included",
+        text="two eggs and toast",
+    )
+    assert item["estimate"]["fallback_reason"] == "timeout"
+
+
+def test_review_sanitize_estimate_drops_malformed_fallback_reason(monkeypatch):
+    module = _client(monkeypatch)
+
+    estimate = module._review_sanitize_estimate({
+        "item_name": "Eggs and toast",
+        "portion_description": None,
+        "meal_type": "breakfast",
+        "calories": 420,
+        "protein_g": 24,
+        "carbs_g": 36,
+        "fat_g": 18,
+        "sodium_mg": 520,
+        "fiber_g": 4,
+        "confidence": 0.55,
+        "ambiguous": True,
+        "uncertainty_notes": ["Rough estimate — AI didn't run; review before logging."],
+        "source": "fallback_text_estimate",
+        "fallback_reason": ["timeout"],
+    })
+
+    assert estimate["source"] == "fallback_text_estimate"
+    assert "fallback_reason" not in estimate
 
 
 def test_meal_intake_rejects_empty_submission(monkeypatch):
@@ -3711,6 +3827,7 @@ def test_meal_intake_text_preserves_parser_item_breakdown(monkeypatch):
     def fake_parse(_text, **_kw):
         return {
             "fallback_used": True,
+            "fallback_reason": "all_endpoints_failed",
             "estimate": {
                 "item_name": "Protein shake; Breakfast taco",
                 "portion_description": "Protein shake; approx 2 servings",
@@ -3809,6 +3926,7 @@ def test_meal_intake_photo_text_item_breakdown_preserves_image_origin(monkeypatc
     def fake_parse(_text, **_kw):
         return {
             "fallback_used": True,
+            "fallback_reason": "all_endpoints_failed",
             "estimate": {
                 "item_name": "Protein shake; Breakfast taco",
                 "portion_description": "Protein shake; approx 2 servings",
@@ -3877,6 +3995,7 @@ def test_meal_intake_photo_text_item_breakdown_preserves_image_origin(monkeypatc
     assert res.status_code == 200, res.get_data(as_text=True)
     body = res.get_json()
     assert body["fallback_used"] is True
+    assert body["fallback_reason"] == "all_endpoints_failed"
     assert body["photo_retention"]["image_received"] is True
     assert all(item["estimate"].get("from_image") is True for item in body["items"])
 

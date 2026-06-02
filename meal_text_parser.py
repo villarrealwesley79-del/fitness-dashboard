@@ -76,6 +76,18 @@ _AMBIGUOUS_TOKENS = (
 )
 
 _AI_UNAVAILABLE_NOTE = "Rough estimate — AI didn't run; review before logging."
+FALLBACK_REASON_TIMEOUT = "timeout"
+FALLBACK_REASON_INVALID_JSON = "invalid_json"
+FALLBACK_REASON_SCHEMA_MISMATCH = "schema_mismatch"
+FALLBACK_REASON_LOCK_TIMEOUT = "lock_timeout"
+FALLBACK_REASON_ALL_ENDPOINTS_FAILED = "all_endpoints_failed"
+FALLBACK_REASON_VALUES = frozenset({
+    FALLBACK_REASON_TIMEOUT,
+    FALLBACK_REASON_INVALID_JSON,
+    FALLBACK_REASON_SCHEMA_MISMATCH,
+    FALLBACK_REASON_LOCK_TIMEOUT,
+    FALLBACK_REASON_ALL_ENDPOINTS_FAILED,
+})
 
 
 # Deterministic preset table used when LM Studio is unreachable, returns
@@ -642,6 +654,34 @@ def _add_no_branded_match_note(estimate: dict) -> dict:
     return estimate
 
 
+def _fallback_reason_from_lm_error(exc: LmStudioError) -> str:
+    message = str(exc).lower()
+    if "invalid json" in message or "invalid envelope json" in message:
+        return FALLBACK_REASON_INVALID_JSON
+    if "timeout" in message:
+        return FALLBACK_REASON_TIMEOUT
+    if (
+        "unexpected response shape" in message
+        or "expected dict" in message
+        or "missing field" in message
+        or "wrong type" in message
+        or "out of range" in message
+        or "must be" in message
+        or "invalid meal_type" in message
+    ):
+        return FALLBACK_REASON_SCHEMA_MISMATCH
+    if message.startswith("all endpoints failed"):
+        return FALLBACK_REASON_ALL_ENDPOINTS_FAILED
+    if (
+        "unreachable" in message
+        or "network error" in message
+        or message.startswith("http ")
+        or "model not loaded" in message
+    ):
+        return FALLBACK_REASON_ALL_ENDPOINTS_FAILED
+    return FALLBACK_REASON_SCHEMA_MISMATCH
+
+
 def parse_meal_text(
     text: str,
     *,
@@ -737,6 +777,7 @@ def parse_meal_text(
         return {
             "estimate": estimate,
             "fallback_used": True,
+            "fallback_reason": FALLBACK_REASON_LOCK_TIMEOUT,
         }
     try:
         try:
@@ -747,13 +788,14 @@ def parse_meal_text(
                 validate=_validate_estimate,
                 clean=_clean_estimate,
             )
-        except LmStudioError:
+        except LmStudioError as exc:
             estimate = _fallback_estimate(cleaned)
             if private_label_miss:
                 estimate = _add_no_branded_match_note(estimate)
             return {
                 "estimate": estimate,
                 "fallback_used": True,
+                "fallback_reason": _fallback_reason_from_lm_error(exc),
             }
     finally:
         _INFERENCE_LOCK.release()

@@ -92,7 +92,7 @@ import branded_food_lookup
 import personal_vocab
 import vision_estimator
 import workout_adaptation
-from meal_text_parser import parse_meal_text
+from meal_text_parser import FALLBACK_REASON_VALUES, parse_meal_text
 from meal_log_policy import (
     CALORIE_MAX,
     CORRECTION_STATE_ACCEPTED,
@@ -5391,6 +5391,7 @@ _MEAL_ESTIMATE_SAFE_METADATA_FIELDS = (
     "vision_description",
     "vision_provider",
     "vision_confidence",
+    "fallback_reason",
 )
 _FOOD_PHOTO_RETENTION = {
     "policy": "discard_after_extraction",
@@ -5419,6 +5420,13 @@ def _meal_intake_public_vision_error(_exc: Exception) -> str:
     return "vision_estimator_failed"
 
 
+def _meal_text_fallback_reason(parsed: dict | None) -> str | None:
+    if not isinstance(parsed, dict):
+        return None
+    reason = parsed.get("fallback_reason")
+    return reason if isinstance(reason, str) and reason in FALLBACK_REASON_VALUES else None
+
+
 def _safe_estimate_metadata_string(value) -> str | None:
     if not isinstance(value, str):
         return None
@@ -5440,6 +5448,8 @@ def _safe_estimate_metadata_scalar(value):
 
 
 def _safe_estimate_metadata_value(key: str, value):
+    if key == "fallback_reason":
+        return value if isinstance(value, str) and value in FALLBACK_REASON_VALUES else None
     if key == "off_attribution":
         if isinstance(value, dict):
             safe = {}
@@ -6379,6 +6389,7 @@ def _review_sanitize_estimate(raw: dict, *, source: str | None = None) -> dict:
         "vision_description",
         "vision_provider",
         "vision_confidence",
+        "fallback_reason",
     ):
         safe_value = _safe_estimate_metadata_value(key, raw.get(key))
         if safe_value is not None:
@@ -7238,6 +7249,9 @@ def meal_intake():
                 parsed_fallback_used = True
             source = estimate["source"]
             response_extras["fallback_used"] = parsed_fallback_used
+            fallback_reason = _meal_text_fallback_reason(parsed)
+            if fallback_reason:
+                response_extras["fallback_reason"] = fallback_reason
             response_extras["vision_error"] = public_vision_error
         estimate["from_image"] = True
     else:
@@ -7265,6 +7279,9 @@ def meal_intake():
         # estimate.get("source") to label the persisted food_log).
         source = estimate["source"]
         response_extras["fallback_used"] = parsed["fallback_used"]
+        fallback_reason = _meal_text_fallback_reason(parsed)
+        if fallback_reason:
+            response_extras["fallback_reason"] = fallback_reason
 
     # FIT-61: the meal-log policy still labels each estimate with a
     # confidence band + reasons; FIT-138 reads them for the response
@@ -7456,6 +7473,9 @@ def _review_estimate_from_text(text: str, *, user_id: int, timestamp: str | None
             estimate["candidates"] = raw.get("candidates")
         if isinstance(raw.get("clarification_question"), str):
             estimate["clarification_question"] = raw["clarification_question"].strip()[:240]
+    fallback_reason = _meal_text_fallback_reason(parsed)
+    if fallback_reason:
+        estimate["fallback_reason"] = fallback_reason
     return estimate
 
 
