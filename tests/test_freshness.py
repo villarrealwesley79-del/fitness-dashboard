@@ -284,6 +284,10 @@ def test_recommendation_smart_oura_cache_miss_does_not_fetch_live_oura(fitness_a
         "freshness",
         "nutrition_context",
         "confidence_level",
+        # FIT-136 surfaced the adapted next workout + adaptation event feed on
+        # the smart recommendation payload; keep this contract assertion current.
+        "next_workout",
+        "workout_adaptation_events",
     }
 
 
