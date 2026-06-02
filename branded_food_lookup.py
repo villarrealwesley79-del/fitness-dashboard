@@ -19,6 +19,8 @@ CACHE_TTL_DAYS = 180
 SOURCE_PRIORITY = ("cache", "heb_product_page", "nutritionix", "usda_fdc", "open_food_facts")
 BARCODE_SOURCE_PRIORITY = ("cache", "nutritionix_barcode", "usda_fdc_barcode", "open_food_facts_barcode")
 BARCODE_LENGTHS = {8, 12, 13, 14}
+OPEN_FOOD_FACTS_HOME_URL = "https://world.openfoodfacts.org/"
+OPEN_FOOD_FACTS_SOURCES = {"open_food_facts", "open_food_facts_barcode"}
 KJ_PER_KCAL = 4.184
 MULTI_ITEM_HARD_TOKENS = {"with", "plus", "&", "+", "combo", "meal", "plate"}
 MULTI_ITEM_SOFT_TOKENS = {"and"}
@@ -429,7 +431,28 @@ def _barcode_cache_lookup(barcode: str, *, user_id: int = 1) -> dict[str, Any] |
     estimate = dict(payload)
     estimate["source"] = "local_cache"
     estimate.setdefault("underlying_source", row.get("source"))
+    _fill_off_barcode_cache_verified_url(estimate)
     return _sanitize_with_provenance(estimate)
+
+
+def _fill_off_barcode_cache_verified_url(estimate: dict[str, Any]) -> None:
+    if estimate.get("verified_source_url"):
+        return
+    if not _is_off_cache_replay(estimate):
+        return
+    external_id = str(estimate.get("external_food_id") or "").strip()
+    if external_id:
+        estimate["verified_source_url"] = f"{OPEN_FOOD_FACTS_HOME_URL}product/{external_id}"
+    else:
+        estimate["verified_source_url"] = OPEN_FOOD_FACTS_HOME_URL
+
+
+def _is_off_cache_replay(estimate: dict[str, Any]) -> bool:
+    sources = {
+        str(estimate.get("source") or "").strip(),
+        str(estimate.get("underlying_source") or "").strip(),
+    }
+    return bool(OPEN_FOOD_FACTS_SOURCES.intersection(sources) or estimate.get("off_attribution"))
 
 
 def _save_barcode_cache_best_effort(barcode: str, source: str, estimate: dict[str, Any], *, user_id: int) -> None:

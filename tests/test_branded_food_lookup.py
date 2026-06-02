@@ -1571,7 +1571,7 @@ def test_lookup_barcode_uses_local_cache_first(monkeypatch):
         "get_barcode_lookup_cache",
         lambda barcode, **kwargs: {
             "barcode": barcode,
-            "source": "nutritionix_barcode",
+            "source": cached["source"],
             "response_json": cached,
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
         },
@@ -1588,6 +1588,124 @@ def test_lookup_barcode_uses_local_cache_first(monkeypatch):
     assert estimate["underlying_source"] == "nutritionix_barcode"
     assert estimate["item_name"] == "Cached chips"
     assert estimate["external_food_id"] == "cached-id"
+
+
+def test_lookup_barcode_off_cache_replay_derives_verified_source_url(monkeypatch):
+    cached = {
+        "item_name": "Cached OFF food",
+        "portion_description": "100 g",
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 3,
+        "carbs_g": 25,
+        "fat_g": 11,
+        "sodium_mg": 280,
+        "fiber_g": 2,
+        "confidence": 0.88,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "open_food_facts_barcode",
+        "external_food_id": "500032837010",
+        "verified_source_url": None,
+        "off_attribution": "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)",
+    }
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "get_barcode_lookup_cache",
+        lambda barcode, **kwargs: {
+            "barcode": barcode,
+            "source": "open_food_facts_barcode",
+            "response_json": cached,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "get_product_by_barcode",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("provider should not run on cache hit")),
+    )
+
+    estimate = branded_food_lookup.lookup_barcode("500032837010", user_id=7)
+
+    assert estimate["source"] == "local_cache"
+    assert estimate["underlying_source"] == "open_food_facts_barcode"
+    assert estimate["verified_source_url"] == "https://world.openfoodfacts.org/product/500032837010"
+
+
+def test_lookup_barcode_off_cache_replay_falls_back_to_homepage_without_external_id(monkeypatch):
+    cached = {
+        "item_name": "Cached OFF food",
+        "portion_description": "100 g",
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 3,
+        "carbs_g": 25,
+        "fat_g": 11,
+        "sodium_mg": 280,
+        "fiber_g": 2,
+        "confidence": 0.88,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "local_cache",
+        "external_food_id": None,
+        "verified_source_url": None,
+        "off_attribution": "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)",
+    }
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "get_barcode_lookup_cache",
+        lambda barcode, **kwargs: {
+            "barcode": barcode,
+            "source": "open_food_facts_barcode",
+            "response_json": cached,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+
+    estimate = branded_food_lookup.lookup_barcode("500032837010", user_id=7)
+
+    assert estimate["source"] == "local_cache"
+    assert estimate["underlying_source"] == "open_food_facts_barcode"
+    assert estimate.get("external_food_id") is None
+    assert estimate["verified_source_url"] == "https://world.openfoodfacts.org/"
+
+
+def test_lookup_barcode_non_off_cache_replay_does_not_derive_verified_source_url(monkeypatch):
+    cached = {
+        "item_name": "Cached chips",
+        "portion_description": "1 bag",
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 3,
+        "carbs_g": 25,
+        "fat_g": 11,
+        "sodium_mg": 280,
+        "fiber_g": 2,
+        "confidence": 0.88,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "nutritionix_barcode",
+        "external_food_id": "cached-id",
+        "verified_source_url": None,
+    }
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "get_barcode_lookup_cache",
+        lambda barcode, **kwargs: {
+            "barcode": barcode,
+            "source": cached["source"],
+            "response_json": cached,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    estimate = branded_food_lookup.lookup_barcode("012345678905", user_id=7)
+    assert estimate["underlying_source"] == "nutritionix_barcode"
+    assert estimate.get("verified_source_url") is None
+
+    cached["source"] = "usda_fdc_barcode"
+    estimate = branded_food_lookup.lookup_barcode("012345678905", user_id=7)
+    assert estimate["underlying_source"] == "usda_fdc_barcode"
+    assert estimate.get("verified_source_url") is None
 
 
 def test_lookup_barcode_uses_nutritionix_upc_and_saves_cache(monkeypatch):
