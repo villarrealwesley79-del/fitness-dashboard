@@ -1,4 +1,8 @@
-"""H-E-B private-label nutrition references for branded lookup misses."""
+"""Text-only H-E-B private-label nutrition references for branded lookup misses.
+
+FIT-218 keeps this helper out of barcode lookup: H-E-B barcode coverage needs a
+real provider, and AC4 excludes scraping or hardcoded barcode rows as a stand-in.
+"""
 
 from __future__ import annotations
 

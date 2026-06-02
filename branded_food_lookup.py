@@ -17,6 +17,9 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 CACHE_TTL_DAYS = 180
 SOURCE_PRIORITY = ("cache", "heb_product_page", "nutritionix", "usda_fdc", "open_food_facts")
+# H-E-B is text-path only via `heb_product_page`; do not add it to the
+# barcode ladder without a real provider. FIT-218 AC4 excludes scraping or
+# hardcoded barcode rows as substitute provider coverage.
 BARCODE_SOURCE_PRIORITY = ("cache", "nutritionix_barcode", "usda_fdc_barcode", "open_food_facts_barcode")
 BARCODE_LENGTHS = {8, 12, 13, 14}
 OPEN_FOOD_FACTS_HOME_URL = "https://world.openfoodfacts.org/"
@@ -274,7 +277,11 @@ def normalize_barcode(value: str) -> str | None:
 
 
 def lookup_barcode(barcode: str, *, user_id: int = 1) -> dict[str, Any] | None:
-    """Return a sanitized estimate from barcode cache or structured providers."""
+    """Return a sanitized estimate from barcode cache or structured barcode providers.
+
+    H-E-B private-label handling is intentionally text-only through `lookup()`;
+    `lookup_barcode()` must not route to `heb_product_page`.
+    """
     normalized = normalize_barcode(barcode)
     if not normalized:
         return None
