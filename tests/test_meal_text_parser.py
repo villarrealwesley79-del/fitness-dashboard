@@ -114,6 +114,11 @@ def test_parse_text_uses_llm_when_available(monkeypatch):
     payload["_meta"] = {"model": "qwen", "elapsed_ms": 50, "fallback_used": False}
 
     def fake(path, payload_in, timeout, validate, clean=None):
+        assert timeout == parser.LM_STUDIO_MEAL_TEXT_TIMEOUT_SEC
+        response_format = payload_in["response_format"]
+        assert response_format["type"] == "json_schema"
+        assert response_format["json_schema"]["name"] == "meal_text_estimate"
+        assert response_format["json_schema"]["schema"]["required"]
         if clean:
             clean(payload)
         validate(payload)

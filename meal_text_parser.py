@@ -18,13 +18,13 @@ review based on the returned ``confidence`` and ``ambiguous`` flag.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Iterable, Optional
 
 import branded_food_lookup
 import personal_vocab
 from lm_studio_adapter import (
-    LM_STUDIO_ANALYZE_TIMEOUT_SEC,
     LmStudioError,
     _completion_json,
     _INFERENCE_LOCK,
@@ -76,6 +76,7 @@ _AMBIGUOUS_TOKENS = (
 )
 
 _AI_UNAVAILABLE_NOTE = "Rough estimate — AI didn't run; review before logging."
+LM_STUDIO_MEAL_TEXT_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_MEAL_TEXT_TIMEOUT_SEC", "45"))
 FALLBACK_REASON_TIMEOUT = "timeout"
 FALLBACK_REASON_INVALID_JSON = "invalid_json"
 FALLBACK_REASON_SCHEMA_MISMATCH = "schema_mismatch"
@@ -277,6 +278,50 @@ Rules:
   bowl, salad, quesadilla, and tacos are different items; do not convert one
   category into another unless the user text says so.
 - Output JSON only."""
+
+_MEAL_TEXT_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "meal_text_estimate",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "item_name": {"type": "string"},
+                "portion_description": {"type": ["string", "null"]},
+                "meal_type": {"type": "string", "enum": sorted(ALLOWED_MEAL_TYPES)},
+                "calories": {"type": "number", "minimum": 0, "maximum": _CALORIE_MAX},
+                "protein_g": {"type": "number", "minimum": 0, "maximum": _MACRO_MAX},
+                "carbs_g": {"type": "number", "minimum": 0, "maximum": _MACRO_MAX},
+                "fat_g": {"type": "number", "minimum": 0, "maximum": _MACRO_MAX},
+                "sodium_mg": {"type": "number", "minimum": 0, "maximum": _SODIUM_MAX},
+                "fiber_g": {"type": "number", "minimum": 0, "maximum": _MACRO_MAX},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "ambiguous": {"type": "boolean"},
+                "uncertainty_notes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 6,
+                },
+            },
+            "required": [
+                "item_name",
+                "portion_description",
+                "meal_type",
+                "calories",
+                "protein_g",
+                "carbs_g",
+                "fat_g",
+                "sodium_mg",
+                "fiber_g",
+                "confidence",
+                "ambiguous",
+                "uncertainty_notes",
+            ],
+        },
+    },
+}
 
 
 def _clean_estimate(parsed: dict) -> None:
@@ -762,13 +807,13 @@ def parse_meal_text(
         ],
         "temperature": 0.0,
         "max_tokens": 400,
-        "response_format": {"type": "json_object"},
+        "response_format": _MEAL_TEXT_RESPONSE_FORMAT,
     }
 
     # Respect the shared LM Studio inference lock so concurrent meal
     # submissions don't stampede the local model — matches the pattern the
     # Adjust Plan and other adapter entry points use.
-    timeout = LM_STUDIO_ANALYZE_TIMEOUT_SEC
+    timeout = LM_STUDIO_MEAL_TEXT_TIMEOUT_SEC
     acquired = _INFERENCE_LOCK.acquire(timeout=timeout + 1)
     if not acquired:
         estimate = _fallback_estimate(cleaned)
