@@ -453,9 +453,11 @@
                 card.remove();
                 if (!host.children.length) host.hidden = true;
             } catch (err) {
+                // Keep the existing card and leave the event in `seen` so a
+                // later poll does NOT append a duplicate; just re-enable the
+                // button so the user can retry the ack on this same card.
                 dismissed = false;
                 dismiss.disabled = false;
-                workoutAdaptationNoticeState.seen.delete(event.id);
                 console.warn('workout adaptation ack failed:', err);
             }
         });

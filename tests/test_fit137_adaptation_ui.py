@@ -78,6 +78,20 @@ def test_adaptation_notice_renders_neutral_reason_and_collapsed_details():
     assert "workout-adaptation-dismiss" in notice
 
 
+def test_adaptation_dismiss_failure_does_not_duplicate_card():
+    js = APP_JS.read_text()
+    notice = _block(
+        js,
+        "function showWorkoutAdaptationNotice(event)",
+        "async function fetchWorkoutAdaptationNotices",
+    )
+
+    # On a failed ack the card must stay and the event must remain in `seen`,
+    # otherwise the next poll re-renders a duplicate card. Guard the fix:
+    assert "workoutAdaptationNoticeState.seen.delete" not in notice
+    assert "dismiss.disabled = false;" in notice  # button stays retry-able
+
+
 def test_adaptation_does_not_surface_audit_log():
     js = APP_JS.read_text()
     block = _block(
