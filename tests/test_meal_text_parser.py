@@ -114,6 +114,11 @@ def test_parse_text_uses_llm_when_available(monkeypatch):
     payload["_meta"] = {"model": "qwen", "elapsed_ms": 50, "fallback_used": False}
 
     def fake(path, payload_in, timeout, validate, clean=None):
+        assert timeout == parser.LM_STUDIO_MEAL_TEXT_TIMEOUT_SEC
+        response_format = payload_in["response_format"]
+        assert response_format["type"] == "json_schema"
+        assert response_format["json_schema"]["name"] == "meal_text_estimate"
+        assert response_format["json_schema"]["schema"]["required"]
         if clean:
             clean(payload)
         validate(payload)
@@ -126,6 +131,7 @@ def test_parse_text_uses_llm_when_available(monkeypatch):
     assert result["estimate"]["item_name"] == "Eggs and toast"
     assert result["estimate"]["calories"] == 420
     assert "_meta" not in result["estimate"], "raw model trace must be stripped"
+    assert "fallback_reason" not in result
     assert set(result["estimate"].keys()) <= REQUIRED_ESTIMATE_KEYS
 
 
@@ -166,9 +172,42 @@ def test_parse_text_falls_back_when_lm_studio_unreachable(monkeypatch):
     result = parser.parse_meal_text("two eggs and toast")
     assert result["fallback_used"] is True
     assert result["estimate"]["source"] == "fallback_text_estimate"
+    assert result["fallback_reason"] == "all_endpoints_failed"
     # Fallback confidence is below the old 0.6 value but still saveable after review.
     assert result["estimate"]["confidence"] == 0.55
     assert any("AI didn't run" in note for note in result["estimate"]["uncertainty_notes"])
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_reason"),
+    [
+        ("timeout", "timeout"),
+        ("invalid json from LLM: not json", "invalid_json"),
+        ("unexpected response shape: {'choices': []}", "schema_mismatch"),
+        ("all endpoints failed: primary: invalid json from LLM: not json", "invalid_json"),
+        ("all endpoints failed: primary: unexpected response shape: {'choices': []}", "schema_mismatch"),
+        ("all endpoints failed: primary: missing field: calories", "schema_mismatch"),
+        ("all endpoints failed: primary: timeout; fallback: timeout", "timeout"),
+        (
+            "all endpoints failed: primary: model not loaded: qwen; fallback: http 400",
+            "all_endpoints_failed",
+        ),
+    ],
+)
+def test_parse_text_surfaces_public_fallback_reason(monkeypatch, message, expected_reason):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    def boom(*_a, **_kw):
+        raise adapter.LmStudioError(message)
+
+    _patch_completion(monkeypatch, boom)
+    result = parser.parse_meal_text("two eggs and toast")
+    assert result["fallback_used"] is True
+    assert result["fallback_reason"] == expected_reason
+    assert result["fallback_reason"] in parser.FALLBACK_REASON_VALUES
+    assert "qwen" not in result["fallback_reason"]
+    assert "_meta" not in result["estimate"]
 
 
 def test_fallback_does_not_split_ingredient_conjunction_inside_one_dish(monkeypatch):
@@ -439,6 +478,7 @@ def test_parse_text_falls_back_when_lm_studio_returns_invalid_schema(monkeypatch
     result = parser.parse_meal_text("two eggs and toast")
     assert result["fallback_used"] is True
     assert result["estimate"]["source"] == "fallback_text_estimate"
+    assert result["fallback_reason"] == "schema_mismatch"
 
 
 def test_parse_text_validator_rejects_implausible_calories(monkeypatch):
@@ -767,6 +807,7 @@ def test_parser_returns_fallback_when_inference_lock_times_out(monkeypatch):
     result = parser.parse_meal_text("two eggs and toast")
     assert result["fallback_used"] is True
     assert result["estimate"]["source"] == "fallback_text_estimate"
+    assert result["fallback_reason"] == "lock_timeout"
 
 
 def test_parser_strips_source_from_llm_output(monkeypatch):
