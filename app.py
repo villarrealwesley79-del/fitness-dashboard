@@ -243,6 +243,29 @@ def _notify_workout_logged(workout_entry):
     threading.Thread(target=_do, daemon=True).start()
 
 
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _start_vision_keep_warm_daemon():
+    """Opt-in, fire-and-forget LM Studio vision warmup for app startup."""
+    if vision_estimator.configured_provider() != "lm_studio":
+        return None
+    if not _env_flag_enabled("VISION_LM_STUDIO_KEEP_WARM"):
+        return None
+
+    def _do():
+        try:
+            result = vision_estimator.local_vision_adapter.warm_all_candidates()
+            print(f"[fitness] Vision keep-warm finished: {result.get('status')}")
+        except Exception as exc:
+            print(f"[fitness] Vision keep-warm failed (non-fatal): {exc}")
+
+    thread = threading.Thread(target=_do, name="vision-keep-warm", daemon=True)
+    thread.start()
+    return thread
+
+
 # ==================== TRAINING GOAL CONFIGURATION ====================
 
 class TrainingGoal(Enum):
@@ -13131,6 +13154,8 @@ if __name__ == '__main__':
     # iteration only. Debug=True enables the Werkzeug debugger/reloader which
     # is an RCE surface and interferes with launchd supervision.
     debug_mode = os.getenv("FLASK_DEBUG", "0") == "1"
+
+    _start_vision_keep_warm_daemon()
 
     host = os.environ.get('HOST', '127.0.0.1')
     app.run(host=host, port=port, debug=debug_mode, request_handler=SanitizedRequestHandler)

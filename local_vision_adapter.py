@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,9 @@ from meal_estimate_schema import (
     MealEstimateValidationError,
     sanitize_meal_estimate,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _env_first(*names: str, default: str) -> str:
@@ -94,6 +99,56 @@ SCALE_CUE_INSTRUCTION = (
 
 class LocalVisionError(RuntimeError):
     """Raised when a local vision model cannot produce a valid description."""
+
+
+_KEEP_WARM_LOCK = threading.Lock()
+
+
+def warm_all_candidates() -> dict[str, Any]:
+    """Best-effort LM Studio vision keep-warm pass.
+
+    This is intentionally separate from the request path. It sends a minimal
+    warmup request for each configured vision candidate and returns/logs only
+    sanitized status details; callers should run it in a daemon thread.
+    """
+    if not _KEEP_WARM_LOCK.acquire(blocking=False):
+        logger.info("LM Studio vision keep-warm skipped; another warm pass is already running")
+        return {
+            "started": False,
+            "status": "skipped",
+            "reason": "already_running",
+            "candidates": [],
+        }
+    try:
+        results: list[dict[str, str]] = []
+        for candidate in _lm_studio_candidates():
+            result = {
+                "role": candidate["role"],
+                "model": candidate["model"],
+                "status": "ok",
+            }
+            try:
+                preflight_warmed = _preflight_candidate(candidate)
+                if not preflight_warmed:
+                    _warm_candidate(candidate)
+            except LocalVisionError as exc:
+                result["status"] = "error"
+                result["error"] = _summarize_lm_studio_error(exc)
+                logger.warning(
+                    "LM Studio vision keep-warm failed for %s: %s",
+                    candidate["role"],
+                    result["error"],
+                )
+            else:
+                logger.info("LM Studio vision keep-warm completed for %s", candidate["role"])
+            results.append(result)
+        return {
+            "started": True,
+            "status": "ok" if any(item["status"] == "ok" for item in results) else "failed",
+            "candidates": results,
+        }
+    finally:
+        _KEEP_WARM_LOCK.release()
 
 
 def _prompt(context_text: str | None = None) -> str:
@@ -279,7 +334,7 @@ def _models_for(candidate: dict[str, str], timeout: float = LM_STUDIO_PREFLIGHT_
     return loaded
 
 
-def _preflight_candidate(candidate: dict[str, str]) -> None:
+def _preflight_candidate(candidate: dict[str, str]) -> bool:
     try:
         loaded = _models_for(candidate, timeout=LM_STUDIO_PREFLIGHT_TIMEOUT_SEC)
     except error.URLError as exc:
@@ -289,7 +344,7 @@ def _preflight_candidate(candidate: dict[str, str]) -> None:
     except Exception as exc:
         raise LocalVisionError(f"preflight failed: {type(exc).__name__}") from exc
     if _target_loaded(loaded, candidate["model"]):
-        return
+        return False
     try:
         _warm_candidate(candidate)
     except LocalVisionError as exc:
@@ -297,9 +352,10 @@ def _preflight_candidate(candidate: dict[str, str]) -> None:
     try:
         loaded = _models_for(candidate, timeout=LM_STUDIO_PREFLIGHT_TIMEOUT_SEC)
     except Exception:
-        return
+        return True
     if not _target_loaded(loaded, candidate["model"]):
         raise LocalVisionError(f"model warmup completed but model not loaded: {candidate['model']}")
+    return True
 
 
 def _warm_candidate(candidate: dict[str, str]) -> None:
