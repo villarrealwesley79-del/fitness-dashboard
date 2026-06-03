@@ -33,6 +33,7 @@ REQUIRED_ESTIMATE_KEYS = {
     "uncertainty_notes",
     "source",  # parser-controlled; round-trips via the accept handler
 }
+OPTIONAL_FALLBACK_ESTIMATE_KEYS = {"fallback_reason"}
 
 
 def _import_parser():
@@ -206,6 +207,7 @@ def test_parse_text_surfaces_public_fallback_reason(monkeypatch, message, expect
     assert result["fallback_used"] is True
     assert result["fallback_reason"] == expected_reason
     assert result["fallback_reason"] in parser.FALLBACK_REASON_VALUES
+    assert result["estimate"]["fallback_reason"] == expected_reason
     assert "qwen" not in result["fallback_reason"]
     assert "_meta" not in result["estimate"]
 
@@ -628,7 +630,7 @@ def test_parse_text_output_conforms_to_estimate_schema_in_fallback(text, monkeyp
 
     result = parser.parse_meal_text(text)
     estimate = result["estimate"]
-    allowed_keys = REQUIRED_ESTIMATE_KEYS | {"items"}
+    allowed_keys = REQUIRED_ESTIMATE_KEYS | OPTIONAL_FALLBACK_ESTIMATE_KEYS | {"items"}
     assert set(estimate.keys()) <= allowed_keys, (
         f"extra keys for {text!r}: {set(estimate.keys()) - allowed_keys}"
     )
@@ -742,18 +744,16 @@ def test_validator_still_accepts_booleans_for_ambiguous_field():
     parser._validate_estimate(payload)  # should not raise
 
 
-def test_parser_acquires_lm_studio_inference_lock(monkeypatch):
-    """Regression: the parser must respect the shared LM Studio inference
-    lock so concurrent meal submissions don't stampede the local model —
-    matches the pattern other adapter entry points already use. Codex
-    audit round 1, finding 4.
+def test_parser_acquires_meal_text_inference_lock(monkeypatch):
+    """Regression: the parser must respect the meal-text inference lock so
+    concurrent meal submissions don't stampede the local model.
     """
     parser = _import_parser()
     adapter = importlib.import_module("lm_studio_adapter")
 
     acquisitions = []
     releases = []
-    original_lock = adapter._INFERENCE_LOCK
+    original_lock = adapter._MEAL_TEXT_INFERENCE_LOCK
 
     class TrackingLock:
         def acquire(self, timeout=None):
@@ -765,8 +765,8 @@ def test_parser_acquires_lm_studio_inference_lock(monkeypatch):
             return original_lock.release()
 
     tracking = TrackingLock()
-    monkeypatch.setattr(adapter, "_INFERENCE_LOCK", tracking)
-    monkeypatch.setattr(parser, "_INFERENCE_LOCK", tracking)
+    monkeypatch.setattr(adapter, "_MEAL_TEXT_INFERENCE_LOCK", tracking)
+    monkeypatch.setattr(parser, "_MEAL_TEXT_INFERENCE_LOCK", tracking)
 
     def fake(path, payload_in, timeout, validate, clean=None):
         payload = _good_llm_payload()
@@ -779,11 +779,112 @@ def test_parser_acquires_lm_studio_inference_lock(monkeypatch):
 
     parser.parse_meal_text("two eggs and toast")
     assert len(acquisitions) == 1, "parser must acquire the inference lock"
+    assert acquisitions[0] == parser.MEAL_TEXT_LOCK_ACQUIRE_SEC
     assert len(releases) == 1, "parser must release the inference lock"
 
 
-def test_parser_returns_fallback_when_inference_lock_times_out(monkeypatch):
-    """If the inference lock is held by another request and times out,
+def test_warm_adapter_within_budget_returns_real_estimate(monkeypatch):
+    parser = _import_parser()
+    payload = _good_llm_payload(confidence=0.82)
+
+    def fake(path, payload_in, timeout, validate, clean=None):
+        if clean:
+            clean(payload)
+        validate(payload)
+        return payload
+
+    _patch_completion(monkeypatch, fake)
+
+    result = parser.parse_meal_text("two eggs and toast")
+    estimate = result["estimate"]
+    assert result["fallback_used"] is False
+    assert estimate["source"] == "ai_text_estimate"
+    assert estimate["source"] != "fallback_text_estimate"
+    assert estimate["confidence"] >= 0.65
+
+
+def test_slow_model_timeout_returns_honest_fallback(monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    def fake(*_a, **_kw):
+        raise adapter.LmStudioError("timeout: model exceeded budget")
+
+    _patch_completion(monkeypatch, fake)
+
+    result = parser.parse_meal_text("two eggs and toast")
+    estimate = result["estimate"]
+    assert result["fallback_used"] is True
+    assert estimate["source"] == "fallback_text_estimate"
+    assert estimate["confidence"] <= 0.55
+    assert estimate["confidence"] < 0.65
+    assert any("AI didn't run" in note for note in estimate["uncertainty_notes"])
+
+
+def test_lock_contention_is_not_masqueraded_as_model_failure(monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+
+    class BusyLock:
+        def acquire(self, timeout=None):
+            return False
+
+        def release(self):
+            raise AssertionError("release should not be called when acquire fails")
+
+    busy = BusyLock()
+    monkeypatch.setattr(adapter, "_MEAL_TEXT_INFERENCE_LOCK", busy)
+    monkeypatch.setattr(parser, "_MEAL_TEXT_INFERENCE_LOCK", busy)
+
+    def fake(path, payload_in, timeout, validate, clean=None):
+        payload = _good_llm_payload(confidence=0.82)
+        if clean:
+            clean(payload)
+        validate(payload)
+        return payload
+
+    _patch_completion(monkeypatch, fake)
+
+    result = parser.parse_meal_text("two eggs and toast")
+    estimate = result["estimate"]
+    assert result["fallback_used"] is True
+    assert estimate["source"] == "fallback_text_estimate"
+    assert result["fallback_reason"] == "lock_timeout"
+    assert estimate["fallback_reason"] == "lock_timeout"
+    assert not any("AI didn't run" in note for note in estimate.get("uncertainty_notes") or [])
+
+
+def test_fallback_confidence_not_inflated_and_gate_rejects_canned(monkeypatch):
+    parser = _import_parser()
+    adapter = importlib.import_module("lm_studio_adapter")
+    workout = importlib.import_module("workout_adaptation")
+
+    def fake(*_a, **_kw):
+        raise adapter.LmStudioError("timeout")
+
+    _patch_completion(monkeypatch, fake)
+
+    result = parser.parse_meal_text("two eggs and toast")
+    estimate = result["estimate"]
+    assert estimate["confidence"] <= 0.55
+    assert estimate["confidence"] < workout.MIN_WORKOUT_CONFIDENCE
+
+    signals = [{"code": "heavy_meal", "label": "Heavy meal"}]
+    confidence = workout._workout_confidence(
+        [{"confidence": estimate["confidence"], "calories": 420}],
+        signals=signals,
+    )
+    assert confidence["score"] < 0.65
+    decision = workout._decide_change(
+        signals=signals,
+        confidence={"score": confidence["score"]},
+        applies_to="same_day",
+    )
+    assert decision["status"] != "applied"
+
+
+def test_parser_returns_fallback_when_meal_text_inference_lock_times_out(monkeypatch):
+    """If the meal-text inference lock is held by another request and times out,
     fall through to the deterministic fallback rather than blocking
     forever or raising.
     """
@@ -798,8 +899,8 @@ def test_parser_returns_fallback_when_inference_lock_times_out(monkeypatch):
             raise AssertionError("release should not be called when acquire fails")
 
     busy = BusyLock()
-    monkeypatch.setattr(adapter, "_INFERENCE_LOCK", busy)
-    monkeypatch.setattr(parser, "_INFERENCE_LOCK", busy)
+    monkeypatch.setattr(adapter, "_MEAL_TEXT_INFERENCE_LOCK", busy)
+    monkeypatch.setattr(parser, "_MEAL_TEXT_INFERENCE_LOCK", busy)
 
     # _completion_json must not be reached.
     _patch_completion(monkeypatch, lambda *_a, **_kw: pytest.fail("should not call LM"))
@@ -808,6 +909,8 @@ def test_parser_returns_fallback_when_inference_lock_times_out(monkeypatch):
     assert result["fallback_used"] is True
     assert result["estimate"]["source"] == "fallback_text_estimate"
     assert result["fallback_reason"] == "lock_timeout"
+    assert result["estimate"]["fallback_reason"] == "lock_timeout"
+    assert not any("AI didn't run" in note for note in result["estimate"]["uncertainty_notes"])
 
 
 def test_parser_strips_source_from_llm_output(monkeypatch):

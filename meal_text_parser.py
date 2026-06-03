@@ -26,8 +26,9 @@ import branded_food_lookup
 import personal_vocab
 from lm_studio_adapter import (
     LmStudioError,
+    MEAL_TEXT_LOCK_ACQUIRE_SEC,
     _completion_json,
-    _INFERENCE_LOCK,
+    _MEAL_TEXT_INFERENCE_LOCK,
 )
 from meal_estimate_schema import ALLOWED_MEAL_TYPES, CALORIE_MAX, MACRO_GRAM_MAX, SODIUM_MG_MAX
 
@@ -76,13 +77,18 @@ _AMBIGUOUS_TOKENS = (
 )
 
 _AI_UNAVAILABLE_NOTE = "Rough estimate — AI didn't run; review before logging."
+_LOCK_CONTENTION_NOTE = "Skipped AI because meal-text inference is busy; rough estimate, review before logging."
 LM_STUDIO_MEAL_TEXT_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_MEAL_TEXT_TIMEOUT_SEC", "45"))
+FALLBACK_REASON_EMPTY_INPUT = "empty_input"
+FALLBACK_REASON_NEEDS_QUANTITY = "needs_quantity"
 FALLBACK_REASON_TIMEOUT = "timeout"
 FALLBACK_REASON_INVALID_JSON = "invalid_json"
 FALLBACK_REASON_SCHEMA_MISMATCH = "schema_mismatch"
 FALLBACK_REASON_LOCK_TIMEOUT = "lock_timeout"
 FALLBACK_REASON_ALL_ENDPOINTS_FAILED = "all_endpoints_failed"
 FALLBACK_REASON_VALUES = frozenset({
+    FALLBACK_REASON_EMPTY_INPUT,
+    FALLBACK_REASON_NEEDS_QUANTITY,
     FALLBACK_REASON_TIMEOUT,
     FALLBACK_REASON_INVALID_JSON,
     FALLBACK_REASON_SCHEMA_MISMATCH,
@@ -479,7 +485,12 @@ def _fallback_merge_combo_parts(parts: list[str]) -> list[str]:
     return merged
 
 
-def _fallback_item_breakdown(text: str) -> list[dict]:
+def _fallback_item_breakdown(
+    text: str,
+    *,
+    include_ai_note: bool = True,
+    reason: str | None = None,
+) -> list[dict]:
     parts = []
     for raw_part in _MULTI_ITEM_SPLIT_RE.split(text or ""):
         part = raw_part.strip(" .;")
@@ -503,10 +514,10 @@ def _fallback_item_breakdown(text: str) -> list[dict]:
     skipped_unknown = False
     recognized_count = 0
     for part in parts[:6]:
-        estimate = _single_fallback_estimate(part)
+        estimate = _single_fallback_estimate(part, include_ai_note=include_ai_note, reason=reason)
         if estimate.get("item_name") == _FALLBACK_DEFAULT["item_name"]:
             skipped_unknown = True
-            estimate = _unknown_split_fallback_estimate(part)
+            estimate = _unknown_split_fallback_estimate(part, include_ai_note=include_ai_note, reason=reason)
         else:
             recognized_count += 1
         notes = estimate.setdefault("uncertainty_notes", [])
@@ -532,9 +543,18 @@ def _fallback_item_breakdown(text: str) -> list[dict]:
     return items
 
 
-def _unknown_split_fallback_estimate(text: str) -> dict:
+def _unknown_split_fallback_estimate(
+    text: str,
+    *,
+    include_ai_note: bool = True,
+    reason: str | None = None,
+) -> dict:
     item_name = re.sub(r"\s+", " ", str(text or "").strip(" .;"))[:80] or "Unrecognized item"
-    return {
+    notes = []
+    if include_ai_note:
+        notes.append(_AI_UNAVAILABLE_NOTE)
+    notes.append("Text fallback could not estimate this item; enter nutrition manually before logging.")
+    estimate = {
         "item_name": item_name,
         "portion_description": None,
         "meal_type": "snack",
@@ -546,15 +566,20 @@ def _unknown_split_fallback_estimate(text: str) -> dict:
         "fiber_g": 0,
         "confidence": 0.0,
         "ambiguous": True,
-        "uncertainty_notes": [
-            _AI_UNAVAILABLE_NOTE,
-            "Text fallback could not estimate this item; enter nutrition manually before logging.",
-        ],
+        "uncertainty_notes": notes,
         "source": "fallback_text_estimate",
     }
+    if reason is not None:
+        estimate["fallback_reason"] = reason
+    return estimate
 
 
-def _single_fallback_estimate(text: str, *, include_ai_note: bool = True) -> dict:
+def _single_fallback_estimate(
+    text: str,
+    *,
+    include_ai_note: bool = True,
+    reason: str | None = None,
+) -> dict:
     """Deterministic estimate produced when the local LLM is unavailable.
 
     Keyword-matches a small preset table that mirrors the FIT-60 stub so
@@ -617,7 +642,7 @@ def _single_fallback_estimate(text: str, *, include_ai_note: bool = True) -> dic
     if matched and "chipotle" in tokens:
         notes.append("Local Chipotle fallback uses a typical menu profile; verify modifiers if exact macros matter.")
 
-    return {
+    result = {
         "item_name": estimate["item_name"],
         "portion_description": portion_description,
         "meal_type": estimate.get("meal_type"),
@@ -632,13 +657,21 @@ def _single_fallback_estimate(text: str, *, include_ai_note: bool = True) -> dic
         "uncertainty_notes": notes,
         "source": "fallback_text_estimate",
     }
+    if reason is not None:
+        result["fallback_reason"] = reason
+    return result
 
 
-def _fallback_estimate(text: str) -> dict:
-    items = _fallback_item_breakdown(text)
+def _fallback_estimate(
+    text: str,
+    *,
+    include_ai_note: bool = True,
+    reason: str | None = None,
+) -> dict:
+    items = _fallback_item_breakdown(text, include_ai_note=include_ai_note, reason=reason)
     if not items:
-        return _single_fallback_estimate(text)
-    aggregate = _single_fallback_estimate(text)
+        return _single_fallback_estimate(text, include_ai_note=include_ai_note, reason=reason)
+    aggregate = _single_fallback_estimate(text, include_ai_note=include_ai_note, reason=reason)
     aggregate["item_name"] = "; ".join(item["item_name"] for item in items)[:160]
     aggregate["portion_description"] = "; ".join(
         str(item.get("portion_hint") or item["item_name"]) for item in items
@@ -762,8 +795,9 @@ def parse_meal_text(
     cleaned = (text or "").strip()
     if not cleaned:
         return {
-            "estimate": _fallback_estimate(""),
+            "estimate": _fallback_estimate("", reason=FALLBACK_REASON_EMPTY_INPUT),
             "fallback_used": True,
+            "fallback_reason": FALLBACK_REASON_EMPTY_INPUT,
         }
 
     try:
@@ -794,10 +828,14 @@ def parse_meal_text(
         }
     private_label_miss = branded_lookup_attempted and private_label_lookup
     if private_label_miss and not _should_parse_private_label_miss(cleaned):
-        estimate = _add_no_branded_match_note(_fallback_estimate(cleaned))
+        estimate = _add_no_branded_match_note(_fallback_estimate(
+            cleaned,
+            reason=FALLBACK_REASON_NEEDS_QUANTITY,
+        ))
         return {
             "estimate": estimate,
             "fallback_used": True,
+            "fallback_reason": FALLBACK_REASON_NEEDS_QUANTITY,
         }
 
     payload = {
@@ -810,13 +848,17 @@ def parse_meal_text(
         "response_format": _MEAL_TEXT_RESPONSE_FORMAT,
     }
 
-    # Respect the shared LM Studio inference lock so concurrent meal
-    # submissions don't stampede the local model — matches the pattern the
-    # Adjust Plan and other adapter entry points use.
     timeout = LM_STUDIO_MEAL_TEXT_TIMEOUT_SEC
-    acquired = _INFERENCE_LOCK.acquire(timeout=timeout + 1)
+    acquired = _MEAL_TEXT_INFERENCE_LOCK.acquire(timeout=MEAL_TEXT_LOCK_ACQUIRE_SEC)
     if not acquired:
-        estimate = _fallback_estimate(cleaned)
+        estimate = _fallback_estimate(
+            cleaned,
+            include_ai_note=False,
+            reason=FALLBACK_REASON_LOCK_TIMEOUT,
+        )
+        notes = estimate.setdefault("uncertainty_notes", [])
+        if _LOCK_CONTENTION_NOTE not in notes:
+            notes.append(_LOCK_CONTENTION_NOTE)
         if private_label_miss:
             estimate = _add_no_branded_match_note(estimate)
         return {
@@ -834,16 +876,17 @@ def parse_meal_text(
                 clean=_clean_estimate,
             )
         except LmStudioError as exc:
-            estimate = _fallback_estimate(cleaned)
+            fallback_reason = _fallback_reason_from_lm_error(exc)
+            estimate = _fallback_estimate(cleaned, reason=fallback_reason)
             if private_label_miss:
                 estimate = _add_no_branded_match_note(estimate)
             return {
                 "estimate": estimate,
                 "fallback_used": True,
-                "fallback_reason": _fallback_reason_from_lm_error(exc),
+                "fallback_reason": fallback_reason,
             }
     finally:
-        _INFERENCE_LOCK.release()
+        _MEAL_TEXT_INFERENCE_LOCK.release()
 
     parsed.pop("_meta", None)
     estimate = _post_process(parsed, source_text=cleaned)
