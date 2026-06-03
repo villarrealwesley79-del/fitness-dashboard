@@ -191,6 +191,12 @@
                 <div class="meal-pending-list" id="meal-pending-list" aria-live="polite" data-provenance-surface="meal-estimates"></div>
             </div>
 
+            <!-- FIT-137: nutrition-driven workout-adaptation confirmation. Rendered by
+                 app.js (showWorkoutAdaptationNotice) ONLY when FIT-136 reports an
+                 applied change to today's plan. Stays empty/hidden on no-change or
+                 low-confidence events, and never surfaces the adaptation audit log. -->
+            <div id="workout-adaptation-host" class="workout-adaptation-host" hidden aria-live="polite"></div>
+
             <div class="section-title">TODAY AT A GLANCE</div>
             <div class="glance-grid">
                 <div class="glance-card">
