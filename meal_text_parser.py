@@ -28,7 +28,6 @@ from lm_studio_adapter import (
     LmStudioError,
     MEAL_TEXT_LOCK_ACQUIRE_SEC,
     _completion_json,
-    _INFERENCE_LOCK,
     _MEAL_TEXT_INFERENCE_LOCK,
 )
 from meal_estimate_schema import ALLOWED_MEAL_TYPES, CALORIE_MAX, MACRO_GRAM_MAX, SODIUM_MG_MAX

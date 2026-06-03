@@ -833,8 +833,8 @@ def test_lock_contention_is_not_masqueraded_as_model_failure(monkeypatch):
             raise AssertionError("release should not be called when acquire fails")
 
     busy = BusyLock()
-    monkeypatch.setattr(adapter, "_INFERENCE_LOCK", busy)
-    monkeypatch.setattr(parser, "_INFERENCE_LOCK", busy)
+    monkeypatch.setattr(adapter, "_MEAL_TEXT_INFERENCE_LOCK", busy)
+    monkeypatch.setattr(parser, "_MEAL_TEXT_INFERENCE_LOCK", busy)
 
     def fake(path, payload_in, timeout, validate, clean=None):
         payload = _good_llm_payload(confidence=0.82)
@@ -847,16 +847,11 @@ def test_lock_contention_is_not_masqueraded_as_model_failure(monkeypatch):
 
     result = parser.parse_meal_text("two eggs and toast")
     estimate = result["estimate"]
-    if result["fallback_used"] is False:
-        assert estimate["source"] == "ai_text_estimate"
-    else:
-        blob = " ".join([
-            str(estimate.get("fallback_reason") or result.get("fallback_reason") or ""),
-            str(estimate.get("source") or ""),
-            " ".join(estimate.get("uncertainty_notes") or []),
-        ]).lower()
-        assert "lock" in blob or "contention" in blob or "busy" in blob
-        assert not any("AI didn't run" in note for note in estimate.get("uncertainty_notes") or [])
+    assert result["fallback_used"] is True
+    assert estimate["source"] == "fallback_text_estimate"
+    assert result["fallback_reason"] == "lock_timeout"
+    assert estimate["fallback_reason"] == "lock_timeout"
+    assert not any("AI didn't run" in note for note in estimate.get("uncertainty_notes") or [])
 
 
 def test_fallback_confidence_not_inflated_and_gate_rejects_canned(monkeypatch):
