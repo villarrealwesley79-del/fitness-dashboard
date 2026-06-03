@@ -1549,6 +1549,23 @@ def test_normalize_barcode_accepts_supported_digit_lengths():
     assert branded_food_lookup.normalize_barcode("1234567") is None
 
 
+def test_lookup_barcode_does_not_route_to_heb_product_page(monkeypatch):
+    assert "heb_product_page" in branded_food_lookup.SOURCE_PRIORITY
+    assert "heb_product_page" not in branded_food_lookup.BARCODE_SOURCE_PRIORITY
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        branded_food_lookup.heb_product_lookup,
+        "lookup",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("H-E-B is text-path only")),
+    )
+    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods_by_barcode", lambda *_a, **_kw: None)
+    monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "get_product_by_barcode", lambda *_a, **_kw: None)
+
+    assert branded_food_lookup.lookup_barcode("012345678905") is None
+
+
 def test_lookup_barcode_uses_local_cache_first(monkeypatch):
     cached = {
         "item_name": "Cached chips",
