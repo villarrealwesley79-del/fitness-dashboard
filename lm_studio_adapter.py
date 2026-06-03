@@ -37,6 +37,7 @@ LM_STUDIO_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_TIMEOUT_SEC", "8"))
 LM_STUDIO_ANALYZE_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_ANALYZE_TIMEOUT_SEC", "25"))
 LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC", "2.5"))
 LM_STUDIO_PREFLIGHT_TIMEOUT_SEC = float(os.environ.get("LM_STUDIO_PREFLIGHT_TIMEOUT_SEC", "1.5"))
+MEAL_TEXT_LOCK_ACQUIRE_SEC = float(os.environ.get("MEAL_TEXT_LOCK_ACQUIRE_SEC", "2.0"))
 # Backwards-compatible names used by app.py cache keys.
 LM_STUDIO_URL = LM_STUDIO_PRIMARY_URL
 LM_STUDIO_MODEL = LM_STUDIO_PRIMARY_MODEL
@@ -45,6 +46,7 @@ LM_STUDIO_MODEL_VERSION = LM_STUDIO_MODEL.split("/")[-1]
 # Concurrency: one adjustment request at a time. A global semaphore keeps
 # LM Studio from being stampeded if two users click Adjust simultaneously.
 _INFERENCE_LOCK = threading.Semaphore(1)
+_MEAL_TEXT_INFERENCE_LOCK = threading.Semaphore(1)
 
 
 class LmStudioError(Exception):
