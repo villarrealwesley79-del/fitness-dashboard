@@ -6942,16 +6942,16 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
     if err:
         return err
     user_id = _current_data_user_id()
+    existing_rows = _meal_existing_rows(user_id, meal_id)
+    existing_event = get_meal_acceptance_event(user_id, meal_id)
     included_items = [item for item in prepared if item["state"] == "included"]
     skipped_count = sum(1 for item in prepared if item["state"] == "skipped")
     deleted_count = sum(1 for item in prepared if item["state"] == "deleted")
     feedback_fingerprint = _meal_negative_feedback_fingerprint(prepared)
     has_image = any(_meal_item_has_image(item["raw"]) for item in prepared)
     incoming_client_ids = {item["client_id"] for item in included_items}
-    existing_rows = _meal_existing_rows(user_id, meal_id)
-    existing_event = get_meal_acceptance_event(user_id, meal_id)
+    existing_client_ids = {row.get("client_id") for row in existing_rows if row.get("client_id")}
     if existing_rows:
-        existing_client_ids = {row.get("client_id") for row in existing_rows if row.get("client_id")}
         if existing_client_ids == incoming_client_ids:
             if existing_event:
                 existing_event_ids = set(existing_event.get("included_client_ids") or [])
@@ -6985,6 +6985,22 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                 "meal_id": meal_id,
                 "error": {"message": "meal_id already accepted with a different included item set"},
             }), 409
+    for item in prepared:
+        if item["state"] == "included" and not isinstance(item["raw"].get("estimate"), dict):
+            return jsonify({"error": {"message": "included items require estimate objects"}}), 400
+    items_to_check = [
+        {**item["raw"], "item_id": item["meal_item_id"]}
+        for item in prepared
+        if item["state"] == "included" and item["client_id"] not in existing_client_ids
+    ]
+    blocked_ids = _review_blocked_item_ids_for_accept_items(items_to_check)
+    if blocked_ids:
+        return jsonify({
+            "status": "blocked",
+            "meal_id": meal_id,
+            "save_blocked_item_ids": blocked_ids,
+            "error": {"message": "review has blocked items"},
+        }), 409
     replaying_existing_event = False
     if existing_event:
         existing_event_ids = set(existing_event.get("included_client_ids") or [])

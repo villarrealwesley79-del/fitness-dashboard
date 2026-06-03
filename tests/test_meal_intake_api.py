@@ -3076,6 +3076,245 @@ def test_multi_item_accept_persists_included_rows_and_totals_only(monkeypatch, t
     assert vocab["duplicate sauce"]["deleted_count"] == 1
 
 
+def test_multi_item_accept_blocks_unsaved_review_item_without_snapshot(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    meal_id = "photo-meal-noenap-1"
+
+    assert data_store.get_meal_review_snapshot(1, meal_id) is None
+
+    res = client.post(
+        "/api/meal-intake/photo-parent-noenap-1/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "included",
+                    "item_id": "blocked-1",
+                    "estimate": _accepted_estimate(
+                        item_name="Mystery dish",
+                        calories=500,
+                        confidence=0.40,
+                    ),
+                }
+            ],
+        },
+    )
+
+    body = res.get_json()
+    assert res.status_code == 409
+    assert body["status"] == "blocked"
+    assert body["meal_id"] == meal_id
+    assert body["save_blocked_item_ids"] == ["blocked-1"]
+    assert body["error"]["message"] == "review has blocked items"
+    assert data_store.get_food_logs(1) == []
+    assert data_store.list_pending_workout_adaptation_windows(1) == []
+
+
+def test_multi_item_accept_persists_clear_item_without_snapshot(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client = module.app.test_client()
+
+    res = client.post(
+        "/api/meal-intake/photo-parent-clear-noenap-1/accept",
+        json={
+            "meal_id": "photo-meal-clear-noenap-1",
+            "items": [
+                {
+                    "state": "included",
+                    "item_id": "clear-1",
+                    "estimate": _accepted_estimate(
+                        item_name="Chicken bowl",
+                        calories=500,
+                        confidence=0.88,
+                    ),
+                }
+            ],
+        },
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == 1
+    assert rows[0]["calories"] == 500
+
+
+def test_multi_item_accept_blocked_sibling_prevents_partial_persist(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client = module.app.test_client()
+
+    res = client.post(
+        "/api/meal-intake/photo-parent-mixed-noenap-1/accept",
+        json={
+            "meal_id": "photo-meal-mixed-noenap-1",
+            "items": [
+                {
+                    "state": "included",
+                    "item_id": "clear-1",
+                    "estimate": _accepted_estimate(
+                        item_name="Chicken bowl",
+                        calories=500,
+                        confidence=0.88,
+                    ),
+                },
+                {
+                    "state": "included",
+                    "item_id": "blocked-1",
+                    "estimate": _accepted_estimate(
+                        item_name="Mystery dish",
+                        calories=500,
+                        confidence=0.40,
+                    ),
+                },
+            ],
+        },
+    )
+
+    body = res.get_json()
+    assert res.status_code == 409
+    assert body["save_blocked_item_ids"] == ["blocked-1"]
+    assert data_store.get_food_logs(1) == []
+    assert data_store.list_pending_workout_adaptation_windows(1) == []
+
+
+def test_multi_item_accept_blocked_new_sibling_rejected_when_event_missing(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    meal_id = "photo-meal-partial-event-missing"
+    payload = {
+        "meal_id": meal_id,
+        "items": [
+            {
+                "state": "included",
+                "item_id": "clear-1",
+                "estimate": _accepted_estimate(
+                    item_name="Chicken bowl",
+                    calories=500,
+                    confidence=0.88,
+                ),
+            }
+        ],
+    }
+
+    first = client.post("/api/meal-intake/photo-parent-partial-event-missing/accept", json=payload)
+    assert first.status_code == 200, first.get_data(as_text=True)
+    data_store.delete_meal_acceptance_event(1, meal_id)
+    pending_before_retry = data_store.list_pending_workout_adaptation_windows(1)
+
+    retry_payload = dict(payload)
+    retry_payload["items"] = [
+        payload["items"][0],
+        {
+            "state": "included",
+            "item_id": "blocked-1",
+            "estimate": _accepted_estimate(
+                item_name="Mystery dish",
+                calories=500,
+                confidence=0.40,
+            ),
+        },
+    ]
+    retry = client.post(
+        "/api/meal-intake/photo-parent-partial-event-missing/accept",
+        json=retry_payload,
+    )
+
+    body = retry.get_json()
+    rows = data_store.get_food_logs(1)
+    assert retry.status_code == 409
+    assert body["save_blocked_item_ids"] == ["blocked-1"]
+    assert len(rows) == 1
+    assert rows[0]["meal_item_id"] == "clear-1"
+    assert data_store.list_pending_workout_adaptation_windows(1) == pending_before_retry
+
+
+def test_multi_item_accept_preserves_blocked_fallback_id_when_event_missing(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    meal_id = "photo-meal-partial-fallback-id"
+    payload = {
+        "meal_id": meal_id,
+        "items": [
+            {"state": "included", "estimate": _accepted_estimate(item_name="Chicken bowl")},
+            {"state": "included", "estimate": _accepted_estimate(item_name="Rice bowl")},
+        ],
+    }
+
+    first = client.post("/api/meal-intake/photo-parent-partial-fallback-id/accept", json=payload)
+    assert first.status_code == 200, first.get_data(as_text=True)
+    data_store.delete_meal_acceptance_event(1, meal_id)
+
+    retry_payload = dict(payload)
+    retry_payload["items"] = [
+        *payload["items"],
+        {
+            "state": "included",
+            "estimate": _accepted_estimate(
+                item_name="Mystery dish",
+                confidence=0.40,
+            ),
+        },
+    ]
+    retry = client.post(
+        "/api/meal-intake/photo-parent-partial-fallback-id/accept",
+        json=retry_payload,
+    )
+
+    body = retry.get_json()
+    assert retry.status_code == 409
+    assert body["save_blocked_item_ids"] == ["item-2"]
+
+
+def test_snapshot_path_blocked_item_still_409(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    meal_id = "meal-snapshot-blocked-1"
+    pending_estimate = _accepted_estimate(
+        item_name="Mystery dish",
+        calories=500,
+        confidence=0.40,
+        ambiguous=True,
+    )
+    module._review_save_snapshot(
+        1,
+        meal_id,
+        {
+            "items": [
+                module._review_item_from_estimate(
+                    pending_estimate,
+                    item_id="item-1",
+                    item_order=1,
+                    status="included",
+                    text="Mystery dish",
+                )
+            ],
+            "meal_type": "lunch",
+        },
+        2,
+        {},
+        sync_pending=True,
+    )
+    assert data_store.get_meal_review_snapshot(1, meal_id) is not None
+
+    accept = client.post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={"estimate": pending_estimate},
+    )
+
+    body = accept.get_json()
+    assert accept.status_code == 409
+    assert body["status"] == "blocked"
+    assert body["meal_id"] == meal_id
+    assert body["save_blocked_item_ids"] == ["item-1"]
+    assert body["error"]["message"] == "review has blocked items"
+
+
 def test_multi_item_accept_retry_is_noop_and_changed_item_set_conflicts(monkeypatch, tmp_path):
     module = _client(monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
@@ -3114,6 +3353,36 @@ def test_multi_item_accept_retry_is_noop_and_changed_item_set_conflicts(monkeypa
     entry = data_store.get_personal_vocab_entry(1, "plate")
     assert entry["skip_count"] == 1
     assert data_store.get_personal_vocab_entry(1, "bowl") is None
+
+
+def test_multi_item_accept_retry_with_existing_rows_does_not_require_estimates(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    payload = {
+        "meal_id": "photo-meal-idem-minimal-retry",
+        "items": [
+            {"state": "included", "item_id": "a", "estimate": _accepted_estimate(item_name="A", calories=100)},
+            {"state": "included", "item_id": "b", "estimate": _accepted_estimate(item_name="B", calories=200)},
+        ],
+    }
+
+    first = client.post("/api/meal-intake/photo-parent-idem-minimal-retry/accept", json=payload)
+    retry = client.post(
+        "/api/meal-intake/photo-parent-idem-minimal-retry/accept",
+        json={
+            "meal_id": payload["meal_id"],
+            "items": [
+                {"state": "included", "item_id": "a"},
+                {"state": "included", "item_id": "b"},
+            ],
+        },
+    )
+
+    assert first.status_code == 200
+    assert retry.status_code == 200
+    assert retry.get_json()["meal_totals"]["calories"] == 300
+    assert len(data_store.get_food_logs(1)) == 2
 
 
 def test_multi_item_accept_namespaces_explicit_item_client_ids(monkeypatch, tmp_path):
@@ -3297,6 +3566,46 @@ def test_multi_item_accept_replays_matching_event_when_rows_are_missing(monkeypa
     assert len(rows) == 2
     assert {row["client_id"] for row in rows} == set(client_ids)
     assert data_store.get_personal_vocab_entry(1, "plate")["skip_count"] == 1
+
+
+def test_multi_item_accept_existing_event_missing_row_still_blocks_unclear_item(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "photo-parent-event-missing-blocked"
+    meal_id = "photo-meal-event-missing-blocked"
+    item_client_id = module._meal_item_client_id(parent_client_id, {"item_id": "blocked-1"}, 0)
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="logged",
+        included_client_ids=[item_client_id],
+        skipped_count=0,
+        deleted_count=0,
+    )
+
+    res = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "included",
+                    "item_id": "blocked-1",
+                    "estimate": _accepted_estimate(
+                        item_name="Mystery dish",
+                        calories=500,
+                        confidence=0.40,
+                    ),
+                }
+            ],
+        },
+    )
+
+    body = res.get_json()
+    assert res.status_code == 409
+    assert body["save_blocked_item_ids"] == ["blocked-1"]
+    assert data_store.get_food_logs(1) == []
+    assert data_store.list_pending_workout_adaptation_windows(1) == []
 
 
 def test_multi_item_accept_replay_repairs_missing_event_when_rows_exist(monkeypatch, tmp_path):
