@@ -167,6 +167,84 @@ def test_under_fueled_adaptation_reduces_and_clamps_to_available_time(monkeypatc
     assert any(op["op"].startswith("clamp") for op in event["patch"]["operations"])
 
 
+def test_clamp_emits_cap_exceeded_marker_when_floor_exceeds_available_time():
+    recommendation = {
+        "id": "rec-fit224",
+        "focus": "lower",
+        "estimated_minutes": 0,
+        "exercises": [
+            {
+                "machine": "Back Squat",
+                "muscle_group": "legs",
+                "target_sets": 7,
+                "target_reps": 3,
+                "time_per_set_minutes": 3,
+            },
+            {
+                "machine": "Bench Press",
+                "muscle_group": "chest",
+                "target_sets": 5,
+                "target_reps": 3,
+                "time_per_set_minutes": 3,
+            },
+        ],
+    }
+    completed = {"Back Squat": 7, "Bench Press": 5}
+    patched, operations = workout_adaptation._clamp_to_available_time(
+        recommendation,
+        30,
+        completed_sets_by_exercise=completed,
+    )
+
+    squat = next(ex for ex in patched["exercises"] if ex["machine"] == "Back Squat")
+    bench = next(ex for ex in patched["exercises"] if ex["machine"] == "Bench Press")
+
+    assert squat["target_sets"] == 7
+    assert bench["target_sets"] == 5
+    assert not any(op["op"] == "clamp_reduce_sets" for op in operations)
+    assert patched["estimated_minutes"] == 46
+    assert patched["estimated_minutes"] > 30
+    cap_ops = [op for op in operations if op["op"] == "cap_exceeded"]
+    assert len(cap_ops) == 1
+    cap = cap_ops[0]
+    assert cap["available_time_minutes"] == 30
+    assert cap["floor_minutes"] == 46
+
+
+def test_clamp_no_cap_exceeded_marker_when_cap_reachable():
+    recommendation = {
+        "id": "rec-fit224-control",
+        "focus": "lower",
+        "estimated_minutes": 0,
+        "exercises": [
+            {
+                "machine": "Back Squat",
+                "muscle_group": "legs",
+                "target_sets": 7,
+                "target_reps": 3,
+                "time_per_set_minutes": 3,
+            },
+            {
+                "machine": "Bench Press",
+                "muscle_group": "chest",
+                "target_sets": 5,
+                "target_reps": 3,
+                "time_per_set_minutes": 3,
+            },
+        ],
+    }
+    completed = {}
+    patched, operations = workout_adaptation._clamp_to_available_time(
+        recommendation,
+        30,
+        completed_sets_by_exercise=completed,
+    )
+
+    assert patched["estimated_minutes"] <= 30
+    assert any(op["op"] == "clamp_reduce_sets" for op in operations)
+    assert not any(op["op"] == "cap_exceeded" for op in operations)
+
+
 def test_high_calorie_meal_alone_does_not_add_burn_off_cardio(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     start = datetime(2026, 5, 24, 12, 0, 0)

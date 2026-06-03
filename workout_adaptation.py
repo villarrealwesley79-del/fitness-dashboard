@@ -584,6 +584,13 @@ def _clamp_to_available_time(
         if not changed:
             break
         _recompute_estimated_minutes(patched)
+    residual = int(patched.get("estimated_minutes") or 0)
+    if residual > available_time_minutes:
+        operations.append({
+            "op": "cap_exceeded",
+            "floor_minutes": residual,
+            "available_time_minutes": available_time_minutes,
+        })
     return patched, operations
 
 
