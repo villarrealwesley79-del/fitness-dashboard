@@ -125,6 +125,7 @@ VISION_OLLAMA_MODEL=
 ```
 
 Do not commit real values for these variables.
+Production must set `SECRET_KEY` via environment or a secret manager; `.flask-secret` is local-dev only and is excluded from images and bundles.
 
 For Apple Health / Health Auto Export setup, keep `HEALTH_SYNC_TOKEN` secret and set one public URL source for setup URL generation:
 

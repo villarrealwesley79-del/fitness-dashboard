@@ -9,3 +9,38 @@ __pycache__/
 server.log
 .git/
 .gitignore
+# secrets / tokens (NEVER ship in an image or bundle)
+.flask-secret
+.health-sync-token
+.apple-health-first-sync
+.env.*
+**/.flask-secret
+**/.health-sync-token
+**/.apple-health-first-sync
+**/.env
+**/.env.*
+# database backup/suffix variants that escape *.db / *.sqlite3
+auth.db*
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+**/auth.db*
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+**/*.sqlite3-*
+# backups, logs, OS/tooling cruft, generated bundles
+*.bak*
+*.log
+.DS_Store
+**/*.bak*
+**/*.log
+**/.DS_Store
+.pytest_cache/
+.claude/
+.runtime-restore-backups/
+audit-bundles/
+backup-bundles/
+docs/audits/
