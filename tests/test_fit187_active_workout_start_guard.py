@@ -148,6 +148,7 @@ const $ = (id) => elements[id] || null;
 const qs = () => ({{ value: '', checked: false }});
 const qsa = () => [];
 const toast = () => {{}};
+const saveActiveWorkoutDraft = () => {{}};
 const getDashboard = async () => ({{ next_workout: dashboardNext }});
 const newWorkoutId = (id) => 'new-' + (id || 'generated');
 const exerciseName = (ex) => ex.exercise || ex.name || ex.machine || '';

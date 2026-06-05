@@ -5077,6 +5077,7 @@
             state.nextWorkout = null;
             state.reco = null;
             state.activeWorkout = null;
+            clearActiveWorkoutDraft();
             await Promise.allSettled([renderSettings(), renderDashboard()]);
         } catch (e) { console.error(e); toast('Update failed', 'err'); }
     }
@@ -5232,6 +5233,130 @@
         return Number.isFinite(count) && count > 0 ? Math.round(count) : 3;
     }
 
+    const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';
+    const ACTIVE_WORKOUT_DRAFT_VERSION = 1;
+
+    function currentActiveWorkoutDraftScope() {
+        try {
+            return String(cachedMealQueueAuthScope()).trim();
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function activeWorkoutDraftIsValid(parsed) {
+        const workout = parsed && parsed.workout;
+        return Boolean(
+            parsed
+            && parsed.version === ACTIVE_WORKOUT_DRAFT_VERSION
+            && workout
+            && typeof workout === 'object'
+            && Array.isArray(workout.exercises)
+        );
+    }
+
+    function loadActiveWorkoutDraft() {
+        try {
+            const raw = localStorage.getItem(ACTIVE_WORKOUT_DRAFT_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            if (!activeWorkoutDraftIsValid(parsed)) return null;
+            return parsed;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function syncActiveWorkoutInputsFromDom() {
+        const aw = state.activeWorkout;
+        const body = $('active-workout-body');
+        if (!aw || !body) return;
+        qsa('.set-row', body).forEach((row) => {
+            const exIdx = Number(row.dataset.ex);
+            const setIdx = Number(row.dataset.set);
+            const ex = aw.exercises && aw.exercises[exIdx];
+            const set = ex && ex.logged_sets && ex.logged_sets[setIdx];
+            if (!set) return;
+            const next = {
+                weight: qs('input[data-field="weight"]', row).value,
+                reps: qs('input[data-field="reps"]', row).value,
+                done: qs('input[data-field="done"]', row).checked,
+                notes: qs('input[data-field="notes"]', row).value,
+            };
+            if (
+                String(set.weight ?? '') !== String(next.weight)
+                || String(set.reps ?? '') !== String(next.reps)
+                || Boolean(set.done) !== Boolean(next.done)
+                || String(set.notes ?? '') !== String(next.notes)
+            ) {
+                ex.logged_sets[setIdx] = next;
+                aw.dirty = true;
+            }
+        });
+
+        const cardio = aw.cardio;
+        const cardioCard = qs('.active-cardio', body);
+        if (cardio && cardioCard) {
+            const next = {
+                completed: qs('input[data-cardio-field="completed"]', cardioCard).checked,
+                activity_type: qs('input[data-cardio-field="activity_type"]', cardioCard).value,
+                duration_minutes: qs('input[data-cardio-field="duration_minutes"]', cardioCard).value,
+                notes: qs('textarea[data-cardio-field="notes"]', cardioCard).value,
+            };
+            if (
+                Boolean(cardio.completed) !== Boolean(next.completed)
+                || String(cardio.activity_type ?? '') !== String(next.activity_type)
+                || String(cardio.duration_minutes ?? '') !== String(next.duration_minutes)
+                || String(cardio.notes ?? '') !== String(next.notes)
+            ) {
+                Object.assign(cardio, next);
+                aw.dirty = true;
+            }
+        }
+    }
+
+    function saveActiveWorkoutDraft({ syncDom = true } = {}) {
+        if (syncDom) syncActiveWorkoutInputsFromDom();
+        const workout = state.activeWorkout;
+        if (!workout) return;
+        try {
+            const draft = {
+                version: ACTIVE_WORKOUT_DRAFT_VERSION,
+                saved_at: new Date().toISOString(),
+                auth_scope: currentActiveWorkoutDraftScope(),
+                workout,
+            };
+            localStorage.setItem(ACTIVE_WORKOUT_DRAFT_KEY, JSON.stringify(draft));
+        } catch (_) { /* localStorage may be unavailable; keep in memory for this page. */ }
+    }
+
+    function saveActiveWorkoutDraftBeforePageHidden() {
+        if (state.activeWorkout) saveActiveWorkoutDraft();
+    }
+
+    function clearActiveWorkoutDraft() {
+        try { localStorage.removeItem(ACTIVE_WORKOUT_DRAFT_KEY); } catch (_) {}
+    }
+
+    function restoreActiveWorkoutDraft() {
+        if (state.activeWorkout) return false;
+        const draft = loadActiveWorkoutDraft();
+        if (!draft) return false;
+        const draftScope = String(draft.auth_scope || '').trim();
+        const currentScope = currentActiveWorkoutDraftScope();
+        if (draftScope && currentScope && draftScope !== currentScope) {
+            return false;
+        }
+        state.activeWorkout = draft.workout;
+        state.activeWorkout.saveState = {
+            message: 'Recovered unsaved workout details from this device.',
+            variant: 'warn',
+        };
+        renderActiveWorkout();
+        toast('Recovered unsaved workout details');
+        return true;
+    }
+
     function buildLoggedSets(ex, previousSets) {
         const reps = recommendedRepsValue(ex);
         const weight = recommendedWeightValue(ex);
@@ -5269,6 +5394,7 @@
             saveState: existing && existing.saveState ? existing.saveState : null,
             dirty: Boolean(existing && existing.dirty),
         };
+        saveActiveWorkoutDraft({ syncDom: false });
     }
 
     // FIT-179: merge an adjusted recommendation into an in-progress active
@@ -5439,6 +5565,7 @@
             saveState: existing.saveState || null,
             dirty: opts.preserveDirty === false ? false : Boolean(existing.dirty),
         };
+        saveActiveWorkoutDraft({ syncDom: false });
     }
 
     function hasRecommendedCardio(cardio) {
@@ -5495,6 +5622,7 @@
             notes: qs('input[data-field="notes"]', row).value,
         };
         state.activeWorkout.dirty = true;
+        saveActiveWorkoutDraft();
         // FIT-108: keep the sticky progress header in sync after every input
         // change. Also re-target the "next incomplete" highlight and, when
         // the user just flipped a set to done, scroll the next incomplete
@@ -5583,6 +5711,7 @@
         cardio.duration_minutes = qs('input[data-cardio-field="duration_minutes"]', card).value;
         cardio.notes = qs('textarea[data-cardio-field="notes"]', card).value;
         state.activeWorkout.dirty = true;
+        saveActiveWorkoutDraft();
     }
 
     function renderActiveWorkout() {
@@ -5745,6 +5874,7 @@
             return;
         }
         state.activeWorkout = null;
+        clearActiveWorkoutDraft();
         clearAdjustIntent();
         modal.hidden = true;
     }
@@ -5777,6 +5907,7 @@
         aw.dirty = true;
         if (!aw.exercises.length) aw.saveState = null;
         renderActiveWorkout();
+        saveActiveWorkoutDraft();
         toast(`Removed ${name}`, 'ok');
     }
 
@@ -6658,6 +6789,7 @@
         if (!exercises.length) {
             const message = 'Validation failed: log at least one set before completing this workout.';
             aw.saveState = { message, variant: 'err' };
+            saveActiveWorkoutDraft();
             setActiveWorkoutStatus(message, 'err');
             toast('Log at least one set', 'err');
             return;
@@ -6671,6 +6803,7 @@
         setActiveWorkoutStatus(aw.saveState.message, aw.saveState.variant);
         const clientWorkoutId = aw.id || `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         aw.id = clientWorkoutId;
+        saveActiveWorkoutDraft();
         const completePayload = {
             id: clientWorkoutId,
             client_workout_id: clientWorkoutId,
@@ -6697,6 +6830,7 @@
 
         function settleQueued(reasonMsg) {
             enqueueOfflineWorkout(completePayload, 'pending');
+            clearActiveWorkoutDraft();
             aw.saveState = { message: reasonMsg, variant: '' };
             setActiveWorkoutStatus(reasonMsg, '');
             $('modal-active').hidden = true;
@@ -6726,6 +6860,7 @@
                 };
                 $('modal-active').hidden = true;
                 state.activeWorkout = null;
+                clearActiveWorkoutDraft();
                 clearAdjustIntent();
                 invalidateCaches();
                 loadTab(state.currentTab);
@@ -6750,6 +6885,7 @@
                 else msg = `Save needs review — ${result.reason || 'see the sync queue'}.`;
                 aw.saveState = { message: msg, variant: 'err' };
                 setActiveWorkoutStatus(msg, 'err');
+                clearActiveWorkoutDraft();
                 toast(result.syncStatus === 'conflicted' ? 'Sync conflict' : 'Workout queued for review', 'err');
             }
         } catch (e) {
@@ -6932,6 +7068,7 @@
             const previous = (state.activeWorkout && state.activeWorkout.exercises) || [];
             setActiveWorkoutFromRecommendation(resp.recommendation, previous);
             renderActiveWorkout();
+            saveActiveWorkoutDraft();
         } else {
             renderNextWorkout();
         }
@@ -6940,6 +7077,9 @@
     async function applySwap(exIdx, newName, oldName) {
         const host = $('swap-alternatives');
         host.innerHTML = '<div class="skeleton">Swapping…</div>';
+        if (state.swapContext && state.swapContext.source === 'active') {
+            saveActiveWorkoutDraft();
+        }
         try {
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
@@ -6989,6 +7129,9 @@
         submitBtn.disabled = true;
         const origLabel = submitBtn.textContent;
         submitBtn.textContent = 'Swapping…';
+        if (ctx.source === 'active') {
+            saveActiveWorkoutDraft();
+        }
         try {
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
@@ -10195,8 +10338,15 @@
         renderSyncBanner();
         wireMealComposer();
         registerServiceWorker();
-        refreshMealQueueAuthScope().catch((err) => console.warn('Meal queue auth scope refresh failed:', err));
+        refreshMealQueueAuthScope()
+            .catch((err) => console.warn('Meal queue auth scope refresh failed:', err))
+            .finally(() => restoreActiveWorkoutDraft());
         cleanupOrphanedMealQueuePhotos().catch((err) => console.warn('Meal queue cleanup failed:', err));
+        window.addEventListener('pagehide', saveActiveWorkoutDraftBeforePageHidden);
+        window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') saveActiveWorkoutDraftBeforePageHidden();
+        });
         window.addEventListener('online', () => {
             refreshMealQueueAuthScope().catch((err) => console.warn('Meal queue auth scope refresh failed:', err));
             flushSyncQueue();
