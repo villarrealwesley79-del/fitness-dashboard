@@ -14,11 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code; secret exclusion relies on .dockerignore.
 COPY . .
 
 # ── Runtime config ──────────────────────────────────────────
 # Fly.io injects PORT env var; default 8080
+# SECRET_KEY must be injected at runtime via env/secret manager, never baked in.
 ENV PORT=8080 \
     FLASK_DEBUG=0 \
     DATA_DIR=/data
