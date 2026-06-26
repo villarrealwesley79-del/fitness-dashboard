@@ -240,8 +240,6 @@ def delete_connection_token_material(db_path: str) -> None:
         os.unlink(_protected_material_path(db_path))
     except FileNotFoundError:
         return
-    except OSError:
-        return
 
 
 def create_oauth_state(

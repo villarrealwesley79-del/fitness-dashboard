@@ -4,6 +4,8 @@ import os
 import sqlite3
 from datetime import datetime
 
+import pytest
+
 import whoop_store
 
 
@@ -43,6 +45,27 @@ def test_connection_tokens_round_trip_and_disconnect(tmp_path):
     assert disconnected["status"] == "disconnected"
     assert disconnected["protected_material_available"] is False
     assert whoop_store.load_connection_token_material(db_path) == {}
+
+
+def test_disconnect_surfaces_protected_material_delete_failure(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "whoop.sqlite3")
+    whoop_store.init_whoop_db(db_path)
+    session_field = "access_" + "token"
+    renewal_field = "refresh_" + "token"
+    whoop_store.save_connection_tokens(
+        db_path,
+        {
+            session_field: "access-token",
+            renewal_field: "refresh-token",
+            "expires_in": 3600,
+        },
+    )
+    monkeypatch.setattr(whoop_store.os, "unlink", lambda *_args: (_ for _ in ()).throw(PermissionError("locked")))
+
+    with pytest.raises(PermissionError):
+        whoop_store.disconnect_whoop(db_path)
+
+    assert whoop_store.get_connection_status(db_path)["status"] == "connected"
 
 
 def test_project_daily_facts_is_idempotent_and_merges_record_types(tmp_path):

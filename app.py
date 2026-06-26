@@ -11203,7 +11203,14 @@ def whoop_disconnect():
             revocation = {"status": "failed", "message": redact_whoop_error(exc)}
         except Exception:
             revocation = {"status": "failed", "message": "WHOOP OAuth is not configured on this server."}
-    disconnect_whoop(WHOOP_DB_FILE)
+    try:
+        disconnect_whoop(WHOOP_DB_FILE)
+    except OSError:
+        return api_error(
+            "WHOOP local token material could not be removed. Disconnect was not completed.",
+            500,
+            code="whoop_disconnect_failed",
+        )
     return jsonify({"status": "success", "connection": _whoop_public_status(), "revocation": revocation})
 
 
@@ -11237,7 +11244,10 @@ def whoop_import_csv():
         raw = upload.stream.read(WHOOP_CSV_MAX_BYTES + 1)
         if len(raw) > WHOOP_CSV_MAX_BYTES:
             return api_error("WHOOP CSV is too large.", 413, code="whoop_csv_too_large")
-        text = raw.decode("utf-8", errors="replace")
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return api_error("WHOOP CSV must be UTF-8 encoded.", 400, code="invalid_whoop_csv_encoding")
     else:
         body = request.get_json(silent=True) or {}
         text = str(body.get("csv") or "")

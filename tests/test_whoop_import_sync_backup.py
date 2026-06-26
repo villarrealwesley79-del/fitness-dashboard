@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import io
 
 import pytest
 
@@ -189,8 +190,19 @@ def test_whoop_csv_import_rejects_large_payload_and_row_flood(fitness_app):
     finally:
         fitness_app.WHOOP_CSV_MAX_ROWS = original_limit
 
-    assert flood_response.status_code == 413
-    assert flood_response.get_json()["error"]["code"] == "whoop_csv_too_many_rows"
+        assert flood_response.status_code == 413
+        assert flood_response.get_json()["error"]["code"] == "whoop_csv_too_many_rows"
+
+
+def test_whoop_csv_upload_rejects_invalid_utf8(fitness_app):
+    response = fitness_app.app.test_client().post(
+        "/api/whoop/import-csv",
+        data={"file": (io.BytesIO(b"\xff\xfe\xfd"), "whoop.csv")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_whoop_csv_encoding"
 
 
 def test_whoop_csv_import_rejects_impossible_metric_values(fitness_app):

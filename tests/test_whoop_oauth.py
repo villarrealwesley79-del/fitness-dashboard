@@ -186,3 +186,16 @@ def test_whoop_disconnect_purges_local_tokens_when_revoke_fails(fitness_app, mon
     assert payload["revocation"]["status"] == "failed"
     assert "stored-access" not in response.get_data(as_text=True)
     assert fitness_app.load_connection_token_material(fitness_app.WHOOP_DB_FILE) == {}
+
+
+def test_whoop_disconnect_reports_local_token_delete_failure(fitness_app, monkeypatch):
+    monkeypatch.setattr(
+        fitness_app,
+        "disconnect_whoop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("locked token file")),
+    )
+
+    response = fitness_app.app.test_client().post("/api/whoop/disconnect")
+
+    assert response.status_code == 500
+    assert response.get_json()["error"]["code"] == "whoop_disconnect_failed"
