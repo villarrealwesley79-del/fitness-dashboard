@@ -247,3 +247,23 @@ def test_default_protected_material_path_is_outside_repo(monkeypatch):
 
     assert not material_path.startswith(os.path.dirname(whoop_store.__file__))
     assert "Application Support" in material_path
+
+
+def test_default_protected_material_path_is_outside_data_dir(monkeypatch, tmp_path):
+    monkeypatch.delenv("WHOOP_PROTECTED_MATERIAL_DIR", raising=False)
+    db_path = str(tmp_path / "whoop.sqlite3")
+
+    material_path = whoop_store._protected_material_path(db_path)
+
+    assert not material_path.startswith(str(tmp_path))
+    assert "Application Support" in material_path
+
+
+def test_clear_whoop_data_removes_import_history(tmp_path):
+    db_path = str(tmp_path / "whoop.sqlite3")
+    whoop_store.init_whoop_db(db_path)
+    whoop_store.record_whoop_sync_run(db_path, reason="csv_import")
+
+    whoop_store.clear_whoop_data(db_path)
+
+    assert whoop_store.list_whoop_sync_runs(db_path, reason="csv_import") == []

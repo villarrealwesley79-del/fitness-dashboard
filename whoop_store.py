@@ -183,16 +183,7 @@ def _protected_material_path(db_path: str) -> str:
     if override:
         base_dir = os.path.abspath(os.path.expanduser(override))
     else:
-        db_dir = os.path.dirname(os.path.abspath(db_path))
-        repo_dir = os.path.dirname(os.path.abspath(__file__))
-        try:
-            db_inside_repo = os.path.commonpath([db_dir, repo_dir]) == repo_dir
-        except ValueError:
-            db_inside_repo = False
-        if db_inside_repo:
-            base_dir = os.path.expanduser("~/Library/Application Support/Fitness Dashboard/secrets")
-        else:
-            base_dir = db_dir
+        base_dir = os.path.expanduser("~/Library/Application Support/Fitness Dashboard/secrets")
     return os.path.join(base_dir, ".whoop-protected-material.json")
 
 
@@ -323,6 +314,7 @@ def clear_whoop_data(db_path: str) -> None:
     with closing(_connect(db_path)) as conn:
         conn.execute("DELETE FROM whoop_records")
         conn.execute("DELETE FROM whoop_daily_facts")
+        conn.execute("DELETE FROM whoop_sync_runs")
         conn.commit()
 
 
