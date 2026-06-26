@@ -10275,7 +10275,6 @@
         wireEvents();
         switchTab('tab-dashboard');
         fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
-        fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
         refreshAiStatus();
         if (aiStatusTimer) clearInterval(aiStatusTimer);
         aiStatusTimer = setInterval(refreshAiStatus, 60_000);
@@ -10284,7 +10283,10 @@
         registerServiceWorker();
         refreshMealQueueAuthScope()
             .catch((err) => console.warn('Meal queue auth scope refresh failed:', err))
-            .finally(() => restoreActiveWorkoutDraft());
+            .finally(() => {
+                restoreActiveWorkoutDraft();
+                fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
+            });
         cleanupOrphanedMealQueuePhotos().catch((err) => console.warn('Meal queue cleanup failed:', err));
         window.addEventListener('pagehide', saveActiveWorkoutDraftBeforePageHidden);
         window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);

@@ -105,7 +105,8 @@ def test_active_workout_draft_clear_points_are_explicit_and_error_states_are_pre
 def test_active_workout_draft_restores_after_auth_scope_refresh_and_saves_on_background_events():
     boot_block = _app_js_block("function boot()", "function registerServiceWorker")
 
-    assert ".finally(() => restoreActiveWorkoutDraft());" in boot_block
+    assert ".finally(() => {\n                restoreActiveWorkoutDraft();" in boot_block
+    assert "restoreActiveWorkoutDraft();\n                fetchWorkoutAdaptationNotices().catch" in boot_block
     assert "window.addEventListener('pagehide', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "document.addEventListener('visibilitychange', () => {" in boot_block
