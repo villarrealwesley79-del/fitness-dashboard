@@ -1349,6 +1349,26 @@
         });
     }
 
+    function recommendationSourceConflictNode(payload) {
+        const node = payload && payload.recommendation_sources && payload.recommendation_sources.source_conflict;
+        if (!node || node.has_conflict !== true) return null;
+        return {
+            providers: [node.whoop_band ? 'whoop' : null, node.oura_band ? 'oura' : null].filter(Boolean),
+            message: node.explanation || 'Wearable sources disagree, so the recommendation stays conservative.',
+        };
+    }
+
+    function collectSourceConflicts(dash, reco) {
+        const conflicts = []
+            .concat((dash && dash.source_conflicts) || [])
+            .concat((reco && reco.source_conflicts) || []);
+        const dashConflict = recommendationSourceConflictNode(dash);
+        const recoConflict = recommendationSourceConflictNode(reco);
+        if (dashConflict) conflicts.push(dashConflict);
+        if (recoConflict) conflicts.push(recoConflict);
+        return normalizeSourceConflicts(conflicts);
+    }
+
     function conflictTouchesProvider(conflict, providerKey) {
         const key = normalizeSourceKey(providerKey);
         if (!conflict) return false;
@@ -1648,14 +1668,12 @@
                     return {
                         key,
                         label: sourceDisplayName(key),
-                        state: key === 'whoop' ? resolveWhoopUiState(node, (dash && dash.source_conflicts) || (reco && reco.source_conflicts) || []) : (node && node.status) || '',
+                        state: key === 'whoop' ? resolveWhoopUiState(node, collectSourceConflicts(dash, reco)) : (node && node.status) || '',
                         detail: node && (node.detail || node.summary || node.last_data_point || ''),
                     };
                 });
         }
-        const conflicts = normalizeSourceConflicts(
-            (dash && dash.source_conflicts) || (reco && reco.source_conflicts) || []
-        );
+        const conflicts = collectSourceConflicts(dash, reco);
         const summary = $('reco-sources-summary');
         const note = $('reco-sources-note');
         const conflictEl = $('reco-source-conflict');
@@ -2029,7 +2047,7 @@
         // Recommendation card — FIT-1 brief + FIT-2 honest freshness
         const nw = dash && dash.next_workout ? dash.next_workout : null;
         const freshness = (reco && reco.freshness) || (dash && dash.freshness) || null;
-        const sourceConflicts = (dash && dash.source_conflicts) || (reco && reco.source_conflicts) || [];
+        const sourceConflicts = collectSourceConflicts(dash, reco);
         const freshnessWithWhoop = Object.assign({}, freshness || {});
         const whoopFreshness = mergeWhoopFreshnessNode(
             freshnessWithWhoop.whoop,
@@ -4448,7 +4466,7 @@
         const whoopFreshness = mergeWhoopFreshnessNode(
             freshness && freshness.whoop,
             whoop,
-            (state.dashboard && state.dashboard.source_conflicts) || (state.reco && state.reco.source_conflicts) || []
+            collectSourceConflicts(state.dashboard, state.reco)
         );
         freshness = Object.assign({}, freshness || {}, { whoop: whoopFreshness });
         const host = $('settings-goals');
@@ -4525,7 +4543,7 @@
         // matches the dashboard reco-card exactly. Detail panels below each
         // chip carry the richer cached/live + sync nuance.
         renderFreshnessChips(freshness, SETTINGS_FRESHNESS_SLOTS);
-        renderWhoopFreshnessDetail(whoop, whoopFreshness, (state.dashboard && state.dashboard.source_conflicts) || (state.reco && state.reco.source_conflicts) || []);
+        renderWhoopFreshnessDetail(whoop, whoopFreshness, collectSourceConflicts(state.dashboard, state.reco));
         renderOuraFreshnessDetail(oura, ouraFreshness);
         // FIT-111: populate the four settings group header chips so the
         // user gets a glance-level signal per section. Reads live chip

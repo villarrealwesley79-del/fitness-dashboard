@@ -55,6 +55,16 @@ def test_whoop_frontend_preserves_keyboard_and_modal_focus_path():
     assert "$('btn-disconnect-whoop') && $('btn-disconnect-whoop').addEventListener('click', disconnectWhoop);" in app_js
 
 
+def test_whoop_recommendation_source_conflict_accepts_nested_backend_shape():
+    app_js = APP_JS.read_text()
+
+    assert "function recommendationSourceConflictNode(payload)" in app_js
+    assert "payload.recommendation_sources && payload.recommendation_sources.source_conflict" in app_js
+    assert "function collectSourceConflicts(dash, reco)" in app_js
+    assert "const conflicts = collectSourceConflicts(dash, reco);" in app_js
+    assert "renderWhoopFreshnessDetail(whoop, whoopFreshness, collectSourceConflicts(state.dashboard, state.reco));" in app_js
+
+
 def test_whoop_styles_live_in_scoped_override_file():
     css = APP_CSS.read_text()
 
