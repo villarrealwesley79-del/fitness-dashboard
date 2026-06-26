@@ -42,11 +42,17 @@ def test_active_workout_draft_uses_versioned_scoped_localstorage_wrapper():
     assert "const ACTIVE_WORKOUT_DRAFT_VERSION = 1;" in block
     assert "function currentActiveWorkoutDraftScope()" in block
     assert "return String(_mealQueueAuthScope || '').trim();" in block
+    assert "function activeWorkoutDraftScopeForWorkout(workout)" in block
+    assert "const workoutScope = String(workout && workout.auth_scope || '').trim();" in block
     assert "function syncActiveWorkoutInputsFromDom()" in block
     assert "function saveActiveWorkoutDraftBeforePageHidden()" in block
+    assert "if (state.activeWorkout && !state.activeWorkout.queuedForSyncReview) saveActiveWorkoutDraft();" in block
     assert "let _activeWorkoutDraftSavePending = false;" in block
+    assert "let _mealQueueAuthScopeRetryTimer = null;" in block
+    assert "let _mealQueueAuthScopeRetryDelayMs = 5_000;" in block
     assert "version: ACTIVE_WORKOUT_DRAFT_VERSION" in block
-    assert "const authScope = currentActiveWorkoutDraftScope();" in block
+    assert "const authScope = activeWorkoutDraftScopeForWorkout(workout);" in block
+    assert "if (workout.queuedForSyncReview) return;" in block
     assert "if (!authScope) {\n            _activeWorkoutDraftSavePending = true;\n            return;\n        }" in block
     assert "auth_scope: authScope" in block
     assert "_activeWorkoutDraftSavePending = false;" in block
@@ -81,7 +87,9 @@ def test_active_workout_draft_persists_all_mutation_paths():
     swap_block = _app_js_block("function _finalizeSwap", "function clearAdjustIntent")
 
     assert "saveActiveWorkoutDraft({ syncDom: false });" in recommendation_block
+    assert "auth_scope: String(nw.auth_scope || (existing && existing.auth_scope) || currentActiveWorkoutDraftScope() || '').trim()," in recommendation_block
     assert "saveActiveWorkoutDraft({ syncDom: false });" in adjust_block
+    assert "auth_scope: String(nw.auth_scope || existing.auth_scope || currentActiveWorkoutDraftScope() || '').trim()," in adjust_block
     assert "state.activeWorkout.dirty = true;\n        saveActiveWorkoutDraft();" in set_block
     assert "state.activeWorkout.dirty = true;\n        saveActiveWorkoutDraft();" in cardio_block
     assert "renderActiveWorkout();\n        saveActiveWorkoutDraft();" in remove_block
@@ -102,6 +110,7 @@ def test_active_workout_draft_clear_points_are_explicit_and_error_states_are_pre
     assert "Validation failed: log at least one set before completing this workout." in complete_block
     assert "aw.saveState = { message, variant: 'err' };\n            saveActiveWorkoutDraft();" in complete_block
     assert "aw.saveState = { message: msg, variant: 'err' };" in complete_block
+    assert "aw.queuedForSyncReview = true;" in complete_block
     assert "setActiveWorkoutStatus(msg, 'err');\n                clearActiveWorkoutDraft();" in complete_block
 
 
@@ -109,10 +118,19 @@ def test_active_workout_draft_restores_after_auth_scope_refresh_and_saves_on_bac
     boot_block = _app_js_block("function boot()", "function registerServiceWorker")
 
     assert "async function boot()" not in APP_JS
-    assert "refreshMealQueueAuthScope({ timeoutMs: 2500 })\n            .catch" in boot_block
+    assert "refreshMealQueueAuthScope({ timeoutMs: 2500 })\n            .then" in boot_block
     assert "wireEvents();" in boot_block
     assert boot_block.index("wireEvents();") < boot_block.index("refreshMealQueueAuthScope({ timeoutMs: 2500 })")
-    assert "restoreActiveWorkoutDraft();\n                flushPendingActiveWorkoutDraftSave();\n                fetchWorkoutAdaptationNotices().catch" in boot_block
+    assert ".then((scopeResult) => {\n                settleActiveWorkoutDraftAfterAuthScope(scopeResult);" in boot_block
+    assert "function settleActiveWorkoutDraftAfterAuthScope(scopeResult)" in APP_JS
+    assert "function scheduleMealQueueAuthScopeRetry(status)" in APP_JS
+    assert "if (status !== 'pending' || _mealQueueAuthScopeRetryTimer) return;" in APP_JS
+    assert "_mealQueueAuthScopeRetryDelayMs = Math.min(_mealQueueAuthScopeRetryDelayMs * 2, 30_000);" in APP_JS
+    assert "clearMealQueueAuthScopeRetry();" in APP_JS
+    assert "restoreActiveWorkoutDraft();\n        flushPendingActiveWorkoutDraftSave();" in APP_JS
+    assert "scheduleMealQueueAuthScopeRetry(scopeResult && scopeResult.status);" in boot_block
+    assert "scheduleMealQueueAuthScopeRetry('pending');" in boot_block
+    assert "fetchWorkoutAdaptationNotices().catch" in boot_block
     assert "window.addEventListener('pagehide', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "document.addEventListener('visibilitychange', () => {" in boot_block

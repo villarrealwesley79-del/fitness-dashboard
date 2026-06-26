@@ -257,6 +257,7 @@ def test_next_workout_endpoint_does_not_fetch_open_wearables(monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["next_workout"]["exercises"]
+    assert payload["next_workout"]["auth_scope"].startswith("user:")
 
 
 def test_open_wearables_marker_tolerates_timezone_sleep_events():

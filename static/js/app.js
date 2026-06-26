@@ -5176,6 +5176,8 @@
     const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';
     const ACTIVE_WORKOUT_DRAFT_VERSION = 1;
     let _activeWorkoutDraftSavePending = false;
+    let _mealQueueAuthScopeRetryTimer = null;
+    let _mealQueueAuthScopeRetryDelayMs = 5_000;
 
     function currentActiveWorkoutDraftScope() {
         try {
@@ -5183,6 +5185,11 @@
         } catch (_) {
             return '';
         }
+    }
+
+    function activeWorkoutDraftScopeForWorkout(workout) {
+        const workoutScope = String(workout && workout.auth_scope || '').trim();
+        return workoutScope || currentActiveWorkoutDraftScope();
     }
 
     function activeWorkoutDraftIsValid(parsed) {
@@ -5260,11 +5267,13 @@
         if (syncDom) syncActiveWorkoutInputsFromDom();
         const workout = state.activeWorkout;
         if (!workout) return;
-        const authScope = currentActiveWorkoutDraftScope();
+        if (workout.queuedForSyncReview) return;
+        const authScope = activeWorkoutDraftScopeForWorkout(workout);
         if (!authScope) {
             _activeWorkoutDraftSavePending = true;
             return;
         }
+        workout.auth_scope = authScope;
         try {
             const draft = {
                 version: ACTIVE_WORKOUT_DRAFT_VERSION,
@@ -5284,7 +5293,7 @@
     }
 
     function saveActiveWorkoutDraftBeforePageHidden() {
-        if (state.activeWorkout) saveActiveWorkoutDraft();
+        if (state.activeWorkout && !state.activeWorkout.queuedForSyncReview) saveActiveWorkoutDraft();
     }
 
     function clearActiveWorkoutDraft() {
@@ -5310,6 +5319,37 @@
         renderActiveWorkout();
         toast('Recovered unsaved workout details');
         return true;
+    }
+
+    function settleActiveWorkoutDraftAfterAuthScope(scopeResult) {
+        if (!(scopeResult && scopeResult.ok)) return;
+        clearMealQueueAuthScopeRetry();
+        restoreActiveWorkoutDraft();
+        flushPendingActiveWorkoutDraftSave();
+    }
+
+    function clearMealQueueAuthScopeRetry() {
+        if (_mealQueueAuthScopeRetryTimer) clearTimeout(_mealQueueAuthScopeRetryTimer);
+        _mealQueueAuthScopeRetryTimer = null;
+        _mealQueueAuthScopeRetryDelayMs = 5_000;
+    }
+
+    function scheduleMealQueueAuthScopeRetry(status) {
+        if (status !== 'pending' || _mealQueueAuthScopeRetryTimer) return;
+        const delayMs = _mealQueueAuthScopeRetryDelayMs;
+        _mealQueueAuthScopeRetryDelayMs = Math.min(_mealQueueAuthScopeRetryDelayMs * 2, 30_000);
+        _mealQueueAuthScopeRetryTimer = setTimeout(() => {
+            _mealQueueAuthScopeRetryTimer = null;
+            refreshMealQueueAuthScope()
+                .then((scopeResult) => {
+                    settleActiveWorkoutDraftAfterAuthScope(scopeResult);
+                    scheduleMealQueueAuthScopeRetry(scopeResult && scopeResult.status);
+                })
+                .catch((err) => {
+                    console.warn('Meal queue auth scope refresh failed:', err);
+                    scheduleMealQueueAuthScopeRetry('pending');
+                });
+        }, delayMs);
     }
 
     function buildLoggedSets(ex, previousSets) {
@@ -5344,6 +5384,7 @@
             id: (existing && existing.id) || nw.workout_id || newWorkoutId(nw.id),
             recommendation_id: nw.id || (existing && existing.recommendation_id) || null,
             focus: nw.focus || nw.goal_name || (existing && existing.focus) || 'Workout',
+            auth_scope: String(nw.auth_scope || (existing && existing.auth_scope) || currentActiveWorkoutDraftScope() || '').trim(),
             exercises: (nw.exercises || []).map((ex, i) => buildActiveExercise(ex, previousExercises[i])),
             cardio: buildActiveCardio(nw.cardio, existing && existing.cardio),
             saveState: existing && existing.saveState ? existing.saveState : null,
@@ -5515,6 +5556,7 @@
             id: existing.id || nw.workout_id || newWorkoutId(nw.id),
             recommendation_id: nw.id || existing.recommendation_id || null,
             focus: nw.focus || nw.goal_name || existing.focus || 'Workout',
+            auth_scope: String(nw.auth_scope || existing.auth_scope || currentActiveWorkoutDraftScope() || '').trim(),
             exercises,
             cardio: mergeAdjustedActiveCardio(nw.cardio, existing.cardio),
             saveState: existing.saveState || null,
@@ -5893,7 +5935,7 @@
         await switchTab('tab-workout');
     }
 
-    function startAdjustedWorkout() {
+    async function startAdjustedWorkout() {
         const nw = state.adjustedWorkout || (state.dashboard && state.dashboard.next_workout);
         if (!nw) { toast('No adjusted workout available', 'err'); return; }
         if (!confirmDiscardActiveWorkoutForStart()) return;
@@ -6850,6 +6892,7 @@
                 else if (result.syncStatus === 'auth_required') msg = 'Sign in, then retry the workout from the sync queue.';
                 else msg = `Save needs review — ${result.reason || 'see the sync queue'}.`;
                 aw.saveState = { message: msg, variant: 'err' };
+                aw.queuedForSyncReview = true;
                 setActiveWorkoutStatus(msg, 'err');
                 clearActiveWorkoutDraft();
                 toast(result.syncStatus === 'conflicted' ? 'Sync conflict' : 'Workout queued for review', 'err');
@@ -10304,10 +10347,15 @@
         wireMealComposer();
         registerServiceWorker();
         refreshMealQueueAuthScope({ timeoutMs: 2500 })
-            .catch((err) => console.warn('Meal queue auth scope refresh failed:', err))
+            .then((scopeResult) => {
+                settleActiveWorkoutDraftAfterAuthScope(scopeResult);
+                scheduleMealQueueAuthScopeRetry(scopeResult && scopeResult.status);
+            })
+            .catch((err) => {
+                console.warn('Meal queue auth scope refresh failed:', err);
+                scheduleMealQueueAuthScopeRetry('pending');
+            })
             .finally(() => {
-                restoreActiveWorkoutDraft();
-                flushPendingActiveWorkoutDraftSave();
                 fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
             });
         cleanupOrphanedMealQueuePhotos().catch((err) => console.warn('Meal queue cleanup failed:', err));
@@ -10317,7 +10365,15 @@
             if (document.visibilityState === 'hidden') saveActiveWorkoutDraftBeforePageHidden();
         });
         window.addEventListener('online', () => {
-            refreshMealQueueAuthScope().catch((err) => console.warn('Meal queue auth scope refresh failed:', err));
+            refreshMealQueueAuthScope()
+                .then((scopeResult) => {
+                    settleActiveWorkoutDraftAfterAuthScope(scopeResult);
+                    scheduleMealQueueAuthScopeRetry(scopeResult && scopeResult.status);
+                })
+                .catch((err) => {
+                    console.warn('Meal queue auth scope refresh failed:', err);
+                    scheduleMealQueueAuthScopeRetry('pending');
+                });
             flushSyncQueue();
             flushMealSyncQueue();
         });
