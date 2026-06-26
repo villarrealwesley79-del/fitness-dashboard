@@ -1430,7 +1430,11 @@
 
     function mergeWhoopFreshnessNode(freshnessNode, whoopStatus, conflicts) {
         const merged = Object.assign({}, freshnessNode || {}, whoopStatus || {});
+        const connectionState = normalizeWhoopStateToken(whoopStatus && (whoopStatus.status || whoopStatus.connection_status));
         if (freshnessNode && freshnessNode.status) merged.status = freshnessNode.status;
+        if (connectionState === WHOOP_UI_STATES.missing_config || connectionState === WHOOP_UI_STATES.reauth_required) {
+            merged.status = connectionState;
+        }
         if (freshnessNode && freshnessNode.score_state) merged.score_state = freshnessNode.score_state;
         if (freshnessNode && Object.prototype.hasOwnProperty.call(freshnessNode, 'last_data_point')) merged.last_data_point = freshnessNode.last_data_point;
         const conflict = firstWhoopConflict(conflicts);
@@ -1826,24 +1830,27 @@
         const disconnected = uiState === WHOOP_UI_STATES.disconnected;
         const missingConfig = uiState === WHOOP_UI_STATES.missing_config;
         const reauth = uiState === WHOOP_UI_STATES.reauth_required;
+        const csvOnlyDisconnected = uiState === WHOOP_UI_STATES.csv_only && (!whoop || whoop.connected === false);
+        const liveSyncUnavailable = disconnected || missingConfig || reauth || csvOnlyDisconnected;
+        const cleanupUnavailable = disconnected || csvOnlyDisconnected;
         const busySync = state.whoopUi.syncInFlight || uiState === WHOOP_UI_STATES.syncing;
         const busyDisconnect = state.whoopUi.disconnectInFlight;
         const busyDelete = state.whoopUi.deleteInFlight;
         const busy = busySync || busyDisconnect || busyDelete;
 
         if (connectBtn) {
-            connectBtn.hidden = !(disconnected || missingConfig || reauth || connectUrl);
+            connectBtn.hidden = !(liveSyncUnavailable || connectUrl);
             connectBtn.disabled = busy;
             connectBtn.textContent = reauth ? 'Reconnect' : 'Connect';
         }
         if (syncBtn) {
-            syncBtn.hidden = disconnected && !connectUrl;
-            syncBtn.disabled = busy || disconnected || missingConfig || reauth;
+            syncBtn.hidden = liveSyncUnavailable && !connectUrl;
+            syncBtn.disabled = busy || liveSyncUnavailable;
             syncBtn.textContent = busySync ? 'Syncing…' : 'Sync';
         }
         if (disconnectBtn) {
-            disconnectBtn.hidden = disconnected && !connectUrl;
-            disconnectBtn.disabled = busy || disconnected;
+            disconnectBtn.hidden = cleanupUnavailable;
+            disconnectBtn.disabled = busy || cleanupUnavailable;
             disconnectBtn.textContent = busyDisconnect ? 'Disconnecting…' : 'Disconnect';
         }
         if (deleteBtn) {

@@ -13,7 +13,7 @@ def test_index_exposes_whoop_dashboard_and_settings_surfaces():
     html = INDEX_HTML.read_text()
 
     for token in [
-        '/static/css/app.css?v=20260626-fit239-whoop3',
+        '/static/css/app.css?v=20260626-fit239-whoop4',
         'id="reco-fresh-whoop"',
         'id="btn-reco-sources"',
         'id="reco-sources-summary"',
@@ -38,9 +38,9 @@ def test_whoop_release_assets_bust_cached_fit238_runtime():
     loader = APP_LOADER.read_text()
     service_worker = APP_SW.read_text()
 
-    assert "/static/js/app-loader.js?v=20260626-fit239-whoop3" in html
-    assert "/static/js/app.js?v=20260626-fit239-whoop3" in loader
-    assert "fitness-dashboard-v20260626-fit239-whoop3" in service_worker
+    assert "/static/js/app-loader.js?v=20260626-fit239-whoop4" in html
+    assert "/static/js/app.js?v=20260626-fit239-whoop4" in loader
+    assert "fitness-dashboard-v20260626-fit239-whoop4" in service_worker
 
 
 def test_whoop_secret_patterns_are_excluded_from_docker_context():
@@ -120,7 +120,10 @@ def test_whoop_freshness_status_wins_over_connection_status_merge():
     assert "scoreState === WHOOP_UI_STATES.calibrating" in app_js
     assert "missing_config: 'missing_config'" in app_js
     assert "if (status === WHOOP_UI_STATES.missing_config) return WHOOP_UI_STATES.missing_config;" in app_js
-    assert "syncBtn.disabled = busy || disconnected || missingConfig || reauth;" in app_js
+    assert "connectionState === WHOOP_UI_STATES.missing_config" in app_js
+    assert "const csvOnlyDisconnected = uiState === WHOOP_UI_STATES.csv_only && (!whoop || whoop.connected === false);" in app_js
+    assert "syncBtn.disabled = busy || liveSyncUnavailable;" in app_js
+    assert "disconnectBtn.hidden = cleanupUnavailable;" in app_js
     assert app_js.index("normalizeWhoopStateToken(whoop.source_kind) === WHOOP_UI_STATES.csv_only") < app_js.index("whoop.connected === false")
     assert app_js.index("whoop.connected === false") < app_js.index("if (status === WHOOP_UI_STATES.fresh")
 
