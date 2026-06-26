@@ -39,6 +39,11 @@ def test_whoop_csv_import_projects_facts_and_lists_history(fitness_app):
     assert fact["recovery_score"] == 42
     assert fact["sleep_performance_pct"] == 68
     assert fact["strain"] == 18.4
+    status = fitness_app.app.test_client().get("/api/whoop/status").get_json()
+    assert status["local_date"] == "2026-06-25"
+    assert status["recovery_score"] == 42
+    assert status["sleep_performance_pct"] == 68
+    assert status["strain"] == 18.4
 
     imports = fitness_app.app.test_client().get("/api/whoop/imports")
     assert imports.status_code == 200

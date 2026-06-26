@@ -11041,6 +11041,7 @@ def _whoop_public_status(now=None):
     config = _whoop_config_or_none()
     connection = get_whoop_connection_status(WHOOP_DB_FILE)
     freshness = _annotate_whoop_freshness(latest_whoop_freshness(WHOOP_DB_FILE, now=now))
+    fact = get_whoop_daily_fact(WHOOP_DB_FILE, local_date=_today_str()) or get_whoop_daily_fact(WHOOP_DB_FILE)
     if config is None:
         status = "missing_config"
     elif connection.get("reauth_required") or connection.get("status") == "reauth_required":
@@ -11062,6 +11063,13 @@ def _whoop_public_status(now=None):
         "last_error": connection.get("last_error"),
         "scopes": connection.get("scopes") or [],
         "freshness": freshness,
+        "local_date": (fact or {}).get("local_date"),
+        "recovery_score": (fact or {}).get("recovery_score"),
+        "recovery_band": (fact or {}).get("recovery_band"),
+        "strain": (fact or {}).get("strain"),
+        "sleep_performance_pct": (fact or {}).get("sleep_performance_pct"),
+        "sleep_need_gap_min": (fact or {}).get("sleep_need_gap_min"),
+        "score_state": (fact or {}).get("score_state"),
     }
 
 

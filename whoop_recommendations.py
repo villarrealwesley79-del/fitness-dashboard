@@ -63,6 +63,9 @@ def build_whoop_recommendation_signals(
     sleep_performance = fact.get("sleep_performance_pct")
     sleep_need_gap_min = fact.get("sleep_need_gap_min")
     strain = fact.get("strain")
+    has_metric = any(value is not None for value in (recovery_score, sleep_performance, sleep_need_gap_min, strain))
+    if not has_metric:
+        display_only = True
 
     if display_only:
         explanations.append("WHOOP is available for context only until fresh scored data lands.")

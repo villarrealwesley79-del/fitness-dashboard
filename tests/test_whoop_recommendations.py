@@ -137,3 +137,16 @@ def test_stale_or_unscored_data_is_display_only():
     assert adjusted["recommendation"] == "moderate"
     assert adjusted["applied_modifiers"] == []
     assert adjusted["next_workout"]["exercises"][0]["target_sets"] == 3
+
+
+def test_scored_fact_without_metrics_is_display_only():
+    signals = build_whoop_recommendation_signals(
+        {
+            "score_state": "SCORED",
+        },
+        freshness={"status": "fresh"},
+    )
+
+    assert signals["display_only"] is True
+    assert signals["bounded_confidence"] == "low"
+    assert signals["applied_modifiers"] == []
