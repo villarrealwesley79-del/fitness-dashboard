@@ -33,6 +33,7 @@ oura_data.db
 oura_daily.sqlite3
 apple_health_sync.db
 ai_coach_cache.sqlite3
+whoop_sync.lock
 
 data_*.json
 *_snapshot.json
