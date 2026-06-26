@@ -79,6 +79,7 @@ from whoop_store import (
     get_connection_status as get_whoop_connection_status,
     get_daily_fact as get_whoop_daily_fact,
     init_whoop_db,
+    latest_whoop_fact_source_reason,
     latest_whoop_freshness,
     list_whoop_daily_facts,
     list_whoop_sync_runs,
@@ -11010,10 +11011,11 @@ def _parse_whoop_csv_rows(text):
 
 def _whoop_has_csv_imported_data(freshness=None):
     node = freshness or {}
-    if not node.get("last_data_point"):
+    local_date = node.get("last_data_point")
+    if not local_date:
         return False
     try:
-        return bool(list_whoop_sync_runs(WHOOP_DB_FILE, reason="csv_import", limit=1))
+        return latest_whoop_fact_source_reason(WHOOP_DB_FILE, local_date=local_date) == "csv_import"
     except Exception:
         return False
 

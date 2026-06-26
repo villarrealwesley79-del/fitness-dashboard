@@ -788,6 +788,28 @@ def list_whoop_sync_runs(db_path: str, *, reason: str | None = None, limit: int 
     return [dict(row) for row in rows]
 
 
+def latest_whoop_fact_source_reason(db_path: str, *, local_date: str | None = None) -> str | None:
+    init_whoop_db(db_path)
+    if not local_date:
+        fact = get_daily_fact(db_path)
+        local_date = (fact or {}).get("local_date")
+    if not local_date:
+        return None
+    with closing(_connect(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT s.reason
+            FROM whoop_records r
+            LEFT JOIN whoop_sync_runs s ON s.run_id = r.sync_run_id
+            WHERE r.local_date = ?
+            ORDER BY r.imported_at DESC
+            LIMIT 1
+            """,
+            (local_date,),
+        ).fetchone()
+    return row["reason"] if row is not None else None
+
+
 def list_whoop_daily_facts(db_path: str, *, limit: int = 30) -> list[dict]:
     init_whoop_db(db_path)
     limit = max(1, min(int(limit or 30), 366))

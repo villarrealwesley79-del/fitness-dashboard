@@ -74,6 +74,44 @@ def test_whoop_csv_import_can_drive_local_recommendation_signals_without_oauth(f
     assert freshness["csv_only"] is True
 
 
+def test_historical_csv_import_does_not_mark_later_api_fact_csv_only(fitness_app):
+    client = fitness_app.app.test_client()
+    client.post(
+        "/api/whoop/import-csv",
+        json={
+            "csv": "\n".join(
+                [
+                    "record_type,local_date,recovery_score,score_state",
+                    "recovery,2026-06-24,38,SCORED",
+                ]
+            )
+        },
+    )
+    run_id = whoop_store.record_whoop_sync_run(fitness_app.WHOOP_DB_FILE, reason="manual")
+    whoop_store.upsert_whoop_records(
+        fitness_app.WHOOP_DB_FILE,
+        "recovery",
+        [
+            {
+                "upstream_id": "api-rec",
+                "local_date": fitness_app._today_str(),
+                "score_state": "SCORED",
+                "recovery_score": 35,
+            }
+        ],
+        sync_run_id=run_id,
+    )
+    whoop_store.project_whoop_daily_facts(fitness_app.WHOOP_DB_FILE)
+
+    freshness = fitness_app._compute_data_freshness()["whoop"]
+    signals = client.get("/api/whoop/recommendation-signals").get_json()["signals"]
+
+    assert freshness.get("source_kind") != "csv_only"
+    assert freshness.get("csv_only") is not True
+    assert signals["display_only"] is True
+    assert "source_kind" not in signals
+
+
 def test_whoop_csv_import_preserves_zero_metric_values(fitness_app):
     csv_text = "\n".join(
         [
