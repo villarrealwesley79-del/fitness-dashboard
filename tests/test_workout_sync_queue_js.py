@@ -44,10 +44,13 @@ def test_active_workout_draft_uses_versioned_scoped_localstorage_wrapper():
     assert "return String(_mealQueueAuthScope || '').trim();" in block
     assert "function syncActiveWorkoutInputsFromDom()" in block
     assert "function saveActiveWorkoutDraftBeforePageHidden()" in block
+    assert "let _activeWorkoutDraftSavePending = false;" in block
     assert "version: ACTIVE_WORKOUT_DRAFT_VERSION" in block
     assert "const authScope = currentActiveWorkoutDraftScope();" in block
-    assert "if (!authScope) return;" in block
+    assert "if (!authScope) {\n            _activeWorkoutDraftSavePending = true;\n            return;\n        }" in block
     assert "auth_scope: authScope" in block
+    assert "_activeWorkoutDraftSavePending = false;" in block
+    assert "function flushPendingActiveWorkoutDraftSave()" in block
     assert "JSON.stringify(draft)" in block
     assert "parsed.version === ACTIVE_WORKOUT_DRAFT_VERSION" in block
     assert "Array.isArray(workout.exercises)" in block
@@ -105,11 +108,11 @@ def test_active_workout_draft_clear_points_are_explicit_and_error_states_are_pre
 def test_active_workout_draft_restores_after_auth_scope_refresh_and_saves_on_background_events():
     boot_block = _app_js_block("function boot()", "function registerServiceWorker")
 
-    assert "async function boot()" in APP_JS
-    assert "await refreshMealQueueAuthScope({ timeoutMs: 2500 })\n            .catch" in boot_block
+    assert "async function boot()" not in APP_JS
+    assert "refreshMealQueueAuthScope({ timeoutMs: 2500 })\n            .catch" in boot_block
     assert "wireEvents();" in boot_block
-    assert boot_block.index("await refreshMealQueueAuthScope({ timeoutMs: 2500 })") < boot_block.index("wireEvents();")
-    assert "restoreActiveWorkoutDraft();\n        fetchWorkoutAdaptationNotices().catch" in boot_block
+    assert boot_block.index("wireEvents();") < boot_block.index("refreshMealQueueAuthScope({ timeoutMs: 2500 })")
+    assert "restoreActiveWorkoutDraft();\n                flushPendingActiveWorkoutDraftSave();\n                fetchWorkoutAdaptationNotices().catch" in boot_block
     assert "window.addEventListener('pagehide', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "document.addEventListener('visibilitychange', () => {" in boot_block

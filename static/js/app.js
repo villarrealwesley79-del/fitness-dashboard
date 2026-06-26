@@ -5175,6 +5175,7 @@
 
     const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';
     const ACTIVE_WORKOUT_DRAFT_VERSION = 1;
+    let _activeWorkoutDraftSavePending = false;
 
     function currentActiveWorkoutDraftScope() {
         try {
@@ -5260,7 +5261,10 @@
         const workout = state.activeWorkout;
         if (!workout) return;
         const authScope = currentActiveWorkoutDraftScope();
-        if (!authScope) return;
+        if (!authScope) {
+            _activeWorkoutDraftSavePending = true;
+            return;
+        }
         try {
             const draft = {
                 version: ACTIVE_WORKOUT_DRAFT_VERSION,
@@ -5269,7 +5273,14 @@
                 workout,
             };
             localStorage.setItem(ACTIVE_WORKOUT_DRAFT_KEY, JSON.stringify(draft));
+            _activeWorkoutDraftSavePending = false;
         } catch (_) { /* localStorage may be unavailable; keep in memory for this page. */ }
+    }
+
+    function flushPendingActiveWorkoutDraftSave() {
+        if (_activeWorkoutDraftSavePending && state.activeWorkout) {
+            saveActiveWorkoutDraft();
+        }
     }
 
     function saveActiveWorkoutDraftBeforePageHidden() {
@@ -10281,10 +10292,8 @@
         refreshMealSubmitState();
     }
 
-    async function boot() {
+    function boot() {
         renderGreeting();
-        await refreshMealQueueAuthScope({ timeoutMs: 2500 })
-            .catch((err) => console.warn('Meal queue auth scope refresh failed:', err));
         wireEvents();
         switchTab('tab-dashboard');
         fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
@@ -10294,8 +10303,13 @@
         renderSyncBanner();
         wireMealComposer();
         registerServiceWorker();
-        restoreActiveWorkoutDraft();
-        fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
+        refreshMealQueueAuthScope({ timeoutMs: 2500 })
+            .catch((err) => console.warn('Meal queue auth scope refresh failed:', err))
+            .finally(() => {
+                restoreActiveWorkoutDraft();
+                flushPendingActiveWorkoutDraftSave();
+                fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
+            });
         cleanupOrphanedMealQueuePhotos().catch((err) => console.warn('Meal queue cleanup failed:', err));
         window.addEventListener('pagehide', saveActiveWorkoutDraftBeforePageHidden);
         window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);
