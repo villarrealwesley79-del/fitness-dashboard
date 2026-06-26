@@ -100,6 +100,29 @@ def test_whoop_callback_redirects_browser_navigation_after_success(fitness_app, 
     assert "stored-access" not in response.get_data(as_text=True)
 
 
+def test_whoop_callback_rejects_partial_token_payload(fitness_app, monkeypatch):
+    monkeypatch.setattr(fitness_app, "_whoop_redirect_uri", lambda: "http://localhost/api/whoop/callback")
+    monkeypatch.setattr(fitness_app, "_whoop_config_for_redirect", lambda redirect_uri: _config())
+    monkeypatch.setattr(
+        fitness_app,
+        "exchange_whoop_code",
+        lambda config, code: {"access_token": "stored-access", "expires_in": 3600},
+    )
+
+    client = fitness_app.app.test_client()
+    state = urllib.parse.parse_qs(
+        urllib.parse.urlparse(client.post("/api/whoop/connect/start").get_json()["authorization_url"]).query
+    )["state"][0]
+
+    response = client.get(f"/api/whoop/callback?state={state}&code=server-code")
+
+    assert response.status_code == 502
+    payload = response.get_json()
+    assert payload["error"]["code"] == "invalid_whoop_token_payload"
+    assert fitness_app.get_whoop_connection_status(fitness_app.WHOOP_DB_FILE)["status"] == "disconnected"
+    assert "stored-access" not in response.get_data(as_text=True)
+
+
 def test_whoop_callback_rejects_invalid_state(fitness_app, monkeypatch):
     monkeypatch.setattr(fitness_app, "_whoop_config_for_redirect", lambda redirect_uri: _config())
 

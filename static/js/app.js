@@ -1398,6 +1398,7 @@
         if (firstWhoopConflict(conflicts) || (whoop && (whoop.source_conflict || status === WHOOP_UI_STATES.source_conflict))) {
             return WHOOP_UI_STATES.source_conflict;
         }
+        if (status === WHOOP_UI_STATES.disconnected || status === 'missing_config' || whoop && whoop.connected === false) return WHOOP_UI_STATES.disconnected;
         if (whoop && (whoop.calibrating || status === WHOOP_UI_STATES.calibrating || scoreState === WHOOP_UI_STATES.calibrating)) return WHOOP_UI_STATES.calibrating;
         if (whoop && (whoop.pending_score || status === WHOOP_UI_STATES.pending_score || scoreState === WHOOP_UI_STATES.pending_score)) return WHOOP_UI_STATES.pending_score;
         if (whoop && (whoop.unscorable || status === WHOOP_UI_STATES.unscorable || scoreState === WHOOP_UI_STATES.unscorable)) return WHOOP_UI_STATES.unscorable;
@@ -1406,7 +1407,6 @@
         }
         if (status === WHOOP_UI_STATES.fresh || status === WHOOP_UI_STATES.aging || status === WHOOP_UI_STATES.stale) return status;
         if (status === WHOOP_UI_STATES.missing || whoop && (whoop.no_data || whoop.has_data === false)) return WHOOP_UI_STATES.missing;
-        if (status === WHOOP_UI_STATES.disconnected || status === 'missing_config' || whoop && whoop.connected === false) return WHOOP_UI_STATES.disconnected;
         if (whoop && (whoop.connected || whoop.connected_at || whoop.last_sync_at || whoop.last_successful_sync_at)) return WHOOP_UI_STATES.connected;
         return WHOOP_UI_STATES.disconnected;
     }

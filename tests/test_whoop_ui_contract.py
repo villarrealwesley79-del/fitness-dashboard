@@ -104,6 +104,7 @@ def test_whoop_freshness_status_wins_over_connection_status_merge():
     assert "const scoreState = normalizeWhoopStateToken(whoop && whoop.score_state);" in app_js
     assert "scoreState === WHOOP_UI_STATES.pending_score" in app_js
     assert "scoreState === WHOOP_UI_STATES.calibrating" in app_js
+    assert app_js.index("whoop.connected === false") < app_js.index("if (status === WHOOP_UI_STATES.fresh")
 
 
 def test_dashboard_recomputes_nutrition_after_whoop_adjustment():

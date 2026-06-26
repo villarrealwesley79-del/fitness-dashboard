@@ -10641,6 +10641,16 @@ def _whoop_callback_is_browser_navigation():
     return "text/html" in accept.lower() and "application/json" not in accept.lower()
 
 
+def _validate_whoop_token_payload(payload):
+    if not isinstance(payload, dict):
+        return "WHOOP OAuth token response was invalid."
+    if not payload.get("access_token"):
+        return "WHOOP OAuth token response did not include an access token."
+    if not payload.get("refresh_token"):
+        return "WHOOP OAuth token response did not include an offline refresh token."
+    return None
+
+
 def _whoop_number(value):
     if value in (None, ""):
         return None
@@ -11079,6 +11089,9 @@ def whoop_callback():
     try:
         config = _whoop_config_for_redirect(saved_state["redirect_uri"])
         grant_payload = exchange_whoop_code(config, code=code)
+        validation_error = _validate_whoop_token_payload(grant_payload)
+        if validation_error:
+            return _whoop_no_store(api_error(validation_error, 502, code="invalid_whoop_token_payload"))
         save_connection_tokens(WHOOP_DB_FILE, grant_payload)
     except WhoopApiError as exc:
         return _whoop_no_store(api_error(str(exc), 502, code="whoop_oauth_failed"))
