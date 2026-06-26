@@ -290,3 +290,38 @@ def test_stats_insights_empty_state_resets_to_placeholder():
         "Stats insights must clear stale cards, normalize items, then render the "
         "empty placeholder before the card-append branch"
     )
+
+
+def test_dashboard_whoop_source_contract_is_wired_into_reco_card():
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+    html = (ROOT / "templates" / "index.html").read_text()
+
+    assert "reco-fresh-whoop" in html
+    assert "btn-reco-sources" in html
+    assert "modal-reco-sources" in html
+    assert "function formatWhoopChip(whoop, ago)" in app_js
+    assert "key: 'whoop'" in app_js
+    assert "renderRecommendationSourceSummary(dash, reco, freshnessWithWhoop);" in app_js
+    assert "mergeWhoopFreshnessNode(" in app_js
+
+
+def test_dashboard_whoop_state_matrix_is_explicit_in_frontend_contract():
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+
+    for token in [
+        "connected",
+        "disconnected",
+        "syncing",
+        "fresh",
+        "aging",
+        "stale",
+        "pending_score",
+        "unscorable",
+        "calibrating",
+        "reauth_required",
+        "csv_only",
+        "source_conflict",
+        "error",
+        "WHOOP · no data",
+    ]:
+        assert token in app_js, f"WHOOP UI state token {token!r} missing from app.js"
