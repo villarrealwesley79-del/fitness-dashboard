@@ -25,10 +25,17 @@
         exercises: null,
         whoopStatus: null,
         whoopUi: {
+            connectInFlight: false,
+            importInFlight: false,
+            oauthPending: false,
+            oauthRefreshInFlight: false,
+            oauthStartedAt: 0,
+            oauthPopupTimer: null,
             syncInFlight: false,
             disconnectInFlight: false,
             deleteInFlight: false,
             lastError: '',
+            selectedImportFile: null,
         },
         ranges: { history: 30, stats: 30 },
         historyTypeFilter: 'all',
@@ -137,31 +144,34 @@
         } finally {
             if (timer) clearTimeout(timer);
         }
-        if (res.status === 401) {
-            let reloadRequired = false;
-            try {
-                const body = await res.clone().json();
-                reloadRequired = Boolean(body && (body.reload === true || body.error === 'reload_required'));
-            } catch {
-                reloadRequired = false;
-            }
-            if (reloadRequired) {
-                if (activeWorkoutHasProgress()) {
-                    toast('Update ready after workout. Refresh when finished.', 'warn');
-                    throw new Error('reload required after workout');
-                }
-                window.location.reload();
-                throw new Error('reload required');
-            }
-            window.location.href = '/login?next=' + encodeURIComponent(location.pathname);
-            throw new Error('unauthorized');
-        }
+        await handleUnauthorizedResponse(res);
         if (!res.ok) {
             const text = await res.text().catch(() => '');
             throw new Error(`${res.status} ${path}: ${text.slice(0, 120)}`);
         }
         const ct = res.headers.get('content-type') || '';
         return ct.includes('application/json') ? res.json() : res.text();
+    }
+
+    async function handleUnauthorizedResponse(res) {
+        if (!res || res.status !== 401) return;
+        let reloadRequired = false;
+        try {
+            const body = await res.clone().json();
+            reloadRequired = Boolean(body && (body.reload === true || body.error === 'reload_required'));
+        } catch {
+            reloadRequired = false;
+        }
+        if (reloadRequired) {
+            if (activeWorkoutHasProgress()) {
+                toast('Update ready after workout. Refresh when finished.', 'warn');
+                throw new Error('reload required after workout');
+            }
+            window.location.reload();
+            throw new Error('reload required');
+        }
+        window.location.href = '/login?next=' + encodeURIComponent(location.pathname);
+        throw new Error('unauthorized');
     }
 
     function toast(msg, variant = 'ok') {
@@ -947,6 +957,7 @@
 
     function closeModal(modal) {
         if (!modal || modal.id === 'modal-active') return;
+        if (modal.id === 'modal-whoop-intake') clearWhoopImportInput();
         if (typeof modal.__fit192Close === 'function') {
             modal.__fit192Close();
         } else {
@@ -1045,6 +1056,7 @@
         window.setTimeout(() => {
             const modal = getTopmostModalForFocus();
             restoreFocusInsideModal(modal);
+            refreshWhoopAfterOAuthReturn();
         }, 0);
     }
 
@@ -1801,23 +1813,208 @@
         ) || '';
     }
 
-    async function connectWhoop() {
-        const url = currentWhoopConnectUrl();
-        if (url) {
-            window.location.assign(url);
-            return;
+    function setWhoopIntakeStatus(message, tone = 'info') {
+        const liveStatus = $('whoop-connect-modal-status');
+        const importStatus = $('whoop-import-status');
+        const text = String(message || '').trim();
+        if (liveStatus) {
+            liveStatus.textContent = tone === 'error' ? 'Needs attention' : tone === 'ok' ? 'Ready' : tone === 'warn' ? 'Unavailable' : 'Ready';
+            liveStatus.className = 'state-chip state-chip-sm ' + (tone === 'error' ? 'err' : tone === 'ok' ? 'ok' : tone === 'warn' ? 'warn' : '');
+        }
+        if (importStatus && text) {
+            importStatus.textContent = text;
+            importStatus.className = 'settings-row-detail whoop-intake-status ' + (tone === 'error' ? 'err' : tone === 'ok' ? 'ok' : tone === 'warn' ? 'warn' : '');
+        }
+    }
+
+    function setWhoopConnectFallback(url, message) {
+        const link = $('whoop-connect-open-link');
+        const fallback = $('whoop-connect-fallback');
+        if (link) {
+            if (url) {
+                link.href = url;
+                link.hidden = false;
+            } else {
+                link.removeAttribute('href');
+                link.hidden = true;
+            }
+        }
+        if (fallback) {
+            fallback.textContent = message || '';
+            fallback.hidden = !message;
+        }
+    }
+
+    function markWhoopOAuthPending(popup) {
+        state.whoopUi.oauthPending = true;
+        state.whoopUi.oauthStartedAt = Date.now();
+        if (state.whoopUi.oauthPopupTimer) {
+            window.clearInterval(state.whoopUi.oauthPopupTimer);
+            state.whoopUi.oauthPopupTimer = null;
+        }
+        if (!popup) return;
+        state.whoopUi.oauthPopupTimer = window.setInterval(() => {
+            if (!state.whoopUi.oauthPending) {
+                window.clearInterval(state.whoopUi.oauthPopupTimer);
+                state.whoopUi.oauthPopupTimer = null;
+                return;
+            }
+            if (popup.closed) {
+                window.clearInterval(state.whoopUi.oauthPopupTimer);
+                state.whoopUi.oauthPopupTimer = null;
+                refreshWhoopAfterOAuthReturn();
+            }
+        }, 1500);
+    }
+
+    async function refreshWhoopAfterOAuthReturn() {
+        if (!state.whoopUi.oauthPending || state.whoopUi.oauthRefreshInFlight) return;
+        state.whoopUi.oauthRefreshInFlight = true;
+        try {
+            const whoop = await getWhoopStatus(true);
+            if (state.currentTab === 'tab-settings') await renderSettings();
+            const expired = Date.now() - (state.whoopUi.oauthStartedAt || 0) > 5 * 60 * 1000;
+            if ((whoop && whoop.connected) || expired) {
+                state.whoopUi.oauthPending = false;
+                state.whoopUi.oauthStartedAt = 0;
+                if (state.whoopUi.oauthPopupTimer) {
+                    window.clearInterval(state.whoopUi.oauthPopupTimer);
+                    state.whoopUi.oauthPopupTimer = null;
+                }
+                if (whoop && whoop.connected) {
+                    setWhoopIntakeStatus('WHOOP connection refreshed.', 'ok');
+                    setWhoopConnectFallback('', '');
+                }
+            }
+        } catch {
+            // Keep the pending marker so a later focus/close event can retry.
+        } finally {
+            state.whoopUi.oauthRefreshInFlight = false;
+        }
+    }
+
+    function openWhoopIntakeModal() {
+        const modal = $('modal-whoop-intake');
+        const text = $('whoop-import-csv-text');
+        if (!modal) return;
+        setWhoopConnectFallback(currentWhoopConnectUrl(), '');
+        setWhoopIntakeStatus('Manual import stays available even when live WHOOP sync is not configured.', 'info');
+        modal.hidden = false;
+        if (text && !text.value) text.placeholder = 'date,recovery_score,recovery_band,strain,sleep_performance_pct';
+        focusOpenModal(modal);
+    }
+
+    async function startWhoopConnectFromModal() {
+        if (state.whoopUi.connectInFlight) return;
+        state.whoopUi.connectInFlight = true;
+        const liveBtn = $('btn-whoop-connect-live');
+        if (liveBtn) liveBtn.disabled = true;
+        setWhoopIntakeStatus('Preparing WHOOP authorization…', 'info');
+        let popup = null;
+        try {
+            popup = window.open('', 'fitnessDashboardWhoopOAuth', 'width=520,height=720');
+            if (popup) popup.opener = null;
+        } catch {
+            popup = null;
         }
         try {
             const body = await api('/api/whoop/connect/start', { method: 'POST' });
             const nextUrl = body && (body.authorization_url || body.url);
             if (!nextUrl) {
-                toast('WHOOP connect flow is not available yet.', 'warn');
+                if (popup && !popup.closed) popup.close();
+                setWhoopConnectFallback('', 'WHOOP live sync is not available yet. You can still import a WHOOP export below.');
+                setWhoopIntakeStatus('WHOOP live sync is not available yet. You can still import a WHOOP export below.', 'warn');
                 return;
             }
             state.whoopStatus = Object.assign({}, state.whoopStatus || {}, body.connection || {}, { authorization_url: nextUrl });
-            window.location.assign(nextUrl);
+            setWhoopConnectFallback(nextUrl, 'If the WHOOP window did not open, use the link above.');
+            if (popup && !popup.closed) {
+                markWhoopOAuthPending(popup);
+                popup.location.href = nextUrl;
+                setWhoopIntakeStatus('WHOOP opened in a new window. Return here after approval.', 'ok');
+            } else {
+                markWhoopOAuthPending(null);
+                setWhoopIntakeStatus('Popup blocked. Use the Open link button to continue.', 'warn');
+            }
         } catch (err) {
-            toast((err && err.message) || 'WHOOP connect failed.', 'error');
+            if (popup && !popup.closed) popup.close();
+            const message = (err && err.message && err.message.includes('missing_whoop_config'))
+                ? 'WHOOP live sync is not configured on this server. Paste or upload a WHOOP export below.'
+                : ((err && err.message) || 'WHOOP connect failed. Paste or upload a WHOOP export below.');
+            setWhoopConnectFallback('', message);
+            setWhoopIntakeStatus(message, 'warn');
+        } finally {
+            state.whoopUi.connectInFlight = false;
+            if (liveBtn) liveBtn.disabled = false;
+        }
+    }
+
+    async function importWhoopCsvFromModal() {
+        if (state.whoopUi.importInFlight) return;
+        const textArea = $('whoop-import-csv-text');
+        const submitBtn = $('btn-whoop-import-submit');
+        const text = textArea ? String(textArea.value || '').trim() : '';
+        const file = state.whoopUi.selectedImportFile;
+        if (!text && !file) {
+            setWhoopIntakeStatus('Paste WHOOP CSV data or choose a CSV file first.', 'error');
+            return;
+        }
+        state.whoopUi.importInFlight = true;
+        if (submitBtn) submitBtn.disabled = true;
+        setWhoopIntakeStatus('Importing WHOOP data…', 'info');
+        try {
+            const options = { method: 'POST' };
+            if (text) {
+                options.headers = { 'Content-Type': 'application/json', 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE };
+                options.body = JSON.stringify({ csv: text });
+            } else {
+                const fd = new FormData();
+                fd.append('file', file);
+                options.headers = { 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE };
+                options.body = fd;
+            }
+            const response = await fetch('/api/whoop/import-csv', Object.assign({}, options, { credentials: 'same-origin' }));
+            await handleUnauthorizedResponse(response);
+            const body = await response.json().catch(() => null);
+            if (!response.ok) {
+                const message = body && body.error && body.error.message ? body.error.message : 'WHOOP import failed.';
+                throw new Error(message);
+            }
+            state.whoopStatus = Object.assign({}, state.whoopStatus || {}, body.connection || {});
+            state.dashboard = null;
+            state.reco = null;
+            await getWhoopStatus(true);
+            await renderSettings();
+            const count = body && body.import && body.import.records_upserted != null ? body.import.records_upserted : null;
+            clearWhoopImportInput();
+            setWhoopIntakeStatus(count != null ? `WHOOP import saved ${count} record${count === 1 ? '' : 's'}.` : 'WHOOP import saved.', 'ok');
+            toast('WHOOP import saved.', 'ok');
+        } catch (err) {
+            setWhoopIntakeStatus((err && err.message) || 'WHOOP import failed.', 'error');
+            toast('WHOOP import failed.', 'err');
+        } finally {
+            state.whoopUi.importInFlight = false;
+            if (submitBtn) submitBtn.disabled = false;
+        }
+    }
+
+    function clearWhoopImportInput() {
+        const text = $('whoop-import-csv-text');
+        const file = $('whoop-import-file');
+        const name = $('whoop-import-file-name');
+        if (text) text.value = '';
+        if (file) file.value = '';
+        if (name) name.textContent = 'No file selected';
+        state.whoopUi.selectedImportFile = null;
+        setWhoopIntakeStatus('Manual import stays available even when live WHOOP sync is not configured.', 'info');
+    }
+
+    async function connectWhoop() {
+        openWhoopIntakeModal();
+        const url = currentWhoopConnectUrl();
+        if (url) {
+            setWhoopConnectFallback(url, 'Use the link above if you already started a WHOOP authorization flow.');
+            return;
         }
     }
 
@@ -1839,9 +2036,9 @@
         const busy = busySync || busyDisconnect || busyDelete;
 
         if (connectBtn) {
-            connectBtn.hidden = !(liveSyncUnavailable || connectUrl);
+            connectBtn.hidden = false;
             connectBtn.disabled = busy;
-            connectBtn.textContent = reauth ? 'Reconnect' : 'Connect';
+            connectBtn.textContent = reauth ? 'Reconnect' : liveSyncUnavailable || connectUrl ? 'Connect' : 'Import';
         }
         if (syncBtn) {
             syncBtn.hidden = liveSyncUnavailable && !connectUrl;
@@ -8382,6 +8579,17 @@
         });
         $('btn-sync-oura') && $('btn-sync-oura').addEventListener('click', syncOura);
         $('btn-connect-whoop') && $('btn-connect-whoop').addEventListener('click', connectWhoop);
+        $('btn-whoop-connect-live') && $('btn-whoop-connect-live').addEventListener('click', startWhoopConnectFromModal);
+        $('btn-whoop-import-submit') && $('btn-whoop-import-submit').addEventListener('click', importWhoopCsvFromModal);
+        $('btn-whoop-import-clear') && $('btn-whoop-import-clear').addEventListener('click', clearWhoopImportInput);
+        $('btn-whoop-import-file') && $('btn-whoop-import-file').addEventListener('click', () => $('whoop-import-file') && $('whoop-import-file').click());
+        $('whoop-import-file') && $('whoop-import-file').addEventListener('change', (e) => {
+            const file = e.target.files && e.target.files[0];
+            const name = $('whoop-import-file-name');
+            state.whoopUi.selectedImportFile = file || null;
+            if (name) name.textContent = file ? file.name : 'No file selected';
+            if (file) setWhoopIntakeStatus(`Selected ${file.name}.`, 'info');
+        });
         $('btn-sync-whoop') && $('btn-sync-whoop').addEventListener('click', syncWhoop);
         $('btn-disconnect-whoop') && $('btn-disconnect-whoop').addEventListener('click', disconnectWhoop);
         $('btn-delete-whoop-data') && $('btn-delete-whoop-data').addEventListener('click', deleteWhoopData);

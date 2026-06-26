@@ -5,7 +5,7 @@
         if (started) return;
         started = true;
         const script = document.createElement('script');
-        script.src = '/static/js/app.js?v=20260626-fit239-whoop5';
+        script.src = '/static/js/app.js?v=20260626-fit240-whoop-intake';
         script.async = true;
         document.body.appendChild(script);
     }

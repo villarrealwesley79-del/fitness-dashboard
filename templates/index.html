@@ -9,7 +9,7 @@
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
     <link rel="stylesheet" href="/static/css/style.css?v=20260626-fit238-qol">
-    <link rel="stylesheet" href="/static/css/app.css?v=20260626-fit239-whoop5">
+    <link rel="stylesheet" href="/static/css/app.css?v=20260626-fit240-whoop-intake">
 </head>
 <body>
     <div class="app-shell">
@@ -853,7 +853,7 @@
                     <div class="settings-row-control settings-row-control-stack">
                         <span id="whoop-connect-state" class="state-chip">—</span>
                         <div class="settings-inline-actions">
-                            <button id="btn-connect-whoop" class="btn btn-ghost btn-sm" type="button" hidden>Connect</button>
+                            <button id="btn-connect-whoop" class="btn btn-ghost btn-sm" type="button" hidden aria-haspopup="dialog" aria-controls="modal-whoop-intake">Connect</button>
                             <button id="btn-sync-whoop" class="btn btn-ghost btn-sm" type="button">Sync</button>
                             <button id="btn-disconnect-whoop" class="btn btn-ghost btn-sm" type="button">Disconnect</button>
                             <button id="btn-delete-whoop-data" class="btn btn-ghost btn-sm" type="button">Delete data</button>
@@ -1142,6 +1142,50 @@
                     <div class="reco-source-drawer-label">Conflicts</div>
                     <div class="reco-source-list" id="reco-sources-conflicts"></div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-whoop-intake" class="modal" role="dialog" aria-modal="true" aria-labelledby="whoop-intake-title" hidden>
+        <div class="modal-sheet modal-sheet-tall whoop-intake-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title" id="whoop-intake-title">Connect WHOOP</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body whoop-intake-body">
+                <section class="whoop-intake-section" aria-labelledby="whoop-live-title">
+                    <div class="whoop-intake-section-head">
+                        <h4 id="whoop-live-title" class="whoop-intake-title">Live WHOOP sync</h4>
+                        <span id="whoop-connect-modal-status" class="state-chip state-chip-sm">Ready</span>
+                    </div>
+                    <p class="dim whoop-intake-copy">Open WHOOP, approve access, then return here. Settings will refresh when the callback lands.</p>
+                    <div class="whoop-intake-actions">
+                        <button id="btn-whoop-connect-live" class="btn btn-primary btn-sm" type="button">Open WHOOP</button>
+                        <a id="whoop-connect-open-link" class="btn btn-ghost btn-sm" href="#" target="_blank" rel="noopener noreferrer" hidden>Open link</a>
+                    </div>
+                    <p id="whoop-connect-fallback" class="settings-row-detail whoop-intake-status" hidden>Popup blocked. Use the link above to continue.</p>
+                </section>
+
+                <section class="whoop-intake-section" aria-labelledby="whoop-import-title">
+                    <div class="whoop-intake-section-head">
+                        <h4 id="whoop-import-title" class="whoop-intake-title">Import WHOOP export</h4>
+                    </div>
+                    <label class="whoop-import-label" for="whoop-import-csv-text">Paste WHOOP CSV/export data</label>
+                    <textarea id="whoop-import-csv-text" class="whoop-import-textarea" rows="8" spellcheck="false" autocomplete="off" placeholder="date,recovery_score,recovery_band,strain,sleep_performance_pct"></textarea>
+                    <div class="whoop-import-file-row">
+                        <input id="whoop-import-file" type="file" accept=".csv,text/csv" hidden>
+                        <button id="btn-whoop-import-file" class="btn btn-ghost btn-sm" type="button">Choose file</button>
+                        <span id="whoop-import-file-name" class="settings-row-detail">No file selected</span>
+                    </div>
+                    <div class="whoop-intake-actions">
+                        <button id="btn-whoop-import-submit" class="btn btn-secondary btn-sm" type="button">Import data</button>
+                        <button id="btn-whoop-import-clear" class="btn btn-ghost btn-sm" type="button">Clear</button>
+                    </div>
+                    <p id="whoop-import-status" class="settings-row-detail whoop-intake-status" role="status">Manual import stays available even when live WHOOP sync is not configured.</p>
+                </section>
+            </div>
+            <div class="modal-foot modal-foot-row">
+                <button class="btn btn-ghost" data-close-modal type="button">Close</button>
             </div>
         </div>
     </div>
@@ -1459,6 +1503,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app-loader.js?v=20260626-fit239-whoop5"></script>
+    <script src="/static/js/app-loader.js?v=20260626-fit240-whoop-intake"></script>
 </body>
 </html>
