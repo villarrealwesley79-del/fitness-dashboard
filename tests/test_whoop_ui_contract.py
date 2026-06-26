@@ -140,8 +140,11 @@ def test_whoop_freshness_status_wins_over_connection_status_merge():
     assert "disconnectBtn.hidden = cleanupUnavailable;" in app_js
     assert "state.dashboard = null;\n            state.reco = null;\n            await renderSettings();" in app_js
     resolver_start = app_js.index("function resolveWhoopUiState")
+    csv_only_check = app_js.index("normalizeWhoopStateToken(whoop.source_kind) === WHOOP_UI_STATES.csv_only", resolver_start)
+    missing_config_check = app_js.index("if (status === WHOOP_UI_STATES.missing_config)", resolver_start)
     disconnected_check = app_js.index("if (status === WHOOP_UI_STATES.disconnected", resolver_start)
     conflict_check = app_js.index("if (firstWhoopConflict(conflicts)", resolver_start)
+    assert csv_only_check < missing_config_check
     assert disconnected_check < conflict_check
     assert app_js.index("normalizeWhoopStateToken(whoop.source_kind) === WHOOP_UI_STATES.csv_only") < app_js.index("whoop.connected === false")
     assert app_js.index("whoop.connected === false") < app_js.index("if (status === WHOOP_UI_STATES.fresh")
