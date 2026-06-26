@@ -13,7 +13,7 @@ def test_index_exposes_whoop_dashboard_and_settings_surfaces():
     html = INDEX_HTML.read_text()
 
     for token in [
-        '/static/css/app.css?v=20260626-fit240-whoop-intake',
+        '/static/css/app.css?v=20260626-fit241-whoop-open',
         'id="reco-fresh-whoop"',
         'id="btn-reco-sources"',
         'id="reco-sources-summary"',
@@ -47,9 +47,9 @@ def test_whoop_release_assets_bust_cached_fit238_runtime():
     loader = APP_LOADER.read_text()
     service_worker = APP_SW.read_text()
 
-    assert "/static/js/app-loader.js?v=20260626-fit240-whoop-intake" in html
-    assert "/static/js/app.js?v=20260626-fit240-whoop-intake" in loader
-    assert "fitness-dashboard-v20260626-fit240-whoop-intake" in service_worker
+    assert "/static/js/app-loader.js?v=20260626-fit241-whoop-open" in html
+    assert "/static/js/app.js?v=20260626-fit241-whoop-open" in loader
+    assert "fitness-dashboard-v20260626-fit241-whoop-open" in service_worker
 
 
 def test_whoop_secret_patterns_are_excluded_from_docker_context():
@@ -108,8 +108,20 @@ def test_whoop_frontend_calls_expected_status_sync_and_disconnect_endpoints():
     assert "markWhoopOAuthPending(popup);" in app_js
     assert "connectBtn.hidden = false;" in app_js
     assert "liveSyncUnavailable || connectUrl ? 'Connect' : 'Import'" in app_js
+    assert "missingConfig && !connectUrl ? 'Import'" in app_js
     assert "clearWhoopImportInput();" in app_js
     assert "if (modal.id === 'modal-whoop-intake') clearWhoopImportInput();" in app_js
+
+
+def test_whoop_missing_config_modal_disables_dead_live_connect_path():
+    app_js = APP_JS.read_text()
+
+    assert "function applyWhoopIntakeAvailability()" in app_js
+    assert "const liveUnavailable = uiState === WHOOP_UI_STATES.missing_config && !url;" in app_js
+    assert "liveBtn.disabled = liveUnavailable || state.whoopUi.connectInFlight;" in app_js
+    assert "liveBtn.setAttribute('aria-disabled', liveUnavailable ? 'true' : 'false');" in app_js
+    assert "WHOOP live sync is not configured on this server. Paste or upload a WHOOP export below." in app_js
+    assert "applyWhoopIntakeAvailability();" in app_js
 
 
 def test_whoop_oauth_success_hash_routes_to_settings_tab():

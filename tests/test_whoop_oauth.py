@@ -36,6 +36,21 @@ def test_whoop_status_missing_config(fitness_app, monkeypatch):
     assert "secret" not in response.get_data(as_text=True)
 
 
+def test_whoop_connect_start_missing_config_does_not_return_authorization_url(fitness_app, monkeypatch):
+    monkeypatch.setattr(fitness_app, "_whoop_config_for_redirect", lambda redirect_uri: None)
+
+    response = fitness_app.app.test_client().post("/api/whoop/connect/start")
+
+    assert response.status_code == 503
+    payload = response.get_json()
+    assert payload["error"]["code"] == "missing_whoop_config"
+    assert "authorization_url" not in payload
+    body = response.get_data(as_text=True)
+    assert "access_token" not in body
+    assert "refresh_token" not in body
+    assert "secret" not in body
+
+
 def test_whoop_connect_start_and_callback_store_connection(fitness_app, monkeypatch):
     monkeypatch.setattr(fitness_app, "_whoop_redirect_uri", lambda: "http://localhost/api/whoop/callback")
     monkeypatch.setattr(fitness_app, "_whoop_config_for_redirect", lambda redirect_uri: _config())
