@@ -148,6 +148,7 @@ const $ = (id) => elements[id] || null;
 const qs = () => ({{ value: '', checked: false }});
 const qsa = () => [];
 const toast = () => {{}};
+const saveActiveWorkoutDraft = () => {{}};
 const getDashboard = async () => ({{ next_workout: dashboardNext }});
 const newWorkoutId = (id) => 'new-' + (id || 'generated');
 const exerciseName = (ex) => ex.exercise || ex.name || ex.machine || '';
@@ -162,6 +163,7 @@ const buildActiveExercise = (ex, previous) => ({{
     ? previous.logged_sets
     : [{{ weight: ex.target_weight || '', reps: ex.target_reps || '', done: false, notes: '' }}],
 }});
+const currentActiveWorkoutDraftScope = () => 'user:fit187';
 ${{helperSource}}
 renderActiveWorkout = () => {{ renderCount += 1; }};
 function activeWithProgress() {{
@@ -182,6 +184,7 @@ function plannedWorkout(name, id) {{
     id,
     workout_id: id + '-workout',
     focus: 'Next',
+    auth_scope: 'user:fit187',
     exercises: [{{
       exercise: name,
       target_sets: 1,
@@ -257,7 +260,7 @@ async function run() {{
   api.state.activeWorkout = api.activeWithProgress();
   api.state.adjustedWorkout = api.plannedWorkout('Hack Squat', 'cancel-adjusted');
   api.setConfirmResponses([false]);
-  api.startAdjustedWorkout();
+  await api.startAdjustedWorkout();
   outputs.cancelAdjustedStart = {{
     confirmCalls: api.confirmCalls(),
     activeName: api.state.activeWorkout.exercises[0].exercise,
@@ -270,7 +273,7 @@ async function run() {{
   api.state.activeWorkout = api.activeWithProgress();
   api.state.adjustedWorkout = api.plannedWorkout('Hack Squat', 'confirm-adjusted');
   api.setConfirmResponses([true]);
-  api.startAdjustedWorkout();
+  await api.startAdjustedWorkout();
   outputs.confirmAdjustedStart = {{
     confirmCalls: api.confirmCalls(),
     activeName: api.state.activeWorkout.exercises[0].exercise,

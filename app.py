@@ -4467,7 +4467,26 @@ def index():
 @app.route('/api/auth/scope')
 def auth_scope():
     """Return the current signed-in scope for client-side queue ownership checks."""
-    return jsonify({"auth_scope": f"user:{_current_data_user_id()}"})
+    return jsonify({"auth_scope": _current_auth_scope()})
+
+
+def _current_auth_scope() -> str:
+    return f"user:{_current_data_user_id()}"
+
+
+def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
+    if recommendation is None:
+        return None
+    scoped = dict(recommendation)
+    scoped["auth_scope"] = _current_auth_scope()
+    return scoped
+
+
+def _payload_with_recommendation_auth_scope(payload: dict) -> dict:
+    scoped = dict(payload)
+    if scoped.get("recommendation"):
+        scoped["recommendation"] = _workout_with_auth_scope(scoped["recommendation"])
+    return scoped
 
 
 def _current_workout_training_recommendation():
@@ -4707,7 +4726,7 @@ def api_next_workout():
         )
     LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
     return jsonify({
-        "next_workout": LAST_WORKOUT_RECOMMENDATION,
+        "next_workout": _workout_with_auth_scope(LAST_WORKOUT_RECOMMENDATION),
         "workout_adaptation_events": [workout_adaptation.project_event(event) for event in workout_adaptation_events],
     })
 
@@ -4981,7 +5000,7 @@ def api_dashboard():
         "muscles": muscle_data,
         "exercises": exercise_data,
         "alerts": generate_alerts(WORKOUTS, SORENESS_DATA),
-        "next_workout": next_workout,
+        "next_workout": _workout_with_auth_scope(next_workout),
         "workout_adaptation_events": [workout_adaptation.project_event(event) for event in workout_adaptation_events],
         "readiness_factors": {
             "acwr": acwr,
@@ -8772,7 +8791,7 @@ def swap_workout_exercise():
         LAST_WORKOUT_RECOMMENDATION = recommendation
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
 
-    return jsonify({"status": "success", "recommendation": recommendation})
+    return jsonify({"status": "success", "recommendation": _workout_with_auth_scope(recommendation)})
 
 
 # ==================== AI COACH — ADJUST PLAN ====================
@@ -9252,12 +9271,12 @@ def adjust_workout():
             )
             LAST_WORKOUT_RECOMMENDATION = payload["recommendation"]
             _ai_metric_log("ok", reason="deterministic_fallback: adapter_missing", constraint_len=len(constraint))
-            return jsonify(payload)
+            return jsonify(_payload_with_recommendation_auth_scope(payload))
         _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
         return jsonify({
             "status": "fallback",
             "reason": "LM Studio adapter not available on this server",
-            "recommendation": recommendation,
+            "recommendation": _workout_with_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
         })
@@ -9291,7 +9310,7 @@ def adjust_workout():
             if cached.get("recommendation"):
                 LAST_WORKOUT_RECOMMENDATION = cached["recommendation"]
                 LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = _workout_recommendation_fingerprint()
-            return jsonify(cached)
+            return jsonify(_payload_with_recommendation_auth_scope(cached))
 
     if route_candidate is None:
         if deterministic_swap:
@@ -9308,7 +9327,7 @@ def adjust_workout():
             )
             LAST_WORKOUT_RECOMMENDATION = payload["recommendation"]
             _ai_metric_log("ok", reason="deterministic_fallback: preflight_unavailable", constraint_len=len(constraint), model_version=route_model_version)
-            return jsonify(payload)
+            return jsonify(_payload_with_recommendation_auth_scope(payload))
         _ai_metric_log(
             "fallback",
             constraint_len=len(constraint),
@@ -9318,7 +9337,7 @@ def adjust_workout():
         return jsonify({
             "status": "fallback",
             "reason": "LM Studio: all endpoints unavailable",
-            "recommendation": recommendation,
+            "recommendation": _workout_with_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
         })
@@ -9358,7 +9377,7 @@ def adjust_workout():
                 model_version=route_model_version,
                 reason=f"deterministic_fallback: {reason_code}",
             )
-            return jsonify(payload)
+            return jsonify(_payload_with_recommendation_auth_scope(payload))
         _ai_metric_log(
             "fallback",
             constraint_len=len(constraint),
@@ -9368,7 +9387,7 @@ def adjust_workout():
         return jsonify({
             "status": "fallback",
             "reason": f"LM Studio: {exc}",
-            "recommendation": recommendation,
+            "recommendation": _workout_with_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
         })
@@ -9399,7 +9418,7 @@ def adjust_workout():
         return jsonify({
             "status": "fallback",
             "reason": f"safety-rail error: {type(exc).__name__}",
-            "recommendation": recommendation,
+            "recommendation": _workout_with_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
         })
@@ -9450,7 +9469,7 @@ def adjust_workout():
         constraint_len=len(constraint),
         model_version=actual_model_version,
     )
-    return jsonify(payload)
+    return jsonify(_payload_with_recommendation_auth_scope(payload))
 
 
 def _exercise_display_name(ex):
@@ -11688,7 +11707,7 @@ def smart_recommendation_api():
         "reasoning": "; ".join(reason_bits) if reason_bits else "No Oura/soreness data available",
         "freshness": freshness,
         "nutrition_context": nutrition_context,
-        "next_workout": next_workout,
+        "next_workout": _workout_with_auth_scope(next_workout),
         "workout_adaptation_events": [workout_adaptation.project_event(event) for event in workout_adaptation_events],
         "confidence_level": confidence_level,
     })

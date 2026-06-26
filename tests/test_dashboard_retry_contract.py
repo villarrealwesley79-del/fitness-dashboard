@@ -188,9 +188,9 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "healthkit_samples_workout_*.json" in app_py
     assert "training_recommendation=_current_workout_training_recommendation()" in app_py
     assert "api('/api/next-workout', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS })" in app_js
-    assert "app-loader.js?v=20260625-fit237-load-defer" in template
-    assert "app.js?v=20260625-fit237-load-defer" in (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "fitness-dashboard-v20260530-fit192-a11y" in sw
+    assert "app-loader.js?v=20260626-fit236-active-draft" in template
+    assert "app.js?v=20260626-fit236-active-draft" in (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "fitness-dashboard-v20260626-fit236-active-draft" in sw
     assert "const STATIC_ASSETS" not in sw
     assert "cache.addAll" not in sw
     assert "caches.keys()" in sw
@@ -229,10 +229,10 @@ def test_dashboard_shell_defers_heavy_app_bundle_until_after_load():
     template = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
 
-    assert "app-loader.js?v=20260625-fit237-load-defer" in template
+    assert "app-loader.js?v=20260626-fit236-active-draft" in template
     assert "<script src=\"/static/js/app.js" not in template
     assert "window.addEventListener('load', loadAppBundle, { once: true });" in loader
-    assert "script.src = '/static/js/app.js?v=20260625-fit237-load-defer';" in loader
+    assert "script.src = '/static/js/app.js?v=20260626-fit236-active-draft';" in loader
     assert "script.async = true;" in loader
 
 
@@ -257,6 +257,7 @@ def test_next_workout_endpoint_does_not_fetch_open_wearables(monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["next_workout"]["exercises"]
+    assert payload["next_workout"]["auth_scope"].startswith("user:")
 
 
 def test_open_wearables_marker_tolerates_timezone_sleep_events():
