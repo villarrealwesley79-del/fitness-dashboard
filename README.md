@@ -8,7 +8,7 @@ The product direction is to become a trusted daily fitness operating system: the
 
 - Plans and adjusts strength workouts based on readiness, soreness, recent volume, and user constraints.
 - Tracks active workouts, set completion, swaps, notes, and workout history.
-- Surfaces recovery context from Oura, Apple Health / Health Auto Export, and local cached data.
+- Surfaces recovery context from Oura, Apple Health / Health Auto Export, WHOOP, and local cached data.
 - Supports nutrition and body-composition tracking.
 - Plans toward photo-based food logging, where a user can snap a picture of food and the app updates calorie/macronutrient context and daily coaching guidance.
 - Keeps sensitive runtime data local by default.
@@ -21,7 +21,7 @@ Included:
 
 - Flask application source
 - Templates and static assets
-- Oura, Apple Health, nutrition, workout, and AI-coach integration code
+- Oura, Apple Health, WHOOP, nutrition, workout, and AI-coach integration code
 - Deployment entry files
 - Product planning docs in `docs/`
 
@@ -32,6 +32,7 @@ Excluded:
 - SQLite databases
 - local health exports
 - Oura/Apple Health caches
+- WHOOP SQLite data and protected OAuth material
 - local JSON workout/health data
 - logs, backups, virtualenvs, and generated artifacts
 
@@ -96,6 +97,9 @@ OURA_API_TOKEN=
 HEALTH_SYNC_TOKEN=
 FITNESS_DASHBOARD_PUBLIC_BASE_URL=
 APPLE_HEALTH_WEBHOOK_URL=
+WHOOP_CLIENT_ID_FILE=
+WHOOP_SCOPES=
+WHOOP_PROTECTED_MATERIAL_DIR=
 SECRET_KEY=
 STRIPE_SECRET_KEY=
 STRIPE_WEBHOOK_SECRET=
@@ -140,6 +144,25 @@ ${FITNESS_DASHBOARD_PUBLIC_BASE_URL}/api/apple-health/sync?token=<HEALTH_SYNC_TO
 ```
 
 Use `APPLE_HEALTH_WEBHOOK_URL` only when the sync endpoint is intentionally exposed at a different public path. The value should be the endpoint URL without the token; the setup route appends the token.
+
+WHOOP setup is split between public client configuration and protected token
+material:
+
+- `WHOOP_CLIENT_ID_FILE` points at a local file containing only the WHOOP client
+  ID. If unset, the app looks for `.whoop-client-id` at the repo root.
+- The WHOOP client secret is read from macOS Keychain service
+  `fitness-dashboard-whoop-client-secret`.
+- OAuth access/refresh material is stored through the protected WHOOP material
+  store, not in backups or normal API responses. `WHOOP_PROTECTED_MATERIAL_DIR`
+  can point that protected store outside the repo.
+- Manual WHOOP CSV import is available through Settings when OAuth is not
+  configured. CSV input is size/row capped, UTF-8 validated, normalized into
+  daily facts, and treated as untrusted input.
+
+The Open Wearables bridge is a best-effort local adapter behind
+`/api/health/sync`. Its sync response returns source metadata, counts, and stable
+error codes only; it must not be used as a raw health-payload export endpoint or
+as the durable WHOOP source of truth.
 
 Browser-initiated state-changing requests send `X-Requested-With: XMLHttpRequest`; the server also accepts browser same-origin metadata for cached app-shell rollouts and rejects mismatched browser origins before checking the CSRF header. The token-authenticated Apple Health sync endpoint and Stripe's signed webhook are explicitly exempt because they are called by external systems rather than the dashboard UI.
 

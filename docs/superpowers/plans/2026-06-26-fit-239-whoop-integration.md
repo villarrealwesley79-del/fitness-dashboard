@@ -1,5 +1,9 @@
 # FIT-239 WHOOP Integration Implementation Plan
 
+> **Historical status:** FIT-239 has landed on `main`. This file is retained as
+> implementation history, not as the current task ledger. Use current checked-in
+> tests and `docs/CURRENT_STATE.md` for authoritative implementation state.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add durable WHOOP sync, local normalized facts, bounded recommendation modifiers, source UI, and safety proof for FIT-239.
@@ -180,8 +184,7 @@ python3 -m pytest tests/test_whoop_recommendations.py tests/test_whoop_source_co
 **Files:**
 - Modify: `whoop_store.py`
 - Modify: `app.py`
-- Test: `tests/test_whoop_csv_import.py`
-- Test: `tests/test_whoop_backup_privacy.py`
+- Test: `tests/test_whoop_import_sync_backup.py`
 
 **Interfaces:**
 - Produces: `POST /api/whoop/import-csv`, `GET /api/whoop/imports`, delete/disconnect helpers.
@@ -193,7 +196,7 @@ python3 -m pytest tests/test_whoop_recommendations.py tests/test_whoop_source_co
 - [ ] Run:
 
 ```bash
-python3 -m pytest tests/test_whoop_csv_import.py tests/test_whoop_backup_privacy.py tests/test_backup_import_food_logs.py -q
+python3 -m pytest tests/test_whoop_import_sync_backup.py tests/test_backup_import_food_logs.py -q
 ```
 
 ### Task 8: Dashboard And Settings UI

@@ -1,13 +1,13 @@
 # Fitness Dashboard PRD
 
 Status: Draft  
-Last updated: 2026-05-18
+Last updated: 2026-06-26
 Owner: Wesley  
 Product type: Single-owner mobile-first fitness coaching dashboard
 
 ## 1. Problem
 
-The owner has training history, body data, Oura recovery metrics, Apple Health activity data, soreness notes, food intake, and goal settings spread across multiple sources. The current app already collects and displays much of this, but the product direction needs to be clearer: it should turn those signals into a daily training and nutrition decision, guide the workout, account for meals and snacks, and close the loop after completion.
+The owner has training history, body data, Oura recovery metrics, Apple Health activity data, WHOOP recovery/strain/sleep data, soreness notes, food intake, and goal settings spread across multiple sources. The current app already collects and displays much of this, but the product direction needs to stay clear: it should turn those signals into a daily training and nutrition decision, guide the workout, account for meals and snacks, and close the loop after completion.
 
 The product problem is not "show more metrics." The problem is making training, recovery, and food decisions easier from the data already available.
 
@@ -91,12 +91,13 @@ Acceptance criteria:
 
 ### Recovery and Wearable Sync
 
-The owner can tell whether Oura and Apple Health data are fresh enough to trust.
+The owner can tell whether Oura, Apple Health, and WHOOP data are fresh enough to trust.
 
 Acceptance criteria:
 
 - Oura status shows cached/live state and latest available day.
 - Apple Health status uses backend sync evidence, including last accepted attempt.
+- WHOOP status shows configured, connected, CSV-only, stale, error, reauth, no-data, and score-state conditions without exposing token material.
 - Token-gated sync endpoint rejects missing or invalid tokens.
 - Auth-gated status endpoint rejects unauthenticated requests.
 
@@ -117,7 +118,7 @@ Acceptance criteria:
 ### Dashboard
 
 - Show daily recommendation, readiness, HRV/RHR/sleep summary, steps/activity, food status, weight/body status, and insight cards.
-- Prefer current Oura and Apple Health data when available, with clear stale states.
+- Prefer current Oura, Apple Health, and WHOOP data when available, with clear stale states.
 - Keep the first-screen action focused on starting or adjusting the recommended workout.
 - Show food-driven changes to the day's plan, such as calories remaining, protein gap, over-target warnings, or under-fueled training notes.
 
@@ -166,6 +167,8 @@ Acceptance criteria:
 
 - Oura: sync sleep/readiness/activity into SQLite cache and expose status/trends.
 - Apple Health: accept Health Auto Export webhook posts through token-gated endpoint and support legacy file exports.
+- WHOOP: support official OAuth/API sync, manual CSV import, local SQLite persistence, normalized daily facts, freshness/status, disconnect/delete, and bounded recommendation modifiers.
+- Open Wearables: keep as a best-effort local bridge that returns redacted sync metadata only, not a raw health export or durable source-of-truth path.
 - LM Studio: support primary and fallback routes, health checks, metrics, strict schemas, and graceful fallback.
 - Vision food estimator: support a model-backed structured estimate path with strict schema validation and graceful manual fallback.
 
@@ -174,6 +177,8 @@ Acceptance criteria:
 - Keep JSON files and SQLite stores readable and recoverable.
 - Export/import backup through the app.
 - Avoid exposing raw tokens, raw JSON, or sync-token material through normal API responses.
+- Export normalized WHOOP daily facts only; exclude WHOOP client secret, access/refresh material, token references, raw provider payloads, and Open Wearables raw payloads from backups and normal responses.
+- Reject backup imports that contain WHOOP token material, token references, raw provider payload keys, malformed WHOOP records, or impossible metric/date values before mutating WHOOP storage.
 - Treat food photos as sensitive personal data. Do not expose images or raw model traces through normal API responses.
 - Default food photo retention is documented in `docs/FOOD_PHOTO_PRIVACY.md`: discard raw photos after extraction unless a future explicit opt-in retention issue changes that policy.
 - Accepted food logs are persisted separately from the daily nutrition summary so multiple meals/snacks can retain final values plus sanitized original estimate and correction metadata. Existing nutrition JSON remains a readable legacy/backfill source.
@@ -196,11 +201,13 @@ The current MVP is a Flask PWA with:
 - 8-tab mobile interface: dashboard, vitals, next workout, log, history, body, stats, settings.
 - Oura integration.
 - Apple Health Health Auto Export integration.
+- WHOOP OAuth/API sync, manual CSV import, local normalized facts, freshness/status, source conflict handling, and bounded recommendation modifiers.
+- Best-effort Open Wearables sync endpoint with metadata-only responses.
 - Deterministic workout recommendation.
 - AI Adjust Plan and Analyze Workout flows.
 - Active workout modal with prefilled recommendation values and swap support.
 - Body, nutrition, soreness, cardio, recovery, history, stats, and backup surfaces.
-- Manual nutrition targets and nutrition log data, but not yet a finished photo-based food capture workflow.
+- Manual nutrition targets, accepted food-log persistence, food-photo/text/barcode estimation and review paths, sanitized original estimates, privacy/retention metadata, and offline photo queue rules. The food loop still needs product polish before it should be called fully finished.
 
 ## 9. App Surface Decision
 
@@ -262,6 +269,7 @@ Platform basis:
 - Surface 24-hour AI metrics in Settings.
 - Add warnings when fallback rate rises.
 - Make Apple Health daily sync schedule and last-attempt evidence easy to inspect.
+- Keep WHOOP and Open Wearables source states honest: OAuth/config failures, CSV-only data, stale data, score pending/calibrating, and source conflicts should be visible without raw payload exposure.
 - Add low-stakes PWA Web Push reminders and stale-data alerts after the backend subscription contract exists.
 
 ### Milestone 6: Product Hardening

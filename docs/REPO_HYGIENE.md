@@ -21,10 +21,14 @@ must not be committed.
 - `.flask-secret`
 - `.health-sync-token`
 - `.apple-health-first-sync`
+- `.whoop-client-id`
+- `.whoop-protected-material-*.json`
 - `auth.db*`
 - `fitness_data.db`
 - `apple_health_sync.db`
 - `oura_daily.sqlite3`
+- `whoop.sqlite3`
+- `whoop_sync.lock`
 - `ai_coach_cache.sqlite3`
 - `data_*.json`
 - logs, backup bundles, generated smoke-test bodies, visual-review screenshots,
@@ -57,6 +61,16 @@ direct HealthKit access should be updated rather than copied forward.
 Native HealthKit work stays behind `docs/APPLE_HEALTH_HELPER_SLA.md`; do not add
 Swift, HealthKit permissions, or native targets unless that trigger is met and
 approved.
+
+Docs should describe the current WHOOP architecture as official WHOOP OAuth/API
+plus manual CSV import, local SQLite projection, protected token material, and
+bounded recommendation modifiers. Any older instruction that says no WHOOP code
+exists, treats Open Wearables as the durable WHOOP source of truth, or suggests
+storing WHOOP tokens/raw payloads in backups should be updated rather than
+copied forward.
+
+Open Wearables docs should describe `/api/health/sync` as a metadata-only local
+bridge response. Do not document it as a raw health export endpoint.
 
 ## Current Ignored Coverage
 
