@@ -5284,6 +5284,8 @@
         if (!draft) return false;
         const draftScope = String(draft.auth_scope || '').trim();
         const currentScope = currentActiveWorkoutDraftScope();
+        // Require a live auth-scope match. A persisted scope can be stale after
+        // sign-out or account switching, and this draft contains health data.
         if (!draftScope || !currentScope || draftScope !== currentScope) {
             return false;
         }
