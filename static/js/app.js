@@ -902,6 +902,11 @@
         return 'tab-dashboard';
     }
 
+    function switchTabFromHash() {
+        const tabId = initialTabFromHash();
+        if (tabId && tabId !== state.currentTab) switchTab(tabId);
+    }
+
     function handleTabKeydown(e) {
         const key = e.key;
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
@@ -11142,7 +11147,8 @@
     function boot() {
         renderGreeting();
         wireEvents();
-        switchTab(initialTabFromHash());
+        switchTabFromHash();
+        window.addEventListener('hashchange', switchTabFromHash);
         fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
         refreshAiStatus();
         if (aiStatusTimer) clearInterval(aiStatusTimer);
