@@ -200,7 +200,7 @@ def refresh_whoop_token(
     grant_fields = {
         "grant_type": "refresh_token",
         "refresh_token": renewal_value,
-        "scope": "offline",
+        "scope": " ".join(config.scopes),
     }
     request = urllib.request.Request(
         config.token_url,

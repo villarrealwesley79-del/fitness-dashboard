@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.parse
 import urllib.error
 
 import pytest
@@ -121,6 +122,31 @@ def test_whoop_client_refreshes_then_paginates(monkeypatch):
     assert client.access_token == "fresh-access"
     assert client.refresh_token == "fresh-refresh"
     assert calls["post"] == 1
+
+
+def test_refresh_whoop_token_preserves_configured_read_scopes():
+    config = whoop_client.WhoopConfig("client-id", "safe-placeholder", "http://localhost/api/whoop/callback")
+    seen = {}
+
+    def fake_urlopen(request, timeout=15):
+        seen["body"] = request.data.decode("utf-8")
+        return _FakeResponse(
+            {
+                "access_token": "fresh-access",
+                "refresh_token": "fresh-refresh",
+                "expires_in": 3600,
+            }
+        )
+
+    whoop_client.refresh_whoop_token(config, renewal_value="stale-refresh", urlopen=fake_urlopen)
+
+    fields = urllib.parse.parse_qs(seen["body"])
+    scope = fields["scope"][0]
+    assert "offline" in scope
+    assert "read:recovery" in scope
+    assert "read:cycles" in scope
+    assert "read:sleep" in scope
+    assert "read:workout" in scope
 
 
 def test_whoop_client_retries_retryable_errors():
