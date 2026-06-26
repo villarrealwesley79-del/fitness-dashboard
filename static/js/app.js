@@ -24,6 +24,18 @@
         nextWorkout: null,
         exercises: null,
         whoopStatus: null,
+        openWearablesStatus: null,
+        wearableSources: null,
+        openWearablesUi: {
+            checkInFlight: false,
+            syncInFlight: false,
+            lastError: '',
+        },
+        aiFactUi: {
+            queryInFlight: false,
+            pendingSuggestionId: null,
+            actionInFlight: false,
+        },
         whoopUi: {
             connectInFlight: false,
             importInFlight: false,
@@ -1156,6 +1168,22 @@
         catch { state.whoopStatus = null; }
         return state.whoopStatus;
     }
+    async function getOpenWearablesStatus(force = false) {
+        if (!force && state.openWearablesStatus) return state.openWearablesStatus;
+        try { state.openWearablesStatus = await api('/api/open-wearables/status', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
+        catch { state.openWearablesStatus = null; }
+        return state.openWearablesStatus;
+    }
+    async function getWearableSources(force = false) {
+        if (!force && state.wearableSources) return state.wearableSources;
+        try {
+            const payload = await api('/api/wearable-sources', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+            state.wearableSources = payload && Array.isArray(payload.sources) ? payload.sources : [];
+        } catch {
+            state.wearableSources = [];
+        }
+        return state.wearableSources;
+    }
     async function getOuraTrends(force = false) {
         if (!force && state.ouraTrends) return state.ouraTrends;
         try { state.ouraTrends = await api('/api/oura/trends'); }
@@ -1321,6 +1349,7 @@
         if (!raw) return '';
         if (raw === 'apple' || raw === 'apple health' || raw === 'apple-health') return 'apple_health';
         if (raw === 'whoop' || raw === 'official_whoop') return 'whoop';
+        if (raw === 'open wearables' || raw === 'open-wearables' || raw === 'open_wearables') return 'open_wearables';
         if (raw === 'oura' || raw === 'oura ring') return 'oura';
         if (raw === 'noop' || raw === 'noop import') return 'noop';
         if (raw === 'food' || raw === 'food log' || raw === 'nutrition') return 'food';
@@ -1330,6 +1359,7 @@
     function sourceDisplayName(value) {
         const key = normalizeSourceKey(value);
         if (key === 'whoop') return 'WHOOP';
+        if (key === 'open_wearables') return 'Open Wearables';
         if (key === 'oura') return 'Oura';
         if (key === 'apple_health') return 'Apple Health';
         if (key === 'noop') return 'Noop import';
@@ -1509,6 +1539,15 @@
     function normalizeRecommendationSources(entries) {
         if (entries && !Array.isArray(entries) && typeof entries === 'object') {
             const normalizedEntries = [];
+            if (entries.open_wearables) {
+                const ow = entries.open_wearables;
+                normalizedEntries.push({
+                    key: 'open_wearables',
+                    label: 'Open Wearables',
+                    role: ow.role || (ow.used_for_recommendation ? 'wearable hub' : 'display only'),
+                    detail: ow.detail || 'Open Wearables is the wearable hub; Fitness Dashboard keeps coaching authority.',
+                });
+            }
             if (entries.whoop) {
                 const whoop = entries.whoop;
                 const detailParts = []
@@ -3065,6 +3104,58 @@
     }
 
     // --- History -------------------------------------------------
+    function canonicalHistoryCategory(label, source) {
+        const raw = String(label || '').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+        const src = String(source || '').trim().toLowerCase();
+        if (src === 'lifted') return 'strength_training';
+        if (['lifted', 'functional strength training', 'traditional strength training', 'strength training', 'weight training', 'resistance training'].includes(raw)) return 'strength_training';
+        if (raw.includes('strength') || raw.includes('weight') || raw.includes('resistance')) return 'strength_training';
+        return raw ? raw.replace(/\s+/g, '_') : 'other';
+    }
+
+    function normalizeWatchHistoryRow(w) {
+        const label = w.original_label || w.activity_type || w.activity || 'Workout';
+        const category = w.canonical_category || canonicalHistoryCategory(label, 'watch');
+        return {
+            ...w,
+            source: 'watch',
+            original_label: label,
+            canonical_category: category,
+            source_label: w.source_label || (category === 'strength_training' ? 'Strength - Watch' : 'Watch'),
+        };
+    }
+
+    function mergeStrengthHistorySources(lifts, watchRows) {
+        const loggedByDate = new Map();
+        const mergedLifts = (lifts || []).map((w) => {
+            const row = {
+                ...w,
+                source: 'lifted',
+                canonical_category: w.canonical_category || 'strength_training',
+                original_label: w.original_label || 'Lifted',
+                source_label: w.source_label || 'Strength - Logged',
+                merged_sources: Array.isArray(w.merged_sources) ? [...w.merged_sources] : ['logged'],
+            };
+            if (row.date && row.canonical_category === 'strength_training' && !loggedByDate.has(row.date)) {
+                loggedByDate.set(row.date, row);
+            }
+            return row;
+        });
+        const visibleWatch = [];
+        (watchRows || []).forEach((row) => {
+            if (row.canonical_category === 'strength_training' && row.date && loggedByDate.has(row.date)) {
+                const logged = loggedByDate.get(row.date);
+                logged.merged_sources = Array.from(new Set([...(logged.merged_sources || []), 'watch']));
+                logged.source_label = 'Strength - Logged + Watch';
+                logged.watch_duration_minutes = row.duration_minutes || row.duration || logged.watch_duration_minutes || null;
+                logged.watch_activity_label = row.original_label || row.activity_type || row.activity || logged.watch_activity_label || null;
+                return;
+            }
+            visibleWatch.push(row);
+        });
+        return mergedLifts.concat(visibleWatch);
+    }
+
     async function renderHistory() {
         // FIT-115: write the empty-state KPI surfaces ("0", "Last N days")
         // before any data fetching or chart math runs. The original code
@@ -3103,35 +3194,29 @@
         cutoff.setDate(cutoff.getDate() - days);
 
         const lifts = allLifts
-            .map((w, i) => ({ ...w, source: 'lifted', _origIndex: i }))
+            .map((w, i) => ({ ...w, source: 'lifted', canonical_category: w.canonical_category || 'strength_training', original_label: w.original_label || 'Lifted', _origIndex: i }))
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff);
         const watch = (Array.isArray(aw) ? aw : [])
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
-            .map((w) => ({ ...w, source: 'watch' }));
+            .map(normalizeWatchHistoryRow);
+        const mergedHistoryRows = mergeStrengthHistorySources(lifts, watch);
 
-        // Exclude Apple Watch's own "Traditional Strength Training" entries on
-        // days the user already logged a lift — same session, different source.
-        const liftDates = new Set(lifts.map((w) => w.date));
-        const watchFiltered = watch.filter((w) => {
-            const t = (w.activity_type || w.activity || '').toLowerCase();
-            const looksLikeLift = t.includes('strength') || t.includes('weight') || t.includes('functional');
-            return !(looksLikeLift && liftDates.has(w.date));
-        });
-
-        const workouts = lifts.length ? lifts : [];
+        const workouts = mergedHistoryRows.filter((w) => w.source === 'lifted');
 
         const totalVol = lifts.reduce((a, w) => a + Number(w.total_volume || 0), 0);
-        const totalSessions = lifts.length + watchFiltered.length;
+        const totalSessions = mergedHistoryRows.length;
         $('history-count').textContent = totalSessions || '0';
-        $('history-freq-sub').textContent = lifts.length && watchFiltered.length
-            ? `Last ${days} days · ${lifts.length} lifted + ${watchFiltered.length} from Watch`
+        const watchOnlyCount = mergedHistoryRows.filter((w) => w.source === 'watch').length;
+        const mergedWatchCount = mergedHistoryRows.filter((w) => Array.isArray(w.merged_sources) && w.merged_sources.includes('watch')).length;
+        $('history-freq-sub').textContent = lifts.length && (watchOnlyCount || mergedWatchCount)
+            ? `Last ${days} days · ${lifts.length} logged + ${watchOnlyCount} Watch-only + ${mergedWatchCount} merged`
             : `Last ${days} days`;
         $('history-total-volume').textContent = fmtKilo(totalVol);
         $('history-vol-sub').textContent = `Last ${days} days · lifting only`;
 
-        // frequency bars by day — count both lifted and watch sessions
+        // frequency bars by day - count canonical merged sessions once.
         const buckets = buildDailyBuckets(days);
-        [...lifts, ...watchFiltered].forEach((w) => {
+        mergedHistoryRows.forEach((w) => {
             if (!w.date) return;
             const b = buckets.find((bb) => bb.iso === w.date);
             if (b) b.count += 1;
@@ -3198,7 +3283,7 @@
         const listHost = $('history-workout-list');
         const filterHost = $('history-type-filter');
         listHost.innerHTML = '';
-        const merged = [...lifts, ...watchFiltered].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+        const merged = mergedHistoryRows.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
         if (!merged.length) {
             // FIT-14: explain WHY the range is empty and offer a path
             // forward — most users opening History on a quiet week want
@@ -3215,7 +3300,7 @@
         renderHistoryTypeFilter(merged, filterHost);
         const visible = merged.filter((w) => historyFilterKey(w) === state.historyTypeFilter || state.historyTypeFilter === 'all');
         if (!visible.length) {
-            const label = state.historyTypeFilter === 'lifted' ? 'Lifted' : state.historyTypeFilter;
+            const label = historyFilterLabel(state.historyTypeFilter);
             // FIT-14: filtered-empty state distinguishes itself from the
             // truly-empty case and offers a one-tap Clear-filter CTA.
             listHost.innerHTML = `
@@ -3262,11 +3347,14 @@
                 });
             } else {
                 const exNames = (w.exercises || []).map((e) => e.machine || e.exercise).filter(Boolean).slice(0, 3).join(', ');
+                const sourceMeta = Array.isArray(w.merged_sources) && w.merged_sources.includes('watch')
+                    ? ` · merged Watch ${w.watch_duration_minutes ? Math.round(w.watch_duration_minutes) + ' min' : 'strength'}`
+                    : '';
                 row.innerHTML = `
                     <div class="w-date">${fmtDate(w.date)}</div>
                     <div>
-                        <div class="w-summary"><span class="src-tag src-lifted">LIFTED</span>${escapeHtml(exNames || '—')}</div>
-                        <div class="w-meta">${w.total_sets || 0} sets · ${w.duration_minutes || 0} min</div>
+                        <div class="w-summary"><span class="src-tag src-lifted">STRENGTH</span>${escapeHtml(exNames || '—')}</div>
+                        <div class="w-meta">${w.total_sets || 0} sets · ${w.duration_minutes || 0} min${escapeHtml(sourceMeta)}</div>
                     </div>
                     <div class="w-analyze-wrap">
                         <div class="w-volume">${fmtKilo(w.total_volume)} lbs</div>
@@ -3297,13 +3385,15 @@
 
     function historyFilterKey(w) {
         if (!w) return 'other';
-        if (w.source === 'lifted') return 'lifted';
+        if (w.canonical_category) return w.canonical_category;
+        if (w.source === 'lifted') return 'strength_training';
         return (w.activity_type || w.activity || 'Other').toString().trim().toLowerCase() || 'other';
     }
 
     function historyFilterLabel(key) {
         if (key === 'all') return 'All';
-        if (key === 'lifted') return 'Lifted';
+        if (key === 'strength_training') return 'Strength Training';
+        if (key === 'lifted') return 'Strength Training';
         return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
     }
 
@@ -3315,9 +3405,9 @@
             counts.set(key, (counts.get(key) || 0) + 1);
         });
         const keys = ['all'];
-        if (counts.has('lifted')) keys.push('lifted');
+        if (counts.has('strength_training')) keys.push('strength_training');
         Array.from(counts.keys())
-            .filter((key) => key !== 'lifted')
+            .filter((key) => key !== 'strength_training')
             .sort((a, b) => a.localeCompare(b))
             .forEach((key) => keys.push(key));
         if (state.historyTypeFilter !== 'all' && !counts.has(state.historyTypeFilter)) {
@@ -4598,9 +4688,16 @@
     }
 
     async function renderStats() {
-        const hist = await getHistory();
-        const all = (hist && hist.workouts) || [];
         const days = state.ranges.stats;
+        const [hist, appleWorkouts] = await Promise.all([
+            getHistory(),
+            getAppleHealthWorkouts(Math.max(days, 30)),
+        ]);
+        const logged = Array.isArray(hist && hist.workouts) ? hist.workouts.map((w) => ({ ...w, source: 'lifted', canonical_category: w.canonical_category || 'strength_training' })) : [];
+        const watch = Array.isArray(appleWorkouts)
+            ? appleWorkouts.map(normalizeWatchHistoryRow)
+            : [];
+        const all = mergeStrengthHistorySources(logged, watch);
         const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days);
         const workouts = all.filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff);
 
@@ -4736,7 +4833,13 @@
         // drive the integration chips + detail panels) must be read
         // AFTER that upsert lands — parallel fetches race and can show
         // "Cached · stale" right after a successful live refresh.
-        const [st, oura, whoop] = await Promise.all([getSettings(), getOuraStatus(true, true), getWhoopStatus(true)]);
+        const [st, oura, whoop, openWearables, wearableSources] = await Promise.all([
+            getSettings(),
+            getOuraStatus(true, true),
+            getWhoopStatus(true),
+            getOpenWearablesStatus(true),
+            getWearableSources(true),
+        ]);
         // FIT-16: use the side-effect-free /api/freshness endpoint.
         // /api/dashboard would also work but it regenerates
         // next_workout and writes LAST_WORKOUT_RECOMMENDATION server-
@@ -4757,6 +4860,7 @@
             collectSourceConflicts(state.dashboard, state.reco)
         );
         freshness = Object.assign({}, freshness || {}, { whoop: whoopFreshness });
+        renderOpenWearablesDetail(openWearables, wearableSources);
         const host = $('settings-goals');
         host.innerHTML = '';
         (st.available_goals || []).forEach((g) => {
@@ -4898,6 +5002,124 @@
 
         // FIT-40: Web Push permission flow + alert surfaces.
         renderPushSection();
+    }
+
+    async function checkOpenWearables() {
+        if (state.openWearablesUi.checkInFlight) return;
+        state.openWearablesUi.checkInFlight = true;
+        state.openWearablesUi.lastError = '';
+        renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
+        try {
+            const body = await api('/api/open-wearables/setup/check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            state.openWearablesStatus = body && body.open_wearables ? body.open_wearables : await getOpenWearablesStatus(true);
+            toast('Open Wearables checked.', 'ok');
+        } catch (error) {
+            state.openWearablesUi.lastError = error && error.message ? error.message : 'Open Wearables check failed.';
+            toast('Open Wearables check failed.', 'err');
+        } finally {
+            state.openWearablesUi.checkInFlight = false;
+            await renderSettings();
+        }
+    }
+
+    async function syncOpenWearables() {
+        if (state.openWearablesUi.syncInFlight) return;
+        state.openWearablesUi.syncInFlight = true;
+        state.openWearablesUi.lastError = '';
+        renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
+        try {
+            await api('/api/open-wearables/sync', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ trigger: 'manual' }),
+            });
+            state.openWearablesStatus = null;
+            state.wearableSources = null;
+            state.dashboard = null;
+            toast('Open Wearables sync complete.', 'ok');
+        } catch (error) {
+            state.openWearablesUi.lastError = error && error.message ? error.message : 'Open Wearables sync failed.';
+            toast('Open Wearables sync failed.', 'err');
+        } finally {
+            state.openWearablesUi.syncInFlight = false;
+            await renderSettings();
+        }
+    }
+
+    async function askAiFactQuestion() {
+        if (state.aiFactUi.queryInFlight) return;
+        const input = $('ai-fact-question');
+        const answerEl = $('ai-fact-answer');
+        const actions = $('ai-fact-suggestion-actions');
+        const question = input ? String(input.value || '').trim() : '';
+        if (!question) {
+            if (answerEl) answerEl.textContent = 'Ask about strength history, wearable sources, or freshness.';
+            if (actions) actions.hidden = true;
+            state.aiFactUi.pendingSuggestionId = null;
+            return;
+        }
+        state.aiFactUi.queryInFlight = true;
+        state.aiFactUi.pendingSuggestionId = null;
+        if (actions) actions.hidden = true;
+        const btn = $('btn-ai-fact-query');
+        if (btn) btn.disabled = true;
+        if (answerEl) answerEl.textContent = 'Checking sanitized history and wearable facts…';
+        try {
+            const payload = await api('/api/ai/facts/query', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question, suggest: true }),
+            });
+            const evidenceCount = Array.isArray(payload && payload.evidence) ? payload.evidence.length : 0;
+            if (answerEl) answerEl.textContent = `${payload.answer || 'No answer available.'}${evidenceCount ? ` · ${evidenceCount} evidence item${evidenceCount === 1 ? '' : 's'}` : ''}`;
+            if (payload && payload.suggested_action_id) {
+                state.aiFactUi.pendingSuggestionId = payload.suggested_action_id;
+                if (actions) actions.hidden = false;
+            }
+        } catch (error) {
+            if (answerEl) answerEl.textContent = 'AI fact query failed. No records were changed.';
+            toast('AI fact query failed.', 'err');
+        } finally {
+            state.aiFactUi.queryInFlight = false;
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    async function resolveAiSuggestion(decision) {
+        const suggestionId = state.aiFactUi.pendingSuggestionId;
+        if (!suggestionId || state.aiFactUi.actionInFlight) return;
+        state.aiFactUi.actionInFlight = true;
+        const approveBtn = $('btn-ai-suggestion-approve');
+        const rejectBtn = $('btn-ai-suggestion-reject');
+        if (approveBtn) approveBtn.disabled = true;
+        if (rejectBtn) rejectBtn.disabled = true;
+        try {
+            const payload = await api(`/api/ai/suggestions/${encodeURIComponent(suggestionId)}/${decision}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            const status = payload && payload.suggestion && payload.suggestion.status;
+            const answerEl = $('ai-fact-answer');
+            if (answerEl) {
+                answerEl.textContent = status === 'approved'
+                    ? 'Suggestion approved. No records were changed in this version.'
+                    : 'Suggestion rejected. No records were changed.';
+            }
+            state.aiFactUi.pendingSuggestionId = null;
+            const actions = $('ai-fact-suggestion-actions');
+            if (actions) actions.hidden = true;
+        } catch (error) {
+            toast('AI suggestion action failed.', 'err');
+        } finally {
+            state.aiFactUi.actionInFlight = false;
+            if (approveBtn) approveBtn.disabled = false;
+            if (rejectBtn) rejectBtn.disabled = false;
+        }
     }
 
     async function syncWhoop() {
@@ -5848,6 +6070,51 @@
         }
 
         setWhoopActionButtons(whoop, uiState);
+    }
+
+    function renderOpenWearablesDetail(status, sources) {
+        const dot = $('open-wearables-int-dot');
+        const chip = $('open-wearables-state');
+        const detail = $('open-wearables-detail');
+        const panel = $('open-wearables-detail-panel');
+        const stateToken = normalizeWhoopStateToken(status && status.status);
+        const providers = Array.isArray(status && status.providers) ? status.providers : [];
+        const connected = stateToken === WHOOP_UI_STATES.connected || (status && status.configured && stateToken !== 'blocked' && stateToken !== WHOOP_UI_STATES.error);
+        if (dot) dot.className = connected ? 'int-dot int-dot-on' : 'int-dot';
+        if (chip) {
+            chip.className = 'state-chip';
+            if (connected) chip.classList.add('ok');
+            else if (stateToken === 'blocked' || stateToken === WHOOP_UI_STATES.error) chip.classList.add('stale');
+            else chip.classList.add('warn');
+            chip.textContent = state.openWearablesUi.syncInFlight
+                ? 'Syncing'
+                : connected
+                    ? 'Hub ready'
+                    : stateToken === 'blocked'
+                        ? 'Blocked'
+                        : 'Setup needed';
+        }
+        if (detail) {
+            const checked = status && status.last_checked_at ? ` · checked ${fmtDateTime(status.last_checked_at)}` : '';
+            detail.textContent = connected
+                ? `Wearable hub configured${checked}`
+                : `Open Wearables setup needed${checked}`;
+        }
+        if (panel) panel.hidden = false;
+        _setDetail('open-wearables-detail-hub', status && status.base_url ? `${status.base_url} · ${status.status}` : String(status && status.status || 'missing_config').replace(/_/g, ' '));
+        const providerCount = providers.length;
+        _setDetail('open-wearables-detail-providers', providerCount ? `${providerCount} hub provider${providerCount === 1 ? '' : 's'} visible` : 'No hub providers visible yet');
+        const attentionRow = $('open-wearables-detail-attention-row');
+        if (attentionRow) {
+            const errorCode = status && status.error_code;
+            const message = state.openWearablesUi.lastError || (errorCode ? String(errorCode).replace(/_/g, ' ') : '');
+            attentionRow.hidden = !message;
+            if (message) _setDetail('open-wearables-detail-attention', message);
+        }
+        const checkBtn = $('btn-check-open-wearables');
+        if (checkBtn) checkBtn.disabled = state.openWearablesUi.checkInFlight;
+        const syncBtn = $('btn-sync-open-wearables');
+        if (syncBtn) syncBtn.disabled = state.openWearablesUi.syncInFlight || !connected;
     }
 
     function renderOuraFreshnessDetail(oura, freshness) {
@@ -8596,6 +8863,17 @@
             await renderSyncQueueModal();
         });
         $('btn-sync-oura') && $('btn-sync-oura').addEventListener('click', syncOura);
+        $('btn-check-open-wearables') && $('btn-check-open-wearables').addEventListener('click', checkOpenWearables);
+        $('btn-sync-open-wearables') && $('btn-sync-open-wearables').addEventListener('click', syncOpenWearables);
+        $('btn-ai-fact-query') && $('btn-ai-fact-query').addEventListener('click', askAiFactQuestion);
+        $('btn-ai-suggestion-approve') && $('btn-ai-suggestion-approve').addEventListener('click', () => resolveAiSuggestion('approve'));
+        $('btn-ai-suggestion-reject') && $('btn-ai-suggestion-reject').addEventListener('click', () => resolveAiSuggestion('reject'));
+        $('ai-fact-question') && $('ai-fact-question').addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                askAiFactQuestion();
+            }
+        });
         $('btn-connect-whoop') && $('btn-connect-whoop').addEventListener('click', connectWhoop);
         $('btn-whoop-connect-live') && $('btn-whoop-connect-live').addEventListener('click', startWhoopConnectFromModal);
         $('btn-whoop-import-submit') && $('btn-whoop-import-submit').addEventListener('click', importWhoopCsvFromModal);

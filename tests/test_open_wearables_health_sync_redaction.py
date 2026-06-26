@@ -140,3 +140,54 @@ def test_health_sync_exception_uses_stable_error_response(monkeypatch):
         "user_id",
     ]:
         assert fragment not in body
+
+
+def test_open_wearables_fetch_blocks_unallowlisted_remote_before_network(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "user")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "pass")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "ow-user")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://wearables.example.com")
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network should be blocked")))
+
+    payload = module.fetch_open_wearables_data()
+
+    assert payload["sleep"] is None
+    assert payload["workouts"] is None
+    assert payload["activity_summary"] is None
+    assert payload["errors"] == {"config": "missing:OW_BASE_URL:remote_requires_tls"}
+
+
+def test_open_wearables_provider_route_reports_real_provider_probe(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "user")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "pass")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "ow-user")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://localhost:8000")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_BASE", "http://localhost:8000/api/v1/users/ow-user")
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-test-token")
+    monkeypatch.setattr(module, "_ow_request", lambda url, headers: {
+        "data": [
+            {"name": "WHOOP", "status": "connected", "capabilities": {"metrics": True, "workouts": True}},
+        ]
+    })
+
+    payload = module.app.test_client().get("/api/open-wearables/providers").get_json()
+
+    assert payload["status"] == "connected"
+    assert payload["providers"][0]["label"] == "WHOOP"
+    assert payload["providers"][0]["capabilities"]["workouts"] is True
+
+
+def test_open_wearables_setup_check_reports_attention_without_cosmetic_success(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://localhost:8000")
+
+    payload = module.app.test_client().post("/api/open-wearables/setup/check", json={}).get_json()
+
+    assert payload["status"] == "attention"
+    assert payload["provider_check"]["checked"] is False
+    assert payload["open_wearables"]["status"] == "missing_config"

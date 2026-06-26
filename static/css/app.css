@@ -212,6 +212,11 @@
     white-space: nowrap;
 }
 
+.ai-fact-query-input {
+    min-width: 180px;
+    max-width: 260px;
+}
+
 @media (max-width: 640px) {
     .reco-source-strip {
         flex-direction: column;
@@ -239,6 +244,11 @@
     }
 
     .whoop-intake-actions .btn {
+        width: 100%;
+    }
+
+    .ai-fact-query-input {
+        max-width: none;
         width: 100%;
     }
 }

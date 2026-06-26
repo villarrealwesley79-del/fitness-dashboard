@@ -833,6 +833,20 @@
                             <span id="ai-metrics-fallback-pct" class="state-chip">—</span>
                         </div>
                     </div>
+                    <div class="settings-row ai-fact-query-row">
+                        <div class="settings-row-label settings-row-label-stack">
+                            <label class="settings-row-label-main" for="ai-fact-question">Ask history</label>
+                            <span id="ai-fact-answer" class="settings-row-detail">Answers use sanitized wearable facts and reconciled history only.</span>
+                        </div>
+                        <div class="settings-row-control settings-row-control-stack">
+                            <input id="ai-fact-question" class="select-inline ai-fact-query-input" type="text" inputmode="text" autocomplete="off" placeholder="strength history?">
+                            <button id="btn-ai-fact-query" class="btn btn-ghost btn-sm" type="button">Ask</button>
+                            <div id="ai-fact-suggestion-actions" class="settings-inline-actions" hidden>
+                                <button id="btn-ai-suggestion-approve" class="btn btn-ghost btn-sm" type="button">Approve</button>
+                                <button id="btn-ai-suggestion-reject" class="btn btn-ghost btn-sm" type="button">Reject</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </section>
 
@@ -842,6 +856,40 @@
                     <span id="settings-group-summary-data-sources" class="state-chip state-chip-sm">—</span>
                 </header>
                 <div class="card">
+                <div class="settings-row">
+                    <div class="settings-row-label settings-row-label-stack">
+                        <span class="settings-row-label-main">
+                            <span class="int-dot" id="open-wearables-int-dot"></span>
+                            Open Wearables
+                        </span>
+                        <span id="open-wearables-detail" class="settings-row-detail">Checking wearable hub…</span>
+                    </div>
+                    <div class="settings-row-control settings-row-control-stack">
+                        <span id="open-wearables-state" class="state-chip">—</span>
+                        <div class="settings-inline-actions">
+                            <button id="btn-check-open-wearables" class="btn btn-ghost btn-sm" type="button">Check</button>
+                            <button id="btn-sync-open-wearables" class="btn btn-ghost btn-sm" type="button">Sync</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="integration-detail" id="open-wearables-detail-panel">
+                    <div class="integration-detail-row">
+                        <span class="detail-label">Hub</span>
+                        <span class="detail-value" id="open-wearables-detail-hub">—</span>
+                    </div>
+                    <div class="integration-detail-row">
+                        <span class="detail-label">Providers</span>
+                        <span class="detail-value" id="open-wearables-detail-providers">—</span>
+                    </div>
+                    <div class="integration-detail-row">
+                        <span class="detail-label">Policy</span>
+                        <span class="detail-value" id="open-wearables-detail-policy">Normalized facts only · coaching stays local</span>
+                    </div>
+                    <div class="integration-detail-row integration-detail-warn" id="open-wearables-detail-attention-row" hidden>
+                        <span class="detail-label">Attention</span>
+                        <span class="detail-value" id="open-wearables-detail-attention">—</span>
+                    </div>
+                </div>
                 <div class="settings-row">
                     <div class="settings-row-label settings-row-label-stack">
                         <span class="settings-row-label-main">
