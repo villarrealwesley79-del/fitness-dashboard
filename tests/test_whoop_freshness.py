@@ -87,3 +87,16 @@ def test_whoop_status_endpoint_does_not_leak_tokens(fitness_app):
     assert payload["status"] in {"missing_config", "connected", "disconnected", "reauth_required", "error"}
     assert "access_token" not in body
     assert "refresh_token" not in body
+
+
+def test_optional_disconnected_whoop_missing_does_not_lower_confidence(fitness_app):
+    confidence = fitness_app._confidence_level_from(
+        82,
+        {
+            "oura": {"status": "fresh"},
+            "apple_health": {"status": "fresh"},
+            "whoop": {"status": "missing", "connected": False, "last_data_point": None},
+        },
+    )
+
+    assert confidence == "high"

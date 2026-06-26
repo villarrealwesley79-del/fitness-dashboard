@@ -105,6 +105,20 @@ def test_whoop_csv_import_rejects_impossible_metric_values(fitness_app):
     assert response.get_json()["error"]["code"] == "invalid_whoop_csv_metric"
 
 
+def test_whoop_csv_import_rejects_non_numeric_metric_values(fitness_app):
+    csv_text = "\n".join(
+        [
+            "record_type,local_date,recovery_score",
+            "recovery,2026-06-25,not-a-number",
+        ]
+    )
+
+    response = fitness_app.app.test_client().post("/api/whoop/import-csv", json={"csv": csv_text})
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_whoop_csv_metric"
+
+
 def test_whoop_manual_sync_uses_protected_material_and_normalizes_records(fitness_app, monkeypatch):
     monkeypatch.setattr(
         fitness_app,

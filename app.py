@@ -10668,6 +10668,22 @@ def _validate_whoop_metric_bounds(record):
             raise ValueError(f"{field} must be between {minimum} and {maximum}.")
 
 
+def _validate_whoop_raw_metric_fields(row):
+    for field, bounds in WHOOP_METRIC_BOUNDS.items():
+        value = row.get(field)
+        if value in (None, ""):
+            continue
+        try:
+            number = float(value)
+        except Exception:
+            raise ValueError(f"{field} must be numeric.")
+        if not math.isfinite(number):
+            raise ValueError(f"{field} must be finite.")
+        minimum, maximum = bounds
+        if number < minimum or number > maximum:
+            raise ValueError(f"{field} must be between {minimum} and {maximum}.")
+
+
 def _first_present(*values):
     for value in values:
         if value is not None and value != "":
@@ -10873,6 +10889,7 @@ def _parse_whoop_csv_rows(text):
         record_type = (row.get("record_type") or row.get("type") or "recovery").strip().lower()
         if record_type not in {"recovery", "sleep", "cycle", "workout"}:
             continue
+        _validate_whoop_raw_metric_fields(row)
         normalized = _normalize_whoop_record(record_type, row)
         if normalized:
             _validate_whoop_metric_bounds(normalized)
@@ -12001,11 +12018,13 @@ def _confidence_level_from(effective_readiness, freshness):
     A stale or fully-missing wearable forces 'low' — we can't claim a confident
     recommendation when the underlying signal is gone.
     """
+    whoop_freshness = (freshness.get("whoop") or {})
     wearable_states = [
         (freshness.get("oura") or {}).get("status"),
-        (freshness.get("whoop") or {}).get("status"),
         (freshness.get("apple_health") or {}).get("status"),
     ]
+    if whoop_freshness.get("connected") or whoop_freshness.get("last_data_point"):
+        wearable_states.append(whoop_freshness.get("status"))
     wearable_states = [state for state in wearable_states if state is not None]
     if "stale" in wearable_states:
         return "low"
