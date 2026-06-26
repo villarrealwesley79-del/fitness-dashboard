@@ -1842,6 +1842,54 @@
         focusOpenModal(modal);
     }
 
+    function openAiFactQueryModal() {
+        const modal = $('modal-ai-fact-query');
+        const trigger = $('btn-open-ai-fact-query');
+        if (!modal) return;
+        modal.__fit192Close = function () {
+            modal.hidden = true;
+            if (trigger) trigger.setAttribute('aria-expanded', 'false');
+        };
+        modal.hidden = false;
+        if (trigger) trigger.setAttribute('aria-expanded', 'true');
+        focusOpenModal(modal);
+    }
+
+    function setOpenWearablesSetupStatus(message, tone = 'info') {
+        const modalStatus = $('open-wearables-setup-modal-status');
+        const setupStatus = $('open-wearables-setup-status');
+        const text = String(message || '').trim();
+        if (modalStatus) {
+            modalStatus.className = 'state-chip state-chip-sm ' + (tone === 'ok' ? 'ok' : tone === 'error' ? 'stale' : 'warn');
+            modalStatus.textContent = tone === 'ok' ? 'Ready' : tone === 'error' ? 'Needs attention' : 'Setup needed';
+        }
+        if (setupStatus && text) {
+            setupStatus.textContent = text;
+            setupStatus.className = 'settings-row-detail whoop-intake-status ' + (tone === 'ok' ? 'ok' : tone === 'error' ? 'err' : tone === 'warn' ? 'warn' : '');
+        }
+    }
+
+    function openWearablesIsConnected(status, checkStatus = '') {
+        const stateToken = normalizeWhoopStateToken(status && status.status);
+        return stateToken === WHOOP_UI_STATES.connected || checkStatus === 'ok';
+    }
+
+    function openOpenWearablesSetupModal() {
+        const modal = $('modal-open-wearables-setup');
+        if (!modal) return;
+        const status = state.openWearablesStatus;
+        const connected = openWearablesIsConnected(status);
+        const configured = Boolean(status && status.configured);
+        const detail = connected
+            ? 'Open Wearables is connected. Use Check setup to refresh provider visibility.'
+            : configured
+                ? 'Open Wearables is configured, but the hub is not connected yet. Check setup for current provider visibility.'
+            : 'Configure the local server values, restart the app, then check setup.';
+        setOpenWearablesSetupStatus(detail, connected ? 'ok' : 'warn');
+        modal.hidden = false;
+        focusOpenModal(modal);
+    }
+
     function currentWhoopConnectUrl() {
         const whoop = state.whoopStatus;
         return whoop && (
@@ -5016,9 +5064,15 @@
                 body: JSON.stringify({}),
             });
             state.openWearablesStatus = body && body.open_wearables ? body.open_wearables : await getOpenWearablesStatus(true);
+            if (openWearablesIsConnected(state.openWearablesStatus, body && body.status)) {
+                setOpenWearablesSetupStatus('Open Wearables is connected. Provider visibility refreshed.', 'ok');
+            } else {
+                setOpenWearablesSetupStatus('Setup still needs the local server values and a reachable hub.', 'warn');
+            }
             toast('Open Wearables checked.', 'ok');
         } catch (error) {
             state.openWearablesUi.lastError = error && error.message ? error.message : 'Open Wearables check failed.';
+            setOpenWearablesSetupStatus(state.openWearablesUi.lastError, 'error');
             toast('Open Wearables check failed.', 'err');
         } finally {
             state.openWearablesUi.checkInFlight = false;
@@ -6079,7 +6133,7 @@
         const panel = $('open-wearables-detail-panel');
         const stateToken = normalizeWhoopStateToken(status && status.status);
         const providers = Array.isArray(status && status.providers) ? status.providers : [];
-        const connected = stateToken === WHOOP_UI_STATES.connected || (status && status.configured && stateToken !== 'blocked' && stateToken !== WHOOP_UI_STATES.error);
+        const connected = openWearablesIsConnected(status);
         if (dot) dot.className = connected ? 'int-dot int-dot-on' : 'int-dot';
         if (chip) {
             chip.className = 'state-chip';
@@ -6111,10 +6165,18 @@
             attentionRow.hidden = !message;
             if (message) _setDetail('open-wearables-detail-attention', message);
         }
-        const checkBtn = $('btn-check-open-wearables');
-        if (checkBtn) checkBtn.disabled = state.openWearablesUi.checkInFlight;
+        const setupCheckBtn = $('btn-open-wearables-setup-check');
+        if (setupCheckBtn) setupCheckBtn.disabled = state.openWearablesUi.checkInFlight;
+        const setupBtn = $('btn-open-wearables-setup');
+        if (setupBtn) {
+            setupBtn.textContent = connected ? 'Manage' : 'Setup';
+            setupBtn.classList.toggle('btn-primary', !connected);
+            setupBtn.classList.toggle('btn-ghost', connected);
+        }
         const syncBtn = $('btn-sync-open-wearables');
         if (syncBtn) syncBtn.disabled = state.openWearablesUi.syncInFlight || !connected;
+        const setupSyncBtn = $('btn-open-wearables-setup-sync');
+        if (setupSyncBtn) setupSyncBtn.disabled = state.openWearablesUi.syncInFlight || !connected;
     }
 
     function renderOuraFreshnessDetail(oura, freshness) {
@@ -8863,7 +8925,10 @@
             await renderSyncQueueModal();
         });
         $('btn-sync-oura') && $('btn-sync-oura').addEventListener('click', syncOura);
-        $('btn-check-open-wearables') && $('btn-check-open-wearables').addEventListener('click', checkOpenWearables);
+        $('btn-open-ai-fact-query') && $('btn-open-ai-fact-query').addEventListener('click', openAiFactQueryModal);
+        $('btn-open-wearables-setup') && $('btn-open-wearables-setup').addEventListener('click', openOpenWearablesSetupModal);
+        $('btn-open-wearables-setup-check') && $('btn-open-wearables-setup-check').addEventListener('click', checkOpenWearables);
+        $('btn-open-wearables-setup-sync') && $('btn-open-wearables-setup-sync').addEventListener('click', syncOpenWearables);
         $('btn-sync-open-wearables') && $('btn-sync-open-wearables').addEventListener('click', syncOpenWearables);
         $('btn-ai-fact-query') && $('btn-ai-fact-query').addEventListener('click', askAiFactQuestion);
         $('btn-ai-suggestion-approve') && $('btn-ai-suggestion-approve').addEventListener('click', () => resolveAiSuggestion('approve'));

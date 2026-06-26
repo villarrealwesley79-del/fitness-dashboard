@@ -8,6 +8,13 @@
     gap: 12px;
 }
 
+.reco-source-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
 .reco-source-copy {
     min-width: 0;
     flex: 1;
@@ -118,6 +125,11 @@
     max-width: 620px;
 }
 
+#modal-open-wearables-setup .modal-sheet,
+#modal-ai-fact-query .modal-sheet {
+    max-width: 620px;
+}
+
 .whoop-intake-body {
     display: flex;
     flex-direction: column;
@@ -198,6 +210,40 @@
     outline-offset: 2px;
 }
 
+.open-wearables-setup-list {
+    display: grid;
+    gap: 10px;
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.open-wearables-setup-list li {
+    display: grid;
+    grid-template-columns: minmax(118px, max-content) minmax(0, 1fr);
+    gap: 10px;
+    align-items: baseline;
+    padding: 10px 0;
+    border-top: 1px solid rgba(51,65,85,0.35);
+}
+
+.open-wearables-setup-list li:first-child {
+    border-top: 0;
+}
+
+.open-wearables-setup-list code,
+.whoop-intake-status code {
+    color: var(--fg-0);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+
+.open-wearables-setup-list span {
+    color: var(--fg-dim);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
 .whoop-import-file-row {
     display: flex;
     align-items: center;
@@ -217,10 +263,35 @@
     max-width: 260px;
 }
 
+.ai-fact-query-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.ai-fact-query-controls .ai-fact-query-input {
+    flex: 1;
+    max-width: none;
+}
+
+.ai-fact-suggestion-actions {
+    margin-top: 10px;
+}
+
 @media (max-width: 640px) {
     .reco-source-strip {
         flex-direction: column;
         align-items: stretch;
+    }
+
+    .reco-source-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .reco-source-actions .btn {
+        flex: 1;
     }
 
     .settings-row-control-stack {
@@ -243,8 +314,19 @@
         flex-direction: column;
     }
 
-    .whoop-intake-actions .btn {
+    .whoop-intake-actions .btn,
+    .ai-fact-query-controls .btn {
         width: 100%;
+    }
+
+    .open-wearables-setup-list li {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+
+    .ai-fact-query-controls {
+        align-items: stretch;
+        flex-direction: column;
     }
 
     .ai-fact-query-input {

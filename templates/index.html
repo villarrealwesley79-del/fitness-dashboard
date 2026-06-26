@@ -92,14 +92,23 @@
                         <div class="reco-source-summary" id="reco-sources-summary">Waiting for wearable source detail…</div>
                         <div class="reco-source-note" id="reco-sources-note">Source attribution stays visible when recovery data ages or conflicts.</div>
                     </div>
-                    <button
-                        id="btn-reco-sources"
-                        class="btn btn-ghost btn-sm"
-                        type="button"
-                        aria-haspopup="dialog"
-                        aria-controls="modal-reco-sources"
-                        aria-expanded="false"
-                    >View details</button>
+                    <div class="reco-source-actions">
+                        <button
+                            id="btn-open-ai-fact-query"
+                            class="btn btn-ghost btn-sm"
+                            type="button"
+                            aria-haspopup="dialog"
+                            aria-controls="modal-ai-fact-query"
+                        >Ask AI</button>
+                        <button
+                            id="btn-reco-sources"
+                            class="btn btn-ghost btn-sm"
+                            type="button"
+                            aria-haspopup="dialog"
+                            aria-controls="modal-reco-sources"
+                            aria-expanded="false"
+                        >View details</button>
+                    </div>
                 </div>
                 <div id="reco-source-conflict" class="reco-source-conflict" hidden aria-live="polite"></div>
             </div>
@@ -833,20 +842,6 @@
                             <span id="ai-metrics-fallback-pct" class="state-chip">—</span>
                         </div>
                     </div>
-                    <div class="settings-row ai-fact-query-row">
-                        <div class="settings-row-label settings-row-label-stack">
-                            <label class="settings-row-label-main" for="ai-fact-question">Ask history</label>
-                            <span id="ai-fact-answer" class="settings-row-detail">Answers use sanitized wearable facts and reconciled history only.</span>
-                        </div>
-                        <div class="settings-row-control settings-row-control-stack">
-                            <input id="ai-fact-question" class="select-inline ai-fact-query-input" type="text" inputmode="text" autocomplete="off" placeholder="strength history?">
-                            <button id="btn-ai-fact-query" class="btn btn-ghost btn-sm" type="button">Ask</button>
-                            <div id="ai-fact-suggestion-actions" class="settings-inline-actions" hidden>
-                                <button id="btn-ai-suggestion-approve" class="btn btn-ghost btn-sm" type="button">Approve</button>
-                                <button id="btn-ai-suggestion-reject" class="btn btn-ghost btn-sm" type="button">Reject</button>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </section>
 
@@ -867,7 +862,7 @@
                     <div class="settings-row-control settings-row-control-stack">
                         <span id="open-wearables-state" class="state-chip">—</span>
                         <div class="settings-inline-actions">
-                            <button id="btn-check-open-wearables" class="btn btn-ghost btn-sm" type="button">Check</button>
+                            <button id="btn-open-wearables-setup" class="btn btn-primary btn-sm" type="button" aria-haspopup="dialog" aria-controls="modal-open-wearables-setup">Setup</button>
                             <button id="btn-sync-open-wearables" class="btn btn-ghost btn-sm" type="button">Sync</button>
                         </div>
                     </div>
@@ -1194,6 +1189,35 @@
         </div>
     </div>
 
+    <div id="modal-ai-fact-query" class="modal" role="dialog" aria-modal="true" aria-labelledby="ai-fact-query-title" hidden>
+        <div class="modal-sheet modal-sheet-tall ai-fact-query-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title" id="ai-fact-query-title">Ask AI</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body whoop-intake-body">
+                <section class="whoop-intake-section" aria-labelledby="ai-fact-question-title">
+                    <div class="whoop-intake-section-head">
+                        <h4 id="ai-fact-question-title" class="whoop-intake-title">History question</h4>
+                        <span class="state-chip state-chip-sm">Sanitized facts</span>
+                    </div>
+                    <p id="ai-fact-answer" class="settings-row-detail whoop-intake-status" role="status">Ask about workouts, wearable history, or trends. No records are changed by asking.</p>
+                    <div class="ai-fact-query-controls">
+                        <input id="ai-fact-question" class="select-inline ai-fact-query-input" type="text" inputmode="text" autocomplete="off" placeholder="strength history?">
+                        <button id="btn-ai-fact-query" class="btn btn-primary btn-sm" type="button">Ask</button>
+                    </div>
+                    <div id="ai-fact-suggestion-actions" class="settings-inline-actions ai-fact-suggestion-actions" hidden>
+                        <button id="btn-ai-suggestion-approve" class="btn btn-ghost btn-sm" type="button">Approve</button>
+                        <button id="btn-ai-suggestion-reject" class="btn btn-ghost btn-sm" type="button">Reject</button>
+                    </div>
+                </section>
+            </div>
+            <div class="modal-foot modal-foot-row">
+                <button class="btn btn-ghost" data-close-modal type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
     <div id="modal-whoop-intake" class="modal" role="dialog" aria-modal="true" aria-labelledby="whoop-intake-title" hidden>
         <div class="modal-sheet modal-sheet-tall whoop-intake-sheet">
             <div class="modal-head">
@@ -1230,6 +1254,46 @@
                         <button id="btn-whoop-import-clear" class="btn btn-ghost btn-sm" type="button">Clear</button>
                     </div>
                     <p id="whoop-import-status" class="settings-row-detail whoop-intake-status" role="status">Manual import stays available even when live WHOOP sync is not configured.</p>
+                </section>
+            </div>
+            <div class="modal-foot modal-foot-row">
+                <button class="btn btn-ghost" data-close-modal type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-open-wearables-setup" class="modal" role="dialog" aria-modal="true" aria-labelledby="open-wearables-setup-title" hidden>
+        <div class="modal-sheet modal-sheet-tall open-wearables-setup-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title" id="open-wearables-setup-title">Set up Open Wearables</h3>
+                <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body whoop-intake-body">
+                <section class="whoop-intake-section" aria-labelledby="open-wearables-hub-title">
+                    <div class="whoop-intake-section-head">
+                        <h4 id="open-wearables-hub-title" class="whoop-intake-title">Wearable hub wrapper</h4>
+                        <span id="open-wearables-setup-modal-status" class="state-chip state-chip-sm warn">Setup needed</span>
+                    </div>
+                    <p class="dim whoop-intake-copy">Fitness Dashboard reads normalized facts from Open Wearables. Install the hub, connect providers there, then point this app at it.</p>
+                    <div class="whoop-intake-actions">
+                        <a class="btn btn-primary btn-sm" href="https://github.com/the-momentum/open-wearables" target="_blank" rel="noopener noreferrer">Open GitHub</a>
+                        <button id="btn-open-wearables-setup-check" class="btn btn-ghost btn-sm" type="button">Check setup</button>
+                        <button id="btn-open-wearables-setup-sync" class="btn btn-ghost btn-sm" type="button">Sync now</button>
+                    </div>
+                    <p id="open-wearables-setup-status" class="settings-row-detail whoop-intake-status" role="status">No credentials are entered here. Configure the local server values, restart the app, then check setup.</p>
+                </section>
+
+                <section class="whoop-intake-section" aria-labelledby="open-wearables-env-title">
+                    <div class="whoop-intake-section-head">
+                        <h4 id="open-wearables-env-title" class="whoop-intake-title">Required server values</h4>
+                    </div>
+                    <ul class="open-wearables-setup-list">
+                        <li><code>OW_BASE_URL</code><span>Local Open Wearables base URL.</span></li>
+                        <li><code>OW_USERNAME</code><span>Hub account username.</span></li>
+                        <li><code>OW_PASSWORD</code><span>Hub account password or token.</span></li>
+                        <li><code>OW_USER_ID</code><span>User mapping in the hub.</span></li>
+                    </ul>
+                    <p class="settings-row-detail whoop-intake-status">Remote hubs must use HTTPS and be allowlisted with <code>OW_ALLOWED_HOSTS</code>.</p>
                 </section>
             </div>
             <div class="modal-foot modal-foot-row">
