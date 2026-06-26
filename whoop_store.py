@@ -730,20 +730,26 @@ def latest_whoop_freshness(db_path: str, *, now: datetime | None = None) -> dict
     init_whoop_db(db_path)
     fact = get_daily_fact(db_path)
     connection = get_connection_status(db_path)
+    connection_status = connection.get("status")
+    reauth_required = bool(connection.get("reauth_required") or connection_status == "reauth_required")
     if fact is None:
         return {
             "status": "missing",
             "last_data_point": None,
             "last_sync_attempt": connection.get("last_successful_sync_at") or connection.get("last_sync_attempt_at"),
             "score_state": None,
-            "connected": connection.get("status") == "connected",
+            "connected": connection_status == "connected",
+            "connection_status": connection_status,
+            "reauth_required": reauth_required,
         }
     return {
         "status": _classify_freshness(fact.get("local_date"), now=now),
         "last_data_point": fact.get("local_date"),
         "last_sync_attempt": fact.get("last_sync_attempt"),
         "score_state": fact.get("score_state"),
-        "connected": connection.get("status") == "connected",
+        "connected": connection_status == "connected",
+        "connection_status": connection_status,
+        "reauth_required": reauth_required,
     }
 
 

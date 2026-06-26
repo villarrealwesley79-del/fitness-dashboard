@@ -11029,6 +11029,8 @@ def _whoop_freshness_is_relevant(freshness):
     node = freshness or {}
     return bool(
         node.get("connected")
+        or node.get("reauth_required")
+        or node.get("connection_status") == "reauth_required"
         or node.get("csv_only")
         or node.get("source_kind") == "csv_only"
     )
@@ -11097,6 +11099,7 @@ def _wearable_sources_payload(freshness, whoop_context):
             "source_kind": (freshness.get("whoop") or {}).get("source_kind") or whoop_signals.get("source_kind"),
             "csv_only": bool((freshness.get("whoop") or {}).get("csv_only") or whoop_signals.get("source_kind") == "csv_only"),
             "connected": whoop_status.get("connected"),
+            "reauth_required": bool((freshness.get("whoop") or {}).get("reauth_required") or whoop_status.get("reauth_required")),
             "used_for_recommendation": not whoop_signals.get("display_only"),
         },
         {

@@ -69,6 +69,25 @@ def test_compute_data_freshness_includes_whoop_and_pending_score(fitness_app):
     assert freshness["whoop"]["score_state"] == "PENDING_SCORE"
 
 
+def test_reauth_required_whoop_remains_relevant_without_facts(fitness_app):
+    whoop_store.save_connection_tokens(
+        fitness_app.WHOOP_DB_FILE,
+        {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "expires_in": 3600,
+        },
+    )
+    whoop_store.mark_reauth_required(fitness_app.WHOOP_DB_FILE, message="expired")
+
+    freshness = fitness_app._compute_data_freshness(now=datetime(2026, 6, 25, 12, 0, 0))
+
+    assert freshness["whoop"]["status"] == "missing"
+    assert freshness["whoop"]["connection_status"] == "reauth_required"
+    assert freshness["whoop"]["reauth_required"] is True
+    assert fitness_app._whoop_freshness_is_relevant(freshness["whoop"]) is True
+
+
 def test_whoop_status_endpoint_does_not_leak_tokens(fitness_app):
     whoop_store.save_connection_tokens(
         fitness_app.WHOOP_DB_FILE,

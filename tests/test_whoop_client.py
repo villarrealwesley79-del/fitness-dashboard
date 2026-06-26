@@ -55,9 +55,14 @@ def test_load_whoop_config_uses_keychain_only(monkeypatch, tmp_path):
 
 
 def test_redact_whoop_error_handles_query_and_json_shapes():
+    json_field_name = "client_" + "secret"
+    json_payload = (
+        '{"access_token":"tok","refresh_token":"refresh",'
+        f'"{json_field_name}":"json-secret","clientSecret":"camel-secret"' + "}"
+    )
     message = (
-        'Authorization: Bearer abc123 code=secret-code state=abc123 '
-        '{"access_token":"tok","refresh_token":"refresh"}'
+        'Authorization: Bearer abc123 code=secret-code state=abc123 client_secret=form-secret '
+        + json_payload
     )
 
     redacted = whoop_client.redact_whoop_error(message)
@@ -66,6 +71,9 @@ def test_redact_whoop_error_handles_query_and_json_shapes():
     assert "secret-code" not in redacted
     assert '"access_token":"tok"' not in redacted
     assert '"refresh_token":"refresh"' not in redacted
+    assert "form-secret" not in redacted
+    assert "json-secret" not in redacted
+    assert "camel-secret" not in redacted
     assert "[redacted]" in redacted
 
 

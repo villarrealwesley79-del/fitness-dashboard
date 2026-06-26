@@ -130,11 +130,15 @@ def redact_whoop_error(value: object) -> str:
     replacements = [
         (r"(?i)(access_token=)[^&\s]+", r"\1[redacted]"),
         (r"(?i)(refresh_token=)[^&\s]+", r"\1[redacted]"),
+        (r"(?i)(client_secret=)[^&\s]+", r"\1[redacted]"),
+        (r"(?i)(clientSecret=)[^&\s]+", r"\1[redacted]"),
         (r"(?i)(code=)[^&\s]+", r"\1[redacted]"),
         (r"(?i)(state=)[^&\s]+", r"\1[redacted]"),
         (r"(?i)(authorization:\s*bearer\s+)[^\s,;]+", r"\1[redacted]"),
         (r'(?i)("access_token"\s*:\s*")[^"]+(")', r"\1[redacted]\2"),
         (r'(?i)("refresh_token"\s*:\s*")[^"]+(")', r"\1[redacted]\2"),
+        (r'(?i)("client_secret"\s*:\s*")[^"]+(")', r"\1[redacted]\2"),
+        (r'(?i)("clientSecret"\s*:\s*")[^"]+(")', r"\1[redacted]\2"),
         (r'(?i)("code"\s*:\s*")[^"]+(")', r"\1[redacted]\2"),
         (r'(?i)("state"\s*:\s*")[^"]+(")', r"\1[redacted]\2"),
     ]
