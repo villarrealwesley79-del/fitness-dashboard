@@ -161,3 +161,20 @@ def test_next_workout_cache_matches_whoop_adjusted_response(fitness_app, monkeyp
 
     assert second_response.status_code == 200
     assert second_payload["next_workout"]["exercises"][0]["target_sets"] == adjusted_sets
+
+    monkeypatch.setattr(
+        fitness_app,
+        "latest_whoop_freshness",
+        lambda *_args, **_kwargs: {
+            "status": "stale",
+            "last_data_point": fitness_app._today_str(),
+            "last_sync_attempt": None,
+            "score_state": "SCORED",
+            "connected": True,
+        },
+    )
+    stale_response = fitness_app.app.test_client().get("/api/next-workout")
+    stale_payload = stale_response.get_json()
+
+    assert stale_response.status_code == 200
+    assert stale_payload["next_workout"]["exercises"][0]["target_sets"] == 4

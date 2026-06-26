@@ -16,6 +16,7 @@ from typing import Callable
 WHOOP_AUTH_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 WHOOP_GRANT_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 WHOOP_API_BASE_URL = "https://api.prod.whoop.com/developer/v1"
+WHOOP_REVOKE_URL = "https://api.prod.whoop.com/developer/v2/user/access"
 WHOOP_DEFAULT_SCOPES = (
     "offline",
     "read:recovery",
@@ -41,6 +42,7 @@ class WhoopConfig:
     auth_url: str = WHOOP_AUTH_URL
     token_url: str = WHOOP_GRANT_URL
     api_base_url: str = WHOOP_API_BASE_URL
+    revoke_url: str = WHOOP_REVOKE_URL
     scopes: tuple[str, ...] = WHOOP_DEFAULT_SCOPES
 
 
@@ -88,7 +90,16 @@ def load_whoop_config(
     scopes = tuple(s.strip() for s in scopes_env.split() if s.strip()) if scopes_env else WHOOP_DEFAULT_SCOPES
     if not client_id or not protected_value:
         raise ValueError("WHOOP OAuth is not fully configured on this server.")
-    return WhoopConfig(client_id, protected_value, redirect_uri, WHOOP_AUTH_URL, WHOOP_GRANT_URL, WHOOP_API_BASE_URL, scopes)
+    return WhoopConfig(
+        client_id,
+        protected_value,
+        redirect_uri,
+        WHOOP_AUTH_URL,
+        WHOOP_GRANT_URL,
+        WHOOP_API_BASE_URL,
+        WHOOP_REVOKE_URL,
+        scopes,
+    )
 
 
 def create_whoop_authorization_url(config: WhoopConfig, *, state: str) -> str:
@@ -211,6 +222,38 @@ def refresh_whoop_token(
     except urllib.error.URLError as exc:
         raise WhoopApiError(
             redact_whoop_error(f"WHOOP token refresh failed: {exc.reason}"),
+            retryable=True,
+        ) from exc
+
+
+def revoke_whoop_access(
+    config: WhoopConfig,
+    *,
+    session_value: str,
+    urlopen: Callable = urllib.request.urlopen,
+) -> None:
+    request = urllib.request.Request(
+        config.revoke_url,
+        headers={"Authorization": f"Bearer {session_value}"},
+        method="DELETE",
+    )
+    try:
+        with urlopen(request, timeout=15):
+            return None
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            detail = ""
+        raise WhoopApiError(
+            redact_whoop_error(detail or f"WHOOP revoke failed with HTTP {exc.code}"),
+            status_code=exc.code,
+            retryable=exc.code in {429, 500, 502, 503, 504},
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise WhoopApiError(
+            redact_whoop_error(f"WHOOP revoke failed: {exc.reason}"),
             retryable=True,
         ) from exc
 

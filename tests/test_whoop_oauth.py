@@ -113,6 +113,13 @@ def test_whoop_callback_rejects_invalid_state(fitness_app, monkeypatch):
 
 def test_whoop_disconnect_clears_connection(fitness_app, monkeypatch):
     monkeypatch.setattr(fitness_app, "_whoop_config_or_none", lambda: _config())
+    monkeypatch.setattr(fitness_app, "_whoop_config_for_redirect", lambda redirect_uri: _config())
+    revoked = []
+    monkeypatch.setattr(
+        fitness_app,
+        "revoke_whoop_access",
+        lambda config, *, session_value: revoked.append(session_value),
+    )
     fitness_app.save_connection_tokens(
         fitness_app.WHOOP_DB_FILE,
         {
@@ -127,4 +134,32 @@ def test_whoop_disconnect_clears_connection(fitness_app, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["connection"]["status"] == "disconnected"
+    assert payload["revocation"]["status"] == "revoked"
+    assert revoked == ["stored-access"]
     assert "stored-access" not in response.get_data(as_text=True)
+
+
+def test_whoop_disconnect_purges_local_tokens_when_revoke_fails(fitness_app, monkeypatch):
+    monkeypatch.setattr(fitness_app, "_whoop_config_for_redirect", lambda redirect_uri: _config())
+
+    def fail_revoke(config, *, session_value):
+        raise fitness_app.WhoopApiError("revoke failed access_token=secret", status_code=500, retryable=True)
+
+    monkeypatch.setattr(fitness_app, "revoke_whoop_access", fail_revoke)
+    fitness_app.save_connection_tokens(
+        fitness_app.WHOOP_DB_FILE,
+        {
+            "access_token": "stored-access",
+            "refresh_token": "stored-refresh",
+            "expires_in": 3600,
+        },
+    )
+
+    response = fitness_app.app.test_client().post("/api/whoop/disconnect")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["connection"]["status"] == "disconnected"
+    assert payload["revocation"]["status"] == "failed"
+    assert "stored-access" not in response.get_data(as_text=True)
+    assert fitness_app.load_connection_token_material(fitness_app.WHOOP_DB_FILE) == {}

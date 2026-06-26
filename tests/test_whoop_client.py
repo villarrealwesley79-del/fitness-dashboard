@@ -137,3 +137,20 @@ def test_whoop_client_retries_retryable_errors():
 
     assert rows == [{"id": "ok"}]
     assert attempts["sleep"] == [1]
+
+
+def test_revoke_whoop_access_uses_delete_with_bearer_token():
+    config = whoop_client.WhoopConfig("client-id", "safe-placeholder", "http://localhost/api/whoop/callback")
+    seen = {}
+
+    def fake_urlopen(request, timeout=15):
+        seen["method"] = getattr(request, "method", "GET")
+        seen["url"] = request.full_url
+        seen["authorization"] = request.headers.get("Authorization")
+        return _FakeResponse({})
+
+    whoop_client.revoke_whoop_access(config, session_value="session-value", urlopen=fake_urlopen)
+
+    assert seen["method"] == "DELETE"
+    assert seen["url"] == whoop_client.WHOOP_REVOKE_URL
+    assert seen["authorization"] == "Bearer session-value"

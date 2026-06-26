@@ -64,6 +64,7 @@ from whoop_client import (
     exchange_whoop_code,
     load_whoop_config,
     redact_whoop_error,
+    revoke_whoop_access,
 )
 from whoop_recommendations import (
     apply_wearable_modifiers,
@@ -4649,6 +4650,7 @@ def _workout_recommendation_fingerprint():
     apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness()
     whoop_connection = get_whoop_connection_status(WHOOP_DB_FILE)
     whoop_fact = get_whoop_daily_fact(WHOOP_DB_FILE, local_date=today_s) or get_whoop_daily_fact(WHOOP_DB_FILE)
+    whoop_freshness = latest_whoop_freshness(WHOOP_DB_FILE)
 
     def latest_marker(rows):
         markers = [
@@ -4729,6 +4731,8 @@ def _workout_recommendation_fingerprint():
             "last_successful_sync_at": whoop_connection.get("last_successful_sync_at"),
             "last_sync_attempt_at": whoop_connection.get("last_sync_attempt_at"),
             "reauth_required": whoop_connection.get("reauth_required"),
+            "freshness_status": whoop_freshness.get("status"),
+            "freshness_score_state": whoop_freshness.get("score_state"),
             "daily_fact": {
                 "local_date": (whoop_fact or {}).get("local_date"),
                 "recovery_score": (whoop_fact or {}).get("recovery_score"),
@@ -11039,8 +11043,20 @@ def whoop_callback():
 
 @app.route('/api/whoop/disconnect', methods=['POST'])
 def whoop_disconnect():
+    revocation = {"status": "skipped"}
+    material = load_connection_token_material(WHOOP_DB_FILE)
+    session_value = material.get("session_value")
+    if session_value:
+        try:
+            config = _whoop_config_for_redirect(_whoop_redirect_uri())
+            revoke_whoop_access(config, session_value=session_value)
+            revocation = {"status": "revoked"}
+        except WhoopApiError as exc:
+            revocation = {"status": "failed", "message": redact_whoop_error(exc)}
+        except Exception:
+            revocation = {"status": "failed", "message": "WHOOP OAuth is not configured on this server."}
     disconnect_whoop(WHOOP_DB_FILE)
-    return jsonify({"status": "success", "connection": _whoop_public_status()})
+    return jsonify({"status": "success", "connection": _whoop_public_status(), "revocation": revocation})
 
 
 @app.route('/api/whoop/sync', methods=['POST'])
