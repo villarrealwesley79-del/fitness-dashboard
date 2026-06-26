@@ -11,6 +11,10 @@ __pycache__/
 .flask-secret
 .health-sync-token
 .apple-health-first-sync
+.whoop-client-id
+.whoop-oauth-state*
+.whoop-token*
+.whoop-sync-state*
 .claude/
 venv/
 .venv/

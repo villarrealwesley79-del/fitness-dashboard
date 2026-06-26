@@ -35,7 +35,7 @@ Server routes stay in `app.py` to match current Flask conventions, but provider 
 
 ## Data Model
 
-WHOOP storage uses SQLite under the app data directory for health facts, but token material is stored outside normal runtime exports/debug bundles. The store must support:
+WHOOP storage uses SQLite under the app data directory for health facts, but token material is stored in macOS Keychain by default, or an equivalent out-of-repo secret store with `0600` permissions when Keychain is unavailable. Token material must never be stored in `DATA_DIR`, SQLite health tables, backups, debug bundles, logs, screenshots, PR text, or Linear comments. The store must support:
 
 - Connection metadata: provider, connected_at, last_successful_sync_at, last_error, scopes, token_ref, reauth_required.
 - Sync runs: run_id, reason, requested window, status, started_at, completed_at, records_upserted, retryable, redacted_error.
@@ -47,9 +47,9 @@ Raw provider payloads are not exported by default. If retained for debugging, re
 
 ## OAuth And Tokens
 
-`POST /api/whoop/connect/start` creates a server-side OAuth state and returns the authorization URL. `GET /api/whoop/callback` validates state, exchanges the code, stores token material safely, and marks the connection connected. `offline` scope is required so refresh tokens are issued.
+`POST /api/whoop/connect/start` creates a server-side OAuth state and returns the authorization URL. State is single-use, expires after 10 minutes, is bound to the initiating app user/session where app context exists, and is deleted on successful use or explicit failure. `GET /api/whoop/callback` validates and consumes state before exchanging the code, stores token material in Keychain or the equivalent protected secret store, marks the connection connected, and returns `Cache-Control: no-store`. `offline` scope is required so refresh tokens are issued.
 
-Refresh is atomic: when WHOOP returns a new refresh token, the old token is not discarded until the new token reference and connection metadata are durably committed. Logs and API responses never include codes, states, access tokens, refresh tokens, Authorization headers, or raw provider payloads.
+Refresh is atomic: when WHOOP returns a new refresh token, the old token is not discarded until the new token reference and connection metadata are durably committed. Logs and API responses never include codes, states, access tokens, refresh tokens, Authorization headers, bearer strings, callback query strings, or raw provider payloads. Existing request logging must redact `code`, `state`, `token`, `access_token`, `refresh_token`, and Authorization/Bearer-like values before WHOOP callback routes are enabled.
 
 ## Sync Contract
 
@@ -109,7 +109,7 @@ Extended routes:
 
 ## UI Design
 
-The dashboard shows one recommendation with source chips, e.g. `WHOOP · fresh`, `Oura · aging`, `Apple Health · fresh`. It explains source usage in plain language, such as `Using WHOOP for recovery, Apple Health for load`. A recommendation sources drawer/bottom sheet shows used today, conflicts, freshness, and raw contributors.
+The dashboard shows one recommendation with source chips, e.g. `WHOOP · fresh`, `Oura · aging`, `Apple Health · fresh`. It explains source usage in plain language, such as `Using WHOOP for recovery, Apple Health for load`. A recommendation sources drawer/bottom sheet shows used today, conflicts, freshness, and normalized factors/labels only. It must not expose raw provider payloads or raw private health rows in the UI or screenshots.
 
 Settings gets a Wearable Sources section with rows for WHOOP, Oura, Apple Health, and optional Noop import context. WHOOP supports connect, manual sync, disconnect, last successful sync, failure copy, stale/error/no-data, reauth required, pending score, unscorable, calibrating, CSV-only, and source conflict states.
 
@@ -118,14 +118,15 @@ UI must follow the active design contract: restrained status chips only for real
 ## Privacy And Safety
 
 - Keep client secrets and refresh/access tokens out of `DATA_DIR`, committed files, logs, backups, screenshots, PR text, and Linear comments.
-- Redact OAuth codes, state, Authorization headers, webhook signatures, query tokens, and raw payloads.
+- Store tokens in macOS Keychain or an equivalent out-of-repo `0600` secret store, referenced from local connection metadata by opaque token reference only.
+- Redact OAuth codes, state, Authorization headers, bearer strings, webhook signatures, query tokens, callback query strings, and raw payloads.
 - CSV imports are untrusted: size cap, row cap, strict column whitelist, UTF-8 only, numeric/date bounds, idempotency hash, and formula escaping for echoed cell values.
-- Disconnect and delete are separate flows.
-- Backup/export must exclude token material and raw provider payloads. Import must not accept token material.
+- Disconnect and delete are separate idempotent flows. Disconnect first attempts upstream revocation when possible, then always purges local token material and marks the connection disconnected; upstream revocation failure is reported without leaving local tokens active. Delete removes local WHOOP-derived data and import batches without requiring an active connection.
+- Backup/export must exclude token material and raw provider payloads. Import must reject inbound token material, token references, and raw provider payload keys rather than silently accepting them.
 
 ## Test Strategy
 
-Backend tests cover config missing/present, OAuth state/callback, token refresh rotation, client pagination/retry, sync-run persistence, freshness projection, recommendation modifiers, source conflict, Apple Health dedupe, CSV validation, disconnect/delete, and backup/export exclusions.
+Backend tests cover config missing/present, single-use TTL-bound OAuth state/callback, `Cache-Control: no-store`, request-log redaction, concrete protected token storage, token refresh rotation, client pagination/retry, sync-run persistence, freshness projection, recommendation modifiers, source conflict, Apple Health dedupe, CSV validation, idempotent disconnect/delete, export exclusions, and import rejection of token/raw-payload keys.
 
 Frontend tests cover render contracts for source chips, Settings rows, recommendation source drawer, sync/error/no-data/reauth/pending/calibrating states, and conflict copy. Browser QA covers desktop/mobile, light/dark, real clicks/keyboard paths, Settings row actions, manual sync/disconnect states, recommendation explanations, and source conflict.
 

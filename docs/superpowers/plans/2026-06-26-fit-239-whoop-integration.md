@@ -13,6 +13,9 @@
 - Start from `origin/main` in `/Users/admin/codex-worktrees/fitness-fit-239-whoop` on `codex/fit-239-whoop-integration`.
 - Do not edit `/Users/admin/fitness-dashboard` except read-only audit commands.
 - Do not commit `.whoop-client-id`, Keychain material, access tokens, refresh tokens, OAuth codes, raw WHOOP payloads, raw health CSVs, screenshots with private values, or generated local runtime DBs.
+- Store WHOOP token material only in macOS Keychain or an equivalent out-of-repo `0600` secret store; local app storage may hold opaque token references only.
+- OAuth state must be single-use, expire after 10 minutes, bind to the initiating user/session where app context exists, and WHOOP callback responses must send `Cache-Control: no-store`.
+- Existing request logging must redact `code`, `state`, `token`, `access_token`, `refresh_token`, Authorization headers, bearer strings, and callback query strings before WHOOP callback routes are enabled.
 - Noop is reference/import-only; do not vendor Noop code or add BLE/runtime coupling.
 - Open Wearables remains optional reference/future adapter; direct official WHOOP API is the FIT-239 v1 path.
 - WHOOP affects recommendations only through bounded modifiers and source explanations.
@@ -61,7 +64,7 @@ Expected: `29 passed`.
 - Consumes: local `.whoop-client-id` and macOS Keychain item by reference only; never logs values.
 
 - [ ] Add `.whoop-client-id` and WHOOP local runtime artifacts to `.gitignore`.
-- [ ] Write failing tests for missing config, present config without value disclosure, state creation, callback state validation, and redacted errors.
+- [ ] Write failing tests for missing config, present config without value disclosure, state creation, single-use state, expired state, user/session-bound state, callback state validation, `Cache-Control: no-store`, request-log redaction, and redacted errors.
 - [ ] Implement OAuth start/callback routes:
 
 ```text
@@ -71,6 +74,7 @@ GET /api/whoop/status
 POST /api/whoop/disconnect
 ```
 
+- [ ] Implement request-log redaction for `code`, `state`, `token`, `access_token`, `refresh_token`, Authorization headers, bearer strings, and callback query strings.
 - [ ] Ensure responses expose statuses only: `missing_config`, `disconnected`, `connected`, `reauth_required`, `error`.
 - [ ] Run:
 
@@ -90,7 +94,7 @@ python3 -m pytest tests/test_whoop_oauth.py -q
 - Produces: `WhoopClient`, `WhoopApiError`, `redact_whoop_error()`.
 - Consumes: token reference from `whoop_store.py`.
 
-- [ ] Write mocked tests for paginated collection fetch, rate-limit retry classification, timeout handling, token refresh, and atomic refresh-token rotation.
+- [ ] Write mocked tests for paginated collection fetch, rate-limit retry classification, timeout handling, concrete protected token storage, token refresh, and atomic refresh-token rotation.
 - [ ] Implement collection helpers for recovery, cycles, sleep, and workouts.
 - [ ] Ensure every error path redacts Authorization headers, OAuth codes/states, access tokens, refresh tokens, and raw payload fields.
 - [ ] Run:
@@ -183,9 +187,9 @@ python3 -m pytest tests/test_whoop_recommendations.py tests/test_whoop_source_co
 - Produces: `POST /api/whoop/import-csv`, `GET /api/whoop/imports`, delete/disconnect helpers.
 - Extends: backup/export/import contracts by explicitly excluding token/raw payload material.
 
-- [ ] Write tests for file size cap, row cap, strict column whitelist, UTF-8 requirement, numeric/date bounds, formula escaping, idempotency hash, import listing, export exclusion, disconnect without delete, delete with data removal.
+- [ ] Write tests for file size cap, row cap, strict column whitelist, UTF-8 requirement, numeric/date bounds, formula escaping, idempotency hash, import listing, export exclusion, import rejection of token/raw-payload keys, disconnect without delete, upstream-revocation failure still purging local token material, idempotent disconnect/delete, and delete with data removal.
 - [ ] Implement CSV parser and import batch storage.
-- [ ] Ensure backup export never includes token material or raw WHOOP payloads.
+- [ ] Ensure backup export never includes token material or raw WHOOP payloads, and backup import rejects token material, token references, and raw provider payload keys.
 - [ ] Run:
 
 ```bash
