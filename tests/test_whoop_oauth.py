@@ -99,6 +99,7 @@ def test_whoop_callback_redirects_browser_navigation_after_success(fitness_app, 
     assert response.status_code == 302
     assert response.headers["Location"] == "/#settings"
     assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
     assert "stored-access" not in response.get_data(as_text=True)
 
 

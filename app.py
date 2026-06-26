@@ -10636,6 +10636,7 @@ def _whoop_no_store(response):
         response, status = response[0], response[1]
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
     if status is not None:
         return response, status
     return response

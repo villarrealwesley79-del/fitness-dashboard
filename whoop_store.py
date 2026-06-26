@@ -737,7 +737,7 @@ def latest_whoop_freshness(db_path: str, *, now: datetime | None = None) -> dict
     connection = get_connection_status(db_path)
     connection_status = connection.get("status")
     reauth_required = bool(connection.get("reauth_required") or connection_status == "reauth_required")
-    sync_attempt = connection.get("last_successful_sync_at") or connection.get("last_sync_attempt_at")
+    sync_attempt = connection.get("last_sync_attempt_at") or connection.get("last_successful_sync_at")
     if fact is None:
         return {
             "status": "missing",
