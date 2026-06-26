@@ -72,6 +72,7 @@ from whoop_recommendations import (
     detect_wearable_source_conflicts,
 )
 from whoop_store import (
+    clear_whoop_data,
     consume_oauth_state,
     create_oauth_state,
     disconnect_whoop,
@@ -13385,6 +13386,7 @@ def import_backup():
                     import_meal_review_snapshot(user_id, meal_snapshot)
 
         if "whoop_daily_facts" in data:
+            clear_whoop_data(WHOOP_DB_FILE)
             if whoop_backup_records:
                 run_id = record_whoop_sync_run(WHOOP_DB_FILE, reason="backup_import")
                 upsert_whoop_records(WHOOP_DB_FILE, "recovery", whoop_backup_records, sync_run_id=run_id)

@@ -283,11 +283,13 @@ def consume_oauth_state(
     init_whoop_db(db_path)
     current = now or datetime.now()
     with closing(_connect(db_path)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT state, redirect_uri, user_binding, created_at, expires_at, consumed_at FROM whoop_oauth_states WHERE state = ?",
             (state,),
         ).fetchone()
         if row is None:
+            conn.commit()
             return None
         if (
             row["consumed_at"]
@@ -298,10 +300,13 @@ def consume_oauth_state(
             conn.commit()
             return None
         consumed_at = _iso_now(current)
-        conn.execute(
-            "UPDATE whoop_oauth_states SET consumed_at = ? WHERE state = ?",
+        updated = conn.execute(
+            "UPDATE whoop_oauth_states SET consumed_at = ? WHERE state = ? AND consumed_at IS NULL",
             (consumed_at, state),
         )
+        if updated.rowcount != 1:
+            conn.commit()
+            return None
         conn.commit()
         return {
             "state": row["state"],
@@ -311,6 +316,14 @@ def consume_oauth_state(
             "expires_at": row["expires_at"],
             "consumed_at": consumed_at,
         }
+
+
+def clear_whoop_data(db_path: str) -> None:
+    init_whoop_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        conn.execute("DELETE FROM whoop_records")
+        conn.execute("DELETE FROM whoop_daily_facts")
+        conn.commit()
 
 
 def _token_expiry(token_payload: dict, *, now: datetime | None = None) -> str | None:

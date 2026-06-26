@@ -471,3 +471,21 @@ def test_backup_import_validates_whoop_before_mutating_json_data(fitness_app, mo
 
     assert response.status_code == 400
     assert fitness_app.WORKOUTS == original_workouts
+
+
+def test_backup_import_empty_whoop_facts_replaces_existing_local_facts(fitness_app):
+    whoop_store.upsert_whoop_records(
+        fitness_app.WHOOP_DB_FILE,
+        "recovery",
+        [{"upstream_id": "stale-rec", "local_date": "2026-06-20", "score_state": "SCORED", "recovery_score": 80}],
+    )
+    whoop_store.project_whoop_daily_facts(fitness_app.WHOOP_DB_FILE)
+    assert whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE) is not None
+
+    response = fitness_app.app.test_client().post(
+        "/api/import-backup",
+        json={"data": {"whoop_daily_facts": []}},
+    )
+
+    assert response.status_code == 200
+    assert whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE) is None
