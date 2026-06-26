@@ -81,7 +81,9 @@ def test_offline_submit_enqueues_with_original_client_id_and_timestamps():
     assert "let _mealQueueAuthScope = '';" in APP_JS
     assert "localStorage.setItem(MEAL_QUEUE_AUTH_SCOPE_KEY, normalized);" in APP_JS
     assert "persistedMealQueueAuthScope()" in APP_JS
-    assert "refreshMealQueueAuthScope().catch" in APP_JS
+    assert "refreshMealQueueAuthScope({ timeoutMs: 2500 })" in APP_JS
+    assert "refreshMealQueueAuthScope()\n                .then((scopeResult) => {\n                    settleActiveWorkoutDraftAfterAuthScope(scopeResult);" in APP_JS
+    assert "scheduleMealQueueAuthScopeRetry(scopeResult && scopeResult.status);" in APP_JS
     assert "auth_scope: authScope" in APP_JS
     assert "const authGate = await mealQueueAuthGate(entry);" in APP_JS
 
@@ -101,7 +103,8 @@ def test_auth_failures_stay_visible_retryable_and_do_not_post_on_scope_mismatch(
     block = _fit145_block()
 
     assert "@app.route('/api/auth/scope')" in APP_PY
-    assert 'return jsonify({"auth_scope": f"user:{_current_data_user_id()}"})' in APP_PY
+    assert 'return jsonify({"auth_scope": _current_auth_scope()})' in APP_PY
+    assert 'scoped["auth_scope"] = _current_auth_scope()' in APP_PY
     assert "fetch('/api/auth/scope'" in block
     assert "const MEAL_QUEUE_RETRYABLE_STATUSES = new Set(['pending', 'auth_required']);" in APP_JS
     assert "res.status === 401 || res.status === 403" in block
@@ -124,8 +127,8 @@ def test_auth_failures_stay_visible_retryable_and_do_not_post_on_scope_mismatch(
 
 def test_service_worker_offline_auth_scope_fallback_stays_retryable():
     block = _app_js_block(
-        "async function fetchCurrentMealQueueAuthScope()",
-        "async function refreshMealQueueAuthScope()",
+        "async function fetchCurrentMealQueueAuthScope",
+        "async function refreshMealQueueAuthScope",
     )
     missing_scope_block = _app_js_block("if (!scope) {", "return { ok: true, scope };")
 
@@ -186,7 +189,7 @@ def test_meal_flush_has_duplicate_guards_and_online_hooks():
     assert "_mealSyncInFlightClientIds.has(clientId)" in APP_JS
     assert "window.addEventListener('online', () => {" in APP_JS
     assert "flushMealSyncQueue();" in APP_JS
-    assert "const CACHE_NAME = 'fitness-dashboard-v20260625-fit238-qol';" in APP_SW
+    assert "const CACHE_NAME = 'fitness-dashboard-v20260626-fit238-qol';" in APP_SW
     assert "cache.addAll" not in APP_SW
     assert "sync" not in APP_SW.lower()
 

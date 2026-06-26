@@ -4154,66 +4154,6 @@
 
         // FIT-40: Web Push permission flow + alert surfaces.
         renderPushSection();
-        renderPersonalVocabSettings();
-    }
-
-    function renderPersonalVocabRow(entry) {
-        const canonical = entry.canonical_resolution || {};
-        const phrase = entry.phrase || entry.normalized_input || 'Mapping';
-        const item = canonical.item_name || 'Saved meal';
-        const calories = canonical.calories != null ? `${fmtInt(canonical.calories)} kcal` : 'Macros saved';
-        const source = canonical.source || canonical.underlying_source || 'manual';
-        const accepts = Number(entry.accept_count || 0);
-        const corrections = Number(entry.correct_count || 0);
-        const row = document.createElement('div');
-        row.className = 'settings-row';
-        row.innerHTML = `
-            <div class="settings-row-label settings-row-label-stack">
-                <span class="settings-row-label-main">${escapeHtml(phrase)}</span>
-                <span class="settings-row-detail">${escapeHtml(item)} · ${escapeHtml(calories)} · ${escapeHtml(source)}</span>
-            </div>
-            <div class="settings-row-control">
-                <span class="state-chip">${accepts} accept${accepts === 1 ? '' : 's'}</span>
-                ${corrections ? `<span class="state-chip warn">${corrections} correction${corrections === 1 ? '' : 's'}</span>` : ''}
-                <button class="btn btn-danger btn-sm" type="button">Forget</button>
-            </div>
-        `;
-        const btn = row.querySelector('button');
-        btn.addEventListener('click', () => forgetPersonalVocabEntry(entry.normalized_input, btn));
-        return row;
-    }
-
-    async function renderPersonalVocabSettings() {
-        const host = $('personal-vocab-list');
-        if (!host) return;
-        host.innerHTML = '<div class="empty">Loading mappings.</div>';
-        try {
-            const payload = await api('/api/personal-vocab');
-            const entries = Array.isArray(payload.entries) ? payload.entries : [];
-            if (!entries.length) {
-                host.innerHTML = '<div class="empty">No learned mappings yet.</div>';
-                return;
-            }
-            host.innerHTML = '';
-            entries.forEach((entry) => host.appendChild(renderPersonalVocabRow(entry)));
-        } catch (err) {
-            console.error(err);
-            host.innerHTML = '<div class="empty">Could not load learned mappings.</div>';
-        }
-    }
-
-    async function forgetPersonalVocabEntry(normalizedInput, button) {
-        if (!normalizedInput) return;
-        button.disabled = true;
-        try {
-            await api(`/api/personal-vocab/${encodeURIComponent(normalizedInput)}`, { method: 'DELETE' });
-            toast('Mapping forgotten', 'ok');
-            renderPersonalVocabSettings();
-        } catch (err) {
-            console.error(err);
-            toast(apiErrorMessage(err, 'Forget failed'), 'err');
-            button.disabled = false;
-        }
     }
 
     // ── FIT-15: AI Coach health + metrics ─────────────────────────
@@ -5199,6 +5139,7 @@
             state.nextWorkout = null;
             state.reco = null;
             state.activeWorkout = null;
+            clearActiveWorkoutDraft();
             await Promise.allSettled([renderSettings(), renderDashboard()]);
         } catch (e) { console.error(e); toast('Update failed', 'err'); }
     }
@@ -5354,6 +5295,185 @@
         return Number.isFinite(count) && count > 0 ? Math.round(count) : 3;
     }
 
+    const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';
+    const ACTIVE_WORKOUT_DRAFT_VERSION = 1;
+    let _activeWorkoutDraftSavePending = false;
+    let _mealQueueAuthScopeRetryTimer = null;
+    let _mealQueueAuthScopeRetryDelayMs = 5_000;
+
+    function currentActiveWorkoutDraftScope() {
+        try {
+            return String(_mealQueueAuthScope || '').trim();
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function activeWorkoutDraftScopeForWorkout(workout) {
+        const workoutScope = String(workout && workout.auth_scope || '').trim();
+        return workoutScope || currentActiveWorkoutDraftScope();
+    }
+
+    function activeWorkoutDraftIsValid(parsed) {
+        const workout = parsed && parsed.workout;
+        return Boolean(
+            parsed
+            && parsed.version === ACTIVE_WORKOUT_DRAFT_VERSION
+            && workout
+            && typeof workout === 'object'
+            && Array.isArray(workout.exercises)
+        );
+    }
+
+    function loadActiveWorkoutDraft() {
+        try {
+            const raw = localStorage.getItem(ACTIVE_WORKOUT_DRAFT_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            if (!activeWorkoutDraftIsValid(parsed)) return null;
+            return parsed;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function syncActiveWorkoutInputsFromDom() {
+        const aw = state.activeWorkout;
+        const body = $('active-workout-body');
+        if (!aw || !body) return;
+        qsa('.set-row', body).forEach((row) => {
+            const exIdx = Number(row.dataset.ex);
+            const setIdx = Number(row.dataset.set);
+            const ex = aw.exercises && aw.exercises[exIdx];
+            const set = ex && ex.logged_sets && ex.logged_sets[setIdx];
+            if (!set) return;
+            const next = {
+                weight: qs('input[data-field="weight"]', row).value,
+                reps: qs('input[data-field="reps"]', row).value,
+                done: qs('input[data-field="done"]', row).checked,
+                notes: qs('input[data-field="notes"]', row).value,
+            };
+            if (
+                String(set.weight ?? '') !== String(next.weight)
+                || String(set.reps ?? '') !== String(next.reps)
+                || Boolean(set.done) !== Boolean(next.done)
+                || String(set.notes ?? '') !== String(next.notes)
+            ) {
+                ex.logged_sets[setIdx] = next;
+                aw.dirty = true;
+            }
+        });
+
+        const cardio = aw.cardio;
+        const cardioCard = qs('.active-cardio', body);
+        if (cardio && cardioCard) {
+            const next = {
+                completed: qs('input[data-cardio-field="completed"]', cardioCard).checked,
+                activity_type: qs('input[data-cardio-field="activity_type"]', cardioCard).value,
+                duration_minutes: qs('input[data-cardio-field="duration_minutes"]', cardioCard).value,
+                notes: qs('textarea[data-cardio-field="notes"]', cardioCard).value,
+            };
+            if (
+                Boolean(cardio.completed) !== Boolean(next.completed)
+                || String(cardio.activity_type ?? '') !== String(next.activity_type)
+                || String(cardio.duration_minutes ?? '') !== String(next.duration_minutes)
+                || String(cardio.notes ?? '') !== String(next.notes)
+            ) {
+                Object.assign(cardio, next);
+                aw.dirty = true;
+            }
+        }
+    }
+
+    function saveActiveWorkoutDraft({ syncDom = true } = {}) {
+        if (syncDom) syncActiveWorkoutInputsFromDom();
+        const workout = state.activeWorkout;
+        if (!workout) return;
+        if (workout.queuedForSyncReview) return;
+        const authScope = activeWorkoutDraftScopeForWorkout(workout);
+        if (!authScope) {
+            _activeWorkoutDraftSavePending = true;
+            return;
+        }
+        workout.auth_scope = authScope;
+        try {
+            const draft = {
+                version: ACTIVE_WORKOUT_DRAFT_VERSION,
+                saved_at: new Date().toISOString(),
+                auth_scope: authScope,
+                workout,
+            };
+            localStorage.setItem(ACTIVE_WORKOUT_DRAFT_KEY, JSON.stringify(draft));
+            _activeWorkoutDraftSavePending = false;
+        } catch (_) { /* localStorage may be unavailable; keep in memory for this page. */ }
+    }
+
+    function flushPendingActiveWorkoutDraftSave() {
+        if (_activeWorkoutDraftSavePending && state.activeWorkout) {
+            saveActiveWorkoutDraft();
+        }
+    }
+
+    function saveActiveWorkoutDraftBeforePageHidden() {
+        if (state.activeWorkout && !state.activeWorkout.queuedForSyncReview) saveActiveWorkoutDraft();
+    }
+
+    function clearActiveWorkoutDraft() {
+        try { localStorage.removeItem(ACTIVE_WORKOUT_DRAFT_KEY); } catch (_) {}
+    }
+
+    function restoreActiveWorkoutDraft() {
+        if (state.activeWorkout) return false;
+        const draft = loadActiveWorkoutDraft();
+        if (!draft) return false;
+        const draftScope = String(draft.auth_scope || '').trim();
+        const currentScope = currentActiveWorkoutDraftScope();
+        // Require a live auth-scope match. A persisted scope can be stale after
+        // sign-out or account switching, and this draft contains health data.
+        if (!draftScope || !currentScope || draftScope !== currentScope) {
+            return false;
+        }
+        state.activeWorkout = draft.workout;
+        state.activeWorkout.saveState = {
+            message: 'Recovered unsaved workout details from this device.',
+            variant: 'warn',
+        };
+        renderActiveWorkout();
+        toast('Recovered unsaved workout details');
+        return true;
+    }
+
+    function settleActiveWorkoutDraftAfterAuthScope(scopeResult) {
+        if (!(scopeResult && scopeResult.ok)) return;
+        clearMealQueueAuthScopeRetry();
+        restoreActiveWorkoutDraft();
+        flushPendingActiveWorkoutDraftSave();
+    }
+
+    function clearMealQueueAuthScopeRetry() {
+        if (_mealQueueAuthScopeRetryTimer) clearTimeout(_mealQueueAuthScopeRetryTimer);
+        _mealQueueAuthScopeRetryTimer = null;
+        _mealQueueAuthScopeRetryDelayMs = 5_000;
+    }
+
+    function scheduleMealQueueAuthScopeRetry(status) {
+        if (status !== 'pending' || _mealQueueAuthScopeRetryTimer) return;
+        const delayMs = _mealQueueAuthScopeRetryDelayMs;
+        _mealQueueAuthScopeRetryDelayMs = Math.min(_mealQueueAuthScopeRetryDelayMs * 2, 30_000);
+        _mealQueueAuthScopeRetryTimer = setTimeout(() => {
+            _mealQueueAuthScopeRetryTimer = null;
+            refreshMealQueueAuthScope()
+                .then((scopeResult) => {
+                    settleActiveWorkoutDraftAfterAuthScope(scopeResult);
+                    scheduleMealQueueAuthScopeRetry(scopeResult && scopeResult.status);
+                })
+                .catch((err) => {
+                    console.warn('Meal queue auth scope refresh failed:', err);
+                    scheduleMealQueueAuthScopeRetry('pending');
+                });
+        }, delayMs);
+    }
+
     function buildLoggedSets(ex, previousSets) {
         const reps = recommendedRepsValue(ex);
         const weight = recommendedWeightValue(ex);
@@ -5386,11 +5506,13 @@
             id: (existing && existing.id) || nw.workout_id || newWorkoutId(nw.id),
             recommendation_id: nw.id || (existing && existing.recommendation_id) || null,
             focus: nw.focus || nw.goal_name || (existing && existing.focus) || 'Workout',
+            auth_scope: String(nw.auth_scope || (existing && existing.auth_scope) || currentActiveWorkoutDraftScope() || '').trim(),
             exercises: (nw.exercises || []).map((ex, i) => buildActiveExercise(ex, previousExercises[i])),
             cardio: buildActiveCardio(nw.cardio, existing && existing.cardio),
             saveState: existing && existing.saveState ? existing.saveState : null,
             dirty: Boolean(existing && existing.dirty),
         };
+        saveActiveWorkoutDraft({ syncDom: false });
     }
 
     // FIT-179: merge an adjusted recommendation into an in-progress active
@@ -5556,11 +5678,13 @@
             id: existing.id || nw.workout_id || newWorkoutId(nw.id),
             recommendation_id: nw.id || existing.recommendation_id || null,
             focus: nw.focus || nw.goal_name || existing.focus || 'Workout',
+            auth_scope: String(nw.auth_scope || existing.auth_scope || currentActiveWorkoutDraftScope() || '').trim(),
             exercises,
             cardio: mergeAdjustedActiveCardio(nw.cardio, existing.cardio),
             saveState: existing.saveState || null,
             dirty: opts.preserveDirty === false ? false : Boolean(existing.dirty),
         };
+        saveActiveWorkoutDraft({ syncDom: false });
     }
 
     function hasRecommendedCardio(cardio) {
@@ -5617,6 +5741,7 @@
             notes: qs('input[data-field="notes"]', row).value,
         };
         state.activeWorkout.dirty = true;
+        saveActiveWorkoutDraft();
         // FIT-108: keep the sticky progress header in sync after every input
         // change. Also re-target the "next incomplete" highlight and, when
         // the user just flipped a set to done, scroll the next incomplete
@@ -5705,6 +5830,7 @@
         cardio.duration_minutes = qs('input[data-cardio-field="duration_minutes"]', card).value;
         cardio.notes = qs('textarea[data-cardio-field="notes"]', card).value;
         state.activeWorkout.dirty = true;
+        saveActiveWorkoutDraft();
     }
 
     function renderActiveWorkout() {
@@ -5867,6 +5993,7 @@
             return;
         }
         state.activeWorkout = null;
+        clearActiveWorkoutDraft();
         clearAdjustIntent();
         modal.hidden = true;
     }
@@ -5899,6 +6026,7 @@
         aw.dirty = true;
         if (!aw.exercises.length) aw.saveState = null;
         renderActiveWorkout();
+        saveActiveWorkoutDraft();
         toast(`Removed ${name}`, 'ok');
     }
 
@@ -5929,7 +6057,7 @@
         await switchTab('tab-workout');
     }
 
-    function startAdjustedWorkout() {
+    async function startAdjustedWorkout() {
         const nw = state.adjustedWorkout || (state.dashboard && state.dashboard.next_workout);
         if (!nw) { toast('No adjusted workout available', 'err'); return; }
         if (!confirmDiscardActiveWorkoutForStart()) return;
@@ -6190,11 +6318,20 @@
         return normalized;
     }
 
-    async function fetchCurrentMealQueueAuthScope() {
+    async function fetchCurrentMealQueueAuthScope({ timeoutMs = 0 } = {}) {
+        let timer = null;
         try {
-            const res = await fetch('/api/auth/scope', {
+            const fetchOpts = {
                 credentials: 'same-origin',
                 headers: { 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
+            };
+            if (timeoutMs && typeof AbortController !== 'undefined') {
+                const controller = new AbortController();
+                timer = setTimeout(() => controller.abort(), timeoutMs);
+                fetchOpts.signal = controller.signal;
+            }
+            const res = await fetch('/api/auth/scope', {
+                ...fetchOpts,
             });
             if (res.status === 401 || res.status === 403) {
                 return {
@@ -6226,11 +6363,13 @@
                 status: 'pending',
                 reason: 'Could not verify the current sign-in before syncing this meal.',
             };
+        } finally {
+            if (timer) clearTimeout(timer);
         }
     }
 
-    async function refreshMealQueueAuthScope() {
-        const liveScope = await fetchCurrentMealQueueAuthScope();
+    async function refreshMealQueueAuthScope(options) {
+        const liveScope = await fetchCurrentMealQueueAuthScope(options);
         if (liveScope.ok) {
             persistMealQueueAuthScope(liveScope.scope);
         }
@@ -6780,6 +6919,7 @@
         if (!exercises.length) {
             const message = 'Validation failed: log at least one set before completing this workout.';
             aw.saveState = { message, variant: 'err' };
+            saveActiveWorkoutDraft();
             setActiveWorkoutStatus(message, 'err');
             toast('Log at least one set', 'err');
             return;
@@ -6793,6 +6933,7 @@
         setActiveWorkoutStatus(aw.saveState.message, aw.saveState.variant);
         const clientWorkoutId = aw.id || `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         aw.id = clientWorkoutId;
+        saveActiveWorkoutDraft();
         const completePayload = {
             id: clientWorkoutId,
             client_workout_id: clientWorkoutId,
@@ -6819,6 +6960,7 @@
 
         function settleQueued(reasonMsg) {
             enqueueOfflineWorkout(completePayload, 'pending');
+            clearActiveWorkoutDraft();
             aw.saveState = { message: reasonMsg, variant: '' };
             setActiveWorkoutStatus(reasonMsg, '');
             $('modal-active').hidden = true;
@@ -6848,6 +6990,7 @@
                 };
                 $('modal-active').hidden = true;
                 state.activeWorkout = null;
+                clearActiveWorkoutDraft();
                 clearAdjustIntent();
                 invalidateCaches();
                 loadTab(state.currentTab);
@@ -6871,7 +7014,9 @@
                 else if (result.syncStatus === 'auth_required') msg = 'Sign in, then retry the workout from the sync queue.';
                 else msg = `Save needs review — ${result.reason || 'see the sync queue'}.`;
                 aw.saveState = { message: msg, variant: 'err' };
+                aw.queuedForSyncReview = true;
                 setActiveWorkoutStatus(msg, 'err');
+                clearActiveWorkoutDraft();
                 toast(result.syncStatus === 'conflicted' ? 'Sync conflict' : 'Workout queued for review', 'err');
             }
         } catch (e) {
@@ -7054,6 +7199,7 @@
             const previous = (state.activeWorkout && state.activeWorkout.exercises) || [];
             setActiveWorkoutFromRecommendation(resp.recommendation, previous);
             renderActiveWorkout();
+            saveActiveWorkoutDraft();
         } else {
             renderNextWorkout();
         }
@@ -7062,6 +7208,9 @@
     async function applySwap(exIdx, newName, oldName) {
         const host = $('swap-alternatives');
         host.innerHTML = '<div class="skeleton">Swapping…</div>';
+        if (state.swapContext && state.swapContext.source === 'active') {
+            saveActiveWorkoutDraft();
+        }
         try {
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
@@ -7111,6 +7260,9 @@
         submitBtn.disabled = true;
         const origLabel = submitBtn.textContent;
         submitBtn.textContent = 'Swapping…';
+        if (ctx.source === 'active') {
+            saveActiveWorkoutDraft();
+        }
         try {
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
@@ -10315,17 +10467,40 @@
         wireEvents();
         switchTab('tab-dashboard');
         fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
-        fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
         refreshAiStatus();
         if (aiStatusTimer) clearInterval(aiStatusTimer);
         aiStatusTimer = setInterval(refreshAiStatus, 60_000);
         renderSyncBanner();
         wireMealComposer();
         registerServiceWorker();
-        refreshMealQueueAuthScope().catch((err) => console.warn('Meal queue auth scope refresh failed:', err));
+        refreshMealQueueAuthScope({ timeoutMs: 2500 })
+            .then((scopeResult) => {
+                settleActiveWorkoutDraftAfterAuthScope(scopeResult);
+                scheduleMealQueueAuthScopeRetry(scopeResult && scopeResult.status);
+            })
+            .catch((err) => {
+                console.warn('Meal queue auth scope refresh failed:', err);
+                scheduleMealQueueAuthScopeRetry('pending');
+            })
+            .finally(() => {
+                fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
+            });
         cleanupOrphanedMealQueuePhotos().catch((err) => console.warn('Meal queue cleanup failed:', err));
+        window.addEventListener('pagehide', saveActiveWorkoutDraftBeforePageHidden);
+        window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') saveActiveWorkoutDraftBeforePageHidden();
+        });
         window.addEventListener('online', () => {
-            refreshMealQueueAuthScope().catch((err) => console.warn('Meal queue auth scope refresh failed:', err));
+            refreshMealQueueAuthScope()
+                .then((scopeResult) => {
+                    settleActiveWorkoutDraftAfterAuthScope(scopeResult);
+                    scheduleMealQueueAuthScopeRetry(scopeResult && scopeResult.status);
+                })
+                .catch((err) => {
+                    console.warn('Meal queue auth scope refresh failed:', err);
+                    scheduleMealQueueAuthScopeRetry('pending');
+                });
             flushSyncQueue();
             flushMealSyncQueue();
         });
