@@ -81,6 +81,7 @@ def test_offline_submit_enqueues_with_original_client_id_and_timestamps():
     assert "let _mealQueueAuthScope = '';" in APP_JS
     assert "localStorage.setItem(MEAL_QUEUE_AUTH_SCOPE_KEY, normalized);" in APP_JS
     assert "persistedMealQueueAuthScope()" in APP_JS
+    assert "refreshMealQueueAuthScope({ timeoutMs: 2500 })" in APP_JS
     assert "refreshMealQueueAuthScope().catch" in APP_JS
     assert "auth_scope: authScope" in APP_JS
     assert "const authGate = await mealQueueAuthGate(entry);" in APP_JS
@@ -124,8 +125,8 @@ def test_auth_failures_stay_visible_retryable_and_do_not_post_on_scope_mismatch(
 
 def test_service_worker_offline_auth_scope_fallback_stays_retryable():
     block = _app_js_block(
-        "async function fetchCurrentMealQueueAuthScope()",
-        "async function refreshMealQueueAuthScope()",
+        "async function fetchCurrentMealQueueAuthScope",
+        "async function refreshMealQueueAuthScope",
     )
     missing_scope_block = _app_js_block("if (!scope) {", "return { ok: true, scope };")
 

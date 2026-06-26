@@ -106,9 +106,9 @@ def test_active_workout_draft_restores_after_auth_scope_refresh_and_saves_on_bac
     boot_block = _app_js_block("function boot()", "function registerServiceWorker")
 
     assert "async function boot()" in APP_JS
-    assert "await refreshMealQueueAuthScope()\n            .catch" in boot_block
+    assert "await refreshMealQueueAuthScope({ timeoutMs: 2500 })\n            .catch" in boot_block
     assert "wireEvents();" in boot_block
-    assert boot_block.index("await refreshMealQueueAuthScope()") < boot_block.index("wireEvents();")
+    assert boot_block.index("await refreshMealQueueAuthScope({ timeoutMs: 2500 })") < boot_block.index("wireEvents();")
     assert "restoreActiveWorkoutDraft();\n        fetchWorkoutAdaptationNotices().catch" in boot_block
     assert "window.addEventListener('pagehide', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);" in boot_block

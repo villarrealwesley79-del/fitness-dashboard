@@ -6143,11 +6143,20 @@
         return normalized;
     }
 
-    async function fetchCurrentMealQueueAuthScope() {
+    async function fetchCurrentMealQueueAuthScope({ timeoutMs = 0 } = {}) {
+        let timer = null;
         try {
-            const res = await fetch('/api/auth/scope', {
+            const fetchOpts = {
                 credentials: 'same-origin',
                 headers: { 'Accept': 'application/json', [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
+            };
+            if (timeoutMs && typeof AbortController !== 'undefined') {
+                const controller = new AbortController();
+                timer = setTimeout(() => controller.abort(), timeoutMs);
+                fetchOpts.signal = controller.signal;
+            }
+            const res = await fetch('/api/auth/scope', {
+                ...fetchOpts,
             });
             if (res.status === 401 || res.status === 403) {
                 return {
@@ -6179,11 +6188,13 @@
                 status: 'pending',
                 reason: 'Could not verify the current sign-in before syncing this meal.',
             };
+        } finally {
+            if (timer) clearTimeout(timer);
         }
     }
 
-    async function refreshMealQueueAuthScope() {
-        const liveScope = await fetchCurrentMealQueueAuthScope();
+    async function refreshMealQueueAuthScope(options) {
+        const liveScope = await fetchCurrentMealQueueAuthScope(options);
         if (liveScope.ok) {
             persistMealQueueAuthScope(liveScope.scope);
         }
@@ -10272,7 +10283,7 @@
 
     async function boot() {
         renderGreeting();
-        await refreshMealQueueAuthScope()
+        await refreshMealQueueAuthScope({ timeoutMs: 2500 })
             .catch((err) => console.warn('Meal queue auth scope refresh failed:', err));
         wireEvents();
         switchTab('tab-dashboard');
