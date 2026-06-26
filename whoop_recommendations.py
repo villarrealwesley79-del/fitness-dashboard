@@ -187,6 +187,7 @@ def apply_wearable_modifiers(
     workout = copy.deepcopy(next_workout or {})
     training_recommendation = recommendation or "moderate"
     modifiers = list(signals.get("applied_modifiers") or [])
+    modifier_signature = "|".join(sorted(str(item) for item in modifiers))
 
     if signals.get("display_only"):
         return {
@@ -194,6 +195,17 @@ def apply_wearable_modifiers(
             "next_workout": workout,
             "applied_modifiers": [],
             "display_only": True,
+            "explanations": signals.get("explanations") or [],
+            "source_conflict": conflict,
+            "load_source": "apple_health",
+        }
+
+    if modifier_signature and workout.get("_whoop_modifier_signature") == modifier_signature:
+        return {
+            "recommendation": training_recommendation,
+            "next_workout": workout,
+            "applied_modifiers": modifiers,
+            "display_only": False,
             "explanations": signals.get("explanations") or [],
             "source_conflict": conflict,
             "load_source": "apple_health",
@@ -240,6 +252,9 @@ def apply_wearable_modifiers(
     if isinstance(workout.get("estimated_minutes"), (int, float)) and volume_scale < 1.0:
         workout["estimated_minutes"] = max(20, int(round(float(workout["estimated_minutes"]) * volume_scale)))
         workout["estimated_duration"] = f"{workout['estimated_minutes']} min"
+
+    if modifier_signature:
+        workout["_whoop_modifier_signature"] = modifier_signature
 
     return {
         "recommendation": training_recommendation,

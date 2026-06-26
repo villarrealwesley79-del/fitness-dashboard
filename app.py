@@ -10752,32 +10752,35 @@ def _run_whoop_sync(reason="manual", *, days_back=7, client_factory=WhoopClient)
         window_start=start.isoformat(),
         window_end=end.isoformat(),
     )
+    client = None
+
+    def persist_rotated_material_if_needed():
+        nonlocal material, client
+        if client is None:
+            return
+        session_value = getattr(client, "access_token", None)
+        renewal_value = getattr(client, "refresh_token", None)
+        if session_value != material.get("session_value") or renewal_value != material.get("renewal_value"):
+            rotate_connection_tokens(
+                WHOOP_DB_FILE,
+                {
+                    "access_token": session_value,
+                    "refresh_token": renewal_value,
+                    "expires_in": 3600,
+                    "scope": "offline",
+                },
+            )
+            material = {
+                "session_value": session_value,
+                "renewal_value": renewal_value,
+            }
+
     try:
         client = client_factory(
             config,
             session_value=material.get("session_value"),
             renewal_value=material.get("renewal_value"),
         )
-
-        def persist_rotated_material_if_needed():
-            nonlocal material
-            session_value = getattr(client, "access_token", None)
-            renewal_value = getattr(client, "refresh_token", None)
-            if session_value != material.get("session_value") or renewal_value != material.get("renewal_value"):
-                rotate_connection_tokens(
-                    WHOOP_DB_FILE,
-                    {
-                        "access_token": session_value,
-                        "refresh_token": renewal_value,
-                        "expires_in": 3600,
-                        "scope": "offline",
-                    },
-                )
-                material = {
-                    "session_value": session_value,
-                    "renewal_value": renewal_value,
-                }
-
         collections = {
             "recovery": client.fetch_recovery(start=start, end=end),
         }
@@ -10805,6 +10808,7 @@ def _run_whoop_sync(reason="manual", *, days_back=7, client_factory=WhoopClient)
             "window_end": end.isoformat(),
         }, None
     except WhoopApiError as exc:
+        persist_rotated_material_if_needed()
         finish_whoop_sync_run(
             WHOOP_DB_FILE,
             run_id,

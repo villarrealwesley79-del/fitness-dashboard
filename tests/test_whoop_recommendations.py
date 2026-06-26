@@ -58,6 +58,34 @@ def test_deload_modifier_never_increases_one_set_exercise():
     assert adjusted["next_workout"]["exercises"][0]["target_sets"] == 1
 
 
+def test_same_whoop_modifier_signature_is_idempotent():
+    signals = build_whoop_recommendation_signals(
+        {
+            "recovery_score": 38,
+            "score_state": "SCORED",
+        },
+        freshness={"status": "fresh"},
+    )
+    base = {"estimated_minutes": 60, "exercises": [{"target_sets": 4, "rpe_target": 8}]}
+
+    first = apply_wearable_modifiers(
+        "moderate",
+        base,
+        whoop_signals=signals,
+        source_conflict={"has_conflict": False},
+    )
+    second = apply_wearable_modifiers(
+        "moderate",
+        first["next_workout"],
+        whoop_signals=signals,
+        source_conflict={"has_conflict": False},
+    )
+
+    assert second["next_workout"]["exercises"][0]["target_sets"] == first["next_workout"]["exercises"][0]["target_sets"]
+    assert second["next_workout"]["exercises"][0]["rpe_target"] == first["next_workout"]["exercises"][0]["rpe_target"]
+    assert second["next_workout"]["estimated_minutes"] == first["next_workout"]["estimated_minutes"]
+
+
 def test_stale_or_unscored_data_is_display_only():
     signals = build_whoop_recommendation_signals(
         {

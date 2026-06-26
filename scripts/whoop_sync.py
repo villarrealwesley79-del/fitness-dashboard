@@ -2,8 +2,7 @@
 """Run a bounded WHOOP sync worker from the command line.
 
 This entry point defines the operational contract for scheduled and manual
-WHOOP sync work without creating launchd/cron automation itself. Wire a real
-backend in separately once the WHOOP client/store modules land.
+WHOOP sync work without creating launchd/cron automation itself.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 BACKEND_ENV_VAR = "WHOOP_SYNC_BACKEND"
-DEFAULT_BACKEND_SPEC = ""
+DEFAULT_BACKEND_SPEC = "app:_run_whoop_sync"
 
 
 @dataclass(frozen=True)
@@ -86,12 +85,38 @@ class BackendUnavailableError(RuntimeError):
     """Raised when no real WHOOP sync backend has been wired yet."""
 
 
+class AppWhoopSyncBackend:
+    def run_sync(self, request: SyncRequest) -> Mapping[str, Any]:
+        app_module = importlib.import_module("app")
+        with app_module.app.app_context():
+            result, error_response = app_module._run_whoop_sync(request.mode, days_back=request.days)
+        if error_response is not None:
+            response = error_response[0] if isinstance(error_response, tuple) else error_response
+            status_code = error_response[1] if isinstance(error_response, tuple) and len(error_response) > 1 else 500
+            payload = response.get_json(silent=True) if hasattr(response, "get_json") else None
+            message = (
+                payload
+                and payload.get("error")
+                and payload["error"].get("message")
+            ) or f"WHOOP sync failed with HTTP {status_code}"
+            return {
+                "status": "retryable_error" if int(status_code) >= 500 else "error",
+                "message": message,
+                "records_upserted": 0,
+            }
+        return {
+            "status": "success",
+            "sync_run_id": (result or {}).get("run_id", ""),
+            "records_upserted": (result or {}).get("records_upserted", 0),
+        }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__,
         epilog=(
             "Safety: this command does not install or schedule launchd/cron automation. "
-            f"Set {BACKEND_ENV_VAR} to a Python object or factory implementing run_sync(request)."
+            f"Override {BACKEND_ENV_VAR} only when replacing the default app-backed sync adapter."
         ),
     )
     parser.add_argument(
@@ -145,10 +170,9 @@ def _load_backend_spec(spec: str) -> WhoopSyncBackend:
 def load_backend() -> WhoopSyncBackend:
     spec = os.environ.get(BACKEND_ENV_VAR, DEFAULT_BACKEND_SPEC).strip()
     if not spec:
-        raise BackendUnavailableError(
-            "WHOOP sync backend is not wired yet. Set "
-            f"{BACKEND_ENV_VAR}=module_path:object_name once the backend adapter exists."
-        )
+        return AppWhoopSyncBackend()
+    if spec == DEFAULT_BACKEND_SPEC:
+        return AppWhoopSyncBackend()
     return _load_backend_spec(spec)
 
 

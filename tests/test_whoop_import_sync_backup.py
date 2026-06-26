@@ -140,7 +140,7 @@ def test_whoop_manual_sync_persists_rotated_material_before_later_failure(fitnes
         def fetch_recovery(self, *, start=None, end=None):
             self.access_token = "fresh-session"
             self.refresh_token = "fresh-renewal"
-            return []
+            raise whoop_client.WhoopApiError("recovery failed after refresh", retryable=True)
 
         def fetch_sleep(self, *, start=None, end=None):
             raise whoop_client.WhoopApiError("sleep failed", retryable=True)

@@ -121,16 +121,12 @@ def test_main_prints_failure_summary_for_non_retryable_error(capsys):
     assert "message=reauth required" in captured.err
 
 
-def test_main_reports_backend_unavailable_when_no_adapter_is_configured(monkeypatch, capsys):
+def test_load_backend_uses_default_app_adapter(monkeypatch):
     monkeypatch.delenv(whoop_sync.BACKEND_ENV_VAR, raising=False)
 
-    exit_code = whoop_sync.main(["--mode", "normal"])
+    backend = whoop_sync.load_backend()
 
-    captured = capsys.readouterr()
-    assert exit_code == 1
-    assert captured.out == ""
-    assert "status=backend_unavailable mode=normal days=2 attempts=0" in captured.err
-    assert f"Set {whoop_sync.BACKEND_ENV_VAR}=module_path:object_name" in captured.err
+    assert isinstance(backend, whoop_sync.AppWhoopSyncBackend)
 
 
 def test_help_text_is_safe_and_describes_bounded_modes():
@@ -147,4 +143,5 @@ def test_help_text_is_safe_and_describes_bounded_modes():
     assert "--mode {normal,backfill,repair}" in completed.stdout
     assert "--days" in completed.stdout
     assert "does not install or schedule launchd/cron automation" in completed.stdout
+    assert "default app-backed sync adapter" in " ".join(completed.stdout.split())
     assert "normal=2, backfill=30, repair=7" in completed.stdout

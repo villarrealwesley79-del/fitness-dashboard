@@ -155,3 +155,9 @@ def test_next_workout_cache_matches_whoop_adjusted_response(fitness_app, monkeyp
     adjusted_sets = payload["next_workout"]["exercises"][0]["target_sets"]
     assert adjusted_sets < 4
     assert fitness_app.LAST_WORKOUT_RECOMMENDATION["exercises"][0]["target_sets"] == adjusted_sets
+
+    second_response = fitness_app.app.test_client().get("/api/next-workout")
+    second_payload = second_response.get_json()
+
+    assert second_response.status_code == 200
+    assert second_payload["next_workout"]["exercises"][0]["target_sets"] == adjusted_sets
