@@ -58,6 +58,20 @@ def test_whoop_secret_patterns_are_excluded_from_docker_context():
         assert token in dockerignore
 
 
+def test_whoop_oauth_callback_query_is_not_logged_by_gunicorn_access_logs():
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    procfile = (ROOT / "Procfile").read_text()
+
+    assert "--access-logformat" in dockerfile
+    assert "--access-logformat" in procfile
+    assert "%(U)s" in dockerfile
+    assert "%(U)s" in procfile
+    assert "%(q)s" not in dockerfile
+    assert "%(q)s" not in procfile
+    assert "%(r)s" not in dockerfile
+    assert "%(r)s" not in procfile
+
+
 def test_whoop_frontend_calls_expected_status_sync_and_disconnect_endpoints():
     app_js = APP_JS.read_text()
 
@@ -124,6 +138,11 @@ def test_whoop_freshness_status_wins_over_connection_status_merge():
     assert "const csvOnlyDisconnected = uiState === WHOOP_UI_STATES.csv_only && (!whoop || whoop.connected === false);" in app_js
     assert "syncBtn.disabled = busy || liveSyncUnavailable;" in app_js
     assert "disconnectBtn.hidden = cleanupUnavailable;" in app_js
+    assert "state.dashboard = null;\n            state.reco = null;\n            await renderSettings();" in app_js
+    resolver_start = app_js.index("function resolveWhoopUiState")
+    disconnected_check = app_js.index("if (status === WHOOP_UI_STATES.disconnected", resolver_start)
+    conflict_check = app_js.index("if (firstWhoopConflict(conflicts)", resolver_start)
+    assert disconnected_check < conflict_check
     assert app_js.index("normalizeWhoopStateToken(whoop.source_kind) === WHOOP_UI_STATES.csv_only") < app_js.index("whoop.connected === false")
     assert app_js.index("whoop.connected === false") < app_js.index("if (status === WHOOP_UI_STATES.fresh")
 

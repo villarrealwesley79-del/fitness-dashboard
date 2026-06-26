@@ -35,4 +35,5 @@ CMD ["sh", "-c", "gunicorn app:app \
      --workers 2 \
      --timeout 120 \
      --access-logfile - \
+     --access-logformat '%(h)s %(l)s %(u)s %(t)s \"%(m)s %(U)s %(H)s\" %(s)s %(b)s \"%(f)s\" \"%(a)s\"' \
      --error-logfile -"]
