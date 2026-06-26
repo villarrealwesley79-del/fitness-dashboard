@@ -27,6 +27,7 @@
         whoopUi: {
             syncInFlight: false,
             disconnectInFlight: false,
+            deleteInFlight: false,
             lastError: '',
         },
         ranges: { history: 30, stats: 30 },
@@ -1801,27 +1802,34 @@
         const connectBtn = $('btn-connect-whoop');
         const syncBtn = $('btn-sync-whoop');
         const disconnectBtn = $('btn-disconnect-whoop');
+        const deleteBtn = $('btn-delete-whoop-data');
         const connectUrl = currentWhoopConnectUrl();
         const disconnected = uiState === WHOOP_UI_STATES.disconnected;
         const missingConfig = uiState === 'missing_config';
         const reauth = uiState === WHOOP_UI_STATES.reauth_required;
         const busySync = state.whoopUi.syncInFlight || uiState === WHOOP_UI_STATES.syncing;
         const busyDisconnect = state.whoopUi.disconnectInFlight;
+        const busyDelete = state.whoopUi.deleteInFlight;
+        const busy = busySync || busyDisconnect || busyDelete;
 
         if (connectBtn) {
             connectBtn.hidden = !(disconnected || missingConfig || reauth || connectUrl);
-            connectBtn.disabled = busySync || busyDisconnect;
+            connectBtn.disabled = busy;
             connectBtn.textContent = reauth ? 'Reconnect' : 'Connect';
         }
         if (syncBtn) {
             syncBtn.hidden = disconnected && !connectUrl;
-            syncBtn.disabled = busySync || busyDisconnect || disconnected || reauth;
+            syncBtn.disabled = busy || disconnected || reauth;
             syncBtn.textContent = busySync ? 'Syncing…' : 'Sync';
         }
         if (disconnectBtn) {
             disconnectBtn.hidden = disconnected && !connectUrl;
-            disconnectBtn.disabled = busySync || busyDisconnect || disconnected;
+            disconnectBtn.disabled = busy || disconnected;
             disconnectBtn.textContent = busyDisconnect ? 'Disconnecting…' : 'Disconnect';
+        }
+        if (deleteBtn) {
+            deleteBtn.disabled = busy;
+            deleteBtn.textContent = busyDelete ? 'Deleting…' : 'Delete data';
         }
     }
 
@@ -4696,6 +4704,36 @@
         } finally {
             state.whoopUi.disconnectInFlight = false;
             state.dashboard = null;
+            await renderSettings();
+        }
+    }
+
+    async function deleteWhoopData() {
+        if (state.whoopUi.deleteInFlight) return;
+        if (typeof confirm === 'function' && !confirm('Delete local WHOOP data from this dashboard?')) return;
+        state.whoopUi.deleteInFlight = true;
+        state.whoopUi.lastError = '';
+        renderWhoopFreshnessDetail(state.whoopStatus, mergeWhoopFreshnessNode(null, state.whoopStatus, []), []);
+        try {
+            const body = await api('/api/whoop/delete-data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            state.whoopStatus = Object.assign({}, state.whoopStatus || {}, body.connection || {}, {
+                freshness: Object.assign({}, (body.connection && body.connection.freshness) || {}, {
+                    status: WHOOP_UI_STATES.missing,
+                    last_data_point: null,
+                }),
+            });
+            toast('WHOOP data deleted.', 'ok');
+        } catch (error) {
+            state.whoopUi.lastError = error && error.message ? error.message : 'WHOOP data delete failed.';
+            toast('WHOOP data delete failed.', 'err');
+        } finally {
+            state.whoopUi.deleteInFlight = false;
+            state.dashboard = null;
+            state.reco = null;
             await renderSettings();
         }
     }
@@ -8317,6 +8355,7 @@
         $('btn-connect-whoop') && $('btn-connect-whoop').addEventListener('click', connectWhoop);
         $('btn-sync-whoop') && $('btn-sync-whoop').addEventListener('click', syncWhoop);
         $('btn-disconnect-whoop') && $('btn-disconnect-whoop').addEventListener('click', disconnectWhoop);
+        $('btn-delete-whoop-data') && $('btn-delete-whoop-data').addEventListener('click', deleteWhoopData);
         $('btn-export') && $('btn-export').addEventListener('click', downloadExport);
         $('btn-import') && $('btn-import').addEventListener('click', () => $('import-file').click());
         $('import-file') && $('import-file').addEventListener('change', (e) => importBackupFile(e.target.files && e.target.files[0]));

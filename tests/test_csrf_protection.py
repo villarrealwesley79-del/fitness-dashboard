@@ -199,6 +199,7 @@ def test_whoop_mutation_posts_without_csrf_header_are_rejected(monkeypatch):
     for path in (
         "/api/whoop/connect/start",
         "/api/whoop/disconnect",
+        "/api/whoop/delete-data",
         "/api/whoop/sync",
         "/api/whoop/import-csv",
     ):

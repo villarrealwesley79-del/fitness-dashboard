@@ -23,6 +23,7 @@ def test_index_exposes_whoop_dashboard_and_settings_surfaces():
         'id="whoop-connect-state"',
         'id="btn-sync-whoop"',
         'id="btn-disconnect-whoop"',
+        'id="btn-delete-whoop-data"',
         'id="whoop-detail-attention"',
         'id="whoop-conflict-row"',
         'id="modal-reco-sources"',
@@ -63,10 +64,12 @@ def test_whoop_frontend_calls_expected_status_sync_and_disconnect_endpoints():
     assert "async function getWhoopStatus(force = false)" in app_js
     assert "async function syncWhoop()" in app_js
     assert "async function disconnectWhoop()" in app_js
+    assert "async function deleteWhoopData()" in app_js
     assert "api('/api/whoop/status'" in app_js
     assert "api('/api/whoop/connect/start', { method: 'POST' })" in app_js
     assert "api('/api/whoop/sync'" in app_js
     assert "api('/api/whoop/disconnect'" in app_js
+    assert "api('/api/whoop/delete-data'" in app_js
     assert "async function connectWhoop()" in app_js
     assert "window.location.assign(nextUrl);" in app_js
 
@@ -81,6 +84,7 @@ def test_whoop_frontend_preserves_keyboard_and_modal_focus_path():
     assert "$('btn-reco-sources') && $('btn-reco-sources').addEventListener('click', openRecoSourcesModal);" in app_js
     assert "$('btn-sync-whoop') && $('btn-sync-whoop').addEventListener('click', syncWhoop);" in app_js
     assert "$('btn-disconnect-whoop') && $('btn-disconnect-whoop').addEventListener('click', disconnectWhoop);" in app_js
+    assert "$('btn-delete-whoop-data') && $('btn-delete-whoop-data').addEventListener('click', deleteWhoopData);" in app_js
 
 
 def test_whoop_recommendation_source_conflict_accepts_nested_backend_shape():

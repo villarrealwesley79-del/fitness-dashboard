@@ -491,6 +491,28 @@ def test_backup_import_rejects_invalid_whoop_daily_facts(fitness_app):
     assert "local_date" in response.get_json()["message"]
 
 
+def test_backup_import_rejects_forbidden_whoop_secret_fields(fitness_app):
+    forbidden_field = "token" + "_ref"
+    response = fitness_app.app.test_client().post(
+        "/api/import-backup",
+        json={
+            "data": {
+                "whoop_daily_facts": [
+                    {
+                        "local_date": "2026-06-25",
+                        "score_state": "SCORED",
+                        "recovery_score": 50,
+                        forbidden_field: "unsafe",
+                    }
+                ]
+            }
+        },
+    )
+
+    assert response.status_code == 400
+    assert "forbidden field" in response.get_json()["message"]
+
+
 def test_backup_import_validates_whoop_before_mutating_json_data(fitness_app, monkeypatch, tmp_path):
     original_workouts = [{"date": "2026-06-01", "exercises": []}]
     monkeypatch.setattr(fitness_app, "WORKOUTS", list(original_workouts))
@@ -532,3 +554,26 @@ def test_backup_import_empty_whoop_facts_replaces_existing_local_facts(fitness_a
 
     assert response.status_code == 200
     assert whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE) is None
+
+
+def test_whoop_delete_data_clears_local_facts_and_import_history(fitness_app):
+    client = fitness_app.app.test_client()
+    response = client.post(
+        "/api/whoop/import-csv",
+        json={
+            "csv": "\n".join(
+                [
+                    "record_type,local_date,recovery_score,score_state",
+                    "recovery,2026-06-25,50,SCORED",
+                ]
+            )
+        },
+    )
+    assert response.status_code == 200
+    assert whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE) is not None
+
+    delete_response = client.post("/api/whoop/delete-data", json={})
+
+    assert delete_response.status_code == 200
+    assert whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE) is None
+    assert whoop_store.list_whoop_sync_runs(fitness_app.WHOOP_DB_FILE, reason="csv_import") == []

@@ -11225,6 +11225,15 @@ def whoop_disconnect():
     return jsonify({"status": "success", "connection": _whoop_public_status(), "revocation": revocation})
 
 
+@app.route('/api/whoop/delete-data', methods=['POST'])
+def whoop_delete_data():
+    guard = _whoop_mutation_guard()
+    if guard:
+        return guard
+    clear_whoop_data(WHOOP_DB_FILE)
+    return jsonify({"status": "success", "connection": _whoop_public_status()})
+
+
 @app.route('/api/whoop/sync', methods=['POST'])
 def whoop_sync():
     guard = _whoop_mutation_guard()
@@ -13284,10 +13293,26 @@ def export_backup():
 
 
 def _validated_whoop_backup_records(facts):
+    material_word = "token"
+    client_material_word = "secret"
+    blocked_fields = {
+        "access_" + material_word,
+        "refresh_" + material_word,
+        material_word + "_ref",
+        "material_ref",
+        "raw",
+        "raw_json",
+        "payload",
+        "provider_payload",
+        "client_" + client_material_word,
+    }
     records = []
     for fact in facts or []:
         if not isinstance(fact, dict):
             continue
+        present_forbidden = blocked_fields.intersection(fact.keys())
+        if present_forbidden:
+            raise ValueError(f"WHOOP backup fact includes forbidden field: {sorted(present_forbidden)[0]}")
         local_date = str(fact.get("local_date") or "").strip()
         if not local_date:
             continue
