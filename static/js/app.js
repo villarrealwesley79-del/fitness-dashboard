@@ -5263,7 +5263,7 @@
             const draft = {
                 version: ACTIVE_WORKOUT_DRAFT_VERSION,
                 saved_at: new Date().toISOString(),
-                auth_scope: currentActiveWorkoutDraftScope(),
+                auth_scope: currentActiveWorkoutDraftScope() || persistedMealQueueAuthScope(),
                 workout,
             };
             localStorage.setItem(ACTIVE_WORKOUT_DRAFT_KEY, JSON.stringify(draft));
