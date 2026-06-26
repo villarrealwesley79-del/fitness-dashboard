@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 import sqlite3
 import tempfile
 import uuid
@@ -184,7 +185,8 @@ def _protected_material_path(db_path: str) -> str:
         base_dir = os.path.abspath(os.path.expanduser(override))
     else:
         base_dir = os.path.expanduser("~/Library/Application Support/Fitness Dashboard/secrets")
-    return os.path.join(base_dir, ".whoop-protected-material.json")
+    db_identity = hashlib.sha256(os.path.abspath(db_path).encode("utf-8")).hexdigest()[:16]
+    return os.path.join(base_dir, f".whoop-protected-material-{db_identity}.json")
 
 
 def _write_protected_material(db_path: str, token_payload: dict) -> str:

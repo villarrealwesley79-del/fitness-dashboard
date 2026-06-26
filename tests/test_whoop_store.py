@@ -259,6 +259,16 @@ def test_default_protected_material_path_is_outside_data_dir(monkeypatch, tmp_pa
     assert "Application Support" in material_path
 
 
+def test_default_protected_material_path_is_namespaced_by_database(monkeypatch, tmp_path):
+    monkeypatch.delenv("WHOOP_PROTECTED_MATERIAL_DIR", raising=False)
+    first_path = whoop_store._protected_material_path(str(tmp_path / "one.sqlite3"))
+    second_path = whoop_store._protected_material_path(str(tmp_path / "two.sqlite3"))
+
+    assert first_path != second_path
+    assert os.path.basename(first_path).startswith(".whoop-protected-material-")
+    assert os.path.basename(second_path).startswith(".whoop-protected-material-")
+
+
 def test_clear_whoop_data_removes_import_history(tmp_path):
     db_path = str(tmp_path / "whoop.sqlite3")
     whoop_store.init_whoop_db(db_path)
