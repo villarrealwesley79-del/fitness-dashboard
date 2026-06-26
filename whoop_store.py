@@ -311,6 +311,22 @@ def consume_oauth_state(
         }
 
 
+def invalidate_oauth_states(db_path: str, *, user_binding: str | None = None) -> int:
+    init_whoop_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        if user_binding is None:
+            deleted = conn.execute(
+                "DELETE FROM whoop_oauth_states WHERE consumed_at IS NULL"
+            )
+        else:
+            deleted = conn.execute(
+                "DELETE FROM whoop_oauth_states WHERE consumed_at IS NULL AND (user_binding = ? OR user_binding IS NULL)",
+                (user_binding,),
+            )
+        conn.commit()
+        return int(deleted.rowcount or 0)
+
+
 def clear_whoop_data(db_path: str) -> None:
     init_whoop_db(db_path)
     with closing(_connect(db_path)) as conn:

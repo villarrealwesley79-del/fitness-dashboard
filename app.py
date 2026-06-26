@@ -80,6 +80,7 @@ from whoop_store import (
     get_connection_status as get_whoop_connection_status,
     get_daily_fact as get_whoop_daily_fact,
     init_whoop_db,
+    invalidate_oauth_states,
     latest_whoop_fact_source_reason,
     latest_whoop_freshness,
     list_whoop_daily_facts,
@@ -11244,10 +11245,13 @@ def whoop_callback():
         return _whoop_no_store(api_error("state is required", 400, code="missing_state"))
     if not code:
         return _whoop_no_store(api_error("code is required", 400, code="missing_code"))
-    saved_state = consume_oauth_state(WHOOP_DB_FILE, state, user_binding=_whoop_user_binding())
-    if saved_state is None:
-        return _whoop_no_store(api_error("WHOOP OAuth state is invalid or expired.", 400, code="invalid_state"))
+    mutation_guard = _acquire_whoop_mutation_guard()
+    if mutation_guard is None:
+        return _whoop_no_store(api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress"))
     try:
+        saved_state = consume_oauth_state(WHOOP_DB_FILE, state, user_binding=_whoop_user_binding())
+        if saved_state is None:
+            return _whoop_no_store(api_error("WHOOP OAuth state is invalid or expired.", 400, code="invalid_state"))
         config = _whoop_config_for_redirect(saved_state["redirect_uri"])
         grant_payload = exchange_whoop_code(config, code=code)
         validation_error = _validate_whoop_token_payload(grant_payload)
@@ -11258,6 +11262,8 @@ def whoop_callback():
         return _whoop_no_store(api_error(str(exc), 502, code="whoop_oauth_failed"))
     except Exception:
         return _whoop_no_store(api_error("WHOOP OAuth is not configured on this server.", 503, code="missing_whoop_config"))
+    finally:
+        mutation_guard.release()
     if _whoop_callback_is_browser_navigation():
         return _whoop_no_store(redirect("/#settings"))
     return _whoop_no_store(jsonify({"status": "success", "connection": _whoop_public_status()}))
@@ -11285,6 +11291,7 @@ def whoop_disconnect():
             except Exception:
                 revocation = {"status": "failed", "message": "WHOOP OAuth is not configured on this server."}
         try:
+            invalidate_oauth_states(WHOOP_DB_FILE, user_binding=_whoop_user_binding())
             disconnect_whoop(WHOOP_DB_FILE)
         except OSError:
             return api_error(
@@ -11306,6 +11313,7 @@ def whoop_delete_data():
     if guard is None:
         return api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
     try:
+        invalidate_oauth_states(WHOOP_DB_FILE, user_binding=_whoop_user_binding())
         clear_whoop_data(WHOOP_DB_FILE)
         return jsonify({"status": "success", "connection": _whoop_public_status()})
     finally:

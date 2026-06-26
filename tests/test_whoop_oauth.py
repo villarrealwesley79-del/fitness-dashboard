@@ -137,6 +137,63 @@ def test_whoop_callback_rejects_invalid_state(fitness_app, monkeypatch):
     assert payload["error"]["code"] == "invalid_state"
 
 
+def test_whoop_callback_rejects_cross_process_lock(fitness_app, monkeypatch, tmp_path):
+    monkeypatch.setattr(fitness_app, "_whoop_redirect_uri", lambda: "http://localhost/api/whoop/callback")
+    monkeypatch.setattr(fitness_app, "_whoop_config_for_redirect", lambda redirect_uri: _config())
+    monkeypatch.setattr(
+        fitness_app,
+        "exchange_whoop_code",
+        lambda config, code: {
+            "access_token": "stored-access",
+            "refresh_token": "stored-refresh",
+            "expires_in": 3600,
+        },
+    )
+    lock_path = tmp_path / "held-whoop-callback.lock"
+    fitness_app.WHOOP_SYNC_LOCK_FILE = str(lock_path)
+    client = fitness_app.app.test_client()
+    state = urllib.parse.parse_qs(
+        urllib.parse.urlparse(client.post("/api/whoop/connect/start").get_json()["authorization_url"]).query
+    )["state"][0]
+
+    with lock_path.open("a", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            response = client.get(f"/api/whoop/callback?state={state}&code=server-code")
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "whoop_sync_in_progress"
+    assert fitness_app.get_whoop_connection_status(fitness_app.WHOOP_DB_FILE)["status"] == "disconnected"
+
+
+def test_whoop_disconnect_invalidates_pending_oauth_state(fitness_app, monkeypatch):
+    monkeypatch.setattr(fitness_app, "_whoop_redirect_uri", lambda: "http://localhost/api/whoop/callback")
+    monkeypatch.setattr(fitness_app, "_whoop_config_for_redirect", lambda redirect_uri: _config())
+    monkeypatch.setattr(
+        fitness_app,
+        "exchange_whoop_code",
+        lambda config, code: {
+            "access_token": "stored-access",
+            "refresh_token": "stored-refresh",
+            "expires_in": 3600,
+        },
+    )
+    client = fitness_app.app.test_client()
+    state = urllib.parse.parse_qs(
+        urllib.parse.urlparse(client.post("/api/whoop/connect/start").get_json()["authorization_url"]).query
+    )["state"][0]
+
+    disconnect = client.post("/api/whoop/disconnect")
+    callback = client.get(f"/api/whoop/callback?state={state}&code=server-code")
+
+    assert disconnect.status_code == 200
+    assert callback.status_code == 400
+    assert callback.get_json()["error"]["code"] == "invalid_state"
+    assert fitness_app.get_whoop_connection_status(fitness_app.WHOOP_DB_FILE)["status"] == "disconnected"
+
+
 def test_whoop_disconnect_clears_connection(fitness_app, monkeypatch):
     monkeypatch.setattr(fitness_app, "_whoop_config_or_none", lambda: _config())
     monkeypatch.setattr(fitness_app, "_whoop_config_for_redirect", lambda redirect_uri: _config())
