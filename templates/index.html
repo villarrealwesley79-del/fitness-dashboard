@@ -1274,27 +1274,58 @@
                         <h4 id="open-wearables-hub-title" class="whoop-intake-title">Wearable hub wrapper</h4>
                         <span id="open-wearables-setup-modal-status" class="state-chip state-chip-sm warn">Setup needed</span>
                     </div>
-                    <p class="dim whoop-intake-copy">Fitness Dashboard reads normalized facts from Open Wearables. Install the hub, connect providers there, then point this app at it.</p>
-                    <div class="whoop-intake-actions">
-                        <a class="btn btn-primary btn-sm" href="https://github.com/the-momentum/open-wearables" target="_blank" rel="noopener noreferrer">Open GitHub</a>
-                        <button id="btn-open-wearables-setup-check" class="btn btn-ghost btn-sm" type="button">Check setup</button>
-                        <button id="btn-open-wearables-setup-sync" class="btn btn-ghost btn-sm" type="button">Sync now</button>
+                    <p class="dim whoop-intake-copy">Pair devices in the local Open Wearables hub, then come back here to check that Fitness Dashboard can see them.</p>
+                    <div class="open-wearables-pairing-card">
+                        <div>
+                            <strong>Pair a device</strong>
+                            <span id="open-wearables-pairing-link-label">Uses the hub on this Mac.</span>
+                        </div>
+                        <div class="open-wearables-provider-list" aria-label="Supported wearable sources">
+                            <span>Apple Health</span>
+                            <span>WHOOP</span>
+                            <span>Oura</span>
+                            <span>Garmin</span>
+                            <span>Strava</span>
+                        </div>
                     </div>
-                    <p id="open-wearables-setup-status" class="settings-row-detail whoop-intake-status" role="status">No credentials are entered here. Configure the local server values, restart the app, then check setup.</p>
+                    <p id="open-wearables-setup-status" class="settings-row-detail whoop-intake-status" role="status">Open the pairing portal, connect a wearable, then check connection.</p>
+                    <div class="whoop-intake-actions">
+                        <button id="btn-open-wearables-portal" class="btn btn-primary btn-sm" type="button">Open pairing</button>
+                        <button id="btn-open-wearables-copy-link" class="btn btn-ghost btn-sm" type="button">Copy link</button>
+                        <button id="btn-open-wearables-setup-check" class="btn btn-ghost btn-sm" type="button">Check connection</button>
+                    </div>
                 </section>
 
-                <section class="whoop-intake-section" aria-labelledby="open-wearables-env-title">
-                    <div class="whoop-intake-section-head">
-                        <h4 id="open-wearables-env-title" class="whoop-intake-title">Required server values</h4>
+                <details class="whoop-intake-section open-wearables-advanced">
+                    <summary>Advanced</summary>
+                    <p class="dim whoop-intake-copy">Only use this if the local hub cannot be found automatically.</p>
+                    <div class="open-wearables-setup-form">
+                        <label class="open-wearables-setup-field" for="open-wearables-base-url">
+                            <span>Hub API URL</span>
+                            <input id="open-wearables-base-url" class="select-inline" type="url" inputmode="url" autocomplete="off" placeholder="http://localhost:8000">
+                        </label>
+                        <label class="open-wearables-setup-field" for="open-wearables-portal-url">
+                            <span>Pairing portal URL</span>
+                            <input id="open-wearables-portal-url" class="select-inline" type="url" inputmode="url" autocomplete="off" placeholder="Auto">
+                        </label>
+                        <label class="open-wearables-setup-field" for="open-wearables-username">
+                            <span>Hub username</span>
+                            <input id="open-wearables-username" class="select-inline" type="text" autocomplete="username" placeholder="Optional">
+                        </label>
+                        <label class="open-wearables-setup-field" for="open-wearables-password">
+                            <span>Hub secret</span>
+                            <input id="open-wearables-password" class="select-inline" type="password" autocomplete="off" placeholder="Leave blank to keep saved secret">
+                        </label>
+                        <label class="open-wearables-setup-field" for="open-wearables-user-id">
+                            <span>User mapping</span>
+                            <input id="open-wearables-user-id" class="select-inline" type="text" autocomplete="off" placeholder="Optional">
+                        </label>
                     </div>
-                    <ul class="open-wearables-setup-list">
-                        <li><code>OW_BASE_URL</code><span>Local Open Wearables base URL.</span></li>
-                        <li><code>OW_USERNAME</code><span>Hub account username.</span></li>
-                        <li><code>OW_PASSWORD</code><span>Hub account password or token.</span></li>
-                        <li><code>OW_USER_ID</code><span>User mapping in the hub.</span></li>
-                    </ul>
-                    <p class="settings-row-detail whoop-intake-status">Remote hubs must use HTTPS and be allowlisted with <code>OW_ALLOWED_HOSTS</code>.</p>
-                </section>
+                    <div class="whoop-intake-actions">
+                        <button id="btn-open-wearables-setup-save" class="btn btn-ghost btn-sm" type="button">Save advanced</button>
+                    </div>
+                    <p class="settings-row-detail whoop-intake-status">Reference only: <a href="https://github.com/the-momentum/open-wearables" target="_blank" rel="noopener noreferrer">Open Wearables GitHub</a>.</p>
+                </details>
             </div>
             <div class="modal-foot modal-foot-row">
                 <button class="btn btn-ghost" data-close-modal type="button">Close</button>

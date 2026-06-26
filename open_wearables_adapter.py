@@ -53,7 +53,11 @@ def redacted_base_url(url: str | None) -> str | None:
     if not parsed.scheme or not parsed.netloc:
         return None
     host = parsed.hostname or parsed.netloc
-    port = f":{parsed.port}" if parsed.port else ""
+    try:
+        port_value = parsed.port
+    except ValueError:
+        port_value = None
+    port = f":{port_value}" if port_value else ""
     return f"{parsed.scheme}://{host}{port}"
 
 
@@ -67,6 +71,10 @@ def validate_open_wearables_base_url(url: str | None, *, allowed_hosts: set[str]
         return True, None
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False, "invalid_url"
+    try:
+        parsed.port
+    except ValueError:
         return False, "invalid_url"
     host = parsed.hostname.lower()
     if host in LOCAL_HOSTS:
@@ -141,12 +149,13 @@ def build_open_wearables_status(
     credential: str | None,
     user_id: str | None,
     base_url: str | None,
+    allowed_hosts: set[str] | None = None,
     providers: list[OpenWearablesProviderStatus] | None = None,
     error_code: str | None = None,
 ) -> OpenWearablesStatus:
     auth_configured = bool(username and credential)
     user_mapped = bool(user_id)
-    base_valid, base_error = validate_open_wearables_base_url(base_url)
+    base_valid, base_error = validate_open_wearables_base_url(base_url, allowed_hosts=allowed_hosts)
     configured = bool(auth_configured and user_mapped and base_valid)
     status = "connected" if configured and not error_code else "missing_config"
     if base_error:

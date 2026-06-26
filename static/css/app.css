@@ -130,6 +130,10 @@
     max-width: 620px;
 }
 
+#modal-open-wearables-setup .modal-body {
+    padding-bottom: 96px;
+}
+
 .whoop-intake-body {
     display: flex;
     flex-direction: column;
@@ -216,6 +220,72 @@
     margin: 10px 0 0;
     padding: 0;
     list-style: none;
+}
+
+.open-wearables-pairing-card {
+    display: grid;
+    gap: 12px;
+    margin-top: 14px;
+    padding: 14px;
+    border: 1px solid rgba(59,130,246,0.38);
+    border-radius: 12px;
+    background: rgba(15,23,42,0.58);
+}
+
+.open-wearables-pairing-card strong {
+    display: block;
+    color: var(--fg-0);
+    font-size: 14px;
+}
+
+.open-wearables-pairing-card span {
+    color: var(--fg-dim);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.open-wearables-provider-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.open-wearables-provider-list span {
+    border: 1px solid rgba(96,165,250,0.32);
+    border-radius: 999px;
+    background: rgba(37,99,235,0.14);
+    color: var(--fg-1);
+    padding: 6px 9px;
+    font-weight: 700;
+}
+
+.open-wearables-advanced summary {
+    cursor: pointer;
+    color: var(--fg-0);
+    font-weight: 800;
+}
+
+.open-wearables-setup-form {
+    display: grid;
+    gap: 10px;
+    margin-top: 14px;
+}
+
+.open-wearables-setup-field {
+    display: grid;
+    gap: 6px;
+}
+
+.open-wearables-setup-field span {
+    color: var(--fg-dim);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.open-wearables-setup-field .select-inline {
+    max-width: none;
+    width: 100%;
 }
 
 .open-wearables-setup-list li {

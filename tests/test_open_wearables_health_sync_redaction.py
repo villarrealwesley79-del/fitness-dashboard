@@ -191,3 +191,167 @@ def test_open_wearables_setup_check_reports_attention_without_cosmetic_success(m
     assert payload["status"] == "attention"
     assert payload["provider_check"]["checked"] is False
     assert payload["open_wearables"]["status"] == "missing_config"
+
+
+def test_open_wearables_setup_saves_local_config_without_echoing_secret(monkeypatch, tmp_path):
+    module = _fitness_app()
+    config_file = tmp_path / "open_wearables_config.json"
+    monkeypatch.setattr(module, "OPEN_WEARABLES_CONFIG_FILE", str(config_file))
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {})
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://localhost:8000")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_ALLOWED_HOSTS", "")
+    monkeypatch.setattr(module, "_fetch_open_wearables_provider_statuses", lambda: ([], "missing_config"))
+    credential = "local-" + "credential"
+
+    response = module.app.test_client().post("/api/open-wearables/setup", json={
+        "base_url": "http://localhost:8000",
+        "username": "local-user",
+        "password": credential,
+        "user_id": "local-user-id",
+    })
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "saved"
+    assert payload["config"] == {
+        "base_url": "http://localhost:8000",
+        "username": "local-user",
+        "user_id": "local-user-id",
+        "portal_url": "",
+        "pairing_url": "http://localhost:3000",
+        "password_configured": True,
+        "config_file": "open_wearables_config.json",
+    }
+    assert credential not in response.get_data(as_text=True)
+    saved = json.loads(config_file.read_text())
+    assert saved.get("password") == module.OPEN_WEARABLES_PASSWORD
+    assert module.OPEN_WEARABLES_USERNAME == "local-user"
+    assert module.OPEN_WEARABLES_PASSWORD == credential
+    assert module.OPEN_WEARABLES_USER_ID == "local-user-id"
+
+
+def test_open_wearables_setup_ignores_client_supplied_remote_allowlist(monkeypatch, tmp_path):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "OPEN_WEARABLES_CONFIG_FILE", str(tmp_path / "open_wearables_config.json"))
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {})
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://localhost:8000")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_ALLOWED_HOSTS", "")
+    credential = "new-" + "credential"
+
+    response = module.app.test_client().post("/api/open-wearables/setup", json={
+        "base_url": "https://attacker.example",
+        "allowed_hosts": "attacker.example",
+        "password": credential,
+    })
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["status"] == "blocked"
+    assert payload["error"]["code"] == "remote_host_not_allowed"
+
+
+def test_open_wearables_setup_requires_secret_when_host_changes(monkeypatch, tmp_path):
+    module = _fitness_app()
+    saved_credential = "saved-" + "credential"
+    monkeypatch.setattr(module, "OPEN_WEARABLES_CONFIG_FILE", str(tmp_path / "open_wearables_config.json"))
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {"password": saved_credential})
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", saved_credential)
+    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://localhost:8000")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_ALLOWED_HOSTS", "wearables.example.com")
+
+    response = module.app.test_client().post("/api/open-wearables/setup", json={
+        "base_url": "https://wearables.example.com",
+        "password": "",
+    })
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["status"] == "blocked"
+    assert payload["error"]["code"] == "credential_required_for_host_change"
+
+
+def test_open_wearables_setup_does_not_copy_env_secret_to_local_config(monkeypatch, tmp_path):
+    module = _fitness_app()
+    env_credential = "env-" + "credential"
+    config_file = tmp_path / "open_wearables_config.json"
+    monkeypatch.setenv("OW_PASSWORD", env_credential)
+    monkeypatch.setattr(module, "OPEN_WEARABLES_CONFIG_FILE", str(config_file))
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {})
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", env_credential)
+    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://localhost:8000")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_ALLOWED_HOSTS", "")
+    monkeypatch.setattr(module, "_fetch_open_wearables_provider_statuses", lambda: ([], "missing_config"))
+
+    response = module.app.test_client().post("/api/open-wearables/setup", json={
+        "base_url": "http://localhost:8000",
+        "username": "local-user",
+        "password": "",
+    })
+
+    assert response.status_code == 200
+    saved = json.loads(config_file.read_text())
+    assert "password" not in saved
+    assert env_credential not in config_file.read_text()
+    assert module.OPEN_WEARABLES_PASSWORD == env_credential
+
+
+def test_open_wearables_setup_blocks_unsafe_pairing_portal(monkeypatch, tmp_path):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "OPEN_WEARABLES_CONFIG_FILE", str(tmp_path / "open_wearables_config.json"))
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {})
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://localhost:8000")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_ALLOWED_HOSTS", "")
+
+    response = module.app.test_client().post("/api/open-wearables/setup", json={
+        "base_url": "http://localhost:8000",
+        "portal_url": "java" + "script:alert(1)",
+    })
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["status"] == "blocked"
+    assert payload["error"]["code"] == "invalid_url"
+
+
+def test_open_wearables_setup_reports_local_config_save_failure(monkeypatch, tmp_path):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "OPEN_WEARABLES_CONFIG_FILE", str(tmp_path / "open_wearables_config.json"))
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {})
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://localhost:8000")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_ALLOWED_HOSTS", "")
+    monkeypatch.setattr(module, "_save_open_wearables_local_config", lambda _config: False)
+
+    response = module.app.test_client().post("/api/open-wearables/setup", json={
+        "base_url": "http://localhost:8000",
+        "username": "local-user",
+    })
+
+    assert response.status_code == 500
+    payload = response.get_json()
+    assert payload["status"] == "blocked"
+    assert payload["error"]["code"] == "config_save_failed"
+
+
+def test_open_wearables_provider_check_uses_saved_allowed_hosts(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "user")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "pass")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "ow-user")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "https://wearables.example.com")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_ALLOWED_HOSTS", "wearables.example.com")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_BASE", "https://wearables.example.com/api/v1/users/ow-user")
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-test-token")
+    monkeypatch.setattr(module, "_ow_request", lambda url, headers: {
+        "data": [{"name": "WHOOP", "status": "connected", "capabilities": {"workouts": True}}],
+    })
+
+    payload = module.app.test_client().get("/api/open-wearables/providers").get_json()
+
+    assert payload["status"] == "connected"
+    assert payload["providers"][0]["label"] == "WHOOP"

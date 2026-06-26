@@ -8,6 +8,7 @@ from open_wearables_adapter import (
 
 def test_remote_open_wearables_hosts_require_tls_and_allowlist():
     assert validate_open_wearables_base_url("http://localhost:8000") == (True, None)
+    assert validate_open_wearables_base_url("http://localhost:bad") == (False, "invalid_url")
     assert validate_open_wearables_base_url("http://wearables.example.com") == (False, "remote_requires_tls")
     assert validate_open_wearables_base_url("https://wearables.example.com", allowed_hosts=set()) == (False, "remote_host_not_allowed")
     assert validate_open_wearables_base_url("https://wearables.example.com", allowed_hosts={"wearables.example.com"}) == (True, None)
