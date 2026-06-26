@@ -10987,6 +10987,20 @@ def _run_whoop_sync_unlocked(reason="manual", *, days_back=7, client_factory=Who
             redacted_error=redact_whoop_error(exc),
         )
         return None, api_error(str(exc), 502, code="whoop_sync_failed")
+    except Exception as exc:
+        redacted = redact_whoop_error(f"{type(exc).__name__}: {exc}")
+        try:
+            persist_rotated_material_if_needed()
+        except Exception as persist_exc:
+            redacted = redact_whoop_error(f"{redacted}; token rotation failed: {type(persist_exc).__name__}: {persist_exc}")
+        finish_whoop_sync_run(
+            WHOOP_DB_FILE,
+            run_id,
+            status="error",
+            retryable=False,
+            redacted_error=redacted,
+        )
+        return None, api_error("WHOOP sync failed unexpectedly.", 500, code="whoop_sync_failed")
 
 
 def _parse_whoop_csv_rows(text):
@@ -11230,8 +11244,13 @@ def whoop_delete_data():
     guard = _whoop_mutation_guard()
     if guard:
         return guard
-    clear_whoop_data(WHOOP_DB_FILE)
-    return jsonify({"status": "success", "connection": _whoop_public_status()})
+    if not WHOOP_SYNC_LOCK.acquire(blocking=False):
+        return api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
+    try:
+        clear_whoop_data(WHOOP_DB_FILE)
+        return jsonify({"status": "success", "connection": _whoop_public_status()})
+    finally:
+        WHOOP_SYNC_LOCK.release()
 
 
 @app.route('/api/whoop/sync', methods=['POST'])

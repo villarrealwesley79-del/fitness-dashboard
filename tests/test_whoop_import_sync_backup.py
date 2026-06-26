@@ -488,6 +488,42 @@ def test_whoop_sync_transport_timeout_finishes_retryable_run(fitness_app, monkey
     assert "TimeoutError" in runs[0]["redacted_error"]
 
 
+def test_whoop_sync_unexpected_failure_finishes_run(fitness_app, monkeypatch):
+    monkeypatch.setattr(
+        fitness_app,
+        "_whoop_config_for_redirect",
+        lambda redirect_uri: whoop_client.WhoopConfig("client-id", "safe-placeholder", redirect_uri),
+    )
+    whoop_store.save_connection_tokens(
+        fitness_app.WHOOP_DB_FILE,
+        {
+            "access_token": "old-session",
+            "refresh_token": "old-renewal",
+            "expires_in": 3600,
+            "scope": "offline read:recovery",
+        },
+    )
+
+    class UnexpectedFailingClient:
+        def __init__(self, config, *, session_value, renewal_value):
+            self.access_token = session_value
+            self.refresh_token = renewal_value
+
+        def fetch_recovery(self, *, start=None, end=None):
+            raise RuntimeError("bad upstream shape")
+
+    with fitness_app.app.app_context():
+        result, err = fitness_app._run_whoop_sync("manual", client_factory=UnexpectedFailingClient)
+
+    assert result is None
+    assert err is not None
+    assert err[1] == 500
+    runs = whoop_store.list_whoop_sync_runs(fitness_app.WHOOP_DB_FILE, reason="manual")
+    assert runs[0]["status"] == "error"
+    assert runs[0]["retryable"] == 0
+    assert "RuntimeError" in runs[0]["redacted_error"]
+
+
 def test_backup_exports_only_normalized_whoop_facts_not_tokens(fitness_app):
     whoop_store.save_connection_tokens(
         fitness_app.WHOOP_DB_FILE,
@@ -670,3 +706,15 @@ def test_whoop_delete_data_clears_local_facts_and_import_history(fitness_app):
     assert delete_response.status_code == 200
     assert whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE) is None
     assert whoop_store.list_whoop_sync_runs(fitness_app.WHOOP_DB_FILE, reason="csv_import") == []
+
+
+def test_whoop_delete_data_rejects_while_sync_is_running(fitness_app):
+    acquired = fitness_app.WHOOP_SYNC_LOCK.acquire(blocking=False)
+    assert acquired is True
+    try:
+        response = fitness_app.app.test_client().post("/api/whoop/delete-data", json={})
+    finally:
+        fitness_app.WHOOP_SYNC_LOCK.release()
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "whoop_sync_in_progress"
