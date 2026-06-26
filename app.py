@@ -12465,6 +12465,11 @@ def smart_recommendation_api():
         source_conflict=whoop_context["source_conflict"],
     )
     next_workout = whoop_adjusted["next_workout"]
+    nutrition_context = _nutrition_context_for_date(
+        today,
+        hard_training_planned=_workout_looks_hard(next_workout),
+        food_log_entries=food_log_entries,
+    )
     confidence_level = _confidence_level_from(effective_readiness, freshness)
     return jsonify({
         "recommendation": recommendation,

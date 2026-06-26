@@ -117,6 +117,17 @@ def test_dashboard_recomputes_nutrition_after_whoop_adjustment():
     assert whoop_adjust < recompute < public_payload
 
 
+def test_smart_recommendation_recomputes_nutrition_after_whoop_adjustment():
+    app_py = (ROOT / "app.py").read_text()
+
+    route_start = app_py.index("def smart_recommendation_api():")
+    whoop_adjust = app_py.index("whoop_adjusted = apply_wearable_modifiers(", route_start)
+    recompute = app_py.index("nutrition_context = _nutrition_context_for_date(", whoop_adjust)
+    confidence = app_py.index("confidence_level = _confidence_level_from", recompute)
+
+    assert whoop_adjust < recompute < confidence
+
+
 def test_whoop_styles_live_in_scoped_override_file():
     css = APP_CSS.read_text()
 
