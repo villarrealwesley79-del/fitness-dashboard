@@ -135,9 +135,9 @@ def test_active_workout_draft_restores_after_auth_scope_refresh_and_saves_on_bac
     assert "window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "document.addEventListener('visibilitychange', () => {" in boot_block
     assert "if (document.visibilityState === 'hidden') saveActiveWorkoutDraftBeforePageHidden();" in boot_block
-    assert "/static/js/app-loader.js?v=20260626-fit239-whoop4" in APP_HTML
-    assert "/static/js/app.js?v=20260626-fit239-whoop4" in APP_LOADER_JS
-    assert "const CACHE_NAME = 'fitness-dashboard-v20260626-fit239-whoop4';" in APP_SW
+    assert "/static/js/app-loader.js?v=20260626-fit239-whoop5" in APP_HTML
+    assert "/static/js/app.js?v=20260626-fit239-whoop5" in APP_LOADER_JS
+    assert "const CACHE_NAME = 'fitness-dashboard-v20260626-fit239-whoop5';" in APP_SW
 
 
 def test_active_workout_background_save_syncs_live_inputs_to_localstorage():

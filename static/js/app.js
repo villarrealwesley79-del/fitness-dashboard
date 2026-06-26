@@ -902,9 +902,9 @@
         return 'tab-dashboard';
     }
 
-    function switchTabFromHash() {
+    function switchTabFromHash(force = false) {
         const tabId = initialTabFromHash();
-        if (tabId && tabId !== state.currentTab) switchTab(tabId);
+        if (tabId && (force || tabId !== state.currentTab)) switchTab(tabId);
     }
 
     function handleTabKeydown(e) {
@@ -11154,7 +11154,7 @@
     function boot() {
         renderGreeting();
         wireEvents();
-        switchTabFromHash();
+        switchTabFromHash(true);
         window.addEventListener('hashchange', switchTabFromHash);
         fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
         refreshAiStatus();

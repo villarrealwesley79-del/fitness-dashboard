@@ -218,6 +218,6 @@ def test_app_bundle_and_service_worker_versions_were_bumped_for_rollout():
     html = INDEX_HTML.read_text()
     sw = SW_JS.read_text()
     assert "/static/css/style.css?v=20260626-fit238-qol" in html
-    assert "/static/js/app-loader.js?v=20260626-fit239-whoop4" in html
-    assert "/static/js/app.js?v=20260626-fit239-whoop4" in (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "fitness-dashboard-v20260626-fit239-whoop4" in sw
+    assert "/static/js/app-loader.js?v=20260626-fit239-whoop5" in html
+    assert "/static/js/app.js?v=20260626-fit239-whoop5" in (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "fitness-dashboard-v20260626-fit239-whoop5" in sw

@@ -13,7 +13,7 @@ def test_index_exposes_whoop_dashboard_and_settings_surfaces():
     html = INDEX_HTML.read_text()
 
     for token in [
-        '/static/css/app.css?v=20260626-fit239-whoop4',
+        '/static/css/app.css?v=20260626-fit239-whoop5',
         'id="reco-fresh-whoop"',
         'id="btn-reco-sources"',
         'id="reco-sources-summary"',
@@ -38,9 +38,9 @@ def test_whoop_release_assets_bust_cached_fit238_runtime():
     loader = APP_LOADER.read_text()
     service_worker = APP_SW.read_text()
 
-    assert "/static/js/app-loader.js?v=20260626-fit239-whoop4" in html
-    assert "/static/js/app.js?v=20260626-fit239-whoop4" in loader
-    assert "fitness-dashboard-v20260626-fit239-whoop4" in service_worker
+    assert "/static/js/app-loader.js?v=20260626-fit239-whoop5" in html
+    assert "/static/js/app.js?v=20260626-fit239-whoop5" in loader
+    assert "fitness-dashboard-v20260626-fit239-whoop5" in service_worker
 
 
 def test_whoop_secret_patterns_are_excluded_from_docker_context():
@@ -78,9 +78,9 @@ def test_whoop_oauth_success_hash_routes_to_settings_tab():
     app_js = APP_JS.read_text()
 
     assert "function initialTabFromHash()" in app_js
-    assert "function switchTabFromHash()" in app_js
+    assert "function switchTabFromHash(force = false)" in app_js
     assert "if (hash === '#settings') return 'tab-settings';" in app_js
-    assert "switchTabFromHash();" in app_js
+    assert "switchTabFromHash(true);" in app_js
     assert "window.addEventListener('hashchange', switchTabFromHash);" in app_js
 
 
