@@ -10755,12 +10755,16 @@ def _whoop_recovery_band(score):
     return "high"
 
 
-def _whoop_sleep_needed_minutes(score):
+def _whoop_sleep_need_gap_minutes(score):
     sleep_needed = score.get("sleep_needed") if isinstance(score, dict) else None
     if sleep_needed in (None, ""):
         return None
     if isinstance(sleep_needed, (int, float)):
-        return round(float(sleep_needed) / 60000.0, 2)
+        total_need_min = round(float(sleep_needed) / 60000.0, 2)
+        performance = _whoop_number(score.get("sleep_performance_percentage"))
+        if performance is None:
+            return None
+        return round(total_need_min * max(0.0, 1.0 - min(100.0, performance) / 100.0), 2)
     if not isinstance(sleep_needed, dict):
         return None
     total_ms = 0.0
@@ -10773,7 +10777,13 @@ def _whoop_sleep_needed_minutes(score):
             found = True
         except Exception:
             continue
-    return round(total_ms / 60000.0, 2) if found else None
+    if not found:
+        return None
+    performance = _whoop_number(score.get("sleep_performance_percentage"))
+    if performance is None:
+        return None
+    total_need_min = total_ms / 60000.0
+    return round(total_need_min * max(0.0, 1.0 - min(100.0, performance) / 100.0), 2)
 
 
 def _normalize_whoop_record(record_type, record):
@@ -10814,7 +10824,7 @@ def _normalize_whoop_record(record_type, record):
         )
     elif record_type == "sleep":
         sleep_score = _first_present(record.get("sleep_performance_pct"), score.get("sleep_performance_percentage"))
-        gap = _first_present(record.get("sleep_need_gap_min"), score.get("sleep_needed_minutes"), _whoop_sleep_needed_minutes(score))
+        gap = _first_present(record.get("sleep_need_gap_min"), score.get("sleep_needed_minutes"), _whoop_sleep_need_gap_minutes(score))
         values.update(
             {
                 "sleep_performance_pct": _whoop_number(sleep_score),

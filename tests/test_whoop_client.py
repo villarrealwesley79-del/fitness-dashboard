@@ -51,6 +51,7 @@ def test_load_whoop_config_uses_keychain_only(monkeypatch, tmp_path):
 
     assert config.client_id == "client-id-123"
     assert config.client_secret == "keychain-secret"
+    assert config.api_base_url.endswith("/developer/v2")
 
 
 def test_redact_whoop_error_handles_query_and_json_shapes():

@@ -129,7 +129,23 @@ def test_whoop_api_normalization_imports_official_sleep_needed_components(fitnes
         },
     )
 
-    assert row["sleep_need_gap_min"] == 570
+    assert row["sleep_need_gap_min"] == 171
+
+
+def test_whoop_api_normalization_does_not_treat_total_sleep_need_as_gap_when_sleep_is_complete(fitness_app):
+    row = fitness_app._normalize_whoop_record(
+        "sleep",
+        {
+            "id": "sleep-complete",
+            "date": "2026-06-25",
+            "score": {
+                "sleep_performance_percentage": 100,
+                "sleep_needed": {"baseline_milli": 28_800_000},
+            },
+        },
+    )
+
+    assert row["sleep_need_gap_min"] == 0
 
 
 def test_whoop_csv_import_rejects_large_payload_and_row_flood(fitness_app):

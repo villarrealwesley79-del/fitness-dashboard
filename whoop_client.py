@@ -15,7 +15,7 @@ from typing import Callable
 
 WHOOP_AUTH_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 WHOOP_GRANT_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
-WHOOP_API_BASE_URL = "https://api.prod.whoop.com/developer/v1"
+WHOOP_API_BASE_URL = "https://api.prod.whoop.com/developer/v2"
 WHOOP_REVOKE_URL = "https://api.prod.whoop.com/developer/v2/user/access"
 WHOOP_DEFAULT_SCOPES = (
     "offline",
