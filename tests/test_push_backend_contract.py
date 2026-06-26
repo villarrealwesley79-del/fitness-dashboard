@@ -86,6 +86,20 @@ def test_push_reminder_preview_surfaces_stale_and_pending_review(monkeypatch, tm
     assert all(alert["safety_critical"] is False for alert in body["alerts"])
 
 
+def test_push_reminder_preview_ignores_never_connected_whoop_missing(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
+        "oura": {"status": "fresh"},
+        "whoop": {"status": "missing", "connected": False, "last_data_point": None},
+        "apple_health": {"status": "fresh"},
+        "food": {"status": "fresh", "pending_review": False},
+    })
+
+    body = module.app.test_client().get("/api/push/reminders/preview").get_json()
+
+    assert body["alerts"] == []
+
+
 def test_push_reminder_preview_gracefully_degrades_without_subscription(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {

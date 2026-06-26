@@ -10993,10 +10993,38 @@ def _parse_whoop_csv_rows(text):
     return [(kind, row) for kind, row in records if row]
 
 
+def _whoop_has_csv_imported_data(freshness=None):
+    node = freshness or {}
+    if not node.get("last_data_point"):
+        return False
+    try:
+        return bool(list_whoop_sync_runs(WHOOP_DB_FILE, reason="csv_import", limit=1))
+    except Exception:
+        return False
+
+
+def _annotate_whoop_freshness(freshness):
+    node = dict(freshness or {})
+    if not node.get("connected") and _whoop_has_csv_imported_data(node):
+        node["source_kind"] = "csv_only"
+        node["csv_only"] = True
+    return node
+
+
+def _whoop_freshness_is_relevant(freshness):
+    node = freshness or {}
+    return bool(
+        node.get("connected")
+        or node.get("last_data_point")
+        or node.get("csv_only")
+        or node.get("source_kind") == "csv_only"
+    )
+
+
 def _whoop_public_status(now=None):
     config = _whoop_config_or_none()
     connection = get_whoop_connection_status(WHOOP_DB_FILE)
-    freshness = latest_whoop_freshness(WHOOP_DB_FILE, now=now)
+    freshness = _annotate_whoop_freshness(latest_whoop_freshness(WHOOP_DB_FILE, now=now))
     if config is None:
         status = "missing_config"
     elif connection.get("reauth_required") or connection.get("status") == "reauth_required":
@@ -11022,11 +11050,10 @@ def _whoop_public_status(now=None):
 
 
 def _whoop_recommendation_context(oura_readiness=None, *, now=None):
-    freshness = latest_whoop_freshness(WHOOP_DB_FILE, now=now)
+    freshness = _annotate_whoop_freshness(latest_whoop_freshness(WHOOP_DB_FILE, now=now))
     public_status = _whoop_public_status(now=now)
     fact = None
-    csv_runs = list_whoop_sync_runs(WHOOP_DB_FILE, reason="csv_import", limit=1)
-    has_csv_import = bool(csv_runs and freshness.get("last_data_point"))
+    has_csv_import = bool(freshness.get("source_kind") == "csv_only")
     if public_status.get("connected") or has_csv_import:
         fact = get_whoop_daily_fact(WHOOP_DB_FILE, local_date=_today_str()) or get_whoop_daily_fact(WHOOP_DB_FILE)
     signals = build_whoop_recommendation_signals(fact, freshness=freshness)
@@ -11054,6 +11081,8 @@ def _wearable_sources_payload(freshness, whoop_context):
             "last_data_point": (freshness.get("whoop") or {}).get("last_data_point"),
             "last_sync_attempt": (freshness.get("whoop") or {}).get("last_sync_attempt"),
             "score_state": (freshness.get("whoop") or {}).get("score_state"),
+            "source_kind": (freshness.get("whoop") or {}).get("source_kind") or whoop_signals.get("source_kind"),
+            "csv_only": bool((freshness.get("whoop") or {}).get("csv_only") or whoop_signals.get("source_kind") == "csv_only"),
             "connected": whoop_status.get("connected"),
             "used_for_recommendation": not whoop_signals.get("display_only"),
         },
@@ -11888,7 +11917,7 @@ def _compute_data_freshness(now=None):
     """
     now = now or datetime.now()
     oura_status, oura_last_data, oura_last_sync = _latest_oura_freshness(now)
-    whoop_freshness = latest_whoop_freshness(WHOOP_DB_FILE, now=now)
+    whoop_freshness = _annotate_whoop_freshness(latest_whoop_freshness(WHOOP_DB_FILE, now=now))
     apple_status, apple_last_data, apple_last_sync = _latest_apple_health_freshness(now)
     food_status, food_last_data, food_last_sync = _latest_food_freshness(now)
     food_targets = _food_target_state(now)
@@ -11921,6 +11950,8 @@ def _push_alert_preview(now=None):
     alerts = []
     for source_key, label in (("oura", "Oura"), ("whoop", "WHOOP"), ("apple_health", "Apple Health")):
         source = freshness.get(source_key) or {}
+        if source_key == "whoop" and not _whoop_freshness_is_relevant(source):
+            continue
         if source.get("status") in {"aging", "stale", "missing"}:
             alerts.append({
                 "type": "stale_wearable_data",

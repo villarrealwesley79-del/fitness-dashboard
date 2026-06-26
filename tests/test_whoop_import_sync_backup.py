@@ -62,6 +62,10 @@ def test_whoop_csv_import_can_drive_local_recommendation_signals_without_oauth(f
     assert payload["signals"]["display_only"] is False
     assert payload["signals"]["source_kind"] == "csv_only"
     assert "deload" in payload["signals"]["applied_modifiers"]
+    freshness = client.get("/api/freshness").get_json()["freshness"]["whoop"]
+    assert freshness["connected"] is False
+    assert freshness["source_kind"] == "csv_only"
+    assert freshness["csv_only"] is True
 
 
 def test_whoop_csv_import_preserves_zero_metric_values(fitness_app):
