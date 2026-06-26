@@ -145,7 +145,7 @@ from meal_log_policy import (
 app = Flask(__name__)
 
 # ── Auth (must be after app creation) ──────────────────────────
-from auth import init_auth
+from auth import CSRF_HEADER_NAME, CSRF_HEADER_VALUE, init_auth
 init_auth(app)
 
 # ── Health route registration (Apple Health + HealthKit ingest) ──
@@ -10637,6 +10637,16 @@ def _whoop_no_store(response):
     return response
 
 
+def _whoop_mutation_guard():
+    if request.headers.get(CSRF_HEADER_NAME) == CSRF_HEADER_VALUE:
+        return None
+    return api_error(
+        f"Missing {CSRF_HEADER_NAME}: {CSRF_HEADER_VALUE}",
+        403,
+        code="csrf_required",
+    )
+
+
 def _whoop_callback_is_browser_navigation():
     accept = request.headers.get("Accept", "")
     return "text/html" in accept.lower() and "application/json" not in accept.lower()
@@ -11117,6 +11127,9 @@ def whoop_status():
 
 @app.route('/api/whoop/connect/start', methods=['POST'])
 def whoop_connect_start():
+    guard = _whoop_mutation_guard()
+    if guard:
+        return guard
     try:
         redirect_uri = _whoop_redirect_uri()
         config = _whoop_config_for_redirect(redirect_uri)
@@ -11172,6 +11185,9 @@ def whoop_callback():
 
 @app.route('/api/whoop/disconnect', methods=['POST'])
 def whoop_disconnect():
+    guard = _whoop_mutation_guard()
+    if guard:
+        return guard
     revocation = {"status": "skipped"}
     material = load_connection_token_material(WHOOP_DB_FILE)
     session_value = material.get("session_value")
@@ -11190,6 +11206,9 @@ def whoop_disconnect():
 
 @app.route('/api/whoop/sync', methods=['POST'])
 def whoop_sync():
+    guard = _whoop_mutation_guard()
+    if guard:
+        return guard
     body = request.get_json(silent=True) or {}
     days_back_value = body["days_back"] if "days_back" in body else 7
     days_back, err = _coerce_whoop_sync_days(days_back_value)
@@ -11203,6 +11222,9 @@ def whoop_sync():
 
 @app.route('/api/whoop/import-csv', methods=['POST'])
 def whoop_import_csv():
+    guard = _whoop_mutation_guard()
+    if guard:
+        return guard
     text = ""
     content_length = request.content_length
     if content_length is not None and content_length > WHOOP_CSV_MAX_BYTES:

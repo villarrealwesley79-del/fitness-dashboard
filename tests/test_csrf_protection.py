@@ -192,6 +192,36 @@ def test_state_changing_post_with_csrf_header_continues_to_work(monkeypatch):
     assert response.get_json()["status"] == "success"
 
 
+def test_whoop_mutation_posts_without_csrf_header_are_rejected(monkeypatch):
+    module = _app_module(monkeypatch)
+    client = module.app.test_client()
+
+    for path in (
+        "/api/whoop/connect/start",
+        "/api/whoop/disconnect",
+        "/api/whoop/sync",
+        "/api/whoop/import-csv",
+    ):
+        response = client.post(path, json={}, environ_overrides=_OMIT_AUTO_CSRF)
+        assert response.status_code == 403
+        assert response.get_json()["code"] == "csrf_required"
+
+
+def test_whoop_disconnect_with_csrf_header_reaches_handler(monkeypatch, tmp_path):
+    module = _app_module(monkeypatch)
+    module.WHOOP_DB_FILE = str(tmp_path / "whoop.sqlite3")
+    module.init_whoop_db(module.WHOOP_DB_FILE)
+
+    response = module.app.test_client().post(
+        "/api/whoop/disconnect",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+        environ_overrides=_OMIT_AUTO_CSRF,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "success"
+
+
 def test_token_authed_apple_health_webhook_is_csrf_exempt(monkeypatch):
     module = _app_module(monkeypatch)
 
