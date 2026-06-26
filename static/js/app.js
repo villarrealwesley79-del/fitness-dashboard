@@ -5259,11 +5259,13 @@
         if (syncDom) syncActiveWorkoutInputsFromDom();
         const workout = state.activeWorkout;
         if (!workout) return;
+        const authScope = currentActiveWorkoutDraftScope();
+        if (!authScope) return;
         try {
             const draft = {
                 version: ACTIVE_WORKOUT_DRAFT_VERSION,
                 saved_at: new Date().toISOString(),
-                auth_scope: currentActiveWorkoutDraftScope() || persistedMealQueueAuthScope(),
+                auth_scope: authScope,
                 workout,
             };
             localStorage.setItem(ACTIVE_WORKOUT_DRAFT_KEY, JSON.stringify(draft));

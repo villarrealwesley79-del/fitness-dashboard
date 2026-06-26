@@ -45,7 +45,9 @@ def test_active_workout_draft_uses_versioned_scoped_localstorage_wrapper():
     assert "function syncActiveWorkoutInputsFromDom()" in block
     assert "function saveActiveWorkoutDraftBeforePageHidden()" in block
     assert "version: ACTIVE_WORKOUT_DRAFT_VERSION" in block
-    assert "auth_scope: currentActiveWorkoutDraftScope() || persistedMealQueueAuthScope()" in block
+    assert "const authScope = currentActiveWorkoutDraftScope();" in block
+    assert "if (!authScope) return;" in block
+    assert "auth_scope: authScope" in block
     assert "JSON.stringify(draft)" in block
     assert "parsed.version === ACTIVE_WORKOUT_DRAFT_VERSION" in block
     assert "Array.isArray(workout.exercises)" in block
