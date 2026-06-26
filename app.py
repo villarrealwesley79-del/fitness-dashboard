@@ -10604,9 +10604,73 @@ def health_sync():
     """Manually pull Open Wearables sleep/workout data."""
     try:
         data = fetch_open_wearables_data()
-        return jsonify({"status": "success", "data": data})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify(_open_wearables_sync_metadata(data))
+    except Exception:
+        return jsonify({
+            "status": "error",
+            "source": "open_wearables",
+            "error": {
+                "code": "open_wearables_sync_failed",
+                "message": "Open Wearables sync failed",
+            },
+        }), 500
+
+
+def _open_wearables_sync_count(payload):
+    if isinstance(payload, list):
+        return len(payload)
+    if not isinstance(payload, dict):
+        return None
+    for key in ("records", "samples", "events", "data", "items", "summaries", "days"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return len(value)
+    return None
+
+
+def _open_wearables_error_code(key):
+    stable_codes = {
+        "auth": "open_wearables_auth_error",
+        "config": "open_wearables_config_error",
+        "sleep": "open_wearables_sync_error",
+        "workouts": "open_wearables_sync_error",
+        "activity_summary": "open_wearables_sync_error",
+    }
+    return stable_codes.get(str(key), "open_wearables_sync_error")
+
+
+def _open_wearables_public_error_key(key):
+    public_names = {"auth", "config", "sleep", "workouts", "activity_summary"}
+    name = str(key)
+    return name if name in public_names else "sync"
+
+
+def _open_wearables_sync_metadata(data):
+    data = data if isinstance(data, dict) else {}
+    counts = {}
+    for key in ("sleep", "workouts", "activity_summary"):
+        count = _open_wearables_sync_count(data.get(key))
+        if count is not None:
+            counts[key] = count
+
+    errors = {}
+    raw_errors = data.get("errors")
+    if isinstance(raw_errors, dict):
+        for key, value in raw_errors.items():
+            if value:
+                errors[_open_wearables_public_error_key(key)] = _open_wearables_error_code(key)
+
+    fetched_at = data.get("fetched_at")
+    if not isinstance(fetched_at, str):
+        fetched_at = datetime.now().isoformat()
+
+    return {
+        "status": "success",
+        "source": "open_wearables",
+        "fetched_at": fetched_at,
+        "counts": counts,
+        "errors": errors,
+    }
 
 
 def _whoop_redirect_uri():
