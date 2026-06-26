@@ -100,6 +100,6 @@ def test_modal_escape_and_focus_helpers_are_delegated_and_guard_active_workout()
 def test_app_bundle_and_service_worker_versions_were_bumped_for_rollout():
     html = INDEX_HTML.read_text()
     sw = SW_JS.read_text()
-    assert "/static/js/app-loader.js?v=20260605-fit236-active-draft" in html
-    assert "/static/js/app.js?v=20260605-fit236-active-draft" in (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "fitness-dashboard-v20260605-fit236-active-draft" in sw
+    assert "/static/js/app-loader.js?v=20260626-fit236-active-draft" in html
+    assert "/static/js/app.js?v=20260626-fit236-active-draft" in (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "fitness-dashboard-v20260626-fit236-active-draft" in sw

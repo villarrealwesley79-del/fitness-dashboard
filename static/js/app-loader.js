@@ -5,7 +5,7 @@
         if (started) return;
         started = true;
         const script = document.createElement('script');
-        script.src = '/static/js/app.js?v=20260605-fit236-active-draft';
+        script.src = '/static/js/app.js?v=20260626-fit236-active-draft';
         script.async = true;
         document.body.appendChild(script);
     }

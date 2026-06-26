@@ -105,15 +105,18 @@ def test_active_workout_draft_clear_points_are_explicit_and_error_states_are_pre
 def test_active_workout_draft_restores_after_auth_scope_refresh_and_saves_on_background_events():
     boot_block = _app_js_block("function boot()", "function registerServiceWorker")
 
-    assert ".finally(() => {\n                restoreActiveWorkoutDraft();" in boot_block
-    assert "restoreActiveWorkoutDraft();\n                fetchWorkoutAdaptationNotices().catch" in boot_block
+    assert "async function boot()" in APP_JS
+    assert "await refreshMealQueueAuthScope()\n            .catch" in boot_block
+    assert "wireEvents();" in boot_block
+    assert boot_block.index("await refreshMealQueueAuthScope()") < boot_block.index("wireEvents();")
+    assert "restoreActiveWorkoutDraft();\n        fetchWorkoutAdaptationNotices().catch" in boot_block
     assert "window.addEventListener('pagehide', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "document.addEventListener('visibilitychange', () => {" in boot_block
     assert "if (document.visibilityState === 'hidden') saveActiveWorkoutDraftBeforePageHidden();" in boot_block
-    assert "/static/js/app-loader.js?v=20260605-fit236-active-draft" in APP_HTML
-    assert "/static/js/app.js?v=20260605-fit236-active-draft" in APP_LOADER_JS
-    assert "const CACHE_NAME = 'fitness-dashboard-v20260605-fit236-active-draft';" in APP_SW
+    assert "/static/js/app-loader.js?v=20260626-fit236-active-draft" in APP_HTML
+    assert "/static/js/app.js?v=20260626-fit236-active-draft" in APP_LOADER_JS
+    assert "const CACHE_NAME = 'fitness-dashboard-v20260626-fit236-active-draft';" in APP_SW
 
 
 def test_active_workout_background_save_syncs_live_inputs_to_localstorage():
