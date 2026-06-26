@@ -11025,11 +11025,12 @@ def ai_facts_query_api():
         return api_error("Question is required", 400, code="missing_question")
     context = _build_ai_public_fact_context()
     answer = answer_fact_question(question, context).public_dict()
-    if body.get("suggest") is True:
+    evidence = answer.get("evidence") or []
+    if body.get("suggest") is True and evidence:
         suggestion = create_pending_suggestion(
             "review",
             "Review this AI suggestion before applying any change.",
-            evidence=answer.get("evidence") or [],
+            evidence=evidence,
         )
         AI_PENDING_SUGGESTIONS[suggestion["id"]] = suggestion
         answer["suggested_action_id"] = suggestion["id"]
