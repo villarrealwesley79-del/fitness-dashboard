@@ -11220,6 +11220,12 @@ def whoop_connect_start():
             503,
             code="missing_whoop_config",
         )
+    if config is None:
+        return api_error(
+            "WHOOP OAuth is not configured on this server.",
+            503,
+            code="missing_whoop_config",
+        )
     state = secrets.token_urlsafe(32)
     create_oauth_state(
         WHOOP_DB_FILE,

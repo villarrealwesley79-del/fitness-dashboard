@@ -1845,6 +1845,23 @@
         }
     }
 
+    function applyWhoopIntakeAvailability() {
+        const liveBtn = $('btn-whoop-connect-live');
+        const url = currentWhoopConnectUrl();
+        const uiState = resolveWhoopUiState(state.whoopStatus);
+        const liveUnavailable = uiState === WHOOP_UI_STATES.missing_config && !url;
+        if (liveBtn) {
+            liveBtn.disabled = liveUnavailable || state.whoopUi.connectInFlight;
+            liveBtn.setAttribute('aria-disabled', liveUnavailable ? 'true' : 'false');
+            liveBtn.textContent = state.whoopUi.connectInFlight ? 'Opening…' : liveUnavailable ? 'Unavailable' : 'Open WHOOP';
+        }
+        if (liveUnavailable) {
+            setWhoopConnectFallback('', 'WHOOP live sync is not configured on this server. Paste or upload a WHOOP export below.');
+            setWhoopIntakeStatus('WHOOP live sync is not configured on this server. Paste or upload a WHOOP export below.', 'warn');
+        }
+        return !liveUnavailable;
+    }
+
     function markWhoopOAuthPending(popup) {
         state.whoopUi.oauthPending = true;
         state.whoopUi.oauthStartedAt = Date.now();
@@ -1899,6 +1916,7 @@
         if (!modal) return;
         setWhoopConnectFallback(currentWhoopConnectUrl(), '');
         setWhoopIntakeStatus('Manual import stays available even when live WHOOP sync is not configured.', 'info');
+        applyWhoopIntakeAvailability();
         modal.hidden = false;
         if (text && !text.value) text.placeholder = 'date,recovery_score,recovery_band,strain,sleep_performance_pct';
         focusOpenModal(modal);
@@ -1906,9 +1924,9 @@
 
     async function startWhoopConnectFromModal() {
         if (state.whoopUi.connectInFlight) return;
+        if (!applyWhoopIntakeAvailability()) return;
         state.whoopUi.connectInFlight = true;
-        const liveBtn = $('btn-whoop-connect-live');
-        if (liveBtn) liveBtn.disabled = true;
+        applyWhoopIntakeAvailability();
         setWhoopIntakeStatus('Preparing WHOOP authorization…', 'info');
         let popup = null;
         try {
@@ -1945,7 +1963,7 @@
             setWhoopIntakeStatus(message, 'warn');
         } finally {
             state.whoopUi.connectInFlight = false;
-            if (liveBtn) liveBtn.disabled = false;
+            applyWhoopIntakeAvailability();
         }
     }
 
@@ -2038,7 +2056,7 @@
         if (connectBtn) {
             connectBtn.hidden = false;
             connectBtn.disabled = busy;
-            connectBtn.textContent = reauth ? 'Reconnect' : liveSyncUnavailable || connectUrl ? 'Connect' : 'Import';
+            connectBtn.textContent = reauth ? 'Reconnect' : missingConfig && !connectUrl ? 'Import' : liveSyncUnavailable || connectUrl ? 'Connect' : 'Import';
         }
         if (syncBtn) {
             syncBtn.hidden = liveSyncUnavailable && !connectUrl;
