@@ -31,6 +31,7 @@ import secrets
 import uuid
 import tempfile
 import threading
+import fcntl
 
 try:
     from pywebpush import WebPushException, webpush
@@ -175,6 +176,7 @@ except Exception as _e:
 # Store runtime data under DATA_DIR when configured, otherwise next to the app.
 JSON_DATA_LOCK = threading.RLock()
 WHOOP_SYNC_LOCK = threading.Lock()
+WHOOP_SYNC_LOCK_FILE = data_path("whoop_sync.lock")
 WORKOUTS_FILE = data_path("data_workouts.json")
 SORENESS_FILE = data_path("data_soreness.json")
 SETTINGS_FILE = data_path("data_settings.json")
@@ -10893,13 +10895,50 @@ def _coerce_whoop_sync_days(value):
     return days, None
 
 
+class _WhoopMutationGuard:
+    def __init__(self, lock_path: str):
+        self.lock_path = lock_path
+        self.handle = None
+        self.thread_acquired = False
+
+    def acquire(self) -> bool:
+        if not WHOOP_SYNC_LOCK.acquire(blocking=False):
+            return False
+        self.thread_acquired = True
+        try:
+            os.makedirs(os.path.dirname(self.lock_path) or ".", exist_ok=True)
+            self.handle = open(self.lock_path, "a", encoding="utf-8")
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            self.release()
+            return False
+
+    def release(self) -> None:
+        if self.handle is not None:
+            try:
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                self.handle.close()
+                self.handle = None
+        if self.thread_acquired:
+            WHOOP_SYNC_LOCK.release()
+            self.thread_acquired = False
+
+
+def _acquire_whoop_mutation_guard() -> _WhoopMutationGuard | None:
+    guard = _WhoopMutationGuard(WHOOP_SYNC_LOCK_FILE)
+    return guard if guard.acquire() else None
+
+
 def _run_whoop_sync(reason="manual", *, days_back=7, client_factory=WhoopClient):
-    if not WHOOP_SYNC_LOCK.acquire(blocking=False):
+    guard = _acquire_whoop_mutation_guard()
+    if guard is None:
         return None, api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
     try:
         return _run_whoop_sync_unlocked(reason, days_back=days_back, client_factory=client_factory)
     finally:
-        WHOOP_SYNC_LOCK.release()
+        guard.release()
 
 
 def _run_whoop_sync_unlocked(reason="manual", *, days_back=7, client_factory=WhoopClient):
@@ -11244,13 +11283,14 @@ def whoop_delete_data():
     guard = _whoop_mutation_guard()
     if guard:
         return guard
-    if not WHOOP_SYNC_LOCK.acquire(blocking=False):
+    guard = _acquire_whoop_mutation_guard()
+    if guard is None:
         return api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
     try:
         clear_whoop_data(WHOOP_DB_FILE)
         return jsonify({"status": "success", "connection": _whoop_public_status()})
     finally:
-        WHOOP_SYNC_LOCK.release()
+        guard.release()
 
 
 @app.route('/api/whoop/sync', methods=['POST'])

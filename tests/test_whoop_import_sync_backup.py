@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import fcntl
 import io
 
 import pytest
@@ -16,6 +17,7 @@ def fitness_app(monkeypatch, tmp_path):
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     module.WHOOP_DB_FILE = str(tmp_path / "whoop.sqlite3")
+    module.WHOOP_SYNC_LOCK_FILE = str(tmp_path / "whoop-sync.lock")
     module.init_whoop_db(module.WHOOP_DB_FILE)
     return module
 
@@ -411,6 +413,22 @@ def test_whoop_sync_rejects_concurrent_run(fitness_app):
     assert err[0].get_json()["error"]["code"] == "whoop_sync_in_progress"
 
 
+def test_whoop_sync_rejects_cross_process_lock(fitness_app, tmp_path):
+    lock_path = tmp_path / "held-whoop-sync.lock"
+    fitness_app.WHOOP_SYNC_LOCK_FILE = str(lock_path)
+    with lock_path.open("a", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            with fitness_app.app.app_context():
+                result, err = fitness_app._run_whoop_sync("manual")
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    assert result is None
+    assert err[1] == 409
+    assert err[0].get_json()["error"]["code"] == "whoop_sync_in_progress"
+
+
 def test_whoop_sync_terminal_auth_failure_marks_reauth_required(fitness_app, monkeypatch):
     monkeypatch.setattr(
         fitness_app,
@@ -715,6 +733,20 @@ def test_whoop_delete_data_rejects_while_sync_is_running(fitness_app):
         response = fitness_app.app.test_client().post("/api/whoop/delete-data", json={})
     finally:
         fitness_app.WHOOP_SYNC_LOCK.release()
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "whoop_sync_in_progress"
+
+
+def test_whoop_delete_data_rejects_cross_process_lock(fitness_app, tmp_path):
+    lock_path = tmp_path / "held-whoop-delete.lock"
+    fitness_app.WHOOP_SYNC_LOCK_FILE = str(lock_path)
+    with lock_path.open("a", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            response = fitness_app.app.test_client().post("/api/whoop/delete-data", json={})
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     assert response.status_code == 409
     assert response.get_json()["error"]["code"] == "whoop_sync_in_progress"
