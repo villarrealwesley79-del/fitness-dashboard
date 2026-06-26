@@ -10668,6 +10668,13 @@ def _validate_whoop_metric_bounds(record):
             raise ValueError(f"{field} must be between {minimum} and {maximum}.")
 
 
+def _first_present(*values):
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
 def _whoop_day_from_record(record):
     for key in ("local_date", "date", "day"):
         value = record.get(key)
@@ -10713,21 +10720,21 @@ def _normalize_whoop_record(record_type, record):
         "upstream_updated_at": record.get("updated_at"),
     }
     if record_type == "recovery":
-        recovery_score = record.get("recovery_score") or score.get("recovery_score")
+        recovery_score = _first_present(record.get("recovery_score"), score.get("recovery_score"))
         values.update(
             {
                 "recovery_score": _whoop_number(recovery_score),
                 "recovery_band": record.get("recovery_band") or _whoop_recovery_band(recovery_score),
-                "hrv_rmssd": _whoop_number(record.get("hrv_rmssd") or score.get("hrv_rmssd_milli")),
-                "resting_hr": _whoop_number(record.get("resting_hr") or score.get("resting_heart_rate")),
-                "respiratory_rate": _whoop_number(record.get("respiratory_rate") or score.get("respiratory_rate")),
-                "spo2": _whoop_number(record.get("spo2") or score.get("spo2_percentage")),
-                "skin_temp": _whoop_number(record.get("skin_temp") or score.get("skin_temp_celsius")),
+                "hrv_rmssd": _whoop_number(_first_present(record.get("hrv_rmssd"), score.get("hrv_rmssd_milli"))),
+                "resting_hr": _whoop_number(_first_present(record.get("resting_hr"), score.get("resting_heart_rate"))),
+                "respiratory_rate": _whoop_number(_first_present(record.get("respiratory_rate"), score.get("respiratory_rate"))),
+                "spo2": _whoop_number(_first_present(record.get("spo2"), score.get("spo2_percentage"))),
+                "skin_temp": _whoop_number(_first_present(record.get("skin_temp"), score.get("skin_temp_celsius"))),
             }
         )
     elif record_type == "sleep":
-        sleep_score = record.get("sleep_performance_pct") or score.get("sleep_performance_percentage")
-        gap = record.get("sleep_need_gap_min") or score.get("sleep_needed_minutes")
+        sleep_score = _first_present(record.get("sleep_performance_pct"), score.get("sleep_performance_percentage"))
+        gap = _first_present(record.get("sleep_need_gap_min"), score.get("sleep_needed_minutes"))
         values.update(
             {
                 "sleep_performance_pct": _whoop_number(sleep_score),
@@ -10735,9 +10742,9 @@ def _normalize_whoop_record(record_type, record):
             }
         )
     elif record_type == "cycle":
-        values["strain"] = _whoop_number(record.get("strain") or score.get("strain"))
+        values["strain"] = _whoop_number(_first_present(record.get("strain"), score.get("strain")))
     elif record_type == "workout":
-        values["workout_kj"] = _whoop_number(record.get("workout_kj") or score.get("kilojoule"))
+        values["workout_kj"] = _whoop_number(_first_present(record.get("workout_kj"), score.get("kilojoule")))
     return values
 
 

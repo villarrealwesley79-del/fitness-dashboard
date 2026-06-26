@@ -1413,6 +1413,9 @@
 
     function mergeWhoopFreshnessNode(freshnessNode, whoopStatus, conflicts) {
         const merged = Object.assign({}, freshnessNode || {}, whoopStatus || {});
+        if (freshnessNode && freshnessNode.status) merged.status = freshnessNode.status;
+        if (freshnessNode && freshnessNode.score_state) merged.score_state = freshnessNode.score_state;
+        if (freshnessNode && Object.prototype.hasOwnProperty.call(freshnessNode, 'last_data_point')) merged.last_data_point = freshnessNode.last_data_point;
         const conflict = firstWhoopConflict(conflicts);
         if (conflict && conflict.message && !merged.conflict_message) merged.conflict_message = conflict.message;
         merged.ui_state = resolveWhoopUiState(merged, conflicts);

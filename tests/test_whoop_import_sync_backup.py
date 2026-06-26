@@ -44,6 +44,26 @@ def test_whoop_csv_import_projects_facts_and_lists_history(fitness_app):
     assert imports.get_json()["imports"][0]["reason"] == "csv_import"
 
 
+def test_whoop_csv_import_preserves_zero_metric_values(fitness_app):
+    csv_text = "\n".join(
+        [
+            "record_type,local_date,recovery_score,sleep_performance_pct,sleep_need_gap_min,strain,score_state",
+            "recovery,2026-06-25,0,,,,SCORED",
+            "sleep,2026-06-25,,0,0,,SCORED",
+            "cycle,2026-06-25,,,,0,SCORED",
+        ]
+    )
+
+    response = fitness_app.app.test_client().post("/api/whoop/import-csv", json={"csv": csv_text})
+
+    assert response.status_code == 200
+    fact = whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE, local_date="2026-06-25")
+    assert fact["recovery_score"] == 0
+    assert fact["sleep_performance_pct"] == 0
+    assert fact["sleep_need_gap_min"] == 0
+    assert fact["strain"] == 0
+
+
 def test_whoop_csv_import_rejects_large_payload_and_row_flood(fitness_app):
     client = fitness_app.app.test_client()
     too_large = "record_type,local_date,recovery_score\n" + ("x" * (fitness_app.WHOOP_CSV_MAX_BYTES + 1))

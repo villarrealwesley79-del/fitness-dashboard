@@ -85,6 +85,14 @@ class BackendUnavailableError(RuntimeError):
     """Raised when no real WHOOP sync backend has been wired yet."""
 
 
+class AppSyncTransientError(RuntimeError):
+    retryable = True
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.redacted_message = message
+
+
 class AppWhoopSyncBackend:
     def run_sync(self, request: SyncRequest) -> Mapping[str, Any]:
         app_module = importlib.import_module("app")
@@ -99,8 +107,10 @@ class AppWhoopSyncBackend:
                 and payload.get("error")
                 and payload["error"].get("message")
             ) or f"WHOOP sync failed with HTTP {status_code}"
+            if int(status_code) >= 500:
+                raise AppSyncTransientError(message)
             return {
-                "status": "retryable_error" if int(status_code) >= 500 else "error",
+                "status": "error",
                 "message": message,
                 "records_upserted": 0,
             }

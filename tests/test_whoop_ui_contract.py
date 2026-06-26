@@ -69,6 +69,13 @@ def test_whoop_recommendation_source_conflict_accepts_nested_backend_shape():
     assert "renderWhoopFreshnessDetail(whoop, whoopFreshness, collectSourceConflicts(state.dashboard, state.reco));" in app_js
 
 
+def test_whoop_freshness_status_wins_over_connection_status_merge():
+    app_js = APP_JS.read_text()
+
+    assert "if (freshnessNode && freshnessNode.status) merged.status = freshnessNode.status;" in app_js
+    assert "if (freshnessNode && freshnessNode.score_state) merged.score_state = freshnessNode.score_state;" in app_js
+
+
 def test_whoop_styles_live_in_scoped_override_file():
     css = APP_CSS.read_text()
 

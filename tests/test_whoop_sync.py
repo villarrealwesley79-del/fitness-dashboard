@@ -129,6 +129,47 @@ def test_load_backend_uses_default_app_adapter(monkeypatch):
     assert isinstance(backend, whoop_sync.AppWhoopSyncBackend)
 
 
+def test_app_backend_transient_error_uses_retry_loop(monkeypatch):
+    class _AppContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeFlaskApp:
+        def app_context(self):
+            return _AppContext()
+
+    class _FakeAppModule:
+        app = _FakeFlaskApp()
+        calls = 0
+
+        @classmethod
+        def _run_whoop_sync(cls, mode, *, days_back):
+            cls.calls += 1
+            if cls.calls == 1:
+                class _Response:
+                    def get_json(self, silent=True):
+                        return {"error": {"message": "temporary WHOOP outage"}}
+
+                return None, (_Response(), 503)
+            return {"run_id": "sync-ok", "records_upserted": 2}, None
+
+    monkeypatch.setattr(whoop_sync.importlib, "import_module", lambda name: _FakeAppModule)
+    request = whoop_sync.SyncRequest(mode="normal", days=2)
+
+    result = whoop_sync.run_sync(
+        request,
+        backend=whoop_sync.AppWhoopSyncBackend(),
+        sleep_fn=lambda _seconds: None,
+    )
+
+    assert result.status == "success"
+    assert result.attempts == 2
+    assert result.sync_run_id == "sync-ok"
+
+
 def test_help_text_is_safe_and_describes_bounded_modes():
     completed = subprocess.run(
         [sys.executable, str(SCRIPT), "--help"],
