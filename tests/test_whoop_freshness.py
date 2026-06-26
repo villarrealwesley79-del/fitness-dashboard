@@ -100,3 +100,16 @@ def test_optional_disconnected_whoop_missing_does_not_lower_confidence(fitness_a
     )
 
     assert confidence == "high"
+
+
+def test_optional_disconnected_historical_whoop_does_not_lower_confidence(fitness_app):
+    confidence = fitness_app._confidence_level_from(
+        82,
+        {
+            "oura": {"status": "fresh"},
+            "apple_health": {"status": "fresh"},
+            "whoop": {"status": "stale", "connected": False, "last_data_point": "2026-06-01"},
+        },
+    )
+
+    assert confidence == "high"

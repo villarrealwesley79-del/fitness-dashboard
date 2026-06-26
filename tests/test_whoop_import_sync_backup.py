@@ -94,13 +94,27 @@ def test_whoop_api_normalization_uses_local_start_date_with_timezone_offset(fitn
         {
             "id": "sleep-late",
             "start": "2026-06-26T03:30:00.000Z",
-            "end": "2026-06-26T11:00:00.000Z",
             "timezone_offset": "-05:00",
             "score": {"sleep_performance_percentage": 82},
         },
     )
 
     assert row["local_date"] == "2026-06-25"
+
+
+def test_whoop_sleep_normalization_uses_local_wake_date(fitness_app):
+    row = fitness_app._normalize_whoop_record(
+        "sleep",
+        {
+            "id": "sleep-overnight",
+            "start": "2026-06-26T03:30:00.000Z",
+            "end": "2026-06-26T11:00:00.000Z",
+            "timezone_offset": "-05:00",
+            "score": {"sleep_performance_percentage": 82},
+        },
+    )
+
+    assert row["local_date"] == "2026-06-26"
 
 
 def test_whoop_api_normalization_marks_calibrating_recovery_display_only(fitness_app):

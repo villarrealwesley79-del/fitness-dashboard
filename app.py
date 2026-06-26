@@ -10716,7 +10716,7 @@ def _first_present(*values):
     return None
 
 
-def _whoop_day_from_record(record):
+def _whoop_day_from_record(record, record_type=None):
     def local_date_from_time(value):
         if not value:
             return None
@@ -10737,8 +10737,12 @@ def _whoop_day_from_record(record):
         value = record.get(key)
         if value:
             return str(value)[:10]
-    for key in ("start", "start_time", "end", "end_time", "created_at", "updated_at"):
-        value = record.get(key)
+    if record_type == "sleep":
+        timestamp_fields = ("end", "end_time", "start", "start_time", "created_at", "updated_at")
+    else:
+        timestamp_fields = ("start", "start_time", "end", "end_time", "created_at", "updated_at")
+    for field in timestamp_fields:
+        value = record.get(field)
         if value:
             return local_date_from_time(value)
     return None
@@ -10799,7 +10803,7 @@ def _whoop_sleep_need_gap_minutes(score):
 
 
 def _normalize_whoop_record(record_type, record):
-    local_date = _whoop_day_from_record(record)
+    local_date = _whoop_day_from_record(record, record_type=record_type)
     if not local_date:
         return None
     upstream_id = (
@@ -11015,7 +11019,6 @@ def _whoop_freshness_is_relevant(freshness):
     node = freshness or {}
     return bool(
         node.get("connected")
-        or node.get("last_data_point")
         or node.get("csv_only")
         or node.get("source_kind") == "csv_only"
     )
@@ -12175,7 +12178,7 @@ def _confidence_level_from(effective_readiness, freshness):
         (freshness.get("oura") or {}).get("status"),
         (freshness.get("apple_health") or {}).get("status"),
     ]
-    if whoop_freshness.get("connected") or whoop_freshness.get("last_data_point"):
+    if _whoop_freshness_is_relevant(whoop_freshness):
         wearable_states.append(whoop_freshness.get("status"))
     wearable_states = [state for state in wearable_states if state is not None]
     if "stale" in wearable_states:
