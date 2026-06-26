@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import fcntl
 import urllib.parse
 
 import pytest
@@ -15,6 +16,7 @@ def fitness_app(monkeypatch, tmp_path):
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     module.WHOOP_DB_FILE = str(tmp_path / "whoop.sqlite3")
+    module.WHOOP_SYNC_LOCK_FILE = str(tmp_path / "whoop-sync.lock")
     module.init_whoop_db(module.WHOOP_DB_FILE)
     return module
 
@@ -160,6 +162,20 @@ def test_whoop_disconnect_clears_connection(fitness_app, monkeypatch):
     assert payload["revocation"]["status"] == "revoked"
     assert revoked == ["stored-access"]
     assert "stored-access" not in response.get_data(as_text=True)
+
+
+def test_whoop_disconnect_rejects_cross_process_lock(fitness_app, tmp_path):
+    lock_path = tmp_path / "held-whoop-disconnect.lock"
+    fitness_app.WHOOP_SYNC_LOCK_FILE = str(lock_path)
+    with lock_path.open("a", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            response = fitness_app.app.test_client().post("/api/whoop/disconnect")
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "whoop_sync_in_progress"
 
 
 def test_whoop_disconnect_purges_local_tokens_when_revoke_fails(fitness_app, monkeypatch):

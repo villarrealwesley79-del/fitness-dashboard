@@ -11255,27 +11255,33 @@ def whoop_disconnect():
     guard = _whoop_mutation_guard()
     if guard:
         return guard
-    revocation = {"status": "skipped"}
-    material = load_connection_token_material(WHOOP_DB_FILE)
-    session_value = material.get("session_value")
-    if session_value:
-        try:
-            config = _whoop_config_for_redirect(_whoop_redirect_uri())
-            revoke_whoop_access(config, session_value=session_value)
-            revocation = {"status": "revoked"}
-        except WhoopApiError as exc:
-            revocation = {"status": "failed", "message": redact_whoop_error(exc)}
-        except Exception:
-            revocation = {"status": "failed", "message": "WHOOP OAuth is not configured on this server."}
+    mutation_guard = _acquire_whoop_mutation_guard()
+    if mutation_guard is None:
+        return api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
     try:
-        disconnect_whoop(WHOOP_DB_FILE)
-    except OSError:
-        return api_error(
-            "WHOOP local token material could not be removed. Disconnect was not completed.",
-            500,
-            code="whoop_disconnect_failed",
-        )
-    return jsonify({"status": "success", "connection": _whoop_public_status(), "revocation": revocation})
+        revocation = {"status": "skipped"}
+        material = load_connection_token_material(WHOOP_DB_FILE)
+        session_value = material.get("session_value")
+        if session_value:
+            try:
+                config = _whoop_config_for_redirect(_whoop_redirect_uri())
+                revoke_whoop_access(config, session_value=session_value)
+                revocation = {"status": "revoked"}
+            except WhoopApiError as exc:
+                revocation = {"status": "failed", "message": redact_whoop_error(exc)}
+            except Exception:
+                revocation = {"status": "failed", "message": "WHOOP OAuth is not configured on this server."}
+        try:
+            disconnect_whoop(WHOOP_DB_FILE)
+        except OSError:
+            return api_error(
+                "WHOOP local token material could not be removed. Disconnect was not completed.",
+                500,
+                code="whoop_disconnect_failed",
+            )
+        return jsonify({"status": "success", "connection": _whoop_public_status(), "revocation": revocation})
+    finally:
+        mutation_guard.release()
 
 
 @app.route('/api/whoop/delete-data', methods=['POST'])
@@ -11342,25 +11348,31 @@ def whoop_import_csv():
         return api_error(str(exc), status_code, code=error_code)
     if not parsed:
         return api_error("No WHOOP rows could be imported from the CSV.", 400, code="empty_whoop_csv")
-    run_id = record_whoop_sync_run(WHOOP_DB_FILE, reason="csv_import")
-    by_type = {"recovery": [], "sleep": [], "cycle": [], "workout": []}
-    for record_type, row in parsed:
-        by_type[record_type].append(row)
-    upserted = 0
-    for record_type, rows in by_type.items():
-        upserted += upsert_whoop_records(WHOOP_DB_FILE, record_type, rows, sync_run_id=run_id)
-    project_whoop_daily_facts(WHOOP_DB_FILE)
-    finish_whoop_sync_run(WHOOP_DB_FILE, run_id, status="success", records_upserted=upserted)
-    return jsonify(
-        {
-            "status": "success",
-            "import": {
-                "run_id": run_id,
-                "records_upserted": upserted,
-            },
-            "connection": _whoop_public_status(),
-        }
-    )
+    mutation_guard = _acquire_whoop_mutation_guard()
+    if mutation_guard is None:
+        return api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
+    try:
+        run_id = record_whoop_sync_run(WHOOP_DB_FILE, reason="csv_import")
+        by_type = {"recovery": [], "sleep": [], "cycle": [], "workout": []}
+        for record_type, row in parsed:
+            by_type[record_type].append(row)
+        upserted = 0
+        for record_type, rows in by_type.items():
+            upserted += upsert_whoop_records(WHOOP_DB_FILE, record_type, rows, sync_run_id=run_id)
+        project_whoop_daily_facts(WHOOP_DB_FILE)
+        finish_whoop_sync_run(WHOOP_DB_FILE, run_id, status="success", records_upserted=upserted)
+        return jsonify(
+            {
+                "status": "success",
+                "import": {
+                    "run_id": run_id,
+                    "records_upserted": upserted,
+                },
+                "connection": _whoop_public_status(),
+            }
+        )
+    finally:
+        mutation_guard.release()
 
 
 @app.route('/api/whoop/imports')
@@ -13415,8 +13427,12 @@ def import_backup():
 
         data = backup_data["data"]
         whoop_backup_records = []
+        whoop_restore_guard = None
         if "whoop_daily_facts" in data:
             whoop_backup_records = _validated_whoop_backup_records(data["whoop_daily_facts"])
+            whoop_restore_guard = _acquire_whoop_mutation_guard()
+            if whoop_restore_guard is None:
+                return api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
 
         # Restore each JSON-backed data type under one lock so readers never see
         # a clear/extend half-state between the in-memory update and disk write.
@@ -13489,6 +13505,10 @@ def import_backup():
                 project_whoop_daily_facts(WHOOP_DB_FILE)
                 finish_whoop_sync_run(WHOOP_DB_FILE, run_id, status="success", records_upserted=len(whoop_backup_records))
 
+        if whoop_restore_guard is not None:
+            whoop_restore_guard.release()
+            whoop_restore_guard = None
+
         return jsonify({
             "status": "success",
             "message": "Backup restored successfully",
@@ -13510,6 +13530,9 @@ def import_backup():
             }
         })
     except Exception as e:
+        whoop_restore_guard = locals().get("whoop_restore_guard")
+        if whoop_restore_guard is not None:
+            whoop_restore_guard.release()
         return jsonify({"status": "error", "message": str(e)}), 400
 
 

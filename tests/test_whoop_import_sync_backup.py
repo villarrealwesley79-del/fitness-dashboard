@@ -52,6 +52,26 @@ def test_whoop_csv_import_projects_facts_and_lists_history(fitness_app):
     assert imports.get_json()["imports"][0]["reason"] == "csv_import"
 
 
+def test_whoop_csv_import_rejects_cross_process_lock(fitness_app, tmp_path):
+    lock_path = tmp_path / "held-whoop-csv.lock"
+    fitness_app.WHOOP_SYNC_LOCK_FILE = str(lock_path)
+    csv_text = "\n".join(
+        [
+            "record_type,local_date,recovery_score,score_state",
+            "recovery,2026-06-25,50,SCORED",
+        ]
+    )
+    with lock_path.open("a", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            response = fitness_app.app.test_client().post("/api/whoop/import-csv", json={"csv": csv_text})
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "whoop_sync_in_progress"
+
+
 def test_whoop_csv_import_can_drive_local_recommendation_signals_without_oauth(fitness_app):
     csv_text = "\n".join(
         [
@@ -701,6 +721,33 @@ def test_backup_import_empty_whoop_facts_replaces_existing_local_facts(fitness_a
 
     assert response.status_code == 200
     assert whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE) is None
+
+
+def test_backup_import_with_whoop_facts_rejects_cross_process_lock(fitness_app, tmp_path):
+    lock_path = tmp_path / "held-whoop-backup.lock"
+    fitness_app.WHOOP_SYNC_LOCK_FILE = str(lock_path)
+    with lock_path.open("a", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            response = fitness_app.app.test_client().post(
+                "/api/import-backup",
+                json={
+                    "data": {
+                        "whoop_daily_facts": [
+                            {
+                                "local_date": "2026-06-25",
+                                "score_state": "SCORED",
+                                "recovery_score": 50,
+                            }
+                        ]
+                    }
+                },
+            )
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "whoop_sync_in_progress"
 
 
 def test_whoop_delete_data_clears_local_facts_and_import_history(fitness_app):
