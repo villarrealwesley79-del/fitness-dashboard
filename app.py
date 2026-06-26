@@ -11057,7 +11057,7 @@ def _whoop_recommendation_context(oura_readiness=None, *, now=None):
     public_status = _whoop_public_status(now=now)
     fact = None
     has_csv_import = bool(freshness.get("source_kind") == "csv_only")
-    if public_status.get("connected") or has_csv_import:
+    if freshness.get("connected") or has_csv_import:
         fact = get_whoop_daily_fact(WHOOP_DB_FILE, local_date=_today_str()) or get_whoop_daily_fact(WHOOP_DB_FILE)
     signals = build_whoop_recommendation_signals(fact, freshness=freshness)
     if has_csv_import and not public_status.get("connected"):
@@ -12526,6 +12526,13 @@ def smart_recommendation_api():
         "history_context": history_context,
         "reasoning": "; ".join(reason_bits) if reason_bits else "No Oura/soreness data available",
         "freshness": freshness,
+        "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
+        "recommendation_sources": {
+            "whoop": whoop_context["signals"],
+            "source_conflict": whoop_context["source_conflict"],
+            "load_source": whoop_adjusted["load_source"],
+            "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
+        },
         "nutrition_context": nutrition_context,
         "next_workout": _workout_with_auth_scope(next_workout),
         "workout_adaptation_events": [workout_adaptation.project_event(event) for event in workout_adaptation_events],

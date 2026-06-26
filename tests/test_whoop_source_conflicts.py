@@ -40,7 +40,7 @@ def fitness_app(monkeypatch, tmp_path):
 
 
 def test_whoop_signal_endpoint_and_smart_recommendation_keep_apple_health_load_truth(fitness_app, monkeypatch):
-    monkeypatch.setattr(fitness_app, "_whoop_config_or_none", lambda: object())
+    monkeypatch.setattr(fitness_app, "_whoop_config_or_none", lambda: None)
     monkeypatch.setattr(
         fitness_app,
         "get_oura_daily",
@@ -117,6 +117,11 @@ def test_whoop_signal_endpoint_and_smart_recommendation_keep_apple_health_load_t
     assert smart_response.status_code == 200
     smart_payload = smart_response.get_json()
     assert smart_payload["recommendation"] == "recovery"
+    assert smart_payload["recommendation_sources"]["whoop"]["display_only"] is False
+    assert smart_payload["recommendation_sources"]["source_conflict"]["has_conflict"] is True
+    assert smart_payload["recommendation_sources"]["load_source"] == "apple_health"
+    assert smart_payload["wearable_sources"][0]["source"] == "whoop"
+    assert smart_payload["wearable_sources"][0]["used_for_recommendation"] is True
 
 
 def test_next_workout_cache_matches_whoop_adjusted_response(fitness_app, monkeypatch):

@@ -283,6 +283,8 @@ def test_recommendation_smart_oura_cache_miss_does_not_fetch_live_oura(fitness_a
         "reasoning",
         "freshness",
         "nutrition_context",
+        "wearable_sources",
+        "recommendation_sources",
         "next_workout",
         "workout_adaptation_events",
         "confidence_level",
