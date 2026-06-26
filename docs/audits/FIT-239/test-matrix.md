@@ -5,9 +5,16 @@ Repo: `/Users/admin/codex-worktrees/fitness-fit-239-whoop`
 Branch: `codex/fit-239-whoop-integration`
 Base: `origin/main`
 
+Historical note: this was a pre-implementation audit. As of 2026-06-26, WHOOP
+code has landed on `main` with OAuth/API sync, manual CSV import, local
+normalized daily facts, freshness/status, recommendation modifiers, UI
+contracts, backup/import guards, and Open Wearables sync redaction. Use the
+checked-in tests on `main` as the authoritative current test inventory.
+
 ## Status
 
-- Current branch state is docs-only for FIT-239. Relative to `origin/main`, the worktree contains the audit, design, plan, and progress-ledger updates, but no WHOOP product code or WHOOP tests yet.
+- Original branch state was docs-only for FIT-239. Relative to the current
+  `main`, this section is no longer current implementation state.
 - This matrix is safe to land now because it does not change product behavior and it stays within the requested write boundary.
 - Existing confidence anchors are still the current freshness and render contracts:
   - `python3 -m pytest tests/test_wearable_freshness_contract.py tests/test_freshness.py -q`
@@ -53,11 +60,11 @@ Base: `origin/main`
 | `tests/test_whoop_client.py` | pagination, timeout, retry, rate-limit classification, refresh rotation | P0 |
 | `tests/test_whoop_store.py` | schema, idempotent upserts, sync runs, daily facts | P0 |
 | `tests/test_whoop_freshness.py` | fresh, aging, stale, missing, pending score, calibrating | P0 |
-| `tests/test_whoop_sync.py` | manual sync route, backfill bounds, repair mode, non-blocking behavior | P1 |
+| `tests/test_whoop_sync.py` and `tests/test_whoop_import_sync_backup.py` | manual sync route, backfill bounds, repair mode, non-blocking behavior | P1 |
 | `tests/test_whoop_recommendations.py` | bounded modifiers, display-only states, nutrition explanation | P0 |
 | `tests/test_whoop_source_conflicts.py` | Oura/WHOOP band conflict, conservative plan choice, Apple Health load truth | P0 |
-| `tests/test_whoop_csv_import.py` | CSV caps, whitelist, bounds, UTF-8, idempotency, formula-safe echoes | P0 |
-| `tests/test_whoop_backup_privacy.py` | export exclusion, import rejection of tokens, disconnect vs delete | P0 |
+| `tests/test_whoop_import_sync_backup.py` | CSV caps, whitelist, bounds, UTF-8, idempotency, formula-safe echoes | P0 |
+| `tests/test_whoop_import_sync_backup.py` | export exclusion, import rejection of tokens, disconnect vs delete | P0 |
 | `tests/test_whoop_ui_contract.py` | chips, settings rows, drawer/bottom-sheet state coverage | P1 |
 
 ### Fixture and mock strategy
@@ -74,19 +81,19 @@ Base: `origin/main`
 
 ## Coverage Matrix
 
-| Area | Critical scenarios | Primary proof | Current gap |
+| Area | Critical scenarios | Primary proof | Current main status |
 |---|---|---|---|
-| OAuth mocks | missing config, valid connect start, callback state mismatch, callback exchange failure, disconnect without delete | `tests/test_whoop_oauth.py` | No WHOOP routes or secret protection code landed yet. |
-| Token refresh | refresh before expired API call, new refresh token rotation, mid-commit failure, redacted refresh error | `tests/test_whoop_client.py` | No WHOOP client/store module exists yet. |
-| Sync | manual sync, initial backfill 30-90d bounds, repair mode 7d, retryable vs terminal errors, no dashboard-blocking fetch | `tests/test_whoop_sync.py` | No sync route or CLI exists yet. |
-| Freshness | fresh, aging, stale, missing, pending score, unscored, calibrating, last data point distinct from last sync | `tests/test_whoop_freshness.py` plus existing freshness contract tests | Current freshness shape only has `oura`, `apple_health`, and `food`. |
-| Recommendations | low recovery dampens, high strain dampens, poor sleep dampens, sleep need explains fueling, stale/display-only does not zero out plan | `tests/test_whoop_recommendations.py` | Current recommendation path only knows direct Oura readiness thresholds. |
-| Conflict and dedupe | WHOOP vs Oura band disagreement, conservative tie-break, Apple Health remains completed-workout truth, WHOOP workouts deduped from Apple Health load | `tests/test_whoop_source_conflicts.py` | No normalized wearable modifier layer exists yet. |
-| CSV import | file-size cap, row cap, UTF-8 only, strict columns, numeric/date bounds, idempotency hash, formula-safe cell echo, rejected-row summary | `tests/test_whoop_csv_import.py` | No CSV importer or batch ledger exists yet. |
-| Backup/export/delete | export excludes tokens and raw payloads, import rejects token material, disconnect preserves local data, delete removes WHOOP-derived data and import batches | `tests/test_whoop_backup_privacy.py` | Current export/import contracts do not know about WHOOP. |
-| UI state contracts | connected, disconnected, missing config, stale, error, no-data, reauth required, pending score, calibrating, CSV-only, conflict, manual sync in progress | `tests/test_whoop_ui_contract.py` and `tests/test_dashboard_render_contract.py` | No WHOOP UI surface exists yet. |
-| Browser proof | desktop/mobile, light/dark, source chips, settings row actions, manual sync, disconnect, drawer state, keyboard path, no overlap | Manual local QA after frontend slice lands | No browser-safe mocked WHOOP flow exists yet. |
-| Security checks | token/code/header redaction, ignored local secrets, no raw payload leak in responses/logs/export/proof, CSV formula defense | Focused pytest plus artifact scan | No WHOOP secret handling exists yet. |
+| OAuth mocks | missing config, valid connect start, callback state mismatch, callback exchange failure, disconnect without delete | `tests/test_whoop_oauth.py` | Implemented on `main`; keep this row as historical acceptance context. |
+| Token refresh | refresh before expired API call, new refresh token rotation, mid-commit failure, redacted refresh error | `tests/test_whoop_client.py` | Implemented on `main`; keep this row as historical acceptance context. |
+| Sync | manual sync, initial backfill 30-90d bounds, repair mode 7d, retryable vs terminal errors, no dashboard-blocking fetch | `tests/test_whoop_import_sync_backup.py` plus route tests | Implemented on `main`; `scripts/whoop_sync.py` is not the current scheduled entry point. |
+| Freshness | fresh, aging, stale, missing, pending score, unscored, calibrating, last data point distinct from last sync | `tests/test_whoop_freshness.py` plus existing freshness contract tests | Implemented on `main`; freshness includes WHOOP. |
+| Recommendations | low recovery dampens, high strain dampens, poor sleep dampens, sleep need explains fueling, stale/display-only does not zero out plan | `tests/test_whoop_recommendations.py` | Implemented on `main` as bounded modifiers. |
+| Conflict and dedupe | WHOOP vs Oura band disagreement, conservative tie-break, Apple Health remains completed-workout truth, WHOOP workouts deduped from Apple Health load | `tests/test_whoop_source_conflicts.py` | Implemented on `main`; Apple Health remains load truth. |
+| CSV import | file-size cap, row cap, UTF-8 only, strict columns, numeric/date bounds, idempotency hash, formula-safe cell echo, rejected-row summary | `tests/test_whoop_import_sync_backup.py` | Implemented on `main` through `/api/whoop/import-csv`. |
+| Backup/export/delete | export excludes tokens and raw payloads, import rejects token material, disconnect preserves local data, delete removes WHOOP-derived data and import batches | `tests/test_whoop_import_sync_backup.py` | Implemented on `main`; backups include normalized daily facts only. |
+| UI state contracts | connected, disconnected, missing config, stale, error, no-data, reauth required, pending score, calibrating, CSV-only, conflict, manual sync in progress | `tests/test_whoop_ui_contract.py` and `tests/test_dashboard_render_contract.py` | Implemented on `main` through Settings/dashboard contracts. |
+| Browser proof | desktop/mobile, light/dark, source chips, settings row actions, manual sync, disconnect, drawer state, keyboard path, no overlap | Manual local QA after frontend slice lands | Historical QA requirement; current evidence should come from the PR that changes UI behavior. |
+| Security checks | token/code/header redaction, ignored local secrets, no raw payload leak in responses/logs/export/proof, CSV formula defense | Focused pytest plus artifact scan | Implemented on `main`; Open Wearables sync redaction is covered separately. |
 
 ## Priority Order
 
@@ -124,7 +131,7 @@ Base: `origin/main`
 python3 -m pytest tests/test_whoop_oauth.py tests/test_whoop_client.py -q
 python3 -m pytest tests/test_whoop_store.py tests/test_whoop_freshness.py tests/test_wearable_freshness_contract.py tests/test_freshness.py -q
 python3 -m pytest tests/test_whoop_recommendations.py tests/test_whoop_source_conflicts.py tests/test_progress_loop_completion_to_recommendation.py -q
-python3 -m pytest tests/test_whoop_csv_import.py tests/test_whoop_backup_privacy.py tests/test_backup_import_food_logs.py -q
+python3 -m pytest tests/test_whoop_import_sync_backup.py tests/test_backup_import_food_logs.py -q
 python3 -m pytest tests/test_dashboard_render_contract.py tests/test_whoop_ui_contract.py -q
 node --check static/js/app.js
 python3 scripts/whoop_sync.py --help
@@ -138,7 +145,7 @@ git diff --check
 python3 /Users/admin/.codex/skills/artifact-safety-checker/scripts/artifact_safety_check.py --repo /Users/admin/codex-worktrees/fitness-fit-239-whoop --base origin/main
 ```
 
-### Current safe command set before implementation lands
+### Historical safe command set before implementation landed
 
 ```bash
 python3 -m pytest tests/test_wearable_freshness_contract.py tests/test_freshness.py -q
@@ -147,7 +154,6 @@ python3 -m pytest tests/test_dashboard_render_contract.py tests/test_backup_impo
 
 ## Open Gaps
 
-- No WHOOP code exists yet in this worktree, so none of the WHOOP-specific commands above are runnable today.
-- The exact browser-proof harness is still unknown. If the frontend slice does not add a deterministic mocked-state hook, manual proof will be slow and error-prone.
-- The implementation plan names new focused modules, but the branch has not yet established their final interfaces. Test file names should stay stable; helper signatures may need minor adjustment once backend code lands.
-- The current code graph indexes the primary checkout, not this clean worktree. That is acceptable for current read-only planning because the branch is docs-only, but once WHOOP code lands the graph should be refreshed before deeper impact review.
+- Historical gaps in this audit have been superseded by the implementation on
+  `main`. For current gaps, inspect the latest Linear issue, checked-in tests,
+  and `docs/CURRENT_STATE.md`.

@@ -17,6 +17,10 @@ token-gated Health Auto Export bridge.
    - `fitness_data.db`
    - `apple_health_sync.db`
    - `oura_daily.sqlite3`
+   - `whoop.sqlite3`
+   - `.whoop-client-id`
+   - `.whoop-protected-material-*.json`
+   - `whoop_sync.lock`
    - `ai_coach_cache.sqlite3`
    - `data_*.json`
    - logs, backup bundles, screenshots, and generated audit artifacts
@@ -93,6 +97,15 @@ For backend-only or docs-only releases, no asset version change is required.
    - `/api/apple-health/sync/status` remains auth-gated.
    - `/api/apple-health/sync/setup-url` still emits the configured public base
      URL only through the owner-auth setup route.
+7. If WHOOP or Open Wearables sync was affected, verify:
+   - WHOOP OAuth start reports `missing_whoop_config` when local client config
+     is absent.
+   - WHOOP sync/import/delete/disconnect routes are auth and browser-mutation
+     gated.
+   - WHOOP backup export contains normalized `whoop_daily_facts` only, not token
+     material or raw provider payloads.
+   - `/api/health/sync` returns redacted Open Wearables metadata only and does
+     not expose upstream payloads or exception text.
 
 ## Apple Health Bridge
 
@@ -106,3 +119,17 @@ FITNESS_DASHBOARD_PUBLIC_BASE_URL=https://<your-public-fitness-dashboard-host>
 Use `APPLE_HEALTH_WEBHOOK_URL` only for an intentionally different public sync
 endpoint. Do not hardcode a personal Tailscale host in committed docs or config.
 The setup route appends the configured `HEALTH_SYNC_TOKEN` to the endpoint.
+
+## WHOOP And Open Wearables
+
+WHOOP is the durable local-first source for WHOOP recovery-aware behavior. Keep
+the client ID in a local `.whoop-client-id` file or `WHOOP_CLIENT_ID_FILE`, keep
+the client secret in macOS Keychain service
+`fitness-dashboard-whoop-client-secret`, and keep access/refresh material in the
+protected material store. Do not place those values in the repo, docs, logs,
+screenshots, PR text, or Linear comments.
+
+Open Wearables remains a best-effort local bridge. Its `/api/health/sync`
+response is intentionally metadata-only. Treat any change that returns raw Open
+Wearables data as a privacy regression unless a future issue explicitly changes
+the backup/export and security contract.

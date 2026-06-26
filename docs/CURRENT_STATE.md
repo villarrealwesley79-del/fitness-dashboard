@@ -1,52 +1,53 @@
 # Fitness Dashboard Current State
 
-Status: Snapshot from local inspection  
-Last updated: 2026-05-18 local time
+Status: Snapshot from current `origin/main` implementation
+Last updated: 2026-06-26 local time
 
 ## Summary
 
-Fitness Dashboard is a Flask-based, mobile-first personal fitness coaching dashboard running locally on the Mac mini at port 5050. It combines manual workout logging, deterministic workout prescription, Oura recovery data, Apple Health sync data, body-composition tracking, nutrition targets/logs, and a constrained LM Studio AI coach layer.
+Fitness Dashboard is a Flask-based, mobile-first personal fitness coaching dashboard running locally on the Mac mini at port 5050. It combines manual workout logging, deterministic workout prescription, Oura recovery data, Apple Health sync data, WHOOP recovery/strain/sleep facts, body-composition tracking, nutrition targets/logs, food-photo estimation/review paths, and a constrained LM Studio AI coach layer.
 
-The current product is functional but still in a draft product state. The app has a real runtime, real data stores, and a substantial mobile UI, but it also has legacy docs/files, a dirty working tree, and several known future-pass items.
+The current product is functional but still in a draft product state. The app has a real runtime, real data stores, and a substantial mobile UI. Productized wearable confidence now includes Oura, Apple Health, WHOOP, and a best-effort Open Wearables bridge, but the app remains single-owner and local-first by default.
 
-## Runtime State Observed
+## Runtime State
 
-- Project path: `/Users/admin/fitness-dashboard`
-- Local listener observed: `127.0.0.1:5050`
-- Launchd jobs observed: `com.fitness-dashboard` and `com.fitness-dashboard.staleness`
-- Root URL behavior: `GET /` returns `302` to `/login?next=/`
-- Apple Health sync status endpoint: unauthenticated request returns `401`
-- Apple Health webhook without token: returns `401` with `invalid or missing sync token`
-- Python compile check passed for the main Python modules inspected in this run.
+- Primary development path may be dirty; issue work should use clean worktrees from `origin/main`.
+- Live local server path commonly used for `main`: `/Users/admin/fitness-dashboard-fit-222`.
+- Local listener: `127.0.0.1:5050`.
+- Launchd jobs: `com.fitness-dashboard` and `com.fitness-dashboard.staleness`.
+- Root URL behavior: `GET /` redirects to `/login?next=/` when no session is present.
+- Apple Health sync status is auth-gated.
+- Apple Health webhook rejects missing or invalid sync tokens.
+- Open Wearables sync uses the normal browser mutation and auth gates; once authorized, the route returns only redacted sync metadata.
 
-Authenticated API smoke tests were not run in this pass because no session cookie was provided.
+Authenticated browser smoke tests require owner credentials or a valid session cookie.
 
-## Data State Observed
+## Data State
 
-Local files and SQLite stores show active data:
+The repo is a sanitized source copy. Runtime data stays local and out of Git:
 
-- `data_workouts.json`: 27 workouts, dated from 2025-09-11 through 2026-05-17.
-- `data_body.json`: 168 body entries, dated from 2022-10-13 through 2026-03-06.
-- `data_settings.json`: training goal is `weight_loss_toning`; equipment preference is `machines_and_cables`; available time is 90 minutes; sessions target is 3 per week.
-- `apple_health_sync.db`: 6,394 sync log rows, latest created at 2026-05-17 18:23:39.
-- `apple_health_sync.db`: 44 sync event rows, latest created at 2026-05-17 18:23:39.
-- `oura_daily.sqlite3`: 86 daily rows, latest day 2026-05-17.
-- `oura_daily.sqlite3`: 203 sleep rows, latest day 2026-05-09.
-- `auth.db`: 52 user rows.
+- JSON data stores such as workouts, soreness, cardio, recovery, settings, body, sleep, and nutrition.
+- SQLite stores such as auth, Apple Health sync, Oura cache, food logs/review snapshots, and WHOOP.
+- Protected WHOOP OAuth material and local client-id files.
+- Health exports, logs, screenshots, backup bundles, and generated proof artifacts.
+
+Committed docs should not quote live private counts or raw health rows unless they are sanitized, durable PR evidence.
 
 ## Architecture
 
-The app is a Flask single-page PWA with auth, JSON data stores, SQLite caches, wearable integrations, and a local AI coach layer.
+The app is a Flask single-page PWA with auth, JSON data stores, SQLite caches, wearable integrations, food-intake flows, and a local AI coach layer.
 
 Core files:
 
-- `app.py`: Flask routes, deterministic workout engine, recommendation logic, AI apply/analyze routes, metrics, backup/import, history, body, settings, Oura endpoints.
+- `app.py`: Flask routes, deterministic workout engine, recommendation logic, AI apply/analyze routes, metrics, backup/import, history, body, settings, Oura, Apple Health, WHOOP, Open Wearables, and food-intake endpoints.
 - `auth.py`: login/session handling, single-owner guard, public-prefix allowlist.
 - `apple_health_parser.py`: Apple Health file parsing, Health Auto Export webhook ingestion, sync DB reads, status/setup endpoints.
 - `oura_client.py` and `oura_sleep_sync.py`: Oura API wrapper, daily cache, sleep sync.
+- `whoop_client.py`, `whoop_store.py`, and `whoop_recommendations.py`: WHOOP OAuth/API client, protected token-material references, local SQLite storage, normalized daily facts, freshness, and bounded recommendation modifiers.
 - `lm_studio_adapter.py`: LM Studio health checks, strict JSON schemas, adjust/analyze validators, fallback behavior.
+- `meal_estimate_schema.py`, `local_vision_adapter.py`, `claude_vision_adapter.py`, and food lookup modules: structured food-photo/text/barcode estimation and sanitization helpers.
 - `templates/index.html`: main 8-tab UI and modals.
-- `static/js/app.js`: frontend data loading, tab logic, active workout flow, charts, forms.
+- `static/js/app.js`: frontend data loading, tab logic, active workout flow, charts, forms, Settings integration rows, and meal-review UI.
 - `static/css/style.css`: dark mobile-first analytical UI.
 
 ## Current Product Surface
@@ -56,17 +57,17 @@ The current UI is an 8-tab mobile-first dashboard:
 - Dashboard: readiness, AI recommendation, daily glance, insight cards, charts.
 - Vitals: resting heart rate, HRV, sleep, body temp, activity, body metrics.
 - Next Workout: recommended session, exercise cards, cardio finisher, start and adjust actions.
-- Log: strength, cardio, and recovery forms.
+- Log: strength, cardio, recovery, and food flows.
 - History: workout frequency, volume, top exercises, recent workouts.
 - Body: weight, body fat, trend charts, measurement logging.
 - Stats: workout totals, volume, RPE, time, muscle distribution, insights.
-- Settings: goals, time/session preferences, equipment, Oura, Apple Health, weather, backup/import.
+- Settings: goals, time/session preferences, equipment, Oura, Apple Health, WHOOP, weather, backup/import.
 
-Modals and interactive states currently include active workout, exercise swap, adjust plan, analyze, Apple Health setup, and toast/error surfaces.
+Modals and interactive states include active workout, exercise swap, adjust plan, analyze, Apple Health setup, WHOOP connect/import/sync/disconnect/delete states, meal review, and toast/error surfaces.
 
-Nutrition exists as backend data and target settings, but the current product surface does not yet provide the desired photo-based food capture flow where a snack or meal photo updates daily calories/macros and coaching context.
+Nutrition has backend persistence, target settings, meal intake/review APIs, accepted food-log storage, sanitized original estimates, barcode/text/photo estimation paths, and dashboard nutrition context. Some product polish remains, but photo/text/barcode food-intake code is no longer just future intent.
 
-Food photo privacy is explicitly backend-first: raw photos are discarded after extraction by default, normal API responses and backups must not expose raw image bytes or raw model traces, and the current non-UI contract is recorded in `docs/FOOD_PHOTO_PRIVACY.md`.
+Food photo privacy remains backend-first: raw photos are discarded after extraction by default, normal API responses and backups must not expose raw image bytes or raw model traces, and the current contract is recorded in `docs/FOOD_PHOTO_PRIVACY.md`.
 
 ## AI Coach State
 
@@ -75,6 +76,7 @@ The AI coach is intentionally constrained. The deterministic Python engine gener
 - Adjust Plan: returns an intent patch that Python validates and applies.
 - Analyze Workout: returns narrative analysis only.
 - Auto-analyze: post-completion narrative analysis.
+- Food-photo/text estimation routes when the configured local provider is available.
 
 Safety rails documented in the repo include RPE clamp, set-delta clamp, deload and poor-readiness blocks, soreness blacklist, duration cap, cardio drop, invalid JSON fallback, and single-inference locking.
 
@@ -89,7 +91,7 @@ Known AI follow-up items:
 
 ### Oura
 
-Oura is wired through local SQLite caches and API endpoints for status, trends, sync, and sleep summary. Current local data shows Oura daily data through 2026-05-17 and sleep rows through 2026-05-09.
+Oura is wired through local SQLite caches and API endpoints for status, trends, sync, and sleep summary.
 
 ### Apple Health
 
@@ -98,7 +100,7 @@ Apple Health supports two paths:
 - Health Auto Export webhook into `apple_health_sync.db`.
 - Legacy file exports from `~/Documents/Health/healthkit_*.json`.
 
-The current sync database has recent entries from 2026-05-17. The public webhook rejects missing tokens, and the status endpoint is auth-gated.
+The public webhook rejects missing tokens, and the status endpoint is auth-gated.
 
 Health Auto Export setup URL generation should use environment-driven public URL config:
 
@@ -107,44 +109,47 @@ Health Auto Export setup URL generation should use environment-driven public URL
 
 Do not hardcode a personal Tailscale hostname in docs or committed config. The owner-only setup route appends the configured `HEALTH_SYNC_TOKEN` to the public sync endpoint it returns.
 
+### WHOOP
+
+WHOOP is implemented as a local-first wearable source:
+
+- OAuth starts at `POST /api/whoop/connect/start` and callback handling validates single-use state before storing protected token material.
+- Manual sync uses `POST /api/whoop/sync`; CSV/import backfill uses `POST /api/whoop/import-csv`.
+- WHOOP facts are normalized into `whoop.sqlite3`, projected into `whoop_daily_facts`, and exposed through status, freshness, dashboard, vitals, and recommendation surfaces.
+- WHOOP contributes bounded modifiers such as caution, deload, sleep priority, or fuel-up context. It does not replace the deterministic workout engine.
+- Stale, unscored, calibrating, missing, or CSV-only data is display/context only or lower confidence rather than a raw source override.
+- Backup export includes normalized `whoop_daily_facts` only. Import rejects token material, token references, raw provider payloads, and malformed WHOOP records before mutating local WHOOP data.
+- Disconnect and delete are separate idempotent flows: disconnect removes connection/token state, while delete removes local WHOOP-derived data and import history.
+
+### Open Wearables
+
+Open Wearables remains a best-effort bridge through `/api/health/sync` and supporting extraction helpers. It is useful as a local adapter, but it is not the durable WHOOP source of truth. The sync route returns only redacted metadata: source, fetch timestamp, counts, and stable error codes. Raw upstream health payloads, token names, and exception text must not be exposed in normal responses.
+
 ### LM Studio
 
-The repo documents a primary ASUS GX10 LM Studio route and a Mac mini fallback route. This snapshot did not run authenticated AI health checks, but the Python compile pass succeeded and the route exists at `/api/ai/health`.
+The repo supports primary and fallback LM Studio routes. Authenticated AI health checks require a valid session. The route exists at `/api/ai/health`.
 
 ## Known Limitations
 
-- The repo has many untracked and modified files, including runtime databases, generated caches, audit bundles, backup files, and source files.
-- Authenticated smoke testing requires a valid session cookie.
+- The primary checkout can have many untracked and modified local artifacts; issue work should use clean worktrees from `origin/main`.
+- Authenticated smoke testing requires a valid session cookie or owner credentials.
 - Release, restart, rollback, cache-bust, and Apple Health bridge checks are documented in `docs/RELEASE_RUNBOOK.md`.
 - Runtime/stale artifact policy is documented in `docs/REPO_HYGIENE.md`; do not delete runtime data during cleanup without explicit approval.
 - The app is single-owner by design; public multi-user mode would require per-user data stores.
 - Apple Health Health Auto Export ingest derives `record_date` from the ISO timestamp's own timezone offset rather than slicing the first 10 characters.
 - If older Apple Health synced rows look misdated after travel, backfill by deleting the affected `health_auto_export` rows for the wrong `record_date` range from `apple_health_sync.db` and replaying the original HAE export payload; the widened `(source, record_type, record_date, record_key)` uniqueness will reinsert them under the corrected local day.
 - Side-specific soreness and joint limitations are not modeled yet.
-- Nutrition data and targets exist, and accepted food logs now have a SQLite persistence path that preserves final values, sanitized original estimates, confidence/correction metadata, context notes, meal type, and source timestamps. Legacy `data_nutrition.json` remains readable for current dashboard totals and migration/backfill safety.
-- There is no finished food photo capture, AI food estimation, confidence/review, or auto-adjustment workflow yet.
-- `auth.db` currently has 52 user rows even though the app is documented as single-owner by default; that should be reviewed before any multi-user assumption.
+- Nutrition data and targets exist, and accepted food logs have a SQLite persistence path that preserves final values, sanitized original estimates, confidence/correction metadata, context notes, meal type, and source timestamps. Legacy `data_nutrition.json` remains readable for current dashboard totals and migration/backfill safety.
+- Food-photo/text/barcode intake and review code exists, including privacy/retention metadata and offline photo queue rules, but the product loop still needs continued UI polish and broad live QA before it should be described as finished.
+- `auth.db` may contain more than one local row even though the app is documented as single-owner by default; that should be reviewed before any multi-user assumption.
 
 ## Verification Performed In This Snapshot
 
-- Read existing handoff, feature, visual review, Oura, Apple Health, and AI TODO docs.
-- Inspected route inventory in `app.py`, `auth.py`, `apple_health_parser.py`, and `lm_studio_adapter.py`.
-- Checked local process and launchd status for port 5050.
-- Checked root login redirect.
-- Checked unauthenticated auth gate on Apple Health sync status.
-- Checked token gate on Apple Health webhook.
-- Counted current local workout, body, Oura, Apple Health, and auth database records.
-- Ran Python compile check on the main backend modules.
+- Indexed the current `origin/main` implementation with codebase-memory.
+- Compared current docs against implementation routes and helpers in `app.py`, `whoop_client.py`, `whoop_store.py`, `whoop_recommendations.py`, `apple_health_parser.py`, and food-intake modules.
+- Checked current route/test evidence for WHOOP OAuth, CSV import, freshness, recommendations, backup/import, Open Wearables sync redaction, and food-photo privacy.
+- Did not inspect private runtime databases or raw local health payloads for this documentation update.
 
 ## Recommended Next Step
 
-Before implementation work, decide which product milestone is next:
-
-1. Trustworthy Daily Brief.
-2. Photo Food Logging.
-3. Workout Execution Reliability.
-4. Progress Loop.
-5. Integration Confidence.
-6. Product Hardening.
-
-For any UI work, visual QA must cover modals, sheets, detail panels, add/edit forms, delete confirmations, mobile nav overlap, empty states, blocked states, warning states, and mobile workout detail views where values must remain readable.
+Keep product work flowing through focused Linear issues and clean `codex/` worktrees. For any UI work, visual QA must cover modals, sheets, detail panels, add/edit forms, delete confirmations, mobile nav overlap, empty states, blocked states, warning states, and mobile workout detail views where values must remain readable.
