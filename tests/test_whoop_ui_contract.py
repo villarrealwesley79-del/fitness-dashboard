@@ -13,7 +13,7 @@ def test_index_exposes_whoop_dashboard_and_settings_surfaces():
     html = INDEX_HTML.read_text()
 
     for token in [
-        '/static/css/app.css?v=20260626-fit239-whoop5',
+        '/static/css/app.css?v=20260626-fit240-whoop-intake',
         'id="reco-fresh-whoop"',
         'id="btn-reco-sources"',
         'id="reco-sources-summary"',
@@ -21,12 +21,21 @@ def test_index_exposes_whoop_dashboard_and_settings_surfaces():
         'id="whoop-int-dot"',
         'id="whoop-last-sync"',
         'id="whoop-connect-state"',
+        'id="btn-connect-whoop" class="btn btn-ghost btn-sm" type="button" hidden aria-haspopup="dialog" aria-controls="modal-whoop-intake"',
         'id="btn-sync-whoop"',
         'id="btn-disconnect-whoop"',
         'id="btn-delete-whoop-data"',
         'id="whoop-detail-attention"',
         'id="whoop-conflict-row"',
         'id="modal-reco-sources"',
+        'id="modal-whoop-intake"',
+        'id="whoop-connect-modal-status"',
+        'id="whoop-connect-open-link"',
+        'id="whoop-import-csv-text"',
+        'id="whoop-import-file"',
+        'id="btn-whoop-import-file"',
+        'id="btn-whoop-import-submit"',
+        'id="whoop-import-status"',
         'aria-controls="modal-reco-sources"',
         'aria-haspopup="dialog"',
     ]:
@@ -38,9 +47,9 @@ def test_whoop_release_assets_bust_cached_fit238_runtime():
     loader = APP_LOADER.read_text()
     service_worker = APP_SW.read_text()
 
-    assert "/static/js/app-loader.js?v=20260626-fit239-whoop5" in html
-    assert "/static/js/app.js?v=20260626-fit239-whoop5" in loader
-    assert "fitness-dashboard-v20260626-fit239-whoop5" in service_worker
+    assert "/static/js/app-loader.js?v=20260626-fit240-whoop-intake" in html
+    assert "/static/js/app.js?v=20260626-fit240-whoop-intake" in loader
+    assert "fitness-dashboard-v20260626-fit240-whoop-intake" in service_worker
 
 
 def test_whoop_secret_patterns_are_excluded_from_docker_context():
@@ -85,7 +94,22 @@ def test_whoop_frontend_calls_expected_status_sync_and_disconnect_endpoints():
     assert "api('/api/whoop/disconnect'" in app_js
     assert "api('/api/whoop/delete-data'" in app_js
     assert "async function connectWhoop()" in app_js
-    assert "window.location.assign(nextUrl);" in app_js
+    assert "function openWhoopIntakeModal()" in app_js
+    assert "async function startWhoopConnectFromModal()" in app_js
+    assert "async function importWhoopCsvFromModal()" in app_js
+    assert "fetch('/api/whoop/import-csv'" in app_js
+    assert "await handleUnauthorizedResponse(response);" in app_js
+    assert "window.open('', 'fitnessDashboardWhoopOAuth'" in app_js
+    assert "popup.opener = null;" in app_js
+    assert "setWhoopConnectFallback(nextUrl" in app_js
+    assert "function markWhoopOAuthPending(popup)" in app_js
+    assert "async function refreshWhoopAfterOAuthReturn()" in app_js
+    assert "refreshWhoopAfterOAuthReturn();" in app_js
+    assert "markWhoopOAuthPending(popup);" in app_js
+    assert "connectBtn.hidden = false;" in app_js
+    assert "liveSyncUnavailable || connectUrl ? 'Connect' : 'Import'" in app_js
+    assert "clearWhoopImportInput();" in app_js
+    assert "if (modal.id === 'modal-whoop-intake') clearWhoopImportInput();" in app_js
 
 
 def test_whoop_oauth_success_hash_routes_to_settings_tab():
@@ -106,9 +130,25 @@ def test_whoop_frontend_preserves_keyboard_and_modal_focus_path():
     assert "trigger.setAttribute('aria-expanded', 'true');" in app_js
     assert "trigger.setAttribute('aria-expanded', 'false');" in app_js
     assert "$('btn-reco-sources') && $('btn-reco-sources').addEventListener('click', openRecoSourcesModal);" in app_js
+    assert "$('btn-whoop-connect-live') && $('btn-whoop-connect-live').addEventListener('click', startWhoopConnectFromModal);" in app_js
+    assert "$('btn-whoop-import-submit') && $('btn-whoop-import-submit').addEventListener('click', importWhoopCsvFromModal);" in app_js
+    assert "$('btn-whoop-import-file') && $('btn-whoop-import-file').addEventListener('click', () => $('whoop-import-file') && $('whoop-import-file').click());" in app_js
     assert "$('btn-sync-whoop') && $('btn-sync-whoop').addEventListener('click', syncWhoop);" in app_js
     assert "$('btn-disconnect-whoop') && $('btn-disconnect-whoop').addEventListener('click', disconnectWhoop);" in app_js
     assert "$('btn-delete-whoop-data') && $('btn-delete-whoop-data').addEventListener('click', deleteWhoopData);" in app_js
+
+
+def test_whoop_intake_styles_are_scoped_to_modal():
+    app_css = APP_CSS.read_text()
+
+    for token in [
+        "#modal-whoop-intake .modal-sheet",
+        ".whoop-intake-section",
+        ".whoop-import-textarea",
+        ".whoop-import-file-row",
+        ".whoop-intake-status.err",
+    ]:
+        assert token in app_css
 
 
 def test_whoop_recommendation_source_conflict_accepts_nested_backend_shape():
