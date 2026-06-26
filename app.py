@@ -10993,9 +10993,13 @@ def _whoop_recommendation_context(oura_readiness=None, *, now=None):
     freshness = latest_whoop_freshness(WHOOP_DB_FILE, now=now)
     public_status = _whoop_public_status(now=now)
     fact = None
-    if public_status.get("connected"):
+    csv_runs = list_whoop_sync_runs(WHOOP_DB_FILE, reason="csv_import", limit=1)
+    has_csv_import = bool(csv_runs and freshness.get("last_data_point"))
+    if public_status.get("connected") or has_csv_import:
         fact = get_whoop_daily_fact(WHOOP_DB_FILE, local_date=_today_str()) or get_whoop_daily_fact(WHOOP_DB_FILE)
     signals = build_whoop_recommendation_signals(fact, freshness=freshness)
+    if has_csv_import and not public_status.get("connected"):
+        signals["source_kind"] = "csv_only"
     source_conflict = detect_wearable_source_conflicts(
         oura_readiness=oura_readiness,
         whoop_signals=signals,
@@ -11123,7 +11127,8 @@ def whoop_disconnect():
 @app.route('/api/whoop/sync', methods=['POST'])
 def whoop_sync():
     body = request.get_json(silent=True) or {}
-    days_back, err = _coerce_whoop_sync_days(body.get("days_back") or 7)
+    days_back_value = body["days_back"] if "days_back" in body else 7
+    days_back, err = _coerce_whoop_sync_days(days_back_value)
     if err:
         return err
     result, err = _run_whoop_sync("manual", days_back=days_back)

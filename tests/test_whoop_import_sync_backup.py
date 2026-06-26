@@ -44,6 +44,26 @@ def test_whoop_csv_import_projects_facts_and_lists_history(fitness_app):
     assert imports.get_json()["imports"][0]["reason"] == "csv_import"
 
 
+def test_whoop_csv_import_can_drive_local_recommendation_signals_without_oauth(fitness_app):
+    csv_text = "\n".join(
+        [
+            "record_type,local_date,recovery_score,score_state",
+            f"recovery,{fitness_app._today_str()},38,SCORED",
+        ]
+    )
+    client = fitness_app.app.test_client()
+
+    import_response = client.post("/api/whoop/import-csv", json={"csv": csv_text})
+    signal_response = client.get("/api/whoop/recommendation-signals")
+
+    assert import_response.status_code == 200
+    assert signal_response.status_code == 200
+    payload = signal_response.get_json()
+    assert payload["signals"]["display_only"] is False
+    assert payload["signals"]["source_kind"] == "csv_only"
+    assert "deload" in payload["signals"]["applied_modifiers"]
+
+
 def test_whoop_csv_import_preserves_zero_metric_values(fitness_app):
     csv_text = "\n".join(
         [
@@ -255,10 +275,12 @@ def test_whoop_sync_rejects_invalid_days_back_before_network(fitness_app):
     client = fitness_app.app.test_client()
 
     bad_type = client.post("/api/whoop/sync", json={"days_back": "forever"})
+    zero = client.post("/api/whoop/sync", json={"days_back": 0})
     too_large = client.post("/api/whoop/sync", json={"days_back": 3650})
     negative = client.post("/api/whoop/sync", json={"days_back": -1})
 
     assert bad_type.status_code == 400
+    assert zero.status_code == 400
     assert too_large.status_code == 400
     assert negative.status_code == 400
     assert bad_type.get_json()["error"]["code"] == "invalid_days_back"
