@@ -20,6 +20,7 @@ import sqlite3
 import hashlib
 import glob
 import html
+import math
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -81,6 +82,7 @@ from whoop_store import (
     list_whoop_sync_runs,
     load_connection_token_material,
     finish_whoop_sync_run,
+    mark_reauth_required,
     rotate_connection_tokens,
     record_whoop_sync_run,
     save_connection_tokens,
@@ -10629,9 +10631,41 @@ def _whoop_number(value):
     if value in (None, ""):
         return None
     try:
-        return float(value)
+        number = float(value)
     except Exception:
         return None
+    return number if math.isfinite(number) else None
+
+
+WHOOP_METRIC_BOUNDS = {
+    "recovery_score": (0, 100),
+    "strain": (0, 21),
+    "sleep_performance_pct": (0, 100),
+    "sleep_need_gap_min": (0, 1440),
+    "workout_kj": (0, 20000),
+    "hrv_rmssd": (0, 300),
+    "resting_hr": (25, 220),
+    "respiratory_rate": (5, 40),
+    "spo2": (50, 100),
+    "skin_temp": (-20, 60),
+    "percent_recorded": (0, 100),
+}
+
+
+def _validate_whoop_metric_bounds(record):
+    for field, bounds in WHOOP_METRIC_BOUNDS.items():
+        value = record.get(field)
+        if value is None:
+            continue
+        try:
+            number = float(value)
+        except Exception:
+            raise ValueError(f"{field} must be numeric.")
+        if not math.isfinite(number):
+            raise ValueError(f"{field} must be finite.")
+        minimum, maximum = bounds
+        if number < minimum or number > maximum:
+            raise ValueError(f"{field} must be between {minimum} and {maximum}.")
 
 
 def _whoop_day_from_record(record):
@@ -10809,6 +10843,8 @@ def _run_whoop_sync(reason="manual", *, days_back=7, client_factory=WhoopClient)
         }, None
     except WhoopApiError as exc:
         persist_rotated_material_if_needed()
+        if exc.status_code in {400, 401}:
+            mark_reauth_required(WHOOP_DB_FILE, message=redact_whoop_error(exc))
         finish_whoop_sync_run(
             WHOOP_DB_FILE,
             run_id,
@@ -10830,7 +10866,10 @@ def _parse_whoop_csv_rows(text):
         record_type = (row.get("record_type") or row.get("type") or "recovery").strip().lower()
         if record_type not in {"recovery", "sleep", "cycle", "workout"}:
             continue
-        records.append((record_type, _normalize_whoop_record(record_type, row)))
+        normalized = _normalize_whoop_record(record_type, row)
+        if normalized:
+            _validate_whoop_metric_bounds(normalized)
+        records.append((record_type, normalized))
     return [(kind, row) for kind, row in records if row]
 
 
@@ -11007,7 +11046,9 @@ def whoop_import_csv():
     try:
         parsed = _parse_whoop_csv_rows(text)
     except ValueError as exc:
-        return api_error(str(exc), 413, code="whoop_csv_too_many_rows")
+        error_code = "whoop_csv_too_many_rows" if "row limit" in str(exc).lower() else "invalid_whoop_csv_metric"
+        status_code = 413 if error_code == "whoop_csv_too_many_rows" else 400
+        return api_error(str(exc), status_code, code=error_code)
     if not parsed:
         return api_error("No WHOOP rows could be imported from the CSV.", 400, code="empty_whoop_csv")
     run_id = record_whoop_sync_run(WHOOP_DB_FILE, reason="csv_import")

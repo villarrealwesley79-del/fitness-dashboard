@@ -71,6 +71,20 @@ def test_whoop_csv_import_rejects_large_payload_and_row_flood(fitness_app):
     assert flood_response.get_json()["error"]["code"] == "whoop_csv_too_many_rows"
 
 
+def test_whoop_csv_import_rejects_impossible_metric_values(fitness_app):
+    csv_text = "\n".join(
+        [
+            "record_type,local_date,recovery_score,strain,sleep_performance_pct",
+            "recovery,2026-06-25,-500,,",
+        ]
+    )
+
+    response = fitness_app.app.test_client().post("/api/whoop/import-csv", json={"csv": csv_text})
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_whoop_csv_metric"
+
+
 def test_whoop_manual_sync_uses_protected_material_and_normalizes_records(fitness_app, monkeypatch):
     monkeypatch.setattr(
         fitness_app,
@@ -166,6 +180,40 @@ def test_whoop_sync_rejects_invalid_days_back_before_network(fitness_app):
     assert too_large.status_code == 400
     assert negative.status_code == 400
     assert bad_type.get_json()["error"]["code"] == "invalid_days_back"
+
+
+def test_whoop_sync_terminal_auth_failure_marks_reauth_required(fitness_app, monkeypatch):
+    monkeypatch.setattr(
+        fitness_app,
+        "_whoop_config_for_redirect",
+        lambda redirect_uri: whoop_client.WhoopConfig("client-id", "safe-placeholder", redirect_uri),
+    )
+    whoop_store.save_connection_tokens(
+        fitness_app.WHOOP_DB_FILE,
+        {
+            "access_token": "old-session",
+            "refresh_token": "old-renewal",
+            "expires_in": 3600,
+            "scope": "offline read:recovery",
+        },
+    )
+
+    class AuthFailingClient:
+        def __init__(self, config, *, session_value, renewal_value):
+            self.access_token = session_value
+            self.refresh_token = renewal_value
+
+        def fetch_recovery(self, *, start=None, end=None):
+            raise whoop_client.WhoopApiError("invalid refresh token", status_code=401, retryable=False)
+
+    with fitness_app.app.app_context():
+        result, err = fitness_app._run_whoop_sync("manual", client_factory=AuthFailingClient)
+
+    assert result is None
+    assert err is not None
+    status = whoop_store.get_connection_status(fitness_app.WHOOP_DB_FILE)
+    assert status["status"] == "reauth_required"
+    assert status["reauth_required"] is True
 
 
 def test_backup_exports_only_normalized_whoop_facts_not_tokens(fitness_app):
