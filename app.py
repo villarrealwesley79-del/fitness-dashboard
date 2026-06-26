@@ -4792,8 +4792,10 @@ def api_next_workout():
         whoop_signals=whoop_context["signals"],
         source_conflict=whoop_context["source_conflict"],
     )
+    LAST_WORKOUT_RECOMMENDATION = whoop_adjusted["next_workout"]
+    LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
     return jsonify({
-        "next_workout": _workout_with_auth_scope(whoop_adjusted["next_workout"]),
+        "next_workout": _workout_with_auth_scope(LAST_WORKOUT_RECOMMENDATION),
         "workout_adaptation_events": [workout_adaptation.project_event(event) for event in workout_adaptation_events],
         "recommendation_sources": {
             "whoop": whoop_context["signals"],
@@ -10722,6 +10724,16 @@ def _whoop_sync_window(days_back=7):
     return start, end
 
 
+def _coerce_whoop_sync_days(value):
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return None, api_error("days_back must be an integer.", 400, code="invalid_days_back")
+    if days < 1 or days > 30:
+        return None, api_error("days_back must be between 1 and 30.", 400, code="invalid_days_back")
+    return days, None
+
+
 def _run_whoop_sync(reason="manual", *, days_back=7, client_factory=WhoopClient):
     connection = get_whoop_connection_status(WHOOP_DB_FILE, include_private=True)
     if connection.get("status") != "connected":
@@ -10746,12 +10758,36 @@ def _run_whoop_sync(reason="manual", *, days_back=7, client_factory=WhoopClient)
             session_value=material.get("session_value"),
             renewal_value=material.get("renewal_value"),
         )
+
+        def persist_rotated_material_if_needed():
+            nonlocal material
+            session_value = getattr(client, "access_token", None)
+            renewal_value = getattr(client, "refresh_token", None)
+            if session_value != material.get("session_value") or renewal_value != material.get("renewal_value"):
+                rotate_connection_tokens(
+                    WHOOP_DB_FILE,
+                    {
+                        "access_token": session_value,
+                        "refresh_token": renewal_value,
+                        "expires_in": 3600,
+                        "scope": "offline",
+                    },
+                )
+                material = {
+                    "session_value": session_value,
+                    "renewal_value": renewal_value,
+                }
+
         collections = {
             "recovery": client.fetch_recovery(start=start, end=end),
-            "sleep": client.fetch_sleep(start=start, end=end),
-            "cycle": client.fetch_cycles(start=start, end=end),
-            "workout": client.fetch_workouts(start=start, end=end),
         }
+        persist_rotated_material_if_needed()
+        collections["sleep"] = client.fetch_sleep(start=start, end=end)
+        persist_rotated_material_if_needed()
+        collections["cycle"] = client.fetch_cycles(start=start, end=end)
+        persist_rotated_material_if_needed()
+        collections["workout"] = client.fetch_workouts(start=start, end=end)
+        persist_rotated_material_if_needed()
         upserted = 0
         for record_type, rows in collections.items():
             upserted += upsert_whoop_records(
@@ -10761,16 +10797,6 @@ def _run_whoop_sync(reason="manual", *, days_back=7, client_factory=WhoopClient)
                 sync_run_id=run_id,
             )
         project_whoop_daily_facts(WHOOP_DB_FILE)
-        if getattr(client, "access_token", None) != material.get("session_value") or getattr(client, "refresh_token", None) != material.get("renewal_value"):
-            rotate_connection_tokens(
-                WHOOP_DB_FILE,
-                {
-                    "access_token": getattr(client, "access_token", None),
-                    "refresh_token": getattr(client, "refresh_token", None),
-                    "expires_in": 3600,
-                    "scope": "offline",
-                },
-            )
         finish_whoop_sync_run(WHOOP_DB_FILE, run_id, status="success", records_upserted=upserted)
         return {
             "run_id": run_id,
@@ -10946,7 +10972,10 @@ def whoop_disconnect():
 @app.route('/api/whoop/sync', methods=['POST'])
 def whoop_sync():
     body = request.get_json(silent=True) or {}
-    result, err = _run_whoop_sync("manual", days_back=body.get("days_back") or 7)
+    days_back, err = _coerce_whoop_sync_days(body.get("days_back") or 7)
+    if err:
+        return err
+    result, err = _run_whoop_sync("manual", days_back=days_back)
     if err:
         return err
     return jsonify({"status": "success", "sync": result, "connection": _whoop_public_status()})

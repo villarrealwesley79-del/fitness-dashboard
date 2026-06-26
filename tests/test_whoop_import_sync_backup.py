@@ -116,6 +116,58 @@ def test_whoop_manual_sync_uses_protected_material_and_normalizes_records(fitnes
     assert fact["strain"] == 16.2
 
 
+def test_whoop_manual_sync_persists_rotated_material_before_later_failure(fitness_app, monkeypatch):
+    monkeypatch.setattr(
+        fitness_app,
+        "_whoop_config_for_redirect",
+        lambda redirect_uri: whoop_client.WhoopConfig("client-id", "safe-placeholder", redirect_uri),
+    )
+    whoop_store.save_connection_tokens(
+        fitness_app.WHOOP_DB_FILE,
+        {
+            "access_token": "old-session",
+            "refresh_token": "old-renewal",
+            "expires_in": 3600,
+            "scope": "offline read:recovery",
+        },
+    )
+
+    class RotatingThenFailingClient:
+        def __init__(self, config, *, session_value, renewal_value):
+            self.access_token = session_value
+            self.refresh_token = renewal_value
+
+        def fetch_recovery(self, *, start=None, end=None):
+            self.access_token = "fresh-session"
+            self.refresh_token = "fresh-renewal"
+            return []
+
+        def fetch_sleep(self, *, start=None, end=None):
+            raise whoop_client.WhoopApiError("sleep failed", retryable=True)
+
+    with fitness_app.app.app_context():
+        result, err = fitness_app._run_whoop_sync("manual", client_factory=RotatingThenFailingClient)
+
+    assert result is None
+    assert err is not None
+    material = whoop_store.load_connection_token_material(fitness_app.WHOOP_DB_FILE)
+    assert material["session_value"] == "fresh-session"
+    assert material["renewal_value"] == "fresh-renewal"
+
+
+def test_whoop_sync_rejects_invalid_days_back_before_network(fitness_app):
+    client = fitness_app.app.test_client()
+
+    bad_type = client.post("/api/whoop/sync", json={"days_back": "forever"})
+    too_large = client.post("/api/whoop/sync", json={"days_back": 3650})
+    negative = client.post("/api/whoop/sync", json={"days_back": -1})
+
+    assert bad_type.status_code == 400
+    assert too_large.status_code == 400
+    assert negative.status_code == 400
+    assert bad_type.get_json()["error"]["code"] == "invalid_days_back"
+
+
 def test_backup_exports_only_normalized_whoop_facts_not_tokens(fitness_app):
     whoop_store.save_connection_tokens(
         fitness_app.WHOOP_DB_FILE,

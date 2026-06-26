@@ -108,3 +108,50 @@ def test_whoop_signal_endpoint_and_smart_recommendation_keep_apple_health_load_t
     assert smart_response.status_code == 200
     smart_payload = smart_response.get_json()
     assert smart_payload["recommendation"] == "recovery"
+
+
+def test_next_workout_cache_matches_whoop_adjusted_response(fitness_app, monkeypatch):
+    monkeypatch.setattr(
+        fitness_app,
+        "generate_next_workout",
+        lambda *_args, **_kwargs: {
+            "estimated_minutes": 60,
+            "estimated_duration": "60 min",
+            "mesocycle": {"volume_multiplier": 1.0},
+            "exercises": [{"target_sets": 4, "rpe_target": 8, "rationale": "Base"}],
+        },
+    )
+    monkeypatch.setattr(fitness_app, "_workout_with_auth_scope", lambda workout: workout)
+    monkeypatch.setattr(fitness_app, "_food_log_entries_for_context", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
+    monkeypatch.setattr(fitness_app, "_workout_looks_hard", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        fitness_app,
+        "_apply_due_workout_adaptations_for_plan",
+        lambda workout, **_kwargs: (workout, []),
+    )
+    fitness_app.LAST_WORKOUT_RECOMMENDATION = None
+    fitness_app.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
+
+    whoop_store.upsert_whoop_records(
+        fitness_app.WHOOP_DB_FILE,
+        "recovery",
+        [
+            {
+                "upstream_id": "rec-1",
+                "local_date": fitness_app._today_str(),
+                "score_state": "SCORED",
+                "recovery_score": 38,
+            }
+        ],
+        imported_at=datetime(2026, 6, 25, 7, 0, 0),
+    )
+    whoop_store.project_whoop_daily_facts(fitness_app.WHOOP_DB_FILE)
+
+    response = fitness_app.app.test_client().get("/api/next-workout")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    adjusted_sets = payload["next_workout"]["exercises"][0]["target_sets"]
+    assert adjusted_sets < 4
+    assert fitness_app.LAST_WORKOUT_RECOMMENDATION["exercises"][0]["target_sets"] == adjusted_sets

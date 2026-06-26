@@ -39,6 +39,25 @@ def test_low_recovery_and_sleep_gap_reduce_workout_and_explain_fueling():
     assert any("sleep need gap" in explanation.lower() for explanation in signals["explanations"])
 
 
+def test_deload_modifier_never_increases_one_set_exercise():
+    signals = build_whoop_recommendation_signals(
+        {
+            "recovery_score": 38,
+            "score_state": "SCORED",
+        },
+        freshness={"status": "fresh"},
+    )
+
+    adjusted = apply_wearable_modifiers(
+        "moderate",
+        {"exercises": [{"target_sets": 1, "rpe_target": 7}]},
+        whoop_signals=signals,
+        source_conflict={"has_conflict": False},
+    )
+
+    assert adjusted["next_workout"]["exercises"][0]["target_sets"] == 1
+
+
 def test_stale_or_unscored_data_is_display_only():
     signals = build_whoop_recommendation_signals(
         {

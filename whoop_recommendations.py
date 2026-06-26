@@ -220,7 +220,9 @@ def apply_wearable_modifiers(
                 continue
             sets = exercise.get("target_sets")
             if isinstance(sets, (int, float)):
-                exercise["target_sets"] = max(2, int(round(float(sets) * volume_scale)))
+                original_sets = max(1, int(round(float(sets))))
+                scaled_sets = max(1, int(round(float(sets) * volume_scale)))
+                exercise["target_sets"] = min(original_sets, scaled_sets)
             rpe = exercise.get("rpe_target")
             if isinstance(rpe, (int, float)) and rpe_delta:
                 exercise["rpe_target"] = max(5, round(float(rpe) + rpe_delta, 1))
