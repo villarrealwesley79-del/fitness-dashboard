@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#0b1120">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260525-fit139-refresh-notices">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260626-fit238-qol">
 </head>
 <body>
     <div class="app-shell">
@@ -398,19 +398,19 @@
             <div id="panel-strength" class="log-panel active">
                 <form id="form-strength" class="form-grid" onsubmit="return false;">
                     <div class="form-field">
-                        <label>Date</label>
+                        <label for="log-date">Date</label>
                         <input type="date" id="log-date" name="date" required>
                     </div>
                     <div class="form-field">
-                        <label>Exercise</label>
+                        <label for="log-exercise">Exercise</label>
                         <select id="log-exercise" name="exercise" required><option value="">Select exercise…</option></select>
                     </div>
                     <div class="form-row-2">
-                        <div class="form-field"><label>Sets</label><input type="number" id="log-sets" min="1" value="3"></div>
-                        <div class="form-field"><label>Reps</label><input type="number" id="log-reps" min="1" value="10"></div>
+                        <div class="form-field"><label for="log-sets">Sets</label><input type="number" id="log-sets" min="1" value="3"></div>
+                        <div class="form-field"><label for="log-reps">Reps</label><input type="number" id="log-reps" min="1" value="10"></div>
                     </div>
                     <div class="form-field">
-                        <label>Weight <span class="field-hint">lbs</span></label>
+                        <label for="log-weight">Weight <span class="field-hint">lbs</span></label>
                         <input type="number" id="log-weight" min="0" step="0.5" placeholder="175">
                     </div>
                     <div class="form-field">
@@ -430,7 +430,7 @@
                         <input type="hidden" id="log-rpe" value="7">
                     </div>
                     <div class="form-field">
-                        <label>Notes <span class="field-hint">optional</span></label>
+                        <label for="log-notes">Notes <span class="field-hint">optional</span></label>
                         <textarea id="log-notes" placeholder="How did it feel?"></textarea>
                     </div>
                     <button id="btn-log-strength" class="btn btn-primary btn-block" type="button">Log Set</button>
@@ -439,9 +439,9 @@
 
             <div id="panel-cardio" class="log-panel">
                 <form id="form-cardio" class="form-grid" onsubmit="return false;">
-                    <div class="form-field"><label>Date</label><input type="date" id="cardio-date" name="date" required></div>
+                    <div class="form-field"><label for="cardio-date">Date</label><input type="date" id="cardio-date" name="date" required></div>
                     <div class="form-field">
-                        <label>Activity</label>
+                        <label for="cardio-type">Activity</label>
                         <select id="cardio-type">
                             <option value="treadmill">Treadmill</option>
                             <option value="stairmaster" selected>Stairmaster</option>
@@ -452,20 +452,20 @@
                         </select>
                     </div>
                     <div class="form-row-2">
-                        <div class="form-field"><label>Duration <span class="field-hint">min</span></label><input type="number" id="cardio-duration" min="1" value="20"></div>
-                        <div class="form-field"><label>Avg HR</label><input type="number" id="cardio-hr" min="30" max="250" placeholder="opt"></div>
+                        <div class="form-field"><label for="cardio-duration">Duration <span class="field-hint">min</span></label><input type="number" id="cardio-duration" min="1" value="20"></div>
+                        <div class="form-field"><label for="cardio-hr">Avg HR</label><input type="number" id="cardio-hr" min="30" max="250" placeholder="opt"></div>
                     </div>
-                    <div class="form-field"><label>Intensity 1–10</label><input type="number" id="cardio-intensity" min="1" max="10" value="5"></div>
-                    <div class="form-field"><label>Notes</label><textarea id="cardio-notes" placeholder="Zone, machine…"></textarea></div>
+                    <div class="form-field"><label for="cardio-intensity">Intensity 1–10</label><input type="number" id="cardio-intensity" min="1" max="10" value="5"></div>
+                    <div class="form-field"><label for="cardio-notes">Notes</label><textarea id="cardio-notes" placeholder="Zone, machine…"></textarea></div>
                     <button id="btn-log-cardio" class="btn btn-primary btn-block" type="button">Log Cardio</button>
                 </form>
             </div>
 
             <div id="panel-recovery" class="log-panel">
                 <form id="form-recovery" class="form-grid" onsubmit="return false;">
-                    <div class="form-field"><label>Date</label><input type="date" id="recovery-date" name="date" required></div>
+                    <div class="form-field"><label for="recovery-date">Date</label><input type="date" id="recovery-date" name="date" required></div>
                     <div class="form-field">
-                        <label>Modality</label>
+                        <label for="recovery-type">Modality</label>
                         <select id="recovery-type">
                             <option value="sauna">Sauna</option>
                             <option value="cold plunge">Cold Plunge</option>
@@ -477,10 +477,10 @@
                         </select>
                     </div>
                     <div class="form-row-2">
-                        <div class="form-field"><label>Duration <span class="field-hint">min</span></label><input type="number" id="recovery-duration" min="1" value="10"></div>
-                        <div class="form-field"><label>Temp <span class="field-hint">°F</span></label><input type="number" id="recovery-temp" placeholder="opt"></div>
+                        <div class="form-field"><label for="recovery-duration">Duration <span class="field-hint">min</span></label><input type="number" id="recovery-duration" min="1" value="10"></div>
+                        <div class="form-field"><label for="recovery-temp">Temp <span class="field-hint">°F</span></label><input type="number" id="recovery-temp" placeholder="opt"></div>
                     </div>
-                    <div class="form-field"><label>Notes</label><textarea id="recovery-notes" placeholder="Protocol, how it felt…"></textarea></div>
+                    <div class="form-field"><label for="recovery-notes">Notes</label><textarea id="recovery-notes" placeholder="Protocol, how it felt…"></textarea></div>
                     <button id="btn-log-recovery" class="btn btn-primary btn-block" type="button">Log Recovery</button>
                 </form>
             </div>
@@ -706,37 +706,37 @@
                 </header>
 
                 <div class="settings-subtitle">Training goal</div>
-                <div class="card-list" id="settings-goals"></div>
+                <div class="card-list" id="settings-goals" role="radiogroup" aria-label="Training goal"></div>
 
                 <div class="settings-subtitle">Workout preferences</div>
                 <div class="card">
                     <div class="settings-row">
-                        <div class="settings-row-label">Date of Birth</div>
+                        <label class="settings-row-label" for="settings-date-of-birth">Date of Birth</label>
                         <div class="settings-row-control">
                             <input type="date" id="settings-date-of-birth" class="select-inline">
                         </div>
                     </div>
                     <div class="settings-row">
-                        <div class="settings-row-label">Sex</div>
+                        <label class="settings-row-label" for="settings-sex">Sex</label>
                         <div class="settings-row-control">
                             <select id="settings-sex" class="select-inline"></select>
                         </div>
                     </div>
                     <div class="settings-row">
-                        <div class="settings-row-label">Preferred Duration</div>
+                        <label class="settings-row-label" for="settings-duration">Preferred Duration</label>
                         <div class="settings-row-control">
                             <select id="settings-duration" class="select-inline"></select>
                         </div>
                     </div>
                     <div class="settings-row">
-                        <div class="settings-row-label">Sessions Per Week</div>
+                        <label class="settings-row-label" for="settings-sessions">Sessions Per Week</label>
                         <div class="settings-row-control">
-                            <input type="range" id="settings-sessions" min="1" max="7" step="1">
+                            <input type="range" id="settings-sessions" min="1" max="7" step="1" aria-describedby="settings-sessions-val">
                             <span id="settings-sessions-val" class="settings-row-val">3</span>
                         </div>
                     </div>
                     <div class="settings-row">
-                        <div class="settings-row-label">Equipment</div>
+                        <label class="settings-row-label" for="settings-equipment">Equipment</label>
                         <div class="settings-row-control">
                             <select id="settings-equipment" class="select-inline"></select>
                         </div>
@@ -1035,7 +1035,7 @@
         </nav>
     </div>
 
-    <div id="modal-swap" class="modal" hidden>
+    <div id="modal-swap" class="modal" role="dialog" aria-modal="true" aria-labelledby="swap-modal-title" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
                 <h3 class="modal-title" id="swap-modal-title">Swap Exercise</h3>
@@ -1060,10 +1060,10 @@
         </div>
     </div>
 
-    <div id="modal-adjust" class="modal" hidden>
+    <div id="modal-adjust" class="modal" role="dialog" aria-modal="true" aria-labelledby="adjust-modal-title" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
-                <h3 class="modal-title">Adjust Plan</h3>
+                <h3 class="modal-title" id="adjust-modal-title">Adjust Plan</h3>
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div id="adjust-body" class="modal-body">
@@ -1093,7 +1093,7 @@
         </div>
     </div>
 
-    <div id="modal-analyze" class="modal" hidden>
+    <div id="modal-analyze" class="modal" role="dialog" aria-modal="true" aria-labelledby="analyze-title" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
                 <h3 class="modal-title" id="analyze-title">Workout Analysis</h3>
@@ -1133,7 +1133,7 @@
         </div>
     </div>
 
-    <div id="modal-workout-detail" class="modal" hidden>
+    <div id="modal-workout-detail" class="modal" role="dialog" aria-modal="true" aria-labelledby="workout-detail-title" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
                 <h3 class="modal-title" id="workout-detail-title">Workout Details</h3>
@@ -1150,7 +1150,7 @@
          modal pattern. Body is populated dynamically from the food_log
          entry the user tapped in the Body tab's nutrition-trend
          expansion. -->
-    <div id="modal-meal-detail" class="modal" hidden>
+    <div id="modal-meal-detail" class="modal" role="dialog" aria-modal="true" aria-labelledby="meal-detail-title" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
                 <h3 class="modal-title" id="meal-detail-title">Meal details</h3>
@@ -1234,10 +1234,10 @@
     </div>
 
     <!-- FIT-107: Dashboard "View food log" sheet — Today / Yesterday / Recent 14 days -->
-    <div id="modal-food-log" class="modal" hidden>
+    <div id="modal-food-log" class="modal" role="dialog" aria-modal="true" aria-labelledby="food-log-title" hidden>
         <div class="modal-sheet modal-sheet-tall">
             <div class="modal-head">
-                <h3 class="modal-title">Food log</h3>
+                <h3 class="modal-title" id="food-log-title">Food log</h3>
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body" id="food-log-body">
@@ -1263,10 +1263,10 @@
         </div>
     </div>
 
-    <div id="modal-delete-confirm" class="modal" hidden>
+    <div id="modal-delete-confirm" class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
-                <h3 class="modal-title">Delete Workout?</h3>
+                <h3 class="modal-title" id="delete-confirm-title">Delete Workout?</h3>
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body">
@@ -1280,10 +1280,10 @@
         </div>
     </div>
 
-    <div id="modal-apple" class="modal" hidden>
+    <div id="modal-apple" class="modal" role="dialog" aria-modal="true" aria-labelledby="apple-modal-title" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
-                <h3 class="modal-title">Connect Apple Health</h3>
+                <h3 class="modal-title" id="apple-modal-title">Connect Apple Health</h3>
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body">
@@ -1310,7 +1310,7 @@
         </div>
     </div>
 
-    <div id="modal-active" class="modal" hidden>
+    <div id="modal-active" class="modal" role="dialog" aria-modal="true" aria-labelledby="active-workout-title" hidden>
         <div class="modal-sheet modal-sheet-tall">
             <div class="modal-head">
                 <h3 class="modal-title" id="active-workout-title">Workout</h3>
@@ -1327,10 +1327,10 @@
         </div>
     </div>
 
-    <div id="modal-workout-saved" class="modal" hidden>
+    <div id="modal-workout-saved" class="modal" role="dialog" aria-modal="true" aria-labelledby="workout-saved-title" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
-                <h3 class="modal-title">Workout saved</h3>
+                <h3 class="modal-title" id="workout-saved-title">Workout saved</h3>
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body">
@@ -1350,10 +1350,10 @@
         </div>
     </div>
 
-    <div id="modal-sync-queue" class="modal" hidden>
+    <div id="modal-sync-queue" class="modal" role="dialog" aria-modal="true" aria-labelledby="sync-queue-title" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
-                <h3 class="modal-title">Pending sync</h3>
+                <h3 class="modal-title" id="sync-queue-title">Pending sync</h3>
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body">
@@ -1373,6 +1373,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app-loader.js?v=20260626-fit236-active-draft"></script>
+    <script src="/static/js/app-loader.js?v=20260626-fit238-qol"></script>
 </body>
 </html>
