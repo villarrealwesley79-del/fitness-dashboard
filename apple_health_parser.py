@@ -412,7 +412,7 @@ def register_apple_health_routes(flask_app):
     @flask_app.route("/api/apple-health/workouts")
     def apple_health_workouts():
         if not health_data_available():
-            return jsonify({"error": "No Apple Health data found"}), 404
+            return jsonify({"workouts": [], "total": 0, "data_source": "unavailable"})
         days = request.args.get("days", 30, type=int)
         file_workouts = parse_workouts()
         sync_workouts = _get_sync_records("workouts", days)

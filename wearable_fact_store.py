@@ -1,0 +1,250 @@
+"""Normalized wearable fact storage.
+
+Only public, coaching-safe facts belong here. Raw provider payloads and secret
+material are rejected before persistence.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from datetime import datetime
+import json
+import sqlite3
+
+
+FORBIDDEN_FIELD_NAMES = {
+    "authorization",
+    "access_token",
+    "refresh_token",
+    "token",
+    "password",
+    "secret",
+    "raw",
+    "payload",
+    "samples",
+    "records",
+    "user_id",
+}
+
+
+@dataclass(frozen=True)
+class WearableDailyFact:
+    date: str
+    provider_id: str
+    source_label: str
+    metric: str
+    value: float | str | None
+    unit: str | None = None
+    band: str | None = None
+    confidence: str = "unknown"
+    freshness: str = "unknown"
+    conflict_state: str | None = None
+    used_for_recommendation: bool = False
+    updated_at: str | None = None
+
+    def public_dict(self) -> dict:
+        payload = asdict(self)
+        if payload["updated_at"] is None:
+            payload["updated_at"] = datetime.now().isoformat()
+        return payload
+
+
+def _scan_forbidden(value: object, path: str = "") -> list[str]:
+    hits: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            field_name = str(key).strip().lower()
+            if field_name in FORBIDDEN_FIELD_NAMES or field_name.endswith("_token"):
+                hits.append(f"{path}.{field_name}" if path else field_name)
+            hits.extend(_scan_forbidden(child, f"{path}.{field_name}" if path else field_name))
+    elif isinstance(value, list):
+        for idx, child in enumerate(value):
+            hits.extend(_scan_forbidden(child, f"{path}[{idx}]"))
+    return hits
+
+
+def validate_public_fact_payload(payload: dict) -> None:
+    hits = _scan_forbidden(payload)
+    if hits:
+        raise ValueError("wearable fact payload contains forbidden raw or secret fields")
+
+
+def init_wearable_fact_db(db_path: str) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wearable_daily_facts (
+                date TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                source_label TEXT NOT NULL,
+                metric TEXT NOT NULL,
+                value_json TEXT,
+                unit TEXT,
+                band TEXT,
+                confidence TEXT NOT NULL,
+                freshness TEXT NOT NULL,
+                conflict_state TEXT,
+                used_for_recommendation INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (date, provider_id, metric)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wearable_sources (
+                provider_id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                status TEXT NOT NULL,
+                last_data_point TEXT,
+                last_sync_attempt TEXT,
+                capabilities_json TEXT,
+                used_for_recommendation INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+
+def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict]) -> int:
+    init_wearable_fact_db(db_path)
+    now = datetime.now().isoformat()
+    rows = []
+    for fact in facts:
+        payload = fact.public_dict() if isinstance(fact, WearableDailyFact) else dict(fact)
+        validate_public_fact_payload(payload)
+        rows.append(payload)
+    with sqlite3.connect(db_path) as conn:
+        for row in rows:
+            conn.execute(
+                """
+                INSERT INTO wearable_daily_facts (
+                    date, provider_id, source_label, metric, value_json, unit, band,
+                    confidence, freshness, conflict_state, used_for_recommendation, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(date, provider_id, metric) DO UPDATE SET
+                    source_label=excluded.source_label,
+                    value_json=excluded.value_json,
+                    unit=excluded.unit,
+                    band=excluded.band,
+                    confidence=excluded.confidence,
+                    freshness=excluded.freshness,
+                    conflict_state=excluded.conflict_state,
+                    used_for_recommendation=excluded.used_for_recommendation,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    row["date"],
+                    row["provider_id"],
+                    row["source_label"],
+                    row["metric"],
+                    json.dumps(row.get("value")),
+                    row.get("unit"),
+                    row.get("band"),
+                    row.get("confidence") or "unknown",
+                    row.get("freshness") or "unknown",
+                    row.get("conflict_state"),
+                    1 if row.get("used_for_recommendation") else 0,
+                    row.get("updated_at") or now,
+                ),
+            )
+    return len(rows)
+
+
+def upsert_wearable_source(db_path: str, source: dict) -> None:
+    init_wearable_fact_db(db_path)
+    validate_public_fact_payload(source)
+    now = datetime.now().isoformat()
+    capabilities = source.get("capabilities") if isinstance(source.get("capabilities"), dict) else {}
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO wearable_sources (
+                provider_id, label, status, last_data_point, last_sync_attempt,
+                capabilities_json, used_for_recommendation, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider_id) DO UPDATE SET
+                label=excluded.label,
+                status=excluded.status,
+                last_data_point=excluded.last_data_point,
+                last_sync_attempt=excluded.last_sync_attempt,
+                capabilities_json=excluded.capabilities_json,
+                used_for_recommendation=excluded.used_for_recommendation,
+                updated_at=excluded.updated_at
+            """,
+            (
+                source["provider_id"],
+                source.get("label") or source["provider_id"],
+                source.get("status") or "unknown",
+                source.get("last_data_point"),
+                source.get("last_sync_attempt"),
+                json.dumps(capabilities, sort_keys=True),
+                1 if source.get("used_for_recommendation") else 0,
+                source.get("updated_at") or now,
+            ),
+        )
+
+
+def list_wearable_sources(db_path: str) -> list[dict]:
+    init_wearable_fact_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM wearable_sources ORDER BY provider_id"
+        ).fetchall()
+    result = []
+    for row in rows:
+        result.append({
+            "source": row["provider_id"],
+            "provider_id": row["provider_id"],
+            "label": row["label"],
+            "status": row["status"],
+            "last_data_point": row["last_data_point"],
+            "last_sync_attempt": row["last_sync_attempt"],
+            "capabilities": json.loads(row["capabilities_json"] or "{}"),
+            "used_for_recommendation": bool(row["used_for_recommendation"]),
+        })
+    return result
+
+
+def list_recommendation_facts(db_path: str, limit: int = 30) -> list[dict]:
+    init_wearable_fact_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT * FROM wearable_daily_facts
+            ORDER BY date DESC, provider_id, metric
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+    facts = []
+    for row in rows:
+        facts.append({
+            "date": row["date"],
+            "provider_id": row["provider_id"],
+            "source_label": row["source_label"],
+            "metric": row["metric"],
+            "value": json.loads(row["value_json"]) if row["value_json"] else None,
+            "unit": row["unit"],
+            "band": row["band"],
+            "confidence": row["confidence"],
+            "freshness": row["freshness"],
+            "conflict_state": row["conflict_state"],
+            "used_for_recommendation": bool(row["used_for_recommendation"]),
+            "updated_at": row["updated_at"],
+        })
+    return facts
+
+
+def latest_wearable_freshness(db_path: str) -> dict:
+    sources = list_wearable_sources(db_path)
+    return {
+        row["provider_id"]: {
+            "status": row["status"],
+            "last_data_point": row["last_data_point"],
+            "last_sync_attempt": row["last_sync_attempt"],
+        }
+        for row in sources
+    }
