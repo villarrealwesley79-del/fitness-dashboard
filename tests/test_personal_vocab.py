@@ -394,12 +394,11 @@ def test_personal_vocab_settings_api_lists_and_deletes(monkeypatch, tmp_path):
     assert missing.get_json() == {"status": "not_found", "removed": False}
 
 
-def test_settings_ui_exposes_learned_vocabulary_card():
+def test_settings_ui_does_not_expose_learned_vocabulary_card():
     root = Path(__file__).resolve().parents[1]
     template = (root / "templates" / "index.html").read_text()
     script = (root / "static" / "js" / "app.js").read_text()
 
-    assert "personal-vocab-list" in template
-    assert "Learned vocabulary" in template
-    assert "/api/personal-vocab" in script
-    assert "Forget" in script
+    assert "personal-vocab-list" not in template
+    assert "Learned vocabulary" not in template
+    assert "/api/personal-vocab" not in script

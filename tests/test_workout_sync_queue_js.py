@@ -7,6 +7,7 @@ import pytest
 
 
 APP_JS = Path("static/js/app.js").read_text()
+APP_LOADER_JS = Path("static/js/app-loader.js").read_text()
 APP_SW = Path("static/js/sw.js").read_text()
 APP_HTML = Path("templates/index.html").read_text()
 
@@ -106,7 +107,8 @@ def test_active_workout_draft_restores_after_auth_scope_refresh_and_saves_on_bac
     assert "window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "document.addEventListener('visibilitychange', () => {" in boot_block
     assert "if (document.visibilityState === 'hidden') saveActiveWorkoutDraftBeforePageHidden();" in boot_block
-    assert "/static/js/app.js?v=20260605-fit236-active-draft" in APP_HTML
+    assert "/static/js/app-loader.js?v=20260605-fit236-active-draft" in APP_HTML
+    assert "/static/js/app.js?v=20260605-fit236-active-draft" in APP_LOADER_JS
     assert "const CACHE_NAME = 'fitness-dashboard-v20260605-fit236-active-draft';" in APP_SW
 
 
