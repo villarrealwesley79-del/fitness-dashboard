@@ -5,6 +5,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = ROOT / "templates" / "index.html"
 APP_JS = ROOT / "static" / "js" / "app.js"
 APP_CSS = ROOT / "static" / "css" / "app.css"
+APP_LOADER = ROOT / "static" / "js" / "app-loader.js"
+APP_SW = ROOT / "static" / "js" / "sw.js"
 
 
 def test_index_exposes_whoop_dashboard_and_settings_surfaces():
@@ -28,6 +30,31 @@ def test_index_exposes_whoop_dashboard_and_settings_surfaces():
         'aria-haspopup="dialog"',
     ]:
         assert token in html
+
+
+def test_whoop_release_assets_bust_cached_fit238_runtime():
+    html = INDEX_HTML.read_text()
+    loader = APP_LOADER.read_text()
+    service_worker = APP_SW.read_text()
+
+    assert "/static/js/app-loader.js?v=20260626-fit239-whoop" in html
+    assert "/static/js/app.js?v=20260626-fit239-whoop" in loader
+    assert "fitness-dashboard-v20260626-fit239-whoop" in service_worker
+
+
+def test_whoop_secret_patterns_are_excluded_from_docker_context():
+    dockerignore = (ROOT / ".dockerignore").read_text()
+
+    for token in [
+        ".whoop-client-id",
+        ".whoop-oauth-state*",
+        ".whoop-token*",
+        ".whoop-protected-material*",
+        "**/.whoop-client-id",
+        "**/.whoop-token*",
+        "**/.whoop-protected-material*",
+    ]:
+        assert token in dockerignore
 
 
 def test_whoop_frontend_calls_expected_status_sync_and_disconnect_endpoints():

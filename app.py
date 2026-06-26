@@ -4,7 +4,7 @@ Fitness Intelligence System - Mobile Web App
 Evidence-based resistance training optimization for iOS/Android.
 """
 
-from flask import Flask, has_request_context, render_template, jsonify, request, Response
+from flask import Flask, has_request_context, render_template, jsonify, request, Response, redirect
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -10627,6 +10627,11 @@ def _whoop_no_store(response):
     return response
 
 
+def _whoop_callback_is_browser_navigation():
+    accept = request.headers.get("Accept", "")
+    return "text/html" in accept.lower() and "application/json" not in accept.lower()
+
+
 def _whoop_number(value):
     if value in (None, ""):
         return None
@@ -11027,6 +11032,8 @@ def whoop_callback():
         return _whoop_no_store(api_error(str(exc), 502, code="whoop_oauth_failed"))
     except Exception:
         return _whoop_no_store(api_error("WHOOP OAuth is not configured on this server.", 503, code="missing_whoop_config"))
+    if _whoop_callback_is_browser_navigation():
+        return _whoop_no_store(redirect("/#settings"))
     return _whoop_no_store(jsonify({"status": "success", "connection": _whoop_public_status()}))
 
 
