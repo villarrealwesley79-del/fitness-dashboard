@@ -187,7 +187,6 @@ def apply_wearable_modifiers(
     workout = copy.deepcopy(next_workout or {})
     training_recommendation = recommendation or "moderate"
     modifiers = list(signals.get("applied_modifiers") or [])
-    modifier_signature = "|".join(sorted(str(item) for item in modifiers))
 
     if signals.get("display_only"):
         return {
@@ -200,6 +199,10 @@ def apply_wearable_modifiers(
             "load_source": "apple_health",
         }
 
+    if conflict.get("has_conflict") and conflict.get("conservative_source") == "whoop" and "caution" not in modifiers and "deload" not in modifiers:
+        modifiers.append("caution")
+
+    modifier_signature = "|".join(sorted(str(item) for item in modifiers))
     if modifier_signature and workout.get("_whoop_modifier_signature") == modifier_signature:
         return {
             "recommendation": training_recommendation,
@@ -210,9 +213,6 @@ def apply_wearable_modifiers(
             "source_conflict": conflict,
             "load_source": "apple_health",
         }
-
-    if conflict.get("has_conflict") and conflict.get("conservative_source") == "whoop" and "caution" not in modifiers and "deload" not in modifiers:
-        modifiers.append("caution")
 
     volume_scale = 1.0
     rpe_delta = 0

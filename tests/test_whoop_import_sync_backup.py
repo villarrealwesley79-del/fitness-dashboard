@@ -434,3 +434,28 @@ def test_backup_import_rejects_invalid_whoop_daily_facts(fitness_app):
 
     assert response.status_code == 400
     assert "local_date" in response.get_json()["message"]
+
+
+def test_backup_import_validates_whoop_before_mutating_json_data(fitness_app, monkeypatch, tmp_path):
+    original_workouts = [{"date": "2026-06-01", "exercises": []}]
+    monkeypatch.setattr(fitness_app, "WORKOUTS", list(original_workouts))
+    monkeypatch.setattr(fitness_app, "WORKOUTS_FILE", str(tmp_path / "workouts.json"))
+
+    response = fitness_app.app.test_client().post(
+        "/api/import-backup",
+        json={
+            "data": {
+                "workouts": [{"date": "2026-06-02", "exercises": [{"machine": "Chest Press"}]}],
+                "whoop_daily_facts": [
+                    {
+                        "local_date": "9999-12-31",
+                        "score_state": "SCORED",
+                        "recovery_score": 50,
+                    }
+                ],
+            }
+        },
+    )
+
+    assert response.status_code == 400
+    assert fitness_app.WORKOUTS == original_workouts

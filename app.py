@@ -13237,6 +13237,36 @@ def export_backup():
     )
 
 
+def _validated_whoop_backup_records(facts):
+    records = []
+    for fact in facts or []:
+        if not isinstance(fact, dict):
+            continue
+        local_date = str(fact.get("local_date") or "").strip()
+        if not local_date:
+            continue
+        record = {
+            "upstream_id": f"backup-{local_date}",
+            "local_date": _validate_imported_whoop_local_date(local_date),
+            "score_state": fact.get("score_state"),
+            "recovery_score": fact.get("recovery_score"),
+            "recovery_band": fact.get("recovery_band"),
+            "strain": fact.get("strain"),
+            "sleep_performance_pct": fact.get("sleep_performance_pct"),
+            "sleep_need_gap_min": fact.get("sleep_need_gap_min"),
+            "workout_kj": fact.get("workout_kj"),
+            "hrv_rmssd": fact.get("hrv_rmssd"),
+            "resting_hr": fact.get("resting_hr"),
+            "respiratory_rate": fact.get("respiratory_rate"),
+            "spo2": fact.get("spo2"),
+            "skin_temp": fact.get("skin_temp"),
+            "percent_recorded": fact.get("percent_recorded"),
+        }
+        _validate_whoop_metric_bounds(record)
+        records.append(record)
+    return records
+
+
 @app.route('/api/import-backup', methods=['POST'])
 def import_backup():
     """Import data from a backup JSON file."""
@@ -13252,6 +13282,9 @@ def import_backup():
             return api_error("Invalid backup format: missing 'data' object", 400, code="invalid_field")
 
         data = backup_data["data"]
+        whoop_backup_records = []
+        if "whoop_daily_facts" in data:
+            whoop_backup_records = _validated_whoop_backup_records(data["whoop_daily_facts"])
 
         # Restore each JSON-backed data type under one lock so readers never see
         # a clear/extend half-state between the in-memory update and disk write.
@@ -13317,37 +13350,11 @@ def import_backup():
                     import_meal_review_snapshot(user_id, meal_snapshot)
 
         if "whoop_daily_facts" in data:
-            records = []
-            for fact in data["whoop_daily_facts"]:
-                if not isinstance(fact, dict):
-                    continue
-                local_date = str(fact.get("local_date") or "").strip()
-                if not local_date:
-                    continue
-                record = {
-                    "upstream_id": f"backup-{local_date}",
-                    "local_date": _validate_imported_whoop_local_date(local_date),
-                    "score_state": fact.get("score_state"),
-                    "recovery_score": fact.get("recovery_score"),
-                    "recovery_band": fact.get("recovery_band"),
-                    "strain": fact.get("strain"),
-                    "sleep_performance_pct": fact.get("sleep_performance_pct"),
-                    "sleep_need_gap_min": fact.get("sleep_need_gap_min"),
-                    "workout_kj": fact.get("workout_kj"),
-                    "hrv_rmssd": fact.get("hrv_rmssd"),
-                    "resting_hr": fact.get("resting_hr"),
-                    "respiratory_rate": fact.get("respiratory_rate"),
-                    "spo2": fact.get("spo2"),
-                    "skin_temp": fact.get("skin_temp"),
-                    "percent_recorded": fact.get("percent_recorded"),
-                }
-                _validate_whoop_metric_bounds(record)
-                records.append(record)
-            if records:
+            if whoop_backup_records:
                 run_id = record_whoop_sync_run(WHOOP_DB_FILE, reason="backup_import")
-                upsert_whoop_records(WHOOP_DB_FILE, "recovery", records, sync_run_id=run_id)
+                upsert_whoop_records(WHOOP_DB_FILE, "recovery", whoop_backup_records, sync_run_id=run_id)
                 project_whoop_daily_facts(WHOOP_DB_FILE)
-                finish_whoop_sync_run(WHOOP_DB_FILE, run_id, status="success", records_upserted=len(records))
+                finish_whoop_sync_run(WHOOP_DB_FILE, run_id, status="success", records_upserted=len(whoop_backup_records))
 
         return jsonify({
             "status": "success",

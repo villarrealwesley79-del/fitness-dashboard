@@ -86,6 +86,36 @@ def test_same_whoop_modifier_signature_is_idempotent():
     assert second["next_workout"]["estimated_minutes"] == first["next_workout"]["estimated_minutes"]
 
 
+def test_source_conflict_caution_modifier_is_idempotent():
+    signals = build_whoop_recommendation_signals(
+        {
+            "recovery_score": 70,
+            "score_state": "SCORED",
+        },
+        freshness={"status": "fresh"},
+    )
+    base = {"estimated_minutes": 60, "exercises": [{"target_sets": 4, "rpe_target": 8}]}
+    conflict = {"has_conflict": True, "conservative_source": "whoop"}
+
+    first = apply_wearable_modifiers(
+        "intensity",
+        base,
+        whoop_signals=signals,
+        source_conflict=conflict,
+    )
+    second = apply_wearable_modifiers(
+        "intensity",
+        first["next_workout"],
+        whoop_signals=signals,
+        source_conflict=conflict,
+    )
+
+    assert first["applied_modifiers"] == ["caution"]
+    assert second["next_workout"]["exercises"][0]["target_sets"] == first["next_workout"]["exercises"][0]["target_sets"]
+    assert second["next_workout"]["exercises"][0]["rpe_target"] == first["next_workout"]["exercises"][0]["rpe_target"]
+    assert second["next_workout"]["estimated_minutes"] == first["next_workout"]["estimated_minutes"]
+
+
 def test_stale_or_unscored_data_is_display_only():
     signals = build_whoop_recommendation_signals(
         {
