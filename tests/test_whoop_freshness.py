@@ -46,6 +46,42 @@ def test_latest_whoop_freshness_classifies_status(tmp_path):
     assert stale["status"] == "stale"
 
 
+def test_latest_whoop_freshness_uses_connection_sync_attempt_for_existing_fact(tmp_path):
+    db_path = str(tmp_path / "whoop.sqlite3")
+    whoop_store.init_whoop_db(db_path)
+    whoop_store.upsert_whoop_records(
+        db_path,
+        "recovery",
+        [
+            {
+                "upstream_id": "rec-1",
+                "local_date": "2026-06-25",
+                "score_state": "SCORED",
+                "recovery_score": 75,
+            }
+        ],
+        imported_at=datetime(2026, 6, 25, 6, 0, 0),
+    )
+    whoop_store.project_whoop_daily_facts(db_path)
+    run_id = whoop_store.record_whoop_sync_run(
+        db_path,
+        reason="manual",
+        started_at=datetime(2026, 6, 26, 8, 0, 0),
+    )
+    whoop_store.finish_whoop_sync_run(
+        db_path,
+        run_id,
+        status="success",
+        completed_at=datetime(2026, 6, 26, 8, 1, 0),
+        records_upserted=0,
+    )
+
+    freshness = whoop_store.latest_whoop_freshness(db_path, now=datetime(2026, 6, 26, 9, 0, 0))
+
+    assert freshness["last_data_point"] == "2026-06-25"
+    assert freshness["last_sync_attempt"] == "2026-06-26T08:01:00"
+
+
 def test_compute_data_freshness_includes_whoop_and_pending_score(fitness_app):
     whoop_store.upsert_whoop_records(
         fitness_app.WHOOP_DB_FILE,
