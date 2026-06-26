@@ -445,6 +445,49 @@ def test_whoop_sync_terminal_auth_failure_marks_reauth_required(fitness_app, mon
     assert status["reauth_required"] is True
 
 
+def test_whoop_sync_transport_timeout_finishes_retryable_run(fitness_app, monkeypatch):
+    monkeypatch.setattr(
+        fitness_app,
+        "_whoop_config_for_redirect",
+        lambda redirect_uri: whoop_client.WhoopConfig("client-id", "safe-placeholder", redirect_uri),
+    )
+    whoop_store.save_connection_tokens(
+        fitness_app.WHOOP_DB_FILE,
+        {
+            "access_token": "old-session",
+            "refresh_token": "old-renewal",
+            "expires_in": 3600,
+            "scope": "offline read:recovery",
+        },
+    )
+
+    class TimeoutClient:
+        def __init__(self, config, *, session_value, renewal_value):
+            self._client = whoop_client.WhoopClient(
+                config,
+                session_value=session_value,
+                renewal_value=renewal_value,
+                urlopen=lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("timed out")),
+                sleep=lambda _seconds: None,
+                max_retries=0,
+            )
+            self.access_token = session_value
+            self.refresh_token = renewal_value
+
+        def fetch_recovery(self, *, start=None, end=None):
+            return self._client.fetch_recovery(start=start, end=end)
+
+    with fitness_app.app.app_context():
+        result, err = fitness_app._run_whoop_sync("manual", client_factory=TimeoutClient)
+
+    assert result is None
+    assert err is not None
+    runs = whoop_store.list_whoop_sync_runs(fitness_app.WHOOP_DB_FILE, reason="manual")
+    assert runs[0]["status"] == "error"
+    assert runs[0]["retryable"] == 1
+    assert "TimeoutError" in runs[0]["redacted_error"]
+
+
 def test_backup_exports_only_normalized_whoop_facts_not_tokens(fitness_app):
     whoop_store.save_connection_tokens(
         fitness_app.WHOOP_DB_FILE,
@@ -489,6 +532,56 @@ def test_backup_import_rejects_invalid_whoop_daily_facts(fitness_app):
 
     assert response.status_code == 400
     assert "local_date" in response.get_json()["message"]
+
+
+def test_backup_import_rejects_malformed_whoop_shape_without_clearing_existing_data(fitness_app):
+    whoop_store.upsert_whoop_records(
+        fitness_app.WHOOP_DB_FILE,
+        "recovery",
+        [
+            {
+                "upstream_id": "rec-existing",
+                "local_date": "2026-06-25",
+                "score_state": "SCORED",
+                "recovery_score": 70,
+            }
+        ],
+    )
+    whoop_store.project_whoop_daily_facts(fitness_app.WHOOP_DB_FILE)
+
+    response = fitness_app.app.test_client().post(
+        "/api/import-backup",
+        json={"data": {"whoop_daily_facts": "bad"}},
+    )
+
+    assert response.status_code == 400
+    assert "must be a list" in response.get_json()["message"]
+    assert whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE, local_date="2026-06-25") is not None
+
+
+def test_backup_import_rejects_non_object_whoop_entries_without_clearing_existing_data(fitness_app):
+    whoop_store.upsert_whoop_records(
+        fitness_app.WHOOP_DB_FILE,
+        "recovery",
+        [
+            {
+                "upstream_id": "rec-existing",
+                "local_date": "2026-06-25",
+                "score_state": "SCORED",
+                "recovery_score": 70,
+            }
+        ],
+    )
+    whoop_store.project_whoop_daily_facts(fitness_app.WHOOP_DB_FILE)
+
+    response = fitness_app.app.test_client().post(
+        "/api/import-backup",
+        json={"data": {"whoop_daily_facts": ["bad"]}},
+    )
+
+    assert response.status_code == 400
+    assert "entries must be objects" in response.get_json()["message"]
+    assert whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE, local_date="2026-06-25") is not None
 
 
 def test_backup_import_rejects_forbidden_whoop_secret_fields(fitness_app):

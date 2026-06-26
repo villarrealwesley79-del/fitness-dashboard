@@ -13293,6 +13293,8 @@ def export_backup():
 
 
 def _validated_whoop_backup_records(facts):
+    if not isinstance(facts, list):
+        raise ValueError("whoop_daily_facts must be a list")
     material_word = "token"
     client_material_word = "secret"
     blocked_fields = {
@@ -13307,9 +13309,9 @@ def _validated_whoop_backup_records(facts):
         "client_" + client_material_word,
     }
     records = []
-    for fact in facts or []:
+    for fact in facts:
         if not isinstance(fact, dict):
-            continue
+            raise ValueError("whoop_daily_facts entries must be objects")
         present_forbidden = blocked_fields.intersection(fact.keys())
         if present_forbidden:
             raise ValueError(f"WHOOP backup fact includes forbidden field: {sorted(present_forbidden)[0]}")

@@ -318,6 +318,11 @@ class WhoopClient:
                 redact_whoop_error(f"WHOOP API request failed: {exc.reason}"),
                 retryable=True,
             ) from exc
+        except (TimeoutError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise WhoopApiError(
+                redact_whoop_error(f"WHOOP API request failed: {type(exc).__name__}"),
+                retryable=True,
+            ) from exc
 
     def refresh_access_token(self) -> dict:
         if not self.refresh_token:
