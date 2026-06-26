@@ -1293,6 +1293,7 @@
         unscorable: 'unscorable',
         calibrating: 'calibrating',
         reauth_required: 'reauth_required',
+        missing_config: 'missing_config',
         csv_only: 'csv_only',
         source_conflict: 'source_conflict',
         error: 'error',
@@ -1330,7 +1331,7 @@
         if (raw === 'no_data' || raw === 'missing/no_data' || raw === 'missing/no-data' || raw === 'no-data') return WHOOP_UI_STATES.missing;
         if (raw === 'pending' || raw === 'pending_score') return WHOOP_UI_STATES.pending_score;
         if (raw === 'reauth' || raw === 'reauth_required') return WHOOP_UI_STATES.reauth_required;
-        if (raw === 'missing_config') return 'missing_config';
+        if (raw === 'missing_config') return WHOOP_UI_STATES.missing_config;
         if (raw === 'csv' || raw === 'csv_only') return WHOOP_UI_STATES.csv_only;
         if (raw === 'source_conflict' || raw === 'conflict') return WHOOP_UI_STATES.source_conflict;
         return raw;
@@ -1411,7 +1412,8 @@
         if (whoop && (whoop.csv_only || normalizeWhoopStateToken(whoop.source_kind) === WHOOP_UI_STATES.csv_only || status === WHOOP_UI_STATES.csv_only)) {
             return WHOOP_UI_STATES.csv_only;
         }
-        if (status === WHOOP_UI_STATES.disconnected || status === 'missing_config' || whoop && whoop.connected === false) return WHOOP_UI_STATES.disconnected;
+        if (status === WHOOP_UI_STATES.missing_config) return WHOOP_UI_STATES.missing_config;
+        if (status === WHOOP_UI_STATES.disconnected || whoop && whoop.connected === false) return WHOOP_UI_STATES.disconnected;
         if (whoop && (whoop.calibrating || status === WHOOP_UI_STATES.calibrating || scoreState === WHOOP_UI_STATES.calibrating)) return WHOOP_UI_STATES.calibrating;
         if (whoop && (whoop.pending_score || status === WHOOP_UI_STATES.pending_score || scoreState === WHOOP_UI_STATES.pending_score)) return WHOOP_UI_STATES.pending_score;
         if (whoop && (whoop.unscorable || status === WHOOP_UI_STATES.unscorable || scoreState === WHOOP_UI_STATES.unscorable)) return WHOOP_UI_STATES.unscorable;
@@ -1461,6 +1463,9 @@
         }
         if (uiState === WHOOP_UI_STATES.reauth_required) {
             return { cls: 'stale', label: 'WHOOP · reauth required', title: 'WHOOP needs to be reconnected before the next sync' };
+        }
+        if (uiState === WHOOP_UI_STATES.missing_config) {
+            return { cls: 'stale', label: 'WHOOP · config missing', title: 'WHOOP OAuth is not configured on this server' };
         }
         if (uiState === WHOOP_UI_STATES.csv_only) {
             return { cls: 'warn', label: 'WHOOP · CSV only', title: 'WHOOP data is available only from CSV import right now' };
@@ -1814,7 +1819,7 @@
         const deleteBtn = $('btn-delete-whoop-data');
         const connectUrl = currentWhoopConnectUrl();
         const disconnected = uiState === WHOOP_UI_STATES.disconnected;
-        const missingConfig = uiState === 'missing_config';
+        const missingConfig = uiState === WHOOP_UI_STATES.missing_config;
         const reauth = uiState === WHOOP_UI_STATES.reauth_required;
         const busySync = state.whoopUi.syncInFlight || uiState === WHOOP_UI_STATES.syncing;
         const busyDisconnect = state.whoopUi.disconnectInFlight;
@@ -1828,7 +1833,7 @@
         }
         if (syncBtn) {
             syncBtn.hidden = disconnected && !connectUrl;
-            syncBtn.disabled = busy || disconnected || reauth;
+            syncBtn.disabled = busy || disconnected || missingConfig || reauth;
             syncBtn.textContent = busySync ? 'Syncing…' : 'Sync';
         }
         if (disconnectBtn) {
@@ -5567,6 +5572,7 @@
             unscorable: 'Connected · unscorable',
             calibrating: 'Connected · calibrating',
             reauth_required: 'Reconnect required',
+            missing_config: 'Config missing',
             csv_only: 'CSV import only',
             source_conflict: 'Connected · source conflict',
             error: 'Connection error',
@@ -5599,6 +5605,7 @@
         else if (uiState === WHOOP_UI_STATES.unscorable) attentionText = 'Latest WHOOP day is unscorable, so WHOOP stays display-only.';
         else if (uiState === WHOOP_UI_STATES.calibrating) attentionText = 'WHOOP is calibrating; the recommendation stays conservative.';
         else if (uiState === WHOOP_UI_STATES.reauth_required) attentionText = 'WHOOP needs to be reconnected before the next sync.';
+        else if (uiState === WHOOP_UI_STATES.missing_config) attentionText = 'WHOOP OAuth is not configured on this server. Disconnect and delete local data remain available.';
         else if (uiState === WHOOP_UI_STATES.csv_only) attentionText = 'CSV backfill is present, but live WHOOP sync is not active.';
         else if (uiState === WHOOP_UI_STATES.source_conflict) attentionText = (freshness && freshness.conflict_message) || 'WHOOP and another wearable disagree, so the conservative plan wins.';
         else if (uiState === WHOOP_UI_STATES.error) attentionText = String((whoop && whoop.error) || state.whoopUi.lastError || 'WHOOP status is unavailable right now.');

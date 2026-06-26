@@ -47,6 +47,35 @@ def test_connection_tokens_round_trip_and_disconnect(tmp_path):
     assert whoop_store.load_connection_token_material(db_path) == {}
 
 
+def test_save_connection_tokens_deletes_material_when_db_write_fails(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "whoop.sqlite3")
+    whoop_store.init_whoop_db(db_path)
+    monkeypatch.setattr(whoop_store, "init_whoop_db", lambda *_args, **_kwargs: None)
+
+    class FailingConnection:
+        def execute(self, *_args, **_kwargs):
+            raise sqlite3.OperationalError("locked")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(whoop_store, "_connect", lambda *_args, **_kwargs: FailingConnection())
+
+    session_field = "access_" + "token"
+    renewal_field = "refresh_" + "token"
+    with pytest.raises(sqlite3.OperationalError):
+        whoop_store.save_connection_tokens(
+            db_path,
+            {
+                session_field: "access-token",
+                renewal_field: "refresh-token",
+                "expires_in": 3600,
+            },
+        )
+
+    assert whoop_store.load_connection_token_material(db_path) == {}
+
+
 def test_disconnect_surfaces_protected_material_delete_failure(tmp_path, monkeypatch):
     db_path = str(tmp_path / "whoop.sqlite3")
     whoop_store.init_whoop_db(db_path)

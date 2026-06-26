@@ -346,38 +346,42 @@ def save_connection_tokens(
     else:
         scopes_json = json.dumps([])
     material_ref = _write_protected_material(db_path, token_payload)
-    with closing(_connect(db_path)) as conn:
-        conn.execute(
-            """
-            INSERT INTO whoop_connection (
-                id, status, connected_at, disconnected_at, last_successful_sync_at, last_sync_attempt_at,
-                last_error, scopes_json, material_ref, access_token_expires_at,
-                reauth_required, updated_at
-            ) VALUES (
-                1, 'connected', :connected_at, NULL, NULL, NULL, :last_error, :scopes_json,
-                :material_ref, :access_token_expires_at, 0, :updated_at
+    try:
+        with closing(_connect(db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO whoop_connection (
+                    id, status, connected_at, disconnected_at, last_successful_sync_at, last_sync_attempt_at,
+                    last_error, scopes_json, material_ref, access_token_expires_at,
+                    reauth_required, updated_at
+                ) VALUES (
+                    1, 'connected', :connected_at, NULL, NULL, NULL, :last_error, :scopes_json,
+                    :material_ref, :access_token_expires_at, 0, :updated_at
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    status = 'connected',
+                    connected_at = excluded.connected_at,
+                    disconnected_at = NULL,
+                    last_error = excluded.last_error,
+                    scopes_json = excluded.scopes_json,
+                    material_ref = excluded.material_ref,
+                    "access_token_expires_at" = excluded."access_token_expires_at",
+                    reauth_required = 0,
+                    updated_at = excluded.updated_at
+                """,
+                {
+                    "connected_at": _iso_now(now),
+                    "last_error": last_error,
+                    "scopes_json": scopes_json,
+                    "material_ref": material_ref,
+                    "access_token_expires_at": _token_expiry(token_payload, now=now),
+                    "updated_at": _iso_now(now),
+                },
             )
-            ON CONFLICT(id) DO UPDATE SET
-                status = 'connected',
-                connected_at = excluded.connected_at,
-                disconnected_at = NULL,
-                last_error = excluded.last_error,
-                scopes_json = excluded.scopes_json,
-                material_ref = excluded.material_ref,
-                "access_token_expires_at" = excluded."access_token_expires_at",
-                reauth_required = 0,
-                updated_at = excluded.updated_at
-            """,
-            {
-                "connected_at": _iso_now(now),
-                "last_error": last_error,
-                "scopes_json": scopes_json,
-                "material_ref": material_ref,
-                "access_token_expires_at": _token_expiry(token_payload, now=now),
-                "updated_at": _iso_now(now),
-            },
-        )
-        conn.commit()
+            conn.commit()
+    except Exception:
+        delete_connection_token_material(db_path)
+        raise
 
 
 def rotate_connection_tokens(
