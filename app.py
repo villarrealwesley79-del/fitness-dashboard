@@ -5075,6 +5075,11 @@ def api_dashboard():
         source_conflict=whoop_context["source_conflict"],
     )
     next_workout = whoop_adjusted["next_workout"]
+    nutrition_context = _nutrition_context_for_date(
+        today_s,
+        hard_training_planned=_workout_looks_hard(next_workout),
+        food_log_entries=food_log_entries,
+    )
     LAST_WORKOUT_RECOMMENDATION = next_workout
     LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
     nutrition_today_payload = _nutrition_today_public_payload(today_s, nutrition_context)
@@ -10976,14 +10981,17 @@ def _whoop_public_status(now=None):
 
 def _whoop_recommendation_context(oura_readiness=None, *, now=None):
     freshness = latest_whoop_freshness(WHOOP_DB_FILE, now=now)
-    fact = get_whoop_daily_fact(WHOOP_DB_FILE, local_date=_today_str()) or get_whoop_daily_fact(WHOOP_DB_FILE)
+    public_status = _whoop_public_status(now=now)
+    fact = None
+    if public_status.get("connected"):
+        fact = get_whoop_daily_fact(WHOOP_DB_FILE, local_date=_today_str()) or get_whoop_daily_fact(WHOOP_DB_FILE)
     signals = build_whoop_recommendation_signals(fact, freshness=freshness)
     source_conflict = detect_wearable_source_conflicts(
         oura_readiness=oura_readiness,
         whoop_signals=signals,
     )
     return {
-        "status": _whoop_public_status(now=now),
+        "status": public_status,
         "fact": fact,
         "signals": signals,
         "source_conflict": source_conflict,

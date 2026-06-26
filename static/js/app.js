@@ -1388,19 +1388,19 @@
                 || whoop.status
                 || whoop.connection_status
                 || whoop.freshness_status
-                || whoop.score_state
                 || whoop.mode
             )
         );
+        const scoreState = normalizeWhoopStateToken(whoop && whoop.score_state);
         if (whoop && (whoop.error || status === WHOOP_UI_STATES.error)) return WHOOP_UI_STATES.error;
         if (whoop && (whoop.syncing || status === WHOOP_UI_STATES.syncing)) return WHOOP_UI_STATES.syncing;
         if (whoop && (whoop.reauth_required || status === WHOOP_UI_STATES.reauth_required)) return WHOOP_UI_STATES.reauth_required;
         if (firstWhoopConflict(conflicts) || (whoop && (whoop.source_conflict || status === WHOOP_UI_STATES.source_conflict))) {
             return WHOOP_UI_STATES.source_conflict;
         }
-        if (whoop && (whoop.calibrating || status === WHOOP_UI_STATES.calibrating)) return WHOOP_UI_STATES.calibrating;
-        if (whoop && (whoop.pending_score || status === WHOOP_UI_STATES.pending_score)) return WHOOP_UI_STATES.pending_score;
-        if (whoop && (whoop.unscorable || status === WHOOP_UI_STATES.unscorable)) return WHOOP_UI_STATES.unscorable;
+        if (whoop && (whoop.calibrating || status === WHOOP_UI_STATES.calibrating || scoreState === WHOOP_UI_STATES.calibrating)) return WHOOP_UI_STATES.calibrating;
+        if (whoop && (whoop.pending_score || status === WHOOP_UI_STATES.pending_score || scoreState === WHOOP_UI_STATES.pending_score)) return WHOOP_UI_STATES.pending_score;
+        if (whoop && (whoop.unscorable || status === WHOOP_UI_STATES.unscorable || scoreState === WHOOP_UI_STATES.unscorable)) return WHOOP_UI_STATES.unscorable;
         if (whoop && (whoop.csv_only || normalizeWhoopStateToken(whoop.source_kind) === WHOOP_UI_STATES.csv_only || status === WHOOP_UI_STATES.csv_only)) {
             return WHOOP_UI_STATES.csv_only;
         }

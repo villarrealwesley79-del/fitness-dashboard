@@ -40,6 +40,7 @@ def fitness_app(monkeypatch, tmp_path):
 
 
 def test_whoop_signal_endpoint_and_smart_recommendation_keep_apple_health_load_truth(fitness_app, monkeypatch):
+    monkeypatch.setattr(fitness_app, "_whoop_config_or_none", lambda: object())
     monkeypatch.setattr(
         fitness_app,
         "get_oura_daily",
@@ -82,6 +83,14 @@ def test_whoop_signal_endpoint_and_smart_recommendation_keep_apple_health_load_t
             "exercises": [{"target_sets": 4, "rpe_target": 8, "rationale": "Base"}],
         },
     )
+    whoop_store.save_connection_tokens(
+        fitness_app.WHOOP_DB_FILE,
+        {
+            "access_token": "session-value",
+            "refresh_token": "renewal-value",
+            "expires_in": 3600,
+        },
+    )
 
     whoop_store.upsert_whoop_records(
         fitness_app.WHOOP_DB_FILE,
@@ -111,6 +120,7 @@ def test_whoop_signal_endpoint_and_smart_recommendation_keep_apple_health_load_t
 
 
 def test_next_workout_cache_matches_whoop_adjusted_response(fitness_app, monkeypatch):
+    monkeypatch.setattr(fitness_app, "_whoop_config_or_none", lambda: object())
     monkeypatch.setattr(
         fitness_app,
         "generate_next_workout",
@@ -132,6 +142,14 @@ def test_next_workout_cache_matches_whoop_adjusted_response(fitness_app, monkeyp
     )
     fitness_app.LAST_WORKOUT_RECOMMENDATION = None
     fitness_app.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
+    whoop_store.save_connection_tokens(
+        fitness_app.WHOOP_DB_FILE,
+        {
+            "access_token": "session-value",
+            "refresh_token": "renewal-value",
+            "expires_in": 3600,
+        },
+    )
 
     whoop_store.upsert_whoop_records(
         fitness_app.WHOOP_DB_FILE,
@@ -178,3 +196,46 @@ def test_next_workout_cache_matches_whoop_adjusted_response(fitness_app, monkeyp
 
     assert stale_response.status_code == 200
     assert stale_payload["next_workout"]["exercises"][0]["target_sets"] == 4
+
+
+def test_disconnected_whoop_facts_do_not_modify_next_workout(fitness_app, monkeypatch):
+    monkeypatch.setattr(
+        fitness_app,
+        "generate_next_workout",
+        lambda *_args, **_kwargs: {
+            "estimated_minutes": 60,
+            "estimated_duration": "60 min",
+            "exercises": [{"target_sets": 4, "rpe_target": 8, "rationale": "Base"}],
+        },
+    )
+    monkeypatch.setattr(fitness_app, "_workout_with_auth_scope", lambda workout: workout)
+    monkeypatch.setattr(fitness_app, "_food_log_entries_for_context", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
+    monkeypatch.setattr(fitness_app, "_workout_looks_hard", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        fitness_app,
+        "_apply_due_workout_adaptations_for_plan",
+        lambda workout, **_kwargs: (workout, []),
+    )
+    fitness_app.LAST_WORKOUT_RECOMMENDATION = None
+    fitness_app.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
+    whoop_store.upsert_whoop_records(
+        fitness_app.WHOOP_DB_FILE,
+        "recovery",
+        [
+            {
+                "upstream_id": "rec-1",
+                "local_date": fitness_app._today_str(),
+                "score_state": "SCORED",
+                "recovery_score": 38,
+            }
+        ],
+    )
+    whoop_store.project_whoop_daily_facts(fitness_app.WHOOP_DB_FILE)
+
+    response = fitness_app.app.test_client().get("/api/next-workout")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["next_workout"]["exercises"][0]["target_sets"] == 4
+    assert payload["recommendation_sources"]["whoop"]["display_only"] is True

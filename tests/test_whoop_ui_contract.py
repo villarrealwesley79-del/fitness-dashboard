@@ -101,6 +101,19 @@ def test_whoop_freshness_status_wins_over_connection_status_merge():
 
     assert "if (freshnessNode && freshnessNode.status) merged.status = freshnessNode.status;" in app_js
     assert "if (freshnessNode && freshnessNode.score_state) merged.score_state = freshnessNode.score_state;" in app_js
+    assert "const scoreState = normalizeWhoopStateToken(whoop && whoop.score_state);" in app_js
+    assert "scoreState === WHOOP_UI_STATES.pending_score" in app_js
+    assert "scoreState === WHOOP_UI_STATES.calibrating" in app_js
+
+
+def test_dashboard_recomputes_nutrition_after_whoop_adjustment():
+    app_py = (ROOT / "app.py").read_text()
+
+    whoop_adjust = app_py.index("whoop_adjusted = apply_wearable_modifiers(")
+    recompute = app_py.index("nutrition_context = _nutrition_context_for_date(", whoop_adjust)
+    public_payload = app_py.index("nutrition_today_payload = _nutrition_today_public_payload", recompute)
+
+    assert whoop_adjust < recompute < public_payload
 
 
 def test_whoop_styles_live_in_scoped_override_file():
