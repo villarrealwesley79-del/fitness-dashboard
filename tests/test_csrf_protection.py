@@ -204,7 +204,8 @@ def test_whoop_mutation_posts_without_csrf_header_are_rejected(monkeypatch):
     ):
         response = client.post(path, json={}, environ_overrides=_OMIT_AUTO_CSRF)
         assert response.status_code == 403
-        assert response.get_json()["code"] == "csrf_required"
+        payload = response.get_json()
+        assert (payload.get("code") or payload["error"]["code"]) == "csrf_required"
 
 
 def test_whoop_disconnect_with_csrf_header_reaches_handler(monkeypatch, tmp_path):

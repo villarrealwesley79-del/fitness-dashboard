@@ -186,7 +186,13 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "\"apple_health\": {" in app_py
     assert "file_marker(_apple_health_sync_db_file())" in app_py
     assert "healthkit_samples_workout_*.json" in app_py
-    assert "training_recommendation=_current_workout_training_recommendation()" in app_py
+    assert (
+        "training_recommendation=_current_workout_training_recommendation()" in app_py
+        or (
+            "training_recommendation = _current_workout_training_recommendation()" in app_py
+            and "training_recommendation=training_recommendation" in app_py
+        )
+    )
     assert "api('/api/next-workout', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS })" in app_js
     assert "app-loader.js?v=20260626-fit239-whoop" in template
     assert "app.js?v=20260626-fit239-whoop" in (ROOT / "static" / "js" / "app-loader.js").read_text()
