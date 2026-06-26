@@ -180,6 +180,8 @@ SLEEP_FILE = data_path("data_sleep.json")
 NUTRITION_FILE = data_path("data_nutrition.json")
 OURA_DB_FILE = data_path("oura_daily.sqlite3")
 WHOOP_DB_FILE = data_path("whoop.sqlite3")
+WHOOP_CSV_MAX_BYTES = 512 * 1024
+WHOOP_CSV_MAX_ROWS = 5000
 
 # ==================== WEATHER (wttr.in) ====================
 # Lightweight cache to avoid hammering the free endpoint.
@@ -10790,7 +10792,9 @@ def _run_whoop_sync(reason="manual", *, days_back=7, client_factory=WhoopClient)
 def _parse_whoop_csv_rows(text):
     reader = csv.DictReader(io.StringIO(text))
     records = []
-    for row in reader:
+    for index, row in enumerate(reader, start=1):
+        if index > WHOOP_CSV_MAX_ROWS:
+            raise ValueError(f"WHOOP CSV row limit exceeded ({WHOOP_CSV_MAX_ROWS}).")
         if not isinstance(row, dict):
             continue
         record_type = (row.get("record_type") or row.get("type") or "recovery").strip().lower()
@@ -10951,15 +10955,26 @@ def whoop_sync():
 @app.route('/api/whoop/import-csv', methods=['POST'])
 def whoop_import_csv():
     text = ""
+    content_length = request.content_length
+    if content_length is not None and content_length > WHOOP_CSV_MAX_BYTES:
+        return api_error("WHOOP CSV is too large.", 413, code="whoop_csv_too_large")
     if request.files:
         upload = next(iter(request.files.values()))
-        text = upload.read().decode("utf-8", errors="replace")
+        raw = upload.stream.read(WHOOP_CSV_MAX_BYTES + 1)
+        if len(raw) > WHOOP_CSV_MAX_BYTES:
+            return api_error("WHOOP CSV is too large.", 413, code="whoop_csv_too_large")
+        text = raw.decode("utf-8", errors="replace")
     else:
         body = request.get_json(silent=True) or {}
         text = str(body.get("csv") or "")
+        if len(text.encode("utf-8")) > WHOOP_CSV_MAX_BYTES:
+            return api_error("WHOOP CSV is too large.", 413, code="whoop_csv_too_large")
     if not text.strip():
         return api_error("CSV content is required.", 400, code="missing_csv")
-    parsed = _parse_whoop_csv_rows(text)
+    try:
+        parsed = _parse_whoop_csv_rows(text)
+    except ValueError as exc:
+        return api_error(str(exc), 413, code="whoop_csv_too_many_rows")
     if not parsed:
         return api_error("No WHOOP rows could be imported from the CSV.", 400, code="empty_whoop_csv")
     run_id = record_whoop_sync_run(WHOOP_DB_FILE, reason="csv_import")

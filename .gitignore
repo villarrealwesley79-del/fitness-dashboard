@@ -14,6 +14,7 @@ __pycache__/
 .whoop-client-id
 .whoop-oauth-state*
 .whoop-token*
+.whoop-protected-material*
 .whoop-sync-state*
 .claude/
 venv/

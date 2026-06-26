@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime
 
@@ -174,3 +175,13 @@ def test_oauth_state_is_single_use_short_lived_and_user_bound(tmp_path):
         user_binding="user-a",
         now=datetime(2026, 6, 25, 8, 6, 0),
     ) is None
+
+
+def test_default_protected_material_path_is_outside_repo(monkeypatch):
+    monkeypatch.delenv("WHOOP_PROTECTED_MATERIAL_DIR", raising=False)
+    repo_db_path = os.path.join(os.path.dirname(whoop_store.__file__), "whoop.sqlite3")
+
+    material_path = whoop_store._protected_material_path(repo_db_path)
+
+    assert not material_path.startswith(os.path.dirname(whoop_store.__file__))
+    assert "Application Support" in material_path

@@ -37,10 +37,11 @@ def test_whoop_frontend_calls_expected_status_sync_and_disconnect_endpoints():
     assert "async function syncWhoop()" in app_js
     assert "async function disconnectWhoop()" in app_js
     assert "api('/api/whoop/status'" in app_js
+    assert "api('/api/whoop/connect/start', { method: 'POST' })" in app_js
     assert "api('/api/whoop/sync'" in app_js
     assert "api('/api/whoop/disconnect'" in app_js
-    assert "function connectWhoop()" in app_js
-    assert "WHOOP connect flow is not available in this slice yet." in app_js
+    assert "async function connectWhoop()" in app_js
+    assert "window.location.assign(nextUrl);" in app_js
 
 
 def test_whoop_frontend_preserves_keyboard_and_modal_focus_path():
@@ -58,6 +59,9 @@ def test_whoop_frontend_preserves_keyboard_and_modal_focus_path():
 def test_whoop_recommendation_source_conflict_accepts_nested_backend_shape():
     app_js = APP_JS.read_text()
 
+    assert "if (entries && !Array.isArray(entries) && typeof entries === 'object')" in app_js
+    assert "entries.whoop" in app_js
+    assert "entries.load_source" in app_js
     assert "function recommendationSourceConflictNode(payload)" in app_js
     assert "payload.recommendation_sources && payload.recommendation_sources.source_conflict" in app_js
     assert "function collectSourceConflicts(dash, reco)" in app_js

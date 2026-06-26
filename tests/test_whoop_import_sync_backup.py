@@ -44,6 +44,33 @@ def test_whoop_csv_import_projects_facts_and_lists_history(fitness_app):
     assert imports.get_json()["imports"][0]["reason"] == "csv_import"
 
 
+def test_whoop_csv_import_rejects_large_payload_and_row_flood(fitness_app):
+    client = fitness_app.app.test_client()
+    too_large = "record_type,local_date,recovery_score\n" + ("x" * (fitness_app.WHOOP_CSV_MAX_BYTES + 1))
+
+    large_response = client.post("/api/whoop/import-csv", json={"csv": too_large})
+
+    assert large_response.status_code == 413
+    assert large_response.get_json()["error"]["code"] == "whoop_csv_too_large"
+
+    original_limit = fitness_app.WHOOP_CSV_MAX_ROWS
+    fitness_app.WHOOP_CSV_MAX_ROWS = 1
+    try:
+        row_flood = "\n".join(
+            [
+                "record_type,local_date,recovery_score",
+                "recovery,2026-06-25,42",
+                "recovery,2026-06-26,43",
+            ]
+        )
+        flood_response = client.post("/api/whoop/import-csv", json={"csv": row_flood})
+    finally:
+        fitness_app.WHOOP_CSV_MAX_ROWS = original_limit
+
+    assert flood_response.status_code == 413
+    assert flood_response.get_json()["error"]["code"] == "whoop_csv_too_many_rows"
+
+
 def test_whoop_manual_sync_uses_protected_material_and_normalizes_records(fitness_app, monkeypatch):
     monkeypatch.setattr(
         fitness_app,

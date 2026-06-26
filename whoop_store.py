@@ -179,7 +179,21 @@ def init_whoop_db(db_path: str) -> None:
 
 
 def _protected_material_path(db_path: str) -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(db_path)), ".whoop-protected-material.json")
+    override = os.environ.get("WHOOP_PROTECTED_MATERIAL_DIR", "").strip()
+    if override:
+        base_dir = os.path.abspath(os.path.expanduser(override))
+    else:
+        db_dir = os.path.dirname(os.path.abspath(db_path))
+        repo_dir = os.path.dirname(os.path.abspath(__file__))
+        try:
+            db_inside_repo = os.path.commonpath([db_dir, repo_dir]) == repo_dir
+        except ValueError:
+            db_inside_repo = False
+        if db_inside_repo:
+            base_dir = os.path.expanduser("~/Library/Application Support/Fitness Dashboard/secrets")
+        else:
+            base_dir = db_dir
+    return os.path.join(base_dir, ".whoop-protected-material.json")
 
 
 def _write_protected_material(db_path: str, token_payload: dict) -> str:

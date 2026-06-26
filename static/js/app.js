@@ -1468,6 +1468,30 @@
     }
 
     function normalizeRecommendationSources(entries) {
+        if (entries && !Array.isArray(entries) && typeof entries === 'object') {
+            const normalizedEntries = [];
+            if (entries.whoop) {
+                const whoop = entries.whoop;
+                const detailParts = []
+                    .concat(whoop.explanations || [])
+                    .concat((whoop.applied_modifiers || []).map(function (item) { return `modifier: ${item}`; }));
+                normalizedEntries.push({
+                    key: 'whoop',
+                    label: 'WHOOP',
+                    role: whoop.display_only ? 'display only' : 'modifier',
+                    detail: detailParts.join(' · ') || 'WHOOP recovery context is available.',
+                });
+            }
+            if (entries.load_source) {
+                normalizedEntries.push({
+                    key: entries.load_source,
+                    label: sourceDisplayName(entries.load_source),
+                    role: 'load source',
+                    detail: `${sourceDisplayName(entries.load_source)} remains the training-load source.`,
+                });
+            }
+            entries = normalizedEntries;
+        }
         if (!Array.isArray(entries)) return [];
         return entries.map(function (entry) {
             if (typeof entry === 'string') {
@@ -1750,13 +1774,24 @@
         ) || '';
     }
 
-    function connectWhoop() {
+    async function connectWhoop() {
         const url = currentWhoopConnectUrl();
-        if (!url) {
-            toast('WHOOP connect flow is not available in this slice yet.', 'warn');
+        if (url) {
+            window.location.assign(url);
             return;
         }
-        window.location.assign(url);
+        try {
+            const body = await api('/api/whoop/connect/start', { method: 'POST' });
+            const nextUrl = body && (body.authorization_url || body.url);
+            if (!nextUrl) {
+                toast('WHOOP connect flow is not available yet.', 'warn');
+                return;
+            }
+            state.whoopStatus = Object.assign({}, state.whoopStatus || {}, body.connection || {}, { authorization_url: nextUrl });
+            window.location.assign(nextUrl);
+        } catch (err) {
+            toast((err && err.message) || 'WHOOP connect failed.', 'error');
+        }
     }
 
     function setWhoopActionButtons(whoop, uiState) {
@@ -1765,12 +1800,13 @@
         const disconnectBtn = $('btn-disconnect-whoop');
         const connectUrl = currentWhoopConnectUrl();
         const disconnected = uiState === WHOOP_UI_STATES.disconnected;
+        const missingConfig = uiState === 'missing_config';
         const reauth = uiState === WHOOP_UI_STATES.reauth_required;
         const busySync = state.whoopUi.syncInFlight || uiState === WHOOP_UI_STATES.syncing;
         const busyDisconnect = state.whoopUi.disconnectInFlight;
 
         if (connectBtn) {
-            connectBtn.hidden = !connectUrl && !reauth;
+            connectBtn.hidden = !(disconnected || missingConfig || reauth || connectUrl);
             connectBtn.disabled = busySync || busyDisconnect;
             connectBtn.textContent = reauth ? 'Reconnect' : 'Connect';
         }
