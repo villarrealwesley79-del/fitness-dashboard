@@ -10677,6 +10677,16 @@ def _whoop_number(value):
     return number if math.isfinite(number) else None
 
 
+def _whoop_truthy(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False
+
+
 WHOOP_METRIC_BOUNDS = {
     "recovery_score": (0, 100),
     "strain": (0, 21),
@@ -10854,6 +10864,8 @@ def _normalize_whoop_record(record_type, record):
             }
         )
     elif record_type == "sleep":
+        if _whoop_truthy(record.get("nap")) or _whoop_truthy(score.get("nap")):
+            return None
         sleep_score = _first_present(record.get("sleep_performance_pct"), score.get("sleep_performance_percentage"))
         gap = _first_present(record.get("sleep_need_gap_min"), score.get("sleep_needed_minutes"), _whoop_sleep_need_gap_minutes(score))
         values.update(

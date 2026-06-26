@@ -893,6 +893,15 @@
         window.scrollTo({ top: 0, behavior: 'instant' });
     }
 
+    function initialTabFromHash() {
+        const hash = window.location && window.location.hash ? window.location.hash.toLowerCase() : '';
+        if (hash === '#settings') return 'tab-settings';
+        if (hash === '#history') return 'tab-history';
+        if (hash === '#workout') return 'tab-workout';
+        if (hash === '#nutrition') return 'tab-nutrition';
+        return 'tab-dashboard';
+    }
+
     function handleTabKeydown(e) {
         const key = e.key;
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
@@ -11126,7 +11135,7 @@
     function boot() {
         renderGreeting();
         wireEvents();
-        switchTab('tab-dashboard');
+        switchTab(initialTabFromHash());
         fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
         refreshAiStatus();
         if (aiStatusTimer) clearInterval(aiStatusTimer);

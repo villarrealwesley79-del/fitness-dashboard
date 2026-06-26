@@ -183,6 +183,34 @@ def test_whoop_sleep_normalization_uses_local_wake_date(fitness_app):
     assert row["local_date"] == "2026-06-26"
 
 
+def test_whoop_sleep_normalization_ignores_naps(fitness_app):
+    row = fitness_app._normalize_whoop_record(
+        "sleep",
+        {
+            "id": "nap-1",
+            "end": "2026-06-25T19:00:00.000Z",
+            "nap": True,
+            "score": {"sleep_performance_percentage": 30},
+        },
+    )
+
+    assert row is None
+
+
+def test_whoop_sleep_csv_normalization_ignores_string_naps(fitness_app):
+    row = fitness_app._normalize_whoop_record(
+        "sleep",
+        {
+            "id": "nap-1",
+            "local_date": "2026-06-25",
+            "nap": "true",
+            "sleep_performance_pct": "30",
+        },
+    )
+
+    assert row is None
+
+
 def test_whoop_api_normalization_marks_calibrating_recovery_display_only(fitness_app):
     row = fitness_app._normalize_whoop_record(
         "recovery",

@@ -74,6 +74,14 @@ def test_whoop_frontend_calls_expected_status_sync_and_disconnect_endpoints():
     assert "window.location.assign(nextUrl);" in app_js
 
 
+def test_whoop_oauth_success_hash_routes_to_settings_tab():
+    app_js = APP_JS.read_text()
+
+    assert "function initialTabFromHash()" in app_js
+    assert "if (hash === '#settings') return 'tab-settings';" in app_js
+    assert "switchTab(initialTabFromHash());" in app_js
+
+
 def test_whoop_frontend_preserves_keyboard_and_modal_focus_path():
     app_js = APP_JS.read_text()
 
