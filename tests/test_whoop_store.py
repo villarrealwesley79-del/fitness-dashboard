@@ -101,6 +101,45 @@ def test_project_daily_facts_is_idempotent_and_merges_record_types(tmp_path):
     assert fact["score_state"] == "SCORED"
 
 
+def test_project_daily_facts_does_not_promote_pending_recovery_metrics(tmp_path):
+    db_path = str(tmp_path / "whoop.sqlite3")
+    whoop_store.init_whoop_db(db_path)
+
+    whoop_store.upsert_whoop_records(
+        db_path,
+        "recovery",
+        [
+            {
+                "upstream_id": "recovery-pending",
+                "local_date": "2026-06-25",
+                "score_state": "PENDING_SCORE",
+                "recovery_score": 22,
+                "recovery_band": "low",
+            }
+        ],
+    )
+    whoop_store.upsert_whoop_records(
+        db_path,
+        "sleep",
+        [
+            {
+                "upstream_id": "sleep-scored",
+                "local_date": "2026-06-25",
+                "score_state": "SCORED",
+                "sleep_performance_pct": 90,
+            }
+        ],
+    )
+
+    whoop_store.project_whoop_daily_facts(db_path)
+
+    fact = whoop_store.get_daily_fact(db_path, local_date="2026-06-25")
+    assert fact["score_state"] == "SCORED"
+    assert fact["recovery_score"] is None
+    assert fact["recovery_band"] is None
+    assert fact["sleep_performance_pct"] == 90
+
+
 def test_rotate_connection_tokens_replaces_refresh_token_atomically(tmp_path):
     db_path = str(tmp_path / "whoop.sqlite3")
     whoop_store.init_whoop_db(db_path)

@@ -673,6 +673,8 @@ def project_whoop_daily_facts(db_path: str, *, projected_at: datetime | None = N
                 fact["score_state"] = "SCORED"
             elif fact["score_state"] != "SCORED" and score_state:
                 fact["score_state"] = score_state
+            if score_state != "SCORED":
+                continue
             for field in WHOOP_RECORD_FIELDS:
                 value = row[field]
                 if value is not None:
