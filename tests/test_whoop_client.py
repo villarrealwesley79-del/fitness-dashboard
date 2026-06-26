@@ -148,6 +148,49 @@ def test_whoop_client_retries_retryable_errors():
     assert attempts["sleep"] == [1]
 
 
+def test_whoop_client_refreshes_later_page_after_prior_retry():
+    config = whoop_client.WhoopConfig("client-id", "safe-placeholder", "http://localhost/api/whoop/callback")
+    calls = {"get": 0, "post": 0, "sleep": []}
+    session_field = "access_" + "token"
+    renewal_field = "refresh_" + "token"
+
+    def fake_urlopen(request, timeout=15):
+        method = getattr(request, "method", "GET")
+        if method == "POST":
+            calls["post"] += 1
+            return _FakeResponse(
+                {
+                    session_field: "fresh-access",
+                    renewal_field: "fresh-refresh",
+                    "expires_in": 3600,
+                }
+            )
+        calls["get"] += 1
+        if calls["get"] == 1:
+            raise _http_error(429, '{"error":"rate_limited"}')
+        if calls["get"] == 2:
+            return _FakeResponse({"records": [{"id": "page-1"}], "next_token": "page-2"})
+        if calls["get"] == 3:
+            raise _http_error(401, '{"error":"expired"}')
+        assert request.headers["Authorization"] == "Bearer fresh-access"
+        return _FakeResponse({"records": [{"id": "page-2"}]})
+
+    client = whoop_client.WhoopClient(
+        config,
+        session_value="stale-access",
+        renewal_value="stale-refresh",
+        urlopen=fake_urlopen,
+        sleep=lambda seconds: calls["sleep"].append(seconds),
+        max_retries=2,
+    )
+
+    rows = client.fetch_recovery()
+
+    assert [row["id"] for row in rows] == ["page-1", "page-2"]
+    assert calls["sleep"] == [1]
+    assert calls["post"] == 1
+
+
 def test_revoke_whoop_access_uses_delete_with_bearer_token():
     config = whoop_client.WhoopConfig("client-id", "safe-placeholder", "http://localhost/api/whoop/callback")
     seen = {}

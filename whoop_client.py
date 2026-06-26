@@ -341,7 +341,6 @@ class WhoopClient:
     ) -> list[dict]:
         records: list[dict] = []
         cursor: str | None = None
-        attempts = 0
         while True:
             query: dict[str, str] = {}
             if start is not None:
@@ -350,18 +349,22 @@ class WhoopClient:
                 query["end"] = _utc_iso(end)
             if cursor:
                 query["nextToken"] = cursor
-            try:
-                payload = self._request_json(path, query=query or None, limit=limit)
-            except WhoopApiError as exc:
-                if exc.status_code == 401 and self.refresh_token and attempts == 0:
-                    self.refresh_access_token()
-                    attempts += 1
-                    continue
-                if exc.retryable and attempts < self.max_retries:
-                    self.sleep(min(2 ** attempts, 4))
-                    attempts += 1
-                    continue
-                raise
+            retry_attempts = 0
+            refreshed = False
+            while True:
+                try:
+                    payload = self._request_json(path, query=query or None, limit=limit)
+                    break
+                except WhoopApiError as exc:
+                    if exc.status_code == 401 and self.refresh_token and not refreshed:
+                        self.refresh_access_token()
+                        refreshed = True
+                        continue
+                    if exc.retryable and retry_attempts < self.max_retries:
+                        self.sleep(min(2 ** retry_attempts, 4))
+                        retry_attempts += 1
+                        continue
+                    raise
             page_records = payload.get("records") or []
             if isinstance(page_records, list):
                 records.extend(item for item in page_records if isinstance(item, dict))
