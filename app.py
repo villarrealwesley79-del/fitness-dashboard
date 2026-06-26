@@ -172,6 +172,7 @@ except Exception as _e:
 # ==================== DATA PERSISTENCE ====================
 # Store runtime data under DATA_DIR when configured, otherwise next to the app.
 JSON_DATA_LOCK = threading.RLock()
+WHOOP_SYNC_LOCK = threading.Lock()
 WORKOUTS_FILE = data_path("data_workouts.json")
 SORENESS_FILE = data_path("data_soreness.json")
 SETTINGS_FILE = data_path("data_settings.json")
@@ -10877,6 +10878,15 @@ def _coerce_whoop_sync_days(value):
 
 
 def _run_whoop_sync(reason="manual", *, days_back=7, client_factory=WhoopClient):
+    if not WHOOP_SYNC_LOCK.acquire(blocking=False):
+        return None, api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
+    try:
+        return _run_whoop_sync_unlocked(reason, days_back=days_back, client_factory=client_factory)
+    finally:
+        WHOOP_SYNC_LOCK.release()
+
+
+def _run_whoop_sync_unlocked(reason="manual", *, days_back=7, client_factory=WhoopClient):
     connection = get_whoop_connection_status(WHOOP_DB_FILE, include_private=True)
     if connection.get("status") != "connected":
         return None, api_error("WHOOP is not connected.", 409, code="whoop_not_connected")
@@ -13268,25 +13278,25 @@ def import_backup():
                 local_date = str(fact.get("local_date") or "").strip()
                 if not local_date:
                     continue
-                records.append(
-                    {
-                        "upstream_id": f"backup-{local_date}",
-                        "local_date": local_date,
-                        "score_state": fact.get("score_state"),
-                        "recovery_score": fact.get("recovery_score"),
-                        "recovery_band": fact.get("recovery_band"),
-                        "strain": fact.get("strain"),
-                        "sleep_performance_pct": fact.get("sleep_performance_pct"),
-                        "sleep_need_gap_min": fact.get("sleep_need_gap_min"),
-                        "workout_kj": fact.get("workout_kj"),
-                        "hrv_rmssd": fact.get("hrv_rmssd"),
-                        "resting_hr": fact.get("resting_hr"),
-                        "respiratory_rate": fact.get("respiratory_rate"),
-                        "spo2": fact.get("spo2"),
-                        "skin_temp": fact.get("skin_temp"),
-                        "percent_recorded": fact.get("percent_recorded"),
-                    }
-                )
+                record = {
+                    "upstream_id": f"backup-{local_date}",
+                    "local_date": _validate_imported_whoop_local_date(local_date),
+                    "score_state": fact.get("score_state"),
+                    "recovery_score": fact.get("recovery_score"),
+                    "recovery_band": fact.get("recovery_band"),
+                    "strain": fact.get("strain"),
+                    "sleep_performance_pct": fact.get("sleep_performance_pct"),
+                    "sleep_need_gap_min": fact.get("sleep_need_gap_min"),
+                    "workout_kj": fact.get("workout_kj"),
+                    "hrv_rmssd": fact.get("hrv_rmssd"),
+                    "resting_hr": fact.get("resting_hr"),
+                    "respiratory_rate": fact.get("respiratory_rate"),
+                    "spo2": fact.get("spo2"),
+                    "skin_temp": fact.get("skin_temp"),
+                    "percent_recorded": fact.get("percent_recorded"),
+                }
+                _validate_whoop_metric_bounds(record)
+                records.append(record)
             if records:
                 run_id = record_whoop_sync_run(WHOOP_DB_FILE, reason="backup_import")
                 upsert_whoop_records(WHOOP_DB_FILE, "recovery", records, sync_run_id=run_id)

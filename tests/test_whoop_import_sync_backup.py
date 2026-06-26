@@ -324,6 +324,20 @@ def test_whoop_sync_rejects_invalid_days_back_before_network(fitness_app):
     assert bad_type.get_json()["error"]["code"] == "invalid_days_back"
 
 
+def test_whoop_sync_rejects_concurrent_run(fitness_app):
+    acquired = fitness_app.WHOOP_SYNC_LOCK.acquire(blocking=False)
+    assert acquired is True
+    try:
+        with fitness_app.app.app_context():
+            result, err = fitness_app._run_whoop_sync("manual")
+    finally:
+        fitness_app.WHOOP_SYNC_LOCK.release()
+
+    assert result is None
+    assert err[1] == 409
+    assert err[0].get_json()["error"]["code"] == "whoop_sync_in_progress"
+
+
 def test_whoop_sync_terminal_auth_failure_marks_reauth_required(fitness_app, monkeypatch):
     monkeypatch.setattr(
         fitness_app,
@@ -382,3 +396,23 @@ def test_backup_exports_only_normalized_whoop_facts_not_tokens(fitness_app):
     assert "backup-access" not in body
     assert "backup-refresh" not in body
     assert "token_ref" not in body
+
+
+def test_backup_import_rejects_invalid_whoop_daily_facts(fitness_app):
+    response = fitness_app.app.test_client().post(
+        "/api/import-backup",
+        json={
+            "data": {
+                "whoop_daily_facts": [
+                    {
+                        "local_date": "9999-12-31",
+                        "score_state": "SCORED",
+                        "recovery_score": 50,
+                    }
+                ]
+            }
+        },
+    )
+
+    assert response.status_code == 400
+    assert "local_date" in response.get_json()["message"]
