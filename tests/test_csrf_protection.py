@@ -192,6 +192,38 @@ def test_state_changing_post_with_csrf_header_continues_to_work(monkeypatch):
     assert response.get_json()["status"] == "success"
 
 
+def test_whoop_mutation_posts_without_csrf_header_are_rejected(monkeypatch):
+    module = _app_module(monkeypatch)
+    client = module.app.test_client()
+
+    for path in (
+        "/api/whoop/connect/start",
+        "/api/whoop/disconnect",
+        "/api/whoop/delete-data",
+        "/api/whoop/sync",
+        "/api/whoop/import-csv",
+    ):
+        response = client.post(path, json={}, environ_overrides=_OMIT_AUTO_CSRF)
+        assert response.status_code == 403
+        payload = response.get_json()
+        assert (payload.get("code") or payload["error"]["code"]) == "csrf_required"
+
+
+def test_whoop_disconnect_with_csrf_header_reaches_handler(monkeypatch, tmp_path):
+    module = _app_module(monkeypatch)
+    module.WHOOP_DB_FILE = str(tmp_path / "whoop.sqlite3")
+    module.init_whoop_db(module.WHOOP_DB_FILE)
+
+    response = module.app.test_client().post(
+        "/api/whoop/disconnect",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+        environ_overrides=_OMIT_AUTO_CSRF,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "success"
+
+
 def test_token_authed_apple_health_webhook_is_csrf_exempt(monkeypatch):
     module = _app_module(monkeypatch)
 
@@ -225,8 +257,8 @@ def test_csrf_rollout_bumps_cached_asset_versions():
     index = Path("templates/index.html").read_text()
     service_worker = Path("static/js/sw.js").read_text()
 
-    assert "app-loader.js?v=20260626-fit238-qol" in index
-    assert "app.js?v=20260626-fit238-qol" in Path("static/js/app-loader.js").read_text()
-    assert "fitness-dashboard-v20260626-fit238-qol" in service_worker
+    assert "app-loader.js?v=20260626-fit239-whoop5" in index
+    assert "app.js?v=20260626-fit239-whoop5" in Path("static/js/app-loader.js").read_text()
+    assert "fitness-dashboard-v20260626-fit239-whoop5" in service_worker
     assert "self.skipWaiting()" in service_worker
     assert "self.clients.claim()" in service_worker

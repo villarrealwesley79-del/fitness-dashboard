@@ -11,6 +11,11 @@ __pycache__/
 .flask-secret
 .health-sync-token
 .apple-health-first-sync
+.whoop-client-id
+.whoop-oauth-state*
+.whoop-token*
+.whoop-protected-material*
+.whoop-sync-state*
 .claude/
 venv/
 .venv/
@@ -28,6 +33,7 @@ oura_data.db
 oura_daily.sqlite3
 apple_health_sync.db
 ai_coach_cache.sqlite3
+whoop_sync.lock
 
 data_*.json
 *_snapshot.json

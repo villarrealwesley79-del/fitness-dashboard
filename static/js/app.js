@@ -23,6 +23,13 @@
         muscleFatigue: null,
         nextWorkout: null,
         exercises: null,
+        whoopStatus: null,
+        whoopUi: {
+            syncInFlight: false,
+            disconnectInFlight: false,
+            deleteInFlight: false,
+            lastError: '',
+        },
         ranges: { history: 30, stats: 30 },
         historyTypeFilter: 'all',
         activeWorkout: null,
@@ -886,6 +893,20 @@
         window.scrollTo({ top: 0, behavior: 'instant' });
     }
 
+    function initialTabFromHash() {
+        const hash = window.location && window.location.hash ? window.location.hash.toLowerCase() : '';
+        if (hash === '#settings') return 'tab-settings';
+        if (hash === '#history') return 'tab-history';
+        if (hash === '#workout') return 'tab-workout';
+        if (hash === '#nutrition') return 'tab-nutrition';
+        return 'tab-dashboard';
+    }
+
+    function switchTabFromHash(force = false) {
+        const tabId = initialTabFromHash();
+        if (tabId && (force || tabId !== state.currentTab)) switchTab(tabId);
+    }
+
     function handleTabKeydown(e) {
         const key = e.key;
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
@@ -1117,6 +1138,12 @@
         catch { state.ouraSleep = null; }
         return state.ouraSleep;
     }
+    async function getWhoopStatus(force = false) {
+        if (!force && state.whoopStatus) return state.whoopStatus;
+        try { state.whoopStatus = await api('/api/whoop/status', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
+        catch { state.whoopStatus = null; }
+        return state.whoopStatus;
+    }
     async function getOuraTrends(force = false) {
         if (!force && state.ouraTrends) return state.ouraTrends;
         try { state.ouraTrends = await api('/api/oura/trends'); }
@@ -1256,12 +1283,287 @@
         return { cls: 'unknown', label, title };
     }
 
+    // Required WHOOP UI states: connected, disconnected, syncing, fresh,
+    // aging, stale, missing/no-data, pending score, unscorable,
+    // calibrating, reauth required, CSV only, source conflict, error.
+    const WHOOP_UI_STATES = {
+        connected: 'connected',
+        disconnected: 'disconnected',
+        syncing: 'syncing',
+        fresh: 'fresh',
+        aging: 'aging',
+        stale: 'stale',
+        missing: 'missing',
+        pending_score: 'pending_score',
+        unscorable: 'unscorable',
+        calibrating: 'calibrating',
+        reauth_required: 'reauth_required',
+        missing_config: 'missing_config',
+        csv_only: 'csv_only',
+        source_conflict: 'source_conflict',
+        error: 'error',
+    };
+
+    function normalizeSourceKey(value) {
+        const raw = String(value == null ? '' : value).trim().toLowerCase();
+        if (!raw) return '';
+        if (raw === 'apple' || raw === 'apple health' || raw === 'apple-health') return 'apple_health';
+        if (raw === 'whoop' || raw === 'official_whoop') return 'whoop';
+        if (raw === 'oura' || raw === 'oura ring') return 'oura';
+        if (raw === 'noop' || raw === 'noop import') return 'noop';
+        if (raw === 'food' || raw === 'food log' || raw === 'nutrition') return 'food';
+        return raw.replace(/\s+/g, '_');
+    }
+
+    function sourceDisplayName(value) {
+        const key = normalizeSourceKey(value);
+        if (key === 'whoop') return 'WHOOP';
+        if (key === 'oura') return 'Oura';
+        if (key === 'apple_health') return 'Apple Health';
+        if (key === 'noop') return 'Noop import';
+        if (key === 'food') return 'Food log';
+        if (!key) return 'Unknown source';
+        return key.replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+    }
+
+    function normalizeWhoopStateToken(value) {
+        const raw = String(value == null ? '' : value)
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, '_')
+            .replace(/-/g, '_');
+        if (!raw) return '';
+        if (raw === 'no_data' || raw === 'missing/no_data' || raw === 'missing/no-data' || raw === 'no-data') return WHOOP_UI_STATES.missing;
+        if (raw === 'pending' || raw === 'pending_score') return WHOOP_UI_STATES.pending_score;
+        if (raw === 'reauth' || raw === 'reauth_required') return WHOOP_UI_STATES.reauth_required;
+        if (raw === 'missing_config') return WHOOP_UI_STATES.missing_config;
+        if (raw === 'csv' || raw === 'csv_only') return WHOOP_UI_STATES.csv_only;
+        if (raw === 'source_conflict' || raw === 'conflict') return WHOOP_UI_STATES.source_conflict;
+        return raw;
+    }
+
+    function normalizeSourceConflicts(conflicts) {
+        if (!Array.isArray(conflicts)) return [];
+        return conflicts.map(function (entry) {
+            if (typeof entry === 'string') {
+                return { providers: [], message: entry.trim() };
+            }
+            const providers = [
+                entry && entry.provider,
+                entry && entry.provider_a,
+                entry && entry.provider_b,
+                entry && entry.left,
+                entry && entry.right,
+            ]
+                .filter(Boolean)
+                .map(normalizeSourceKey);
+            const message = entry && (entry.message || entry.summary || entry.reason || entry.detail || '');
+            return {
+                providers,
+                message: String(message || '').trim(),
+            };
+        });
+    }
+
+    function recommendationSourceConflictNode(payload) {
+        const node = payload && payload.recommendation_sources && payload.recommendation_sources.source_conflict;
+        if (!node || node.has_conflict !== true) return null;
+        return {
+            providers: [node.whoop_band ? 'whoop' : null, node.oura_band ? 'oura' : null].filter(Boolean),
+            message: node.explanation || 'Wearable sources disagree, so the recommendation stays conservative.',
+        };
+    }
+
+    function collectSourceConflicts(dash, reco) {
+        const conflicts = []
+            .concat((dash && dash.source_conflicts) || [])
+            .concat((reco && reco.source_conflicts) || []);
+        const dashConflict = recommendationSourceConflictNode(dash);
+        const recoConflict = recommendationSourceConflictNode(reco);
+        if (dashConflict) conflicts.push(dashConflict);
+        if (recoConflict) conflicts.push(recoConflict);
+        return normalizeSourceConflicts(conflicts);
+    }
+
+    function conflictTouchesProvider(conflict, providerKey) {
+        const key = normalizeSourceKey(providerKey);
+        if (!conflict) return false;
+        return Array.isArray(conflict.providers) && conflict.providers.indexOf(key) >= 0;
+    }
+
+    function firstWhoopConflict(conflicts) {
+        return normalizeSourceConflicts(conflicts).find(function (conflict) {
+            return conflictTouchesProvider(conflict, 'whoop');
+        }) || null;
+    }
+
+    function resolveWhoopUiState(whoop, conflicts) {
+        const status = normalizeWhoopStateToken(
+            whoop && (
+                whoop.ui_state
+                || whoop.status
+                || whoop.connection_status
+                || whoop.freshness_status
+                || whoop.mode
+            )
+        );
+        const scoreState = normalizeWhoopStateToken(whoop && whoop.score_state);
+        if (whoop && (whoop.error || status === WHOOP_UI_STATES.error)) return WHOOP_UI_STATES.error;
+        if (whoop && (whoop.syncing || status === WHOOP_UI_STATES.syncing)) return WHOOP_UI_STATES.syncing;
+        if (whoop && (whoop.reauth_required || status === WHOOP_UI_STATES.reauth_required)) return WHOOP_UI_STATES.reauth_required;
+        if (whoop && (whoop.csv_only || normalizeWhoopStateToken(whoop.source_kind) === WHOOP_UI_STATES.csv_only || status === WHOOP_UI_STATES.csv_only)) {
+            return WHOOP_UI_STATES.csv_only;
+        }
+        if (status === WHOOP_UI_STATES.missing_config) return WHOOP_UI_STATES.missing_config;
+        if (status === WHOOP_UI_STATES.disconnected || whoop && whoop.connected === false) return WHOOP_UI_STATES.disconnected;
+        if (firstWhoopConflict(conflicts) || (whoop && (whoop.source_conflict || status === WHOOP_UI_STATES.source_conflict))) {
+            return WHOOP_UI_STATES.source_conflict;
+        }
+        if (whoop && (whoop.calibrating || status === WHOOP_UI_STATES.calibrating || scoreState === WHOOP_UI_STATES.calibrating)) return WHOOP_UI_STATES.calibrating;
+        if (whoop && (whoop.pending_score || status === WHOOP_UI_STATES.pending_score || scoreState === WHOOP_UI_STATES.pending_score)) return WHOOP_UI_STATES.pending_score;
+        if (whoop && (whoop.unscorable || status === WHOOP_UI_STATES.unscorable || scoreState === WHOOP_UI_STATES.unscorable)) return WHOOP_UI_STATES.unscorable;
+        if (status === WHOOP_UI_STATES.fresh || status === WHOOP_UI_STATES.aging || status === WHOOP_UI_STATES.stale) return status;
+        if (status === WHOOP_UI_STATES.missing || whoop && (whoop.no_data || whoop.has_data === false)) return WHOOP_UI_STATES.missing;
+        if (whoop && (whoop.connected || whoop.connected_at || whoop.last_sync_at || whoop.last_successful_sync_at)) return WHOOP_UI_STATES.connected;
+        return WHOOP_UI_STATES.disconnected;
+    }
+
+    function mergeWhoopFreshnessNode(freshnessNode, whoopStatus, conflicts) {
+        const merged = Object.assign({}, freshnessNode || {}, whoopStatus || {});
+        const connectionState = normalizeWhoopStateToken(whoopStatus && (whoopStatus.status || whoopStatus.connection_status));
+        if (freshnessNode && freshnessNode.status) merged.status = freshnessNode.status;
+        if (connectionState === WHOOP_UI_STATES.missing_config || connectionState === WHOOP_UI_STATES.reauth_required) {
+            merged.status = connectionState;
+        }
+        if (freshnessNode && freshnessNode.score_state) merged.score_state = freshnessNode.score_state;
+        if (freshnessNode && Object.prototype.hasOwnProperty.call(freshnessNode, 'last_data_point')) merged.last_data_point = freshnessNode.last_data_point;
+        const conflict = firstWhoopConflict(conflicts);
+        if (conflict && conflict.message && !merged.conflict_message) merged.conflict_message = conflict.message;
+        merged.ui_state = resolveWhoopUiState(merged, conflicts);
+        if (!merged.status) merged.status = merged.ui_state;
+        return merged;
+    }
+
+    function formatWhoopChip(whoop, ago) {
+        const uiState = resolveWhoopUiState(whoop, whoop && whoop.conflicts);
+        const dataAgo = ago((whoop && (whoop.last_data_point || whoop.local_date)) || null);
+        const syncAgo = ago((whoop && (whoop.last_successful_sync_at || whoop.last_sync_at)) || null);
+        const ageDetail = dataAgo || syncAgo || '';
+        if (uiState === WHOOP_UI_STATES.syncing) {
+            return { cls: 'warn', label: 'WHOOP · syncing', title: 'WHOOP manual sync in progress' };
+        }
+        if (uiState === WHOOP_UI_STATES.fresh) {
+            return { cls: 'ok', label: 'WHOOP · fresh', title: ageDetail ? `WHOOP freshness · ${ageDetail}` : 'WHOOP freshness · fresh' };
+        }
+        if (uiState === WHOOP_UI_STATES.aging) {
+            return { cls: 'warn', label: 'WHOOP · aging', title: ageDetail ? `WHOOP freshness · ${ageDetail}` : 'WHOOP freshness · aging' };
+        }
+        if (uiState === WHOOP_UI_STATES.stale) {
+            return { cls: 'stale', label: 'WHOOP · stale', title: ageDetail ? `WHOOP freshness · ${ageDetail}` : 'WHOOP freshness · stale' };
+        }
+        if (uiState === WHOOP_UI_STATES.pending_score) {
+            return { cls: 'warn', label: 'WHOOP · pending score', title: 'Latest WHOOP day is pending score' };
+        }
+        if (uiState === WHOOP_UI_STATES.unscorable) {
+            return { cls: 'warn', label: 'WHOOP · unscorable', title: 'Latest WHOOP day cannot be scored yet' };
+        }
+        if (uiState === WHOOP_UI_STATES.calibrating) {
+            return { cls: 'warn', label: 'WHOOP · calibrating', title: 'WHOOP is still calibrating' };
+        }
+        if (uiState === WHOOP_UI_STATES.reauth_required) {
+            return { cls: 'stale', label: 'WHOOP · reauth required', title: 'WHOOP needs to be reconnected before the next sync' };
+        }
+        if (uiState === WHOOP_UI_STATES.missing_config) {
+            return { cls: 'stale', label: 'WHOOP · config missing', title: 'WHOOP OAuth is not configured on this server' };
+        }
+        if (uiState === WHOOP_UI_STATES.csv_only) {
+            return { cls: 'warn', label: 'WHOOP · CSV only', title: 'WHOOP data is available only from CSV import right now' };
+        }
+        if (uiState === WHOOP_UI_STATES.source_conflict) {
+            return { cls: 'stale', label: 'WHOOP · source conflict', title: whoop && whoop.conflict_message ? whoop.conflict_message : 'WHOOP and another wearable disagree' };
+        }
+        if (uiState === WHOOP_UI_STATES.error) {
+            return { cls: 'stale', label: 'WHOOP · error', title: whoop && whoop.error ? String(whoop.error) : 'WHOOP status error' };
+        }
+        if (uiState === WHOOP_UI_STATES.missing) {
+            return { cls: 'stale', label: 'WHOOP · no data', title: 'WHOOP is connected, but no scored data is available yet' };
+        }
+        if (uiState === WHOOP_UI_STATES.connected) {
+            return { cls: 'ok', label: 'WHOOP · connected', title: syncAgo ? `WHOOP connected · last sync ${syncAgo}` : 'WHOOP connected' };
+        }
+        return { cls: 'unknown', label: 'WHOOP · disconnected', title: 'WHOOP is not connected' };
+    }
+
+    function normalizeRecommendationSources(entries) {
+        if (entries && !Array.isArray(entries) && typeof entries === 'object') {
+            const normalizedEntries = [];
+            if (entries.whoop) {
+                const whoop = entries.whoop;
+                const detailParts = []
+                    .concat(whoop.explanations || [])
+                    .concat((whoop.applied_modifiers || []).map(function (item) { return `modifier: ${item}`; }));
+                normalizedEntries.push({
+                    key: 'whoop',
+                    label: 'WHOOP',
+                    role: whoop.display_only ? 'display only' : 'modifier',
+                    detail: detailParts.join(' · ') || 'WHOOP recovery context is available.',
+                });
+            }
+            if (entries.load_source) {
+                normalizedEntries.push({
+                    key: entries.load_source,
+                    label: sourceDisplayName(entries.load_source),
+                    role: 'load source',
+                    detail: `${sourceDisplayName(entries.load_source)} remains the training-load source.`,
+                });
+            }
+            entries = normalizedEntries;
+        }
+        if (!Array.isArray(entries)) return [];
+        return entries.map(function (entry) {
+            if (typeof entry === 'string') {
+                const key = normalizeSourceKey(entry);
+                return { key, label: sourceDisplayName(key), role: '', detail: '' };
+            }
+            const key = normalizeSourceKey(entry && (entry.provider || entry.source || entry.key || entry.name));
+            const role = String(entry && (entry.role || entry.used_for || entry.kind || '') || '').trim();
+            const detail = String(entry && (entry.detail || entry.reason || entry.summary || '') || '').trim();
+            return {
+                key,
+                label: sourceDisplayName(key),
+                role,
+                detail,
+            };
+        }).filter(function (entry) { return entry.key; });
+    }
+
+    function normalizeWearableSources(entries) {
+        if (!Array.isArray(entries)) return [];
+        return entries.map(function (entry) {
+            if (typeof entry === 'string') {
+                const key = normalizeSourceKey(entry);
+                return { key, label: sourceDisplayName(key), state: '', detail: '' };
+            }
+            const key = normalizeSourceKey(entry && (entry.provider || entry.source || entry.key || entry.name));
+            const stateText = String(entry && (entry.status || entry.freshness || entry.state || '') || '').trim();
+            const detail = String(entry && (entry.detail || entry.summary || entry.reason || '') || '').trim();
+            return {
+                key,
+                label: sourceDisplayName(key),
+                state: stateText,
+                detail,
+            };
+        }).filter(function (entry) { return entry.key; });
+    }
+
     const DASHBOARD_FRESHNESS_SLOTS = [
+        { id: 'reco-fresh-whoop', key: 'whoop',        render: formatWhoopChip },
         { id: 'reco-fresh-oura',  key: 'oura',         render: formatOuraChip  },
         { id: 'reco-fresh-apple', key: 'apple_health', render: formatAppleChip },
         { id: 'reco-fresh-food',  key: 'food',         render: formatFoodChip  },
     ];
     const SETTINGS_FRESHNESS_SLOTS = [
+        { id: 'whoop-connect-state', key: 'whoop',        render: formatWhoopChip },
         { id: 'oura-connect-state',  key: 'oura',         render: formatOuraChip  },
         { id: 'apple-connect-state', key: 'apple_health', render: formatAppleChip },
     ];
@@ -1345,6 +1647,216 @@
         applyGroupChip($('settings-group-summary-maintenance'),
             backup.cls,
             backup.text ? `Backup ${backup.text}` : 'No recent backup');
+    }
+
+    function buildRecommendationSourcesSummary(sources) {
+        if (!sources.length) return 'Recommendation source detail is not available yet.';
+        return 'Using ' + sources.map(function (entry) {
+            return entry.role ? `${entry.label} for ${entry.role}` : entry.label;
+        }).join(', ') + '.';
+    }
+
+    function buildWearableSignalsSummary(wearables) {
+        if (!wearables.length) return 'Wearable freshness has not loaded yet.';
+        return wearables.map(function (entry) {
+            return entry.state ? `${entry.label} · ${String(entry.state).replace(/_/g, ' ')}` : entry.label;
+        }).join(' · ');
+    }
+
+    function renderSourceList(hostId, items, emptyText, detailFormatter) {
+        const host = $(hostId);
+        if (!host) return;
+        host.innerHTML = '';
+        if (!items.length) {
+            const empty = document.createElement('div');
+            empty.className = 'reco-source-list-empty';
+            empty.textContent = emptyText;
+            host.appendChild(empty);
+            return;
+        }
+        items.forEach(function (item) {
+            const row = document.createElement('div');
+            row.className = 'reco-source-item';
+
+            const head = document.createElement('div');
+            head.className = 'reco-source-item-head';
+
+            const name = document.createElement('span');
+            name.className = 'reco-source-item-name';
+            name.textContent = item.label || sourceDisplayName(item.key);
+            head.appendChild(name);
+
+            const tag = document.createElement('span');
+            tag.className = 'state-chip state-chip-sm';
+            const tone = normalizeWhoopStateToken(item.state || item.role || item.key);
+            if (tone === WHOOP_UI_STATES.fresh || tone === WHOOP_UI_STATES.connected) tag.classList.add('ok');
+            else if (tone === WHOOP_UI_STATES.aging || tone === WHOOP_UI_STATES.pending_score || tone === WHOOP_UI_STATES.unscorable || tone === WHOOP_UI_STATES.calibrating || tone === WHOOP_UI_STATES.csv_only || tone === 'load') tag.classList.add('warn');
+            else if (tone === WHOOP_UI_STATES.stale || tone === WHOOP_UI_STATES.reauth_required || tone === WHOOP_UI_STATES.source_conflict || tone === WHOOP_UI_STATES.error || tone === WHOOP_UI_STATES.missing) tag.classList.add('stale');
+            else tag.classList.add('unknown');
+            tag.textContent = String(item.role || item.state || 'available').replace(/_/g, ' ');
+            head.appendChild(tag);
+
+            row.appendChild(head);
+
+            const detail = document.createElement('div');
+            detail.className = 'reco-source-item-detail';
+            detail.textContent = detailFormatter ? detailFormatter(item) : (item.detail || 'No extra detail');
+            row.appendChild(detail);
+            host.appendChild(row);
+        });
+    }
+
+    function renderRecommendationSourceSummary(dash, reco, freshness) {
+        const recommendationSources = normalizeRecommendationSources(
+            (dash && dash.recommendation_sources) || (reco && reco.recommendation_sources) || []
+        );
+        let wearableSources = normalizeWearableSources((dash && dash.wearable_sources) || []);
+        if (!wearableSources.length && freshness) {
+            wearableSources = ['whoop', 'oura', 'apple_health']
+                .filter(function (key) { return freshness[key]; })
+                .map(function (key) {
+                    const node = freshness[key];
+                    return {
+                        key,
+                        label: sourceDisplayName(key),
+                        state: key === 'whoop' ? resolveWhoopUiState(node, collectSourceConflicts(dash, reco)) : (node && node.status) || '',
+                        detail: node && (node.detail || node.summary || node.last_data_point || ''),
+                    };
+                });
+        }
+        const conflicts = collectSourceConflicts(dash, reco);
+        const summary = $('reco-sources-summary');
+        const note = $('reco-sources-note');
+        const conflictEl = $('reco-source-conflict');
+        const openBtn = $('btn-reco-sources');
+        const drawerSummary = $('reco-sources-drawer-summary');
+
+        if (summary) summary.textContent = buildRecommendationSourcesSummary(recommendationSources);
+        if (note) note.textContent = buildWearableSignalsSummary(wearableSources);
+        if (drawerSummary) drawerSummary.textContent = summary ? summary.textContent : 'Recommendation source detail is not available yet.';
+        if (openBtn) openBtn.disabled = !recommendationSources.length && !wearableSources.length && !conflicts.length;
+
+        if (conflictEl) {
+            if (conflicts.length) {
+                conflictEl.hidden = false;
+                conflictEl.textContent = conflicts[0].message || 'Wearable sources disagree, so the recommendation stays conservative.';
+            } else {
+                conflictEl.hidden = true;
+                conflictEl.textContent = '';
+            }
+        }
+
+        renderSourceList(
+            'reco-sources-used',
+            recommendationSources,
+            'No recommendation source detail yet.',
+            function (entry) {
+                return entry.detail || (entry.role ? `${entry.label} contributes ${entry.role}.` : `${entry.label} is available to the recommendation.` );
+            }
+        );
+        renderSourceList(
+            'reco-sources-signals',
+            wearableSources,
+            'No wearable source detail yet.',
+            function (entry) {
+                return entry.detail || (entry.state ? `${entry.label} is currently ${entry.state}.` : `${entry.label} has no current state detail.`);
+            }
+        );
+        renderSourceList(
+            'reco-sources-conflicts',
+            conflicts.map(function (entry) {
+                return {
+                    key: 'conflict',
+                    label: 'Source conflict',
+                    role: 'review',
+                    detail: entry.message || 'Recommendation uses the conservative plan until the conflict clears.',
+                };
+            }),
+            'No source conflicts.',
+            function (entry) { return entry.detail; }
+        );
+    }
+
+    function openRecoSourcesModal() {
+        renderRecommendationSourceSummary(state.dashboard, state.reco, state.dashboard && state.dashboard.freshness);
+        const modal = $('modal-reco-sources');
+        const trigger = $('btn-reco-sources');
+        if (!modal) return;
+        modal.__fit192Close = function () {
+            modal.hidden = true;
+            if (trigger) trigger.setAttribute('aria-expanded', 'false');
+        };
+        modal.hidden = false;
+        if (trigger) trigger.setAttribute('aria-expanded', 'true');
+        focusOpenModal(modal);
+    }
+
+    function currentWhoopConnectUrl() {
+        const whoop = state.whoopStatus;
+        return whoop && (
+            whoop.connect_url
+            || whoop.authorization_url
+            || whoop.authorize_url
+            || (whoop.actions && whoop.actions.connect_url)
+        ) || '';
+    }
+
+    async function connectWhoop() {
+        const url = currentWhoopConnectUrl();
+        if (url) {
+            window.location.assign(url);
+            return;
+        }
+        try {
+            const body = await api('/api/whoop/connect/start', { method: 'POST' });
+            const nextUrl = body && (body.authorization_url || body.url);
+            if (!nextUrl) {
+                toast('WHOOP connect flow is not available yet.', 'warn');
+                return;
+            }
+            state.whoopStatus = Object.assign({}, state.whoopStatus || {}, body.connection || {}, { authorization_url: nextUrl });
+            window.location.assign(nextUrl);
+        } catch (err) {
+            toast((err && err.message) || 'WHOOP connect failed.', 'error');
+        }
+    }
+
+    function setWhoopActionButtons(whoop, uiState) {
+        const connectBtn = $('btn-connect-whoop');
+        const syncBtn = $('btn-sync-whoop');
+        const disconnectBtn = $('btn-disconnect-whoop');
+        const deleteBtn = $('btn-delete-whoop-data');
+        const connectUrl = currentWhoopConnectUrl();
+        const disconnected = uiState === WHOOP_UI_STATES.disconnected;
+        const missingConfig = uiState === WHOOP_UI_STATES.missing_config;
+        const reauth = uiState === WHOOP_UI_STATES.reauth_required;
+        const csvOnlyDisconnected = uiState === WHOOP_UI_STATES.csv_only && (!whoop || whoop.connected === false);
+        const liveSyncUnavailable = disconnected || missingConfig || reauth || csvOnlyDisconnected;
+        const cleanupUnavailable = disconnected || csvOnlyDisconnected;
+        const busySync = state.whoopUi.syncInFlight || uiState === WHOOP_UI_STATES.syncing;
+        const busyDisconnect = state.whoopUi.disconnectInFlight;
+        const busyDelete = state.whoopUi.deleteInFlight;
+        const busy = busySync || busyDisconnect || busyDelete;
+
+        if (connectBtn) {
+            connectBtn.hidden = !(liveSyncUnavailable || connectUrl);
+            connectBtn.disabled = busy;
+            connectBtn.textContent = reauth ? 'Reconnect' : 'Connect';
+        }
+        if (syncBtn) {
+            syncBtn.hidden = liveSyncUnavailable && !connectUrl;
+            syncBtn.disabled = busy || liveSyncUnavailable;
+            syncBtn.textContent = busySync ? 'Syncing…' : 'Sync';
+        }
+        if (disconnectBtn) {
+            disconnectBtn.hidden = cleanupUnavailable;
+            disconnectBtn.disabled = busy || cleanupUnavailable;
+            disconnectBtn.textContent = busyDisconnect ? 'Disconnecting…' : 'Disconnect';
+        }
+        if (deleteBtn) {
+            deleteBtn.disabled = busy;
+            deleteBtn.textContent = busyDelete ? 'Deleting…' : 'Delete data';
+        }
     }
 
     function buildFoodGuidanceLine(food) {
@@ -1608,10 +2120,19 @@
         // Recommendation card — FIT-1 brief + FIT-2 honest freshness
         const nw = dash && dash.next_workout ? dash.next_workout : null;
         const freshness = (reco && reco.freshness) || (dash && dash.freshness) || null;
-        const wearableStatuses = freshness ? [
-            freshness.oura && freshness.oura.status,
-            freshness.apple_health && freshness.apple_health.status,
-        ] : [];
+        const sourceConflicts = collectSourceConflicts(dash, reco);
+        const freshnessWithWhoop = Object.assign({}, freshness || {});
+        const whoopFreshness = mergeWhoopFreshnessNode(
+            freshnessWithWhoop.whoop,
+            (state.whoopStatus && typeof state.whoopStatus === 'object') ? state.whoopStatus : null,
+            sourceConflicts
+        );
+        freshnessWithWhoop.whoop = whoopFreshness;
+        const wearableStatuses = [
+            whoopFreshness && resolveWhoopUiState(whoopFreshness, sourceConflicts),
+            freshnessWithWhoop.oura && freshnessWithWhoop.oura.status,
+            freshnessWithWhoop.apple_health && freshnessWithWhoop.apple_health.status,
+        ].filter(Boolean);
         const wearableStale = wearableStatuses.indexOf('stale') >= 0;
         const wearableAllMissing = wearableStatuses.length > 0 && wearableStatuses.every(function (s) { return s === 'missing'; });
         const wearableDegraded = wearableStale || wearableAllMissing;
@@ -1791,7 +2312,8 @@
         }
 
         // Freshness chips (always render — null freshness shows "unknown" state)
-        renderFreshnessChips(freshness);
+        renderFreshnessChips(freshnessWithWhoop);
+        renderRecommendationSourceSummary(dash, reco, freshnessWithWhoop);
 
         // Macro status card (FIT-23)
         renderMacroCard(dash && dash.nutrition_today);
@@ -3999,7 +4521,7 @@
         // drive the integration chips + detail panels) must be read
         // AFTER that upsert lands — parallel fetches race and can show
         // "Cached · stale" right after a successful live refresh.
-        const [st, oura] = await Promise.all([getSettings(), getOuraStatus(true, true)]);
+        const [st, oura, whoop] = await Promise.all([getSettings(), getOuraStatus(true, true), getWhoopStatus(true)]);
         // FIT-16: use the side-effect-free /api/freshness endpoint.
         // /api/dashboard would also work but it regenerates
         // next_workout and writes LAST_WORKOUT_RECOMMENDATION server-
@@ -4014,6 +4536,12 @@
         }
         const ouraFreshness = freshness && freshness.oura;
         const appleFreshness = freshness && freshness.apple_health;
+        const whoopFreshness = mergeWhoopFreshnessNode(
+            freshness && freshness.whoop,
+            whoop,
+            collectSourceConflicts(state.dashboard, state.reco)
+        );
+        freshness = Object.assign({}, freshness || {}, { whoop: whoopFreshness });
         const host = $('settings-goals');
         host.innerHTML = '';
         (st.available_goals || []).forEach((g) => {
@@ -4088,6 +4616,7 @@
         // matches the dashboard reco-card exactly. Detail panels below each
         // chip carry the richer cached/live + sync nuance.
         renderFreshnessChips(freshness, SETTINGS_FRESHNESS_SLOTS);
+        renderWhoopFreshnessDetail(whoop, whoopFreshness, collectSourceConflicts(state.dashboard, state.reco));
         renderOuraFreshnessDetail(oura, ouraFreshness);
         // FIT-111: populate the four settings group header chips so the
         // user gets a glance-level signal per section. Reads live chip
@@ -4154,6 +4683,86 @@
 
         // FIT-40: Web Push permission flow + alert surfaces.
         renderPushSection();
+    }
+
+    async function syncWhoop() {
+        if (state.whoopUi.syncInFlight) return;
+        state.whoopUi.syncInFlight = true;
+        state.whoopUi.lastError = '';
+        renderWhoopFreshnessDetail(state.whoopStatus, mergeWhoopFreshnessNode(null, state.whoopStatus, []), []);
+        try {
+            const body = await api('/api/whoop/sync', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ trigger: 'manual' }),
+            });
+            if (body && typeof body === 'object') state.whoopStatus = Object.assign({}, state.whoopStatus || {}, body.status || body.whoop_status || body.whoop || {});
+            toast('WHOOP sync requested.', 'ok');
+        } catch (error) {
+            state.whoopUi.lastError = error && error.message ? error.message : 'WHOOP sync failed.';
+            toast('WHOOP sync failed.', 'err');
+        } finally {
+            state.whoopUi.syncInFlight = false;
+            state.dashboard = null;
+            await renderSettings();
+        }
+    }
+
+    async function disconnectWhoop() {
+        if (state.whoopUi.disconnectInFlight) return;
+        state.whoopUi.disconnectInFlight = true;
+        state.whoopUi.lastError = '';
+        renderWhoopFreshnessDetail(state.whoopStatus, mergeWhoopFreshnessNode(null, state.whoopStatus, []), []);
+        try {
+            await api('/api/whoop/disconnect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            state.whoopStatus = Object.assign({}, state.whoopStatus || {}, {
+                connected: false,
+                status: WHOOP_UI_STATES.disconnected,
+            });
+            toast('WHOOP disconnected.', 'ok');
+        } catch (error) {
+            state.whoopUi.lastError = error && error.message ? error.message : 'WHOOP disconnect failed.';
+            toast('WHOOP disconnect failed.', 'err');
+        } finally {
+            state.whoopUi.disconnectInFlight = false;
+            state.dashboard = null;
+            state.reco = null;
+            await renderSettings();
+        }
+    }
+
+    async function deleteWhoopData() {
+        if (state.whoopUi.deleteInFlight) return;
+        if (typeof confirm === 'function' && !confirm('Delete local WHOOP data from this dashboard?')) return;
+        state.whoopUi.deleteInFlight = true;
+        state.whoopUi.lastError = '';
+        renderWhoopFreshnessDetail(state.whoopStatus, mergeWhoopFreshnessNode(null, state.whoopStatus, []), []);
+        try {
+            const body = await api('/api/whoop/delete-data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            state.whoopStatus = Object.assign({}, state.whoopStatus || {}, body.connection || {}, {
+                freshness: Object.assign({}, (body.connection && body.connection.freshness) || {}, {
+                    status: WHOOP_UI_STATES.missing,
+                    last_data_point: null,
+                }),
+            });
+            toast('WHOOP data deleted.', 'ok');
+        } catch (error) {
+            state.whoopUi.lastError = error && error.message ? error.message : 'WHOOP data delete failed.';
+            toast('WHOOP data delete failed.', 'err');
+        } finally {
+            state.whoopUi.deleteInFlight = false;
+            state.dashboard = null;
+            state.reco = null;
+            await renderSettings();
+        }
     }
 
     // ── FIT-15: AI Coach health + metrics ─────────────────────────
@@ -4948,6 +5557,82 @@
     function _setDetail(id, text) {
         const el = $(id);
         if (el) el.textContent = text;
+    }
+
+    function renderWhoopFreshnessDetail(whoop, freshness, conflicts) {
+        const uiState = resolveWhoopUiState(freshness || whoop, conflicts);
+        const dot = $('whoop-int-dot');
+        if (dot) dot.className = uiState === WHOOP_UI_STATES.disconnected ? 'int-dot' : 'int-dot int-dot-on';
+
+        const lastSyncRaw = whoop && (whoop.last_successful_sync_at || whoop.last_sync_at || whoop.last_sync);
+        if ($('whoop-last-sync')) {
+            $('whoop-last-sync').textContent = lastSyncRaw
+                ? `Last sync ${fmtDateTime(lastSyncRaw)}`
+                : uiState === WHOOP_UI_STATES.disconnected
+                    ? 'WHOOP is disconnected'
+                    : 'No WHOOP sync recorded yet';
+        }
+
+        const connectionText = {
+            connected: 'Connected',
+            disconnected: 'Disconnected',
+            syncing: 'Syncing now',
+            fresh: 'Connected · fresh',
+            aging: 'Connected · aging',
+            stale: 'Connected · stale',
+            missing: 'Connected · no data',
+            pending_score: 'Connected · pending score',
+            unscorable: 'Connected · unscorable',
+            calibrating: 'Connected · calibrating',
+            reauth_required: 'Reconnect required',
+            missing_config: 'Config missing',
+            csv_only: 'CSV import only',
+            source_conflict: 'Connected · source conflict',
+            error: 'Connection error',
+        }[uiState] || 'Disconnected';
+        _setDetail('whoop-detail-connection', connectionText);
+
+        const dataThrough = (freshness && (freshness.last_data_point || freshness.local_date))
+            || (whoop && (whoop.last_data_point || whoop.local_date));
+        _setDetail('whoop-detail-data-through', dataThrough ? `${dataThrough} (${uiState.replace(/_/g, ' ')})` : 'No WHOOP data yet');
+
+        const recoveryParts = [];
+        const recoveryScore = whoop && (whoop.recovery_score != null ? whoop.recovery_score : whoop.score);
+        if (recoveryScore != null) recoveryParts.push(`Recovery ${recoveryScore}`);
+        if (whoop && whoop.recovery_band) recoveryParts.push(String(whoop.recovery_band));
+        if (whoop && whoop.strain != null) recoveryParts.push(`strain ${whoop.strain}`);
+        if (whoop && whoop.sleep_performance_pct != null) recoveryParts.push(`sleep ${whoop.sleep_performance_pct}%`);
+        _setDetail('whoop-detail-recovery', recoveryParts.length ? recoveryParts.join(' · ') : 'No scored WHOOP recovery yet');
+
+        let sourceText = 'Official WHOOP API';
+        if (uiState === WHOOP_UI_STATES.csv_only) sourceText = 'CSV import only';
+        else if (whoop && whoop.source_kind) sourceText = String(whoop.source_kind).replace(/_/g, ' ');
+        _setDetail('whoop-detail-source', sourceText);
+
+        let attentionText = 'Ready for recovery guidance.';
+        if (uiState === WHOOP_UI_STATES.syncing) attentionText = 'Manual sync is in progress.';
+        else if (uiState === WHOOP_UI_STATES.aging) attentionText = 'Data is aging; manual sync may sharpen the recommendation.';
+        else if (uiState === WHOOP_UI_STATES.stale) attentionText = 'Data is stale; recommendation confidence is lowered.';
+        else if (uiState === WHOOP_UI_STATES.missing) attentionText = 'Connected, but no scored WHOOP data is available yet.';
+        else if (uiState === WHOOP_UI_STATES.pending_score) attentionText = 'Latest WHOOP day is still pending score.';
+        else if (uiState === WHOOP_UI_STATES.unscorable) attentionText = 'Latest WHOOP day is unscorable, so WHOOP stays display-only.';
+        else if (uiState === WHOOP_UI_STATES.calibrating) attentionText = 'WHOOP is calibrating; the recommendation stays conservative.';
+        else if (uiState === WHOOP_UI_STATES.reauth_required) attentionText = 'WHOOP needs to be reconnected before the next sync.';
+        else if (uiState === WHOOP_UI_STATES.missing_config) attentionText = 'WHOOP OAuth is not configured on this server. Disconnect and delete local data remain available.';
+        else if (uiState === WHOOP_UI_STATES.csv_only) attentionText = 'CSV backfill is present, but live WHOOP sync is not active.';
+        else if (uiState === WHOOP_UI_STATES.source_conflict) attentionText = (freshness && freshness.conflict_message) || 'WHOOP and another wearable disagree, so the conservative plan wins.';
+        else if (uiState === WHOOP_UI_STATES.error) attentionText = String((whoop && whoop.error) || state.whoopUi.lastError || 'WHOOP status is unavailable right now.');
+        else if (uiState === WHOOP_UI_STATES.disconnected) attentionText = 'No WHOOP connection detected.';
+        _setDetail('whoop-detail-attention', attentionText);
+
+        const conflictRow = $('whoop-conflict-row');
+        const conflict = firstWhoopConflict(conflicts);
+        if (conflictRow) {
+            conflictRow.hidden = !conflict;
+            if (conflict) _setDetail('whoop-conflict-text', conflict.message || 'WHOOP and another wearable disagree.');
+        }
+
+        setWhoopActionButtons(whoop, uiState);
     }
 
     function renderOuraFreshnessDetail(oura, freshness) {
@@ -7696,12 +8381,17 @@
             await renderSyncQueueModal();
         });
         $('btn-sync-oura') && $('btn-sync-oura').addEventListener('click', syncOura);
+        $('btn-connect-whoop') && $('btn-connect-whoop').addEventListener('click', connectWhoop);
+        $('btn-sync-whoop') && $('btn-sync-whoop').addEventListener('click', syncWhoop);
+        $('btn-disconnect-whoop') && $('btn-disconnect-whoop').addEventListener('click', disconnectWhoop);
+        $('btn-delete-whoop-data') && $('btn-delete-whoop-data').addEventListener('click', deleteWhoopData);
         $('btn-export') && $('btn-export').addEventListener('click', downloadExport);
         $('btn-import') && $('btn-import').addEventListener('click', () => $('import-file').click());
         $('import-file') && $('import-file').addEventListener('change', (e) => importBackupFile(e.target.files && e.target.files[0]));
 
         // FIT-107: dashboard "View food log" button opens the food-log sheet
         $('btn-view-food-log') && $('btn-view-food-log').addEventListener('click', openFoodLogSheet);
+        $('btn-reco-sources') && $('btn-reco-sources').addEventListener('click', openRecoSourcesModal);
 
         // Close modals
         qsa('[data-close-modal]').forEach((b) => b.addEventListener('click', () => {
@@ -10465,7 +11155,8 @@
     function boot() {
         renderGreeting();
         wireEvents();
-        switchTab('tab-dashboard');
+        switchTabFromHash(true);
+        window.addEventListener('hashchange', switchTabFromHash);
         fetchFoodLogRefreshNotices().catch((err) => console.warn('food-log refresh notices failed:', err));
         refreshAiStatus();
         if (aiStatusTimer) clearInterval(aiStatusTimer);

@@ -13,10 +13,18 @@ server.log
 .flask-secret
 .health-sync-token
 .apple-health-first-sync
+.whoop-client-id
+.whoop-oauth-state*
+.whoop-token*
+.whoop-protected-material*
 .env.*
 **/.flask-secret
 **/.health-sync-token
 **/.apple-health-first-sync
+**/.whoop-client-id
+**/.whoop-oauth-state*
+**/.whoop-token*
+**/.whoop-protected-material*
 **/.env
 **/.env.*
 # database backup/suffix variants that escape *.db / *.sqlite3

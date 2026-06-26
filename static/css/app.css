@@ -1,0 +1,132 @@
+.reco-source-strip {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(51,65,85,0.4);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.reco-source-copy {
+    min-width: 0;
+    flex: 1;
+}
+
+.reco-source-eyebrow,
+.reco-source-drawer-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0;
+    color: var(--fg-dimmer);
+}
+
+.reco-source-summary {
+    margin-top: 4px;
+    color: var(--fg-1);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.reco-source-note {
+    margin-top: 4px;
+    color: var(--fg-dim);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.reco-source-conflict {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(248,113,113,0.3);
+    background: rgba(127,29,29,0.18);
+    color: #fecaca;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.reco-source-drawer-section + .reco-source-drawer-section {
+    margin-top: 18px;
+}
+
+.reco-source-list {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.reco-source-list-empty {
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px dashed rgba(71,85,105,0.7);
+    color: var(--fg-dim);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.reco-source-item {
+    padding: 12px;
+    border-radius: 14px;
+    border: 1px solid rgba(51,65,85,0.45);
+    background: rgba(15,23,42,0.6);
+}
+
+.reco-source-item-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.reco-source-item-name {
+    color: var(--fg-0);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.reco-source-item-detail {
+    margin-top: 6px;
+    color: var(--fg-dim);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.settings-row-control-stack {
+    align-items: flex-end;
+    flex-direction: column;
+}
+
+.settings-inline-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+#whoop-detail-attention-row .detail-value,
+#whoop-conflict-row .detail-value {
+    line-height: 1.45;
+}
+
+#modal-reco-sources .modal-sheet {
+    max-width: 540px;
+}
+
+@media (max-width: 640px) {
+    .reco-source-strip {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .settings-row-control-stack {
+        width: 100%;
+        align-items: stretch;
+    }
+
+    .settings-inline-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+}
