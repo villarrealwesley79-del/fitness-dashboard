@@ -10701,14 +10701,30 @@ def _first_present(*values):
 
 
 def _whoop_day_from_record(record):
+    def local_date_from_time(value):
+        if not value:
+            return None
+        text = str(value)
+        offset = str(record.get("timezone_offset") or "").strip()
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if offset and len(offset) == 6 and offset[0] in {"+", "-"} and offset[3] == ":":
+                sign = 1 if offset[0] == "+" else -1
+                hours = int(offset[1:3])
+                minutes = int(offset[4:6])
+                dt = dt + (timedelta(hours=hours, minutes=minutes) * sign)
+            return dt.date().isoformat()
+        except Exception:
+            return text[:10]
+
     for key in ("local_date", "date", "day"):
         value = record.get(key)
         if value:
             return str(value)[:10]
-    for key in ("start_time", "end_time", "created_at", "updated_at"):
+    for key in ("start", "start_time", "end", "end_time", "created_at", "updated_at"):
         value = record.get(key)
         if value:
-            return str(value)[:10]
+            return local_date_from_time(value)
     return None
 
 
@@ -10724,6 +10740,27 @@ def _whoop_recovery_band(score):
     return "high"
 
 
+def _whoop_sleep_needed_minutes(score):
+    sleep_needed = score.get("sleep_needed") if isinstance(score, dict) else None
+    if sleep_needed in (None, ""):
+        return None
+    if isinstance(sleep_needed, (int, float)):
+        return round(float(sleep_needed) / 60000.0, 2)
+    if not isinstance(sleep_needed, dict):
+        return None
+    total_ms = 0.0
+    found = False
+    for key, value in sleep_needed.items():
+        if not str(key).endswith("_milli"):
+            continue
+        try:
+            total_ms += float(value or 0)
+            found = True
+        except Exception:
+            continue
+    return round(total_ms / 60000.0, 2) if found else None
+
+
 def _normalize_whoop_record(record_type, record):
     local_date = _whoop_day_from_record(record)
     if not local_date:
@@ -10736,12 +10773,15 @@ def _normalize_whoop_record(record_type, record):
         or f"{record_type}-{local_date}"
     )
     score = record.get("score") if isinstance(record.get("score"), dict) else {}
+    score_state = record.get("score_state") or record.get("state") or "SCORED"
+    if isinstance(score, dict) and score.get("user_calibrating") is True:
+        score_state = "CALIBRATING"
     values = {
         "upstream_id": str(upstream_id),
         "local_date": local_date,
         "start_time": record.get("start") or record.get("start_time"),
         "end_time": record.get("end") or record.get("end_time"),
-        "score_state": record.get("score_state") or record.get("state") or "SCORED",
+        "score_state": score_state,
         "upstream_updated_at": record.get("updated_at"),
     }
     if record_type == "recovery":
@@ -10759,7 +10799,7 @@ def _normalize_whoop_record(record_type, record):
         )
     elif record_type == "sleep":
         sleep_score = _first_present(record.get("sleep_performance_pct"), score.get("sleep_performance_percentage"))
-        gap = _first_present(record.get("sleep_need_gap_min"), score.get("sleep_needed_minutes"))
+        gap = _first_present(record.get("sleep_need_gap_min"), score.get("sleep_needed_minutes"), _whoop_sleep_needed_minutes(score))
         values.update(
             {
                 "sleep_performance_pct": _whoop_number(sleep_score),

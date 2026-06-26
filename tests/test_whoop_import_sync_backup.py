@@ -64,6 +64,54 @@ def test_whoop_csv_import_preserves_zero_metric_values(fitness_app):
     assert fact["strain"] == 0
 
 
+def test_whoop_api_normalization_uses_local_start_date_with_timezone_offset(fitness_app):
+    row = fitness_app._normalize_whoop_record(
+        "sleep",
+        {
+            "id": "sleep-late",
+            "start": "2026-06-26T03:30:00.000Z",
+            "end": "2026-06-26T11:00:00.000Z",
+            "timezone_offset": "-05:00",
+            "score": {"sleep_performance_percentage": 82},
+        },
+    )
+
+    assert row["local_date"] == "2026-06-25"
+
+
+def test_whoop_api_normalization_marks_calibrating_recovery_display_only(fitness_app):
+    row = fitness_app._normalize_whoop_record(
+        "recovery",
+        {
+            "id": "recovery-calibrating",
+            "date": "2026-06-25",
+            "score": {"recovery_score": 75, "user_calibrating": True},
+        },
+    )
+
+    assert row["score_state"] == "CALIBRATING"
+
+
+def test_whoop_api_normalization_imports_official_sleep_needed_components(fitness_app):
+    row = fitness_app._normalize_whoop_record(
+        "sleep",
+        {
+            "id": "sleep-needed",
+            "date": "2026-06-25",
+            "score": {
+                "sleep_performance_percentage": 70,
+                "sleep_needed": {
+                    "baseline_milli": 28_800_000,
+                    "need_from_sleep_debt_milli": 3_600_000,
+                    "need_from_strain_milli": 1_800_000,
+                },
+            },
+        },
+    )
+
+    assert row["sleep_need_gap_min"] == 570
+
+
 def test_whoop_csv_import_rejects_large_payload_and_row_flood(fitness_app):
     client = fitness_app.app.test_client()
     too_large = "record_type,local_date,recovery_score\n" + ("x" * (fitness_app.WHOOP_CSV_MAX_BYTES + 1))
