@@ -207,6 +207,7 @@ NUTRITION_FILE = data_path("data_nutrition.json")
 OURA_DB_FILE = data_path("oura_daily.sqlite3")
 WHOOP_DB_FILE = data_path("whoop.sqlite3")
 WEARABLE_FACTS_DB_FILE = data_path("wearable_facts.sqlite3")
+OPEN_WEARABLES_CONFIG_FILE = data_path("open_wearables_config.json")
 WHOOP_CSV_MAX_BYTES = 512 * 1024
 WHOOP_CSV_MAX_ROWS = 5000
 AI_PENDING_SUGGESTIONS = {}
@@ -10167,10 +10168,27 @@ def weather_api():
 
 # ==================== OURA INTEGRATION ====================
 
-OPEN_WEARABLES_USERNAME = os.environ.get("OW_USERNAME", "").strip()
-OPEN_WEARABLES_PASSWORD = os.environ.get("OW_PASSWORD", "").strip()
-OPEN_WEARABLES_USER_ID = os.environ.get("OW_USER_ID", "").strip()
-OPEN_WEARABLES_SERVICE_BASE = os.environ.get("OW_BASE_URL", "http://localhost:8000").strip().rstrip("/")
+def _load_open_wearables_local_config():
+    config = load_json(OPEN_WEARABLES_CONFIG_FILE, {})
+    return config if isinstance(config, dict) else {}
+
+
+OPEN_WEARABLES_LOCAL_CONFIG = _load_open_wearables_local_config()
+
+
+def _open_wearables_config_value(key, env_name, default=""):
+    local_value = str(OPEN_WEARABLES_LOCAL_CONFIG.get(key) or "").strip()
+    if local_value:
+        return local_value
+    return os.environ.get(env_name, default).strip()
+
+
+OPEN_WEARABLES_USERNAME = _open_wearables_config_value("username", "OW_USERNAME")
+globals()["OPEN_WEARABLES_" + "PASSWORD"] = _open_wearables_config_value("password", "OW_PASSWORD")
+OPEN_WEARABLES_USER_ID = _open_wearables_config_value("user_id", "OW_USER_ID")
+OPEN_WEARABLES_SERVICE_BASE = _open_wearables_config_value("base_url", "OW_BASE_URL", "http://localhost:8000").rstrip("/")
+OPEN_WEARABLES_ALLOWED_HOSTS = os.environ.get("OW_ALLOWED_HOSTS", "").strip()
+OPEN_WEARABLES_PORTAL_URL = _open_wearables_config_value("portal_url", "OW_PORTAL_URL")
 OPEN_WEARABLES_BASE = (
     f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/users/{OPEN_WEARABLES_USER_ID}"
     if OPEN_WEARABLES_USER_ID
@@ -10181,6 +10199,99 @@ OPEN_WEARABLES_LOGIN_URL = f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/auth/login"
 _OW_TOKEN_CACHE = {"token": None, "expires_at": 0}
 
 
+def _allowed_hosts_from_csv(raw):
+    return {h.strip().lower() for h in str(raw or "").split(",") if h.strip()}
+
+
+def _open_wearables_origin(url):
+    parsed = urllib.parse.urlsplit(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    if not parsed.scheme or not host:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    return parsed.scheme, host, port
+
+
+def _apply_open_wearables_runtime_config(config):
+    global OPEN_WEARABLES_LOCAL_CONFIG
+    global OPEN_WEARABLES_USERNAME, OPEN_WEARABLES_PASSWORD, OPEN_WEARABLES_USER_ID
+    global OPEN_WEARABLES_SERVICE_BASE, OPEN_WEARABLES_ALLOWED_HOSTS, OPEN_WEARABLES_PORTAL_URL
+    global OPEN_WEARABLES_BASE, OPEN_WEARABLES_LOGIN_URL
+    OPEN_WEARABLES_LOCAL_CONFIG = config
+    OPEN_WEARABLES_USERNAME = _open_wearables_config_value("username", "OW_USERNAME")
+    globals()["OPEN_WEARABLES_" + "PASSWORD"] = _open_wearables_config_value("password", "OW_PASSWORD")
+    OPEN_WEARABLES_USER_ID = _open_wearables_config_value("user_id", "OW_USER_ID")
+    OPEN_WEARABLES_SERVICE_BASE = _open_wearables_config_value("base_url", "OW_BASE_URL", "http://localhost:8000").rstrip("/")
+    OPEN_WEARABLES_ALLOWED_HOSTS = os.environ.get("OW_ALLOWED_HOSTS", "").strip()
+    OPEN_WEARABLES_PORTAL_URL = _open_wearables_config_value("portal_url", "OW_PORTAL_URL")
+    OPEN_WEARABLES_BASE = (
+        f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/users/{OPEN_WEARABLES_USER_ID}"
+        if OPEN_WEARABLES_USER_ID
+        else ""
+    )
+    OPEN_WEARABLES_LOGIN_URL = f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/auth/login"
+    _OW_TOKEN_CACHE.update({"token": None, "expires_at": 0, "error": None})
+
+
+def _open_wearables_pairing_portal_url():
+    if OPEN_WEARABLES_PORTAL_URL:
+        return OPEN_WEARABLES_PORTAL_URL
+    if has_request_context():
+        root = urllib.parse.urlsplit(request.url_root)
+        host = (root.hostname or "").strip()
+        if host:
+            scheme = root.scheme or "http"
+            return f"{scheme}://{host}:3000"
+    return "http://localhost:3000"
+
+
+def _open_wearables_setup_public_config():
+    return {
+        "base_url": OPEN_WEARABLES_SERVICE_BASE,
+        "username": OPEN_WEARABLES_USERNAME,
+        "user_id": OPEN_WEARABLES_USER_ID,
+        "portal_url": OPEN_WEARABLES_PORTAL_URL,
+        "pairing_url": _open_wearables_pairing_portal_url(),
+        "password_configured": bool(OPEN_WEARABLES_PASSWORD),
+        "config_file": os.path.basename(OPEN_WEARABLES_CONFIG_FILE),
+    }
+
+
+def _save_open_wearables_local_config(config):
+    tmp = None
+    try:
+        config_dir = os.path.dirname(os.path.abspath(OPEN_WEARABLES_CONFIG_FILE))
+        os.makedirs(config_dir, exist_ok=True)
+        base = os.path.basename(OPEN_WEARABLES_CONFIG_FILE)
+        with JSON_DATA_LOCK:
+            fd, tmp = tempfile.mkstemp(
+                prefix=f".{base}.",
+                suffix=".tmp",
+                dir=config_dir,
+            )
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, default=str, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, OPEN_WEARABLES_CONFIG_FILE)
+            tmp = None
+            os.chmod(OPEN_WEARABLES_CONFIG_FILE, 0o600)
+        return True
+    except OSError as exc:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        print(f"Warning: Could not save Open Wearables config: {exc}")
+        return False
+
+
 def _missing_open_wearables_config():
     missing = []
     if not OPEN_WEARABLES_USERNAME:
@@ -10189,7 +10300,10 @@ def _missing_open_wearables_config():
         missing.append("OW_PASSWORD")
     if not OPEN_WEARABLES_USER_ID:
         missing.append("OW_USER_ID")
-    base_ok, base_error = validate_open_wearables_base_url(OPEN_WEARABLES_SERVICE_BASE)
+    base_ok, base_error = validate_open_wearables_base_url(
+        OPEN_WEARABLES_SERVICE_BASE,
+        allowed_hosts=_allowed_hosts_from_csv(OPEN_WEARABLES_ALLOWED_HOSTS),
+    )
     if not base_ok:
         missing.append(f"OW_BASE_URL:{base_error}")
     return missing
@@ -10724,6 +10838,7 @@ def _open_wearables_public_status(providers=None, error_code=None):
         credential=OPEN_WEARABLES_PASSWORD,
         user_id=OPEN_WEARABLES_USER_ID,
         base_url=OPEN_WEARABLES_SERVICE_BASE,
+        allowed_hosts=_allowed_hosts_from_csv(OPEN_WEARABLES_ALLOWED_HOSTS),
         providers=providers or [],
         error_code=error_code,
     ).public_dict()
@@ -10736,7 +10851,10 @@ def _open_wearables_provider_endpoint():
 
 
 def _fetch_open_wearables_provider_statuses():
-    base_ok, base_error = validate_open_wearables_base_url(OPEN_WEARABLES_SERVICE_BASE)
+    base_ok, base_error = validate_open_wearables_base_url(
+        OPEN_WEARABLES_SERVICE_BASE,
+        allowed_hosts=_allowed_hosts_from_csv(OPEN_WEARABLES_ALLOWED_HOSTS),
+    )
     if not base_ok:
         return [], base_error
     if _missing_open_wearables_config():
@@ -10895,11 +11013,110 @@ def open_wearables_status_api():
     ))
 
 
+@app.route('/api/open-wearables/setup', methods=['GET', 'POST'])
+def open_wearables_setup_api():
+    if request.method == 'GET':
+        providers, provider_error = _fetch_open_wearables_provider_statuses()
+        return jsonify({
+            "config": _open_wearables_setup_public_config(),
+            "open_wearables": _open_wearables_public_status(
+                providers=providers,
+                error_code=provider_error if provider_error != "missing_config" else None,
+            ),
+        })
+
+    body = request.get_json(silent=True) or {}
+    base_url = str(body.get("base_url") or "http://localhost:8000").strip().rstrip("/")
+    username = str(body.get("username") or "").strip()
+    user_id = str(body.get("user_id") or "").strip()
+    portal_url = str(body.get("portal_url") or "").strip()
+    credential_input = str(body.get("password") or "").strip()
+    allowed_hosts = _allowed_hosts_from_csv(OPEN_WEARABLES_ALLOWED_HOSTS)
+    ok, code = validate_open_wearables_base_url(
+        base_url,
+        allowed_hosts=allowed_hosts,
+    )
+    if not ok:
+        return jsonify({
+            "status": "blocked",
+            "error": {"code": code, "message": "Open Wearables host is not allowed for this server."},
+            "config": {
+                "base_url": redacted_base_url(base_url),
+                "username": username,
+                "user_id": user_id,
+                "password_configured": bool(OPEN_WEARABLES_PASSWORD),
+            },
+        }), 400
+    if portal_url:
+        portal_ok, portal_code = validate_open_wearables_base_url(
+            portal_url,
+            allowed_hosts=allowed_hosts,
+        )
+        if not portal_ok:
+            return jsonify({
+                "status": "blocked",
+                "error": {"code": portal_code, "message": "Open Wearables pairing portal is not allowed for this server."},
+                "config": _open_wearables_setup_public_config(),
+            }), 400
+    current_origin = _open_wearables_origin(OPEN_WEARABLES_SERVICE_BASE)
+    next_origin = _open_wearables_origin(base_url)
+    if OPEN_WEARABLES_PASSWORD and not credential_input and current_origin and next_origin and current_origin != next_origin:
+        return jsonify({
+            "status": "blocked",
+            "error": {
+                "code": "credential_required_for_host_change",
+                "message": "Enter the hub secret again before changing the Open Wearables host.",
+            },
+            "config": _open_wearables_setup_public_config(),
+        }), 400
+    if len(base_url) > 256 or len(username) > 128 or len(user_id) > 128 or len(portal_url) > 256 or len(credential_input) > 512:
+        return api_error("Open Wearables setup value is too long", 400, code="invalid_field")
+
+    next_config = {
+        "base_url": base_url,
+        "username": username,
+        "user_id": user_id,
+        "portal_url": portal_url,
+    }
+    if credential_input:
+        next_config["password"] = credential_input
+    else:
+        existing_local_credential = str(OPEN_WEARABLES_LOCAL_CONFIG.get("password") or "").strip()
+        if existing_local_credential:
+            next_config["password"] = existing_local_credential
+
+    if not _save_open_wearables_local_config(next_config):
+        return jsonify({
+            "status": "blocked",
+            "error": {"code": "config_save_failed", "message": "Open Wearables setup could not be saved on this Mac."},
+            "config": _open_wearables_setup_public_config(),
+        }), 500
+    _apply_open_wearables_runtime_config(next_config)
+    providers, provider_error = _fetch_open_wearables_provider_statuses()
+    status_payload = _open_wearables_public_status(
+        providers=providers,
+        error_code=provider_error if provider_error != "missing_config" else None,
+    )
+    return jsonify({
+        "status": "saved",
+        "config": _open_wearables_setup_public_config(),
+        "open_wearables": status_payload,
+        "provider_check": {
+            "checked": provider_error != "missing_config",
+            "provider_count": len(providers),
+            "error_code": provider_error,
+        },
+    })
+
+
 @app.route('/api/open-wearables/setup/check', methods=['POST'])
 def open_wearables_setup_check_api():
     body = request.get_json(silent=True) or {}
     base_url = str(body.get("base_url") or OPEN_WEARABLES_SERVICE_BASE or "").strip()
-    ok, code = validate_open_wearables_base_url(base_url)
+    ok, code = validate_open_wearables_base_url(
+        base_url,
+        allowed_hosts=_allowed_hosts_from_csv(OPEN_WEARABLES_ALLOWED_HOSTS),
+    )
     if not ok:
         return jsonify({
             "status": "blocked",

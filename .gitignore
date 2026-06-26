@@ -36,6 +36,7 @@ ai_coach_cache.sqlite3
 whoop_sync.lock
 
 data_*.json
+open_wearables_config.json
 *_snapshot.json
 *_proof-output.json
 audit-bundles/
