@@ -5,7 +5,7 @@ Evidence-based resistance training optimization for iOS/Android.
 """
 
 from flask import Flask, has_request_context, render_template, jsonify, request, Response, redirect
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from contextlib import closing
@@ -10743,6 +10743,17 @@ def _whoop_day_from_record(record):
     return None
 
 
+def _validate_imported_whoop_local_date(local_date):
+    try:
+        parsed = datetime.strptime(str(local_date), "%Y-%m-%d").date()
+    except Exception:
+        raise ValueError("local_date must be a valid YYYY-MM-DD date.")
+    tomorrow = datetime.now().date() + timedelta(days=1)
+    if parsed > tomorrow:
+        raise ValueError("local_date cannot be in the future.")
+    return parsed.isoformat()
+
+
 def _whoop_recovery_band(score):
     try:
         value = float(score)
@@ -10850,7 +10861,7 @@ def _normalize_whoop_records(record_type, records):
 
 
 def _whoop_sync_window(days_back=7):
-    end = datetime.now()
+    end = datetime.now(timezone.utc)
     start = end - timedelta(days=int(days_back or 7))
     return start, end
 
@@ -10966,6 +10977,7 @@ def _parse_whoop_csv_rows(text):
         _validate_whoop_raw_metric_fields(row)
         normalized = _normalize_whoop_record(record_type, row)
         if normalized:
+            normalized["local_date"] = _validate_imported_whoop_local_date(normalized["local_date"])
             _validate_whoop_metric_bounds(normalized)
         records.append((record_type, normalized))
     return [(kind, row) for kind, row in records if row]

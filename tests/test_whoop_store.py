@@ -134,7 +134,7 @@ def test_project_daily_facts_does_not_promote_pending_recovery_metrics(tmp_path)
     whoop_store.project_whoop_daily_facts(db_path)
 
     fact = whoop_store.get_daily_fact(db_path, local_date="2026-06-25")
-    assert fact["score_state"] == "SCORED"
+    assert fact["score_state"] == "PENDING_SCORE"
     assert fact["recovery_score"] is None
     assert fact["recovery_band"] is None
     assert fact["sleep_performance_pct"] == 90

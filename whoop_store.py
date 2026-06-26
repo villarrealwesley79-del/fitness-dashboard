@@ -662,6 +662,8 @@ def project_whoop_daily_facts(db_path: str, *, projected_at: datetime | None = N
                     "skin_temp": None,
                     "percent_recorded": None,
                     "score_state": row["score_state"] or "unscored",
+                    "_has_recovery_state": False,
+                    "_has_scored_recovery": False,
                     "last_sync_attempt": row["imported_at"],
                     "projected_at": _iso_now(projected_at),
                 },
@@ -669,9 +671,16 @@ def project_whoop_daily_facts(db_path: str, *, projected_at: datetime | None = N
             if row["imported_at"] and (fact["last_sync_attempt"] is None or row["imported_at"] > fact["last_sync_attempt"]):
                 fact["last_sync_attempt"] = row["imported_at"]
             score_state = row["score_state"]
-            if score_state == "SCORED":
+            if row["record_type"] == "recovery":
+                fact["_has_recovery_state"] = True
+                if score_state == "SCORED":
+                    fact["_has_scored_recovery"] = True
+                    fact["score_state"] = "SCORED"
+                elif not fact["_has_scored_recovery"] and score_state:
+                    fact["score_state"] = score_state
+            elif score_state == "SCORED" and not fact["_has_recovery_state"]:
                 fact["score_state"] = "SCORED"
-            elif fact["score_state"] != "SCORED" and score_state:
+            elif fact["score_state"] != "SCORED" and score_state and not fact["_has_recovery_state"]:
                 fact["score_state"] = score_state
             if score_state != "SCORED":
                 continue
