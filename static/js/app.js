@@ -38,6 +38,7 @@
     // retry success can no longer flip its sentinel back on).
     let dashboardRenderGen = 0;
     let modalOpenSeq = 0;
+    let selectedGoalToRestoreFocus = null;
     const dashboardSentinelGen = { ouraError: 0, recoError: 0, ouraSleepError: 0 };
     let nextWorkoutRenderGen = 0;
 
@@ -103,6 +104,7 @@
         '[data-close-modal]:not([disabled])',
         'button:not([disabled])',
         '[href]',
+        'iframe',
         'input:not([disabled]):not([type="hidden"])',
         'select:not([disabled])',
         'textarea:not([disabled])',
@@ -939,12 +941,90 @@
             .pop() || null;
     }
 
+    function getTopmostModalForFocus() {
+        return qsa('.modal')
+            .filter((modal) => !modal.hidden && modal.isConnected)
+            .sort((a, b) => (a.__fit192OpenedAt || 0) - (b.__fit192OpenedAt || 0))
+            .pop() || null;
+    }
+
     function handleModalEscape(e) {
         if (e.key !== 'Escape') return;
         const modal = getTopmostOpenModal();
         if (!modal) return;
         e.preventDefault();
         closeModal(modal);
+    }
+
+    function restoreFocusInsideModal(modal) {
+        if (!modal || modal.contains(document.activeElement)) return;
+        const focusable = getModalFocusableElements(modal);
+        if (focusable.length) focusable[0].focus({ preventScroll: true });
+    }
+
+    function bindModalIframeFocusGuards(modal) {
+        qsa('iframe', modal).forEach((frame) => {
+            if (frame.__fit238FocusGuardBound) return;
+            frame.__fit238FocusGuardBound = true;
+            frame.addEventListener('blur', () => {
+                window.setTimeout(() => restoreFocusInsideModal(modal), 0);
+            });
+        });
+    }
+
+    function getModalFocusableElements(modal) {
+        bindModalIframeFocusGuards(modal);
+        return qsa(MODAL_FOCUS_SELECTOR, modal).filter((el) => {
+            if (el.disabled || el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
+            if (el.closest('[hidden]')) return false;
+            return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+        });
+    }
+
+    function handleModalTabKeydown(e) {
+        if (e.key !== 'Tab') return;
+        const modal = getTopmostModalForFocus();
+        if (!modal) return;
+        const focusable = getModalFocusableElements(modal);
+        if (!focusable.length) {
+            e.preventDefault();
+            return;
+        }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement;
+        if (!modal.contains(active)) {
+            e.preventDefault();
+            first.focus({ preventScroll: true });
+            return;
+        }
+        if (e.shiftKey && active === first) {
+            e.preventDefault();
+            last.focus({ preventScroll: true });
+        } else if (!e.shiftKey && active === last) {
+            e.preventDefault();
+            first.focus({ preventScroll: true });
+        }
+    }
+
+    function handleModalFocusin(e) {
+        const modal = getTopmostModalForFocus();
+        if (!modal || modal.contains(e.target)) return;
+        restoreFocusInsideModal(modal);
+    }
+
+    function handleModalFocusout() {
+        window.setTimeout(() => {
+            const modal = getTopmostModalForFocus();
+            restoreFocusInsideModal(modal);
+        }, 0);
+    }
+
+    function handleModalWindowFocus() {
+        window.setTimeout(() => {
+            const modal = getTopmostModalForFocus();
+            restoreFocusInsideModal(modal);
+        }, 0);
     }
 
     function collectOpenModals(node, seen) {
@@ -957,7 +1037,11 @@
 
     function watchModalFocus() {
         qsa('.modal').forEach(focusOpenModal);
-        document.addEventListener('keydown', handleModalEscape);
+    document.addEventListener('keydown', handleModalEscape);
+    document.addEventListener('keydown', handleModalTabKeydown);
+    document.addEventListener('focusin', handleModalFocusin);
+    document.addEventListener('focusout', handleModalFocusout);
+    window.addEventListener('focus', handleModalWindowFocus);
         if (!('MutationObserver' in window)) return;
         const observer = new MutationObserver((records) => {
             const opened = new Set();
@@ -3882,6 +3966,33 @@
     function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
     // --- Settings ------------------------------------------------
+    function selectGoalOption(option) {
+        if (!option || !option.dataset || !option.dataset.goal) return;
+        selectedGoalToRestoreFocus = option.dataset.goal;
+        updateSetting({ training_goal: option.dataset.goal });
+    }
+
+    function handleGoalOptionKeydown(e) {
+        const key = e.key;
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' ', 'Enter'].includes(key)) return;
+        const options = qsa('[role="radio"]', $('settings-goals')).filter((option) => !option.disabled);
+        if (!options.length) return;
+        const current = options.indexOf(e.currentTarget);
+        if (current < 0) return;
+        e.preventDefault();
+        if (key === ' ' || key === 'Enter') {
+            selectGoalOption(e.currentTarget);
+            return;
+        }
+        let next = current;
+        if (key === 'ArrowLeft' || key === 'ArrowUp') next = (current - 1 + options.length) % options.length;
+        else if (key === 'ArrowRight' || key === 'ArrowDown') next = (current + 1) % options.length;
+        else if (key === 'Home') next = 0;
+        else if (key === 'End') next = options.length - 1;
+        options[next].focus({ preventScroll: true });
+        selectGoalOption(options[next]);
+    }
+
     async function renderSettings() {
         // FIT-16: settings + Oura first. Oura refresh upserts today's
         // row, so the dashboard freshness block (which we use below to
@@ -3906,20 +4017,31 @@
         const host = $('settings-goals');
         host.innerHTML = '';
         (st.available_goals || []).forEach((g) => {
+            const selected = st.training_goal === g.value || st.goal === g.value || (st.goal_details && st.goal_details.name === g.name);
             const btn = document.createElement('button');
             btn.type = 'button';
-            btn.className = 'goal-opt' + (st.training_goal === g.value || st.goal === g.value || (st.goal_details && st.goal_details.name === g.name) ? ' active' : '');
+            btn.className = 'goal-opt' + (selected ? ' active' : '');
             btn.dataset.goal = g.value;
+            btn.setAttribute('role', 'radio');
+            btn.setAttribute('aria-checked', selected ? 'true' : 'false');
+            btn.tabIndex = selected ? 0 : -1;
             btn.innerHTML = `
                 <div>
                     <div class="goal-title">${escapeHtml(g.name)}</div>
                     <span class="goal-sub">${escapeHtml(g.description)}</span>
                 </div>
-                <span class="goal-check">✓</span>
+                <span class="goal-check" aria-hidden="true">✓</span>
             `;
-            btn.addEventListener('click', () => updateSetting({ training_goal: g.value }));
+            btn.addEventListener('click', () => selectGoalOption(btn));
+            btn.addEventListener('keydown', handleGoalOptionKeydown);
             host.appendChild(btn);
         });
+        if (selectedGoalToRestoreFocus) {
+            const focusGoal = selectedGoalToRestoreFocus;
+            selectedGoalToRestoreFocus = null;
+            const optionToFocus = qsa('[role="radio"]', host).find((option) => option.dataset.goal === focusGoal);
+            if (optionToFocus) optionToFocus.focus({ preventScroll: true });
+        }
 
         const dobInput = $('settings-date-of-birth');
         dobInput.value = st.date_of_birth || '';
@@ -9918,13 +10040,18 @@
                     <button type="button" class="meal-review-v2-source-modal-close" aria-label="Close" data-action="close-source">✕</button>
                 </header>
                 <iframe class="meal-review-v2-source-frame" src="${escapeHtml(safe)}" sandbox="allow-same-origin" referrerpolicy="no-referrer" loading="lazy"></iframe>
+                <button type="button" class="visually-hidden" data-action="focus-source-close">Return to source viewer controls</button>
             </div>
         `;
         document.body.appendChild(modal);
         const close = () => modal.remove();
         modal.__fit192Close = close;
         focusOpenModal(modal);
+        const closeButton = modal.querySelector('.meal-review-v2-source-modal-close');
         modal.querySelectorAll('[data-action="close-source"]').forEach((el) => el.addEventListener('click', () => closeModal(modal)));
+        modal.querySelectorAll('[data-action="focus-source-close"]').forEach((el) => {
+            el.addEventListener('focus', () => closeButton && closeButton.focus({ preventScroll: true }));
+        });
     }
 
     function sanitizeMealV2SourceLink(link) {

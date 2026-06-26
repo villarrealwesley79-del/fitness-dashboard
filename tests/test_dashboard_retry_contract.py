@@ -188,8 +188,8 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "healthkit_samples_workout_*.json" in app_py
     assert "training_recommendation=_current_workout_training_recommendation()" in app_py
     assert "api('/api/next-workout', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS })" in app_js
-    assert "app.js?v=20260530-fit192-a11y" in template
-    assert "fitness-dashboard-v20260530-fit192-a11y" in sw
+    assert "app.js?v=20260625-fit238-qol" in template
+    assert "fitness-dashboard-v20260625-fit238-qol" in sw
     assert "const STATIC_ASSETS" not in sw
     assert "cache.addAll" not in sw
     assert "caches.keys()" in sw
