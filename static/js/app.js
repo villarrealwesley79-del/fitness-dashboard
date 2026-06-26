@@ -5178,7 +5178,7 @@
 
     function currentActiveWorkoutDraftScope() {
         try {
-            return String(cachedMealQueueAuthScope()).trim();
+            return String(_mealQueueAuthScope || '').trim();
         } catch (_) {
             return '';
         }
@@ -5284,7 +5284,7 @@
         if (!draft) return false;
         const draftScope = String(draft.auth_scope || '').trim();
         const currentScope = currentActiveWorkoutDraftScope();
-        if (draftScope && currentScope && draftScope !== currentScope) {
+        if (!draftScope || !currentScope || draftScope !== currentScope) {
             return false;
         }
         state.activeWorkout = draft.workout;

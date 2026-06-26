@@ -41,7 +41,7 @@ def test_active_workout_draft_uses_versioned_scoped_localstorage_wrapper():
     assert "const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';" in block
     assert "const ACTIVE_WORKOUT_DRAFT_VERSION = 1;" in block
     assert "function currentActiveWorkoutDraftScope()" in block
-    assert "return String(cachedMealQueueAuthScope()).trim();" in block
+    assert "return String(_mealQueueAuthScope || '').trim();" in block
     assert "function syncActiveWorkoutInputsFromDom()" in block
     assert "function saveActiveWorkoutDraftBeforePageHidden()" in block
     assert "version: ACTIVE_WORKOUT_DRAFT_VERSION" in block
@@ -52,12 +52,12 @@ def test_active_workout_draft_uses_versioned_scoped_localstorage_wrapper():
     assert "localStorage.removeItem(ACTIVE_WORKOUT_DRAFT_KEY)" in block
 
 
-def test_active_workout_draft_restore_rejects_detectable_scope_mismatch():
+def test_active_workout_draft_restore_requires_fresh_matching_scope():
     block = _app_js_block("function restoreActiveWorkoutDraft()", "function buildLoggedSets")
 
     assert "const draftScope = String(draft.auth_scope || '').trim();" in block
     assert "const currentScope = currentActiveWorkoutDraftScope();" in block
-    assert "if (draftScope && currentScope && draftScope !== currentScope)" in block
+    assert "if (!draftScope || !currentScope || draftScope !== currentScope)" in block
     assert "Recovered unsaved workout details from this device." in block
     assert "renderActiveWorkout();" in block
     assert "toast('Recovered unsaved workout details')" in block
@@ -155,7 +155,7 @@ const sandbox = {{
     setItem: (key, value) => store.set(key, value),
     removeItem: (key) => store.delete(key),
   }},
-  cachedMealQueueAuthScope: () => 'user:fit236',
+  _mealQueueAuthScope: 'user:fit236',
   renderActiveWorkout: () => {{}},
   toast: () => {{}},
 }};
