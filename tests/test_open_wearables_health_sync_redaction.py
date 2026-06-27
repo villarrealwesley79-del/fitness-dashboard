@@ -423,7 +423,184 @@ def test_open_wearables_bootstrap_uses_sidecar_without_echoing_secret(monkeypatc
     assert bootstrap_secret not in response.get_data(as_text=True)
     saved = json.loads(config_file.read_text())
     assert saved["password"] == bootstrap_secret
+    assert saved["profiles"]["1"]["user_id"] == "11111111-1111-4111-8111-111111111111"
+    assert saved["profiles"]["1"]["external_user_id"] == "fitness-dashboard-user-1"
     assert module.OPEN_WEARABLES_PASSWORD == bootstrap_secret
+
+
+def test_open_wearables_profile_mapping_uses_current_data_user(monkeypatch):
+    module = _fitness_app()
+    seen = {}
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 42)
+    monkeypatch.setattr(module, "_open_wearables_find_user", lambda *_args: "")
+
+    def fake_create(_base_url, _token, external_user_id):
+        seen["external_user_id"] = external_user_id
+        return "open-wearables-user-42"
+
+    monkeypatch.setattr(module, "_open_wearables_create_user", fake_create)
+
+    user_id, state = module._open_wearables_resolve_user("http://localhost:8000", "safe-token")
+
+    assert user_id == "open-wearables-user-42"
+    assert state == "created"
+    assert seen["external_user_id"] == "fitness-dashboard-user-42"
+
+
+def test_open_wearables_public_config_uses_profile_mapping_before_legacy_user(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "_open_wearables_provider_actions", lambda: [])
+    monkeypatch.setattr(module, "_open_wearables_sidecar_env_available", lambda: False)
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "admin@example.test")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "saved-credential")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "legacy-owner-user")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {
+        "user_id": "legacy-owner-user",
+        "profiles": {
+            "42": {
+                "user_id": "open-wearables-user-42",
+                "external_user_id": "fitness-dashboard-user-42",
+            },
+        },
+    })
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 42)
+
+    profile_config = module._open_wearables_setup_public_config()
+
+    assert profile_config["profile_key"] == "42"
+    assert profile_config["user_id"] == "open-wearables-user-42"
+    assert profile_config["user_mapped"] is True
+
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 43)
+
+    other_profile_config = module._open_wearables_setup_public_config()
+
+    assert other_profile_config["profile_key"] == "43"
+    assert other_profile_config["user_id"] == ""
+    assert other_profile_config["user_mapped"] is False
+
+
+def test_open_wearables_setup_save_preserves_other_profile_mappings(monkeypatch, tmp_path):
+    module = _fitness_app()
+    config_file = tmp_path / "open_wearables_config.json"
+    monkeypatch.setattr(module, "OPEN_WEARABLES_CONFIG_FILE", str(config_file))
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {
+        "user_id": "legacy-owner-user",
+        "profiles": {
+            "7": {
+                "user_id": "open-wearables-user-7",
+                "external_user_id": "fitness-dashboard-user-7",
+            },
+        },
+    })
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "legacy-owner-user")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "saved-credential")
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 42)
+    monkeypatch.setattr(module, "_fetch_open_wearables_provider_statuses", lambda: ([], "open_wearables_no_providers"))
+
+    response = module.app.test_client().post("/api/open-wearables/setup", json={
+        "base_url": "http://localhost:8000",
+        "username": "admin@example.test",
+        "user_id": "open-wearables-user-42",
+    })
+
+    assert response.status_code == 200
+    saved = json.loads(config_file.read_text())
+    assert saved["user_id"] == "legacy-owner-user"
+    assert saved["profiles"]["7"]["user_id"] == "open-wearables-user-7"
+    assert saved["profiles"]["42"]["user_id"] == "open-wearables-user-42"
+    assert saved["profiles"]["42"]["external_user_id"] == "fitness-dashboard-user-42"
+
+
+def test_open_wearables_setup_remap_clears_profile_cache_and_facts(monkeypatch, tmp_path):
+    module = _fitness_app()
+    config_file = tmp_path / "open_wearables_config.json"
+    facts_db = tmp_path / "wearable_facts.sqlite3"
+    monkeypatch.setattr(module, "OPEN_WEARABLES_CONFIG_FILE", str(config_file))
+    monkeypatch.setattr(module, "WEARABLE_FACTS_DB_FILE", str(facts_db))
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {
+        "profiles": {
+            "42": {
+                "user_id": "old-open-wearables-user-42",
+                "external_user_id": "fitness-dashboard-user-42",
+            },
+            "7": {
+                "user_id": "open-wearables-user-7",
+                "external_user_id": "fitness-dashboard-user-7",
+            },
+        },
+    })
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "saved-credential")
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 42)
+    monkeypatch.setattr(module, "_fetch_open_wearables_provider_statuses", lambda: ([], "open_wearables_no_providers"))
+    monkeypatch.setattr(module, "OPEN_WEARABLES_WORKOUT_MARKER_CACHE", {"42": {"configured": True}})
+    module.upsert_daily_facts(str(facts_db), [
+        module.WearableDailyFact("2026-06-26", "open_wearables", "Open Wearables", "sleep_duration", 430, "min"),
+    ], profile_key="42")
+
+    response = module.app.test_client().post("/api/open-wearables/setup", json={
+        "base_url": "http://localhost:8000",
+        "username": "admin@example.test",
+        "user_id": "new-open-wearables-user-42",
+    })
+
+    assert response.status_code == 200
+    saved = json.loads(config_file.read_text())
+    assert saved["profiles"]["42"]["user_id"] == "new-open-wearables-user-42"
+    assert saved["profiles"]["7"]["user_id"] == "open-wearables-user-7"
+    assert module.OPEN_WEARABLES_WORKOUT_MARKER_CACHE == {}
+    assert module.list_recommendation_facts(str(facts_db), profile_key="42") == []
+
+
+def test_open_wearables_sync_uses_current_profile_user_mapping(monkeypatch):
+    module = _fitness_app()
+    requested = []
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 42)
+    monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "admin@example.test")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "saved-credential")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://localhost:8000")
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {
+        "profiles": {
+            "1": {"user_id": "open-wearables-user-1"},
+            "42": {"user_id": "open-wearables-user-42"},
+        },
+    })
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+
+    def fake_ow_request(url, **_kwargs):
+        requested.append(url)
+        return {"items": []}
+
+    monkeypatch.setattr(module, "_ow_request", fake_ow_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    assert payload["errors"] == {}
+    assert requested
+    assert all("/api/v1/users/open-wearables-user-42/" in url for url in requested)
+    assert not any("open-wearables-user-1" in url for url in requested)
+
+
+def test_open_wearables_recommendation_marker_cache_is_profile_scoped(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "OPEN_WEARABLES_WORKOUT_MARKER_CACHE", {})
+
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+    profile_one = module._store_open_wearables_recommendation_marker({
+        "sleep": {"events": [{"end_time": "2026-06-26T07:00:00", "duration_min": 480}]}
+    })
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 2)
+    profile_two = module._store_open_wearables_recommendation_marker({
+        "sleep": {"events": [{"end_time": "2026-06-26T07:00:00", "duration_min": 120}]}
+    })
+
+    assert profile_one["sleep"]["duration_min"] == 480
+    assert profile_two["sleep"]["duration_min"] == 120
+    assert module._open_wearables_recommendation_marker()["sleep"]["duration_min"] == 120
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+    assert module._open_wearables_recommendation_marker()["sleep"]["duration_min"] == 480
 
 
 def test_open_wearables_bootstrap_reports_missing_sidecar_without_secret(monkeypatch, tmp_path):

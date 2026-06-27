@@ -107,6 +107,7 @@ from open_wearables_adapter import (
 from recommendation_sources import build_open_wearables_recommendation_source
 from wearable_fact_store import (
     WearableDailyFact,
+    delete_provider_data,
     list_recommendation_facts,
     list_wearable_sources,
     upsert_daily_facts,
@@ -507,7 +508,7 @@ WORKOUT_RECOMMENDATIONS = []  # Stores what was recommended
 COMPLETED_WORKOUTS = []  # Stores what was actually done
 LAST_WORKOUT_RECOMMENDATION = None  # Most recent recommendation for swap actions
 LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
-OPEN_WEARABLES_WORKOUT_MARKER_CACHE = None
+OPEN_WEARABLES_WORKOUT_MARKER_CACHE = {}
 
 # ==================== CARDIO RECOMMENDATIONS ====================
 # Heart rate zones based on % of max HR (220 - age, assume age 30 for now = 190 max HR)
@@ -4629,23 +4630,27 @@ def _store_open_wearables_recommendation_marker(data):
         "workouts": _open_wearables_payload_marker((data or {}).get("workouts")),
         "activity_summary": _open_wearables_payload_marker((data or {}).get("activity_summary")),
     }
-    OPEN_WEARABLES_WORKOUT_MARKER_CACHE = marker
+    if not isinstance(OPEN_WEARABLES_WORKOUT_MARKER_CACHE, dict):
+        OPEN_WEARABLES_WORKOUT_MARKER_CACHE = {}
+    OPEN_WEARABLES_WORKOUT_MARKER_CACHE[_open_wearables_profile_key()] = marker
     return marker
 
 
 def _open_wearables_recommendation_marker(refresh=False):
     if not _open_wearables_workout_inputs_live():
         return {"configured": False}
-    if not refresh and OPEN_WEARABLES_WORKOUT_MARKER_CACHE is not None:
-        return OPEN_WEARABLES_WORKOUT_MARKER_CACHE
+    cache = OPEN_WEARABLES_WORKOUT_MARKER_CACHE if isinstance(OPEN_WEARABLES_WORKOUT_MARKER_CACHE, dict) else {}
+    profile_key = _open_wearables_profile_key()
+    if not refresh and profile_key in cache:
+        return cache[profile_key]
     if not refresh:
         return {"configured": True, "status": "unfetched"}
     try:
         data = fetch_open_wearables_data()
         return _store_open_wearables_recommendation_marker(data)
     except Exception as exc:
-        if OPEN_WEARABLES_WORKOUT_MARKER_CACHE is not None:
-            return OPEN_WEARABLES_WORKOUT_MARKER_CACHE
+        if profile_key in cache:
+            return cache[profile_key]
         return {
             "configured": True,
             "error_type": type(exc).__name__,
@@ -4699,6 +4704,7 @@ def _workout_recommendation_fingerprint():
         "volume_landmarks",
     ]
     payload = {
+        "auth_scope": _current_auth_scope(),
         "day": today_s,
         "workouts_count": len(WORKOUTS or []),
         "workouts_latest": latest_marker(WORKOUTS),
@@ -4717,7 +4723,7 @@ def _workout_recommendation_fingerprint():
         },
         "open_wearables": {
             "configured": _open_wearables_workout_inputs_live(),
-            "user_id": bool(OPEN_WEARABLES_USER_ID),
+            "user_id": _open_wearables_user_id(),
             "marker": _open_wearables_recommendation_marker(),
         },
         "apple_health": {
@@ -10251,6 +10257,88 @@ def _open_wearables_origin(url):
     return parsed.scheme, host, port
 
 
+def _open_wearables_profile_key():
+    try:
+        user_id = _current_data_user_id()
+    except Exception:
+        user_id = 1
+    key = re.sub(r"[^a-zA-Z0-9_.:-]", "-", str(user_id or "1").strip())
+    return key or "1"
+
+
+def _open_wearables_profile_mappings(config=None):
+    raw_profiles = (config if isinstance(config, dict) else OPEN_WEARABLES_LOCAL_CONFIG).get("profiles")
+    return raw_profiles if isinstance(raw_profiles, dict) else {}
+
+
+def _open_wearables_profile_config(profile_key=None, config=None):
+    key = str(profile_key or _open_wearables_profile_key())
+    profile = _open_wearables_profile_mappings(config).get(key)
+    return profile if isinstance(profile, dict) else {}
+
+
+def _open_wearables_user_id(profile_key=None):
+    key = str(profile_key or _open_wearables_profile_key())
+    mapped = str(_open_wearables_profile_config(key).get("user_id") or "").strip()
+    if mapped:
+        return mapped
+    if key == "1":
+        return str(OPEN_WEARABLES_USER_ID or "").strip()
+    return ""
+
+
+def _open_wearables_user_base(user_id=None):
+    resolved_user_id = str(user_id if user_id is not None else _open_wearables_user_id()).strip()
+    if not resolved_user_id:
+        return ""
+    return f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/users/{urllib.parse.quote(resolved_user_id)}"
+
+
+def _open_wearables_external_user_id(profile_key=None):
+    key = str(profile_key or _open_wearables_profile_key())
+    return f"fitness-dashboard-user-{key}"
+
+
+def _open_wearables_config_with_profile_mapping(config, user_id, profile_key=None):
+    mapped_user_id = str(user_id or "").strip()
+    if not mapped_user_id:
+        return config
+    key = str(profile_key or _open_wearables_profile_key())
+    next_config = dict(config or {})
+    profiles = dict(_open_wearables_profile_mappings(next_config))
+    profile_config = dict(profiles.get(key) or {})
+    profile_config.update({
+        "user_id": mapped_user_id,
+        "external_user_id": _open_wearables_external_user_id(key),
+        "mapped_at": datetime.now().isoformat(),
+    })
+    profiles[key] = profile_config
+    next_config["profiles"] = profiles
+    if key == "1":
+        next_config["user_id"] = mapped_user_id
+    return next_config
+
+
+def _open_wearables_mapping_changed(user_id, profile_key=None):
+    mapped_user_id = str(user_id or "").strip()
+    if not mapped_user_id:
+        return False
+    return _open_wearables_user_id(profile_key) not in {"", mapped_user_id}
+
+
+def _clear_open_wearables_profile_cache(profile_key=None):
+    global OPEN_WEARABLES_WORKOUT_MARKER_CACHE
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
+    key = str(profile_key or _open_wearables_profile_key())
+    if isinstance(OPEN_WEARABLES_WORKOUT_MARKER_CACHE, dict):
+        OPEN_WEARABLES_WORKOUT_MARKER_CACHE.pop(key, None)
+    else:
+        OPEN_WEARABLES_WORKOUT_MARKER_CACHE = {}
+    delete_provider_data(WEARABLE_FACTS_DB_FILE, "open_wearables", profile_key=key)
+    LAST_WORKOUT_RECOMMENDATION = None
+    LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
+
+
 def _apply_open_wearables_runtime_config(config):
     global OPEN_WEARABLES_LOCAL_CONFIG
     global OPEN_WEARABLES_USERNAME, OPEN_WEARABLES_PASSWORD, OPEN_WEARABLES_USER_ID
@@ -10295,15 +10383,17 @@ def _open_wearables_pairing_portal_url():
 
 def _open_wearables_setup_public_config():
     provider_actions = _open_wearables_provider_actions()
+    user_id = _open_wearables_user_id()
     return {
         "base_url": OPEN_WEARABLES_SERVICE_BASE,
         "username": OPEN_WEARABLES_USERNAME,
-        "user_id": OPEN_WEARABLES_USER_ID,
+        "user_id": user_id,
+        "profile_key": _open_wearables_profile_key(),
         "portal_url": OPEN_WEARABLES_PORTAL_URL,
         "pairing_url": _open_wearables_pairing_portal_url(),
         "password_configured": bool(OPEN_WEARABLES_PASSWORD),
         "hub_account_ready": bool(OPEN_WEARABLES_USERNAME and OPEN_WEARABLES_PASSWORD),
-        "user_mapped": bool(OPEN_WEARABLES_USER_ID),
+        "user_mapped": bool(user_id),
         "bootstrap_available": _open_wearables_sidecar_env_available(),
         "managed_connector_restart_required": bool(OPEN_WEARABLES_MANAGED_RESTART_REQUIRED),
         "provider_setup_ready": any(action.get("enabled") for action in provider_actions),
@@ -10564,7 +10654,7 @@ def _open_wearables_seed_managed_provider_credentials(sidecar_env=None):
 
 
 def _open_wearables_provider_actions():
-    can_pair = bool(OPEN_WEARABLES_USER_ID and OPEN_WEARABLES_USERNAME and OPEN_WEARABLES_PASSWORD)
+    can_pair = bool(_open_wearables_user_id() and OPEN_WEARABLES_USERNAME and OPEN_WEARABLES_PASSWORD)
     sidecar_env, env_error = _load_open_wearables_sidecar_env()
     restart_required = bool(OPEN_WEARABLES_MANAGED_RESTART_REQUIRED)
     hub_settings, hub_error = _open_wearables_provider_settings_from_hub() if can_pair else ({}, None)
@@ -10656,7 +10746,7 @@ def _missing_open_wearables_config():
         missing.append("OW_USERNAME")
     if not OPEN_WEARABLES_PASSWORD:
         missing.append("OW_PASSWORD")
-    if not OPEN_WEARABLES_USER_ID:
+    if not _open_wearables_user_id():
         missing.append("OW_USER_ID")
     base_ok, base_error = validate_open_wearables_base_url(
         OPEN_WEARABLES_SERVICE_BASE,
@@ -10827,8 +10917,8 @@ def _open_wearables_create_user(base_url, token, external_user_id):
     return _open_wearables_user_id_from_payload(created)
 
 
-def _open_wearables_resolve_user(base_url, token):
-    external_user_id = "fitness-dashboard-primary"
+def _open_wearables_resolve_user(base_url, token, profile_key=None):
+    external_user_id = _open_wearables_external_user_id(profile_key)
     existing = _open_wearables_find_user(base_url, token, external_user_id)
     if existing:
         return existing, "reused"
@@ -10866,7 +10956,8 @@ def _open_wearables_bootstrap_local_hub():
         if managed_connectors.get("changed"):
             sidecar_env, _env_error = _load_open_wearables_sidecar_env()
         token, _payload = _open_wearables_login(base_url, username, credential)
-        user_id = OPEN_WEARABLES_USER_ID
+        profile_key = _open_wearables_profile_key()
+        user_id = _open_wearables_user_id(profile_key)
         if user_id:
             try:
                 _ow_json_request(f"{base_url}/api/v1/users/{urllib.parse.quote(user_id)}", token=token)
@@ -10874,26 +10965,34 @@ def _open_wearables_bootstrap_local_hub():
                 user_id = ""
         user_state = "reused"
         if not user_id:
-            user_id, user_state = _open_wearables_resolve_user(base_url, token)
+            user_id, user_state = _open_wearables_resolve_user(base_url, token, profile_key=profile_key)
     except Exception:
         return None, "hub_bootstrap_failed"
 
     portal_url = OPEN_WEARABLES_PORTAL_URL
     if not portal_url:
         portal_url = str(sidecar_env.get("FRONTEND_URL") or "").strip()
+    mapping_changed = _open_wearables_mapping_changed(user_id, profile_key=profile_key)
     next_config = {
         "base_url": base_url,
         "portal_url": portal_url,
         "username": username,
         "password": credential,
-        "user_id": user_id,
     }
+    existing_profiles = _open_wearables_profile_mappings()
+    if existing_profiles:
+        next_config["profiles"] = dict(existing_profiles)
+    if OPEN_WEARABLES_USER_ID:
+        next_config["user_id"] = OPEN_WEARABLES_USER_ID
+    next_config = _open_wearables_config_with_profile_mapping(next_config, user_id, profile_key=profile_key)
     if OPEN_WEARABLES_SIDECAR_ENV_PATH:
         next_config["sidecar_env_path"] = OPEN_WEARABLES_SIDECAR_ENV_PATH
     if managed_connectors.get("restart_required"):
         next_config["managed_connector_restart_required"] = True
     if not _save_open_wearables_local_config(next_config):
         return None, "config_save_failed"
+    if mapping_changed:
+        _clear_open_wearables_profile_cache(profile_key=profile_key)
     _apply_open_wearables_runtime_config(next_config)
     return {
         "user_id": user_id,
@@ -10914,7 +11013,8 @@ def _open_wearables_authorization_url(provider):
     )
     if not base_ok:
         return None, base_error
-    if not OPEN_WEARABLES_USER_ID:
+    user_id = _open_wearables_user_id()
+    if not user_id:
         return None, "missing_user_mapping"
     hub_settings = None
     if OPEN_WEARABLES_MANAGED_RESTART_REQUIRED:
@@ -10941,7 +11041,7 @@ def _open_wearables_authorization_url(provider):
         return None, "sdk_provider"
     if not _open_wearables_provider_credentials_ready(provider_id):
         return None, "provider_app_needed"
-    query = urllib.parse.urlencode({"user_id": OPEN_WEARABLES_USER_ID})
+    query = urllib.parse.urlencode({"user_id": user_id})
     endpoint = f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/oauth/{provider_id}/authorize?{query}"
     try:
         payload = _ow_json_request(endpoint, timeout_s=6)
@@ -10967,7 +11067,8 @@ def _open_wearables_mobile_invite(provider):
         return None, "provider_not_supported"
     if catalog_entry.get("kind") != "sdk":
         return None, "cloud_provider"
-    if not OPEN_WEARABLES_USER_ID:
+    user_id = _open_wearables_user_id()
+    if not user_id:
         return None, "missing_user_mapping"
     base_ok, base_error = validate_open_wearables_base_url(
         OPEN_WEARABLES_SERVICE_BASE,
@@ -10980,7 +11081,7 @@ def _open_wearables_mobile_invite(provider):
         return None, "hub_auth_failed"
     endpoint = (
         f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/users/"
-        f"{urllib.parse.quote(OPEN_WEARABLES_USER_ID)}/invitation-code"
+        f"{urllib.parse.quote(user_id)}/invitation-code"
     )
     try:
         payload = _ow_json_request(endpoint, token=token, method="POST", timeout_s=6)
@@ -11045,9 +11146,9 @@ def fetch_open_wearables_data():
     end_date = today.strftime("%Y-%m-%d")
 
     endpoints = {
-        "sleep": f"{OPEN_WEARABLES_BASE}/events/sleep?start_date={start_date}&end_date={end_date}",
-        "workouts": f"{OPEN_WEARABLES_BASE}/events/workouts?start_date={start_date}&end_date={end_date}",
-        "activity_summary": f"{OPEN_WEARABLES_BASE}/summaries/activity?start_date={start_date}&end_date={end_date}",
+        "sleep": f"{_open_wearables_user_base()}/events/sleep?start_date={start_date}&end_date={end_date}",
+        "workouts": f"{_open_wearables_user_base()}/events/workouts?start_date={start_date}&end_date={end_date}",
+        "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?start_date={start_date}&end_date={end_date}",
     }
 
     result = {
@@ -11464,7 +11565,7 @@ def _open_wearables_public_status(providers=None, error_code=None):
     payload = build_open_wearables_status(
         username=OPEN_WEARABLES_USERNAME,
         credential=OPEN_WEARABLES_PASSWORD,
-        user_id=OPEN_WEARABLES_USER_ID,
+        user_id=_open_wearables_user_id(),
         base_url=OPEN_WEARABLES_SERVICE_BASE,
         allowed_hosts=_allowed_hosts_from_csv(OPEN_WEARABLES_ALLOWED_HOSTS),
         providers=providers or [],
@@ -11480,9 +11581,10 @@ def _open_wearables_public_status(providers=None, error_code=None):
 
 
 def _open_wearables_provider_endpoint():
-    if not OPEN_WEARABLES_USER_ID:
+    user_base = _open_wearables_user_base()
+    if not user_base:
         return None
-    return f"{OPEN_WEARABLES_BASE}/data-sources"
+    return f"{user_base}/data-sources"
 
 
 def _fetch_open_wearables_provider_statuses():
@@ -11541,6 +11643,7 @@ def _open_wearables_status_source(status_payload=None):
 
 def _store_wearable_facts_from_open_wearables(data):
     data = data if isinstance(data, dict) else {}
+    profile_key = _open_wearables_profile_key()
     fetched_at = data.get("fetched_at") if isinstance(data.get("fetched_at"), str) else datetime.now().isoformat()
     errors = data.get("errors") if isinstance(data.get("errors"), dict) else {}
     status = "error" if errors else "fresh"
@@ -11552,7 +11655,7 @@ def _store_wearable_facts_from_open_wearables(data):
         "last_sync_attempt": fetched_at,
         "capabilities": {"metrics": True, "workouts": True, "history": True, "sync": True},
         "used_for_recommendation": status != "error",
-    })
+    }, profile_key=profile_key)
 
     facts = []
     activity = _extract_open_wearables_activity_summaries(data.get("activity_summary"))
@@ -11575,13 +11678,17 @@ def _store_wearable_facts_from_open_wearables(data):
             facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_avg_heart_rate", sleep.get("avg_hr"), "bpm", confidence="medium", freshness=status))
 
     if facts:
-        upsert_daily_facts(WEARABLE_FACTS_DB_FILE, facts)
+        upsert_daily_facts(WEARABLE_FACTS_DB_FILE, facts, profile_key=profile_key)
     return len(facts)
 
 
 def _open_wearables_recommendation_facts(limit=20):
     return [
-        fact for fact in list_recommendation_facts(WEARABLE_FACTS_DB_FILE, limit=limit)
+        fact for fact in list_recommendation_facts(
+            WEARABLE_FACTS_DB_FILE,
+            limit=limit,
+            profile_key=_open_wearables_profile_key(),
+        )
         if fact.get("provider_id") == "open_wearables"
         and fact.get("freshness") in {"fresh", "aging"}
     ]
@@ -11707,12 +11814,20 @@ def open_wearables_setup_api():
     if len(base_url) > 256 or len(username) > 128 or len(user_id) > 128 or len(portal_url) > 256 or len(credential_input) > 512:
         return api_error("Open Wearables setup value is too long", 400, code="invalid_field")
 
+    profile_key = _open_wearables_profile_key()
+    mapping_changed = _open_wearables_mapping_changed(user_id, profile_key=profile_key)
     next_config = {
         "base_url": base_url,
         "username": username,
-        "user_id": user_id,
         "portal_url": portal_url,
     }
+    existing_profiles = _open_wearables_profile_mappings()
+    if existing_profiles:
+        next_config["profiles"] = dict(existing_profiles)
+    if OPEN_WEARABLES_USER_ID:
+        next_config["user_id"] = OPEN_WEARABLES_USER_ID
+    if user_id:
+        next_config = _open_wearables_config_with_profile_mapping(next_config, user_id)
     existing_sidecar_env_path = str(
         OPEN_WEARABLES_LOCAL_CONFIG.get("sidecar_env_path")
         or OPEN_WEARABLES_SIDECAR_ENV_PATH
@@ -11735,6 +11850,8 @@ def open_wearables_setup_api():
             "error": {"code": "config_save_failed", "message": "Open Wearables setup could not be saved on this Mac."},
             "config": _open_wearables_setup_public_config(),
         }), 500
+    if mapping_changed:
+        _clear_open_wearables_profile_cache(profile_key=profile_key)
     _apply_open_wearables_runtime_config(next_config)
     providers, provider_error = _fetch_open_wearables_provider_statuses()
     status_payload = _open_wearables_public_status(
@@ -11790,7 +11907,7 @@ def open_wearables_setup_bootstrap_api():
 
 @app.route('/api/open-wearables/pair/<provider>', methods=['GET', 'POST'])
 def open_wearables_pair_provider_api(provider):
-    if not OPEN_WEARABLES_USER_ID or not OPEN_WEARABLES_USERNAME or not OPEN_WEARABLES_PASSWORD:
+    if not _open_wearables_user_id() or not OPEN_WEARABLES_USERNAME or not OPEN_WEARABLES_PASSWORD:
         if request.method == "GET":
             return jsonify({
                 "status": "blocked",
@@ -11843,7 +11960,7 @@ def open_wearables_pair_provider_api(provider):
 
 @app.route('/api/open-wearables/mobile-invite/<provider>', methods=['POST'])
 def open_wearables_mobile_invite_api(provider):
-    if not OPEN_WEARABLES_USER_ID or not OPEN_WEARABLES_USERNAME or not OPEN_WEARABLES_PASSWORD:
+    if not _open_wearables_user_id() or not OPEN_WEARABLES_USERNAME or not OPEN_WEARABLES_PASSWORD:
         _bootstrap, bootstrap_error = _open_wearables_bootstrap_local_hub()
         if bootstrap_error:
             return jsonify({
@@ -11935,7 +12052,7 @@ def wearable_sources_api():
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context()
     sources = _wearable_sources_payload(freshness, whoop_context)
-    stored = list_wearable_sources(WEARABLE_FACTS_DB_FILE)
+    stored = list_wearable_sources(WEARABLE_FACTS_DB_FILE, profile_key=_open_wearables_profile_key())
     existing_sources = {s.get("source") for s in sources}
     sources.extend([row for row in stored if row.get("source") not in existing_sources])
     return jsonify({"sources": sources})
@@ -11948,7 +12065,13 @@ def wearable_facts_api():
         limit_i = max(1, min(100, int(limit)))
     except Exception:
         limit_i = 30
-    return jsonify({"facts": list_recommendation_facts(WEARABLE_FACTS_DB_FILE, limit=limit_i)})
+    return jsonify({
+        "facts": list_recommendation_facts(
+            WEARABLE_FACTS_DB_FILE,
+            limit=limit_i,
+            profile_key=_open_wearables_profile_key(),
+        )
+    })
 
 
 def _ai_history_context(limit=80):
@@ -11983,13 +12106,17 @@ def _build_ai_public_fact_context():
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context()
     sources = _wearable_sources_payload(freshness, whoop_context)
-    stored_sources = list_wearable_sources(WEARABLE_FACTS_DB_FILE)
+    stored_sources = list_wearable_sources(WEARABLE_FACTS_DB_FILE, profile_key=_open_wearables_profile_key())
     existing = {row.get("source") for row in sources}
     sources.extend([row for row in stored_sources if row.get("source") not in existing])
     return build_ai_fact_context(
         freshness=freshness,
         wearable_sources=sources,
-        facts=list_recommendation_facts(WEARABLE_FACTS_DB_FILE, limit=60),
+        facts=list_recommendation_facts(
+            WEARABLE_FACTS_DB_FILE,
+            limit=60,
+            profile_key=_open_wearables_profile_key(),
+        ),
         history=_ai_history_context(),
     )
 

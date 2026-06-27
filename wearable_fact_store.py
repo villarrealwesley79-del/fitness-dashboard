@@ -71,9 +71,64 @@ def validate_public_fact_payload(payload: dict) -> None:
 
 def init_wearable_fact_db(db_path: str) -> None:
     with sqlite3.connect(db_path) as conn:
+        _create_wearable_fact_tables(conn)
+        _ensure_column(conn, "wearable_daily_facts", "profile_key", "TEXT NOT NULL DEFAULT '1'")
+        _ensure_column(conn, "wearable_sources", "profile_key", "TEXT NOT NULL DEFAULT '1'")
+        _migrate_profile_key_primary_keys(conn)
+
+
+def _create_wearable_fact_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wearable_daily_facts (
+            profile_key TEXT NOT NULL DEFAULT '1',
+            date TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            source_label TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            value_json TEXT,
+            unit TEXT,
+            band TEXT,
+            confidence TEXT NOT NULL,
+            freshness TEXT NOT NULL,
+            conflict_state TEXT,
+            used_for_recommendation INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (profile_key, date, provider_id, metric)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wearable_sources (
+            profile_key TEXT NOT NULL DEFAULT '1',
+            provider_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            status TEXT NOT NULL,
+            last_data_point TEXT,
+            last_sync_attempt TEXT,
+            capabilities_json TEXT,
+            used_for_recommendation INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (profile_key, provider_id)
+        )
+        """
+    )
+
+
+def _primary_key_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return [row[1] for row in sorted((row for row in rows if row[5]), key=lambda row: row[5])]
+
+
+def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> None:
+    daily_pk = _primary_key_columns(conn, "wearable_daily_facts")
+    if daily_pk != ["profile_key", "date", "provider_id", "metric"]:
+        conn.execute("ALTER TABLE wearable_daily_facts RENAME TO wearable_daily_facts_legacy")
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS wearable_daily_facts (
+            CREATE TABLE wearable_daily_facts (
+                profile_key TEXT NOT NULL DEFAULT '1',
                 date TEXT NOT NULL,
                 provider_id TEXT NOT NULL,
                 source_label TEXT NOT NULL,
@@ -86,43 +141,86 @@ def init_wearable_fact_db(db_path: str) -> None:
                 conflict_state TEXT,
                 used_for_recommendation INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL,
-                PRIMARY KEY (date, provider_id, metric)
+                PRIMARY KEY (profile_key, date, provider_id, metric)
             )
             """
         )
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS wearable_sources (
-                provider_id TEXT PRIMARY KEY,
+            INSERT OR REPLACE INTO wearable_daily_facts (
+                profile_key, date, provider_id, source_label, metric, value_json, unit, band,
+                confidence, freshness, conflict_state, used_for_recommendation, updated_at
+            )
+            SELECT COALESCE(profile_key, '1'), date, provider_id, source_label, metric, value_json, unit, band,
+                confidence, freshness, conflict_state, used_for_recommendation, updated_at
+            FROM wearable_daily_facts_legacy
+            """
+        )
+        conn.execute("DROP TABLE wearable_daily_facts_legacy")
+
+    sources_pk = _primary_key_columns(conn, "wearable_sources")
+    if sources_pk != ["profile_key", "provider_id"]:
+        conn.execute("ALTER TABLE wearable_sources RENAME TO wearable_sources_legacy")
+        conn.execute(
+            """
+            CREATE TABLE wearable_sources (
+                profile_key TEXT NOT NULL DEFAULT '1',
+                provider_id TEXT NOT NULL,
                 label TEXT NOT NULL,
                 status TEXT NOT NULL,
                 last_data_point TEXT,
                 last_sync_attempt TEXT,
                 capabilities_json TEXT,
                 used_for_recommendation INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (profile_key, provider_id)
             )
             """
         )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO wearable_sources (
+                profile_key, provider_id, label, status, last_data_point, last_sync_attempt,
+                capabilities_json, used_for_recommendation, updated_at
+            )
+            SELECT COALESCE(profile_key, '1'), provider_id, label, status, last_data_point, last_sync_attempt,
+                capabilities_json, used_for_recommendation, updated_at
+            FROM wearable_sources_legacy
+            """
+        )
+        conn.execute("DROP TABLE wearable_sources_legacy")
 
 
-def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict]) -> int:
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if column not in {row[1] for row in rows}:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _normalize_profile_key(profile_key: str | int | None) -> str:
+    text = str(profile_key or "1").strip()
+    return text or "1"
+
+
+def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict], profile_key: str | int | None = None) -> int:
     init_wearable_fact_db(db_path)
     now = datetime.now().isoformat()
+    scoped_profile = _normalize_profile_key(profile_key)
     rows = []
     for fact in facts:
         payload = fact.public_dict() if isinstance(fact, WearableDailyFact) else dict(fact)
         validate_public_fact_payload(payload)
+        payload["profile_key"] = _normalize_profile_key(payload.get("profile_key") or scoped_profile)
         rows.append(payload)
     with sqlite3.connect(db_path) as conn:
         for row in rows:
             conn.execute(
                 """
                 INSERT INTO wearable_daily_facts (
-                    date, provider_id, source_label, metric, value_json, unit, band,
+                    profile_key, date, provider_id, source_label, metric, value_json, unit, band,
                     confidence, freshness, conflict_state, used_for_recommendation, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(date, provider_id, metric) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_key, date, provider_id, metric) DO UPDATE SET
                     source_label=excluded.source_label,
                     value_json=excluded.value_json,
                     unit=excluded.unit,
@@ -134,6 +232,7 @@ def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict]) -> i
                     updated_at=excluded.updated_at
                 """,
                 (
+                    row["profile_key"],
                     row["date"],
                     row["provider_id"],
                     row["source_label"],
@@ -151,19 +250,20 @@ def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict]) -> i
     return len(rows)
 
 
-def upsert_wearable_source(db_path: str, source: dict) -> None:
+def upsert_wearable_source(db_path: str, source: dict, profile_key: str | int | None = None) -> None:
     init_wearable_fact_db(db_path)
     validate_public_fact_payload(source)
     now = datetime.now().isoformat()
+    scoped_profile = _normalize_profile_key(source.get("profile_key") or profile_key)
     capabilities = source.get("capabilities") if isinstance(source.get("capabilities"), dict) else {}
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
             INSERT INTO wearable_sources (
-                provider_id, label, status, last_data_point, last_sync_attempt,
+                profile_key, provider_id, label, status, last_data_point, last_sync_attempt,
                 capabilities_json, used_for_recommendation, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(provider_id) DO UPDATE SET
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_key, provider_id) DO UPDATE SET
                 label=excluded.label,
                 status=excluded.status,
                 last_data_point=excluded.last_data_point,
@@ -173,6 +273,7 @@ def upsert_wearable_source(db_path: str, source: dict) -> None:
                 updated_at=excluded.updated_at
             """,
             (
+                scoped_profile,
                 source["provider_id"],
                 source.get("label") or source["provider_id"],
                 source.get("status") or "unknown",
@@ -185,12 +286,14 @@ def upsert_wearable_source(db_path: str, source: dict) -> None:
         )
 
 
-def list_wearable_sources(db_path: str) -> list[dict]:
+def list_wearable_sources(db_path: str, profile_key: str | int | None = None) -> list[dict]:
     init_wearable_fact_db(db_path)
+    scoped_profile = _normalize_profile_key(profile_key)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM wearable_sources ORDER BY provider_id"
+            "SELECT * FROM wearable_sources WHERE profile_key = ? ORDER BY provider_id",
+            (scoped_profile,),
         ).fetchall()
     result = []
     for row in rows:
@@ -207,17 +310,19 @@ def list_wearable_sources(db_path: str) -> list[dict]:
     return result
 
 
-def list_recommendation_facts(db_path: str, limit: int = 30) -> list[dict]:
+def list_recommendation_facts(db_path: str, limit: int = 30, profile_key: str | int | None = None) -> list[dict]:
     init_wearable_fact_db(db_path)
+    scoped_profile = _normalize_profile_key(profile_key)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
             SELECT * FROM wearable_daily_facts
+            WHERE profile_key = ?
             ORDER BY date DESC, provider_id, metric
             LIMIT ?
             """,
-            (int(limit),),
+            (scoped_profile, int(limit)),
         ).fetchall()
     facts = []
     for row in rows:
@@ -238,8 +343,25 @@ def list_recommendation_facts(db_path: str, limit: int = 30) -> list[dict]:
     return facts
 
 
-def latest_wearable_freshness(db_path: str) -> dict:
-    sources = list_wearable_sources(db_path)
+def delete_provider_data(db_path: str, provider_id: str, profile_key: str | int | None = None) -> None:
+    init_wearable_fact_db(db_path)
+    scoped_profile = _normalize_profile_key(profile_key)
+    provider = str(provider_id or "").strip()
+    if not provider:
+        return
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM wearable_daily_facts WHERE profile_key = ? AND provider_id = ?",
+            (scoped_profile, provider),
+        )
+        conn.execute(
+            "DELETE FROM wearable_sources WHERE profile_key = ? AND provider_id = ?",
+            (scoped_profile, provider),
+        )
+
+
+def latest_wearable_freshness(db_path: str, profile_key: str | int | None = None) -> dict:
+    sources = list_wearable_sources(db_path, profile_key=profile_key)
     return {
         row["provider_id"]: {
             "status": row["status"],
