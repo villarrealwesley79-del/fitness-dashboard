@@ -5,7 +5,7 @@
         if (started) return;
         started = true;
         const script = document.createElement('script');
-        script.src = '/static/js/app.js?v=20260626-fit241-whoop-open';
+        script.src = '/static/js/app.js?v=20260627-fit249-auto-mobile-invite';
         script.async = true;
         document.body.appendChild(script);
     }

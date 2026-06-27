@@ -156,8 +156,12 @@ def build_open_wearables_status(
     auth_configured = bool(username and credential)
     user_mapped = bool(user_id)
     base_valid, base_error = validate_open_wearables_base_url(base_url, allowed_hosts=allowed_hosts)
+    provider_list = providers or []
+    waiting_for_provider = error_code == "open_wearables_no_providers"
+    if waiting_for_provider:
+        error_code = None
     configured = bool(auth_configured and user_mapped and base_valid)
-    status = "connected" if configured and not error_code else "missing_config"
+    status = "connected" if configured and provider_list and not error_code else "missing_config"
     if base_error:
         status = "blocked"
         error_code = base_error
@@ -170,6 +174,6 @@ def build_open_wearables_status(
         user_mapped=user_mapped,
         auth_configured=auth_configured,
         last_checked_at=datetime.now().isoformat(),
-        providers=providers or [],
+        providers=provider_list,
         error_code=error_code,
     )

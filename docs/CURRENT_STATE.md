@@ -1,13 +1,13 @@
 # Fitness Dashboard Current State
 
-Status: Snapshot from current `origin/main` implementation
-Last updated: 2026-06-26 local time
+Status: Snapshot from current implementation
+Last updated: 2026-06-27 local time
 
 ## Summary
 
-Fitness Dashboard is a Flask-based, mobile-first personal fitness coaching dashboard running locally on the Mac mini at port 5050. It combines manual workout logging, deterministic workout prescription, Oura recovery data, Apple Health sync data, WHOOP recovery/strain/sleep facts, body-composition tracking, nutrition targets/logs, food-photo estimation/review paths, and a constrained LM Studio AI coach layer.
+Fitness Dashboard is a Flask-based, mobile-first personal fitness coaching web app running locally on the Mac mini at port 5050. It combines manual workout logging, deterministic workout prescription, Oura recovery data, Apple Health sync data, WHOOP recovery/strain/sleep facts, Open Wearables hub data, body-composition tracking, nutrition targets/logs, food-photo estimation/review paths, and a constrained LM Studio AI coach layer.
 
-The current product is functional but still in a draft product state. The app has a real runtime, real data stores, and a substantial mobile UI. Productized wearable confidence now includes Oura, Apple Health, WHOOP, and a best-effort Open Wearables bridge, but the app remains single-owner and local-first by default.
+The current product is functional but still in a draft product state. The app has a real runtime, real data stores, and a substantial mobile UI. Productized wearable confidence now includes Oura, Apple Health, WHOOP, and Open Wearables as a local hub wrapper, but the app remains single-owner and local-first by default.
 
 ## Runtime State
 
@@ -18,7 +18,8 @@ The current product is functional but still in a draft product state. The app ha
 - Root URL behavior: `GET /` redirects to `/login?next=/` when no session is present.
 - Apple Health sync status is auth-gated.
 - Apple Health webhook rejects missing or invalid sync tokens.
-- Open Wearables sync uses the normal browser mutation and auth gates; once authorized, the route returns only redacted sync metadata.
+- Open Wearables setup uses the normal browser mutation and auth gates. The web app prepares the local hub profile when the sidecar env is available, gates cloud sign-in on real connector credentials, and creates phone-app invite codes for SDK-style health sources.
+- Open Wearables sync returns only redacted metadata and stored fact counts; raw upstream payloads are not exposed in normal responses.
 
 Authenticated browser smoke tests require owner credentials or a valid session cookie.
 
@@ -48,7 +49,7 @@ Core files:
 - `meal_estimate_schema.py`, `local_vision_adapter.py`, `claude_vision_adapter.py`, and food lookup modules: structured food-photo/text/barcode estimation and sanitization helpers.
 - `templates/index.html`: main 8-tab UI and modals.
 - `static/js/app.js`: frontend data loading, tab logic, active workout flow, charts, forms, Settings integration rows, and meal-review UI.
-- `static/css/style.css`: dark mobile-first analytical UI.
+- `static/css/style.css` and `static/css/app.css`: dark mobile-first analytical UI plus newer scoped integration styling.
 
 ## Current Product Surface
 
@@ -61,9 +62,9 @@ The current UI is an 8-tab mobile-first dashboard:
 - History: workout frequency, volume, top exercises, recent workouts.
 - Body: weight, body fat, trend charts, measurement logging.
 - Stats: workout totals, volume, RPE, time, muscle distribution, insights.
-- Settings: goals, time/session preferences, equipment, Oura, Apple Health, WHOOP, weather, backup/import.
+- Settings: goals, time/session preferences, equipment, Oura, Apple Health, WHOOP, Open Wearables, weather, backup/import.
 
-Modals and interactive states include active workout, exercise swap, adjust plan, analyze, Apple Health setup, WHOOP connect/import/sync/disconnect/delete states, meal review, and toast/error surfaces.
+Modals and interactive states include active workout, exercise swap, adjust plan, analyze, Apple Health setup, WHOOP connect/import/sync/disconnect/delete states, Open Wearables add-wearable setup, cloud provider owner-setup states, phone health-source invite-code states, meal review, and toast/error surfaces.
 
 Nutrition has backend persistence, target settings, meal intake/review APIs, accepted food-log storage, sanitized original estimates, barcode/text/photo estimation paths, and dashboard nutrition context. Some product polish remains, but photo/text/barcode food-intake code is no longer just future intent.
 
@@ -123,7 +124,13 @@ WHOOP is implemented as a local-first wearable source:
 
 ### Open Wearables
 
-Open Wearables remains a best-effort bridge through `/api/health/sync` and supporting extraction helpers. It is useful as a local adapter, but it is not the durable WHOOP source of truth. The sync route returns only redacted metadata: source, fetch timestamp, counts, and stable error codes. Raw upstream health payloads, token names, and exception text must not be exposed in normal responses.
+Open Wearables is a local wearable hub wrapper plus a best-effort sync bridge. The Settings flow uses `/api/open-wearables/setup/bootstrap` to read the local Open Wearables sidecar env, create or reuse the hub user mapping, and save the local app mapping without exposing the hub secret. Provider tiles are generated from the supported provider catalog and hub state.
+
+Cloud providers such as WHOOP, Oura, Garmin, Strava, Fitbit, Polar, Suunto, and Ultrahuman open provider sign-in only when the Open Wearables connector has non-placeholder credentials. If connector credentials are missing, the UI shows owner setup instead of sending the user to a broken provider page.
+
+Phone health sources such as Apple Health, Samsung Health, and Google Health Connect do not use provider website OAuth. They use `/api/open-wearables/mobile-invite/<provider>` to create an Open Wearables phone-app invitation code and a phone-usable hub URL.
+
+The sync routes remain metadata-only. `/api/health/sync` and `/api/open-wearables/sync` return source, fetch timestamp, counts, stored fact counts, and stable error codes. Raw upstream health payloads, token names, hub secrets, and exception text must not be exposed in normal responses.
 
 ### LM Studio
 
@@ -145,9 +152,9 @@ The repo supports primary and fallback LM Studio routes. Authenticated AI health
 
 ## Verification Performed In This Snapshot
 
-- Indexed the current `origin/main` implementation with codebase-memory.
-- Compared current docs against implementation routes and helpers in `app.py`, `whoop_client.py`, `whoop_store.py`, `whoop_recommendations.py`, `apple_health_parser.py`, and food-intake modules.
-- Checked current route/test evidence for WHOOP OAuth, CSV import, freshness, recommendations, backup/import, Open Wearables sync redaction, and food-photo privacy.
+- Attempted codebase-memory indexing for this worktree; the MCP returned `Transport closed`, so this pass used local repo inspection instead.
+- Compared current docs against implementation routes and helpers in `app.py`, `open_wearables_adapter.py`, `whoop_client.py`, `whoop_store.py`, `whoop_recommendations.py`, `apple_health_parser.py`, and food-intake modules.
+- Checked current route/test evidence for WHOOP OAuth, CSV import, freshness, recommendations, backup/import, Open Wearables setup bootstrap, provider pairing gates, mobile invitation codes, sync redaction, and food-photo privacy.
 - Did not inspect private runtime databases or raw local health payloads for this documentation update.
 
 ## Recommended Next Step

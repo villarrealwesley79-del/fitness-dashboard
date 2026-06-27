@@ -54,3 +54,18 @@ def test_providers_from_payload_accepts_data_source_lists():
 
     assert [p.provider_id for p in providers] == ["whoop", "garmin"]
     assert providers[0].capabilities["metrics"] is True
+
+
+def test_configured_hub_with_no_providers_is_waiting_not_error():
+    status = build_open_wearables_status(
+        username="admin@example.test",
+        credential="local-secret",
+        user_id="user-123",
+        base_url="http://localhost:8000",
+        providers=[],
+        error_code="open_wearables_no_providers",
+    ).public_dict()
+
+    assert status["configured"] is True
+    assert status["status"] == "missing_config"
+    assert status["error_code"] is None

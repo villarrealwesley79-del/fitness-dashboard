@@ -8,7 +8,7 @@ The product direction is to become a trusted daily fitness operating system: the
 
 - Plans and adjusts strength workouts based on readiness, soreness, recent volume, and user constraints.
 - Tracks active workouts, set completion, swaps, notes, and workout history.
-- Surfaces recovery context from Oura, Apple Health / Health Auto Export, WHOOP, and local cached data.
+- Surfaces recovery context from Oura, Apple Health / Health Auto Export, WHOOP, Open Wearables, and local cached data.
 - Supports nutrition and body-composition tracking.
 - Plans toward photo-based food logging, where a user can snap a picture of food and the app updates calorie/macronutrient context and daily coaching guidance.
 - Keeps sensitive runtime data local by default.
@@ -21,7 +21,7 @@ Included:
 
 - Flask application source
 - Templates and static assets
-- Oura, Apple Health, WHOOP, nutrition, workout, and AI-coach integration code
+- Oura, Apple Health, WHOOP, Open Wearables, nutrition, workout, and AI-coach integration code
 - Deployment entry files
 - Product planning docs in `docs/`
 
@@ -100,6 +100,13 @@ APPLE_HEALTH_WEBHOOK_URL=
 WHOOP_CLIENT_ID_FILE=
 WHOOP_SCOPES=
 WHOOP_PROTECTED_MATERIAL_DIR=
+OW_BASE_URL=
+OW_USERNAME=
+OW_PASSWORD=
+OW_USER_ID=
+OW_PORTAL_URL=
+OW_SIDECAR_ENV_PATH=
+OW_ALLOWED_HOSTS=
 SECRET_KEY=
 STRIPE_SECRET_KEY=
 STRIPE_WEBHOOK_SECRET=
@@ -159,10 +166,18 @@ material:
   configured. CSV input is size/row capped, UTF-8 validated, normalized into
   daily facts, and treated as untrusted input.
 
-The Open Wearables bridge is a best-effort local adapter behind
-`/api/health/sync`. Its sync response returns source metadata, counts, and stable
-error codes only; it must not be used as a raw health-payload export endpoint or
-as the durable WHOOP source of truth.
+Open Wearables setup is exposed through Settings as a non-technical wearable
+wrapper. The app can prepare the local hub profile from the local Open Wearables
+sidecar env, list provider actions, start cloud provider sign-in only when that
+provider has real connector credentials, and create phone-app invitation codes
+for SDK-style sources such as Apple Health, Samsung Health, and Google Health
+Connect. Advanced values such as hub URL, username, secret, and mapped user id
+stay behind diagnostics instead of being the normal setup path.
+
+The Open Wearables sync bridge remains metadata-only. `/api/health/sync` and
+`/api/open-wearables/sync` return source metadata, counts, stored fact counts,
+and stable error codes only; they must not be used as raw health-payload export
+endpoints or as the durable WHOOP source of truth.
 
 Browser-initiated state-changing requests send `X-Requested-With: XMLHttpRequest`; the server also accepts browser same-origin metadata for cached app-shell rollouts and rejects mismatched browser origins before checking the CSRF header. The token-authenticated Apple Health sync endpoint and Stripe's signed webhook are explicitly exempt because they are called by external systems rather than the dashboard UI.
 

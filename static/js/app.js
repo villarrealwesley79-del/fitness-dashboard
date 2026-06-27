@@ -30,8 +30,15 @@
             saveInFlight: false,
             checkInFlight: false,
             syncInFlight: false,
+            bootstrapInFlight: false,
+            pairInFlight: false,
+            mobileInviteInFlight: false,
             lastError: '',
             portalUrl: '',
+            selectedProvider: '',
+            mobileInvite: null,
+            providerActions: [],
+            config: null,
         },
         aiFactUi: {
             queryInFlight: false,
@@ -1547,7 +1554,7 @@
                     key: 'open_wearables',
                     label: 'Open Wearables',
                     role: ow.role || (ow.used_for_recommendation ? 'wearable hub' : 'display only'),
-                    detail: ow.detail || 'Open Wearables is the wearable hub; Fitness Dashboard keeps coaching authority.',
+                    detail: ow.detail || 'Open Wearables is the wearable hub; this web app keeps coaching authority.',
                 });
             }
             if (entries.whoop) {
@@ -1863,7 +1870,7 @@
         const text = String(message || '').trim();
         if (modalStatus) {
             modalStatus.className = 'state-chip state-chip-sm ' + (tone === 'ok' ? 'ok' : tone === 'error' ? 'stale' : 'warn');
-            modalStatus.textContent = tone === 'ok' ? 'Ready' : tone === 'error' ? 'Needs attention' : 'Setup needed';
+            modalStatus.textContent = tone === 'ok' ? 'Ready' : tone === 'error' ? 'Needs attention' : 'Add device';
         }
         if (setupStatus && text) {
             setupStatus.textContent = text;
@@ -1874,6 +1881,327 @@
     function openWearablesIsConnected(status, checkStatus = '') {
         const stateToken = normalizeWhoopStateToken(status && status.status);
         return stateToken === WHOOP_UI_STATES.connected || checkStatus === 'ok';
+    }
+
+    function deriveOpenWearablesSetupState(status, config) {
+        if (state.openWearablesUi.syncInFlight) return 'syncing';
+        if (state.openWearablesUi.checkInFlight) return 'checking_connection';
+        if (state.openWearablesUi.bootstrapInFlight) return 'checking';
+        const stateToken = normalizeWhoopStateToken(status && status.status);
+        if (stateToken === 'blocked') return 'blocked';
+        if (stateToken === WHOOP_UI_STATES.error) return 'error';
+        if (openWearablesIsConnected(status)) return 'connected';
+        const safeConfig = config || state.openWearablesUi.config || {};
+        const hubAccountReady = safeConfig.hub_account_ready != null
+            ? Boolean(safeConfig.hub_account_ready)
+            : Boolean(status && status.auth_configured);
+        const userMapped = safeConfig.user_mapped != null
+            ? Boolean(safeConfig.user_mapped)
+            : Boolean(status && status.user_mapped);
+        if (!hubAccountReady) return 'needs_hub_account';
+        if (!userMapped) return 'needs_person';
+        if (
+            safeConfig.managed_connector_restart_required === true
+        ) return 'hub_restart_needed';
+        if (
+            safeConfig.provider_setup_ready === false
+            || (status && status.setup_hint === 'provider_credentials_missing')
+        ) return 'needs_provider_credentials';
+        if (Array.isArray(status && status.providers) && status.providers.length) return 'ready_to_sync';
+        if (state.openWearablesUi.selectedProvider) return 'pairing_provider';
+        return 'ready_to_choose_provider';
+    }
+
+    function openWearablesSetupCopy(setupState) {
+        const copy = {
+            checking: 'Preparing local wearable setup...',
+            needs_hub_account: 'Prepare pairing to use the local hub on this Mac.',
+            needs_person: 'Add the person whose wearable data should appear here.',
+            needs_provider_credentials: 'This wearable needs owner setup before anyone can pair it.',
+            hub_restart_needed: 'Finishing local wearable setup. Try again after the hub restarts.',
+            ready_to_choose_provider: 'Choose your wearable to continue.',
+            pairing_provider: 'Finish pairing, then check setup.',
+            checking_connection: 'Checking whether the hub can see your device...',
+            ready_to_sync: 'Device is visible. Sync now when ready.',
+            connected: 'Wearable data is ready.',
+            syncing: 'Syncing Open Wearables data...',
+            blocked: 'Needs attention. Advanced diagnostics has details.',
+            error: 'Needs attention. Advanced diagnostics has details.',
+        };
+        return copy[setupState] || copy.needs_hub_account;
+    }
+
+    function openWearablesChipText(setupState) {
+        if (setupState === 'connected' || setupState === 'ready_to_sync') return 'Ready';
+        if (setupState === 'syncing') return 'Syncing';
+        if (setupState === 'blocked' || setupState === 'error') return 'Blocked';
+        if (setupState === 'checking' || setupState === 'checking_connection') return 'Checking';
+        if (setupState === 'hub_restart_needed') return 'Finishing setup';
+        if (setupState === 'needs_provider_credentials') return 'Setup needed';
+        return 'Add device';
+    }
+
+    function renderOpenWearablesSetupSteps(setupState, config) {
+        const safeConfig = config || state.openWearablesUi.config || {};
+        _setText('open-wearables-step-person', safeConfig.user_mapped ? 'Person added' : 'Not prepared');
+        _setText('open-wearables-step-device', setupState === 'needs_hub_account' || setupState === 'needs_person'
+            ? 'Choose after preparing'
+            : state.openWearablesUi.selectedProvider
+                ? `Continue to ${state.openWearablesUi.selectedProvider}`
+                : 'Choose a wearable');
+        _setText('open-wearables-step-connection', openWearablesIsConnected(state.openWearablesStatus)
+            ? 'Connected'
+            : setupState === 'ready_to_sync'
+                ? 'Device visible'
+                : setupState === 'needs_provider_credentials'
+                    ? 'Provider sign-in needed'
+                    : setupState === 'hub_restart_needed'
+                        ? 'Finishing local setup'
+                    : 'Waiting for pairing');
+    }
+
+    function renderOpenWearablesMobileInvite(invite) {
+        const card = $('open-wearables-mobile-invite');
+        if (!card) return;
+        const safe = invite || state.openWearablesUi.mobileInvite || null;
+        card.hidden = !safe;
+        if (!safe) return;
+        _setText('open-wearables-mobile-title', `Connect ${safe.label || 'phone app'}`);
+        _setText('open-wearables-mobile-body', 'Use this one-time code in the Open Wearables mobile app.');
+        _setText('open-wearables-mobile-server', safe.server_url || '—');
+        _setText('open-wearables-mobile-code', safe.code || '—');
+        _setText('open-wearables-mobile-expires', safe.expires_at ? `Expires ${fmtDateTime(safe.expires_at)}` : 'This code expires soon.');
+    }
+
+    function showOpenWearablesProviderSetupNeeded(label = 'Wearable', reason = '') {
+        const name = String(label || 'Wearable').trim();
+        state.openWearablesUi.selectedProvider = name;
+        const reasonToken = String(reason || '').trim();
+        const message = reasonToken === 'sdk_provider'
+            ? `${name} connects through a phone health-store setup instead of a provider sign-in popup.`
+            : reasonToken === 'provider_disabled'
+                ? `${name} is disabled in Open Wearables. Turn it on in the local hub, then this button will open sign-in.`
+            : reasonToken === 'provider_catalog_unavailable'
+                ? `Open Wearables did not return provider details yet. Try ${name} again once the hub is reachable.`
+            : `${name} needs owner setup before anyone can pair it here. Once the connector is prepared on this Mac, this button will open ${name} sign-in.`;
+        state.openWearablesUi.lastError = message;
+        setOpenWearablesSetupStatus(message, 'warn');
+        const providerNote = document.querySelector('.open-wearables-provider-note');
+        if (providerNote) providerNote.textContent = message;
+        if (reasonToken !== 'sdk_provider') {
+            state.openWearablesUi.mobileInvite = null;
+            renderOpenWearablesMobileInvite(null);
+        }
+        renderOpenWearablesProviderActions(state.openWearablesUi.providerActions);
+        renderOpenWearablesSetupSteps('needs_provider_credentials', state.openWearablesUi.config);
+    }
+
+    function openWearablesProviderBadge(action) {
+        const reason = String(action && action.reason || '');
+        if (reason === 'sdk_provider') return 'Phone setup';
+        if (reason === 'provider_disabled') return 'Disabled';
+        if (reason === 'hub_restart_needed') return 'Finishing';
+        if (reason === 'prepare_profile') return 'Prepare first';
+        return 'Owner setup';
+    }
+
+    function renderOpenWearablesProviderActions(actions) {
+        const host = $('open-wearables-provider-actions');
+        if (!host) return;
+        const providerActions = Array.isArray(actions) && actions.length
+            ? actions
+            : [
+                { provider: 'garmin', label: 'Garmin', enabled: false },
+                { provider: 'oura', label: 'Oura', enabled: false },
+                { provider: 'whoop', label: 'WHOOP', enabled: false },
+                { provider: 'suunto', label: 'Suunto', enabled: false },
+                { provider: 'polar', label: 'Polar', enabled: false },
+                { provider: 'ultrahuman', label: 'Ultrahuman', enabled: false },
+                { provider: 'strava', label: 'Strava', enabled: false },
+                { provider: 'fitbit', label: 'Fitbit', enabled: false },
+                { provider: 'apple', label: 'Apple Health', enabled: false, reason: 'sdk_provider' },
+                { provider: 'samsung', label: 'Samsung Health', enabled: false, reason: 'sdk_provider' },
+                { provider: 'google', label: 'Google Health Connect', enabled: false, reason: 'sdk_provider' },
+            ];
+        host.innerHTML = '';
+        providerActions.slice(0, 12).forEach((action) => {
+            const provider = String(action.provider || '').trim();
+            if (!provider) return;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'open-wearables-provider-btn';
+            btn.dataset.openWearablesProvider = provider;
+            btn.textContent = action.label || provider;
+            btn.disabled = state.openWearablesUi.pairInFlight;
+            btn.disabled = btn.disabled || state.openWearablesUi.mobileInviteInFlight;
+            btn.classList.toggle('is-unavailable', !action.enabled);
+            btn.dataset.setupState = action.enabled ? 'ready' : 'setup_needed';
+            btn.dataset.statusLabel = openWearablesProviderBadge(action);
+            if (action.reason === 'provider_app_needed') {
+                btn.title = 'Owner setup is needed on this Mac first.';
+            } else if (action.reason === 'sdk_provider') {
+                btn.title = 'This source connects through the phone health-store setup.';
+            } else if (action.reason === 'provider_disabled') {
+                btn.title = 'This provider is disabled in Open Wearables.';
+            } else if (action.reason === 'hub_restart_needed') {
+                btn.title = 'The local wearable hub is finishing setup.';
+            }
+            btn.classList.toggle('is-selected', state.openWearablesUi.selectedProvider === (action.label || provider));
+            btn.addEventListener('click', () => {
+                if (action.enabled) {
+                    pairOpenWearablesProvider(provider, action.label || provider);
+                } else if (action.reason === 'sdk_provider') {
+                    createOpenWearablesMobileInvite(provider, action.label || provider);
+                } else if (action.reason === 'prepare_profile') {
+                    prepareOpenWearablesThenContinue(provider, action.label || provider);
+                } else {
+                    showOpenWearablesProviderSetupNeeded(action.label || provider, action.reason);
+                }
+            });
+            host.appendChild(btn);
+        });
+        renderOpenWearablesMobileInvite(state.openWearablesUi.mobileInvite);
+    }
+
+    function handleOpenWearablesPrimarySetupAction() {
+        const setupState = deriveOpenWearablesSetupState(state.openWearablesStatus, state.openWearablesUi.config);
+        if (setupState === 'needs_provider_credentials') {
+            showOpenWearablesProviderSetupNeeded('Wearable');
+            const modal = $('modal-open-wearables-setup');
+            const advanced = modal && modal.querySelector('.open-wearables-advanced');
+            if (advanced) advanced.open = true;
+            return;
+        }
+        if (setupState === 'hub_restart_needed') {
+            setOpenWearablesSetupStatus(openWearablesSetupCopy(setupState), 'warn');
+            return;
+        }
+        if (setupState === 'ready_to_choose_provider') {
+            setOpenWearablesSetupStatus('Choose a wearable above to continue.', 'warn');
+            return;
+        }
+        bootstrapOpenWearablesSetup();
+    }
+
+    async function bootstrapOpenWearablesSetup() {
+        if (state.openWearablesUi.bootstrapInFlight) return;
+        state.openWearablesUi.bootstrapInFlight = true;
+        state.openWearablesUi.lastError = '';
+        renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
+        setOpenWearablesSetupStatus('Preparing the local wearable profile...', 'warn');
+        try {
+            const body = await api('/api/open-wearables/setup/bootstrap', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            if (body && body.config) populateOpenWearablesSetupFields(body.config);
+            state.openWearablesStatus = body && body.open_wearables ? body.open_wearables : await getOpenWearablesStatus(true);
+            state.dashboard = null;
+            renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
+            const nextState = deriveOpenWearablesSetupState(state.openWearablesStatus, state.openWearablesUi.config);
+            setOpenWearablesSetupStatus(
+                nextState === 'hub_restart_needed'
+                    ? openWearablesSetupCopy(nextState)
+                    : 'Person added. Choose a wearable to pair.',
+                nextState === 'hub_restart_needed' ? 'warn' : 'ok'
+            );
+            toast('Wearable profile prepared.', 'ok');
+            return true;
+        } catch (error) {
+            state.openWearablesUi.lastError = error && error.message ? error.message : 'Could not prepare pairing.';
+            setOpenWearablesSetupStatus(state.openWearablesUi.lastError, 'error');
+            toast('Could not prepare pairing.', 'err');
+            return false;
+        } finally {
+            state.openWearablesUi.bootstrapInFlight = false;
+            renderOpenWearablesProviderActions(state.openWearablesUi.providerActions);
+            renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
+        }
+    }
+
+    async function prepareOpenWearablesThenContinue(provider, label) {
+        const providerId = String(provider || '').trim().toLowerCase();
+        if (!providerId) return;
+        const prepared = await bootstrapOpenWearablesSetup();
+        if (!prepared) return;
+        const nextAction = (state.openWearablesUi.providerActions || [])
+            .find((action) => String(action && action.provider || '').toLowerCase() === providerId);
+        if (nextAction && nextAction.enabled) {
+            pairOpenWearablesProvider(providerId, nextAction.label || label || providerId);
+            return;
+        }
+        if (nextAction && (nextAction.kind === 'sdk' || nextAction.reason === 'sdk_provider')) {
+            createOpenWearablesMobileInvite(providerId, nextAction.label || label || providerId);
+            return;
+        }
+        showOpenWearablesProviderSetupNeeded(
+            (nextAction && nextAction.label) || label || providerId,
+            nextAction && nextAction.reason
+        );
+    }
+
+    async function pairOpenWearablesProvider(provider, label) {
+        const providerId = String(provider || '').trim().toLowerCase();
+        if (!providerId || state.openWearablesUi.pairInFlight) return;
+        state.openWearablesUi.pairInFlight = true;
+        state.openWearablesUi.selectedProvider = label || providerId;
+        state.openWearablesUi.lastError = '';
+        renderOpenWearablesProviderActions(state.openWearablesUi.providerActions);
+        renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
+        setOpenWearablesSetupStatus(`Opening ${label || providerId} pairing...`, 'warn');
+        try {
+            const body = await api(`/api/open-wearables/pair/${encodeURIComponent(providerId)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            const url = body && body.authorization_url;
+            if (!url) throw new Error('Pairing link is not available for this wearable yet.');
+            setOpenWearablesSetupStatus(`Finish ${label || providerId} pairing, then check connection.`, 'warn');
+            window.open(url, '_blank', 'noopener,noreferrer');
+        } catch (error) {
+            const message = error && error.message ? error.message : 'This wearable is not ready to pair yet.';
+            state.openWearablesUi.lastError = message;
+            setOpenWearablesSetupStatus(message, 'error');
+            toast('Wearable pairing is not ready.', 'err');
+        } finally {
+            state.openWearablesUi.pairInFlight = false;
+            renderOpenWearablesProviderActions(state.openWearablesUi.providerActions);
+            renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
+        }
+    }
+
+    async function createOpenWearablesMobileInvite(provider, label) {
+        const providerId = String(provider || '').trim().toLowerCase();
+        if (!providerId || state.openWearablesUi.mobileInviteInFlight) return;
+        state.openWearablesUi.mobileInviteInFlight = true;
+        state.openWearablesUi.selectedProvider = label || providerId;
+        state.openWearablesUi.lastError = '';
+        renderOpenWearablesProviderActions(state.openWearablesUi.providerActions);
+        renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
+        setOpenWearablesSetupStatus(`Creating ${label || providerId} phone app code...`, 'warn');
+        try {
+            const body = await api(`/api/open-wearables/mobile-invite/${encodeURIComponent(providerId)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            const invite = body && body.invite;
+            if (!invite || !invite.code) throw new Error('Phone app code is not available yet.');
+            state.openWearablesUi.mobileInvite = invite;
+            renderOpenWearablesMobileInvite(invite);
+            setOpenWearablesSetupStatus(`Use the ${label || providerId} code in the Open Wearables mobile app.`, 'ok');
+        } catch (error) {
+            const message = error && error.message ? error.message : 'Phone app setup is not ready yet.';
+            state.openWearablesUi.lastError = message;
+            setOpenWearablesSetupStatus(message, 'error');
+            toast('Phone app setup is not ready.', 'err');
+        } finally {
+            state.openWearablesUi.mobileInviteInFlight = false;
+            renderOpenWearablesProviderActions(state.openWearablesUi.providerActions);
+            renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
+        }
     }
 
     function populateOpenWearablesSetupFields(config) {
@@ -1888,6 +2216,9 @@
             const el = $(id);
             if (el) el.value = value;
         });
+        state.openWearablesUi.config = safe;
+        state.openWearablesUi.providerActions = Array.isArray(safe.provider_actions) ? safe.provider_actions : [];
+        renderOpenWearablesMobileInvite(state.openWearablesUi.mobileInvite);
         const password = $('open-wearables-password');
         if (password) {
             password.value = '';
@@ -1897,21 +2228,35 @@
         }
         state.openWearablesUi.portalUrl = safe.pairing_url || safe.portal_url || '';
         const linkLabel = $('open-wearables-pairing-link-label');
-        if (linkLabel) linkLabel.textContent = state.openWearablesUi.portalUrl
-            ? 'Ready to open the pairing portal.'
-            : 'Uses the hub on this Mac.';
+        const providerNote = document.querySelector('.open-wearables-provider-note');
+        const setupState = deriveOpenWearablesSetupState(state.openWearablesStatus, safe);
+        if (linkLabel) linkLabel.textContent = safe.user_mapped
+            ? 'Person added. Choose a wearable below.'
+            : 'Prepare pairing to create the local hub profile.';
+        if (providerNote) {
+            providerNote.textContent = setupState === 'needs_provider_credentials'
+                ? 'Some cloud wearables need owner setup on this Mac before they can be paired. Phone health sources use the mobile health-store setup.'
+                : setupState === 'hub_restart_needed'
+                    ? 'The web app prepared a connector. The local hub needs to restart before pairing opens.'
+                : 'Cloud wearables open provider sign-in. Phone health sources use the mobile health-store setup.';
+        }
+        renderOpenWearablesProviderActions(state.openWearablesUi.providerActions);
+        renderOpenWearablesSetupSteps(setupState, safe);
+        setOpenWearablesSetupStatus(openWearablesSetupCopy(setupState), setupState === 'connected' || setupState === 'ready_to_sync' ? 'ok' : setupState === 'blocked' || setupState === 'error' ? 'error' : 'warn');
     }
 
     async function loadOpenWearablesSetup() {
         try {
             const body = await api('/api/open-wearables/setup');
-            populateOpenWearablesSetupFields(body && body.config);
             if (body && body.open_wearables) {
                 state.openWearablesStatus = body.open_wearables;
                 renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
             }
+            populateOpenWearablesSetupFields(body && body.config);
+            return body;
         } catch (error) {
             setOpenWearablesSetupStatus('Could not load local setup values.', 'error');
+            return null;
         }
     }
 
@@ -1920,16 +2265,25 @@
         if (!modal) return;
         const status = state.openWearablesStatus;
         const connected = openWearablesIsConnected(status);
-        const configured = Boolean(status && status.configured);
         const detail = connected
-            ? 'Open Wearables is connected. Pair more devices any time.'
-            : configured
-                ? 'Open the pairing portal, connect a wearable, then check connection.'
-            : 'Open the pairing portal, connect a wearable, then check connection.';
+            ? 'Open Wearables is ready. Add another wearable any time.'
+            : 'Prepare pairing, choose a wearable, then check connection.';
         setOpenWearablesSetupStatus(detail, connected ? 'ok' : 'warn');
+        const advanced = modal.querySelector('.open-wearables-advanced');
+        if (advanced) advanced.open = false;
         modal.hidden = false;
         focusOpenModal(modal);
-        await loadOpenWearablesSetup();
+        const body = await loadOpenWearablesSetup();
+        const config = body && body.config ? body.config : state.openWearablesUi.config;
+        const setupState = deriveOpenWearablesSetupState(state.openWearablesStatus, config);
+        if (
+            config
+            && config.bootstrap_available
+            && !state.openWearablesUi.bootstrapInFlight
+            && ['needs_hub_account', 'needs_person', 'needs_provider_credentials'].includes(setupState)
+        ) {
+            await bootstrapOpenWearablesSetup();
+        }
     }
 
     function readOpenWearablesSetupFields() {
@@ -1977,7 +2331,7 @@
     function openOpenWearablesPortal() {
         const url = state.openWearablesUi.portalUrl || String(($('open-wearables-portal-url') || {}).value || '').trim();
         if (!url) {
-            setOpenWearablesSetupStatus('Pairing portal link is not available yet. Check connection or use Advanced.', 'warn');
+            setOpenWearablesSetupStatus('Hub admin link is not available yet. Check connection or use Advanced diagnostics.', 'warn');
             return;
         }
         if (!/^https?:\/\//i.test(url)) {
@@ -1990,13 +2344,13 @@
     async function copyOpenWearablesPairingLink() {
         const url = state.openWearablesUi.portalUrl || String(($('open-wearables-portal-url') || {}).value || '').trim();
         if (!url) {
-            setOpenWearablesSetupStatus('Pairing link is not available yet. Check connection or use Advanced.', 'warn');
+            setOpenWearablesSetupStatus('Hub admin link is not available yet. Check connection or use Advanced diagnostics.', 'warn');
             return;
         }
         try {
             await navigator.clipboard.writeText(url);
-            setOpenWearablesSetupStatus('Pairing link copied. Send it to the person pairing a device.', 'ok');
-            toast('Pairing link copied.', 'ok');
+            setOpenWearablesSetupStatus('Hub admin link copied.', 'ok');
+            toast('Hub link copied.', 'ok');
         } catch {
             setOpenWearablesSetupStatus(url, 'warn');
         }
@@ -5177,9 +5531,9 @@
             });
             state.openWearablesStatus = body && body.open_wearables ? body.open_wearables : await getOpenWearablesStatus(true);
             if (openWearablesIsConnected(state.openWearablesStatus, body && body.status)) {
-                setOpenWearablesSetupStatus('Open Wearables is connected. Provider visibility refreshed.', 'ok');
+                setOpenWearablesSetupStatus('Device is visible. Sync now when ready.', 'ok');
             } else {
-                setOpenWearablesSetupStatus('Setup still needs the local server values and a reachable hub.', 'warn');
+                setOpenWearablesSetupStatus('Finish pairing, then check connection again.', 'warn');
             }
             toast('Open Wearables checked.', 'ok');
         } catch (error) {
@@ -5340,7 +5694,7 @@
 
     async function deleteWhoopData() {
         if (state.whoopUi.deleteInFlight) return;
-        if (typeof confirm === 'function' && !confirm('Delete local WHOOP data from this dashboard?')) return;
+        if (typeof confirm === 'function' && !confirm('Delete local WHOOP data from this web app?')) return;
         state.whoopUi.deleteInFlight = true;
         state.whoopUi.lastError = '';
         renderWhoopFreshnessDetail(state.whoopStatus, mergeWhoopFreshnessNode(null, state.whoopStatus, []), []);
@@ -6162,8 +6516,24 @@
         if (el) el.textContent = text;
     }
 
+    function _setText(id, text) {
+        const el = $(id);
+        if (el) el.textContent = text;
+    }
+
     function renderWhoopFreshnessDetail(whoop, freshness, conflicts) {
         const uiState = resolveWhoopUiState(freshness || whoop, conflicts);
+        const dataThrough = (freshness && (freshness.last_data_point || freshness.local_date))
+            || (whoop && (whoop.last_data_point || whoop.local_date));
+        const hideDirectFallback = Boolean(
+            !dataThrough
+            && (uiState === WHOOP_UI_STATES.missing_config || uiState === WHOOP_UI_STATES.disconnected)
+        );
+        const row = $('whoop-settings-row');
+        const detailPanel = $('whoop-detail');
+        if (row) row.hidden = hideDirectFallback;
+        if (detailPanel) detailPanel.hidden = hideDirectFallback;
+        if (hideDirectFallback) return;
         const dot = $('whoop-int-dot');
         if (dot) dot.className = uiState === WHOOP_UI_STATES.disconnected ? 'int-dot' : 'int-dot int-dot-on';
 
@@ -6195,8 +6565,6 @@
         }[uiState] || 'Disconnected';
         _setDetail('whoop-detail-connection', connectionText);
 
-        const dataThrough = (freshness && (freshness.last_data_point || freshness.local_date))
-            || (whoop && (whoop.last_data_point || whoop.local_date));
         _setDetail('whoop-detail-data-through', dataThrough ? `${dataThrough} (${uiState.replace(/_/g, ' ')})` : 'No WHOOP data yet');
 
         const recoveryParts = [];
@@ -6207,7 +6575,7 @@
         if (whoop && whoop.sleep_performance_pct != null) recoveryParts.push(`sleep ${whoop.sleep_performance_pct}%`);
         _setDetail('whoop-detail-recovery', recoveryParts.length ? recoveryParts.join(' · ') : 'No scored WHOOP recovery yet');
 
-        let sourceText = 'Official WHOOP API';
+        let sourceText = 'Direct WHOOP fallback';
         if (uiState === WHOOP_UI_STATES.csv_only) sourceText = 'CSV import only';
         else if (whoop && whoop.source_kind) sourceText = String(whoop.source_kind).replace(/_/g, ' ');
         _setDetail('whoop-detail-source', sourceText);
@@ -6246,28 +6614,30 @@
         const stateToken = normalizeWhoopStateToken(status && status.status);
         const providers = Array.isArray(status && status.providers) ? status.providers : [];
         const connected = openWearablesIsConnected(status);
+        const setupState = deriveOpenWearablesSetupState(status, state.openWearablesUi.config);
         if (dot) dot.className = connected ? 'int-dot int-dot-on' : 'int-dot';
         if (chip) {
             chip.className = 'state-chip';
-            if (connected) chip.classList.add('ok');
+            if (setupState === 'connected' || setupState === 'ready_to_sync') chip.classList.add('ok');
             else if (stateToken === 'blocked' || stateToken === WHOOP_UI_STATES.error) chip.classList.add('stale');
             else chip.classList.add('warn');
-            chip.textContent = state.openWearablesUi.syncInFlight
-                ? 'Syncing'
-                : connected
-                    ? 'Hub ready'
-                    : stateToken === 'blocked'
-                        ? 'Blocked'
-                        : 'Setup needed';
+            chip.textContent = openWearablesChipText(setupState);
         }
         if (detail) {
             const checked = status && status.last_checked_at ? ` · checked ${fmtDateTime(status.last_checked_at)}` : '';
-            detail.textContent = connected
-                ? `Wearable hub configured${checked}`
-                : `Open Wearables setup needed${checked}`;
+            detail.textContent = `${openWearablesSetupCopy(setupState)}${checked}`;
         }
         if (panel) panel.hidden = false;
-        _setDetail('open-wearables-detail-hub', status && status.base_url ? `${status.base_url} · ${status.status}` : String(status && status.status || 'missing_config').replace(/_/g, ' '));
+        const hubText = setupState === 'connected' || setupState === 'ready_to_sync'
+            ? 'Hub account ready'
+            : setupState === 'needs_hub_account' || setupState === 'needs_person'
+                ? 'Prepare pairing'
+                : setupState === 'needs_provider_credentials'
+                    ? 'Sign-in setup needed'
+                : setupState === 'blocked' || setupState === 'error'
+                    ? 'Needs diagnostics'
+                    : 'Pairing in progress';
+        _setDetail('open-wearables-detail-hub', hubText);
         const providerCount = providers.length;
         _setDetail('open-wearables-detail-providers', providerCount ? `${providerCount} hub provider${providerCount === 1 ? '' : 's'} visible` : 'No hub providers visible yet');
         const attentionRow = $('open-wearables-detail-attention-row');
@@ -6279,16 +6649,29 @@
         }
         const setupCheckBtn = $('btn-open-wearables-setup-check');
         if (setupCheckBtn) setupCheckBtn.disabled = state.openWearablesUi.checkInFlight;
+        const bootstrapBtn = $('btn-open-wearables-bootstrap');
+        if (bootstrapBtn) {
+            const userMapped = Boolean(state.openWearablesUi.config && state.openWearablesUi.config.user_mapped);
+            const setupState = deriveOpenWearablesSetupState(status, state.openWearablesUi.config);
+            bootstrapBtn.disabled = state.openWearablesUi.bootstrapInFlight;
+            bootstrapBtn.textContent = state.openWearablesUi.bootstrapInFlight
+                ? 'Preparing...'
+                : setupState === 'needs_provider_credentials'
+                    ? 'Show details'
+                    : userMapped
+                        ? 'Choose wearable'
+                    : 'Prepare pairing';
+        }
         const setupSaveBtn = $('btn-open-wearables-setup-save');
         if (setupSaveBtn) setupSaveBtn.disabled = state.openWearablesUi.saveInFlight;
         const setupBtn = $('btn-open-wearables-setup');
         if (setupBtn) {
-            setupBtn.textContent = connected ? 'Manage' : 'Setup';
+            setupBtn.textContent = connected ? 'Manage devices' : 'Add device';
             setupBtn.classList.toggle('btn-primary', !connected);
             setupBtn.classList.toggle('btn-ghost', connected);
         }
         const syncBtn = $('btn-sync-open-wearables');
-        if (syncBtn) syncBtn.disabled = state.openWearablesUi.syncInFlight || !connected;
+        if (syncBtn) syncBtn.disabled = state.openWearablesUi.syncInFlight || !(connected || setupState === 'ready_to_sync');
     }
 
     function renderOuraFreshnessDetail(oura, freshness) {
@@ -9039,6 +9422,7 @@
         $('btn-sync-oura') && $('btn-sync-oura').addEventListener('click', syncOura);
         $('btn-open-ai-fact-query') && $('btn-open-ai-fact-query').addEventListener('click', openAiFactQueryModal);
         $('btn-open-wearables-setup') && $('btn-open-wearables-setup').addEventListener('click', openOpenWearablesSetupModal);
+        $('btn-open-wearables-bootstrap') && $('btn-open-wearables-bootstrap').addEventListener('click', handleOpenWearablesPrimarySetupAction);
         $('btn-open-wearables-portal') && $('btn-open-wearables-portal').addEventListener('click', openOpenWearablesPortal);
         $('btn-open-wearables-copy-link') && $('btn-open-wearables-copy-link').addEventListener('click', copyOpenWearablesPairingLink);
         $('btn-open-wearables-setup-save') && $('btn-open-wearables-setup-save').addEventListener('click', saveOpenWearablesSetup);

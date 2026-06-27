@@ -32,6 +32,7 @@ import uuid
 import tempfile
 import threading
 import fcntl
+import shutil
 
 try:
     from pywebpush import WebPushException, webpush
@@ -10189,12 +10190,45 @@ OPEN_WEARABLES_USER_ID = _open_wearables_config_value("user_id", "OW_USER_ID")
 OPEN_WEARABLES_SERVICE_BASE = _open_wearables_config_value("base_url", "OW_BASE_URL", "http://localhost:8000").rstrip("/")
 OPEN_WEARABLES_ALLOWED_HOSTS = os.environ.get("OW_ALLOWED_HOSTS", "").strip()
 OPEN_WEARABLES_PORTAL_URL = _open_wearables_config_value("portal_url", "OW_PORTAL_URL")
+OPEN_WEARABLES_SIDECAR_ENV_PATH = _open_wearables_config_value(
+    "sidecar_env_path",
+    "OW_SIDECAR_ENV_PATH",
+    "~/open-wearables/backend/config/.env",
+)
 OPEN_WEARABLES_BASE = (
     f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/users/{OPEN_WEARABLES_USER_ID}"
     if OPEN_WEARABLES_USER_ID
     else ""
 )
 OPEN_WEARABLES_LOGIN_URL = f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/auth/login"
+OPEN_WEARABLES_MANAGED_RESTART_REQUIRED = bool(
+    OPEN_WEARABLES_LOCAL_CONFIG.get("managed_connector_restart_required")
+)
+
+OPEN_WEARABLES_PAIRING_PROVIDERS = [
+    {"id": "garmin", "label": "Garmin", "kind": "cloud"},
+    {"id": "oura", "label": "Oura", "kind": "cloud"},
+    {"id": "whoop", "label": "WHOOP", "kind": "cloud"},
+    {"id": "suunto", "label": "Suunto", "kind": "cloud"},
+    {"id": "polar", "label": "Polar", "kind": "cloud"},
+    {"id": "ultrahuman", "label": "Ultrahuman", "kind": "cloud"},
+    {"id": "strava", "label": "Strava", "kind": "cloud"},
+    {"id": "fitbit", "label": "Fitbit", "kind": "cloud"},
+    {"id": "apple", "label": "Apple Health", "kind": "sdk"},
+    {"id": "samsung", "label": "Samsung Health", "kind": "sdk"},
+    {"id": "google", "label": "Google Health Connect", "kind": "sdk"},
+]
+OPEN_WEARABLES_PROVIDER_CREDENTIAL_KEYS = {
+    "whoop": ("WHOOP_CLIENT_ID", "WHOOP_CLIENT_SECRET"),
+    "oura": ("OURA_CLIENT_ID", "OURA_CLIENT_SECRET"),
+    "garmin": ("GARMIN_CLIENT_ID", "GARMIN_CLIENT_SECRET"),
+    "strava": ("STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET"),
+    "fitbit": ("FITBIT_CLIENT_ID", "FITBIT_CLIENT_SECRET"),
+    "polar": ("POLAR_CLIENT_ID", "POLAR_CLIENT_SECRET"),
+    "suunto": ("SUUNTO_CLIENT_ID", "SUUNTO_CLIENT_SECRET"),
+    "ultrahuman": ("ULTRAHUMAN_CLIENT_ID", "ULTRAHUMAN_CLIENT_SECRET"),
+}
+OPEN_WEARABLES_MANAGED_PROVIDER_IDS = ("whoop",)
 
 _OW_TOKEN_CACHE = {"token": None, "expires_at": 0}
 
@@ -10221,6 +10255,7 @@ def _apply_open_wearables_runtime_config(config):
     global OPEN_WEARABLES_LOCAL_CONFIG
     global OPEN_WEARABLES_USERNAME, OPEN_WEARABLES_PASSWORD, OPEN_WEARABLES_USER_ID
     global OPEN_WEARABLES_SERVICE_BASE, OPEN_WEARABLES_ALLOWED_HOSTS, OPEN_WEARABLES_PORTAL_URL
+    global OPEN_WEARABLES_SIDECAR_ENV_PATH, OPEN_WEARABLES_MANAGED_RESTART_REQUIRED
     global OPEN_WEARABLES_BASE, OPEN_WEARABLES_LOGIN_URL
     OPEN_WEARABLES_LOCAL_CONFIG = config
     OPEN_WEARABLES_USERNAME = _open_wearables_config_value("username", "OW_USERNAME")
@@ -10229,12 +10264,20 @@ def _apply_open_wearables_runtime_config(config):
     OPEN_WEARABLES_SERVICE_BASE = _open_wearables_config_value("base_url", "OW_BASE_URL", "http://localhost:8000").rstrip("/")
     OPEN_WEARABLES_ALLOWED_HOSTS = os.environ.get("OW_ALLOWED_HOSTS", "").strip()
     OPEN_WEARABLES_PORTAL_URL = _open_wearables_config_value("portal_url", "OW_PORTAL_URL")
+    OPEN_WEARABLES_SIDECAR_ENV_PATH = _open_wearables_config_value(
+        "sidecar_env_path",
+        "OW_SIDECAR_ENV_PATH",
+        "~/open-wearables/backend/config/.env",
+    )
     OPEN_WEARABLES_BASE = (
         f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/users/{OPEN_WEARABLES_USER_ID}"
         if OPEN_WEARABLES_USER_ID
         else ""
     )
     OPEN_WEARABLES_LOGIN_URL = f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/auth/login"
+    OPEN_WEARABLES_MANAGED_RESTART_REQUIRED = bool(
+        config.get("managed_connector_restart_required", OPEN_WEARABLES_MANAGED_RESTART_REQUIRED)
+    )
     _OW_TOKEN_CACHE.update({"token": None, "expires_at": 0, "error": None})
 
 
@@ -10251,6 +10294,7 @@ def _open_wearables_pairing_portal_url():
 
 
 def _open_wearables_setup_public_config():
+    provider_actions = _open_wearables_provider_actions()
     return {
         "base_url": OPEN_WEARABLES_SERVICE_BASE,
         "username": OPEN_WEARABLES_USERNAME,
@@ -10258,8 +10302,322 @@ def _open_wearables_setup_public_config():
         "portal_url": OPEN_WEARABLES_PORTAL_URL,
         "pairing_url": _open_wearables_pairing_portal_url(),
         "password_configured": bool(OPEN_WEARABLES_PASSWORD),
+        "hub_account_ready": bool(OPEN_WEARABLES_USERNAME and OPEN_WEARABLES_PASSWORD),
+        "user_mapped": bool(OPEN_WEARABLES_USER_ID),
+        "bootstrap_available": _open_wearables_sidecar_env_available(),
+        "managed_connector_restart_required": bool(OPEN_WEARABLES_MANAGED_RESTART_REQUIRED),
+        "provider_setup_ready": any(action.get("enabled") for action in provider_actions),
+        "provider_actions": provider_actions,
         "config_file": os.path.basename(OPEN_WEARABLES_CONFIG_FILE),
     }
+
+
+def _open_wearables_sidecar_env_file():
+    raw = str(OPEN_WEARABLES_SIDECAR_ENV_PATH or "").strip()
+    if not raw:
+        return ""
+    return os.path.abspath(os.path.expanduser(raw))
+
+
+def _open_wearables_sidecar_env_available():
+    path = _open_wearables_sidecar_env_file()
+    return bool(path and os.path.isfile(path))
+
+
+def _load_open_wearables_sidecar_env():
+    path = _open_wearables_sidecar_env_file()
+    if not path or not os.path.isfile(path):
+        return {}, "sidecar_env_missing"
+    values = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip().strip('"').strip("'")
+    except OSError:
+        return {}, "sidecar_env_unreadable"
+    return values, None
+
+
+def _open_wearables_placeholder_value(value):
+    text = str(value or "").strip().strip('"').strip("'")
+    if not text:
+        return True
+    lower = text.lower()
+    return any(token in lower for token in (
+        "your-",
+        "public-client-id",
+        "private-secret-id",
+    ))
+
+
+def _open_wearables_provider_credentials_ready(provider_id, sidecar_env=None):
+    provider_key = str(provider_id or "").strip().lower()
+    keys = OPEN_WEARABLES_PROVIDER_CREDENTIAL_KEYS.get(provider_key)
+    if not keys:
+        return False
+    env_values = sidecar_env
+    if env_values is None:
+        env_values, env_error = _load_open_wearables_sidecar_env()
+        if env_error:
+            return False
+    return all(not _open_wearables_placeholder_value(env_values.get(key)) for key in keys)
+
+
+def _open_wearables_provider_catalog():
+    return {
+        provider["id"]: {
+            "provider": provider["id"],
+            "label": provider["label"],
+            "kind": provider.get("kind") or "cloud",
+        }
+        for provider in OPEN_WEARABLES_PAIRING_PROVIDERS
+    }
+
+
+def _open_wearables_provider_settings_from_hub():
+    base_url = str(OPEN_WEARABLES_SERVICE_BASE or "").rstrip("/")
+    ok, _code = validate_open_wearables_base_url(
+        base_url,
+        allowed_hosts=_allowed_hosts_from_csv(OPEN_WEARABLES_ALLOWED_HOSTS),
+    )
+    if not ok:
+        return {}, "base_not_allowed"
+    try:
+        payload = _ow_json_request(f"{base_url}/api/v1/oauth/providers?enabled_only=true", timeout_s=3)
+    except Exception:
+        return {}, "provider_catalog_unavailable"
+    items = payload if isinstance(payload, list) else _open_wearables_extract_items(payload)
+    settings_by_provider = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        provider_id = re.sub(r"[^a-z0-9_-]", "", str(item.get("provider") or "").lower())
+        if not provider_id:
+            continue
+        settings_by_provider[provider_id] = {
+            "label": str(item.get("name") or "").strip(),
+            "has_cloud_api": bool(item.get("has_cloud_api")),
+            "is_enabled": item.get("is_enabled") is not False,
+            "icon_url": str(item.get("icon_url") or "").strip(),
+            "live_sync_mode": item.get("live_sync_mode"),
+        }
+    if not settings_by_provider:
+        return {}, "provider_catalog_unavailable"
+    return settings_by_provider, None
+
+
+def _open_wearables_managed_restart_satisfied(hub_settings, sidecar_env=None):
+    if not isinstance(hub_settings, dict) or not hub_settings:
+        return False
+    for provider_id in OPEN_WEARABLES_MANAGED_PROVIDER_IDS:
+        hub = hub_settings.get(provider_id) or {}
+        if (
+            hub.get("is_enabled") is not False
+            and hub.get("has_cloud_api")
+            and _open_wearables_provider_credentials_ready(provider_id, sidecar_env)
+        ):
+            return True
+    return False
+
+
+def _open_wearables_clear_managed_restart_required():
+    global OPEN_WEARABLES_LOCAL_CONFIG, OPEN_WEARABLES_MANAGED_RESTART_REQUIRED
+    if not OPEN_WEARABLES_MANAGED_RESTART_REQUIRED:
+        return
+    OPEN_WEARABLES_MANAGED_RESTART_REQUIRED = False
+    next_config = dict(OPEN_WEARABLES_LOCAL_CONFIG or {})
+    next_config.pop("managed_connector_restart_required", None)
+    OPEN_WEARABLES_LOCAL_CONFIG = next_config
+    _save_open_wearables_local_config(next_config)
+
+
+def _open_wearables_public_server_url():
+    base_url = str(OPEN_WEARABLES_SERVICE_BASE or "").rstrip("/")
+    parsed = urllib.parse.urlsplit(base_url)
+    if has_request_context():
+        root = urllib.parse.urlsplit(request.url_root)
+        host = (root.hostname or "").strip()
+        if host and host not in {"127.0.0.1", "localhost", "0.0.0.0"}:
+            port = parsed.port or 8000
+            scheme = parsed.scheme or root.scheme or "http"
+            return f"{scheme}://{host}:{port}"
+    return base_url
+
+
+def _set_env_file_values(path, updates):
+    if not path or not updates:
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return False
+
+    replaced = set()
+    changed = False
+    next_lines = []
+    for raw_line in lines:
+        if "=" not in raw_line or raw_line.lstrip().startswith("#"):
+            next_lines.append(raw_line)
+            continue
+        key, _value = raw_line.split("=", 1)
+        clean_key = key.strip()
+        if clean_key in updates:
+            next_value = f"{clean_key}={updates[clean_key]}\n"
+            next_lines.append(next_value)
+            replaced.add(clean_key)
+            changed = changed or raw_line != next_value
+        else:
+            next_lines.append(raw_line)
+
+    for key, value in updates.items():
+        if key not in replaced:
+            if next_lines and not next_lines[-1].endswith("\n"):
+                next_lines[-1] += "\n"
+            next_lines.append(f"{key}={value}\n")
+            changed = True
+
+    if not changed:
+        return False
+
+    tmp = None
+    try:
+        env_dir = os.path.dirname(os.path.abspath(path))
+        fd, tmp = tempfile.mkstemp(prefix=".open-wearables-env.", suffix=".tmp", dir=env_dir)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.writelines(next_lines)
+            handle.flush()
+            os.fsync(handle.fileno())
+        backup_path = f"{path}.before-managed-connectors-{int(time.time())}"
+        shutil.copy2(path, backup_path)
+        os.replace(tmp, path)
+        tmp = None
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        print(f"Warning: Could not update Open Wearables managed connector config: {exc}")
+        return False
+    return True
+
+
+def _open_wearables_seed_managed_provider_credentials(sidecar_env=None):
+    global OPEN_WEARABLES_MANAGED_RESTART_REQUIRED
+    env_values = sidecar_env
+    env_error = None
+    if env_values is None:
+        env_values, env_error = _load_open_wearables_sidecar_env()
+    if env_error:
+        return {"available": False, "changed": False, "providers": [], "restart_required": False, "error_code": env_error}
+
+    results = []
+    updates = {}
+    whoop_keys = OPEN_WEARABLES_PROVIDER_CREDENTIAL_KEYS["whoop"]
+    managed_whoop_scope = " ".join((
+        "offline",
+        "read:cycles",
+        "read:sleep",
+        "read:recovery",
+        "read:workout",
+        "read:body_measurement",
+    ))
+    whoop_needs_values = any(_open_wearables_placeholder_value(env_values.get(key)) for key in whoop_keys)
+    if whoop_needs_values:
+        try:
+            whoop_config = load_whoop_config(
+                _whoop_redirect_uri(),
+                client_id_path=data_path(".whoop-client-id"),
+            )
+            updates["WHOOP_CLIENT_ID"] = whoop_config.client_id
+            updates["WHOOP_CLIENT_SECRET"] = whoop_config.client_secret
+            updates["WHOOP_DEFAULT_SCOPE"] = managed_whoop_scope
+            results.append({"provider": "whoop", "status": "prepared"})
+        except Exception:
+            results.append({"provider": "whoop", "status": "owner_setup_needed"})
+    else:
+        results.append({"provider": "whoop", "status": "already_prepared"})
+        if str(env_values.get("WHOOP_DEFAULT_SCOPE") or "").strip() != managed_whoop_scope:
+            updates["WHOOP_DEFAULT_SCOPE"] = managed_whoop_scope
+
+    managed_whoop_redirect = _whoop_redirect_uri()
+    if not managed_whoop_redirect.startswith(("http://", "https://")):
+        managed_whoop_redirect = str(env_values.get("WHOOP_REDIRECT_URI") or "").strip()
+    if managed_whoop_redirect and str(env_values.get("WHOOP_REDIRECT_URI") or "").strip() != managed_whoop_redirect:
+        updates["WHOOP_REDIRECT_URI"] = managed_whoop_redirect
+
+    changed = _set_env_file_values(_open_wearables_sidecar_env_file(), updates) if updates else False
+    if changed:
+        OPEN_WEARABLES_MANAGED_RESTART_REQUIRED = True
+    return {
+        "available": True,
+        "changed": bool(changed),
+        "providers": results,
+        "restart_required": bool(OPEN_WEARABLES_MANAGED_RESTART_REQUIRED),
+    }
+
+
+def _open_wearables_provider_actions():
+    can_pair = bool(OPEN_WEARABLES_USER_ID and OPEN_WEARABLES_USERNAME and OPEN_WEARABLES_PASSWORD)
+    sidecar_env, env_error = _load_open_wearables_sidecar_env()
+    restart_required = bool(OPEN_WEARABLES_MANAGED_RESTART_REQUIRED)
+    hub_settings, hub_error = _open_wearables_provider_settings_from_hub() if can_pair else ({}, None)
+    if restart_required and _open_wearables_managed_restart_satisfied(hub_settings, sidecar_env):
+        _open_wearables_clear_managed_restart_required()
+        restart_required = False
+    hub_catalog_checked = bool(can_pair and not restart_required and not hub_error)
+    actions = []
+    for provider in OPEN_WEARABLES_PAIRING_PROVIDERS:
+        provider_id = provider["id"]
+        provider_kind = provider.get("kind") or "cloud"
+        hub = hub_settings.get(provider_id) or {}
+        provider_missing = bool(hub_catalog_checked and provider_id not in hub_settings)
+        label = str(hub.get("label") or provider["label"]).strip()
+        is_cloud = bool(hub.get("has_cloud_api")) if hub else provider_kind == "cloud"
+        is_enabled = bool(hub.get("is_enabled", True))
+        credentials_ready = _open_wearables_provider_credentials_ready(provider_id, sidecar_env)
+        ready = bool(
+            can_pair
+            and not restart_required
+            and not hub_error
+            and not provider_missing
+            and is_cloud
+            and is_enabled
+            and credentials_ready
+        )
+        reason = ""
+        if not can_pair:
+            reason = "prepare_profile"
+        elif restart_required:
+            reason = "hub_restart_needed"
+        elif provider_missing and provider_kind == "cloud":
+            reason = "provider_not_ready"
+        elif not is_enabled:
+            reason = "provider_disabled"
+        elif not is_cloud:
+            reason = "sdk_provider"
+        elif not credentials_ready:
+            reason = "provider_app_needed"
+        elif hub_error:
+            reason = "provider_catalog_unavailable"
+        actions.append({
+            "provider": provider_id,
+            "label": label,
+            "kind": "cloud" if is_cloud else "sdk",
+            "enabled": ready,
+            "url": f"/api/open-wearables/pair/{provider_id}" if ready else "",
+            "reason": reason,
+            "icon_url": hub.get("icon_url") or "",
+            "live_sync_mode": hub.get("live_sync_mode"),
+            "managed_credentials_ready": credentials_ready,
+        })
+    return actions
 
 
 def _save_open_wearables_local_config(config):
@@ -10323,6 +10681,31 @@ def _decode_jwt_exp(token: str | None):
         return None
 
 
+def _open_wearables_login(base_url, username, credential, timeout_s=6):
+    data = urllib.parse.urlencode({
+        "username": username,
+        "password": credential,
+    }).encode("utf-8")
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    req = urllib.request.Request(
+        f"{str(base_url).rstrip('/')}/api/v1/auth/login",
+        data=data,
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    token = (
+        payload.get("access_token")
+        or payload.get("token")
+        or payload.get("jwt")
+        or (payload.get("data") or {}).get("access_token")
+    )
+    if not token:
+        raise RuntimeError("missing_token")
+    return token, payload
+
+
 def _get_ow_token():
     """Login once to Open Wearables and reuse token until expiry."""
     missing = _missing_open_wearables_config()
@@ -10340,27 +10723,14 @@ def _get_ow_token():
     if cached and now < (expires_at - 30):
         return cached
 
-    data = urllib.parse.urlencode({
-        "username": OPEN_WEARABLES_USERNAME,
-        "password": OPEN_WEARABLES_PASSWORD,
-    }).encode("utf-8")
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
     try:
-        req = urllib.request.Request(OPEN_WEARABLES_LOGIN_URL, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        token, payload = _open_wearables_login(
+            OPEN_WEARABLES_SERVICE_BASE,
+            OPEN_WEARABLES_USERNAME,
+            OPEN_WEARABLES_PASSWORD,
+        )
     except Exception as e:
         _OW_TOKEN_CACHE.update({"token": None, "expires_at": 0, "error": str(e)})
-        return None
-
-    token = (
-        payload.get("access_token")
-        or payload.get("token")
-        or payload.get("jwt")
-        or (payload.get("data") or {}).get("access_token")
-    )
-    if not token:
-        _OW_TOKEN_CACHE.update({"token": None, "expires_at": 0, "error": "missing_token"})
         return None
 
     expires_at = None
@@ -10395,6 +10765,264 @@ def _ow_request(url: str, headers: dict, timeout_s: int = 6, retry_auth: bool = 
             headers = {**headers, "Authorization": f"Bearer {token}"}
             return _ow_request(url, headers, timeout_s=timeout_s, retry_auth=False)
         raise
+
+
+def _ow_json_request(url: str, *, token: str | None = None, method: str = "GET", payload=None, timeout_s: int = 6):
+    headers = {}
+    data = None
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        body = resp.read().decode("utf-8")
+        return json.loads(body) if body else None
+
+
+def _open_wearables_extract_items(payload):
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for key in ("items", "data", "users", "results"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _open_wearables_user_id_from_payload(payload):
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("id", "user_id", "uuid"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return _open_wearables_user_id_from_payload(data)
+    return ""
+
+
+def _open_wearables_find_user(base_url, token, external_user_id):
+    query = urllib.parse.urlencode({"external_user_id": external_user_id, "limit": 1})
+    payload = _ow_json_request(f"{base_url}/api/v1/users?{query}", token=token)
+    for item in _open_wearables_extract_items(payload):
+        user_id = _open_wearables_user_id_from_payload(item)
+        if user_id:
+            return user_id
+    return ""
+
+
+def _open_wearables_create_user(base_url, token, external_user_id):
+    payload = {
+        "first_name": "Fitness",
+        "last_name": "Dashboard",
+        "email": "fitness-dashboard-user@fitnessdashboard.dev",
+        "external_user_id": external_user_id,
+    }
+    created = _ow_json_request(f"{base_url}/api/v1/users", token=token, method="POST", payload=payload)
+    return _open_wearables_user_id_from_payload(created)
+
+
+def _open_wearables_resolve_user(base_url, token):
+    external_user_id = "fitness-dashboard-primary"
+    existing = _open_wearables_find_user(base_url, token, external_user_id)
+    if existing:
+        return existing, "reused"
+    try:
+        created = _open_wearables_create_user(base_url, token, external_user_id)
+    except urllib.error.HTTPError:
+        created = _open_wearables_find_user(base_url, token, external_user_id)
+    if not created:
+        raise RuntimeError("user_mapping_failed")
+    return created, "created"
+
+
+def _open_wearables_bootstrap_local_hub():
+    global OPEN_WEARABLES_MANAGED_RESTART_REQUIRED
+    sidecar_env, env_error = _load_open_wearables_sidecar_env()
+    if env_error:
+        return None, env_error
+    username = str(sidecar_env.get("ADMIN_EMAIL") or "").strip()
+    credential = str(sidecar_env.get("ADMIN_PASSWORD") or "").strip()
+    if not username or not credential:
+        return None, "sidecar_admin_missing"
+
+    base_url = (OPEN_WEARABLES_SERVICE_BASE or "http://127.0.0.1:8000").rstrip("/")
+    if base_url in {"http://localhost:8000", "http://0.0.0.0:8000"}:
+        base_url = "http://127.0.0.1:8000"
+    ok, code = validate_open_wearables_base_url(
+        base_url,
+        allowed_hosts=_allowed_hosts_from_csv(OPEN_WEARABLES_ALLOWED_HOSTS),
+    )
+    if not ok:
+        return None, code
+
+    try:
+        managed_connectors = _open_wearables_seed_managed_provider_credentials(sidecar_env)
+        if managed_connectors.get("changed"):
+            sidecar_env, _env_error = _load_open_wearables_sidecar_env()
+        token, _payload = _open_wearables_login(base_url, username, credential)
+        user_id = OPEN_WEARABLES_USER_ID
+        if user_id:
+            try:
+                _ow_json_request(f"{base_url}/api/v1/users/{urllib.parse.quote(user_id)}", token=token)
+            except Exception:
+                user_id = ""
+        user_state = "reused"
+        if not user_id:
+            user_id, user_state = _open_wearables_resolve_user(base_url, token)
+    except Exception:
+        return None, "hub_bootstrap_failed"
+
+    portal_url = OPEN_WEARABLES_PORTAL_URL
+    if not portal_url:
+        portal_url = str(sidecar_env.get("FRONTEND_URL") or "").strip()
+    next_config = {
+        "base_url": base_url,
+        "portal_url": portal_url,
+        "username": username,
+        "password": credential,
+        "user_id": user_id,
+    }
+    if OPEN_WEARABLES_SIDECAR_ENV_PATH:
+        next_config["sidecar_env_path"] = OPEN_WEARABLES_SIDECAR_ENV_PATH
+    if managed_connectors.get("restart_required"):
+        next_config["managed_connector_restart_required"] = True
+    if not _save_open_wearables_local_config(next_config):
+        return None, "config_save_failed"
+    _apply_open_wearables_runtime_config(next_config)
+    return {
+        "user_id": user_id,
+        "user_state": user_state,
+        "managed_connectors": managed_connectors,
+    }, None
+
+
+def _open_wearables_authorization_url(provider):
+    provider_id = re.sub(r"[^a-z0-9_-]", "", str(provider or "").lower())
+    catalog = _open_wearables_provider_catalog()
+    catalog_entry = catalog.get(provider_id)
+    if not catalog_entry:
+        return None, "provider_not_supported"
+    base_ok, base_error = validate_open_wearables_base_url(
+        OPEN_WEARABLES_SERVICE_BASE,
+        allowed_hosts=_allowed_hosts_from_csv(OPEN_WEARABLES_ALLOWED_HOSTS),
+    )
+    if not base_ok:
+        return None, base_error
+    if not OPEN_WEARABLES_USER_ID:
+        return None, "missing_user_mapping"
+    hub_settings = None
+    if OPEN_WEARABLES_MANAGED_RESTART_REQUIRED:
+        hub_settings, hub_error = _open_wearables_provider_settings_from_hub()
+        if hub_error or not _open_wearables_managed_restart_satisfied(hub_settings):
+            return None, "hub_restart_needed"
+        _open_wearables_clear_managed_restart_required()
+    if OPEN_WEARABLES_MANAGED_RESTART_REQUIRED:
+        return None, "hub_restart_needed"
+    if catalog_entry.get("kind") == "sdk":
+        return None, "sdk_provider"
+    if hub_settings is None:
+        hub_settings, hub_error = _open_wearables_provider_settings_from_hub()
+    else:
+        hub_error = None
+    if hub_error:
+        return None, hub_error
+    hub_entry = hub_settings.get(provider_id)
+    if not hub_entry:
+        return None, "provider_not_ready"
+    if hub_entry.get("is_enabled") is False:
+        return None, "provider_disabled"
+    if not hub_entry.get("has_cloud_api"):
+        return None, "sdk_provider"
+    if not _open_wearables_provider_credentials_ready(provider_id):
+        return None, "provider_app_needed"
+    query = urllib.parse.urlencode({"user_id": OPEN_WEARABLES_USER_ID})
+    endpoint = f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/oauth/{provider_id}/authorize?{query}"
+    try:
+        payload = _ow_json_request(endpoint, timeout_s=6)
+    except urllib.error.HTTPError as exc:
+        if exc.code in {400, 404, 422}:
+            return None, "provider_not_ready"
+        return None, "provider_authorization_failed"
+    except Exception:
+        return None, "provider_authorization_failed"
+    url = ""
+    if isinstance(payload, dict):
+        url = str(payload.get("authorization_url") or payload.get("url") or "").strip()
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None, "provider_authorization_failed"
+    return url, None
+
+
+def _open_wearables_mobile_invite(provider):
+    provider_id = re.sub(r"[^a-z0-9_-]", "", str(provider or "").lower())
+    catalog_entry = _open_wearables_provider_catalog().get(provider_id)
+    if not catalog_entry:
+        return None, "provider_not_supported"
+    if catalog_entry.get("kind") != "sdk":
+        return None, "cloud_provider"
+    if not OPEN_WEARABLES_USER_ID:
+        return None, "missing_user_mapping"
+    base_ok, base_error = validate_open_wearables_base_url(
+        OPEN_WEARABLES_SERVICE_BASE,
+        allowed_hosts=_allowed_hosts_from_csv(OPEN_WEARABLES_ALLOWED_HOSTS),
+    )
+    if not base_ok:
+        return None, base_error
+    token = _get_ow_token()
+    if not token:
+        return None, "hub_auth_failed"
+    endpoint = (
+        f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/users/"
+        f"{urllib.parse.quote(OPEN_WEARABLES_USER_ID)}/invitation-code"
+    )
+    try:
+        payload = _ow_json_request(endpoint, token=token, method="POST", timeout_s=6)
+    except urllib.error.HTTPError as exc:
+        if exc.code in {400, 401, 403, 404, 422}:
+            return None, "mobile_invite_not_ready"
+        return None, "mobile_invite_failed"
+    except Exception:
+        return None, "mobile_invite_failed"
+    if not isinstance(payload, dict):
+        return None, "mobile_invite_failed"
+    code = str(payload.get("code") or "").strip()
+    if not code:
+        return None, "mobile_invite_failed"
+    return {
+        "provider": provider_id,
+        "label": catalog_entry.get("label"),
+        "server_url": _open_wearables_public_server_url(),
+        "code": code,
+        "expires_at": payload.get("expires_at"),
+    }, None
+
+
+def _open_wearables_complete_oauth_callback(provider, code, state):
+    provider_id = re.sub(r"[^a-z0-9_-]", "", str(provider or "").lower())
+    if provider_id not in _open_wearables_provider_catalog():
+        return False
+    if not code or not state:
+        return False
+    base_ok, _base_error = validate_open_wearables_base_url(
+        OPEN_WEARABLES_SERVICE_BASE,
+        allowed_hosts=_allowed_hosts_from_csv(OPEN_WEARABLES_ALLOWED_HOSTS),
+    )
+    if not base_ok:
+        return False
+    query = urllib.parse.urlencode({"code": code, "state": state})
+    endpoint = f"{OPEN_WEARABLES_SERVICE_BASE}/api/v1/oauth/{provider_id}/callback?{query}"
+    try:
+        _ow_json_request(endpoint, timeout_s=30)
+        return True
+    except Exception:
+        return False
 
 
 def fetch_open_wearables_data():
@@ -10833,7 +11461,7 @@ def _open_wearables_sync_metadata(data):
 
 
 def _open_wearables_public_status(providers=None, error_code=None):
-    return build_open_wearables_status(
+    payload = build_open_wearables_status(
         username=OPEN_WEARABLES_USERNAME,
         credential=OPEN_WEARABLES_PASSWORD,
         user_id=OPEN_WEARABLES_USER_ID,
@@ -10842,6 +11470,13 @@ def _open_wearables_public_status(providers=None, error_code=None):
         providers=providers or [],
         error_code=error_code,
     ).public_dict()
+    if (
+        payload.get("auth_configured")
+        and payload.get("user_mapped")
+        and not payload.get("providers")
+    ):
+        payload["setup_hint"] = "provider_credentials_missing"
+    return payload
 
 
 def _open_wearables_provider_endpoint():
@@ -11078,6 +11713,15 @@ def open_wearables_setup_api():
         "user_id": user_id,
         "portal_url": portal_url,
     }
+    existing_sidecar_env_path = str(
+        OPEN_WEARABLES_LOCAL_CONFIG.get("sidecar_env_path")
+        or OPEN_WEARABLES_SIDECAR_ENV_PATH
+        or ""
+    ).strip()
+    if existing_sidecar_env_path:
+        next_config["sidecar_env_path"] = existing_sidecar_env_path
+    if OPEN_WEARABLES_MANAGED_RESTART_REQUIRED:
+        next_config["managed_connector_restart_required"] = True
     if credential_input:
         next_config["password"] = credential_input
     else:
@@ -11106,6 +11750,127 @@ def open_wearables_setup_api():
             "provider_count": len(providers),
             "error_code": provider_error,
         },
+    })
+
+
+@app.route('/api/open-wearables/setup/bootstrap', methods=['POST'])
+def open_wearables_setup_bootstrap_api():
+    bootstrap, bootstrap_error = _open_wearables_bootstrap_local_hub()
+    providers, provider_error = _fetch_open_wearables_provider_statuses()
+    status_payload = _open_wearables_public_status(
+        providers=providers,
+        error_code=provider_error if provider_error != "missing_config" else None,
+    )
+    if bootstrap_error:
+        return jsonify({
+            "status": "blocked",
+            "error": {
+                "code": bootstrap_error,
+                "message": "This web app could not prepare the local wearable hub.",
+            },
+            "config": _open_wearables_setup_public_config(),
+            "open_wearables": status_payload,
+        }), 400 if bootstrap_error != "config_save_failed" else 500
+    return jsonify({
+        "status": "ready",
+        "bootstrap": {
+            "user_mapped": bool(bootstrap and bootstrap.get("user_id")),
+            "user_state": (bootstrap or {}).get("user_state"),
+            "managed_connectors": (bootstrap or {}).get("managed_connectors"),
+        },
+        "config": _open_wearables_setup_public_config(),
+        "open_wearables": status_payload,
+        "provider_check": {
+            "checked": provider_error != "missing_config",
+            "provider_count": len(providers),
+            "error_code": provider_error,
+        },
+    })
+
+
+@app.route('/api/open-wearables/pair/<provider>', methods=['GET', 'POST'])
+def open_wearables_pair_provider_api(provider):
+    if not OPEN_WEARABLES_USER_ID or not OPEN_WEARABLES_USERNAME or not OPEN_WEARABLES_PASSWORD:
+        if request.method == "GET":
+            return jsonify({
+                "status": "blocked",
+                "provider": str(provider or "").lower(),
+                "error": {
+                    "code": "missing_user_mapping",
+                    "message": "Prepare pairing before connecting this wearable.",
+                },
+            }), 400
+        _bootstrap, bootstrap_error = _open_wearables_bootstrap_local_hub()
+        if bootstrap_error:
+            return jsonify({
+                "status": "blocked",
+                "error": {
+                    "code": bootstrap_error,
+                    "message": "Prepare pairing before connecting this wearable.",
+                },
+            }), 400
+    url, error_code = _open_wearables_authorization_url(provider)
+    if error_code:
+        message = (
+            "The local wearable hub is finishing setup. Try again after it restarts."
+            if error_code == "hub_restart_needed"
+            else "This source connects through the phone health-store setup, not a provider sign-in popup."
+            if error_code == "sdk_provider"
+            else "The local hub has this provider, but its connector is not ready yet."
+            if error_code == "provider_not_ready"
+            else "The local hub is not reporting available provider sign-ins yet."
+            if error_code == "provider_catalog_unavailable"
+            else "This provider is disabled in the local hub."
+            if error_code == "provider_disabled"
+            else "This wearable is not ready to pair in the local hub."
+        )
+        return jsonify({
+            "status": "blocked",
+            "provider": str(provider or "").lower(),
+            "error": {
+                "code": error_code,
+                "message": message,
+            },
+        }), 400
+    if request.method == "GET":
+        return redirect(url)
+    return jsonify({
+        "status": "ready",
+        "provider": str(provider or "").lower(),
+        "authorization_url": url,
+    })
+
+
+@app.route('/api/open-wearables/mobile-invite/<provider>', methods=['POST'])
+def open_wearables_mobile_invite_api(provider):
+    if not OPEN_WEARABLES_USER_ID or not OPEN_WEARABLES_USERNAME or not OPEN_WEARABLES_PASSWORD:
+        _bootstrap, bootstrap_error = _open_wearables_bootstrap_local_hub()
+        if bootstrap_error:
+            return jsonify({
+                "status": "blocked",
+                "error": {
+                    "code": bootstrap_error,
+                    "message": "Prepare pairing before connecting this phone health source.",
+                },
+            }), 400
+    invite, error_code = _open_wearables_mobile_invite(provider)
+    if error_code:
+        message = (
+            "This source uses provider sign-in instead of the phone app code."
+            if error_code == "cloud_provider"
+            else "The local hub could not create a phone app code yet."
+        )
+        return jsonify({
+            "status": "blocked",
+            "provider": str(provider or "").lower(),
+            "error": {
+                "code": error_code,
+                "message": message,
+            },
+        }), 400
+    return jsonify({
+        "status": "ready",
+        "invite": invite,
     })
 
 
@@ -11924,6 +12689,10 @@ def whoop_callback():
     try:
         saved_state = consume_oauth_state(WHOOP_DB_FILE, state, user_binding=_whoop_user_binding())
         if saved_state is None:
+            if _open_wearables_complete_oauth_callback("whoop", code, state):
+                if _whoop_callback_is_browser_navigation():
+                    return _whoop_no_store(redirect("/#settings"))
+                return _whoop_no_store(jsonify({"status": "success", "provider": "whoop", "source": "open_wearables"}))
             return _whoop_no_store(api_error("WHOOP OAuth state is invalid or expired.", 400, code="invalid_state"))
         config = _whoop_config_for_redirect(saved_state["redirect_uri"])
         grant_payload = exchange_whoop_code(config, code=code)

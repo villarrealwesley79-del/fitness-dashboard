@@ -245,18 +245,99 @@
 }
 
 .open-wearables-provider-list {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
     gap: 8px;
 }
 
-.open-wearables-provider-list span {
+.open-wearables-provider-btn {
     border: 1px solid rgba(96,165,250,0.32);
-    border-radius: 999px;
+    border-radius: 10px;
     background: rgba(37,99,235,0.14);
     color: var(--fg-1);
-    padding: 6px 9px;
+    min-height: 40px;
+    padding: 9px 10px;
     font-weight: 700;
+    text-align: left;
+}
+
+.open-wearables-provider-btn:not(:disabled) {
+    cursor: pointer;
+}
+
+.open-wearables-provider-btn:not(:disabled):hover,
+.open-wearables-provider-btn.is-selected {
+    border-color: rgba(96,165,250,0.72);
+    background: rgba(37,99,235,0.28);
+    color: var(--fg-0);
+}
+
+.open-wearables-provider-btn.is-unavailable {
+    border-color: rgba(234,179,8,0.42);
+    background: rgba(113,63,18,0.18);
+    color: var(--fg-1);
+}
+
+.open-wearables-provider-btn.is-unavailable::after {
+    content: attr(data-status-label);
+    display: block;
+    color: #fde68a;
+    font-size: 10px;
+    font-weight: 700;
+    margin-top: 3px;
+}
+
+.open-wearables-provider-btn:disabled {
+    opacity: 0.52;
+}
+
+.open-wearables-provider-note {
+    margin-top: 0;
+}
+
+.open-wearables-mobile-invite {
+    display: grid;
+    gap: 10px;
+    border: 1px solid rgba(96,165,250,0.32);
+    border-radius: 12px;
+    background: rgba(15,23,42,0.42);
+    padding: 12px;
+}
+
+.open-wearables-mobile-invite[hidden] {
+    display: none;
+}
+
+.open-wearables-mobile-invite strong {
+    color: var(--fg-0);
+}
+
+.open-wearables-mobile-invite > span,
+.open-wearables-mobile-grid span {
+    color: var(--fg-2);
+    font-size: 12px;
+}
+
+.open-wearables-mobile-grid {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: 1fr;
+}
+
+.open-wearables-mobile-grid div {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.open-wearables-mobile-grid code {
+    display: block;
+    overflow-wrap: anywhere;
+    border-radius: 8px;
+    background: rgba(2,6,23,0.62);
+    color: var(--fg-0);
+    padding: 8px;
+    font-size: 12px;
 }
 
 .open-wearables-advanced summary {
@@ -299,6 +380,11 @@
 
 .open-wearables-setup-list li:first-child {
     border-top: 0;
+}
+
+.open-wearables-setup-list strong {
+    color: var(--fg-0);
+    font-size: 12px;
 }
 
 .open-wearables-setup-list code,
@@ -392,6 +478,10 @@
     .open-wearables-setup-list li {
         grid-template-columns: 1fr;
         gap: 4px;
+    }
+
+    .open-wearables-provider-list {
+        grid-template-columns: 1fr;
     }
 
     .ai-fact-query-controls {
