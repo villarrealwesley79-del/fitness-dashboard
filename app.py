@@ -147,6 +147,7 @@ import branded_food_lookup
 import personal_vocab
 import vision_estimator
 import workout_adaptation
+import workout_recommendation_fingerprint
 from meal_text_parser import FALLBACK_REASON_VALUES, parse_meal_text
 from meal_log_policy import (
     CALORIE_MAX,
@@ -4638,13 +4639,6 @@ def _workout_recommendation_fingerprint():
     except Exception:
         oura_rows = []
 
-    def file_marker(path):
-        try:
-            stat = os.stat(path)
-            return {"path": path, "mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
-        except OSError:
-            return {"path": path, "missing": True}
-
     health_workout_files = sorted(
         glob.glob(os.path.expanduser("~/Documents/Health/healthkit_samples_workout_*.json"))
     )
@@ -4653,101 +4647,30 @@ def _workout_recommendation_fingerprint():
     whoop_fact = get_whoop_daily_fact(WHOOP_DB_FILE, local_date=today_s) or get_whoop_daily_fact(WHOOP_DB_FILE)
     whoop_freshness = latest_whoop_freshness(WHOOP_DB_FILE)
 
-    def latest_marker(rows):
-        markers = [
-            str((row or {}).get("created_at") or (row or {}).get("date") or "")
-            for row in (rows or [])
-        ]
-        return max(markers) if markers else ""
-
-    settings_fields = [
-        "training_goal",
-        "date_of_birth",
-        "sex",
-        "sessions_per_week_target",
-        "available_time_minutes",
-        "fatigue_threshold",
-        "equipment_preference",
-        "preferred_equipment_brands",
-        "excluded_exercises",
-        "volume_landmarks",
-    ]
-    payload = {
-        "day": today_s,
-        "workouts_count": len(WORKOUTS or []),
-        "workouts_latest": latest_marker(WORKOUTS),
-        "soreness_count": len(SORENESS_DATA or []),
-        "soreness_latest": latest_marker(SORENESS_DATA),
-        "cardio_count": len(CARDIO_DATA or []),
-        "cardio_latest": latest_marker(CARDIO_DATA),
-        "recovery_count": len(RECOVERY_DATA or []),
-        "recovery_latest": latest_marker(RECOVERY_DATA),
-        "settings": {field: USER_SETTINGS.get(field) for field in settings_fields},
-        "weather": {
-            "ts": _WEATHER_CACHE.get("ts"),
-            "location": _WEATHER_CACHE.get("location"),
-            "data": _WEATHER_CACHE.get("data"),
-            "error": _WEATHER_CACHE.get("error"),
-        },
-        "open_wearables": {
-            "configured": _open_wearables_workout_inputs_live(),
-            "user_id": bool(OPEN_WEARABLES_USER_ID),
-            "marker": _open_wearables_recommendation_marker(),
-        },
-        "apple_health": {
-            "enabled": _apple_health_recommendation_enabled(),
-            "hr_intensity_enabled": _apple_health_hr_intensity_enabled(),
-            "freshness": {
-                "status": apple_status,
-                "last_data": apple_last_data,
-                "last_sync": apple_last_sync,
-            },
-            "sync_db": file_marker(_apple_health_sync_db_file()),
-            "workout_files": [file_marker(path) for path in health_workout_files[-3:]],
-        },
-        "oura": {
-            "day": cached_oura.get("day"),
-            "readiness_score": cached_oura.get("readiness_score"),
-            "sleep_score": cached_oura.get("sleep_score"),
-            "hrv": cached_oura.get("hrv"),
-            "sleep_duration_min": cached_oura.get("sleep_duration_min"),
-            "resting_hr": cached_oura.get("resting_hr"),
-            "last_7_days": [
-                {
-                    "day": row.get("day"),
-                    "readiness_score": row.get("readiness_score"),
-                    "sleep_score": row.get("sleep_score"),
-                    "hrv": row.get("hrv"),
-                    "sleep_duration_min": row.get("sleep_duration_min"),
-                    "resting_hr": row.get("resting_hr"),
-                    "created_at": row.get("created_at"),
-                }
-                for row in oura_rows
-            ],
-            "db": file_marker(OURA_DB_FILE),
-        },
-        "whoop": {
-            "status": whoop_connection.get("status"),
-            "connected_at": whoop_connection.get("connected_at"),
-            "last_successful_sync_at": whoop_connection.get("last_successful_sync_at"),
-            "last_sync_attempt_at": whoop_connection.get("last_sync_attempt_at"),
-            "reauth_required": whoop_connection.get("reauth_required"),
-            "freshness_status": whoop_freshness.get("status"),
-            "freshness_score_state": whoop_freshness.get("score_state"),
-            "daily_fact": {
-                "local_date": (whoop_fact or {}).get("local_date"),
-                "recovery_score": (whoop_fact or {}).get("recovery_score"),
-                "recovery_band": (whoop_fact or {}).get("recovery_band"),
-                "strain": (whoop_fact or {}).get("strain"),
-                "sleep_performance_pct": (whoop_fact or {}).get("sleep_performance_pct"),
-                "sleep_need_gap_min": (whoop_fact or {}).get("sleep_need_gap_min"),
-                "score_state": (whoop_fact or {}).get("score_state"),
-            },
-            "db": file_marker(WHOOP_DB_FILE),
-        },
-    }
-    raw = json.dumps(payload, sort_keys=True, default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return workout_recommendation_fingerprint.build_fingerprint(
+        day=today_s,
+        workouts=WORKOUTS,
+        soreness_data=SORENESS_DATA,
+        cardio_data=CARDIO_DATA,
+        recovery_data=RECOVERY_DATA,
+        user_settings=USER_SETTINGS,
+        weather_cache=_WEATHER_CACHE,
+        open_wearables_configured=_open_wearables_workout_inputs_live(),
+        open_wearables_user_mapped=bool(OPEN_WEARABLES_USER_ID),
+        open_wearables_marker=_open_wearables_recommendation_marker(),
+        apple_health_enabled=_apple_health_recommendation_enabled(),
+        apple_health_hr_intensity_enabled=_apple_health_hr_intensity_enabled(),
+        apple_health_freshness=(apple_status, apple_last_data, apple_last_sync),
+        apple_health_sync_db_file=_apple_health_sync_db_file(),
+        apple_health_workout_files=health_workout_files,
+        cached_oura=cached_oura,
+        oura_rows=oura_rows,
+        oura_db_file=OURA_DB_FILE,
+        whoop_connection=whoop_connection,
+        whoop_freshness=whoop_freshness,
+        whoop_fact=whoop_fact,
+        whoop_db_file=WHOOP_DB_FILE,
+    )
 
 
 @app.route('/api/next-workout')
