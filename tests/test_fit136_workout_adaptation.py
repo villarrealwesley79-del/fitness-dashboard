@@ -490,9 +490,15 @@ def test_guardrail_metadata_has_required_citations_and_neutral_language(monkeypa
     citations = event["reason_metadata"]["citations"]
     pmids = {citation["pmid"] for citation in citations}
     assert {"26920240", "28919842", "28642676", "19204579"}.issubset(pmids)
-    event_text = str(event).lower()
+    user_facing_text = " ".join(
+        [
+            event["reason"],
+            *(signal["label"] for signal in event["nutrition_context"]["signals"]),
+            *(citation["title"] for citation in citations),
+        ]
+    ).lower()
     for banned in workout_adaptation.MORAL_LABELS:
-        assert banned not in event_text
+        assert banned not in user_facing_text
 
 
 def test_neutral_language_guard_ignores_user_controlled_ids(monkeypatch, tmp_path):

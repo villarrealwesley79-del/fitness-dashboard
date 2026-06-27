@@ -98,7 +98,7 @@ def test_whoop_signal_endpoint_and_smart_recommendation_keep_apple_health_load_t
         [
             {
                 "upstream_id": "rec-1",
-                "local_date": "2026-06-25",
+                "local_date": fitness_app._today_str(),
                 "score_state": "SCORED",
                 "recovery_score": 34,
             }
