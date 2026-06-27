@@ -1,4 +1,5 @@
 from recommendation_sources import build_open_wearables_recommendation_source
+from open_wearables_hub import apply_recommendation_guard
 from wearable_fact_store import WearableDailyFact, upsert_daily_facts
 
 
@@ -85,11 +86,10 @@ def test_open_wearables_facts_downgrade_dashboard_and_next_workout_routes(monkey
 
 
 def test_open_wearables_modifier_never_hardens_recommendation():
-    import app as module
-
-    recommendation, modifier = module._apply_open_wearables_recommendation_guard(
+    recommendation, modifier = apply_recommendation_guard(
         "moderate",
         [WearableDailyFact("2026-06-26", "open_wearables", "Open Wearables", "sleep_duration", 480, "min", freshness="fresh").public_dict()],
+        downgrade_once=lambda recommendation: "recovery",
     )
 
     assert recommendation == "moderate"

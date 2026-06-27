@@ -103,13 +103,10 @@ from open_wearables_adapter import (
     redacted_base_url,
     validate_open_wearables_base_url,
 )
-from recommendation_sources import build_open_wearables_recommendation_source
+import open_wearables_hub
 from wearable_fact_store import (
-    WearableDailyFact,
     list_recommendation_facts,
     list_wearable_sources,
-    upsert_daily_facts,
-    upsert_wearable_source,
 )
 from data_store import (
     init_data_db,
@@ -4600,34 +4597,12 @@ def _open_wearables_workout_inputs_live():
     return not _missing_open_wearables_config()
 
 
-def _open_wearables_payload_marker(payload):
-    """Return a stable marker for live OW inputs without carrying timestamps."""
-    if payload is None:
-        return None
-    try:
-        raw = json.dumps(payload, sort_keys=True, default=str)
-    except TypeError:
-        raw = str(payload)
-    return {
-        "hash": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
-        "bytes": len(raw),
-    }
-
-
 def _store_open_wearables_recommendation_marker(data):
     global OPEN_WEARABLES_WORKOUT_MARKER_CACHE
-    sleep = _extract_open_wearables_sleep((data or {}).get("sleep"))
-    marker = {
-        "configured": True,
-        "sleep": {
-            "duration_min": sleep.get("duration_min") if sleep else None,
-            "avg_hr": sleep.get("avg_hr") if sleep else None,
-            "event_time": sleep.get("event_time") if sleep else None,
-            "recent": sleep.get("recent") if sleep else None,
-        },
-        "workouts": _open_wearables_payload_marker((data or {}).get("workouts")),
-        "activity_summary": _open_wearables_payload_marker((data or {}).get("activity_summary")),
-    }
+    marker = open_wearables_hub.workout_marker(
+        data,
+        sleep_extractor=_extract_open_wearables_sleep,
+    )
     OPEN_WEARABLES_WORKOUT_MARKER_CACHE = marker
     return marker
 
@@ -4781,10 +4756,11 @@ def api_next_workout():
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
     training_recommendation = _current_workout_training_recommendation()
-    open_wearables_facts = _open_wearables_recommendation_facts()
-    guarded_training_recommendation, open_wearables_modifier = _apply_open_wearables_recommendation_guard(
+    open_wearables_facts = open_wearables_hub.recommendation_facts(WEARABLE_FACTS_DB_FILE)
+    guarded_training_recommendation, open_wearables_modifier = open_wearables_hub.apply_recommendation_guard(
         training_recommendation,
         open_wearables_facts,
+        downgrade_once=_downgrade_training_recommendation_once,
     )
     if (
         not LAST_WORKOUT_RECOMMENDATION
@@ -4835,8 +4811,9 @@ def api_next_workout():
         "next_workout": _workout_with_auth_scope(LAST_WORKOUT_RECOMMENDATION),
         "workout_adaptation_events": [workout_adaptation.project_event(event) for event in workout_adaptation_events],
         "recommendation_sources": {
-            "open_wearables": build_open_wearables_recommendation_source(
+            "open_wearables": open_wearables_hub.recommendation_source_payload(
                 freshness.get("open_wearables"),
+                db_file=WEARABLE_FACTS_DB_FILE,
                 facts=open_wearables_facts,
                 modifier=open_wearables_modifier,
             ),
@@ -5061,10 +5038,11 @@ def api_dashboard():
     )
     if signal == "RECOVER" and max_soreness >= 7:
         dashboard_training_recommendation = "recovery"
-    open_wearables_facts = _open_wearables_recommendation_facts()
-    guarded_dashboard_recommendation, open_wearables_modifier = _apply_open_wearables_recommendation_guard(
+    open_wearables_facts = open_wearables_hub.recommendation_facts(WEARABLE_FACTS_DB_FILE)
+    guarded_dashboard_recommendation, open_wearables_modifier = open_wearables_hub.apply_recommendation_guard(
         dashboard_training_recommendation,
         open_wearables_facts,
+        downgrade_once=_downgrade_training_recommendation_once,
     )
     if open_wearables_modifier.get("detail"):
         reason_bits.append(open_wearables_modifier["detail"])
@@ -5162,8 +5140,9 @@ def api_dashboard():
         "freshness": freshness,
         "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
         "recommendation_sources": {
-            "open_wearables": build_open_wearables_recommendation_source(
+            "open_wearables": open_wearables_hub.recommendation_source_payload(
                 freshness.get("open_wearables"),
+                db_file=WEARABLE_FACTS_DB_FILE,
                 facts=open_wearables_facts,
                 modifier=open_wearables_modifier,
             ),
@@ -10763,7 +10742,7 @@ def health_sync():
     """Manually pull Open Wearables sleep/workout data."""
     try:
         data = fetch_open_wearables_data()
-        return jsonify(_open_wearables_sync_metadata(data))
+        return jsonify(open_wearables_hub.sync_metadata(data))
     except Exception:
         return jsonify({
             "status": "error",
@@ -10773,63 +10752,6 @@ def health_sync():
                 "message": "Open Wearables sync failed",
             },
         }), 500
-
-
-def _open_wearables_sync_count(payload):
-    if isinstance(payload, list):
-        return len(payload)
-    if not isinstance(payload, dict):
-        return None
-    for key in ("records", "samples", "events", "data", "items", "summaries", "days"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return len(value)
-    return None
-
-
-def _open_wearables_error_code(key):
-    stable_codes = {
-        "auth": "open_wearables_auth_error",
-        "config": "open_wearables_config_error",
-        "sleep": "open_wearables_sync_error",
-        "workouts": "open_wearables_sync_error",
-        "activity_summary": "open_wearables_sync_error",
-    }
-    return stable_codes.get(str(key), "open_wearables_sync_error")
-
-
-def _open_wearables_public_error_key(key):
-    public_names = {"auth", "config", "sleep", "workouts", "activity_summary"}
-    name = str(key)
-    return name if name in public_names else "sync"
-
-
-def _open_wearables_sync_metadata(data):
-    data = data if isinstance(data, dict) else {}
-    counts = {}
-    for key in ("sleep", "workouts", "activity_summary"):
-        count = _open_wearables_sync_count(data.get(key))
-        if count is not None:
-            counts[key] = count
-
-    errors = {}
-    raw_errors = data.get("errors")
-    if isinstance(raw_errors, dict):
-        for key, value in raw_errors.items():
-            if value:
-                errors[_open_wearables_public_error_key(key)] = _open_wearables_error_code(key)
-
-    fetched_at = data.get("fetched_at")
-    if not isinstance(fetched_at, str):
-        fetched_at = datetime.now().isoformat()
-
-    return {
-        "status": "success",
-        "source": "open_wearables",
-        "fetched_at": fetched_at,
-        "counts": counts,
-        "errors": errors,
-    }
 
 
 def _open_wearables_public_status(providers=None, error_code=None):
@@ -10873,135 +10795,6 @@ def _fetch_open_wearables_provider_statuses():
     if not providers:
         return [], "open_wearables_no_providers"
     return providers, None
-
-
-def _open_wearables_status_source(status_payload=None):
-    status_payload = status_payload or _open_wearables_public_status()
-    return {
-        "source": "open_wearables",
-        "provider_id": "open_wearables",
-        "label": "Open Wearables",
-        "status": status_payload.get("status"),
-        "configured": bool(status_payload.get("configured")),
-        "connected": status_payload.get("status") == "connected",
-        "last_sync_attempt": status_payload.get("last_checked_at"),
-        "last_data_point": None,
-        "score_state": None,
-        "source_kind": "hub",
-        "capabilities": {
-            "providers": True,
-            "metrics": True,
-            "workouts": True,
-            "history": True,
-            "sync": True,
-        },
-        "used_for_recommendation": status_payload.get("status") == "connected",
-        "detail": (
-            "Open Wearables is configured as the wearable hub."
-            if status_payload.get("configured")
-            else "Open Wearables hub needs configuration before provider data can sync."
-        ),
-    }
-
-
-def _store_wearable_facts_from_open_wearables(data):
-    data = data if isinstance(data, dict) else {}
-    fetched_at = data.get("fetched_at") if isinstance(data.get("fetched_at"), str) else datetime.now().isoformat()
-    errors = data.get("errors") if isinstance(data.get("errors"), dict) else {}
-    status = "error" if errors else "fresh"
-    upsert_wearable_source(WEARABLE_FACTS_DB_FILE, {
-        "provider_id": "open_wearables",
-        "label": "Open Wearables",
-        "status": status,
-        "last_data_point": fetched_at[:10],
-        "last_sync_attempt": fetched_at,
-        "capabilities": {"metrics": True, "workouts": True, "history": True, "sync": True},
-        "used_for_recommendation": status != "error",
-    })
-
-    facts = []
-    activity = _extract_open_wearables_activity_summaries(data.get("activity_summary"))
-    if activity:
-        latest = sorted(activity, key=lambda row: row.get("date") or datetime.min.date())[-1]
-        date_s = latest["date"].strftime("%Y-%m-%d")
-        if latest.get("steps") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "steps", latest.get("steps"), "count", confidence="medium", freshness=status))
-        if latest.get("resting") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "resting_heart_rate", latest.get("resting"), "bpm", confidence="medium", freshness=status))
-        if latest.get("active_minutes") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "active_minutes", latest.get("active_minutes"), "min", confidence="medium", freshness=status))
-
-    sleep = _extract_open_wearables_sleep(data.get("sleep"))
-    if sleep and sleep.get("event_time"):
-        date_s = (sleep.get("event_time") or fetched_at)[:10]
-        if sleep.get("duration_min") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_duration", sleep.get("duration_min"), "min", confidence="medium", freshness=status))
-        if sleep.get("avg_hr") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_avg_heart_rate", sleep.get("avg_hr"), "bpm", confidence="medium", freshness=status))
-
-    if facts:
-        upsert_daily_facts(WEARABLE_FACTS_DB_FILE, facts)
-    return len(facts)
-
-
-def _open_wearables_recommendation_facts(limit=20):
-    return [
-        fact for fact in list_recommendation_facts(WEARABLE_FACTS_DB_FILE, limit=limit)
-        if fact.get("provider_id") == "open_wearables"
-        and fact.get("freshness") in {"fresh", "aging"}
-    ]
-
-
-def _open_wearables_conservative_modifier(facts):
-    facts = facts or []
-    latest_by_metric = {}
-    for fact in facts:
-        metric = fact.get("metric")
-        if metric and metric not in latest_by_metric:
-            latest_by_metric[metric] = fact
-
-    applied = []
-    details = []
-    sleep = latest_by_metric.get("sleep_duration")
-    try:
-        sleep_min = float(sleep.get("value")) if sleep and sleep.get("value") is not None else None
-    except Exception:
-        sleep_min = None
-    if sleep_min is not None and sleep_min < 360:
-        applied.append("sleep_caution")
-        details.append(f"Open Wearables sleep duration {int(round(sleep_min))} min")
-
-    active = latest_by_metric.get("active_minutes")
-    try:
-        active_min = float(active.get("value")) if active and active.get("value") is not None else None
-    except Exception:
-        active_min = None
-    if active_min is not None and active_min >= 90:
-        applied.append("activity_caution")
-        details.append(f"Open Wearables active minutes {int(round(active_min))}")
-
-    return {
-        "applied": bool(applied),
-        "applied_modifiers": applied,
-        "detail": "; ".join(details) + " -> recommendation held conservative." if details else None,
-    }
-
-
-def _apply_open_wearables_recommendation_guard(recommendation, facts):
-    modifier = _open_wearables_conservative_modifier(facts)
-    if not modifier.get("applied"):
-        return recommendation, modifier
-    return _downgrade_training_recommendation_once(recommendation), modifier
-
-
-def _open_wearables_recommendation_source_payload(freshness):
-    facts = _open_wearables_recommendation_facts()
-    modifier = _open_wearables_conservative_modifier(facts)
-    return build_open_wearables_recommendation_source(
-        freshness.get("open_wearables") if isinstance(freshness, dict) else None,
-        facts=facts,
-        modifier=modifier,
-    )
 
 
 @app.route('/api/open-wearables/status')
@@ -11153,8 +10946,13 @@ def open_wearables_providers_api():
 def open_wearables_sync_api():
     try:
         data = fetch_open_wearables_data()
-        facts_upserted = _store_wearable_facts_from_open_wearables(data)
-        metadata = _open_wearables_sync_metadata(data)
+        facts_upserted = open_wearables_hub.store_wearable_facts(
+            data,
+            db_file=WEARABLE_FACTS_DB_FILE,
+            activity_extractor=_extract_open_wearables_activity_summaries,
+            sleep_extractor=_extract_open_wearables_sleep,
+        )
+        metadata = open_wearables_hub.sync_metadata(data)
         metadata["facts_upserted"] = facts_upserted
         return jsonify(metadata)
     except Exception as exc:
@@ -11864,7 +11662,7 @@ def _wearable_sources_payload(freshness, whoop_context):
             "connected": True,
             "used_for_recommendation": True,
         },
-        _open_wearables_status_source(),
+        open_wearables_hub.status_source(_open_wearables_public_status()),
     ]
 
 
@@ -13256,10 +13054,11 @@ def smart_recommendation_api():
         reason_bits.append(explanation)
     if whoop_context["source_conflict"].get("explanation"):
         reason_bits.append(whoop_context["source_conflict"]["explanation"])
-    open_wearables_facts = _open_wearables_recommendation_facts()
-    recommendation, open_wearables_modifier = _apply_open_wearables_recommendation_guard(
+    open_wearables_facts = open_wearables_hub.recommendation_facts(WEARABLE_FACTS_DB_FILE)
+    recommendation, open_wearables_modifier = open_wearables_hub.apply_recommendation_guard(
         recommendation,
         open_wearables_facts,
+        downgrade_once=_downgrade_training_recommendation_once,
     )
     if open_wearables_modifier.get("detail"):
         reason_bits.append(open_wearables_modifier["detail"])
@@ -13366,8 +13165,9 @@ def smart_recommendation_api():
         "freshness": freshness,
         "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
         "recommendation_sources": {
-            "open_wearables": build_open_wearables_recommendation_source(
+            "open_wearables": open_wearables_hub.recommendation_source_payload(
                 freshness.get("open_wearables"),
+                db_file=WEARABLE_FACTS_DB_FILE,
                 facts=open_wearables_facts,
                 modifier=open_wearables_modifier,
             ),
