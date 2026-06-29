@@ -106,6 +106,11 @@ For backend-only or docs-only releases, no asset version change is required.
      material or raw provider payloads.
    - `/api/health/sync` returns redacted Open Wearables metadata only and does
      not expose upstream payloads or exception text.
+   - Open Wearables provider pairing refuses cloud providers whose connector
+     credentials are missing or placeholder values.
+   - Open Wearables phone health sources create invitation codes through
+     `/api/open-wearables/mobile-invite/<provider>` and return a phone-usable
+     hub URL without exposing the hub secret.
 
 ## Apple Health Bridge
 
@@ -129,7 +134,29 @@ the client secret in macOS Keychain service
 protected material store. Do not place those values in the repo, docs, logs,
 screenshots, PR text, or Linear comments.
 
+Open Wearables setup is app-first. The Settings flow should prepare the local
+hub profile through `/api/open-wearables/setup/bootstrap` when the local sidecar
+env is available. The default sidecar env path is:
+
+```bash
+~/open-wearables/backend/config/.env
+```
+
+Use `OW_SIDECAR_ENV_PATH` only when the Open Wearables checkout stores that file
+elsewhere. The web app may copy local WHOOP connector credentials into the
+Open Wearables sidecar env when they are available and the Open Wearables env
+still has placeholder values. If that changes the sidecar env, restart the Open
+Wearables hub before testing provider sign-in.
+
+Cloud providers such as Oura, Garmin, Strava, Fitbit, Polar, Suunto, and
+Ultrahuman must stay in owner-setup state until their Open Wearables connector
+credentials are real. A broken provider OAuth page is a release failure, not an
+acceptable setup screen. Apple Health, Samsung Health, and Google Health Connect
+are phone health-source flows; verify that they create an Open Wearables
+invitation code instead of opening a provider website.
+
 Open Wearables remains a best-effort local bridge. Its `/api/health/sync`
-response is intentionally metadata-only. Treat any change that returns raw Open
-Wearables data as a privacy regression unless a future issue explicitly changes
+and `/api/open-wearables/sync` responses are intentionally metadata-only. Treat
+any change that returns raw Open Wearables data, hub secrets, token names, or raw
+exception text as a privacy regression unless a future issue explicitly changes
 the backup/export and security contract.

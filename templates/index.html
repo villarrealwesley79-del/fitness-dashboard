@@ -9,7 +9,7 @@
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
     <link rel="stylesheet" href="/static/css/style.css?v=20260626-fit238-qol">
-    <link rel="stylesheet" href="/static/css/app.css?v=20260626-fit241-whoop-open">
+    <link rel="stylesheet" href="/static/css/app.css?v=20260627-fit249-auto-mobile-invite">
 </head>
 <body>
     <div class="app-shell">
@@ -885,11 +885,11 @@
                         <span class="detail-value" id="open-wearables-detail-attention">—</span>
                     </div>
                 </div>
-                <div class="settings-row">
+                <div class="settings-row" id="whoop-settings-row">
                     <div class="settings-row-label settings-row-label-stack">
                         <span class="settings-row-label-main">
                             <span class="int-dot" id="whoop-int-dot"></span>
-                            WHOOP
+                            WHOOP fallback
                         </span>
                         <span id="whoop-last-sync" class="settings-row-detail">Checking WHOOP connection…</span>
                     </div>
@@ -1265,40 +1265,66 @@
     <div id="modal-open-wearables-setup" class="modal" role="dialog" aria-modal="true" aria-labelledby="open-wearables-setup-title" hidden>
         <div class="modal-sheet modal-sheet-tall open-wearables-setup-sheet">
             <div class="modal-head">
-                <h3 class="modal-title" id="open-wearables-setup-title">Set up Open Wearables</h3>
+                <h3 class="modal-title" id="open-wearables-setup-title">Add a wearable</h3>
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body whoop-intake-body">
                 <section class="whoop-intake-section" aria-labelledby="open-wearables-hub-title">
                     <div class="whoop-intake-section-head">
-                        <h4 id="open-wearables-hub-title" class="whoop-intake-title">Wearable hub wrapper</h4>
-                        <span id="open-wearables-setup-modal-status" class="state-chip state-chip-sm warn">Setup needed</span>
+                        <h4 id="open-wearables-hub-title" class="whoop-intake-title">Open Wearables</h4>
+                        <span id="open-wearables-setup-modal-status" class="state-chip state-chip-sm warn">Add device</span>
                     </div>
-                    <p class="dim whoop-intake-copy">Pair devices in the local Open Wearables hub, then come back here to check that Fitness Dashboard can see them.</p>
+                    <p class="dim whoop-intake-copy">This web app prepares the local hub account on this Mac, then opens wearable sign-in when you pick a device.</p>
                     <div class="open-wearables-pairing-card">
                         <div>
-                            <strong>Pair a device</strong>
-                            <span id="open-wearables-pairing-link-label">Uses the hub on this Mac.</span>
+                            <strong>Add a person or device</strong>
+                            <span id="open-wearables-pairing-link-label">Prepare pairing to create the local hub profile.</span>
                         </div>
-                        <div class="open-wearables-provider-list" aria-label="Supported wearable sources">
-                            <span>Apple Health</span>
-                            <span>WHOOP</span>
-                            <span>Oura</span>
-                            <span>Garmin</span>
-                            <span>Strava</span>
+                        <div id="open-wearables-provider-actions" class="open-wearables-provider-list" aria-label="Pair wearable sources">
+                            <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="garmin" disabled>Garmin</button>
+                            <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="oura" disabled>Oura</button>
+                            <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="whoop" disabled>WHOOP</button>
+                            <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="suunto" disabled>Suunto</button>
+                            <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="polar" disabled>Polar</button>
+                            <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="ultrahuman" disabled>Ultrahuman</button>
+                            <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="strava" disabled>Strava</button>
+                            <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="fitbit" disabled>Fitbit</button>
+                            <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="apple" disabled>Apple Health</button>
+                            <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="samsung" disabled>Samsung Health</button>
+                            <button class="open-wearables-provider-btn" type="button" data-open-wearables-provider="google" disabled>Google Health Connect</button>
+                        </div>
+                        <p class="settings-row-detail open-wearables-provider-note">Cloud wearables open provider sign-in. Phone health sources use the mobile health-store setup.</p>
+                        <div id="open-wearables-mobile-invite" class="open-wearables-mobile-invite" hidden>
+                            <strong id="open-wearables-mobile-title">Connect phone app</strong>
+                            <span id="open-wearables-mobile-body">Use this one-time code in the Open Wearables mobile app.</span>
+                            <div class="open-wearables-mobile-grid">
+                                <div>
+                                    <span>Server address</span>
+                                    <code id="open-wearables-mobile-server">—</code>
+                                </div>
+                                <div>
+                                    <span>One-time code</span>
+                                    <code id="open-wearables-mobile-code">—</code>
+                                </div>
+                            </div>
+                            <span id="open-wearables-mobile-expires" class="settings-row-detail">—</span>
                         </div>
                     </div>
-                    <p id="open-wearables-setup-status" class="settings-row-detail whoop-intake-status" role="status">Open the pairing portal, connect a wearable, then check connection.</p>
+                    <ol id="open-wearables-setup-steps" class="open-wearables-setup-list" aria-label="Open Wearables setup progress">
+                        <li><strong>Person</strong><span id="open-wearables-step-person">Not prepared</span></li>
+                        <li><strong>Device</strong><span id="open-wearables-step-device">Choose a wearable</span></li>
+                        <li><strong>Connection</strong><span id="open-wearables-step-connection">Waiting for pairing</span></li>
+                    </ol>
+                    <p id="open-wearables-setup-status" class="settings-row-detail whoop-intake-status" role="status">Prepare pairing, choose a wearable, then check connection.</p>
                     <div class="whoop-intake-actions">
-                        <button id="btn-open-wearables-portal" class="btn btn-primary btn-sm" type="button">Open pairing</button>
-                        <button id="btn-open-wearables-copy-link" class="btn btn-ghost btn-sm" type="button">Copy link</button>
+                        <button id="btn-open-wearables-bootstrap" class="btn btn-primary btn-sm" type="button">Prepare pairing</button>
                         <button id="btn-open-wearables-setup-check" class="btn btn-ghost btn-sm" type="button">Check connection</button>
                     </div>
                 </section>
 
                 <details class="whoop-intake-section open-wearables-advanced">
-                    <summary>Advanced</summary>
-                    <p class="dim whoop-intake-copy">Only use this if the local hub cannot be found automatically.</p>
+                    <summary>Advanced diagnostics</summary>
+                    <p class="dim whoop-intake-copy">For local hub setup, connection details, and safe error codes.</p>
                     <div class="open-wearables-setup-form">
                         <label class="open-wearables-setup-field" for="open-wearables-base-url">
                             <span>Hub API URL</span>
@@ -1322,6 +1348,8 @@
                         </label>
                     </div>
                     <div class="whoop-intake-actions">
+                        <button id="btn-open-wearables-portal" class="btn btn-ghost btn-sm" type="button">Open hub admin</button>
+                        <button id="btn-open-wearables-copy-link" class="btn btn-ghost btn-sm" type="button">Copy hub link</button>
                         <button id="btn-open-wearables-setup-save" class="btn btn-ghost btn-sm" type="button">Save advanced</button>
                     </div>
                     <p class="settings-row-detail whoop-intake-status">Reference only: <a href="https://github.com/the-momentum/open-wearables" target="_blank" rel="noopener noreferrer">Open Wearables GitHub</a>.</p>
@@ -1560,7 +1588,7 @@
                 <button class="modal-close" data-close-modal type="button" aria-label="close">✕</button>
             </div>
             <div class="modal-body">
-                <p class="dim">Apple Health has to push data to this dashboard — there's no system-level toggle Claude can flip for you. Here's the one-time setup.</p>
+                <p class="dim">Apple Health has to push data to this web app. Here's the one-time setup.</p>
                 <ol class="setup-steps">
                     <li>On your iPhone, install <strong>Health Auto Export – JSON+CSV</strong> from the App Store.</li>
                     <li>Open it, grant Health permissions, then create two automations under <em>Automations</em> → <em>New Automation</em>.</li>
@@ -1646,6 +1674,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app-loader.js?v=20260626-fit241-whoop-open"></script>
+    <script src="/static/js/app-loader.js?v=20260627-fit249-auto-mobile-invite"></script>
 </body>
 </html>

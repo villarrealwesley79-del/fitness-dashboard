@@ -72,6 +72,14 @@ copied forward.
 Open Wearables docs should describe `/api/health/sync` as a metadata-only local
 bridge response. Do not document it as a raw health export endpoint.
 
+Open Wearables setup docs should describe the web app as the non-technical
+wrapper for the local hub: prepare the local hub profile from the sidecar env,
+show provider-level setup state, block cloud sign-in when connector credentials
+are placeholders, and use phone-app invitation codes for Apple Health, Samsung
+Health, and Google Health Connect. Do not ask end users to enter base URLs,
+hub usernames, hub secrets, or mapped user ids unless they have opened advanced
+diagnostics.
+
 ## Current Ignored Coverage
 
 The repo already ignores the main private/runtime classes:

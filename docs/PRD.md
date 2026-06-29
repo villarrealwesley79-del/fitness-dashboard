@@ -1,9 +1,9 @@
 # Fitness Dashboard PRD
 
 Status: Draft  
-Last updated: 2026-06-26
+Last updated: 2026-06-27
 Owner: Wesley  
-Product type: Single-owner mobile-first fitness coaching dashboard
+Product type: Single-owner mobile-first fitness coaching web app
 
 ## 1. Problem
 
@@ -91,13 +91,15 @@ Acceptance criteria:
 
 ### Recovery and Wearable Sync
 
-The owner can tell whether Oura, Apple Health, and WHOOP data are fresh enough to trust.
+The owner can tell whether Oura, Apple Health, WHOOP, and Open Wearables-backed data are fresh enough to trust.
 
 Acceptance criteria:
 
 - Oura status shows cached/live state and latest available day.
 - Apple Health status uses backend sync evidence, including last accepted attempt.
 - WHOOP status shows configured, connected, CSV-only, stale, error, reauth, no-data, and score-state conditions without exposing token material.
+- Open Wearables setup lets a non-technical user add a wearable from the web app, while advanced hub URL, secret, and user-id fields stay behind diagnostics.
+- Cloud wearable provider sign-in opens only when the local Open Wearables connector is ready; phone health sources show an Open Wearables mobile-app invitation code instead of a broken website sign-in.
 - Token-gated sync endpoint rejects missing or invalid tokens.
 - Auth-gated status endpoint rejects unauthenticated requests.
 
@@ -161,14 +163,14 @@ Acceptance criteria:
 ### Settings
 
 - Support training goal, sessions per week, available time, equipment preference, nutrition targets, food-estimation defaults, and integrations.
-- Surface Oura, Apple Health, weather, AI coach status, and backup/import.
+- Surface Oura, Apple Health, WHOOP, Open Wearables, weather, AI coach status, and backup/import.
 
 ### Integrations
 
 - Oura: sync sleep/readiness/activity into SQLite cache and expose status/trends.
 - Apple Health: accept Health Auto Export webhook posts through token-gated endpoint and support legacy file exports.
 - WHOOP: support official OAuth/API sync, manual CSV import, local SQLite persistence, normalized daily facts, freshness/status, disconnect/delete, and bounded recommendation modifiers.
-- Open Wearables: keep as a best-effort local bridge that returns redacted sync metadata only, not a raw health export or durable source-of-truth path.
+- Open Wearables: act as the wearable hub wrapper for provider breadth and setup state; prepare the local hub profile from the sidecar env where safe; start cloud provider sign-in only when connector credentials are ready; create phone-app invite codes for SDK-style health sources; keep sync responses redacted and metadata-only rather than exposing raw health payloads or replacing the durable WHOOP path.
 - LM Studio: support primary and fallback routes, health checks, metrics, strict schemas, and graceful fallback.
 - Vision food estimator: support a model-backed structured estimate path with strict schema validation and graceful manual fallback.
 
@@ -202,7 +204,7 @@ The current MVP is a Flask PWA with:
 - Oura integration.
 - Apple Health Health Auto Export integration.
 - WHOOP OAuth/API sync, manual CSV import, local normalized facts, freshness/status, source conflict handling, and bounded recommendation modifiers.
-- Best-effort Open Wearables sync endpoint with metadata-only responses.
+- Open Wearables setup wrapper, provider action list, cloud sign-in gates, phone health-source invite codes, and metadata-only sync responses.
 - Deterministic workout recommendation.
 - AI Adjust Plan and Analyze Workout flows.
 - Active workout modal with prefilled recommendation values and swap support.
@@ -269,7 +271,7 @@ Platform basis:
 - Surface 24-hour AI metrics in Settings.
 - Add warnings when fallback rate rises.
 - Make Apple Health daily sync schedule and last-attempt evidence easy to inspect.
-- Keep WHOOP and Open Wearables source states honest: OAuth/config failures, CSV-only data, stale data, score pending/calibrating, and source conflicts should be visible without raw payload exposure.
+- Keep WHOOP and Open Wearables source states honest: OAuth/config failures, missing owner connector setup, phone setup, CSV-only data, stale data, score pending/calibrating, and source conflicts should be visible without raw payload exposure.
 - Add low-stakes PWA Web Push reminders and stale-data alerts after the backend subscription contract exists.
 
 ### Milestone 6: Product Hardening

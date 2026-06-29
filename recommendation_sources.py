@@ -13,7 +13,9 @@ def build_open_wearables_recommendation_source(
     providers = providers or []
     facts = facts or []
     modifier = modifier or {}
-    status = freshness.get("status") or ("connected" if providers else "missing")
+    status = freshness.get("status") or ("fresh" if facts else ("connected" if providers else "missing"))
+    if facts and modifier.get("applied") and status == "missing":
+        status = "fresh"
     used = bool(facts) and status in {"fresh", "aging", "connected"}
     provider_labels = [p.get("label") or p.get("provider_id") for p in providers if isinstance(p, dict)]
     detail = "Open Wearables is the wearable hub."

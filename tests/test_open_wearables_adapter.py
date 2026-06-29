@@ -1,4 +1,5 @@
 from open_wearables_adapter import (
+    OpenWearablesProviderStatus,
     build_open_wearables_status,
     providers_from_payload,
     provider_status_from_payload,
@@ -54,3 +55,94 @@ def test_providers_from_payload_accepts_data_source_lists():
 
     assert [p.provider_id for p in providers] == ["whoop", "garmin"]
     assert providers[0].capabilities["metrics"] is True
+
+
+def test_data_source_rows_without_status_count_as_connected():
+    providers = providers_from_payload({
+        "data": [
+            {
+                "provider": "WHOOP",
+                "display_name": "WHOOP",
+                "device_id": "device-123",
+                "capabilities": {"metrics": True, "manual_sync": True},
+            }
+        ]
+    })
+    status = build_open_wearables_status(
+        username="admin@example.test",
+        credential="local-secret",
+        user_id="user-123",
+        base_url="http://localhost:8000",
+        providers=providers,
+    ).public_dict()
+
+    assert providers[0].state == "connected"
+    assert status["status"] == "connected"
+    assert status["error_code"] is None
+
+
+def test_data_source_row_prefers_provider_over_record_id():
+    provider = provider_status_from_payload({
+        "id": "4b3795c8-datasource-row-id",
+        "provider": "whoop",
+        "display_name": "WHOOP",
+        "capabilities": {"metrics": True},
+    })
+
+    assert provider.provider_id == "whoop"
+    assert provider.label == "WHOOP"
+    assert provider.state == "connected"
+
+
+def test_configured_hub_with_no_providers_is_waiting_not_error():
+    status = build_open_wearables_status(
+        username="admin@example.test",
+        credential="local-secret",
+        user_id="user-123",
+        base_url="http://localhost:8000",
+        providers=[],
+        error_code="open_wearables_no_providers",
+    ).public_dict()
+
+    assert status["configured"] is True
+    assert status["status"] == "missing_config"
+    assert status["error_code"] is None
+
+
+def test_configured_hub_requires_healthy_provider_to_connect():
+    stale_status = build_open_wearables_status(
+        username="admin@example.test",
+        credential="local-secret",
+        user_id="user-123",
+        base_url="http://localhost:8000",
+        providers=[
+            OpenWearablesProviderStatus(
+                provider_id="whoop",
+                label="WHOOP",
+                state="connected",
+                capabilities={"metrics": True},
+                stale=True,
+            )
+        ],
+    ).public_dict()
+
+    assert stale_status["status"] == "error"
+    assert stale_status["error_code"] == "open_wearables_provider_stale"
+
+    connected_status = build_open_wearables_status(
+        username="admin@example.test",
+        credential="local-secret",
+        user_id="user-123",
+        base_url="http://localhost:8000",
+        providers=[
+            OpenWearablesProviderStatus(
+                provider_id="whoop",
+                label="WHOOP",
+                state="connected",
+                capabilities={"metrics": True},
+            )
+        ],
+    ).public_dict()
+
+    assert connected_status["status"] == "connected"
+    assert connected_status["error_code"] is None

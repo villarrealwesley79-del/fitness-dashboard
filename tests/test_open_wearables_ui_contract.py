@@ -22,12 +22,22 @@ def test_settings_contains_open_wearables_hub_controls():
     assert 'id="btn-open-wearables-setup-check"' in html
     assert 'id="btn-sync-open-wearables"' in html
     assert ">Open GitHub<" not in html
-    assert "Open pairing" in html
-    assert "Copy link" in html
+    assert "Add a wearable" in html
+    assert "This web app prepares the local hub account" in html
     assert "Check connection" in html
     assert "Save advanced" in html
     assert "Advanced" in html
     assert "Reference only" in html
+    assert "WHOOP fallback" in html
+    assert "Garmin" in html
+    assert "Suunto" in html
+    assert "Polar" in html
+    assert "Ultrahuman" in html
+    assert "Samsung Health" in html
+    assert "Google Health Connect" in html
+    assert "Cloud wearables open provider sign-in" in html
+    assert 'id="open-wearables-mobile-invite"' in html
+    assert "One-time code" in html
     assert "https://github.com/the-momentum/open-wearables" in html
     assert "Base URL" not in html
     assert "open_wearables_config.json" in gitignore
@@ -45,8 +55,25 @@ def test_app_js_wires_open_wearables_sources_and_history_category():
     assert "populateOpenWearablesSetupFields" in js
     assert "safe.pairing_url || safe.portal_url" in js
     assert "function openWearablesIsConnected" in js
+    assert "function openWearablesCanSync" in js
+    assert "&& Array.isArray(status && status.providers)" in js
+    assert "!openWearablesCanSync(" in js
     assert "checkStatus === 'ok'" in js
-    assert "Open the pairing portal, connect a wearable, then check connection." in js
+    assert "Choose your wearable to continue." in js
+    assert "Phone setup" in js
+    assert "/api/open-wearables/mobile-invite/" in js
+    assert "prepareOpenWearablesThenContinue" in js
+    assert "provider_disabled" in js
+    assert "Direct WHOOP fallback" in js
+    assert js.index("state.openWearablesStatus = body.open_wearables") < js.index("populateOpenWearablesSetupFields(body && body.config)")
+    modal_open_block = js.split("async function openOpenWearablesSetupModal()", 1)[1].split("function readOpenWearablesSetupFields()", 1)[0]
+    assert "loadOpenWearablesSetup()" in modal_open_block
+    assert "bootstrapOpenWearablesSetup()" not in modal_open_block
+    check_block = js.split("async function checkOpenWearables()", 1)[1].split("async function syncOpenWearables()", 1)[0]
+    assert "populateOpenWearablesSetupFields(body.config)" in check_block
+    assert check_block.index("populateOpenWearablesSetupFields(body.config)") < check_block.index("openWearablesIsConnected")
+    assert "hasProviderSetupPath" in js
+    assert "&& !hasProviderSetupPath" in js
     assert "canonicalHistoryCategory" in js
     assert "strength_training" in js
 
