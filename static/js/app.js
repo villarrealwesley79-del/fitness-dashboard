@@ -1988,7 +1988,7 @@
         card.hidden = !safe;
         if (!safe) return;
         _setText('open-wearables-mobile-title', `Connect ${safe.label || 'phone app'}`);
-        _setText('open-wearables-mobile-body', 'Use this one-time code in the Open Wearables mobile app.');
+        _setText('open-wearables-mobile-body', 'Enter this server address and one-time code inside the Open Wearables mobile app. Do not open the server address in a browser.');
         _setText('open-wearables-mobile-server', safe.server_url || '—');
         _setText('open-wearables-mobile-code', safe.code || '—');
         _setText('open-wearables-mobile-expires', safe.expires_at ? `Expires ${fmtDateTime(safe.expires_at)}` : 'This code expires soon.');
@@ -2000,10 +2000,12 @@
         const reasonToken = String(reason || '').trim();
         const message = reasonToken === 'sdk_provider'
             ? `${name} connects through a phone health-store setup instead of a provider sign-in popup.`
+            : reasonToken === 'provider_app_needed'
+                ? `${name} needs connector credentials in Open Wearables first. Opening Open Wearables now; finish ${name} setup there, then return and check connection.`
             : reasonToken === 'provider_disabled'
-                ? `${name} is disabled in Open Wearables. Turn it on in the local hub, then this button will open sign-in.`
+                ? `${name} is disabled in Open Wearables. Opening Open Wearables now so you can turn it on there.`
             : reasonToken === 'provider_catalog_unavailable'
-                ? `Open Wearables did not return provider details yet. Try ${name} again once the hub is reachable.`
+                ? `Open Wearables did not return provider details yet. Opening the hub admin so you can inspect setup there.`
             : `${name} needs owner setup before anyone can pair it here. Once the connector is prepared on this Mac, this button will open ${name} sign-in.`;
         state.openWearablesUi.lastError = message;
         setOpenWearablesSetupStatus(message, 'warn');
@@ -2012,6 +2014,9 @@
         if (reasonToken !== 'sdk_provider') {
             state.openWearablesUi.mobileInvite = null;
             renderOpenWearablesMobileInvite(null);
+        }
+        if (reasonToken && reasonToken !== 'sdk_provider' && reasonToken !== 'prepare_profile') {
+            openOpenWearablesPortal(message);
         }
         renderOpenWearablesProviderActions(state.openWearablesUi.providerActions);
         renderOpenWearablesSetupSteps('needs_provider_credentials', state.openWearablesUi.config);
@@ -2212,7 +2217,7 @@
             if (!invite || !invite.code) throw new Error('Phone app code is not available yet.');
             state.openWearablesUi.mobileInvite = invite;
             renderOpenWearablesMobileInvite(invite);
-            setOpenWearablesSetupStatus(`Use the ${label || providerId} code in the Open Wearables mobile app.`, 'ok');
+            setOpenWearablesSetupStatus(`Enter the server address and ${label || providerId} code in the Open Wearables mobile app. Do not open the server address in a browser.`, 'ok');
         } catch (error) {
             const message = error && error.message ? error.message : 'Phone app setup is not ready yet.';
             state.openWearablesUi.lastError = message;
@@ -2339,7 +2344,7 @@
         }
     }
 
-    function openOpenWearablesPortal() {
+    function openOpenWearablesPortal(statusMessage = '') {
         const url = state.openWearablesUi.portalUrl || String(($('open-wearables-portal-url') || {}).value || '').trim();
         if (!url) {
             setOpenWearablesSetupStatus('Hub admin link is not available yet. Check connection or use Advanced diagnostics.', 'warn');
@@ -2349,6 +2354,7 @@
             setOpenWearablesSetupStatus('Pairing portal link must start with http:// or https://.', 'error');
             return;
         }
+        if (statusMessage) setOpenWearablesSetupStatus(statusMessage, 'warn');
         window.open(url, '_blank', 'noopener,noreferrer');
     }
 
@@ -9442,7 +9448,9 @@
         $('btn-open-wearables-setup') && $('btn-open-wearables-setup').addEventListener('click', openOpenWearablesSetupModal);
         $('btn-open-wearables-bootstrap') && $('btn-open-wearables-bootstrap').addEventListener('click', handleOpenWearablesPrimarySetupAction);
         $('btn-open-wearables-portal') && $('btn-open-wearables-portal').addEventListener('click', openOpenWearablesPortal);
+        $('btn-open-wearables-portal-inline') && $('btn-open-wearables-portal-inline').addEventListener('click', openOpenWearablesPortal);
         $('btn-open-wearables-copy-link') && $('btn-open-wearables-copy-link').addEventListener('click', copyOpenWearablesPairingLink);
+        $('btn-open-wearables-copy-link-inline') && $('btn-open-wearables-copy-link-inline').addEventListener('click', copyOpenWearablesPairingLink);
         $('btn-open-wearables-setup-save') && $('btn-open-wearables-setup-save').addEventListener('click', saveOpenWearablesSetup);
         $('btn-open-wearables-setup-check') && $('btn-open-wearables-setup-check').addEventListener('click', checkOpenWearables);
         $('btn-sync-open-wearables') && $('btn-sync-open-wearables').addEventListener('click', syncOpenWearables);

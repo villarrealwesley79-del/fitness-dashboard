@@ -17,7 +17,9 @@ def test_settings_contains_open_wearables_hub_controls():
     assert 'id="open-wearables-user-id"' in html
     assert 'id="open-wearables-allowed-hosts"' not in html
     assert 'id="btn-open-wearables-portal"' in html
+    assert 'id="btn-open-wearables-portal-inline"' in html
     assert 'id="btn-open-wearables-copy-link"' in html
+    assert 'id="btn-open-wearables-copy-link-inline"' in html
     assert 'id="btn-open-wearables-setup-save"' in html
     assert 'id="btn-open-wearables-setup-check"' in html
     assert 'id="btn-sync-open-wearables"' in html
@@ -44,6 +46,7 @@ def test_settings_contains_open_wearables_hub_controls():
 
 
 def test_app_js_wires_open_wearables_sources_and_history_category():
+    html = (ROOT / "templates" / "index.html").read_text()
     js = (ROOT / "static" / "js" / "app.js").read_text()
     assert "/api/open-wearables/status" in js
     assert "/api/wearable-sources" in js
@@ -61,9 +64,16 @@ def test_app_js_wires_open_wearables_sources_and_history_category():
     assert "checkStatus === 'ok'" in js
     assert "Choose your wearable to continue." in js
     assert "Phone setup" in js
+    assert "Opening Open Wearables now" in js
+    assert "Do not open the server address in a browser" in js
     assert "/api/open-wearables/mobile-invite/" in js
     assert "prepareOpenWearablesThenContinue" in js
     assert "provider_disabled" in js
+    assert "openOpenWearablesPortal(message)" in js
+    assert "function openOpenWearablesPortal(statusMessage = '')" in js
+    assert "$('btn-open-wearables-portal-inline') && $('btn-open-wearables-portal-inline').addEventListener('click', openOpenWearablesPortal);" in js
+    assert "$('btn-open-wearables-copy-link-inline') && $('btn-open-wearables-copy-link-inline').addEventListener('click', copyOpenWearablesPairingLink);" in js
+    assert "Enter this server address and one-time code inside the Open Wearables mobile app" in html
     assert "Direct WHOOP fallback" in js
     assert js.index("state.openWearablesStatus = body.open_wearables") < js.index("populateOpenWearablesSetupFields(body && body.config)")
     modal_open_block = js.split("async function openOpenWearablesSetupModal()", 1)[1].split("function readOpenWearablesSetupFields()", 1)[0]
