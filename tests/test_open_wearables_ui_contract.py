@@ -23,6 +23,8 @@ def test_settings_contains_open_wearables_hub_controls():
     assert 'id="btn-open-wearables-setup-save"' in html
     assert 'id="btn-open-wearables-setup-check"' in html
     assert 'id="btn-sync-open-wearables"' in html
+    assert 'id="settings-row-oura"' in html
+    assert 'id="settings-row-apple"' in html
     assert ">Open GitHub<" not in html
     assert "Add a wearable" in html
     assert "This web app prepares the local hub account" in html
@@ -64,6 +66,16 @@ def test_app_js_wires_open_wearables_sources_and_history_category():
     assert "checkStatus === 'ok'" in js
     assert "Choose your wearable to continue." in js
     assert "Phone setup" in js
+    assert "function openWearablesProviderConnected" in js
+    assert "function openWearablesDirectSourceReplaced" in js
+    assert "function applyOpenWearablesDirectSourceVisibility" in js
+    assert "dataset.statusLabel = providerConnected ? 'Connected'" in js
+    assert "provider.stale || provider.error_code" in js
+    assert "status && status.replacement_sources" in js
+    assert "is connected through Open Wearables" in js
+    assert "rowId: 'settings-row-oura'" in js
+    assert "rowId: 'settings-row-apple'" in js
+    assert "elementOrAncestorHidden" in js
     assert "Opening Open Wearables now" in js
     assert "Do not open the server address in a browser" in js
     assert "/api/open-wearables/mobile-invite/" in js
@@ -71,7 +83,8 @@ def test_app_js_wires_open_wearables_sources_and_history_category():
     assert "provider_disabled" in js
     assert "openOpenWearablesPortal(message)" in js
     assert "function openOpenWearablesPortal(statusMessage = '')" in js
-    assert "$('btn-open-wearables-portal-inline') && $('btn-open-wearables-portal-inline').addEventListener('click', openOpenWearablesPortal);" in js
+    assert "$('btn-open-wearables-portal') && $('btn-open-wearables-portal').addEventListener('click', () => openOpenWearablesPortal());" in js
+    assert "$('btn-open-wearables-portal-inline') && $('btn-open-wearables-portal-inline').addEventListener('click', () => openOpenWearablesPortal());" in js
     assert "$('btn-open-wearables-copy-link-inline') && $('btn-open-wearables-copy-link-inline').addEventListener('click', copyOpenWearablesPairingLink);" in js
     assert "Enter this server address and one-time code inside the Open Wearables mobile app" in html
     assert "Direct WHOOP fallback" in js
