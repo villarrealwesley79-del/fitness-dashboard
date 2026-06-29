@@ -55,6 +55,9 @@ def test_app_js_wires_open_wearables_sources_and_history_category():
     assert "populateOpenWearablesSetupFields" in js
     assert "safe.pairing_url || safe.portal_url" in js
     assert "function openWearablesIsConnected" in js
+    assert "function openWearablesCanSync" in js
+    assert "&& Array.isArray(status && status.providers)" in js
+    assert "!openWearablesCanSync(" in js
     assert "checkStatus === 'ok'" in js
     assert "Choose your wearable to continue." in js
     assert "Phone setup" in js
@@ -63,6 +66,14 @@ def test_app_js_wires_open_wearables_sources_and_history_category():
     assert "provider_disabled" in js
     assert "Direct WHOOP fallback" in js
     assert js.index("state.openWearablesStatus = body.open_wearables") < js.index("populateOpenWearablesSetupFields(body && body.config)")
+    modal_open_block = js.split("async function openOpenWearablesSetupModal()", 1)[1].split("function readOpenWearablesSetupFields()", 1)[0]
+    assert "loadOpenWearablesSetup()" in modal_open_block
+    assert "bootstrapOpenWearablesSetup()" not in modal_open_block
+    check_block = js.split("async function checkOpenWearables()", 1)[1].split("async function syncOpenWearables()", 1)[0]
+    assert "populateOpenWearablesSetupFields(body.config)" in check_block
+    assert check_block.index("populateOpenWearablesSetupFields(body.config)") < check_block.index("openWearablesIsConnected")
+    assert "hasProviderSetupPath" in js
+    assert "&& !hasProviderSetupPath" in js
     assert "canonicalHistoryCategory" in js
     assert "strength_training" in js
 

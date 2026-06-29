@@ -1883,6 +1883,23 @@
         return stateToken === WHOOP_UI_STATES.connected || checkStatus === 'ok';
     }
 
+    function openWearablesCanSync(status, config, setupState) {
+        if (openWearablesIsConnected(status) || setupState === 'ready_to_sync') return true;
+        const safeConfig = config || state.openWearablesUi.config || {};
+        const userMapped = safeConfig.user_mapped != null
+            ? Boolean(safeConfig.user_mapped)
+            : Boolean(status && status.user_mapped);
+        const hubAccountReady = safeConfig.hub_account_ready != null
+            ? Boolean(safeConfig.hub_account_ready)
+            : Boolean(status && status.auth_configured);
+        return Boolean(
+            userMapped
+            && hubAccountReady
+            && Array.isArray(status && status.providers)
+            && status.providers.length
+        );
+    }
+
     function deriveOpenWearablesSetupState(status, config) {
         if (state.openWearablesUi.syncInFlight) return 'syncing';
         if (state.openWearablesUi.checkInFlight) return 'checking_connection';
@@ -1903,9 +1920,13 @@
         if (
             safeConfig.managed_connector_restart_required === true
         ) return 'hub_restart_needed';
+        const providerActions = Array.isArray(safeConfig.provider_actions) ? safeConfig.provider_actions : [];
+        const hasProviderSetupPath = providerActions.some((action) => (
+            action && (action.enabled || action.reason === 'sdk_provider' || action.reason === 'prepare_profile')
+        ));
         if (
-            safeConfig.provider_setup_ready === false
-            || (status && status.setup_hint === 'provider_credentials_missing')
+            (safeConfig.provider_setup_ready === false || (status && status.setup_hint === 'provider_credentials_missing'))
+            && !hasProviderSetupPath
         ) return 'needs_provider_credentials';
         if (Array.isArray(status && status.providers) && status.providers.length) return 'ready_to_sync';
         if (state.openWearablesUi.selectedProvider) return 'pairing_provider';
@@ -2273,17 +2294,7 @@
         if (advanced) advanced.open = false;
         modal.hidden = false;
         focusOpenModal(modal);
-        const body = await loadOpenWearablesSetup();
-        const config = body && body.config ? body.config : state.openWearablesUi.config;
-        const setupState = deriveOpenWearablesSetupState(state.openWearablesStatus, config);
-        if (
-            config
-            && config.bootstrap_available
-            && !state.openWearablesUi.bootstrapInFlight
-            && ['needs_hub_account', 'needs_person', 'needs_provider_credentials'].includes(setupState)
-        ) {
-            await bootstrapOpenWearablesSetup();
-        }
+        await loadOpenWearablesSetup();
     }
 
     function readOpenWearablesSetupFields() {
@@ -5530,6 +5541,7 @@
                 body: JSON.stringify({}),
             });
             state.openWearablesStatus = body && body.open_wearables ? body.open_wearables : await getOpenWearablesStatus(true);
+            if (body && body.config) populateOpenWearablesSetupFields(body.config);
             if (openWearablesIsConnected(state.openWearablesStatus, body && body.status)) {
                 setOpenWearablesSetupStatus('Device is visible. Sync now when ready.', 'ok');
             } else {
@@ -6671,7 +6683,13 @@
             setupBtn.classList.toggle('btn-ghost', connected);
         }
         const syncBtn = $('btn-sync-open-wearables');
-        if (syncBtn) syncBtn.disabled = state.openWearablesUi.syncInFlight || !(connected || setupState === 'ready_to_sync');
+        if (syncBtn) {
+            syncBtn.disabled = state.openWearablesUi.syncInFlight || !openWearablesCanSync(
+                status,
+                state.openWearablesUi.config,
+                setupState
+            );
+        }
     }
 
     function renderOuraFreshnessDetail(oura, freshness) {

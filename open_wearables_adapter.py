@@ -99,16 +99,20 @@ def provider_status_from_payload(entry: dict) -> OpenWearablesProviderStatus | N
         return None
     raw_provider = str(
         entry.get("provider_id")
-        or entry.get("id")
         or entry.get("provider")
         or entry.get("name")
+        or entry.get("id")
         or ""
     ).strip()
     provider_id = raw_provider.lower().replace(" ", "_")
     if not provider_id:
         return None
     label = str(entry.get("label") or entry.get("display_name") or entry.get("name") or raw_provider or provider_id).strip()
-    state = str(entry.get("state") or entry.get("status") or "unknown").strip().lower().replace(" ", "_")
+    state = str(entry.get("state") or entry.get("status") or "").strip().lower().replace(" ", "_")
+    stale = bool(entry.get("stale"))
+    error_code = entry.get("error_code") if isinstance(entry.get("error_code"), str) else None
+    if not state:
+        state = "unknown" if stale or error_code else "connected"
     capabilities = entry.get("capabilities") if isinstance(entry.get("capabilities"), dict) else {}
     normalized_caps = {
         "metrics": bool(capabilities.get("metrics") or capabilities.get("vitals")),
@@ -123,8 +127,8 @@ def provider_status_from_payload(entry: dict) -> OpenWearablesProviderStatus | N
         state=state or "unknown",
         capabilities=normalized_caps,
         last_sync_at=entry.get("last_sync_at") if isinstance(entry.get("last_sync_at"), str) else None,
-        stale=bool(entry.get("stale")),
-        error_code=entry.get("error_code") if isinstance(entry.get("error_code"), str) else None,
+        stale=stale,
+        error_code=error_code,
     )
 
 
@@ -161,7 +165,18 @@ def build_open_wearables_status(
     if waiting_for_provider:
         error_code = None
     configured = bool(auth_configured and user_mapped and base_valid)
-    status = "connected" if configured and provider_list and not error_code else "missing_config"
+    active_states = {"connected", "active", "ready", "ok", "enabled"}
+    healthy_provider = any(
+        provider.state in active_states
+        and not provider.stale
+        and not provider.error_code
+        for provider in provider_list
+    )
+    if configured and provider_list and not healthy_provider and not error_code:
+        stale_provider = any(provider.stale for provider in provider_list)
+        provider_error = next((provider.error_code for provider in provider_list if provider.error_code), None)
+        error_code = provider_error or ("open_wearables_provider_stale" if stale_provider else "open_wearables_provider_inactive")
+    status = "connected" if configured and healthy_provider and not error_code else "missing_config"
     if base_error:
         status = "blocked"
         error_code = base_error
