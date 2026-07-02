@@ -77,13 +77,12 @@ def webhook():
     s = get_stripe()
     if not s:
         return 'Stripe not configured', 400
+    if not webhook_secret:
+        current_app.logger.error('Stripe webhook secret is not configured; refusing unsigned webhook')
+        return 'Stripe webhook secret is not configured', 503
 
     try:
-        if webhook_secret:
-            event = s.Webhook.construct_event(payload, sig_header, webhook_secret)
-        else:
-            import json
-            event = json.loads(payload)
+        event = s.Webhook.construct_event(payload, sig_header, webhook_secret)
     except (ValueError, stripe.error.SignatureVerificationError) as e:
         current_app.logger.warning(f'Stripe webhook error: {e}')
         return 'Invalid payload or signature', 400

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 from flask import Flask
@@ -57,7 +58,8 @@ def test_wrong_password_returns_none_and_records_rate_limit_on_login(tmp_path, m
 
     assert response.status_code == 200
     assert b"Invalid username or password." in response.data
-    assert len(auth._rate_fail_log["198.51.100.10"]) == 1
+    assert len(auth._rate_fail_log["ip:198.51.100.10"]) == 1
+    assert len(auth._rate_fail_log["user:Wesley1226"]) == 1
 
 
 def test_login_success_sets_session_and_reaches_protected_route(tmp_path, monkeypatch):
@@ -74,6 +76,115 @@ def test_login_success_sets_session_and_reaches_protected_route(tmp_path, monkey
     assert response.headers["Location"].endswith("/")
     assert "Set-Cookie" in response.headers
     assert client.get("/protected").status_code == 200
+
+
+def test_login_post_rejects_external_next_redirect(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("Wesley1226", "existing-password")
+
+    response = app.test_client().post(
+        "/login?next=https://evil.example/phish",
+        data={"username": "Wesley1226", "password": "existing-password"},
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/")
+    assert "evil.example" not in response.headers["Location"]
+
+
+def test_login_post_rejects_backslash_next_redirect(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("Wesley1226", "existing-password")
+
+    response = app.test_client().post(
+        "/login?next=/\\evil.example/phish",
+        data={"username": "Wesley1226", "password": "existing-password"},
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/")
+    assert "evil.example" not in response.headers["Location"]
+
+
+def test_login_rate_limit_ignores_spoofed_forwarded_for(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(auth, "_RATE_LIMIT_MAX_FAILS", 2)
+    client = app.test_client()
+
+    for index in range(2):
+        response = client.post(
+            "/login",
+            data={"username": f"unknown-{index}", "password": "wrong-password"},
+            headers={"X-Forwarded-For": f"203.0.113.{index}"},
+            environ_base={"REMOTE_ADDR": "198.51.100.20"},
+        )
+        assert response.status_code == 200
+
+    blocked = client.post(
+        "/login",
+        data={"username": "unknown-3", "password": "wrong-password"},
+        headers={"X-Forwarded-For": "203.0.113.99"},
+        environ_base={"REMOTE_ADDR": "198.51.100.20"},
+    )
+
+    assert blocked.status_code == 429
+
+
+def test_login_rate_limit_also_keys_by_username(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("Wesley1226", "existing-password")
+    monkeypatch.setattr(auth, "_RATE_LIMIT_MAX_FAILS", 2)
+    client = app.test_client()
+
+    for index in range(2):
+        response = client.post(
+            "/login",
+            data={"username": "Wesley1226", "password": "wrong-password"},
+            headers={"X-Forwarded-For": f"203.0.113.{index}, 198.51.100.{index}"},
+            environ_base={"REMOTE_ADDR": "10.0.0.8"},
+        )
+        assert response.status_code == 200
+
+    blocked = client.post(
+        "/login",
+        data={"username": "Wesley1226", "password": "wrong-password"},
+        headers={"X-Forwarded-For": "203.0.113.99, 198.51.100.99"},
+        environ_base={"REMOTE_ADDR": "10.0.0.8"},
+    )
+
+    assert blocked.status_code == 429
+
+
+def test_username_rate_limit_uses_exact_login_username(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("Wesley1226", "existing-password")
+    monkeypatch.setattr(auth, "_RATE_LIMIT_MAX_FAILS", 2)
+    client = app.test_client()
+
+    for index in range(2):
+        response = client.post(
+            "/login",
+            data={"username": "wesley1226", "password": "wrong-password"},
+            environ_base={"REMOTE_ADDR": f"198.51.100.{index}"},
+        )
+        assert response.status_code == 200
+
+    allowed = client.post(
+        "/login",
+        data={"username": "Wesley1226", "password": "existing-password"},
+        environ_base={"REMOTE_ADDR": "198.51.100.99"},
+    )
+
+    assert allowed.status_code == 302
+
+
+def test_rate_check_evicts_empty_pruned_keys(tmp_path, monkeypatch):
+    _app, auth = _make_auth_app(tmp_path, monkeypatch)
+    stale_key = "ip:198.51.100.30"
+    auth._rate_fail_log[stale_key] = [time.time() - auth._RATE_LIMIT_WINDOW_SEC - 1]
+
+    assert auth._rate_check(stale_key) is True
+    assert stale_key not in auth._rate_fail_log
 
 
 def test_login_db_unavailable_returns_503_not_invalid_credentials(tmp_path, monkeypatch):
@@ -93,4 +204,5 @@ def test_login_db_unavailable_returns_503_not_invalid_credentials(tmp_path, monk
     assert response.status_code == 503
     assert b"Login service temporarily unavailable." in response.data
     assert b"Invalid username or password." not in response.data
-    assert auth._rate_fail_log["198.51.100.11"] == []
+    assert "ip:198.51.100.11" not in auth._rate_fail_log
+    assert "user:wesley1226" not in auth._rate_fail_log

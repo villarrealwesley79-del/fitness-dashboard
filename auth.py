@@ -18,30 +18,60 @@ from flask_login import LoginManager, UserMixin, login_user, logout_user, login_
 from runtime_config import data_path
 from werkzeug.security import check_password_hash, generate_password_hash
 
-# ── Rate limiting (in-memory, per-IP) ────────────────────
-# Tracks failed auth attempts: {ip: [(timestamp, ...), ...]}
+# ── Rate limiting (in-memory, per-client/user) ────────────
+# Tracks failed auth attempts: {identity: [(timestamp, ...), ...]}
 _RATE_LIMIT_WINDOW_SEC = 600   # 10 minutes
 _RATE_LIMIT_MAX_FAILS  = 10    # max failures before lockout
 _rate_fail_log: dict = defaultdict(list)
 
 
-def _rate_check(ip: str) -> bool:
-    """Return True if the IP is allowed to attempt auth; False if locked out."""
+def _rate_check(identity: str) -> bool:
+    """Return True if the identity is allowed to attempt auth; False if locked out."""
     now = time.time()
     window_start = now - _RATE_LIMIT_WINDOW_SEC
-    # Prune old entries
-    _rate_fail_log[ip] = [t for t in _rate_fail_log[ip] if t > window_start]
-    return len(_rate_fail_log[ip]) < _RATE_LIMIT_MAX_FAILS
+    attempts = [t for t in _rate_fail_log.get(identity, []) if t > window_start]
+    if attempts:
+        _rate_fail_log[identity] = attempts
+    else:
+        _rate_fail_log.pop(identity, None)
+    return len(attempts) < _RATE_LIMIT_MAX_FAILS
 
 
-def _rate_record_fail(ip: str) -> None:
-    """Record one failed auth attempt for the IP."""
-    _rate_fail_log[ip].append(time.time())
+def _rate_record_fail(identity: str) -> None:
+    """Record one failed auth attempt for the identity."""
+    _rate_fail_log[identity].append(time.time())
 
 
-def _rate_reset(ip: str) -> None:
-    """Clear rate-limit history for an IP on successful login."""
-    _rate_fail_log.pop(ip, None)
+def _rate_reset(identity: str) -> None:
+    """Clear rate-limit history for an identity on successful auth."""
+    _rate_fail_log.pop(identity, None)
+
+
+def _rate_client_ip() -> str:
+    # X-Forwarded-For is client-controlled unless a trusted proxy normalizes it.
+    return request.remote_addr or "unknown"
+
+
+def _rate_keys(ip: str, username: str) -> list[str]:
+    keys = [f"ip:{ip}"]
+    exact_username = username.strip()
+    if exact_username:
+        keys.append(f"user:{exact_username}")
+    return keys
+
+
+def _rate_check_all(identities: list[str]) -> bool:
+    return all(_rate_check(identity) for identity in identities)
+
+
+def _rate_record_fail_all(identities: list[str]) -> None:
+    for identity in identities:
+        _rate_record_fail(identity)
+
+
+def _rate_reset_all(identities: list[str]) -> None:
+    for identity in identities:
+        _rate_reset(identity)
 
 # ── DB setup ──────────────────────────────────────────────
 AUTH_DB = data_path("auth.db")
@@ -263,24 +293,29 @@ def load_user(user_id):
     return User.get_by_id(int(user_id))
 
 
+def _safe_next(next_page: str | None, *, reload_root: bool = False) -> str:
+    next_page = next_page or url_for("index")
+    if "\\" in next_page or not next_page.startswith("/") or next_page.startswith("//"):
+        next_page = url_for("index")
+    if reload_root and next_page == "/":
+        next_page = "/?fd_shell_reload=20260525-fit181-controller-reload-r2"
+    return next_page
+
+
 # ── Routes ────────────────────────────────────────────────
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET" and current_user.is_authenticated:
-        next_page = request.args.get("next") or url_for("index")
-        if not next_page.startswith("/") or next_page.startswith("//"):
-            next_page = url_for("index")
-        if next_page == "/":
-            next_page = "/?fd_shell_reload=20260525-fit181-controller-reload-r2"
-        return redirect(next_page)
+        return redirect(_safe_next(request.args.get("next"), reload_root=True))
 
     if request.method == "POST":
-        ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
-        if not _rate_check(ip):
-            flash("Too many failed attempts. Please wait 10 minutes before trying again.")
-            return render_template("login.html"), 429
+        ip = _rate_client_ip()
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        rate_keys = _rate_keys(ip, username)
+        if not _rate_check_all(rate_keys):
+            flash("Too many failed attempts. Please wait 10 minutes before trying again.")
+            return render_template("login.html"), 429
         try:
             user = User.authenticate(username, password)
         except sqlite3.Error:
@@ -288,11 +323,10 @@ def login():
             flash("Login service temporarily unavailable. Please try again shortly.")
             return render_template("login.html"), 503
         if user:
-            _rate_reset(ip)
+            _rate_reset_all(rate_keys)
             login_user(user)
-            next_page = request.args.get("next") or url_for("index")
-            return redirect(next_page)
-        _rate_record_fail(ip)
+            return redirect(_safe_next(request.args.get("next")))
+        _rate_record_fail_all(rate_keys)
         flash("Invalid username or password.")
     return render_template("login.html")
 
@@ -304,23 +338,24 @@ def register():
         return render_template("login.html"), 403
 
     if request.method == "POST":
-        ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
-        if not _rate_check(ip):
-            flash("Too many attempts. Please wait 10 minutes before trying again.")
-            return render_template("login.html", register=True), 429
+        ip = _rate_client_ip()
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         email = request.form.get("email", "").strip() or None
+        rate_keys = _rate_keys(ip, username)
+        if not _rate_check_all(rate_keys):
+            flash("Too many attempts. Please wait 10 minutes before trying again.")
+            return render_template("login.html", register=True), 429
         if not username or not password:
             flash("Username and password are required.")
         elif len(password) < 8:
             flash("Password must be at least 8 characters.")
         elif User.get_by_username(username):
-            _rate_record_fail(ip)
+            _rate_record_fail_all(rate_keys)
             flash("Username already taken.")
         else:
             User.create(username, password, email=email)
-            _rate_reset(ip)
+            _rate_reset_all(rate_keys)
             user = User.authenticate(username, password)
             login_user(user)
             return redirect(url_for("index"))
