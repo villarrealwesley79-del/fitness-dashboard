@@ -81,6 +81,14 @@ def test_whoop_oauth_callback_query_is_not_logged_by_gunicorn_access_logs():
     assert "%(r)s" not in procfile
 
 
+def test_docker_gunicorn_uses_single_worker_with_threads():
+    dockerfile = (ROOT / "Dockerfile").read_text()
+
+    assert "--workers 1" in dockerfile
+    assert "--workers 2" not in dockerfile
+    assert "--threads 1" in dockerfile
+
+
 def test_whoop_frontend_calls_expected_status_sync_and_disconnect_endpoints():
     app_js = APP_JS.read_text()
 
