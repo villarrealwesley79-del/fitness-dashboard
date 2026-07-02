@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import json
 import os
+import base64
 import hashlib
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta
+from subprocess import SubprocessError
 
 
 WHOOP_MATERIAL_REF = "fitness-dashboard-whoop-oauth-material"
+PROTECTED_SECRET_FILE_PREFIX = "fd-protected-secret-v1:"
 WHOOP_RECORD_FIELDS = (
     "recovery_score",
     "recovery_band",
@@ -189,18 +194,26 @@ def _protected_material_path(db_path: str) -> str:
     return os.path.join(base_dir, f".whoop-protected-material-{db_identity}.json")
 
 
-def _write_protected_material(db_path: str, token_payload: dict) -> str:
-    material = {
-        "session_value": token_payload.get("access_token"),
-        "renewal_value": token_payload.get("refresh_token"),
-        "stored_at": _iso_now(),
-    }
-    target = _protected_material_path(db_path)
+def _protected_material_account(db_path: str) -> str:
+    db_identity = hashlib.sha256(os.path.abspath(db_path).encode("utf-8")).hexdigest()[:16]
+    return f"whoop-oauth-{db_identity}"
+
+
+def _protected_secret_uses_keychain(fallback_override_env: str = "") -> bool:
+    if sys.platform != "darwin":
+        return False
+    if fallback_override_env and os.environ.get(fallback_override_env, "").strip():
+        return False
+    return True
+
+
+def _write_protected_secret_file(path: str, secret_value: str) -> None:
+    target = os.path.abspath(os.path.expanduser(path))
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(prefix=".whoop-protected-material.", dir=os.path.dirname(target))
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{os.path.basename(target)}.", dir=os.path.dirname(target))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(material, handle)
+            handle.write(_encode_protected_secret_file_value(secret_value))
         os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, target)
         os.chmod(target, 0o600)
@@ -210,15 +223,211 @@ def _write_protected_material(db_path: str, token_payload: dict) -> str:
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+def _encode_protected_secret_file_value(secret_value: str) -> str:
+    encoded = base64.urlsafe_b64encode(secret_value.encode("utf-8")).decode("ascii")
+    return f"{PROTECTED_SECRET_FILE_PREFIX}{encoded}"
+
+
+def _decode_protected_secret_file_value(raw_value: str) -> str:
+    if not raw_value.startswith(PROTECTED_SECRET_FILE_PREFIX):
+        return raw_value
+    encoded = raw_value[len(PROTECTED_SECRET_FILE_PREFIX):]
+    try:
+        return base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _read_raw_protected_secret_file(path: str) -> str:
+    try:
+        with open(os.path.abspath(os.path.expanduser(path)), "r", encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+
+def _read_protected_secret_file(path: str) -> str:
+    return _decode_protected_secret_file_value(_read_raw_protected_secret_file(path))
+
+
+def _delete_protected_secret_file(path: str) -> None:
+    try:
+        os.unlink(os.path.abspath(os.path.expanduser(path)))
+    except FileNotFoundError:
+        return
+
+
+def _keychain_find(service: str, account: str) -> str:
+    result = subprocess.run(
+        ["security", "find-generic-password", "-s", service, "-a", account, "-w"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.rstrip("\n")
+
+
+def _keychain_save(service: str, account: str, secret_value: str) -> None:
+    subprocess.run(
+        ["security", "delete-generic-password", "-s", service, "-a", account],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    result = subprocess.run(
+        [
+            "security",
+            "add-generic-password",
+            "-U",
+            "-s",
+            service,
+            "-a",
+            account,
+            "-w",
+        ],
+        capture_output=True,
+        text=True,
+        input=f"{secret_value}\n",
+        timeout=5,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Could not save protected secret.")
+
+
+def _keychain_delete(service: str, account: str) -> None:
+    result = subprocess.run(
+        ["security", "delete-generic-password", "-s", service, "-a", account],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    if result.returncode == 0:
+        return
+    stderr = (result.stderr or "").lower()
+    if "not found" in stderr or "could not be found" in stderr:
+        return
+    raise RuntimeError(result.stderr.strip() or "Could not delete protected secret.")
+
+
+def save_protected_secret(
+    service: str,
+    account: str,
+    secret_value: str,
+    *,
+    fallback_path: str,
+    fallback_override_env: str = "",
+) -> str:
+    if _protected_secret_uses_keychain(fallback_override_env):
+        try:
+            _keychain_save(service, account, secret_value)
+            _delete_protected_secret_file(fallback_path)
+            return "keychain"
+        except (OSError, RuntimeError, SubprocessError):
+            pass
+    _write_protected_secret_file(fallback_path, secret_value)
+    return "file"
+
+
+def load_protected_secret(
+    service: str,
+    account: str,
+    *,
+    fallback_path: str,
+    fallback_override_env: str = "",
+) -> str:
+    fallback_raw = _read_raw_protected_secret_file(fallback_path)
+    if fallback_raw.startswith(PROTECTED_SECRET_FILE_PREFIX):
+        return _decode_protected_secret_file_value(fallback_raw)
+    if _protected_secret_uses_keychain(fallback_override_env):
+        try:
+            secret_value = _keychain_find(service, account)
+        except (OSError, RuntimeError, SubprocessError):
+            secret_value = ""
+        if secret_value:
+            return secret_value
+    return _decode_protected_secret_file_value(fallback_raw)
+
+
+def delete_protected_secret(
+    service: str,
+    account: str,
+    *,
+    fallback_path: str,
+    fallback_override_env: str = "",
+) -> None:
+    keychain_error = None
+    if _protected_secret_uses_keychain(fallback_override_env):
+        try:
+            _keychain_delete(service, account)
+        except (OSError, RuntimeError, SubprocessError) as exc:
+            keychain_error = exc
+    if keychain_error is not None:
+        raise keychain_error
+    _delete_protected_secret_file(fallback_path)
+
+
+def _write_protected_material(db_path: str, token_payload: dict) -> str:
+    material = {
+        "session_value": token_payload.get("access_token"),
+        "renewal_value": token_payload.get("refresh_token"),
+        "stored_at": _iso_now(),
+    }
+    fallback_path = _protected_material_path(db_path)
+    storage = save_protected_secret(
+        WHOOP_MATERIAL_REF,
+        _protected_material_account(db_path),
+        json.dumps(material),
+        fallback_path=fallback_path,
+        fallback_override_env="WHOOP_PROTECTED_MATERIAL_DIR",
+    )
+    if storage == "keychain":
+        _delete_protected_secret_file(fallback_path)
     return WHOOP_MATERIAL_REF
 
 
 def load_connection_token_material(db_path: str) -> dict:
-    path = _protected_material_path(db_path)
+    fallback_path = _protected_material_path(db_path)
+    fallback_raw = _read_raw_protected_secret_file(fallback_path)
+    if _protected_secret_uses_keychain("WHOOP_PROTECTED_MATERIAL_DIR"):
+        if fallback_raw.startswith(PROTECTED_SECRET_FILE_PREFIX):
+            raw = _decode_protected_secret_file_value(fallback_raw)
+        else:
+            legacy_raw = _decode_protected_secret_file_value(fallback_raw)
+            raw = ""
+            if legacy_raw:
+                try:
+                    legacy_payload = json.loads(legacy_raw)
+                except json.JSONDecodeError:
+                    legacy_payload = {}
+                if isinstance(legacy_payload, dict) and legacy_payload:
+                    storage = save_protected_secret(
+                        WHOOP_MATERIAL_REF,
+                        _protected_material_account(db_path),
+                        json.dumps(legacy_payload),
+                        fallback_path=fallback_path,
+                        fallback_override_env="WHOOP_PROTECTED_MATERIAL_DIR",
+                    )
+                    if storage == "keychain":
+                        _delete_protected_secret_file(fallback_path)
+                    raw = json.dumps(legacy_payload)
+            if not raw:
+                try:
+                    raw = _keychain_find(WHOOP_MATERIAL_REF, _protected_material_account(db_path))
+                except (OSError, RuntimeError, SubprocessError):
+                    raw = ""
+    else:
+        raw = _read_protected_secret_file(fallback_path)
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
         return {}
     if not isinstance(payload, dict):
         return {}
@@ -229,10 +438,15 @@ def load_connection_token_material(db_path: str) -> dict:
 
 
 def delete_connection_token_material(db_path: str) -> None:
-    try:
-        os.unlink(_protected_material_path(db_path))
-    except FileNotFoundError:
-        return
+    fallback_path = _protected_material_path(db_path)
+    delete_protected_secret(
+        WHOOP_MATERIAL_REF,
+        _protected_material_account(db_path),
+        fallback_path=fallback_path,
+        fallback_override_env="WHOOP_PROTECTED_MATERIAL_DIR",
+    )
+    if _protected_secret_uses_keychain("WHOOP_PROTECTED_MATERIAL_DIR"):
+        _delete_protected_secret_file(fallback_path)
 
 
 def create_oauth_state(

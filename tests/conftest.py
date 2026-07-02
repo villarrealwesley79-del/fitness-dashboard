@@ -87,6 +87,12 @@ def isolated_whoop_material_dir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> It
 
 
 @pytest.fixture(autouse=True)
+def isolated_open_wearables_password_file(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Iterator[None]:
+    monkeypatch.setenv("OPEN_WEARABLES_PASSWORD_FILE", str(tmp_path / "open-wearables-password"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def no_live_network(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> Iterator[None]:
     """Fail tests that try to make uncassetted external network calls."""
     if request.node.get_closest_marker("allow_net"):

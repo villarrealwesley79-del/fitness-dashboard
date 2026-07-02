@@ -47,7 +47,8 @@ def test_hae_normalizer_uses_timestamp_offset_local_date(monkeypatch):
     parser = importlib.import_module("apple_health_parser")
 
     response = module.app.test_client().post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={
             "data": {
                 "workouts": [
@@ -86,7 +87,8 @@ def test_hae_normalizer_preserves_existing_cdt_date(monkeypatch):
     module = _app_module(monkeypatch)
 
     response = module.app.test_client().post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={
             "data": {
                 "metrics": [
@@ -108,7 +110,8 @@ def test_hae_normalizer_accepts_z_suffixed_timestamp(monkeypatch):
     module = _app_module(monkeypatch)
 
     response = module.app.test_client().post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={
             "data": {
                 "metrics": [
@@ -130,7 +133,8 @@ def test_flat_sync_payload_normalizes_date_and_dashboard_freshness(monkeypatch):
     module = _app_module(monkeypatch)
 
     response = module.app.test_client().post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={"steps": [{"date": "2026-05-18T23:55:00-05:00", "value": 1200}]},
     )
 
@@ -155,7 +159,8 @@ def test_sync_routes_honor_runtime_db_env_after_app_import(monkeypatch):
     monkeypatch.setenv("APPLE_HEALTH_SYNC_DB", str(alt_db_path))
 
     response = module.app.test_client().post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={"steps": [{"date": "2026-05-18T23:55:00-05:00", "value": 1200}]},
     )
 
@@ -179,7 +184,8 @@ def test_workouts_endpoint_preserves_basketball_and_filters_other(monkeypatch):
     monkeypatch.setattr(parser, "datetime", FrozenDateTime)
 
     response = client.post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={
             "workouts": [
                 {
@@ -235,7 +241,8 @@ def test_sleep_duration_falls_back_to_phase_sum_during_hae_normalization(monkeyp
     module = _app_module(monkeypatch)
 
     response = module.app.test_client().post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={
             "data": {
                 "metrics": [
@@ -273,7 +280,8 @@ def test_sleep_phase_sum_reingest_updates_existing_daily_sleep_row(monkeypatch):
     client = module.app.test_client()
 
     first = client.post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={
             "data": {
                 "metrics": [
@@ -290,7 +298,8 @@ def test_sleep_phase_sum_reingest_updates_existing_daily_sleep_row(monkeypatch):
     assert stored["duration_minutes"] is None
 
     second = client.post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={
             "data": {
                 "metrics": [
@@ -325,7 +334,8 @@ def test_sleep_reingest_does_not_erase_existing_duration_with_partial_row(monkey
     client = module.app.test_client()
 
     first = client.post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={
             "data": {
                 "metrics": [
@@ -349,7 +359,8 @@ def test_sleep_reingest_does_not_erase_existing_duration_with_partial_row(monkey
     assert first.status_code == 200
 
     second = client.post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={
             "data": {
                 "metrics": [
@@ -390,7 +401,8 @@ def test_sleep_reingest_preserves_legacy_duration_fields_and_updates_timestamp(m
         conn.commit()
 
     response = module.app.test_client().post(
-        "/api/apple-health/sync?token=fit29-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit29-health-token"},
         json={
             "data": {
                 "metrics": [

@@ -18,7 +18,7 @@ import glob
 from datetime import datetime, timezone
 from collections import defaultdict
 from typing import Optional
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from flask import jsonify, request
 from runtime_config import clean_public_url, data_path, public_base_url
 
@@ -97,14 +97,14 @@ def _clean_public_url(value: str) -> str:
     return clean_public_url(value)
 
 
-def _append_sync_token(url: str, token: str) -> str:
-    if not token:
-        return url
-    parts = urlsplit(url)
-    query = parse_qsl(parts.query, keep_blank_values=True)
-    if any(key == "token" for key, _value in query):
-        return url
-    query.append(("token", token))
+def _without_sync_token_query(url: str, sync_token: str = "") -> str:
+    parts = urlsplit(str(url or ""))
+    token = str(sync_token or "").strip()
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key.lower() != "token" and (not token or token not in value)
+    ]
     return urlunsplit((
         parts.scheme,
         parts.netloc,
@@ -112,6 +112,16 @@ def _append_sync_token(url: str, token: str) -> str:
         urlencode(query),
         parts.fragment,
     ))
+
+
+def _recursive_unquote(value: str, limit: int = 5) -> str:
+    decoded = str(value or "")
+    for _ in range(limit):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+    return decoded
 
 
 def _public_base_url_from_request() -> str:
@@ -779,17 +789,15 @@ def register_apple_health_routes(flask_app):
         Deduplicates by (source, record_type, record_date, record_key).
         Returns sync_token for incremental sync.
 
-        Auth: requires a shared secret in X-Sync-Token header or ?token= query,
-        compared against HEALTH_SYNC_TOKEN env var. If the env var is unset the
+        Auth: requires a shared secret in X-Sync-Token header compared against
+        HEALTH_SYNC_TOKEN env var. If the env var is unset the
         endpoint rejects everything — you must configure the secret. No bypass.
         """
         import hmac as _hmac
         expected = os.environ.get("HEALTH_SYNC_TOKEN", "").strip()
         if not expected:
             return jsonify({"error": "HEALTH_SYNC_TOKEN not configured on server"}), 503
-        supplied = (request.headers.get("X-Sync-Token")
-                    or request.args.get("token")
-                    or "").strip()
+        supplied = (request.headers.get("X-Sync-Token") or "").strip()
         if not supplied or not _hmac.compare_digest(supplied, expected):
             return jsonify({"error": "invalid or missing sync token"}), 401
 
@@ -920,11 +928,13 @@ def register_apple_health_routes(flask_app):
 
     @flask_app.route("/api/apple-health/sync/setup-url")
     def apple_health_sync_setup_url():
-        """Return the tokenized Health Auto Export webhook URL for setup UI only."""
+        """Return the Health Auto Export webhook URL for setup UI only."""
         token = os.environ.get("HEALTH_SYNC_TOKEN", "").strip()
-        base_url = _apple_health_sync_endpoint()
+        base_url = _without_sync_token_query(_apple_health_sync_endpoint(), token)
+        if token and token in _recursive_unquote(base_url):
+            base_url = f"{_public_base_url_from_request()}/api/apple-health/sync"
         return jsonify({
-            "webhook_url": _append_sync_token(base_url, token),
+            "webhook_url": base_url,
             "has_token": bool(token),
         })
 
