@@ -11,7 +11,7 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 
 MIN_ACCEPTS_FOR_EXACT = 3
-MIN_ACCEPTS_FOR_FUZZY = 1
+MIN_ACCEPTS_FOR_FUZZY = MIN_ACCEPTS_FOR_EXACT
 FUZZY_CUTOFF = 0.78
 
 
@@ -77,7 +77,7 @@ def lookup(phrase: str | None, *, user_id: int = 1) -> dict | None:
     exact = data_store.get_personal_vocab_entry(user_id, normalized)
     if exact:
         if _trusted(exact, minimum_accepts=MIN_ACCEPTS_FOR_EXACT):
-            return _estimate_from_entry(exact)
+            return _estimate_from_entry(exact, trusted_exact=True)
         return None
 
     entries = data_store.list_personal_vocab_entries(user_id)
@@ -171,7 +171,7 @@ def _token_matches_abbreviation(query_token: str, candidate_token: str) -> bool:
     return pos == len(query_token)
 
 
-def _estimate_from_entry(entry: dict) -> dict | None:
+def _estimate_from_entry(entry: dict, *, trusted_exact: bool = False) -> dict | None:
     canonical = entry.get("canonical_resolution")
     if not isinstance(canonical, dict):
         return None
@@ -179,8 +179,9 @@ def _estimate_from_entry(entry: dict) -> dict | None:
     underlying = canonical.get("source")
     estimate["underlying_source"] = canonical.get("underlying_source") or underlying
     estimate["source"] = "personal_vocab"
-    estimate["confidence"] = max(float(estimate.get("confidence") or 0), 0.9)
-    estimate["ambiguous"] = False
+    if trusted_exact:
+        estimate["confidence"] = max(float(estimate.get("confidence") or 0), 0.9)
+        estimate["ambiguous"] = False
     estimate.setdefault("uncertainty_notes", [])
     estimate["personal_vocab_phrase"] = entry.get("phrase")
     return estimate
