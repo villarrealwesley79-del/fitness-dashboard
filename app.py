@@ -4842,13 +4842,13 @@ def api_next_workout():
         "next_workout": _workout_with_auth_scope(LAST_WORKOUT_RECOMMENDATION),
         "workout_adaptation_events": [workout_adaptation.project_event(event) for event in workout_adaptation_events],
         "recommendation_sources": {
-            "open_wearables": build_open_wearables_recommendation_source(
-                freshness.get("open_wearables"),
-                facts=open_wearables_facts,
-                modifier=open_wearables_modifier,
+            **_recommendation_sources_payload(
+                freshness,
+                whoop_context,
+                open_wearables_facts,
+                open_wearables_modifier,
+                whoop_adjusted["load_source"],
             ),
-            "whoop": whoop_context["signals"],
-            "source_conflict": whoop_context["source_conflict"],
             "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
         },
     })
@@ -5168,16 +5168,13 @@ def api_dashboard():
         },
         "freshness": freshness,
         "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
-        "recommendation_sources": {
-            "open_wearables": build_open_wearables_recommendation_source(
-                freshness.get("open_wearables"),
-                facts=open_wearables_facts,
-                modifier=open_wearables_modifier,
-            ),
-            "whoop": whoop_context["signals"],
-            "source_conflict": whoop_context["source_conflict"],
-            "load_source": whoop_adjusted["load_source"],
-        },
+        "recommendation_sources": _recommendation_sources_payload(
+            freshness,
+            whoop_context,
+            open_wearables_facts,
+            open_wearables_modifier,
+            whoop_adjusted["load_source"],
+        ),
     })
 
 
@@ -11877,6 +11874,32 @@ def _open_wearables_recommendation_source_payload(freshness):
     )
 
 
+def _recommendation_sources_payload(freshness, whoop_context, open_wearables_facts, open_wearables_modifier, load_source):
+    open_wearables_source = build_open_wearables_recommendation_source(
+        freshness.get("open_wearables"),
+        facts=open_wearables_facts,
+        modifier=open_wearables_modifier,
+    )
+    whoop_signals = dict(whoop_context["signals"])
+    if whoop_signals.get("display_only"):
+        whoop_signals["summary_hidden"] = True
+
+    payload = {
+        "open_wearables": open_wearables_source,
+        "whoop": whoop_signals,
+        "source_conflict": whoop_context["source_conflict"],
+        "load_source": load_source,
+    }
+    apple_status = (freshness.get("apple_health") or {}).get("status")
+    if (
+        load_source == "apple_health"
+        and open_wearables_source.get("used_for_recommendation")
+        and apple_status in {"missing", "stale", "error", "blocked"}
+    ):
+        payload["load_source_summary_hidden"] = True
+    return payload
+
+
 @app.route('/api/open-wearables/status')
 def open_wearables_status_api():
     providers, provider_error = _fetch_open_wearables_provider_statuses()
@@ -14453,14 +14476,13 @@ def smart_recommendation_api():
         "freshness": freshness,
         "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
         "recommendation_sources": {
-            "open_wearables": build_open_wearables_recommendation_source(
-                freshness.get("open_wearables"),
-                facts=open_wearables_facts,
-                modifier=open_wearables_modifier,
+            **_recommendation_sources_payload(
+                freshness,
+                whoop_context,
+                open_wearables_facts,
+                open_wearables_modifier,
+                whoop_adjusted["load_source"],
             ),
-            "whoop": whoop_context["signals"],
-            "source_conflict": whoop_context["source_conflict"],
-            "load_source": whoop_adjusted["load_source"],
             "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
         },
         "nutrition_context": nutrition_context,

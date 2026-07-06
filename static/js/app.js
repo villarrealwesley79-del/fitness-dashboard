@@ -1557,7 +1557,7 @@
                     detail: ow.detail || 'Open Wearables is the wearable hub; this web app keeps coaching authority.',
                 });
             }
-            if (entries.whoop) {
+            if (entries.whoop && !entries.whoop.summary_hidden) {
                 const whoop = entries.whoop;
                 const detailParts = []
                     .concat(whoop.explanations || [])
@@ -1569,7 +1569,7 @@
                     detail: detailParts.join(' · ') || 'WHOOP recovery context is available.',
                 });
             }
-            if (entries.load_source) {
+            if (entries.load_source && !entries.load_source_summary_hidden) {
                 normalizedEntries.push({
                     key: entries.load_source,
                     label: sourceDisplayName(entries.load_source),
