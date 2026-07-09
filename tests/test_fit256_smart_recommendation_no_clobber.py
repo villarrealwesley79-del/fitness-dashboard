@@ -50,10 +50,20 @@ def test_smart_recommendation_due_event_does_not_replace_current_swapped_plan(mo
         },
     )
     monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fp-after-refresh")
+    stale_global_plan = _recommendation(module)
+    stale_global_plan["exercises"][0]["exercise"] = "Stale Press"
+    module.LAST_WORKOUT_RECOMMENDATION = stale_global_plan
+    module.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = "fp-after-refresh"
+    module.LAST_WORKOUT_RECOMMENDATION_OWNER = {
+        "user_id": 1,
+        "fingerprint": "fp-after-refresh",
+        "plan_id": id(stale_global_plan),
+    }
 
     smart = client.get("/api/recommendation/smart")
 
     assert smart.status_code == 200
+    assert smart.get_json()["next_workout"]["exercises"][0]["exercise"] == "Incline Press"
     adaptation_event = smart.get_json()["workout_adaptation_events"][0]
     assert adaptation_event["status"] == "applied"
     assert adaptation_event["reason"] == "test due adaptation"

@@ -14784,7 +14784,7 @@ def smart_recommendation_api():
     fingerprint = _workout_recommendation_fingerprint()
     current_plan = _current_workout_plan_for_fingerprint(fingerprint)
     stored_plan = get_current_workout_plan(_current_data_user_id())
-    canonical_plan = current_plan or (stored_plan or {}).get("plan")
+    canonical_plan = (stored_plan or {}).get("plan") or current_plan
     if not active_open_requested or completed_sets_by_exercise:
         if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
             canonical_nutrition_context = _nutrition_context_for_date(
