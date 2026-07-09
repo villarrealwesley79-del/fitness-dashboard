@@ -3490,7 +3490,7 @@
             const sets = ex.target_sets || ex.sets || 3;
             const reps = ex.target_reps || ex.reps || (ex.rep_range ? ex.rep_range.join('–') : 10);
             const w = ex.target_weight != null ? ex.target_weight : ex.target_weight_lbs;
-            const weightStr = w != null && Number(w) > 0 ? ` · ${Math.round(w)} lb` : '';
+            const weightStr = ex.bodyweight ? ' · BW' : (w != null && Number(w) > 0 ? ` · ${Math.round(w)} lb` : '');
             const rpe = ex.rpe_target || ex.rpe;
             const rationale = ex.rationale || ex.reason || '';
             const loadHint = exerciseLoadHint(ex);
@@ -3568,7 +3568,8 @@
         const reps = ex.target_reps || ex.reps || (ex.rep_range ? ex.rep_range.join('–') : 10);
         const w = ex.target_weight != null ? ex.target_weight : ex.target_weight_lbs;
         const bits = [`${sets} × ${reps}`];
-        if (w != null && Number(w) > 0) bits.push(`${Math.round(w)} lb`);
+        if (ex.bodyweight) bits.push('BW');
+        else if (w != null && Number(w) > 0) bits.push(`${Math.round(w)} lb`);
         if (ex.rpe_target || ex.rpe) bits.push(`RPE ${ex.rpe_target || ex.rpe}`);
         return bits.join(' · ');
     }
@@ -7688,7 +7689,7 @@
             const reps = ex.target_reps || ex.reps || 10;
             const rpe = ex.rpe_target || ex.rpe || '7';
             ex.rpe = rpe; // keep for completeWorkout payload
-            const target = `${sets} × ${reps} RPE ${rpe}`;
+            const target = exerciseTargetText(ex);
             let rowsHtml = '';
             ex.logged_sets.forEach((set, sidx) => {
                 // FIT-108: flag the first incomplete set across the whole

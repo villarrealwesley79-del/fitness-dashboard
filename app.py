@@ -3409,6 +3409,11 @@ def _build_exercise_entry(
     load_source = _select_recommendation_e1rm(exercise_name, ex_progression, progression)
     current_e1rm = load_source["e1rm"]
     status = load_source["status"]
+    _, exercise = _lookup_by_exercise_name(EXERCISE_LOOKUP, exercise_name)
+    is_unweighted_bodyweight = (
+        (exercise or {}).get("equipment") == "bodyweight"
+        and load_source["source"] == "hardcoded"
+    )
 
     if status == "Baseline":
         target_weight = round(current_e1rm * intensity_pct * 0.9, 0)
@@ -3441,22 +3446,27 @@ def _build_exercise_entry(
     volume_adjusted_sets = max(1, round(sets * volume_multiplier))
 
     last_perf = _get_last_exercise_performance(workouts, exercise_name)
-    target_weight, target_reps, overload_note = _apply_progressive_overload(
-        target_weight, target_reps, rpe_target, is_compound, last_perf
-    )
-    rationale = f"{rationale} · {overload_note}"
+    if not is_unweighted_bodyweight:
+        target_weight, target_reps, overload_note = _apply_progressive_overload(
+            target_weight, target_reps, rpe_target, is_compound, last_perf
+        )
+        rationale = f"{rationale} · {overload_note}"
 
     if exercise_name == "Plank":
         target_weight = 0
         target_reps = 45
         rationale = f"{goal_params['name']}: Timed core stability"
 
+    if is_unweighted_bodyweight:
+        target_weight = 0
+        rationale = f"{goal_params['name']}: Bodyweight — prioritize controlled reps, form, and effort"
+
     rest_label = f"{rest_time} min"
     entry = {
         "exercise": exercise_name,
         "muscle": muscle,
         "is_compound": is_compound,
-        "target_weight": max(5, target_weight),
+        "target_weight": 0 if is_unweighted_bodyweight else max(5, target_weight),
         "target_reps": target_reps,
         "target_sets": max(2, volume_adjusted_sets),
         "rationale": rationale,
@@ -3471,6 +3481,8 @@ def _build_exercise_entry(
         "load_e1rm": round(current_e1rm, 1),
         "load_source_detail": load_source["detail"],
     }
+    if is_unweighted_bodyweight:
+        entry["bodyweight"] = True
     if load_source.get("inferred_from"):
         entry["load_inference"] = {
             "source_exercise": load_source["inferred_from"],
