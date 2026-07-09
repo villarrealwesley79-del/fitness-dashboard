@@ -199,7 +199,10 @@ def test_under_fueled_adaptation_reduces_and_clamps_to_available_time(monkeypatc
     assert coverage["sufficient"] is True
     assert coverage["mode"] == "full_day"
     assert coverage["entries_count"] == 2
+    assert coverage["meal_windows_count"] == 2
+    assert coverage["first_coverage_hour"] == 8
     assert coverage["coverage_hour"] == 18
+    assert coverage["coverage_span_hours"] == 10
     assert coverage["target_fraction"] == 1.0
     assert coverage["effective_calorie_pct_threshold"] == 60.0
     assert coverage["effective_protein_pct_threshold"] == 80.0
@@ -245,7 +248,53 @@ def test_late_day_single_partial_meal_skips_volume_reduction(monkeypatch, tmp_pa
     assert coverage["sufficient"] is False
     assert coverage["mode"] == "incomplete"
     assert coverage["entries_count"] == 1
+    assert coverage["meal_windows_count"] == 1
+    assert coverage["first_coverage_hour"] == 17
     assert coverage["coverage_hour"] == 17
+    assert coverage["coverage_span_hours"] == 0
+
+
+def test_multi_item_meal_does_not_satisfy_same_day_coverage(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    first_row = _food_log(
+        "multi-item-first",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        meal_id="meal-multi-item",
+        logged_at="2026-05-24T18:00:00",
+    )
+    trigger_row = _food_log(
+        "multi-item-trigger",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        meal_id="meal-multi-item",
+        logged_at="2026-05-24T18:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [trigger_row], clock=start)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[first_row, trigger_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    event = workout_adaptation.project_event(events[0])
+    assert event["status"] == "no_change"
+    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
+    assert patched["estimated_minutes"] == 60
+    coverage = event["reason_metadata"]["same_day_fueling_coverage"]
+    assert coverage["entries_count"] == 2
+    assert coverage["meal_windows_count"] == 1
+    assert coverage["first_coverage_hour"] == 18
+    assert coverage["coverage_hour"] == 18
+    assert coverage["coverage_span_hours"] == 0
 
 
 def test_morning_full_entry_count_requires_prorated_deficit(monkeypatch, tmp_path):
@@ -284,7 +333,10 @@ def test_morning_full_entry_count_requires_prorated_deficit(monkeypatch, tmp_pat
         "sufficient": False,
         "mode": "prorated",
         "entries_count": 2,
+        "meal_windows_count": 2,
+        "first_coverage_hour": 8,
         "coverage_hour": 12,
+        "coverage_span_hours": 4,
         "target_fraction": 0.4,
         "effective_calorie_pct_threshold": 24.0,
         "effective_protein_pct_threshold": 32.0,
@@ -326,7 +378,10 @@ def test_midday_prorated_deficit_reduces_volume(monkeypatch, tmp_path):
     coverage = event["reason_metadata"]["same_day_fueling_coverage"]
     assert coverage["sufficient"] is True
     assert coverage["mode"] == "prorated"
+    assert coverage["meal_windows_count"] == 2
+    assert coverage["first_coverage_hour"] == 8
     assert coverage["coverage_hour"] == 12
+    assert coverage["coverage_span_hours"] == 4
     assert coverage["target_fraction"] == 0.4
 
 

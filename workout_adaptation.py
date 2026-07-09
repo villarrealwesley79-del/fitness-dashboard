@@ -28,6 +28,10 @@ SODIUM_RECOVERY_CONTEXT_MG = 2300
 LATE_MEAL_HOUR = 20
 # Multiple accepted entries avoid treating a single meal as full-day intake.
 MIN_SAME_DAY_FUELING_ENTRIES = 2
+# Distinct meal windows prevent one multi-item meal from satisfying coverage.
+MIN_SAME_DAY_FUELING_WINDOWS = 2
+# A one-hour span confirms entries represent more than one immediate meal event.
+MIN_SAME_DAY_FUELING_SPAN_HOURS = 1
 # Typical fueling is expected to begin by the morning meal window.
 TYPICAL_FUELING_WINDOW_START_HOUR = 8
 # Eighteen hundred permits same-day decisions before late-meal deferral begins.
@@ -492,7 +496,15 @@ def _same_day_fueling_coverage(
     percentages = nutrition_context.get("percentages") or {}
     entries_count = int(totals.get("entries_count") or 0)
     logged_hours = [hour for row in day_logs for hour in [_logged_hour(row)] if hour is not None]
+    meal_windows = {_fueling_window_key(row) for row in day_logs}
+    meal_windows_count = len(meal_windows)
+    first_coverage_hour = min(logged_hours) if logged_hours else None
     coverage_hour = max(logged_hours) if logged_hours else None
+    coverage_span_hours = (
+        coverage_hour - first_coverage_hour
+        if coverage_hour is not None and first_coverage_hour is not None
+        else 0
+    )
     target_fraction = _fueling_target_fraction(coverage_hour)
     effective_calorie_pct_threshold = round(UNDER_FUELED_CALORIES_PCT * target_fraction, 3)
     effective_protein_pct_threshold = round(LOW_PROTEIN_PCT * target_fraction, 3)
@@ -500,7 +512,12 @@ def _same_day_fueling_coverage(
     protein_pct = float(percentages.get("protein") or 0)
     signal_codes = {signal["code"] for signal in signals}
 
-    if entries_count < MIN_SAME_DAY_FUELING_ENTRIES or coverage_hour is None:
+    if (
+        entries_count < MIN_SAME_DAY_FUELING_ENTRIES
+        or meal_windows_count < MIN_SAME_DAY_FUELING_WINDOWS
+        or coverage_span_hours < MIN_SAME_DAY_FUELING_SPAN_HOURS
+        or coverage_hour is None
+    ):
         mode = "incomplete"
         sufficient = False
     elif coverage_hour >= FULL_DAY_FUELING_COVERAGE_HOUR:
@@ -525,11 +542,25 @@ def _same_day_fueling_coverage(
         "sufficient": sufficient,
         "mode": mode,
         "entries_count": entries_count,
+        "meal_windows_count": meal_windows_count,
+        "first_coverage_hour": first_coverage_hour,
         "coverage_hour": coverage_hour,
+        "coverage_span_hours": coverage_span_hours,
         "target_fraction": target_fraction,
         "effective_calorie_pct_threshold": effective_calorie_pct_threshold,
         "effective_protein_pct_threshold": effective_protein_pct_threshold,
     }
+
+
+def _fueling_window_key(row: dict) -> tuple[str, str]:
+    meal_id = str(row.get("meal_id") or "").strip()
+    if meal_id:
+        return ("meal_id", meal_id)
+    for field in ("logged_at", "local_timestamp"):
+        logged_at = _parse_iso(row.get(field))
+        if logged_at is not None:
+            return ("logged_at_minute", logged_at.replace(second=0, microsecond=0).isoformat())
+    return ("client_id", str(row.get("client_id") or ""))
 
 
 def _fueling_target_fraction(coverage_hour: int | None) -> float:
