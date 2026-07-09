@@ -102,7 +102,7 @@ Failure → If already unauthenticated, global/public route behavior allows the 
 
 Trigger → Any request after `init_auth(app)`.  
 Behavior → Public paths pass through. Unauthenticated API/JSON requests receive `{"error":"Unauthorized","login":"/login"}` with HTTP 401. Unauthenticated browser requests redirect to `/login?next=<path>`. Authenticated non-owner requests in single-user mode receive HTTP 403.  
-Validation → Owner is `FITNESS_DASHBOARD_OWNER_USER_ID` when set to an integer; otherwise minimum user ID. Invalid non-integer values disable the owner guard entirely: every authenticated user is treated as owner. It does not fall back to the first user; only an unset/empty value falls back to minimum `users.id`. If there is no owner row yet, access is allowed so first setup can proceed.
+Validation → Owner is `FITNESS_DASHBOARD_OWNER_USER_ID` when set to an integer; otherwise minimum user ID. An invalid non-integer value is a logged misconfiguration and fails closed: authenticated users are denied owner-only routes until it is corrected. Only an unset/empty value falls back to minimum `users.id`. If there is no owner row yet, access is allowed so first setup can proceed.
 
 ### CSRF / Origin Protection
 
@@ -205,7 +205,7 @@ CSRF protection is not a per-route decorator; it is a global before-request gate
 | `SECRET_KEY` | None | Reads or creates `.flask-secret`; startup fails if secret stays empty/default. |
 | `SESSION_COOKIE_SECURE` | `"true"` | Secure cookies enabled. Set `"false"` only for local HTTP. |
 | `FITNESS_DASHBOARD_SINGLE_USER` | `"true"` | Registration closes after first account and owner guard applies. |
-| `FITNESS_DASHBOARD_OWNER_USER_ID` | Empty | Owner is minimum `users.id`. Invalid non-integer value disables the owner guard entirely: every authenticated user is treated as owner. It does not fall back to the first user; only unset/empty falls back to minimum `users.id`. |
+| `FITNESS_DASHBOARD_OWNER_USER_ID` | Empty | Owner is minimum `users.id`. An invalid non-integer value logs an actionable error and locks owner-only routes until corrected. Only unset/empty falls back to minimum `users.id`; an empty users table remains permissive for first-run setup. |
 | `FITNESS_DASHBOARD_PUBLIC_BASE_URL` | Empty | Adds a trusted same-origin value for CSRF origin comparison when set. |
 
 ## 12. Test Coverage
@@ -267,7 +267,7 @@ Coverage gaps:
 - **Acceptance criteria:**
   - Document an operator-safe owner recovery procedure.
   - Add a read-only diagnostic that reports owner selection without exposing secrets.
-  - Add tests for invalid, missing, and valid `FITNESS_DASHBOARD_OWNER_USER_ID`.
+  - FIT-277 added tests for invalid, missing, and valid `FITNESS_DASHBOARD_OWNER_USER_ID`; this follow-up retains the owner-repair flow work.
 - **Duplicate-of:** none
 
 ### IC-5: Make `/landing` route status explicit
