@@ -247,16 +247,10 @@ Coverage gaps:
 ## 13. Gaps & Issue Candidates
 
 ### IC-1: Register or remove the Stripe blueprint contract
-- **Type:** Bug
-- **Priority:** high
-- **Where:** `stripe_checkout.py:11`, `app.py:168-179`
-- **Problem:** The repo defines Stripe routes in `stripe_checkout.py`, and auth publicly allowlists those paths, but current app wiring does not import or register `stripe_bp`. The route inventory calls them additional blueprint routes, yet the inspected app object will not serve them unless an external wrapper registers the blueprint.
-- **Why it matters:** Billing pages and webhook behavior can appear implemented while being unreachable.
-- **Acceptance criteria:**
-  - The app either registers `stripe_bp` intentionally or deletes/marks the blueprint as dormant.
-  - Route tests cover `/pricing`, `/success`, `/cancel`, and `/webhook`.
-  - Auth public allowlist matches the chosen route set.
-- **Duplicate-of:** none
+- **Status:** Resolved as dormant by owner decision (FIT-299).
+- **Decision:** `stripe_bp` remains intentionally unregistered. The Stripe routes are no longer public-auth allowlist entries, so anonymous browser requests to `/pricing`, `/success`, `/cancel`, and `/webhook` are directed through the normal login guard instead of returning anonymous 404s.
+- **Dependency fact:** The `stripe` PyPI package is not installed and is absent from `requirements.txt`; registering `stripe_bp` today would fail when `stripe_checkout.py` imports `stripe`.
+- **Guard:** `tests/test_fit299_stripe_dormancy.py` verifies the anonymous login behavior and that no app URL rule registers `/webhook`.
 
 ### IC-2: Require signed Stripe webhooks outside local development
 - **Type:** Bug

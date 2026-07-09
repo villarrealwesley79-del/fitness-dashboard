@@ -341,12 +341,11 @@ def logout():
 # expose the sync token hint and last-sync metadata.
 _PUBLIC_PREFIXES = (
     "/login", "/register", "/logout",
-    "/landing", "/pricing",
+    "/landing",  # Separate dormant landing surface; FIT-297 owns its allowlist state.
     "/manifest.json", "/sw.js",
     "/static/",           # prefix — any static asset
     "/robots.txt", "/sitemap.xml",  # SEO crawlers
-    "/webhook",            # Stripe webhook — must be unauthenticated
-    "/success", "/cancel", # Post-checkout pages
+    # Stripe blueprint is dormant and intentionally unregistered; see FIT-299.
     "/api/apple-health/sync",   # exact — the POST webhook; its token is its auth
 )
 
