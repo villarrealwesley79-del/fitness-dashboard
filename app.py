@@ -4813,6 +4813,7 @@ def _workout_recommendation_fingerprint():
         "recovery_latest": latest_marker(RECOVERY_DATA),
         "settings": {field: USER_SETTINGS.get(field) for field in settings_fields},
         "weather": {
+            "ts": _WEATHER_CACHE.get("ts"),
             "location": _WEATHER_CACHE.get("location"),
             "data": _WEATHER_CACHE.get("data"),
             "error": _WEATHER_CACHE.get("error"),

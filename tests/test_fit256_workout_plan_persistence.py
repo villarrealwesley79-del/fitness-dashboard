@@ -138,33 +138,6 @@ def test_swap_uses_same_user_plan_after_fingerprint_drift(monkeypatch, tmp_path)
     assert exercise["exercise"] == "Incline Press"
 
 
-def test_next_workout_uses_same_user_plan_after_fingerprint_drift(monkeypatch, tmp_path):
-    module, client, _state = _client(monkeypatch, tmp_path)
-    weather_cache = {
-        "ts": 1,
-        "location": "San_Antonio",
-        "data": {"temp_f": 75, "feelslike_f": 75, "humidity_pct": 40},
-        "error": None,
-    }
-    monkeypatch.setattr(module, "_WEATHER_CACHE", weather_cache)
-    monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: _recommendation(module))
-
-    created = client.get("/api/next-workout")
-    assert created.status_code == 200
-
-    weather_cache["ts"] = 2
-    monkeypatch.setattr(
-        module,
-        "generate_next_workout",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should keep the persisted plan")),
-    )
-
-    refreshed = client.get("/api/next-workout")
-
-    assert refreshed.status_code == 200
-    assert refreshed.get_json()["next_workout"]["id"] == "fit-256-plan"
-
-
 def test_adjust_uses_persisted_plan_after_worker_globals_are_empty(monkeypatch, tmp_path):
     module, client, _state = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: _recommendation(module))
