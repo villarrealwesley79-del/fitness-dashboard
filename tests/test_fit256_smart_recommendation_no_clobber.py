@@ -67,3 +67,47 @@ def test_smart_recommendation_due_event_does_not_replace_current_swapped_plan(mo
     assert recommendation["id"] == "fit-256-plan"
     assert recommendation["exercises"][0]["exercise"] == "Chest Press"
     assert recommendation["exercises"][1]["exercise"] == "Adapted Pulldown"
+
+
+def test_smart_recommendation_due_event_persists_a_new_current_plan(monkeypatch, tmp_path):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    new_plan = _recommendation(module)
+    monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: new_plan)
+    monkeypatch.setattr(
+        module,
+        "_apply_due_workout_adaptations_for_plan",
+        lambda plan, **_kwargs: (
+            plan,
+            [{"status": "applied", "reason": "test first-plan adaptation"}],
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_whoop_recommendation_context",
+        lambda _readiness: {"signals": {}, "source_conflict": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "_apply_open_wearables_recommendation_guard",
+        lambda recommendation, _facts: (recommendation, {}),
+    )
+    monkeypatch.setattr(
+        module,
+        "apply_wearable_modifiers",
+        lambda recommendation, workout, **kwargs: {
+            "recommendation": recommendation,
+            "next_workout": workout,
+            "load_source": None,
+        },
+    )
+
+    smart = client.get("/api/recommendation/smart")
+    later_swap = client.post(
+        "/api/workout/swap",
+        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+    )
+
+    assert smart.status_code == 200
+    assert smart.get_json()["workout_adaptation_events"][0]["status"] == "applied"
+    assert later_swap.status_code == 200
+    assert later_swap.get_json()["recommendation"]["id"] == "fit-256-plan"

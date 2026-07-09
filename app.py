@@ -14782,6 +14782,7 @@ def smart_recommendation_api():
     completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
     fingerprint = _workout_recommendation_fingerprint()
     current_plan = _current_workout_plan_for_fingerprint(fingerprint)
+    stored_plan = get_current_workout_plan(_current_data_user_id())
     if current_plan:
         next_workout = current_plan
         nutrition_context = _nutrition_context_for_date(
@@ -14799,7 +14800,7 @@ def smart_recommendation_api():
             completed_sets_by_exercise=completed_sets_by_exercise,
         )
         if workout_adaptation_events:
-            if current_plan:
+            if current_plan or stored_plan is None:
                 _persist_current_workout_plan(next_workout, fingerprint)
             nutrition_context = _nutrition_context_for_date(
                 today,
