@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import logging
 from datetime import date, timedelta
 
 import pytest
@@ -191,3 +192,31 @@ def test_detect_deload_need_reports_regression_and_soreness_indicators(fitness_a
 
     assert status["needed"] is True
     assert status["indicators"] == ["2 exercises regressing", "High soreness levels"]
+
+
+def test_next_workout_ignores_unevaluable_legacy_deload_data(fitness_app, monkeypatch, caplog):
+    calls = 0
+    detector = fitness_app.detect_deload_need
+
+    def counting_detector(workouts, soreness_data):
+        nonlocal calls
+        calls += 1
+        return detector(workouts, soreness_data)
+
+    monkeypatch.setattr(fitness_app, "detect_deload_need", counting_detector)
+    legacy_workouts = [
+        {"date": "2026-07-01", "exercises": []},
+        {"date": "2026-07-01T12:00:00Z", "exercises": []},
+        {"date": "2026-07-03", "exercises": []},
+        {"date": "2026-07-04", "exercises": []},
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        recommendation = fitness_app.generate_next_workout(
+            legacy_workouts, [], available_time=120
+        )
+
+    assert calls == 1
+    assert recommendation["mesocycle"]["phase"] == "Overreach"
+    assert recommendation["mesocycle"].get("deload_forced") is None
+    assert "deload detector could not evaluate legacy workout data" in caplog.text

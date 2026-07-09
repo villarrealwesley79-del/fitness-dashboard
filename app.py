@@ -3651,7 +3651,14 @@ def generate_next_workout(
     sessions_per_week = USER_SETTINGS.get("sessions_per_week_target", 3)
     meso_week = _get_mesocycle_week(workouts, sessions_per_week)
     meso_plan = MESOCYCLE_PLAN.get(meso_week, MESOCYCLE_PLAN[1])
-    deload_status = detect_deload_need(workouts, soreness_data)
+    try:
+        deload_status = detect_deload_need(workouts, soreness_data)
+    except (KeyError, TypeError, ValueError):
+        app.logger.warning(
+            "deload detector could not evaluate legacy workout data; continuing without forced deload",
+            exc_info=True,
+        )
+        deload_status = {"needed": False, "indicators": []}
     deload_forced = bool(deload_status.get("needed"))
     if deload_forced:
         meso_week = 4
