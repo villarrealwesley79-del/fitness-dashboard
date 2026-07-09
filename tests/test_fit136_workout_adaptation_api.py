@@ -69,6 +69,26 @@ def _recommendation():
     }
 
 
+def _add_late_coverage_entry(client_id: str):
+    return data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-24",
+            "logged_at": "2026-05-24T20:00:00",
+            "meal_id": f"meal-{client_id}",
+            "item_name": "Dinner",
+            "calories": 690,
+            "protein_g": 29.5,
+            "carbs_g": 80,
+            "fat_g": 25,
+            "sodium_mg": 500,
+            "confidence": 0.9,
+            "correction_state": "accepted",
+        },
+    )
+
+
 def test_accepting_food_schedules_workout_adaptation_window(monkeypatch, tmp_path):
     _module, client = _client(monkeypatch, tmp_path)
 
@@ -133,7 +153,7 @@ def test_pending_manual_nutrition_does_not_schedule_workout_adaptation(monkeypat
     assert data_store.list_pending_workout_adaptation_windows(1) == []
 
 
-def test_workout_adaptation_events_endpoint_exposes_applied_contract(monkeypatch, tmp_path):
+def test_workout_adaptation_events_endpoint_exposes_incomplete_coverage_contract(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
     monkeypatch.setattr(module, "USER_SETTINGS", {"available_time_minutes": 35, "daily_calorie_target": 2200, "daily_protein_target_g": 150})
@@ -185,12 +205,12 @@ def test_workout_adaptation_events_endpoint_exposes_applied_contract(monkeypatch
     payload = response.get_json()
     assert payload["count"] == 1
     event = payload["events"][0]
-    assert event["status"] == "applied"
-    assert event["silent"] is False
-    assert event["change_type"] == "reduce_volume"
-    assert event["active_workout"]["updated_live"] is True
-    assert event["patch"]["estimated_minutes"] <= 35
-    assert event["confidence"]["no_change_reason"] is None
+    assert event["status"] == "no_change"
+    assert event["silent"] is True
+    assert event["change_type"] == "none"
+    assert event["active_workout"]["updated_live"] is False
+    assert event["patch"]["estimated_minutes"] == 60
+    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
     assert event["reason_metadata"]["fit137_contract"]["endpoint"] == "/api/workout-adaptation-events"
     assert generate_calls[0]["consume_cardio_rotation"] is False
     assert "include_open_wearables_readiness" not in generate_calls[0]
@@ -206,6 +226,7 @@ def test_next_workout_route_replays_due_adaptation_even_with_cached_plan(monkeyp
     cached = _recommendation()
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", cached)
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT", module._workout_recommendation_fingerprint())
+    _add_late_coverage_entry("fit136-next-workout-late")
 
     row = data_store.add_food_log(
         1,
@@ -290,6 +311,7 @@ def test_repeated_adaptation_windows_use_cached_base_plan_not_prior_patch(monkey
     monkeypatch.setattr(module, "WORKOUTS", [])
     monkeypatch.setattr(module, "SORENESS_DATA", [])
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+    _add_late_coverage_entry("fit136-repeated-late")
 
     first = data_store.add_food_log(
         1,
@@ -349,6 +371,7 @@ def test_repeated_adaptation_preserves_user_edited_cached_plan(monkeypatch, tmp_
     monkeypatch.setattr(module, "WORKOUTS", [])
     monkeypatch.setattr(module, "SORENESS_DATA", [])
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+    _add_late_coverage_entry("fit136-user-edit-late")
 
     first = data_store.add_food_log(
         1,

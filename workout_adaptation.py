@@ -26,6 +26,10 @@ UNDER_FUELED_PROTEIN_PCT = 50
 LOW_PROTEIN_PCT = 80
 SODIUM_RECOVERY_CONTEXT_MG = 2300
 LATE_MEAL_HOUR = 20
+# Multiple accepted entries avoid treating a single meal as full-day intake.
+MIN_SAME_DAY_FUELING_ENTRIES = 2
+# One entry at or after LATE_MEAL_HOUR confirms the day includes late intake.
+MIN_SAME_DAY_LATE_ENTRIES = 1
 HEAVY_MEAL_CALORIES = 900
 
 SCIENCE_CITATIONS = {
@@ -355,7 +359,12 @@ def _evaluate_pending_window(
     signals = _nutrition_signals(relevant_logs, nutrition_context, day_logs=day_logs)
     confidence = _workout_confidence(relevant_logs, signals)
     applies_to = "next_day" if str(plan_date) > str(pending.get("date")) else "today"
-    decision = _decide_change(signals, confidence, applies_to)
+    decision = _decide_change(
+        signals,
+        confidence,
+        applies_to,
+        same_day_coverage_sufficient=_has_same_day_fueling_coverage(nutrition_context),
+    )
     patched = copy.deepcopy(recommendation or {})
     operations: list[dict] = []
     if decision["status"] == "applied":
@@ -464,7 +473,22 @@ def _workout_confidence(relevant_logs: list[dict], signals: list[dict]) -> dict:
     return {"score": score, "level": level}
 
 
-def _decide_change(signals: list[dict], confidence: dict, applies_to: str) -> dict:
+def _has_same_day_fueling_coverage(nutrition_context: dict) -> bool:
+    totals = nutrition_context.get("totals") or {}
+    next_day_context = nutrition_context.get("next_day_context") or {}
+    return (
+        int(totals.get("entries_count") or 0) >= MIN_SAME_DAY_FUELING_ENTRIES
+        and int(next_day_context.get("late_entries_count") or 0) >= MIN_SAME_DAY_LATE_ENTRIES
+    )
+
+
+def _decide_change(
+    signals: list[dict],
+    confidence: dict,
+    applies_to: str,
+    *,
+    same_day_coverage_sufficient: bool = True,
+) -> dict:
     codes = {signal["code"] for signal in signals}
     if confidence["score"] < MIN_WORKOUT_CONFIDENCE:
         return _no_change("low_confidence", "Saved nutrition confidence is below the workout-change threshold.")
@@ -479,6 +503,11 @@ def _decide_change(signals: list[dict], confidence: dict, applies_to: str) -> di
             }
         return _no_change("no_science_supported_change", "Preserved the workout; saved nutrition did not support a next-day change.")
     if {"under_fueled", "low_protein"} & codes:
+        if not same_day_coverage_sufficient:
+            return _no_change(
+                "incomplete_day_coverage",
+                "Preserved the workout because today's nutrition log does not yet cover enough of the day.",
+            )
         return {
             "status": "applied",
             "silent": False,

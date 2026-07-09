@@ -59,7 +59,7 @@ def _recommendation():
     }
 
 
-def _nutrition_context(*, calories_pct=100, protein_pct=100, sodium_mg=700):
+def _nutrition_context(*, calories_pct=100, protein_pct=100, sodium_mg=700, entries_count=1, hour=12):
     return {
         "totals": {
             "calories": int(2200 * calories_pct / 100),
@@ -67,7 +67,7 @@ def _nutrition_context(*, calories_pct=100, protein_pct=100, sodium_mg=700):
             "carbs_g": 200,
             "fat_g": 70,
             "sodium_mg": sodium_mg,
-            "entries_count": 1,
+            "entries_count": entries_count,
         },
         "targets": {
             "calories": 2200,
@@ -86,6 +86,9 @@ def _nutrition_context(*, calories_pct=100, protein_pct=100, sodium_mg=700):
             "protein": protein_pct,
             "carbs": 80,
             "fat": 95,
+        },
+        "next_day_context": {
+            "late_entries_count": int(hour >= workout_adaptation.LATE_MEAL_HOUR),
         },
     }
 
@@ -144,15 +147,34 @@ def test_low_confidence_no_change_is_silent_contract(monkeypatch, tmp_path):
 
 def test_under_fueled_adaptation_reduces_and_clamps_to_available_time(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
-    start = datetime(2026, 5, 24, 12, 0, 0)
-    row = _food_log("under-fueled", calories=300, protein_g=8, confidence=0.9)
+    start = datetime(2026, 5, 24, 20, 5, 0)
+    late_row = _food_log(
+        "under-fueled-late",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        meal_id="meal-under-fueled-late",
+        logged_at="2026-05-24T20:00:00",
+    )
+    row = _food_log(
+        "under-fueled-earlier",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        logged_at="2026-05-24T12:00:00",
+    )
     workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
 
     patched, events = workout_adaptation.apply_due_adaptations(
         1,
         _recommendation(),
-        food_log_entries=[row],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        food_log_entries=[late_row, row],
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=2,
+            hour=20,
+        ),
         settings={"available_time_minutes": 35},
         plan_date="2026-05-24",
         clock=start + timedelta(minutes=3, seconds=1),
@@ -165,6 +187,45 @@ def test_under_fueled_adaptation_reduces_and_clamps_to_available_time(monkeypatc
     assert patched["estimated_minutes"] <= 35
     assert event["patch"]["estimated_minutes"] <= 35
     assert any(op["op"].startswith("clamp") for op in event["patch"]["operations"])
+
+
+def test_late_day_single_partial_meal_skips_volume_reduction(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 17, 43, 0)
+    row = _food_log(
+        "partial-day-late-meal",
+        calories=1100,
+        protein_g=75,
+        confidence=0.9,
+        logged_at="2026-05-24T17:43:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[row],
+        nutrition_context=_nutrition_context(
+            calories_pct=50,
+            protein_pct=50,
+            entries_count=1,
+            hour=17,
+        ),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    event = workout_adaptation.project_event(events[0])
+    assert event["status"] == "no_change"
+    assert event["silent"] is True
+    assert event["change_type"] == "none"
+    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
+    assert event["patch"]["estimated_minutes"] == 60
+    assert patched["estimated_minutes"] == 60
+    assert "incomplete_day_coverage" not in {
+        signal["code"] for signal in event["nutrition_context"]["signals"]
+    }
 
 
 def test_clamp_emits_cap_exceeded_marker_when_floor_exceeds_available_time():
@@ -453,7 +514,12 @@ def test_active_workout_patch_preserves_completed_sets(monkeypatch, tmp_path):
         1,
         recommendation,
         food_log_entries=[row],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=2,
+            hour=20,
+        ),
         settings={"available_time_minutes": 60},
         plan_date="2026-05-24",
         active_workout_open=True,
@@ -511,7 +577,12 @@ def test_neutral_language_guard_ignores_user_controlled_ids(monkeypatch, tmp_pat
         1,
         _recommendation(),
         food_log_entries=[row],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=2,
+            hour=20,
+        ),
         settings={"available_time_minutes": 60},
         plan_date="2026-05-24",
         clock=start + timedelta(minutes=3, seconds=1),
@@ -535,7 +606,12 @@ def test_clamp_preserves_generated_non_default_set_timing(monkeypatch, tmp_path)
         1,
         recommendation,
         food_log_entries=[row],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=2,
+            hour=20,
+        ),
         settings={"available_time_minutes": 35},
         plan_date="2026-05-24",
         clock=start + timedelta(minutes=3, seconds=1),
@@ -616,7 +692,12 @@ def test_multiple_due_windows_do_not_stack_volume_reductions_in_one_poll(monkeyp
         1,
         _recommendation(),
         food_log_entries=[first, second],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=2,
+            hour=20,
+        ),
         settings={"available_time_minutes": 60},
         plan_date="2026-05-24",
         clock=datetime(2026, 5, 24, 13, 3, 1),
@@ -638,7 +719,12 @@ def test_later_no_change_window_does_not_erase_prior_applied_patch(monkeypatch, 
         1,
         _recommendation(),
         food_log_entries=[applied, no_change],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=2,
+            hour=20,
+        ),
         settings={"available_time_minutes": 60},
         plan_date="2026-05-24",
         clock=datetime(2026, 5, 24, 13, 3, 1),
