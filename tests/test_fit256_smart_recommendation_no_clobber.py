@@ -49,6 +49,7 @@ def test_smart_recommendation_due_event_does_not_replace_current_swapped_plan(mo
             "load_source": None,
         },
     )
+    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fp-after-refresh")
 
     smart = client.get("/api/recommendation/smart")
 

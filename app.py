@@ -14783,25 +14783,41 @@ def smart_recommendation_api():
     fingerprint = _workout_recommendation_fingerprint()
     current_plan = _current_workout_plan_for_fingerprint(fingerprint)
     stored_plan = get_current_workout_plan(_current_data_user_id())
-    if current_plan:
-        next_workout = current_plan
-        nutrition_context = _nutrition_context_for_date(
-            today,
-            hard_training_planned=_workout_looks_hard(next_workout),
-            food_log_entries=food_log_entries,
-        )
+    canonical_plan = current_plan or (stored_plan or {}).get("plan")
     if not active_open_requested or completed_sets_by_exercise:
-        next_workout, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-            next_workout,
-            date_s=today,
-            food_log_entries=adaptation_food_entries,
-            nutrition_context=nutrition_context,
-            active_workout_open=active_open_requested,
-            completed_sets_by_exercise=completed_sets_by_exercise,
-        )
-        if workout_adaptation_events:
-            if current_plan or stored_plan is None:
+        if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
+            canonical_nutrition_context = _nutrition_context_for_date(
+                today,
+                hard_training_planned=_workout_looks_hard(canonical_plan),
+                food_log_entries=food_log_entries,
+            )
+            adapted_plan, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
+                canonical_plan,
+                date_s=today,
+                food_log_entries=adaptation_food_entries,
+                nutrition_context=canonical_nutrition_context,
+                active_workout_open=active_open_requested,
+                completed_sets_by_exercise=completed_sets_by_exercise,
+            )
+            if workout_adaptation_events:
+                next_workout = _persist_current_workout_plan(adapted_plan, fingerprint)
+                nutrition_context = _nutrition_context_for_date(
+                    today,
+                    hard_training_planned=_workout_looks_hard(next_workout),
+                    food_log_entries=food_log_entries,
+                )
+        else:
+            next_workout, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
+                next_workout,
+                date_s=today,
+                food_log_entries=adaptation_food_entries,
+                nutrition_context=nutrition_context,
+                active_workout_open=active_open_requested,
+                completed_sets_by_exercise=completed_sets_by_exercise,
+            )
+            if workout_adaptation_events:
                 _persist_current_workout_plan(next_workout, fingerprint)
+        if workout_adaptation_events:
             nutrition_context = _nutrition_context_for_date(
                 today,
                 hard_training_planned=_workout_looks_hard(next_workout),
