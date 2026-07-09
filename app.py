@@ -3651,6 +3651,7 @@ def generate_next_workout(
     sessions_per_week = USER_SETTINGS.get("sessions_per_week_target", 3)
     meso_week = _get_mesocycle_week(workouts, sessions_per_week)
     meso_plan = MESOCYCLE_PLAN.get(meso_week, MESOCYCLE_PLAN[1])
+    scheduled_meso_plan = meso_plan
     deload_status = detect_deload_need(workouts, soreness_data)
     deload_forced = bool(deload_status.get("needed"))
     if deload_forced:
@@ -3696,6 +3697,31 @@ def generate_next_workout(
             cardio_reservation = min(cardio_duration, effective_time - minimum_resistance_time)
     resistance_time_budget = max(minimum_resistance_time, effective_time - cardio_reservation)
     max_exercises = max(2, int(resistance_time_budget / time_per_exercise))
+    if deload_forced:
+        scheduled_sets_for_timing = max(
+            2,
+            round(sets_per_exercise * scheduled_meso_plan["volume_multiplier"]),
+        )
+        scheduled_time_per_exercise = time_per_set * scheduled_sets_for_timing
+        scheduled_minimum_resistance_time = 2 * scheduled_time_per_exercise
+        scheduled_cardio_reservation = 0
+        if cardio_rec.get("include_cardio") and cardio_duration >= 10:
+            if effective_time - cardio_duration >= scheduled_minimum_resistance_time:
+                scheduled_cardio_reservation = cardio_duration
+            elif effective_time - 10 >= scheduled_minimum_resistance_time:
+                scheduled_cardio_reservation = min(
+                    cardio_duration,
+                    effective_time - scheduled_minimum_resistance_time,
+                )
+        scheduled_resistance_time_budget = max(
+            scheduled_minimum_resistance_time,
+            effective_time - scheduled_cardio_reservation,
+        )
+        scheduled_max_exercises = max(
+            2,
+            int(scheduled_resistance_time_budget / scheduled_time_per_exercise),
+        )
+        max_exercises = min(max_exercises, scheduled_max_exercises)
 
     volume_data = calculate_volume(workouts, weeks=4)
     muscle_groups = list(volume_data.keys()) or ["chest", "back", "quads", "shoulders"]
@@ -4098,7 +4124,12 @@ def detect_deload_need(workouts: list, soreness_data: list) -> dict:
 
     # Check for consecutive weeks of training
     recent_workouts = workouts[-8:] if len(workouts) >= 8 else workouts
-    dates = [datetime.strptime(w["date"], '%Y-%m-%d') for w in recent_workouts]
+    dates = []
+    for workout in recent_workouts:
+        try:
+            dates.append(datetime.strptime(workout.get("date", ""), '%Y-%m-%d'))
+        except (TypeError, ValueError):
+            continue
 
     if not dates:
         return {"needed": False, "reason": "No recent workouts", "recommendation": ""}

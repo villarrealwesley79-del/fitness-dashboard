@@ -166,6 +166,31 @@ def test_generate_next_workout_keeps_week_two_overreach_when_detector_is_quiet(
     }
 
 
+def test_forced_deload_does_not_add_exercises_or_sets(fitness_app, monkeypatch):
+    monkeypatch.setattr(
+        fitness_app,
+        "detect_deload_need",
+        lambda workouts, soreness_data: {"needed": False, "indicators": []},
+    )
+    regular = fitness_app.generate_next_workout(
+        _week_two_history(), [], available_time=120, consume_cardio_rotation=False
+    )
+
+    monkeypatch.setattr(
+        fitness_app,
+        "detect_deload_need",
+        lambda workouts, soreness_data: {"needed": True, "indicators": []},
+    )
+    forced = fitness_app.generate_next_workout(
+        _week_two_history(), [], available_time=120, consume_cardio_rotation=False
+    )
+
+    assert len(forced["exercises"]) <= len(regular["exercises"])
+    assert sum(exercise["target_sets"] for exercise in forced["exercises"]) < sum(
+        exercise["target_sets"] for exercise in regular["exercises"]
+    )
+
+
 def test_detect_deload_need_reports_regression_and_soreness_indicators(fitness_app, monkeypatch):
     today = date.today()
     workouts = [
@@ -191,3 +216,17 @@ def test_detect_deload_need_reports_regression_and_soreness_indicators(fitness_a
 
     assert status["needed"] is True
     assert status["indicators"] == ["2 exercises regressing", "High soreness levels"]
+
+
+def test_detect_deload_need_ignores_malformed_workout_dates(fitness_app):
+    status = fitness_app.detect_deload_need(
+        [
+            {"date": "2026-07-01", "exercises": []},
+            {"date": "invalid-date", "exercises": []},
+            {"date": "2026-07-03", "exercises": []},
+            {"date": "2026-07-04", "exercises": []},
+        ],
+        [],
+    )
+
+    assert status["needed"] is False
