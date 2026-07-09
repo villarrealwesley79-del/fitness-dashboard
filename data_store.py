@@ -2050,6 +2050,7 @@ def delete_user_data(user_id: int) -> None:
     with _get_db() as conn:
         for table in tables:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM push_subscriptions WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM branded_lookup_cache WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM barcode_lookup_cache WHERE user_id = ?", (user_id,))
         conn.commit()
@@ -2066,6 +2067,7 @@ def get_user_data_summary(user_id: int) -> dict:
         "meal_acceptance_events",
         "meal_review_snapshots",
         "recovery_data",
+        "push_subscriptions",
     ]
     summary = {}
     with _get_db() as conn:
