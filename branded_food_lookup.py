@@ -16,6 +16,8 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 
 CACHE_TTL_DAYS = 180
+FALLBACK_CACHE_TTL_DAYS = 1
+LONG_LIVED_CACHE_SOURCE_TIERS = {"heb_product_page", "nutritionix", "nutritionix_barcode"}
 SOURCE_PRIORITY = ("cache", "heb_product_page", "nutritionix", "usda_fdc", "open_food_facts")
 # H-E-B is text-path only via `heb_product_page`; do not add it to the
 # barcode ladder without a real provider. FIT-218 AC4 excludes scraping or
@@ -401,7 +403,7 @@ def _cache_lookup(normalized: str, *, user_id: int = 1) -> dict[str, Any] | None
     if not row:
         return None
     fetched_at = _parse_iso(row.get("fetched_at"))
-    if not fetched_at or datetime.now() - fetched_at > timedelta(days=CACHE_TTL_DAYS):
+    if not _cache_entry_fresh(fetched_at, row):
         return None
     payload = row.get("response_json")
     if not isinstance(payload, dict):
@@ -420,9 +422,17 @@ def _cache_allowed_for_lookup(estimate: dict[str, Any], private_label_brand: str
 
 def _save_cache_best_effort(normalized: str, source: str, estimate: dict[str, Any], *, user_id: int) -> None:
     try:
-        data_store.save_branded_lookup_cache(normalized, source, estimate, user_id=user_id)
+        data_store.save_branded_lookup_cache(normalized, source, estimate, user_id=user_id, source_tier=source)
     except Exception:
         return
+
+
+def _cache_entry_fresh(fetched_at: datetime | None, row: dict[str, Any]) -> bool:
+    if not fetched_at:
+        return False
+    source_tier = str(row.get("source_tier") or row.get("source") or "").strip()
+    ttl_days = CACHE_TTL_DAYS if source_tier in LONG_LIVED_CACHE_SOURCE_TIERS else FALLBACK_CACHE_TTL_DAYS
+    return datetime.now() - fetched_at <= timedelta(days=ttl_days)
 
 
 def _barcode_cache_lookup(barcode: str, *, user_id: int = 1) -> dict[str, Any] | None:
@@ -430,7 +440,7 @@ def _barcode_cache_lookup(barcode: str, *, user_id: int = 1) -> dict[str, Any] |
     if not row:
         return None
     fetched_at = _parse_iso(row.get("fetched_at"))
-    if not fetched_at or datetime.now() - fetched_at > timedelta(days=CACHE_TTL_DAYS):
+    if not _cache_entry_fresh(fetched_at, row):
         return None
     payload = row.get("response_json")
     if not isinstance(payload, dict):
@@ -464,7 +474,7 @@ def _is_off_cache_replay(estimate: dict[str, Any]) -> bool:
 
 def _save_barcode_cache_best_effort(barcode: str, source: str, estimate: dict[str, Any], *, user_id: int) -> None:
     try:
-        data_store.save_barcode_lookup_cache(barcode, source, estimate, user_id=user_id)
+        data_store.save_barcode_lookup_cache(barcode, source, estimate, user_id=user_id, source_tier=source)
     except Exception:
         return
 

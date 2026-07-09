@@ -1,6 +1,9 @@
 """
 Stripe Checkout Blueprint for Fitness Dashboard
 Handles $9/mo Pro subscription via Stripe Checkout hosted page.
+
+DORMANT (FIT-299): This blueprint is intentionally unregistered. The `stripe`
+package is not in requirements.txt, so registering it would fail at import time.
 """
 
 import os

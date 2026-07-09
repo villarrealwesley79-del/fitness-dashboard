@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import importlib
+import logging
+from datetime import date, timedelta
 
 import pytest
 
@@ -108,3 +110,113 @@ def test_reconciled_goals_still_generate_recommendations_in_rep_range(fitness_ap
     assert recommendation["exercises"]
     for exercise in recommendation["exercises"]:
         assert min_reps <= exercise["target_reps"] <= max_reps
+
+
+def _week_two_history():
+    return [
+        {"date": "2026-07-01", "exercises": []},
+        {"date": "2026-07-02", "exercises": []},
+        {"date": "2026-07-03", "exercises": []},
+    ]
+
+
+def test_generate_next_workout_forces_deload_when_detector_fires(fitness_app, monkeypatch):
+    calls = 0
+    indicators = ["2 exercises regressing", "High soreness levels"]
+
+    def firing_detector(workouts, soreness_data):
+        nonlocal calls
+        calls += 1
+        return {"needed": True, "indicators": indicators}
+
+    monkeypatch.setattr(fitness_app, "detect_deload_need", firing_detector)
+
+    recommendation = fitness_app.generate_next_workout(
+        _week_two_history(), [], available_time=120
+    )
+
+    assert calls == 1
+    assert recommendation["mesocycle"] == {
+        "week": 4,
+        "phase": "Deload",
+        "volume_multiplier": 0.5,
+        "rpe_base": 5.5,
+        "deload_forced": True,
+        "indicators": indicators,
+    }
+
+
+def test_generate_next_workout_keeps_week_two_overreach_when_detector_is_quiet(
+    fitness_app, monkeypatch
+):
+    monkeypatch.setattr(
+        fitness_app,
+        "detect_deload_need",
+        lambda workouts, soreness_data: {"needed": False, "indicators": []},
+    )
+
+    recommendation = fitness_app.generate_next_workout(
+        _week_two_history(), [], available_time=120
+    )
+
+    assert recommendation["mesocycle"] == {
+        "week": 2,
+        "phase": "Overreach",
+        "volume_multiplier": 1.2,
+        "rpe_base": 7.5,
+    }
+
+
+def test_detect_deload_need_reports_regression_and_soreness_indicators(fitness_app, monkeypatch):
+    today = date.today()
+    workouts = [
+        {
+            "date": (today - timedelta(days=21 - offset * 3)).isoformat(),
+            "exercises": [],
+        }
+        for offset in range(8)
+    ]
+    monkeypatch.setattr(
+        fitness_app,
+        "calculate_progression_status",
+        lambda _workouts: {
+            "squat": {"status": "Regression"},
+            "bench": {"status": "Regression"},
+        },
+    )
+
+    status = fitness_app.detect_deload_need(
+        workouts,
+        [{"soreness_level": 6}, {"soreness_level": 7}, {"soreness_level": 8}],
+    )
+
+    assert status["needed"] is True
+    assert status["indicators"] == ["2 exercises regressing", "High soreness levels"]
+
+
+def test_next_workout_ignores_unevaluable_legacy_deload_data(fitness_app, monkeypatch, caplog):
+    calls = 0
+    detector = fitness_app.detect_deload_need
+
+    def counting_detector(workouts, soreness_data):
+        nonlocal calls
+        calls += 1
+        return detector(workouts, soreness_data)
+
+    monkeypatch.setattr(fitness_app, "detect_deload_need", counting_detector)
+    legacy_workouts = [
+        {"date": "2026-07-01", "exercises": []},
+        {"date": "2026-07-01T12:00:00Z", "exercises": []},
+        {"date": "2026-07-03", "exercises": []},
+        {"date": "2026-07-04", "exercises": []},
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        recommendation = fitness_app.generate_next_workout(
+            legacy_workouts, [], available_time=120
+        )
+
+    assert calls == 1
+    assert recommendation["mesocycle"]["phase"] == "Overreach"
+    assert recommendation["mesocycle"].get("deload_forced") is None
+    assert "deload detector could not evaluate legacy workout data" in caplog.text
