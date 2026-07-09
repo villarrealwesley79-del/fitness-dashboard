@@ -8108,6 +8108,28 @@ def meal_intake_accept(client_id: str):
                     "save_blocked_item_ids": blocked_ids,
                     "error": {"message": "review has blocked items"},
                 }), 409
+        else:
+            persisted_parent = _food_log_by_client_id(user_id, meal_id)
+            if isinstance(persisted_parent, dict):
+                persisted_original = {
+                    field: persisted_parent.get(field)
+                    for field in ("source", "calories", "protein_g", "carbs_g", "fat_g")
+                }
+                if (
+                    persisted_original["source"] == "barcode_pending_source"
+                    and all(persisted_original[field] == 0 for field in ("calories", "protein_g", "carbs_g", "fat_g"))
+                ):
+                    items = data.get("items")
+                    if isinstance(items, list):
+                        data = {
+                            **data,
+                            "items": [
+                                {**item, "original_estimate": persisted_original}
+                                if isinstance(item, dict)
+                                else item
+                                for item in items
+                            ],
+                        }
         result = _meal_intake_accept_multi(client_id, data)
         if _review_response_code(result) < 400:
             meal_id = str(data.get("meal_id") or client_id).strip()

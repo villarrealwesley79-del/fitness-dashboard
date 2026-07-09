@@ -4268,6 +4268,85 @@ def test_barcode_pending_source_without_snapshot_still_requires_real_nutrition(m
     assert res.get_json()["error"]["code"] == "placeholder_nutrition_not_resolved"
 
 
+def test_snapshotless_items_cannot_accept_zero_barcode_placeholder(monkeypatch, tmp_path):
+    monkeypatch.setenv("SECRET_KEY", "fit349-coordinator-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "NUTRITION_DATA", [])
+    monkeypatch.setattr(module, "save_json", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+    monkeypatch.setattr(module.branded_food_lookup, "lookup_barcode", lambda *_a, **_kw: None)
+    client = module.app.test_client()
+
+    pending = client.post(
+        "/api/meal-intake/barcode",
+        json={"client_id": "fit349-snapshotless-zero", "barcode": "000000000000", "allow_pending": True},
+    )
+    assert pending.status_code == 200, pending.get_data(as_text=True)
+    body = pending.get_json()
+    data_store.delete_meal_review_snapshot(1, "fit349-snapshotless-zero")
+
+    estimate = dict(body["items"][0]["estimate"])
+    estimate.update({"source": "manual_review_estimate", "confidence": 0.8, "ambiguous": False})
+    response = client.post(
+        "/api/meal-intake/fit349-snapshotless-zero/accept",
+        json={
+            "meal_id": "fit349-snapshotless-zero",
+            "items": [{"item_id": body["items"][0]["item_id"], "state": "included", "estimate": estimate}],
+        },
+    )
+
+    rows = data_store.get_food_logs(1)
+    assert response.status_code == 422, response.get_data(as_text=True)
+    assert [(row["correction_state"], row["calories"]) for row in rows] == [("pending_review", 0)]
+    assert data_store.list_personal_vocab_entries(1) == []
+
+
+def test_snapshotless_items_accept_resolved_barcode_placeholder_and_train_vocab(monkeypatch, tmp_path):
+    monkeypatch.setenv("SECRET_KEY", "fit349-coordinator-positive-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "NUTRITION_DATA", [])
+    monkeypatch.setattr(module, "save_json", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+    monkeypatch.setattr(module.branded_food_lookup, "lookup_barcode", lambda *_a, **_kw: None)
+    client = module.app.test_client()
+
+    pending = client.post(
+        "/api/meal-intake/barcode",
+        json={"client_id": "fit349-snapshotless-positive", "barcode": "000000000000", "allow_pending": True},
+    )
+    assert pending.status_code == 200, pending.get_data(as_text=True)
+    body = pending.get_json()
+    data_store.delete_meal_review_snapshot(1, "fit349-snapshotless-positive")
+
+    estimate = dict(body["items"][0]["estimate"])
+    estimate.update({
+        "source": "manual_review_estimate",
+        "confidence": 0.8,
+        "ambiguous": False,
+        "calories": 180,
+        "protein_g": 12,
+        "carbs_g": 8,
+        "fat_g": 7,
+    })
+    response = client.post(
+        "/api/meal-intake/fit349-snapshotless-positive/accept",
+        json={
+            "meal_id": "fit349-snapshotless-positive",
+            "items": [{"item_id": body["items"][0]["item_id"], "state": "included", "estimate": estimate}],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert [(row["correction_state"], row["calories"]) for row in data_store.get_food_logs(1)] == [("corrected", 180)]
+    assert len(data_store.list_personal_vocab_entries(1)) == 1
+
+
 def test_meal_intake_barcode_validates_json_client_id_and_barcode(monkeypatch):
     module = _client(monkeypatch)
     client = module.app.test_client()
