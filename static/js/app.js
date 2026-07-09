@@ -7598,7 +7598,7 @@
             const reps = ex.target_reps || ex.reps || 10;
             const rpe = ex.rpe_target || ex.rpe || '7';
             ex.rpe = rpe; // keep for completeWorkout payload
-            const target = `${sets} × ${reps} RPE ${rpe}`;
+            const target = exerciseTargetText(ex);
             let rowsHtml = '';
             ex.logged_sets.forEach((set, sidx) => {
                 // FIT-108: flag the first incomplete set across the whole

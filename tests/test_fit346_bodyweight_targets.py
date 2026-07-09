@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import importlib
+import json
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
+
+
+APP_JS = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text()
 
 
 GOAL_PARAMS = {
@@ -69,3 +76,33 @@ def test_non_bodyweight_target_still_uses_minimum_load_clamp(module, monkeypatch
 
     assert entry["target_weight"] == 5
     assert "bodyweight" not in entry
+
+
+def test_bodyweight_target_display_uses_bw_for_active_and_preview_cards():
+    if not shutil.which("node"):
+        pytest.skip("FIT-346 display regression requires node to execute app.js")
+
+    active_workout_block = APP_JS.split("function renderActiveWorkout()", 1)[1]
+    assert "const target = exerciseTargetText(ex);" in active_workout_block
+
+    helper_source = APP_JS.split("function exerciseTargetText(ex)", 1)[1].split("// FIT-105", 1)[0]
+    node_script = f"""
+const vm = require('node:vm');
+const helperSource = {json.dumps(helper_source)};
+const sandbox = {{ module: {{ exports: {{}} }} }};
+vm.runInNewContext(`
+function exerciseTargetText(ex) {{${{helperSource}}}}
+module.exports = {{ exerciseTargetText }};
+`, sandbox);
+process.stdout.write(JSON.stringify({{
+  bodyweight: sandbox.module.exports.exerciseTargetText({{ target_sets: 3, target_reps: 10, target_weight: 0, bodyweight: true, rpe_target: 7 }}),
+  weighted: sandbox.module.exports.exerciseTargetText({{ target_sets: 3, target_reps: 10, target_weight: 85, rpe_target: 7 }}),
+}}));
+"""
+    result = subprocess.run(["node", "-e", node_script], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "bodyweight": "3 × 10 · BW · RPE 7",
+        "weighted": "3 × 10 · 85 lb · RPE 7",
+    }
