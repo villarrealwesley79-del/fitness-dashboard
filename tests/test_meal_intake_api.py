@@ -4192,6 +4192,20 @@ def test_barcode_pending_source_accept_requires_real_nutrition_before_vocab_trai
         "state": "included",
         "estimate": laundered,
     }
+    mismatched_meal_id = client.post(
+        "/api/meal-intake/fit349-barcode-1/accept",
+        json={
+            "meal_id": "fit349-route-body-mismatch",
+            "items": [laundered_item],
+        },
+    )
+    assert mismatched_meal_id.status_code == 400, mismatched_meal_id.get_data(as_text=True)
+    assert mismatched_meal_id.get_json()["error"]["code"] == "invalid_field"
+    assert data_store.get_meal_review_snapshot(1, "fit349-barcode-1") is not None
+    assert data_store.get_meal_acceptance_event(1, "fit349-route-body-mismatch") is None
+    assert [row["correction_state"] for row in data_store.get_food_logs(1)] == ["pending_review"]
+    assert data_store.list_personal_vocab_entries(1) == []
+
     renamed = client.post(
         "/api/meal-intake/fit349-barcode-1/accept",
         json={

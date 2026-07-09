@@ -8066,6 +8066,36 @@ def meal_intake_accept(client_id: str):
     user_id = _current_data_user_id()
     if "items" in data:
         meal_id = str(data.get("meal_id") or client_id).strip()
+        if meal_id != client_id:
+            route_snapshot = get_meal_review_snapshot(user_id, client_id)
+            route_snapshot_items = (
+                route_snapshot.get("payload", {}).get("items") or []
+                if isinstance(route_snapshot, dict)
+                else []
+            )
+            route_has_placeholder = any(
+                isinstance(item, dict)
+                and _review_placeholder_nutrition_not_resolved({
+                    "estimate": {},
+                    "original_estimate": item.get("original_estimate"),
+                })
+                for item in route_snapshot_items
+            )
+            route_parent = _food_log_by_client_id(user_id, client_id)
+            if isinstance(route_parent, dict):
+                route_has_placeholder = route_has_placeholder or _review_placeholder_nutrition_not_resolved({
+                    "estimate": {},
+                    "original_estimate": {
+                        field: route_parent.get(field)
+                        for field in ("source", "calories", "protein_g", "carbs_g", "fat_g")
+                    },
+                })
+            if route_has_placeholder:
+                return api_error(
+                    "meal_id must match the pending barcode review route",
+                    400,
+                    code="invalid_field",
+                )
         snapshot = get_meal_review_snapshot(user_id, meal_id)
         if snapshot:
             items = data.get("items")
