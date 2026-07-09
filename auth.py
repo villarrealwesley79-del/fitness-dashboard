@@ -7,6 +7,7 @@ import os
 import sqlite3
 import hmac
 import hashlib
+import logging
 import re
 import secrets
 import time
@@ -65,6 +66,8 @@ _CSRF_EXEMPT_PATHS = {
 }
 _PASSWORD_HASH_METHOD = "scrypt:32768:8:1"
 _LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
+_INVALID_OWNER_USER_ID = object()
+_owner_config_error_logged = False
 
 
 @contextmanager
@@ -240,16 +243,26 @@ def _owner_user_id():
         try:
             return int(configured)
         except ValueError:
-            return None
+            return _INVALID_OWNER_USER_ID
     with _get_db() as conn:
         row = conn.execute("SELECT MIN(id) FROM users").fetchone()
     return int(row[0]) if row and row[0] is not None else None
 
 
 def _is_owner_user_id(user_id) -> bool:
+    global _owner_config_error_logged
+
     if not _single_user_mode():
         return True
     owner_id = _owner_user_id()
+    if owner_id is _INVALID_OWNER_USER_ID:
+        if not _owner_config_error_logged:
+            logging.getLogger(__name__).error(
+                "FITNESS_DASHBOARD_OWNER_USER_ID is set but not an integer; "
+                "owner-only routes are locked until fixed"
+            )
+            _owner_config_error_logged = True
+        return False
     if owner_id is None:
         return True
     try:
@@ -341,12 +354,11 @@ def logout():
 # expose the sync token hint and last-sync metadata.
 _PUBLIC_PREFIXES = (
     "/login", "/register", "/logout",
-    "/landing", "/pricing",
+    "/landing",  # Separate dormant landing surface; FIT-297 owns its allowlist state.
     "/manifest.json", "/sw.js",
     "/static/",           # prefix — any static asset
     "/robots.txt", "/sitemap.xml",  # SEO crawlers
-    "/webhook",            # Stripe webhook — must be unauthenticated
-    "/success", "/cancel", # Post-checkout pages
+    # Stripe blueprint is dormant and intentionally unregistered; see FIT-299.
     "/api/apple-health/sync",   # exact — the POST webhook; its token is its auth
 )
 
