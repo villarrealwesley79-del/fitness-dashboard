@@ -14461,7 +14461,6 @@ def smart_recommendation_api():
             completed_sets_by_exercise=completed_sets_by_exercise,
         )
         if workout_adaptation_events:
-            _persist_current_workout_plan(next_workout, _workout_recommendation_fingerprint())
             nutrition_context = _nutrition_context_for_date(
                 today,
                 hard_training_planned=_workout_looks_hard(next_workout),
