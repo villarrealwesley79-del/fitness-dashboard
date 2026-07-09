@@ -14781,7 +14781,7 @@ def smart_recommendation_api():
     active_open_requested = active_open_raw in {"1", "true", "yes"}
     completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
     fingerprint = _workout_recommendation_fingerprint()
-    current_plan = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
+    current_plan = _current_workout_plan_for_fingerprint(fingerprint)
     if current_plan:
         next_workout = current_plan
         nutrition_context = _nutrition_context_for_date(
