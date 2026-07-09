@@ -140,12 +140,19 @@ def test_swap_uses_same_user_plan_after_fingerprint_drift(monkeypatch, tmp_path)
 
 def test_next_workout_uses_same_user_plan_after_fingerprint_drift(monkeypatch, tmp_path):
     module, client, _state = _client(monkeypatch, tmp_path)
+    weather_cache = {
+        "ts": 1,
+        "location": "San_Antonio",
+        "data": {"temp_f": 75, "feelslike_f": 75, "humidity_pct": 40},
+        "error": None,
+    }
+    monkeypatch.setattr(module, "_WEATHER_CACHE", weather_cache)
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: _recommendation(module))
 
     created = client.get("/api/next-workout")
     assert created.status_code == 200
 
-    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fp-after-refresh")
+    weather_cache["ts"] = 2
     monkeypatch.setattr(
         module,
         "generate_next_workout",

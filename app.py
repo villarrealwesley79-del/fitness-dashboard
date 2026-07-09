@@ -4813,7 +4813,6 @@ def _workout_recommendation_fingerprint():
         "recovery_latest": latest_marker(RECOVERY_DATA),
         "settings": {field: USER_SETTINGS.get(field) for field in settings_fields},
         "weather": {
-            "ts": _WEATHER_CACHE.get("ts"),
             "location": _WEATHER_CACHE.get("location"),
             "data": _WEATHER_CACHE.get("data"),
             "error": _WEATHER_CACHE.get("error"),
@@ -4884,7 +4883,7 @@ def api_next_workout():
     """Return only the active workout prescription for gym execution."""
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    current_plan = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
+    current_plan = _current_workout_plan_for_fingerprint(fingerprint)
     training_recommendation = _current_workout_training_recommendation()
     open_wearables_facts = _open_wearables_recommendation_facts()
     guarded_training_recommendation, open_wearables_modifier = _apply_open_wearables_recommendation_guard(
@@ -5166,7 +5165,7 @@ def api_dashboard():
         reason_bits.append(open_wearables_modifier["detail"])
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    next_workout = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
+    next_workout = _current_workout_plan_for_fingerprint(fingerprint)
     if not next_workout or next_workout.get("_fit136_lightweight_no_ow"):
         next_workout = generate_next_workout(
             WORKOUTS,
