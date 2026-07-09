@@ -1,7 +1,7 @@
 # Billing, Stripe & Landing — PRD
 
 > **Sources:** `stripe_checkout.py`, `templates/landing.html`, `templates/pricing.html`, `templates/checkout_success.html`, `templates/checkout_cancel.html`, `auth.py`, `app.py`, `tests/test_csrf_protection.py`, `tests/test_fit183_runtime_paths.py`, `tests/test_whoop_ui_contract.py`, `README.md`, `docs/CURRENT_STATE.md`
-> **Routes:** Blueprint contract: `/pricing`, `/create-checkout-session`, `/success`, `/cancel`, `/webhook`. Public allowlist also includes `/landing`. `stripe_bp` is defined but never registered (only `auth_bp` is registered in `auth.py`), so these blueprint routes 404 in the running app; `/landing` has no route.
+> **Routes:** Dormant blueprint contract: `/pricing`, `/create-checkout-session`, `/success`, `/cancel`, `/webhook`. `stripe_bp` is intentionally unregistered, so no Stripe handler is live. After FIT-299 removed `/pricing`, `/success`, `/cancel`, and `/webhook` from the public allowlist, anonymous browser requests enter the login guard (redirect; API-style requests receive 401); authenticated requests still 404 because no handler is registered. `/landing` remains in the allowlist but has no route; its state is unchanged and out of scope for FIT-299.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
 ## 1. Overview
@@ -10,7 +10,7 @@ Billing, Stripe & Landing is a partially implemented SaaS/productization layer a
 
 The intended billing scenario is: a visitor sees FitOS marketing, registers a local account, opens pricing, submits a CSRF-protected checkout form, is redirected to Stripe Checkout for a `$9/mo` subscription, and Stripe calls the webhook to mark that local user as Pro. If Stripe later sends subscription deleted or paused, the app revokes Pro for the row matching the Stripe subscription ID.
 
-The current reachable runtime is less complete. `stripe_checkout.py` defines a Flask blueprint, but the app never registers `stripe_bp`; only `auth_bp` is registered in the inspected Flask wiring. Similarly, `templates/landing.html` exists and `/landing` is public in auth, but no `/landing` route exists. This PRD documents both the implemented contract and the confirmed dead reachability.
+The current runtime deliberately leaves Stripe dormant. `stripe_checkout.py` defines `stripe_bp`, but the app intentionally does not register it; only `auth_bp` is registered in the inspected Flask wiring. The `stripe` package is absent from `requirements.txt`, so registering the blueprint would also fail at import time. Anonymous requests for the four removed allowlist paths now enter the normal login guard; after authentication, the missing handlers still return 404. Similarly, `templates/landing.html` exists and `/landing` remains public in auth, but no `/landing` route exists. Its allowlist entry and `_CSRF_EXEMPT_PATHS` are unchanged and out of scope for FIT-299.
 
 No current app feature gate was found that checks `current_user.is_pro` or `User.is_pro` before allowing Oura, smart recommendations, unlimited history, multi-user access, or priority features. The billing state is persisted, but the subscription is not currently a product access boundary in the inspected code.
 
@@ -19,10 +19,10 @@ No current app feature gate was found that checks `current_user.is_pro` or `User
 | Surface | File | Current reachability | Behavior |
 | --- | --- | --- | --- |
 | Landing page | `templates/landing.html` | Template exists; no `/landing` route. | Public marketing page for "FitOS — Evidence-Based Training Intelligence" with navigation, hero, social proof, stats, mock dashboard, feature cards, how-it-works, testimonials, pricing, FAQ, CTA, and footer. |
-| Pricing page | `templates/pricing.html` through `stripe_checkout.pricing` | Blueprint defined in `stripe_checkout.py` but never registered; route 404. | Public simple pricing page with Free and Pro cards. Pro card submits a CSRF-protected checkout form. |
-| Checkout success | `templates/checkout_success.html` through `/success` | Blueprint defined in `stripe_checkout.py` but never registered; route 404. | Public confirmation page saying Pro account is active and links to dashboard. Does not verify `session_id`. |
-| Checkout cancel | `templates/checkout_cancel.html` through `/cancel` | Blueprint defined in `stripe_checkout.py` but never registered; route 404. | Public cancellation page saying free account remains active and links back to pricing. |
-| Stripe webhook | `stripe_checkout.webhook` at `/webhook` | Blueprint defined in `stripe_checkout.py` but never registered; route 404. | External POST endpoint; auth-public and CSRF-exempt by path. Processes selected Stripe event types. |
+| Pricing page | `templates/pricing.html` through `stripe_checkout.pricing` | Dormant: no registered handler. Anonymous browser request redirects to login; authenticated request 404s. | Blueprint contract would render Free and Pro cards; it is not a live public page. |
+| Checkout success | `templates/checkout_success.html` through `/success` | Dormant: no registered handler. Anonymous browser request redirects to login; authenticated request 404s. | Blueprint contract would show a confirmation page; it is not live. |
+| Checkout cancel | `templates/checkout_cancel.html` through `/cancel` | Dormant: no registered handler. Anonymous browser request redirects to login; authenticated request 404s. | Blueprint contract would show a cancellation page; it is not live. |
+| Stripe webhook | `stripe_checkout.webhook` at `/webhook` | Dormant: no registered handler. Anonymous browser POST enters the login guard (redirect/401); authenticated request 404s. | Blueprint contract would process Stripe events; it is not auth-public at runtime. |
 
 The landing page content is more SaaS/market-facing than the rest of the app. It claims a seven-day free trial, Oura integration, recovery-based recommendations, HRV/sleep scoring, unlimited history, nutrition logging, cardio/weather integration, mobile PWA, testimonials, exportability, TLS, encrypted Oura token storage, and no data selling. Several of these are real app capabilities, but the trial/subscription gates and public SaaS posture are not enforced by inspected code.
 
@@ -89,76 +89,73 @@ API → No `/landing` route exists in the current app; auth allowlist includes `
 Success → User can read marketing content and start registration.  
 Failure → If no route is registered, request returns 404 despite template/public allowlist.
 
-### Public Pricing Browse
+### Dormant Pricing Blueprint Contract
 
 Trigger → Visitor opens intended `/pricing`.  
-Behavior → Renders plan cards and checkout form. Flash errors appear above cards.  
-Validation → None for GET.  
-API → `GET /pricing` in `stripe_checkout.py`.  
-Success → User can click Start Free Trial or submit Pro upgrade.  
-Failure → Blueprint is not registered, so the route is unreachable in the running app.
+Behavior → The unregistered blueprint would render plan cards and checkout form.  
+Validation → None for the dormant GET handler.  
+API → `GET /pricing` is defined in `stripe_checkout.py` but not registered.  
+Live behavior → Anonymous browser requests redirect to `/login`; API-style requests receive 401; authenticated requests 404 because no handler exists.  
+Status → Dormant by owner decision (FIT-299), not a public pricing surface.
 
 ### Start Checkout
 
-Trigger → Authenticated user submits Pro checkout form.  
-Behavior → Global CSRF guard accepts the form token or same-origin/XHR header signals; cross-origin browser posts are rejected. Route then checks Stripe client and price config. On success, it creates a Stripe hosted Checkout Session and returns a 303 redirect to `session.url`.  
-Validation → Requires login. Requires `STRIPE_SECRET_KEY`. Requires `STRIPE_PRICE_ID`. Stripe validates price/payment configuration.  
-API → `POST /create-checkout-session`.  
-Success → Browser leaves the app for Stripe Checkout.  
-Failure → Missing Stripe config redirects back to pricing with flash. Stripe API exception is flashed back to pricing.
+Trigger → Authenticated user would submit the dormant Pro checkout form.  
+Behavior → The unregistered handler contains CSRF, Stripe-client, and price checks, but it is never reached at runtime.  
+Validation → Blueprint contract requires login, `STRIPE_SECRET_KEY`, and `STRIPE_PRICE_ID`; the missing `stripe` package prevents safe registration.  
+API → `POST /create-checkout-session` is defined but not registered.  
+Live behavior → Anonymous requests enter the login guard; authenticated requests 404.  
+Status → No checkout session can be created by the live app.
 
 ### Checkout Success Page
 
-Trigger → Stripe redirects to `/success?session_id=<id>`.  
-Behavior → Renders success page and "Go to Dashboard" link.  
-Validation → Does not retrieve or verify the `session_id`. Does not itself mark Pro.  
-API → `GET /success`.  
-Success → User sees success confirmation.  
-Failure → If webhook has not fired or blueprint is unreachable, local `is_pro` may not match the page copy.
+Trigger → Stripe would redirect to `/success?session_id=<id>` if the dormant integration were activated.  
+Behavior → The unregistered handler would render a success page.  
+Validation → Its dormant contract does not retrieve or verify `session_id`.  
+API → `GET /success` is defined but not registered.  
+Live behavior → Anonymous browser requests redirect to login; authenticated requests 404.
 
 ### Checkout Cancel Page
 
-Trigger → Stripe redirects to `/cancel`.  
-Behavior → Renders cancellation page.  
-Validation → None.  
-API → `GET /cancel`.  
-Success → User sees that free account remains active and can return to pricing.
+Trigger → Stripe would redirect to `/cancel` if the dormant integration were activated.  
+Behavior → The unregistered handler would render a cancellation page.  
+Validation → None in the dormant handler.  
+API → `GET /cancel` is defined but not registered.  
+Live behavior → Anonymous browser requests redirect to login; authenticated requests 404.
 
 ### Webhook Subscription Activation
 
-Trigger → Stripe posts `checkout.session.completed` to `/webhook`.  
-Behavior → If `STRIPE_WEBHOOK_SECRET` is set, verifies signature with `stripe.Webhook.construct_event`. If not set, parses raw JSON without signature verification. Extracts local `metadata.user_id`, customer ID, and subscription ID, then updates `users.is_pro=1`, `stripe_customer`, and `stripe_sub`.  
-Validation → Requires `STRIPE_SECRET_KEY` because `get_stripe()` must return a configured Stripe module. Signature verification is optional based on env.  
-API → `POST /webhook`.  
-Success → HTTP 200 empty body. Local user row is upgraded if the row exists and helper does not error.  
-Failure → Missing Stripe config returns HTTP 400. Invalid payload/signature returns HTTP 400. Helper exceptions are logged but do not change the HTTP 200 response.
+Trigger → Stripe would post `checkout.session.completed` if the dormant integration were activated.  
+Behavior → The unregistered handler contains the documented signature and entitlement logic, but it is never reached at runtime.  
+Validation → The dormant contract requires the `stripe` module and configuration; the package is absent from `requirements.txt`.  
+API → `POST /webhook` is defined but not registered.  
+Live behavior → Anonymous browser POST enters the login guard (redirect; API-style request 401); authenticated request 404s. No Stripe handler is served.
 
 ### Webhook Subscription Revocation
 
-Trigger → Stripe posts `customer.subscription.deleted` or `customer.subscription.paused`.  
-Behavior → Looks up `users.id` where `stripe_sub` equals the Stripe subscription ID. If found, sets `is_pro=0` and `stripe_sub=NULL`; `stripe_customer` is left unchanged.  
-Validation → Same webhook parsing rules as activation.  
-API → `POST /webhook`.  
-Success → HTTP 200 empty body whether or not a row was found.  
-Failure → Helper exceptions are logged, not surfaced to Stripe.
+Trigger → Stripe would post revocation events if the dormant integration were activated.  
+Behavior → The unregistered handler contains the documented revocation logic, but it is never reached at runtime.  
+API → `POST /webhook` is defined but not registered.  
+Live behavior → Anonymous requests enter the login guard; authenticated requests 404.
 
 ## 5. API Endpoints
 
 | Method | Path | Auth | Trigger | Key params | Response shape | Real/Mock |
 | --- | --- | --- | --- | --- | --- | --- |
 | GET | `/landing` | Public allowlist | Marketing page | None | HTML landing page | Dead route: template exists, no route found |
-| GET | `/pricing` | Public allowlist | Pricing page | None | HTML pricing page | Blueprint defined in `stripe_checkout.py` but never registered; route 404 |
-| POST | `/create-checkout-session` | Login required + CSRF | Upgrade button | Form `csrf_token`; env Stripe keys | 303 to Stripe or 302 back to pricing with flash | Blueprint defined in `stripe_checkout.py` but never registered; route 404 |
-| GET | `/success` | Public allowlist | Stripe return | Optional `session_id` ignored | HTML success page | Blueprint defined in `stripe_checkout.py` but never registered; route 404 |
-| GET | `/cancel` | Public allowlist | Stripe return | None | HTML cancel page | Blueprint defined in `stripe_checkout.py` but never registered; route 404 |
-| POST | `/webhook` | Public, CSRF-exempt | Stripe event delivery | Raw body, `Stripe-Signature` header | Empty 200 or text 400 | Blueprint defined in `stripe_checkout.py` but never registered; route 404 |
+| GET | `/pricing` | Anonymous: login redirect/401; authenticated: 404 | Dormant pricing contract | None | No live response from Stripe handler | Blueprint defined but intentionally unregistered |
+| POST | `/create-checkout-session` | Anonymous: login redirect/401; authenticated: 404 | Dormant checkout contract | Form `csrf_token`; env Stripe keys | No live checkout response | Blueprint defined but intentionally unregistered |
+| GET | `/success` | Anonymous: login redirect/401; authenticated: 404 | Dormant success contract | Optional `session_id` ignored | No live success response | Blueprint defined but intentionally unregistered |
+| GET | `/cancel` | Anonymous: login redirect/401; authenticated: 404 | Dormant cancellation contract | None | No live cancellation response | Blueprint defined but intentionally unregistered |
+| POST | `/webhook` | Anonymous: login redirect/401; authenticated: 404 | Dormant webhook contract | Raw body, `Stripe-Signature` header | No live webhook response | Blueprint defined but intentionally unregistered; `_CSRF_EXEMPT_PATHS` is unchanged and inert |
 
 Endpoint details:
 
-- `/create-checkout-session` returns HTTP 303 only on successful session creation.
-- `/webhook` returns HTTP 200 for ignored events, activation/revocation helper failures, and payment-failed logs.
-- `/webhook` accepts unsigned JSON when `STRIPE_WEBHOOK_SECRET` is empty, which is unsafe for production.
-- `/success` page copy says Pro is active before verifying local entitlement state.
+- The response behaviors below describe the dormant handler contract only; no live app route invokes them.
+- `/create-checkout-session` would return HTTP 303 only on successful session creation.
+- `/webhook` would return HTTP 200 for ignored events, activation/revocation helper failures, and payment-failed logs.
+- `/webhook` would accept unsigned JSON when `STRIPE_WEBHOOK_SECRET` is empty, which must be addressed before any future activation.
+- `/success` page copy would say Pro is active before verifying local entitlement state.
 
 ## 6. Data Model & Persistence
 
@@ -189,19 +186,19 @@ There is no separate subscriptions table, no webhook event log, no idempotency l
 
 ## 8. Integration Points
 
-Billing reads account email and user ID from the auth system. Stripe webhook writes back to the same auth database. The public allowlist in auth makes checkout-adjacent pages and `/webhook` reachable without login once their routes exist.
+The dormant billing contract reads account email and user ID from the auth system and would write Stripe webhook state back to the same auth database if activated. FIT-299 removed the four Stripe paths from the auth public allowlist, so anonymous live requests enter the login guard instead of reaching a missing handler. `/landing` remains allowlisted and `_CSRF_EXEMPT_PATHS` remains unchanged; both are out of scope for this decision.
 
 The landing/pricing promises reference other product areas: Oura, recommendation engine, workout logging, nutrition, cardio/weather, PWA, export/import, and data security. Those features are implemented elsewhere, but the paid/free division is not currently wired into those feature routes.
 
 Default single-user registration also blocks the documented funnel once any user exists: `/register` returns 403 unless `FITNESS_DASHBOARD_SINGLE_USER=false`. The owner-only global guard is stronger than missing Pro gates: authenticated non-owner users are rejected with 403 before reaching the dashboard, so a paying non-owner account could not use the product in the default model.
 
-Operations/deployment matter for billing because webhook verification depends on `STRIPE_WEBHOOK_SECRET` and public reachability depends on a host URL that Stripe can call. See [15-ops-deployment.md](15-ops-deployment.md).
+Operations/deployment would matter if the dormant integration were activated, because webhook verification depends on `STRIPE_WEBHOOK_SECRET` and public reachability depends on a host URL that Stripe can call. See [15-ops-deployment.md](15-ops-deployment.md). That separate inventory is report-only for FIT-299.
 
 ## 9. Permissions & Security
 
-`POST /create-checkout-session` is explicitly `@login_required` and must pass global CSRF. This prevents anonymous checkout sessions that cannot map back to a local user.
+The dormant `POST /create-checkout-session` handler is explicitly `@login_required` and would need to pass global CSRF if registered. At runtime, it is not registered: anonymous requests enter the login guard and authenticated requests 404.
 
-`POST /webhook` is public and CSRF-exempt. It is intended to be authenticated by Stripe signature verification. However, signature verification is conditional: when `STRIPE_WEBHOOK_SECRET` is unset, the code parses and trusts raw JSON. That is acceptable only for local/manual development and should not be considered production-safe.
+The dormant `POST /webhook` handler contains a conditional Stripe-signature check, but it is not live, public, or served by the app. `_CSRF_EXEMPT_PATHS` remains unchanged and inert for this unregistered handler. If Stripe is ever activated, its unsigned-JSON behavior must be addressed before making the endpoint public.
 
 Gunicorn/Docker/Procfile access log formats use `%(U)s` rather than full request line/query string. Tests assert query strings are not logged, which matters for OAuth and token-bearing URLs.
 
@@ -209,35 +206,35 @@ Secrets must come from environment. `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
 
 ## 10. Business Rules
 
-- Billing currently stores subscription state but does not gate product features.
+- The dormant billing contract stores subscription state but does not gate product features.
 - A user can register without email; Stripe checkout receives `customer_email=None` in that case.
 - Success page display does not prove webhook completion.
 - Subscription revocation depends on `stripe_sub` being stored during activation.
 - Payment failure does not revoke immediately; the code intentionally lets Stripe retry.
 - Unknown Stripe events are ignored with HTTP 200.
-- If Stripe API key is missing, webhook returns HTTP 400 even if signature secret is present.
-- If webhook helper fails to mark/revoke a user, Stripe still receives HTTP 200 because the helper catches and logs exceptions.
+- If activated, a missing Stripe API key would make the webhook return HTTP 400 even if a signature secret were present.
+- If activated, a webhook helper failure would still return HTTP 200 because the helper catches and logs exceptions.
 - The landing page's testimonials, social proof, and `87%` statistic are static marketing copy; no source or metric calculation was found in repo.
 
 ## 11. Config & Environment
 
 | Env var | Default | Behavior when unset |
 | --- | --- | --- |
-| `STRIPE_SECRET_KEY` | Empty | Checkout cannot start; webhook returns `Stripe not configured`, HTTP 400. |
-| `STRIPE_WEBHOOK_SECRET` | Empty | Webhook skips Stripe signature verification and trusts JSON body. |
-| `STRIPE_PRICE_ID` | Empty | Checkout redirects to pricing with "Stripe price not configured." |
+| `STRIPE_SECRET_KEY` | Empty | Dormant handler contract: checkout cannot start; webhook would return `Stripe not configured`, HTTP 400. |
+| `STRIPE_WEBHOOK_SECRET` | Empty | Dormant handler contract: webhook would skip Stripe signature verification and trust JSON body. |
+| `STRIPE_PRICE_ID` | Empty | Dormant handler contract: checkout would redirect to pricing with "Stripe price not configured." |
 | `FITNESS_DASHBOARD_SINGLE_USER` | true | When a user already exists, `/register` returns 403 unless this is false. |
 | `SECRET_KEY` | See auth PRD | Needed for sessions/CSRF form token. |
 | `DATA_DIR` | App directory | Determines `auth.db` location for subscription flags. |
 
 ## 12. Test Coverage
 
-Existing tests cover that the pricing page checkout form includes `csrf_token`, that all server-rendered POST forms include a CSRF token, that Stripe revocation helper uses `auth.AUTH_DB` under `DATA_DIR`, that revocation sets `[is_pro, stripe_sub]` to `[0, None]`, and that Docker/Procfile access logs avoid query strings.
+Existing tests cover that the pricing page checkout form includes `csrf_token`, that all server-rendered POST forms include a CSRF token, that Stripe revocation helper uses `auth.AUTH_DB` under `DATA_DIR`, that revocation sets `[is_pro, stripe_sub]` to `[0, None]`, and that Docker/Procfile access logs avoid query strings. `tests/test_fit299_stripe_dormancy.py` also proves the anonymous login-guard behavior for `/pricing`, `/success`, `/cancel`, and `/webhook`, and confirms that no app URL rule registers `/webhook`.
 
 Coverage gaps:
 
-- No test proves `stripe_bp` is registered with the app.
-- No test proves `/landing`, `/pricing`, `/success`, `/cancel`, or `/webhook` are reachable in the real Flask app.
+- No test proves the entire dormant `stripe_bp` route set is absent; FIT-299 proves the critical `/webhook` rule is unregistered and the four removed public paths enter the anonymous login guard.
+- No test proves `/landing` is reachable in the real Flask app; it remains an out-of-scope dead route. The four Stripe paths are intentionally not reachable as anonymous handlers.
 - No test verifies webhook signature is required in production.
 - No test covers `checkout.session.completed` upgrading a user through the route.
 - No test covers idempotent duplicate webhook delivery.
@@ -247,16 +244,10 @@ Coverage gaps:
 ## 13. Gaps & Issue Candidates
 
 ### IC-1: Register or remove the Stripe blueprint contract
-- **Type:** Bug
-- **Priority:** high
-- **Where:** `stripe_checkout.py:11`, `app.py:168-179`
-- **Problem:** The repo defines Stripe routes in `stripe_checkout.py`, and auth publicly allowlists those paths, but current app wiring does not import or register `stripe_bp`. The route inventory calls them additional blueprint routes, yet the inspected app object will not serve them unless an external wrapper registers the blueprint.
-- **Why it matters:** Billing pages and webhook behavior can appear implemented while being unreachable.
-- **Acceptance criteria:**
-  - The app either registers `stripe_bp` intentionally or deletes/marks the blueprint as dormant.
-  - Route tests cover `/pricing`, `/success`, `/cancel`, and `/webhook`.
-  - Auth public allowlist matches the chosen route set.
-- **Duplicate-of:** none
+- **Status:** Resolved as dormant by owner decision (FIT-299).
+- **Decision:** `stripe_bp` remains intentionally unregistered. The Stripe routes are no longer public-auth allowlist entries, so anonymous browser requests to `/pricing`, `/success`, `/cancel`, and `/webhook` are directed through the normal login guard instead of returning anonymous 404s.
+- **Dependency fact:** The `stripe` PyPI package is not installed and is absent from `requirements.txt`; registering `stripe_bp` today would fail when `stripe_checkout.py` imports `stripe`.
+- **Guard:** `tests/test_fit299_stripe_dormancy.py` verifies the anonymous login behavior and that no app URL rule registers `/webhook`.
 
 ### IC-2: Require signed Stripe webhooks outside local development
 - **Type:** Bug
