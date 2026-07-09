@@ -3394,7 +3394,6 @@ def _build_exercise_entry(
     progression,
     workouts,
     time_per_set,
-    deload_forced=False,
 ):
     min_reps, max_reps = goal_params["rep_range"]
     target_sets = goal_params["sets_per_exercise"]
@@ -3445,8 +3444,6 @@ def _build_exercise_entry(
     target_weight, target_reps, overload_note = _apply_progressive_overload(
         target_weight, target_reps, rpe_target, is_compound, last_perf
     )
-    if deload_forced:
-        target_weight = min(target_weight, round(current_e1rm * 0.7, 0))
     rationale = f"{rationale} · {overload_note}"
 
     if exercise_name == "Plank":
@@ -3805,7 +3802,6 @@ def generate_next_workout(
             progression=progression,
             workouts=workouts,
             time_per_set=time_per_set,
-            deload_forced=deload_forced,
         ))
 
     exercises.sort(key=lambda x: (not x["is_compound"], x["muscle"]))
@@ -4160,11 +4156,7 @@ def detect_deload_need(workouts: list, soreness_data: list) -> dict:
     plateaus = sum(1 for d in progression.values() if d["status"] == "Plateau")
 
     # Check average soreness
-    recent_soreness = [
-        s
-        for s in filter_recent_soreness(soreness_data, hours=48)
-        if s.get("soreness_level", 0) >= 6
-    ]
+    recent_soreness = [s for s in soreness_data if s.get("soreness_level", 0) >= 6]
 
     # Deload indicators
     indicators = []

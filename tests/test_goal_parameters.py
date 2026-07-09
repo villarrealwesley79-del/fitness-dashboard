@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 import pytest
 
@@ -191,29 +191,6 @@ def test_forced_deload_does_not_add_exercises_or_sets(fitness_app, monkeypatch):
     )
 
 
-def test_forced_deload_caps_prescribed_weight_at_seventy_percent_of_e1rm(
-    fitness_app, monkeypatch
-):
-    monkeypatch.setattr(
-        fitness_app,
-        "detect_deload_need",
-        lambda workouts, soreness_data: {"needed": True, "indicators": []},
-    )
-
-    forced = fitness_app.generate_next_workout(
-        _week_two_history(),
-        [],
-        goal=fitness_app.TrainingGoal.STRENGTH.value,
-        available_time=120,
-        consume_cardio_rotation=False,
-    )
-
-    assert all(
-        exercise["target_weight"] <= round(exercise["load_e1rm"] * 0.7, 0)
-        for exercise in forced["exercises"]
-    )
-
-
 def test_detect_deload_need_reports_regression_and_soreness_indicators(fitness_app, monkeypatch):
     today = date.today()
     workouts = [
@@ -234,11 +211,7 @@ def test_detect_deload_need_reports_regression_and_soreness_indicators(fitness_a
 
     status = fitness_app.detect_deload_need(
         workouts,
-        [
-            {"soreness_level": 6, "created_at": datetime.now().isoformat()},
-            {"soreness_level": 7, "created_at": datetime.now().isoformat()},
-            {"soreness_level": 8, "created_at": datetime.now().isoformat()},
-        ],
+        [{"soreness_level": 6}, {"soreness_level": 7}, {"soreness_level": 8}],
     )
 
     assert status["needed"] is True
@@ -254,36 +227,6 @@ def test_detect_deload_need_ignores_malformed_workout_dates(fitness_app):
             {"date": "2026-07-04", "exercises": []},
         ],
         [],
-    )
-
-    assert status["needed"] is False
-
-
-def test_detect_deload_need_ignores_stale_soreness(fitness_app, monkeypatch):
-    today = date.today()
-    workouts = [
-        {
-            "date": (today - timedelta(days=21 - offset * 3)).isoformat(),
-            "exercises": [],
-        }
-        for offset in range(8)
-    ]
-    monkeypatch.setattr(
-        fitness_app,
-        "calculate_progression_status",
-        lambda _workouts: {
-            "squat": {"status": "Regression"},
-            "bench": {"status": "Regression"},
-        },
-    )
-
-    status = fitness_app.detect_deload_need(
-        workouts,
-        [
-            {"soreness_level": 6, "created_at": "2020-01-01T00:00:00"},
-            {"soreness_level": 7, "created_at": "2020-01-01T00:00:00"},
-            {"soreness_level": 8, "created_at": "2020-01-01T00:00:00"},
-        ],
     )
 
     assert status["needed"] is False
