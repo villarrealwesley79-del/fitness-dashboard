@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -74,6 +75,55 @@ def test_login_success_sets_session_and_reaches_protected_route(tmp_path, monkey
     assert response.headers["Location"].endswith("/")
     assert "Set-Cookie" in response.headers
     assert client.get("/protected").status_code == 200
+
+
+def test_invalid_owner_id_locks_authenticated_non_owner_and_logs_error(tmp_path, monkeypatch, caplog):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("owner", "existing-password")
+    auth.User.create("member", "existing-password")
+    member = auth.User.get_by_username("member")
+    monkeypatch.setenv("FITNESS_DASHBOARD_OWNER_USER_ID", "not-an-integer")
+
+    client = app.test_client()
+    assert client.post(
+        "/login", data={"username": "member", "password": "existing-password"}
+    ).status_code == 302
+
+    with caplog.at_level(logging.ERROR, logger=auth.__name__):
+        response = client.get("/protected")
+
+    assert response.status_code == 403
+    assert auth._is_owner_user_id(member.id) is False
+    assert "FITNESS_DASHBOARD_OWNER_USER_ID is set but not an integer" in caplog.text
+
+
+def test_unset_owner_id_uses_lowest_user_id(tmp_path, monkeypatch):
+    _app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("owner", "existing-password")
+    auth.User.create("member", "existing-password")
+    owner = auth.User.get_by_username("owner")
+    member = auth.User.get_by_username("member")
+
+    assert auth._is_owner_user_id(owner.id) is True
+    assert auth._is_owner_user_id(member.id) is False
+
+
+def test_valid_owner_id_allows_only_configured_user(tmp_path, monkeypatch):
+    _app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("first", "existing-password")
+    auth.User.create("owner", "existing-password")
+    first_user = auth.User.get_by_username("first")
+    configured_owner = auth.User.get_by_username("owner")
+    monkeypatch.setenv("FITNESS_DASHBOARD_OWNER_USER_ID", str(configured_owner.id))
+
+    assert auth._is_owner_user_id(configured_owner.id) is True
+    assert auth._is_owner_user_id(first_user.id) is False
+
+
+def test_no_users_remains_permissive_for_first_run_setup(tmp_path, monkeypatch):
+    _app, auth = _make_auth_app(tmp_path, monkeypatch)
+
+    assert auth._is_owner_user_id("first-run") is True
 
 
 def test_login_db_unavailable_returns_503_not_invalid_credentials(tmp_path, monkeypatch):

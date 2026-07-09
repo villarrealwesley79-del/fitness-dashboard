@@ -13,7 +13,7 @@ def test_index_exposes_whoop_dashboard_and_settings_surfaces():
     html = INDEX_HTML.read_text()
 
     for token in [
-        '/static/css/app.css?v=20260627-fit249-auto-mobile-invite',
+        '/static/css/app.css?v=20260629-fit253-open-wearables-link',
         'id="reco-fresh-whoop"',
         'id="btn-reco-sources"',
         'id="reco-sources-summary"',
@@ -47,9 +47,9 @@ def test_whoop_release_assets_bust_cached_fit238_runtime():
     loader = APP_LOADER.read_text()
     service_worker = APP_SW.read_text()
 
-    assert "/static/js/app-loader.js?v=20260627-fit249-auto-mobile-invite" in html
-    assert "/static/js/app.js?v=20260627-fit249-auto-mobile-invite" in loader
-    assert "fitness-dashboard-v20260627-fit249-auto-mobile-invite" in service_worker
+    assert "/static/js/app-loader.js?v=20260629-fit253-open-wearables-link" in html
+    assert "/static/js/app.js?v=20260629-fit253-open-wearables-link" in loader
+    assert "fitness-dashboard-v20260629-fit253-open-wearables-link" in service_worker
 
 
 def test_whoop_secret_patterns_are_excluded_from_docker_context():
@@ -177,6 +177,8 @@ def test_whoop_recommendation_source_conflict_accepts_nested_backend_shape():
     assert "if (entries && !Array.isArray(entries) && typeof entries === 'object')" in app_js
     assert "entries.whoop" in app_js
     assert "entries.load_source" in app_js
+    assert "if (entries.whoop && !entries.whoop.summary_hidden)" in app_js
+    assert "if (entries.load_source && !entries.load_source_summary_hidden)" in app_js
     assert "function recommendationSourceConflictNode(payload)" in app_js
     assert "payload.recommendation_sources && payload.recommendation_sources.source_conflict" in app_js
     assert "function collectSourceConflicts(dash, reco)" in app_js
