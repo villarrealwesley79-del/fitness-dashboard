@@ -8215,12 +8215,20 @@ def meal_intake_accept(client_id: str):
     terminal = _meal_terminal_idempotency_response(user_id, client_id, originated_from_image)
     if terminal is not None:
         return terminal
+    stored_placeholder_original = None
     existing = _food_log_by_client_id(user_id, client_id)
     if isinstance(existing, dict):
-        stored_original = {
-            field: existing.get(field)
-            for field in ("source", "calories", "protein_g", "carbs_g", "fat_g")
-        }
+        stored_original = existing.get("original_estimate")
+        if not isinstance(stored_original, dict):
+            stored_original = {
+                field: existing.get(field)
+                for field in ("source", "calories", "protein_g", "carbs_g", "fat_g")
+            }
+        if _review_placeholder_nutrition_not_resolved({
+            "estimate": {},
+            "original_estimate": stored_original,
+        }):
+            stored_placeholder_original = stored_original
         if _review_placeholder_nutrition_not_resolved({
             "estimate": raw_estimate,
             "original_estimate": stored_original,
@@ -8255,13 +8263,14 @@ def meal_intake_accept(client_id: str):
     local_iso, err = _coerce_str(data.get("local_iso"), "local_iso", required=False, max_len=64)
     if err:
         return err
+    trusted_original = stored_placeholder_original or data.get("original_estimate")
     corrected = (
         bool(data.get("corrected"))
         or data.get("correction_state") == "corrected"
-        or _meal_accept_was_corrected(estimate, data.get("original_estimate"))
+        or _meal_accept_was_corrected(estimate, trusted_original)
     )
     correction_state = "corrected" if corrected else CORRECTION_STATE_ACCEPTED
-    original_for_log = _sanitize_original_estimate_for_log(data.get("original_estimate"), estimate)
+    original_for_log = _sanitize_original_estimate_for_log(trusted_original, estimate)
     food_log = _meal_intake_persist(
         client_id,
         estimate,
