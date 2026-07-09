@@ -1529,6 +1529,7 @@ def test_data_store_cache_round_trip(tmp_path, monkeypatch):
 
     assert row["user_id"] == 1
     assert row["source"] == "usda_fdc"
+    assert row["source_tier"] == "usda_fdc"
     assert row["response_json"] == response
     assert row["fetched_at"]
 
@@ -1539,6 +1540,41 @@ def test_data_store_cache_round_trip(tmp_path, monkeypatch):
     data_store.delete_user_data(1)
     assert data_store.get_branded_lookup_cache("banana", user_id=1) is None
     assert data_store.get_branded_lookup_cache("banana", user_id=2)["response_json"]["item_name"] == "User 2 banana"
+
+
+def test_text_fallback_cache_expires_before_top_tier_cache(monkeypatch):
+    base = {
+        "item_name": "Cached banana",
+        "portion_description": "100 g",
+        "meal_type": "snack",
+        "calories": 89,
+        "protein_g": 1.1,
+        "carbs_g": 22.8,
+        "fat_g": 0.3,
+        "sodium_mg": 1,
+        "fiber_g": 2.6,
+        "confidence": 0.85,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    }
+    old = (datetime.now() - timedelta(days=2)).isoformat(timespec="seconds")
+    row = {
+        "source": "usda_fdc",
+        "source_tier": "usda_fdc",
+        "response_json": {**base, "source": "usda_fdc"},
+        "fetched_at": old,
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: row)
+
+    assert branded_food_lookup._cache_lookup("banana", user_id=1) is None
+
+    row["source"] = "nutritionix"
+    row["source_tier"] = "nutritionix"
+    row["response_json"] = {**base, "source": "nutritionix"}
+    estimate = branded_food_lookup._cache_lookup("banana", user_id=1)
+
+    assert estimate["source"] == "local_cache"
+    assert estimate["underlying_source"] == "nutritionix"
 
 
 def test_normalize_barcode_accepts_supported_digit_lengths():
@@ -1605,6 +1641,43 @@ def test_lookup_barcode_uses_local_cache_first(monkeypatch):
     assert estimate["underlying_source"] == "nutritionix_barcode"
     assert estimate["item_name"] == "Cached chips"
     assert estimate["external_food_id"] == "cached-id"
+
+
+def test_barcode_fallback_cache_expires_before_top_tier_cache(monkeypatch):
+    base = {
+        "item_name": "Cached chips",
+        "portion_description": "1 bag",
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 3,
+        "carbs_g": 25,
+        "fat_g": 11,
+        "sodium_mg": 280,
+        "fiber_g": 2,
+        "confidence": 0.82,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "external_food_id": "500032837010",
+    }
+    old = (datetime.now() - timedelta(days=2)).isoformat(timespec="seconds")
+    row = {
+        "barcode": "500032837010",
+        "source": "open_food_facts_barcode",
+        "source_tier": "open_food_facts_barcode",
+        "response_json": {**base, "source": "open_food_facts_barcode"},
+        "fetched_at": old,
+    }
+    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: row)
+
+    assert branded_food_lookup._barcode_cache_lookup("500032837010", user_id=1) is None
+
+    row["source"] = "nutritionix_barcode"
+    row["source_tier"] = "nutritionix_barcode"
+    row["response_json"] = {**base, "source": "nutritionix_barcode"}
+    estimate = branded_food_lookup._barcode_cache_lookup("500032837010", user_id=1)
+
+    assert estimate["source"] == "local_cache"
+    assert estimate["underlying_source"] == "nutritionix_barcode"
 
 
 def test_lookup_barcode_off_cache_replay_derives_verified_source_url(monkeypatch):

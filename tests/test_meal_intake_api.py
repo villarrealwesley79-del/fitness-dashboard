@@ -418,6 +418,110 @@ def test_meal_intake_pending_retry_does_not_downgrade_accepted_row(monkeypatch):
     assert body["food_log"]["correction_state"] == "accepted"
 
 
+def test_meal_intake_late_parser_result_preserves_concurrent_accept(monkeypatch):
+    """A parser that finishes after accept must replay the terminal row."""
+    module = _client(monkeypatch)
+    client_id = "meal-race-accepted"
+    today = module._today_str()
+
+    def slow_parser(_text, **_kwargs):
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "date": today,
+                "logged_at": f"{today}T12:00:00",
+                "item_name": "Accepted chicken bowl",
+                "calories": 550,
+                "protein_g": 42,
+                "carbs_g": 48,
+                "fat_g": 20,
+                "sodium_mg": 780,
+                "fiber_g": 7,
+                "correction_state": "accepted",
+                "source": "manual_review_estimate",
+            },
+        )
+        data_store.save_meal_acceptance_event(
+            1,
+            meal_id=client_id,
+            status="accepted",
+            included_client_ids=[client_id],
+            skipped_count=0,
+            deleted_count=0,
+        )
+        return {
+            "estimate": _accepted_estimate(
+                item_name="Late estimate",
+                calories=300,
+                protein_g=5,
+                carbs_g=36,
+                fat_g=18,
+                confidence=0.45,
+                ambiguous=True,
+                uncertainty_notes=["Portion unclear."],
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", slow_parser)
+    client = module.app.test_client()
+    response = client.post(
+        "/api/meal-intake",
+        data={"text": "slow chicken estimate", "client_id": client_id},
+        content_type="multipart/form-data",
+    )
+    late_snapshot = data_store.save_meal_review_snapshot(
+        1,
+        meal_id=client_id,
+        payload={"status": "pending_review", "food_log": {"client_id": client_id}},
+        next_item_seq=1,
+    )
+    today_response = client.get("/api/nutrition-today")
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    body = response.get_json()
+    assert body["status"] == "logged"
+    assert body["food_log"]["correction_state"] == "accepted"
+    assert body["food_log"]["item_name"] == "Accepted chicken bowl"
+    assert body["food_log"]["calories"] == 550
+    assert late_snapshot["payload"]["status"] == "pending_review"
+    assert data_store.get_meal_review_snapshot(1, client_id) is None
+    assert data_store.get_food_logs(1)[0]["correction_state"] == "accepted"
+    assert today_response.get_json()["calories"] == 550
+
+
+def test_food_log_terminal_rows_reject_pending_but_allow_terminal_refresh(monkeypatch):
+    module = _client(monkeypatch)
+    client_id = "terminal-refresh-row"
+    today = module._today_str()
+
+    def save(calories, correction_state):
+        return data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "date": today,
+                "logged_at": f"{today}T12:00:00",
+                "item_name": "Terminal refresh row",
+                "calories": calories,
+                "protein_g": 20,
+                "carbs_g": 30,
+                "fat_g": 10,
+                "sodium_mg": 400,
+                "fiber_g": 5,
+                "correction_state": correction_state,
+                "source": "verified_lookup",
+            },
+        )
+
+    assert save(550, "accepted")["correction_state"] == "accepted"
+    assert save(300, "pending_review")["calories"] == 550
+    assert save(600, "corrected")["calories"] == 600
+    assert save(300, "pending_review")["correction_state"] == "corrected"
+    assert save(650, "accepted")["calories"] == 650
+
+
 def test_meal_intake_text_response_omits_meta_and_traces(monkeypatch):
     """No _meta, raw model output, or chain of thought may appear in the
     response shape exposed to the client.
