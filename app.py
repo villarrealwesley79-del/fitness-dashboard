@@ -16151,7 +16151,7 @@ def analytics_advanced():
     meso_pen=min(15, float(weeks_since)*2.5)
     fatigue=min(100, round(22+hrv_pen+sleep_pen+vol_pen+sore_pen+ar_pen+meso_pen,1))
     deload= fatigue >= USER_SETTINGS.get('fatigue_threshold',72)
-    perf_decline = detect_deload_need(WORKOUTS,SORENESS_DATA).get('recommended',False)
+    perf_decline = detect_deload_need(WORKOUTS,SORENESS_DATA).get('needed',False)
     return jsonify({
         'volume_landmarks': volume_landmarks,
         'fatigue_score': fatigue,
