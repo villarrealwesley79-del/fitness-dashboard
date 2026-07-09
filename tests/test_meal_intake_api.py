@@ -4178,13 +4178,29 @@ def test_barcode_pending_source_accept_requires_real_nutrition_before_vocab_trai
     assert pending.status_code == 200, pending.get_data(as_text=True)
     pending_body = pending.get_json()
 
+    malformed = client.post(
+        "/api/meal-intake/fit349-barcode-1/accept",
+        json={"meal_id": "fit349-barcode-1", "items": "not-a-list"},
+    )
+    assert malformed.status_code == 400, malformed.get_data(as_text=True)
+    assert data_store.get_meal_review_snapshot(1, "fit349-barcode-1") is not None
+
     laundered = dict(pending_body["items"][0]["estimate"])
     laundered.update({"confidence": 0.8, "ambiguous": False, "source": "manual_review_estimate"})
     laundered_item = {
-        "item_id": "client-renamed-item",
+        "item_id": pending_body["items"][0]["item_id"],
         "state": "included",
         "estimate": laundered,
     }
+    renamed = client.post(
+        "/api/meal-intake/fit349-barcode-1/accept",
+        json={
+            "meal_id": "fit349-barcode-1",
+            "items": [{**laundered_item, "item_id": "client-renamed-item"}],
+        },
+    )
+    assert renamed.status_code == 400, renamed.get_data(as_text=True)
+
     rejected = client.post(
         "/api/meal-intake/fit349-barcode-1/accept",
         json={"meal_id": "fit349-barcode-1", "items": [laundered_item]},
@@ -4197,6 +4213,17 @@ def test_barcode_pending_source_accept_requires_real_nutrition_before_vocab_trai
     assert len(pending_rows) == 1
     assert pending_rows[0]["correction_state"] == "pending_review"
     assert data_store.list_personal_vocab_entries(1) == []
+
+    tiny_nutrition = dict(laundered)
+    tiny_nutrition.update({"calories": 0.1, "protein_g": 0.01})
+    still_unresolved = client.post(
+        "/api/meal-intake/fit349-barcode-1/accept",
+        json={
+            "meal_id": "fit349-barcode-1",
+            "items": [{**laundered_item, "estimate": tiny_nutrition}],
+        },
+    )
+    assert still_unresolved.status_code == 422, still_unresolved.get_data(as_text=True)
 
     resolved = dict(laundered)
     resolved.update({"calories": 180, "protein_g": 12, "carbs_g": 8, "fat_g": 7})
@@ -4212,6 +4239,33 @@ def test_barcode_pending_source_accept_requires_real_nutrition_before_vocab_trai
     assert data_store.get_meal_review_snapshot(1, "fit349-barcode-1") is None
     assert len(data_store.get_food_logs(1)) == 1
     assert len(data_store.list_personal_vocab_entries(1)) == 1
+
+
+def test_barcode_pending_source_without_snapshot_still_requires_real_nutrition(monkeypatch):
+    module = _client(monkeypatch)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "fit349-pending-without-snapshot",
+            "date": "2026-07-09",
+            "logged_at": "2026-07-09T12:00:00",
+            "item_name": "Barcode 000000000000",
+            "calories": 0,
+            "protein_g": 0,
+            "carbs_g": 0,
+            "fat_g": 0,
+            "source": "barcode_pending_source",
+            "correction_state": "pending_review",
+        },
+    )
+
+    res = module.app.test_client().post(
+        "/api/meal-intake/fit349-pending-without-snapshot/accept",
+        json={"estimate": _accepted_estimate(calories=0, protein_g=0, carbs_g=0, fat_g=0, source="manual_review_estimate")},
+    )
+
+    assert res.status_code == 422, res.get_data(as_text=True)
+    assert res.get_json()["error"]["code"] == "placeholder_nutrition_not_resolved"
 
 
 def test_meal_intake_barcode_validates_json_client_id_and_barcode(monkeypatch):

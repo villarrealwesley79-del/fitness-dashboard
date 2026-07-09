@@ -7041,6 +7041,15 @@ def _review_placeholder_nutrition_not_resolved(item: dict) -> bool:
     estimate = item.get("estimate")
     if not isinstance(estimate, dict):
         return True
+    try:
+        estimate = sanitize_meal_estimate(
+            estimate,
+            source=estimate.get("source") or "manual_review_estimate",
+            legacy_defaults=True,
+            plausible_ranges=True,
+        )
+    except MealEstimateValidationError:
+        return True
     calories = estimate.get("calories")
     if isinstance(calories, bool) or not isinstance(calories, (int, float)) or calories <= 0:
         return True
@@ -8059,24 +8068,28 @@ def meal_intake_accept(client_id: str):
         meal_id = str(data.get("meal_id") or client_id).strip()
         snapshot = get_meal_review_snapshot(user_id, meal_id)
         if snapshot:
-            items = data.get("items") if isinstance(data.get("items"), list) else []
+            items = data.get("items")
+            if not isinstance(items, list):
+                return api_error("items must be a list", 400, code="invalid_field")
             snapshot_items = snapshot.get("payload", {}).get("items") or []
             originals_by_id = {
                 str(item.get("item_id")): item.get("original_estimate")
                 for item in snapshot_items
                 if isinstance(item, dict) and isinstance(item.get("original_estimate"), dict)
             }
-            single_snapshot_original = (
-                next(iter(originals_by_id.values())) if len(snapshot_items) == 1 and len(originals_by_id) == 1 else None
-            )
             items_with_server_originals = []
+            seen_item_ids = set()
             for item in items:
                 if not isinstance(item, dict):
                     items_with_server_originals.append(item)
                     continue
-                original = originals_by_id.get(str(item.get("item_id") or "")) or single_snapshot_original
+                item_id = str(item.get("item_id") or "")
+                original = originals_by_id.get(item_id)
+                if not item_id or item_id in seen_item_ids or not isinstance(original, dict):
+                    return api_error("items must reference saved review items", 400, code="invalid_field")
+                seen_item_ids.add(item_id)
                 items_with_server_originals.append(
-                    {**item, "original_estimate": original} if isinstance(original, dict) else item
+                    {**item, "original_estimate": original}
                 )
             data = {**data, "items": items_with_server_originals}
             placeholder_ids = _review_placeholder_nutrition_item_ids_for_accept_items(items_with_server_originals)
@@ -8145,6 +8158,21 @@ def meal_intake_accept(client_id: str):
     terminal = _meal_terminal_idempotency_response(user_id, client_id, originated_from_image)
     if terminal is not None:
         return terminal
+    existing = _food_log_by_client_id(user_id, client_id)
+    if isinstance(existing, dict):
+        stored_original = {
+            field: existing.get(field)
+            for field in ("source", "calories", "protein_g", "carbs_g", "fat_g")
+        }
+        if _review_placeholder_nutrition_not_resolved({
+            "estimate": raw_estimate,
+            "original_estimate": stored_original,
+        }):
+            return api_error(
+                "barcode pending source requires real nutrition before acceptance",
+                422,
+                code="placeholder_nutrition_not_resolved",
+            )
     try:
         estimate = sanitize_meal_estimate(
             raw_estimate,
