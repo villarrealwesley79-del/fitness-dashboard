@@ -1382,30 +1382,71 @@ def save_meal_review_snapshot(
     now_iso = datetime.now().isoformat(timespec="seconds")
     init_data_db()
     with _get_db() as conn:
-        row = conn.execute(
-            """
-            INSERT INTO meal_review_snapshots (
-                user_id, meal_id, payload_json, next_item_seq,
-                applied_refreshes_json, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, meal_id) DO UPDATE SET
-                payload_json = excluded.payload_json,
-                next_item_seq = excluded.next_item_seq,
-                applied_refreshes_json = excluded.applied_refreshes_json,
-                updated_at = excluded.updated_at
-            RETURNING *
-            """,
-            (
-                user_id,
-                key,
-                _json_dumps_or_none(payload) or "{}",
-                max(1, int(next_item_seq or 1)),
-                _json_dumps_or_none(applied_refreshes or {}) or "{}",
-                now_iso,
-                now_iso,
-            ),
-        ).fetchone()
+        if payload.get("status") == "pending_review":
+            terminal_food_log = conn.execute(
+                """
+                SELECT 1 FROM food_logs
+                WHERE user_id = ? AND (meal_id = ? OR client_id = ?)
+                  AND correction_state IN ('accepted', 'corrected')
+                LIMIT 1
+                """,
+                (user_id, key, key),
+            ).fetchone()
+            terminal_event = conn.execute(
+                """
+                SELECT 1 FROM meal_acceptance_events
+                WHERE user_id = ? AND meal_id = ?
+                LIMIT 1
+                """,
+                (user_id, key),
+            ).fetchone()
+            if terminal_food_log or terminal_event:
+                row = conn.execute(
+                    """
+                    SELECT * FROM meal_review_snapshots
+                    WHERE user_id = ? AND meal_id = ?
+                    """,
+                    (user_id, key),
+                ).fetchone()
+                if row is None:
+                    return {
+                        "user_id": user_id,
+                        "meal_id": key,
+                        "payload": payload,
+                        "next_item_seq": max(1, int(next_item_seq or 1)),
+                        "applied_refreshes": applied_refreshes or {},
+                        "created_at": now_iso,
+                        "updated_at": now_iso,
+                    }
+            else:
+                row = None
+        else:
+            row = None
+        if row is None:
+            row = conn.execute(
+                """
+                INSERT INTO meal_review_snapshots (
+                    user_id, meal_id, payload_json, next_item_seq,
+                    applied_refreshes_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, meal_id) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    next_item_seq = excluded.next_item_seq,
+                    applied_refreshes_json = excluded.applied_refreshes_json,
+                    updated_at = excluded.updated_at
+                RETURNING *
+                """,
+                (
+                    user_id,
+                    key,
+                    _json_dumps_or_none(payload) or "{}",
+                    max(1, int(next_item_seq or 1)),
+                    _json_dumps_or_none(applied_refreshes or {}) or "{}",
+                    now_iso,
+                    now_iso,
+                ),
+            ).fetchone()
         conn.commit()
     result = dict(row)
     result["payload"] = _json_loads_or_none(result.pop("payload_json", None)) or {}
@@ -1856,10 +1897,17 @@ def add_food_log(user_id: int, record: dict) -> dict:
             f"""
             INSERT INTO food_logs ({', '.join(cols)}) VALUES ({placeholders})
             ON CONFLICT(user_id, client_id) DO UPDATE SET {assignments}
+            WHERE excluded.correction_state != 'pending_review'
+               OR food_logs.correction_state NOT IN ('accepted', 'corrected')
             RETURNING *
             """,
             vals,
         ).fetchone()
+        if row is None and entry.get("client_id"):
+            row = conn.execute(
+                "SELECT * FROM food_logs WHERE user_id = ? AND client_id = ? LIMIT 1",
+                (user_id, entry["client_id"]),
+            ).fetchone()
         if refresh_metadata is not None and previous_row is not None and row is not None:
             _insert_food_log_refresh_event(
                 conn,
