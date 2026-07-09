@@ -21,7 +21,7 @@ GOAL_PARAMS = {
 }
 
 
-def _entry(module, exercise_name, *, progression=None):
+def _entry(module, exercise_name, *, progression=None, workouts=None):
     exercise = next(item for item in module.EXERCISE_LIBRARY if item["name"] == exercise_name)
     return module._build_exercise_entry(
         exercise_name,
@@ -34,7 +34,7 @@ def _entry(module, exercise_name, *, progression=None):
         {},
         [],
         progression or {},
-        [],
+        workouts or [],
         3,
     )
 
@@ -64,7 +64,31 @@ def test_weighted_pullup_history_keeps_numeric_target(module):
 
     assert entry["load_source"] == "progression"
     assert entry["target_weight"] == 85
+    assert entry["rationale"] == "Hypertrophy: +5 lbs progression · Baseline: no recent history"
     assert "bodyweight" not in entry
+
+
+@pytest.mark.parametrize("exercise_name", ["Dips", "Pullups"])
+def test_zero_weight_bodyweight_history_keeps_bodyweight_guidance(module, exercise_name):
+    entry = _entry(
+        module,
+        exercise_name,
+        workouts=[
+            {
+                "date": "2026-07-08",
+                "exercises": [
+                    {
+                        "machine": exercise_name,
+                        "sets": [{"weight_lbs": 0, "reps": 10, "rpe": 6}],
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert entry["target_weight"] == 0
+    assert entry["bodyweight"] is True
+    assert entry["rationale"] == "Hypertrophy: Bodyweight — prioritize controlled reps, form, and effort"
 
 
 def test_non_bodyweight_target_still_uses_minimum_load_clamp(module, monkeypatch):
@@ -75,6 +99,7 @@ def test_non_bodyweight_target_still_uses_minimum_load_clamp(module, monkeypatch
     entry = _entry(module, "Lateral Raise")
 
     assert entry["target_weight"] == 5
+    assert entry["rationale"] == "Hypertrophy: Starting weight — log your first session to calibrate · Baseline: no recent history"
     assert "bodyweight" not in entry
 
 

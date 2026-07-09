@@ -3446,10 +3446,11 @@ def _build_exercise_entry(
     volume_adjusted_sets = max(1, round(sets * volume_multiplier))
 
     last_perf = _get_last_exercise_performance(workouts, exercise_name)
-    target_weight, target_reps, overload_note = _apply_progressive_overload(
-        target_weight, target_reps, rpe_target, is_compound, last_perf
-    )
-    rationale = f"{rationale} · {overload_note}"
+    if not is_unweighted_bodyweight:
+        target_weight, target_reps, overload_note = _apply_progressive_overload(
+            target_weight, target_reps, rpe_target, is_compound, last_perf
+        )
+        rationale = f"{rationale} · {overload_note}"
 
     if exercise_name == "Plank":
         target_weight = 0
@@ -3458,6 +3459,7 @@ def _build_exercise_entry(
 
     if is_unweighted_bodyweight:
         target_weight = 0
+        rationale = f"{goal_params['name']}: Bodyweight — prioritize controlled reps, form, and effort"
 
     rest_label = f"{rest_time} min"
     entry = {
