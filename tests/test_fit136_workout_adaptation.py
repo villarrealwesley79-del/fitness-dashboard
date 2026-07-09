@@ -201,8 +201,11 @@ def test_under_fueled_adaptation_reduces_and_clamps_to_available_time(monkeypatc
     assert coverage["entries_count"] == 2
     assert coverage["meal_windows_count"] == 2
     assert coverage["first_coverage_hour"] == 8
+    assert coverage["first_coverage_minute"] == 8 * 60
     assert coverage["coverage_hour"] == 18
     assert coverage["coverage_span_hours"] == 10
+    assert coverage["coverage_minute"] == 18 * 60
+    assert coverage["coverage_span_minutes"] == 600
     assert coverage["target_fraction"] == 1.0
     assert coverage["effective_calorie_pct_threshold"] == 60.0
     assert coverage["effective_protein_pct_threshold"] == 80.0
@@ -250,8 +253,11 @@ def test_late_day_single_partial_meal_skips_volume_reduction(monkeypatch, tmp_pa
     assert coverage["entries_count"] == 1
     assert coverage["meal_windows_count"] == 1
     assert coverage["first_coverage_hour"] == 17
+    assert coverage["first_coverage_minute"] == (17 * 60) + 43
     assert coverage["coverage_hour"] == 17
     assert coverage["coverage_span_hours"] == 0
+    assert coverage["coverage_minute"] == (17 * 60) + 43
+    assert coverage["coverage_span_minutes"] == 0
 
 
 def test_multi_item_meal_does_not_satisfy_same_day_coverage(monkeypatch, tmp_path):
@@ -293,8 +299,101 @@ def test_multi_item_meal_does_not_satisfy_same_day_coverage(monkeypatch, tmp_pat
     assert coverage["entries_count"] == 2
     assert coverage["meal_windows_count"] == 1
     assert coverage["first_coverage_hour"] == 18
+    assert coverage["first_coverage_minute"] == 18 * 60
     assert coverage["coverage_hour"] == 18
     assert coverage["coverage_span_hours"] == 0
+    assert coverage["coverage_minute"] == 18 * 60
+    assert coverage["coverage_span_minutes"] == 0
+
+
+def test_late_two_hour_observation_does_not_satisfy_full_day_coverage(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    earlier_row = _food_log(
+        "late-first",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        meal_id="meal-late-first",
+        logged_at="2026-05-24T17:00:00",
+    )
+    trigger_row = _food_log(
+        "late-trigger",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        meal_id="meal-late-trigger",
+        logged_at="2026-05-24T18:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [trigger_row], clock=start)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[earlier_row, trigger_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    event = workout_adaptation.project_event(events[0])
+    assert event["status"] == "no_change"
+    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
+    assert patched["estimated_minutes"] == 60
+    coverage = event["reason_metadata"]["same_day_fueling_coverage"]
+    assert coverage["mode"] == "incomplete"
+    assert coverage["first_coverage_minute"] == 17 * 60
+    assert coverage["coverage_minute"] == 18 * 60
+    assert coverage["coverage_span_minutes"] == 60
+    assert coverage["first_coverage_hour"] == 17
+    assert coverage["coverage_hour"] == 18
+    assert coverage["coverage_span_hours"] == 1.0
+
+
+def test_one_minute_prorated_span_does_not_satisfy_coverage(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 9, 0, 0)
+    earlier_row = _food_log(
+        "minute-first",
+        calories=100,
+        protein_g=2,
+        confidence=0.9,
+        meal_id="meal-minute-first",
+        logged_at="2026-05-24T08:59:00",
+    )
+    trigger_row = _food_log(
+        "minute-trigger",
+        calories=100,
+        protein_g=2,
+        confidence=0.9,
+        meal_id="meal-minute-trigger",
+        logged_at="2026-05-24T09:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [trigger_row], clock=start)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[earlier_row, trigger_row],
+        nutrition_context=_nutrition_context(calories_pct=1, protein_pct=1, entries_count=2),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    event = workout_adaptation.project_event(events[0])
+    assert event["status"] == "no_change"
+    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
+    assert patched["estimated_minutes"] == 60
+    coverage = event["reason_metadata"]["same_day_fueling_coverage"]
+    assert coverage["mode"] == "incomplete"
+    assert coverage["first_coverage_minute"] == (8 * 60) + 59
+    assert coverage["coverage_minute"] == 9 * 60
+    assert coverage["coverage_span_minutes"] == 1
+    assert coverage["first_coverage_hour"] == 8
+    assert coverage["coverage_hour"] == 9
+    assert coverage["coverage_span_hours"] == 0.017
 
 
 def test_morning_full_entry_count_requires_prorated_deficit(monkeypatch, tmp_path):
@@ -335,8 +434,11 @@ def test_morning_full_entry_count_requires_prorated_deficit(monkeypatch, tmp_pat
         "entries_count": 2,
         "meal_windows_count": 2,
         "first_coverage_hour": 8,
+        "first_coverage_minute": 8 * 60,
         "coverage_hour": 12,
         "coverage_span_hours": 4,
+        "coverage_minute": 12 * 60,
+        "coverage_span_minutes": 240,
         "target_fraction": 0.4,
         "effective_calorie_pct_threshold": 24.0,
         "effective_protein_pct_threshold": 32.0,
@@ -380,8 +482,11 @@ def test_midday_prorated_deficit_reduces_volume(monkeypatch, tmp_path):
     assert coverage["mode"] == "prorated"
     assert coverage["meal_windows_count"] == 2
     assert coverage["first_coverage_hour"] == 8
+    assert coverage["first_coverage_minute"] == 8 * 60
     assert coverage["coverage_hour"] == 12
     assert coverage["coverage_span_hours"] == 4
+    assert coverage["coverage_minute"] == 12 * 60
+    assert coverage["coverage_span_minutes"] == 240
     assert coverage["target_fraction"] == 0.4
 
 

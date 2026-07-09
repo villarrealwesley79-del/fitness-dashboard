@@ -30,12 +30,16 @@ LATE_MEAL_HOUR = 20
 MIN_SAME_DAY_FUELING_ENTRIES = 2
 # Distinct meal windows prevent one multi-item meal from satisfying coverage.
 MIN_SAME_DAY_FUELING_WINDOWS = 2
-# A one-hour span confirms entries represent more than one immediate meal event.
-MIN_SAME_DAY_FUELING_SPAN_HOURS = 1
+# Sixty observed minutes prevent adjacent entries from representing one meal event.
+MIN_SAME_DAY_FUELING_SPAN_MINUTES = 60
 # Typical fueling is expected to begin by the morning meal window.
 TYPICAL_FUELING_WINDOW_START_HOUR = 8
 # Eighteen hundred permits same-day decisions before late-meal deferral begins.
 FULL_DAY_FUELING_COVERAGE_HOUR = 18
+# A full fueling window spans the typical 08:00 through 18:00 observation period.
+FULL_DAY_FUELING_SPAN_MINUTES = (
+    FULL_DAY_FUELING_COVERAGE_HOUR - TYPICAL_FUELING_WINDOW_START_HOUR
+) * 60
 HEAVY_MEAL_CALORIES = 900
 
 SCIENCE_CITATIONS = {
@@ -495,17 +499,24 @@ def _same_day_fueling_coverage(
     totals = nutrition_context.get("totals") or {}
     percentages = nutrition_context.get("percentages") or {}
     entries_count = int(totals.get("entries_count") or 0)
-    logged_hours = [hour for row in day_logs for hour in [_logged_hour(row)] if hour is not None]
+    observed_minutes = [
+        minute for row in day_logs for minute in [_observation_minute(row)] if minute is not None
+    ]
     meal_windows = {_fueling_window_key(row) for row in day_logs}
     meal_windows_count = len(meal_windows)
-    first_coverage_hour = min(logged_hours) if logged_hours else None
-    coverage_hour = max(logged_hours) if logged_hours else None
-    coverage_span_hours = (
-        coverage_hour - first_coverage_hour
-        if coverage_hour is not None and first_coverage_hour is not None
+    first_coverage_minute = min(observed_minutes) if observed_minutes else None
+    coverage_minute = max(observed_minutes) if observed_minutes else None
+    coverage_span_minutes = (
+        coverage_minute - first_coverage_minute
+        if coverage_minute is not None and first_coverage_minute is not None
         else 0
     )
-    target_fraction = _fueling_target_fraction(coverage_hour)
+    first_coverage_hour = (
+        first_coverage_minute // 60 if first_coverage_minute is not None else None
+    )
+    coverage_hour = coverage_minute // 60 if coverage_minute is not None else None
+    coverage_span_hours = round(coverage_span_minutes / 60, 3)
+    target_fraction = _fueling_target_fraction(coverage_minute)
     effective_calorie_pct_threshold = round(UNDER_FUELED_CALORIES_PCT * target_fraction, 3)
     effective_protein_pct_threshold = round(LOW_PROTEIN_PCT * target_fraction, 3)
     calories_pct = float(percentages.get("calories") or 0)
@@ -515,16 +526,22 @@ def _same_day_fueling_coverage(
     if (
         entries_count < MIN_SAME_DAY_FUELING_ENTRIES
         or meal_windows_count < MIN_SAME_DAY_FUELING_WINDOWS
-        or coverage_span_hours < MIN_SAME_DAY_FUELING_SPAN_HOURS
-        or coverage_hour is None
+        or coverage_span_minutes < MIN_SAME_DAY_FUELING_SPAN_MINUTES
+        or coverage_minute is None
     ):
         mode = "incomplete"
         sufficient = False
-    elif coverage_hour >= FULL_DAY_FUELING_COVERAGE_HOUR:
+    elif (
+        coverage_minute >= FULL_DAY_FUELING_COVERAGE_HOUR * 60
+        and coverage_span_minutes >= FULL_DAY_FUELING_SPAN_MINUTES
+    ):
         mode = "full_day"
         sufficient = True
         effective_calorie_pct_threshold = float(UNDER_FUELED_CALORIES_PCT)
         effective_protein_pct_threshold = float(LOW_PROTEIN_PCT)
+    elif coverage_minute >= FULL_DAY_FUELING_COVERAGE_HOUR * 60:
+        mode = "incomplete"
+        sufficient = False
     else:
         mode = "prorated"
         sufficient = (
@@ -544,8 +561,11 @@ def _same_day_fueling_coverage(
         "entries_count": entries_count,
         "meal_windows_count": meal_windows_count,
         "first_coverage_hour": first_coverage_hour,
+        "first_coverage_minute": first_coverage_minute,
         "coverage_hour": coverage_hour,
         "coverage_span_hours": coverage_span_hours,
+        "coverage_minute": coverage_minute,
+        "coverage_span_minutes": coverage_span_minutes,
         "target_fraction": target_fraction,
         "effective_calorie_pct_threshold": effective_calorie_pct_threshold,
         "effective_protein_pct_threshold": effective_protein_pct_threshold,
@@ -556,19 +576,18 @@ def _fueling_window_key(row: dict) -> tuple[str, str]:
     meal_id = str(row.get("meal_id") or "").strip()
     if meal_id:
         return ("meal_id", meal_id)
-    for field in ("logged_at", "local_timestamp"):
-        logged_at = _parse_iso(row.get(field))
-        if logged_at is not None:
-            return ("logged_at_minute", logged_at.replace(second=0, microsecond=0).isoformat())
+    observed_minute = _observation_minute(row)
+    if observed_minute is not None:
+        return ("logged_at_minute", str(observed_minute))
     return ("client_id", str(row.get("client_id") or ""))
 
 
-def _fueling_target_fraction(coverage_hour: int | None) -> float:
-    if coverage_hour is None:
+def _fueling_target_fraction(coverage_minute: int | None) -> float:
+    if coverage_minute is None:
         return 0.0
-    window_duration = FULL_DAY_FUELING_COVERAGE_HOUR - TYPICAL_FUELING_WINDOW_START_HOUR
-    elapsed_hours = coverage_hour - TYPICAL_FUELING_WINDOW_START_HOUR
-    return round(max(0.0, min(1.0, elapsed_hours / window_duration)), 3)
+    window_start_minute = TYPICAL_FUELING_WINDOW_START_HOUR * 60
+    elapsed_minutes = coverage_minute - window_start_minute
+    return round(max(0.0, min(1.0, elapsed_minutes / FULL_DAY_FUELING_SPAN_MINUTES)), 3)
 
 
 def _decide_change(
@@ -804,12 +823,17 @@ def _citations_for_rules(rules: list[str]) -> list[dict]:
     return [SCIENCE_CITATIONS[key] for key in sorted(keys)]
 
 
-def _logged_hour(row: dict) -> int | None:
+def _observation_minute(row: dict) -> int | None:
     for key in ("logged_at", "local_timestamp", "created_at"):
         dt = _parse_iso(row.get(key))
         if dt is not None:
-            return dt.hour
+            return (dt.hour * 60) + dt.minute
     return None
+
+
+def _logged_hour(row: dict) -> int | None:
+    observed_minute = _observation_minute(row)
+    return observed_minute // 60 if observed_minute is not None else None
 
 
 def _contains_alcohol(row: dict) -> bool:
