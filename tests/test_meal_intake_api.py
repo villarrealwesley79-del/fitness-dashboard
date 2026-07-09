@@ -4159,6 +4159,61 @@ def test_meal_intake_barcode_allow_pending_creates_uncached_review_draft(monkeyp
     assert body["save_blocked_item_ids"] == ["item-1"]
 
 
+def test_barcode_pending_source_accept_requires_real_nutrition_before_vocab_training(monkeypatch, tmp_path):
+    monkeypatch.setenv("SECRET_KEY", "fit349-barcode-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "NUTRITION_DATA", [])
+    monkeypatch.setattr(module, "save_json", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+    monkeypatch.setattr(module.branded_food_lookup, "lookup_barcode", lambda *_a, **_kw: None)
+    client = module.app.test_client()
+
+    pending = client.post(
+        "/api/meal-intake/barcode",
+        json={"client_id": "fit349-barcode-1", "barcode": "000000000000", "allow_pending": True},
+    )
+    assert pending.status_code == 200, pending.get_data(as_text=True)
+    pending_body = pending.get_json()
+
+    laundered = dict(pending_body["items"][0]["estimate"])
+    laundered.update({"confidence": 0.8, "ambiguous": False, "source": "manual_review_estimate"})
+    laundered_item = {
+        "item_id": pending_body["items"][0]["item_id"],
+        "state": "included",
+        "estimate": laundered,
+    }
+    rejected = client.post(
+        "/api/meal-intake/fit349-barcode-1/accept",
+        json={"meal_id": "fit349-barcode-1", "items": [laundered_item]},
+    )
+
+    assert rejected.status_code == 422, rejected.get_data(as_text=True)
+    assert rejected.get_json()["error"]["code"] == "placeholder_nutrition_not_resolved"
+    assert data_store.get_meal_review_snapshot(1, "fit349-barcode-1") is not None
+    pending_rows = data_store.get_food_logs(1)
+    assert len(pending_rows) == 1
+    assert pending_rows[0]["correction_state"] == "pending_review"
+    assert data_store.list_personal_vocab_entries(1) == []
+
+    resolved = dict(laundered)
+    resolved.update({"calories": 180, "protein_g": 12, "carbs_g": 8, "fat_g": 7})
+    accepted = client.post(
+        "/api/meal-intake/fit349-barcode-1/accept",
+        json={
+            "meal_id": "fit349-barcode-1",
+            "items": [{**laundered_item, "estimate": resolved}],
+        },
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    assert data_store.get_meal_review_snapshot(1, "fit349-barcode-1") is None
+    assert len(data_store.get_food_logs(1)) == 1
+    assert len(data_store.list_personal_vocab_entries(1)) == 1
+
+
 def test_meal_intake_barcode_validates_json_client_id_and_barcode(monkeypatch):
     module = _client(monkeypatch)
     client = module.app.test_client()

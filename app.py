@@ -7032,6 +7032,38 @@ def _review_blocked_item_ids_for_accept_items(items: list[dict]) -> list[str]:
     return blocked_ids
 
 
+def _review_placeholder_nutrition_not_resolved(item: dict) -> bool:
+    original = item.get("original_estimate")
+    if not isinstance(original, dict) or original.get("source") != "barcode_pending_source":
+        return False
+    if any(original.get(field) != 0 for field in ("calories", "protein_g", "carbs_g", "fat_g")):
+        return False
+    estimate = item.get("estimate")
+    if not isinstance(estimate, dict):
+        return True
+    calories = estimate.get("calories")
+    if isinstance(calories, bool) or not isinstance(calories, (int, float)) or calories <= 0:
+        return True
+    for field in ("protein_g", "carbs_g", "fat_g"):
+        value = estimate.get(field)
+        if not isinstance(value, bool) and isinstance(value, (int, float)) and value > 0:
+            return False
+    return True
+
+
+def _review_placeholder_nutrition_item_ids_for_accept_items(items: list[dict]) -> list[str]:
+    blocked_ids = []
+    for index, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            continue
+        state = str(raw.get("state") or raw.get("item_state") or raw.get("status") or "included").strip().lower()
+        if state != "included":
+            continue
+        if _review_placeholder_nutrition_not_resolved(raw):
+            blocked_ids.append(str(raw.get("item_id") or f"item-{index + 1}"))
+    return blocked_ids
+
+
 def _review_payload_from_estimate(
     *,
     meal_id: str,
@@ -7214,6 +7246,14 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
         for item in prepared
         if item["state"] == "included" and item["client_id"] not in existing_client_ids
     ]
+    placeholder_ids = _review_placeholder_nutrition_item_ids_for_accept_items(items_to_check)
+    if placeholder_ids:
+        return api_error(
+            "barcode pending source requires real nutrition before acceptance",
+            422,
+            code="placeholder_nutrition_not_resolved",
+            details={"meal_id": meal_id, "save_blocked_item_ids": placeholder_ids},
+        )
     blocked_ids = _review_blocked_item_ids_for_accept_items(items_to_check)
     if blocked_ids:
         return jsonify({
@@ -7326,7 +7366,13 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
             item_state="included",
         )
         rows.append(food_log)
-        if claim_food_log_vocab_learning(user_id, item["client_id"]):
+        if (
+            not _review_placeholder_nutrition_not_resolved({
+                "estimate": estimate,
+                "original_estimate": record["original_for_log"],
+            })
+            and claim_food_log_vocab_learning(user_id, item["client_id"])
+        ):
             vocab_phrase = record["text_hint"] or _meal_vocab_learning_phrase(None, estimate)
             if record["corrected"]:
                 personal_vocab.record_correct(user_id, vocab_phrase, estimate)
@@ -8011,9 +8057,34 @@ def meal_intake_accept(client_id: str):
     user_id = _current_data_user_id()
     if "items" in data:
         meal_id = str(data.get("meal_id") or client_id).strip()
-        if get_meal_review_snapshot(user_id, meal_id):
+        snapshot = get_meal_review_snapshot(user_id, meal_id)
+        if snapshot:
             items = data.get("items") if isinstance(data.get("items"), list) else []
-            blocked_ids = _review_blocked_item_ids_for_accept_items(items)
+            snapshot_items = snapshot.get("payload", {}).get("items") or []
+            originals_by_id = {
+                str(item.get("item_id")): item.get("original_estimate")
+                for item in snapshot_items
+                if isinstance(item, dict) and isinstance(item.get("original_estimate"), dict)
+            }
+            items_with_server_originals = []
+            for item in items:
+                if not isinstance(item, dict):
+                    items_with_server_originals.append(item)
+                    continue
+                original = originals_by_id.get(str(item.get("item_id") or ""))
+                items_with_server_originals.append(
+                    {**item, "original_estimate": original} if isinstance(original, dict) else item
+                )
+            data = {**data, "items": items_with_server_originals}
+            placeholder_ids = _review_placeholder_nutrition_item_ids_for_accept_items(items_with_server_originals)
+            if placeholder_ids:
+                return api_error(
+                    "barcode pending source requires real nutrition before acceptance",
+                    422,
+                    code="placeholder_nutrition_not_resolved",
+                    details={"meal_id": meal_id, "save_blocked_item_ids": placeholder_ids},
+                )
+            blocked_ids = _review_blocked_item_ids_for_accept_items(items_with_server_originals)
             if blocked_ids:
                 return jsonify({
                     "status": "blocked",
@@ -8030,9 +8101,19 @@ def meal_intake_accept(client_id: str):
     if snapshot:
         snapshot_payload = snapshot["payload"]
         try:
-            snapshot_items = _review_snapshot_items_for_accept(snapshot_payload, data)
+            snapshot_accept_data = dict(data)
+            snapshot_accept_data.pop("original_estimate", None)
+            snapshot_items = _review_snapshot_items_for_accept(snapshot_payload, snapshot_accept_data)
         except MealEstimateValidationError as exc:
             return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
+        placeholder_ids = _review_placeholder_nutrition_item_ids_for_accept_items(snapshot_items)
+        if placeholder_ids:
+            return api_error(
+                "barcode pending source requires real nutrition before acceptance",
+                422,
+                code="placeholder_nutrition_not_resolved",
+                details={"meal_id": client_id, "save_blocked_item_ids": placeholder_ids},
+            )
         blocked_ids = _review_blocked_item_ids_for_accept_items(snapshot_items)
         if blocked_ids:
             return jsonify({
@@ -8105,7 +8186,13 @@ def meal_intake_accept(client_id: str):
         correction_state=correction_state,
         original_estimate=original_for_log,
     )
-    if claim_food_log_vocab_learning(user_id, client_id):
+    if (
+        not _review_placeholder_nutrition_not_resolved({
+            "estimate": estimate,
+            "original_estimate": original_for_log,
+        })
+        and claim_food_log_vocab_learning(user_id, client_id)
+    ):
         if corrected:
             vocab_phrase = text_hint or _meal_vocab_learning_phrase(None, estimate)
             personal_vocab.record_correct(user_id, vocab_phrase, estimate)
