@@ -11690,6 +11690,11 @@ def _open_wearables_public_status(providers=None, error_code=None, provider_acti
         providers=providers or [],
         error_code=error_code,
     ).public_dict()
+    replacement_source_dates = _open_wearables_replacement_source_dates()
+    replacement_sources = sorted(replacement_source_dates)
+    payload["facts_ready"] = bool(replacement_sources)
+    payload["replacement_sources"] = replacement_sources
+    payload["replacement_source_dates"] = replacement_source_dates
     if (
         payload.get("auth_configured")
         and payload.get("user_mapped")
@@ -11753,6 +11758,10 @@ def _open_wearables_status_source(status_payload=None):
         "last_data_point": None,
         "score_state": None,
         "source_kind": "hub",
+        "providers": status_payload.get("providers") or [],
+        "facts_ready": bool(status_payload.get("facts_ready")),
+        "replacement_sources": status_payload.get("replacement_sources") or [],
+        "replacement_source_dates": status_payload.get("replacement_source_dates") or {},
         "capabilities": {
             "providers": True,
             "metrics": True,
@@ -11769,41 +11778,234 @@ def _open_wearables_status_source(status_payload=None):
     }
 
 
+_OPEN_WEARABLES_DIRECT_SOURCE_PROVIDERS = {
+    "oura": {"oura"},
+    "apple_health": {"apple", "apple_health", "healthkit"},
+}
+
+
+def _normalize_open_wearables_provider_id(value):
+    return str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def _open_wearables_active_provider_ids(open_wearables_source):
+    if not isinstance(open_wearables_source, dict):
+        return set()
+    connected = bool(open_wearables_source.get("connected")) or open_wearables_source.get("hub_status") == "connected"
+    if not connected:
+        return set()
+    providers = open_wearables_source.get("providers")
+    if not isinstance(providers, list):
+        return set()
+    active_states = {"active", "connected", "enabled", "ok", "ready"}
+    provider_ids = set()
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        if provider.get("stale") or provider.get("error_code"):
+            continue
+        state = _normalize_open_wearables_provider_id(provider.get("state") or provider.get("status") or "connected")
+        if state not in active_states:
+            continue
+        provider_ids.add(_normalize_open_wearables_provider_id(
+            provider.get("provider_id")
+            or provider.get("provider")
+            or provider.get("id")
+            or provider.get("name")
+        ))
+    return {provider_id for provider_id in provider_ids if provider_id}
+
+
+def _open_wearables_supersedes_direct_source(source_key, open_wearables_source):
+    replacement_sources = set((open_wearables_source or {}).get("replacement_sources") or [])
+    if source_key not in replacement_sources:
+        return False
+    provider_ids = _open_wearables_active_provider_ids(open_wearables_source)
+    return bool(provider_ids & _OPEN_WEARABLES_DIRECT_SOURCE_PROVIDERS.get(source_key, set()))
+
+
+def _open_wearables_replacement_source_dates(now=None):
+    try:
+        stored_sources = list_wearable_sources(
+            WEARABLE_FACTS_DB_FILE,
+            profile_key=_open_wearables_profile_key(),
+        )
+    except Exception:
+        return {}
+    now_dt = now or datetime.now()
+    for source in stored_sources:
+        if source.get("provider_id") != "open_wearables":
+            continue
+        if source.get("status") not in {"fresh", "aging"}:
+            return {}
+        sync_dt = _parse_iso_date_or_datetime(source.get("last_sync_attempt"))
+        if not sync_dt:
+            return {}
+        age_days = (now_dt - sync_dt).total_seconds() / 86400.0
+        if age_days < 0 or age_days > 2:
+            return {}
+        capabilities = source.get("capabilities") if isinstance(source.get("capabilities"), dict) else {}
+        stored_replacement_dates = capabilities.get("replacement_source_dates")
+        if not isinstance(stored_replacement_dates, dict):
+            return {}
+        valid_sources = set(_OPEN_WEARABLES_DIRECT_SOURCE_PROVIDERS)
+        replacement_source_dates = {}
+        for source_key, date_value in stored_replacement_dates.items():
+            source_key = str(source_key or "").strip()
+            if source_key not in valid_sources:
+                continue
+            data_dt = _parse_iso_date_or_datetime(str(date_value or ""))
+            if not data_dt:
+                continue
+            data_age_days = (now_dt.date() - data_dt.date()).days
+            if 0 <= data_age_days <= 2:
+                replacement_source_dates[source_key] = data_dt.date().isoformat()
+        return replacement_source_dates
+    return {}
+
+
+def _open_wearables_replacement_sources(now=None):
+    return sorted(_open_wearables_replacement_source_dates(now=now))
+
+
+def _open_wearables_has_replacement_facts(now=None):
+    return bool(_open_wearables_replacement_sources(now=now))
+
+
+def _open_wearables_payload_rows(value):
+    if isinstance(value, dict):
+        rows = (
+            value.get("data")
+            or value.get("events")
+            or value.get("summaries")
+            or value.get("days")
+            or value.get("records")
+            or value.get("samples")
+            or value.get("items")
+            or []
+        )
+        if not rows and value.get("event"):
+            rows = [value.get("event")]
+        if not rows and value.get("summary"):
+            rows = [value.get("summary")]
+    elif isinstance(value, list):
+        rows = value
+    else:
+        rows = []
+    return rows if isinstance(rows, list) else []
+
+
+def _open_wearables_row_provider(row):
+    if not isinstance(row, dict):
+        return ""
+    source = row.get("source") if isinstance(row.get("source"), dict) else {}
+    return _normalize_open_wearables_provider_id(
+        source.get("provider")
+        or row.get("provider")
+        or row.get("provider_id")
+    )
+
+
+def _open_wearables_row_device(row):
+    if not isinstance(row, dict):
+        return ""
+    source = row.get("source") if isinstance(row.get("source"), dict) else {}
+    return _normalize_open_wearables_provider_id(source.get("device") or row.get("device"))
+
+
+def _open_wearables_row_date(row):
+    if not isinstance(row, dict):
+        return None
+    for key in ("date", "local_date", "day", "summary_date", "end_time", "endTime", "end", "start_time", "startTime", "start", "timestamp", "created_at"):
+        value = row.get(key)
+        if not value:
+            continue
+        dt = _parse_iso_date_or_datetime(str(value))
+        if dt:
+            return dt.date()
+        try:
+            return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+    return None
+
+
+def _open_wearables_row_replacement_sources(row):
+    replacement_sources = set()
+    provider = _open_wearables_row_provider(row)
+    device = _open_wearables_row_device(row)
+    if provider == "oura":
+        replacement_sources.add("oura")
+    if provider in {"apple", "apple_health", "healthkit"} or device.startswith(("iphone", "ipad", "watch", "apple_watch")):
+        # Apple Health is a health-store bridge; records often preserve
+        # the originating app as source.provider and the Apple device
+        # as source.device.
+        replacement_sources.add("apple_health")
+    return sorted(replacement_sources)
+
+
 def _store_wearable_facts_from_open_wearables(data):
     data = data if isinstance(data, dict) else {}
     profile_key = _open_wearables_profile_key()
     fetched_at = data.get("fetched_at") if isinstance(data.get("fetched_at"), str) else datetime.now().isoformat()
     errors = data.get("errors") if isinstance(data.get("errors"), dict) else {}
     status = "error" if errors else "fresh"
-    upsert_wearable_source(WEARABLE_FACTS_DB_FILE, {
-        "provider_id": "open_wearables",
-        "label": "Open Wearables",
-        "status": status,
-        "last_data_point": fetched_at[:10],
-        "last_sync_attempt": fetched_at,
-        "capabilities": {"metrics": True, "workouts": True, "history": True, "sync": True},
-        "used_for_recommendation": status != "error",
-    }, profile_key=profile_key)
+    replacement_source_dates = {}
+
+    def mark_replacement_sources(raw_row, date_s):
+        if not raw_row or not date_s:
+            return
+        for source_key in _open_wearables_row_replacement_sources(raw_row):
+            if date_s > replacement_source_dates.get(source_key, ""):
+                replacement_source_dates[source_key] = date_s
 
     facts = []
     activity = _extract_open_wearables_activity_summaries(data.get("activity_summary"))
     if activity:
         latest = sorted(activity, key=lambda row: row.get("date") or datetime.min.date())[-1]
         date_s = latest["date"].strftime("%Y-%m-%d")
+        added_activity_fact = False
         if latest.get("steps") is not None:
             facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "steps", latest.get("steps"), "count", confidence="medium", freshness=status))
+            added_activity_fact = True
         if latest.get("resting") is not None:
             facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "resting_heart_rate", latest.get("resting"), "bpm", confidence="medium", freshness=status))
+            added_activity_fact = True
         if latest.get("active_minutes") is not None:
             facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "active_minutes", latest.get("active_minutes"), "min", confidence="medium", freshness=status))
+            added_activity_fact = True
+        if added_activity_fact:
+            mark_replacement_sources(latest.get("raw"), date_s)
 
     sleep = _extract_open_wearables_sleep(data.get("sleep"))
     if sleep and sleep.get("event_time"):
         date_s = (sleep.get("event_time") or fetched_at)[:10]
+        added_sleep_fact = False
         if sleep.get("duration_min") is not None:
             facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_duration", sleep.get("duration_min"), "min", confidence="medium", freshness=status))
+            added_sleep_fact = True
         if sleep.get("avg_hr") is not None:
             facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_avg_heart_rate", sleep.get("avg_hr"), "bpm", confidence="medium", freshness=status))
+            added_sleep_fact = True
+        if added_sleep_fact:
+            mark_replacement_sources(sleep.get("raw"), date_s)
+
+    upsert_wearable_source(WEARABLE_FACTS_DB_FILE, {
+        "provider_id": "open_wearables",
+        "label": "Open Wearables",
+        "status": status,
+        "last_data_point": max(replacement_source_dates.values()) if replacement_source_dates else fetched_at[:10],
+        "last_sync_attempt": fetched_at,
+        "capabilities": {
+            "metrics": True,
+            "workouts": True,
+            "history": True,
+            "sync": True,
+            "replacement_sources": sorted(replacement_source_dates),
+            "replacement_source_dates": replacement_source_dates,
+        },
+        "used_for_recommendation": status != "error",
+    }, profile_key=profile_key)
 
     if facts:
         upsert_daily_facts(WEARABLE_FACTS_DB_FILE, facts, profile_key=profile_key)
@@ -12935,7 +13137,8 @@ def _whoop_recommendation_context(oura_readiness=None, *, now=None):
 def _wearable_sources_payload(freshness, whoop_context):
     whoop_status = whoop_context.get("status") or {}
     whoop_signals = whoop_context.get("signals") or {}
-    return [
+    open_wearables_source = _open_wearables_status_source()
+    direct_sources = [
         {
             "source": "whoop",
             "status": (freshness.get("whoop") or {}).get("status"),
@@ -12966,8 +13169,12 @@ def _wearable_sources_payload(freshness, whoop_context):
             "connected": True,
             "used_for_recommendation": True,
         },
-        _open_wearables_status_source(),
     ]
+    return [
+        source
+        for source in direct_sources
+        if not _open_wearables_supersedes_direct_source(source.get("source"), open_wearables_source)
+    ] + [open_wearables_source]
 
 
 @app.route('/api/whoop/status')
@@ -13858,13 +14065,18 @@ def _compute_data_freshness(now=None):
     open_wearables_bucket = "fresh" if open_wearables_status.get("status") == "connected" else "missing"
     if open_wearables_status.get("status") in {"blocked", "error"}:
         open_wearables_bucket = "stale"
-    return {
+    freshness = {
         "open_wearables": {
             "status": open_wearables_bucket,
             "hub_status": open_wearables_status.get("status"),
             "last_data_point": None,
             "last_sync_attempt": open_wearables_status.get("last_checked_at"),
             "source": "hub",
+            "connected": open_wearables_status.get("status") == "connected",
+            "providers": open_wearables_status.get("providers") or [],
+            "facts_ready": bool(open_wearables_status.get("facts_ready")),
+            "replacement_sources": open_wearables_status.get("replacement_sources") or [],
+            "replacement_source_dates": open_wearables_status.get("replacement_source_dates") or {},
         },
         "oura": {
             "status": oura_status,
@@ -13886,14 +14098,38 @@ def _compute_data_freshness(now=None):
             **food_targets,
         },
     }
+    return _open_wearables_adjusted_freshness(freshness)
+
+
+def _open_wearables_adjusted_freshness(freshness):
+    safe = dict(freshness or {})
+    open_wearables_source = safe.get("open_wearables") or {}
+    replacement_source_dates = open_wearables_source.get("replacement_source_dates") or {}
+    for source_key in ("oura", "apple_health"):
+        if not _open_wearables_supersedes_direct_source(source_key, open_wearables_source):
+            continue
+        node = dict(safe.get(source_key) or {})
+        node["status"] = "fresh"
+        node["source"] = "open_wearables"
+        node["superseded_by"] = "open_wearables"
+        node["superseded_source"] = source_key
+        if replacement_source_dates.get(source_key):
+            node["last_data_point"] = replacement_source_dates.get(source_key)
+        if open_wearables_source.get("last_sync_attempt"):
+            node["last_sync_attempt"] = open_wearables_source.get("last_sync_attempt")
+        safe[source_key] = node
+    return safe
 
 
 def _push_alert_preview(now=None):
     """Deterministic, non-sending alert contract for FIT-39."""
     freshness = _compute_data_freshness(now=now)
+    open_wearables_source = freshness.get("open_wearables") or {}
     alerts = []
     for source_key, label in (("oura", "Oura"), ("whoop", "WHOOP"), ("apple_health", "Apple Health")):
         source = freshness.get(source_key) or {}
+        if _open_wearables_supersedes_direct_source(source_key, open_wearables_source):
+            continue
         if source_key == "whoop" and not _whoop_freshness_is_relevant(source):
             continue
         if source.get("status") in {"aging", "stale", "missing"}:
