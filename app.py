@@ -3447,6 +3447,8 @@ def _build_exercise_entry(
     )
     if deload_forced:
         target_weight = min(target_weight, round(current_e1rm * 0.7, 0))
+        rationale = "Forced deload: capped at 70% intensity"
+        overload_note = "Deload intensity cap"
     rationale = f"{rationale} · {overload_note}"
 
     if exercise_name == "Plank":
@@ -3461,12 +3463,12 @@ def _build_exercise_entry(
         "is_compound": is_compound,
         "target_weight": max(5, target_weight),
         "target_reps": target_reps,
-        "target_sets": max(2, volume_adjusted_sets),
+        "target_sets": max(1 if deload_forced else 2, volume_adjusted_sets),
         "rationale": rationale,
         "rest_minutes": rest_time,
         "rest_label": rest_label,
         "rpe_target": rpe_target,
-        "estimated_time": round(max(2, volume_adjusted_sets) * time_per_set),
+        "estimated_time": round(max(1 if deload_forced else 2, volume_adjusted_sets) * time_per_set),
         "days_since_trained": days_since,
         "soreness": soreness_level,
         "oura_readiness": oura_readiness if oura_readiness is not None else None,
@@ -3688,7 +3690,7 @@ def generate_next_workout(
     volume_multiplier = meso_plan["volume_multiplier"]
     if oura_readiness is not None and oura_readiness < 60:
         volume_multiplier *= 0.8
-    adjusted_sets_for_timing = max(2, round(sets_per_exercise * volume_multiplier))
+    adjusted_sets_for_timing = max(1 if deload_forced else 2, round(sets_per_exercise * volume_multiplier))
     time_per_exercise = time_per_set * adjusted_sets_for_timing
     cardio_duration = int(cardio_rec.get("duration_minutes") or 0)
     minimum_resistance_time = 2 * time_per_exercise
@@ -4127,13 +4129,13 @@ def detect_deload_need(workouts: list, soreness_data: list) -> dict:
         return {"needed": False, "reason": "Insufficient data", "recommendation": ""}
 
     # Check for consecutive weeks of training
-    recent_workouts = workouts[-8:] if len(workouts) >= 8 else workouts
     dates = []
-    for workout in recent_workouts:
+    for workout in workouts:
         try:
             dates.append(datetime.strptime(workout.get("date", ""), '%Y-%m-%d'))
         except (TypeError, ValueError):
             continue
+    dates.sort()
 
     if not dates:
         return {"needed": False, "reason": "No recent workouts", "recommendation": ""}
@@ -9004,6 +9006,7 @@ def swap_workout_exercise():
         progression=progression,
         workouts=WORKOUTS,
         time_per_set=time_per_set,
+        deload_forced=bool(recommendation.get("mesocycle", {}).get("deload_forced")),
     )
     updated_ex["rationale"] = f"{updated_ex['rationale']} · Swapped from {old_ex.get('exercise')}"
 
@@ -9207,6 +9210,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
 
     # ── 1) Respect deload: skip rpe_delta / sets_delta_pct entirely on deload.
     deload_active = bool((meso_plan.get("name") == "Deload"))
+    deload_forced = bool(recommendation.get("mesocycle", {}).get("deload_forced"))
 
     # ── 2) Clamp rpe_delta to ±1.0; disallow upward on poor readiness.
     rpe_delta_raw = float(intent.get("rpe_delta") or 0)
@@ -9368,6 +9372,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             progression=progression,
             workouts=WORKOUTS,
             time_per_set=time_per_set,
+            deload_forced=deload_forced,
         )
         reason = sw.get("reason") or ""
         old_name = exercises[idx].get('exercise')
