@@ -28,8 +28,10 @@ SODIUM_RECOVERY_CONTEXT_MG = 2300
 LATE_MEAL_HOUR = 20
 # Multiple accepted entries avoid treating a single meal as full-day intake.
 MIN_SAME_DAY_FUELING_ENTRIES = 2
-# One entry at or after LATE_MEAL_HOUR confirms the day includes late intake.
-MIN_SAME_DAY_LATE_ENTRIES = 1
+# Typical fueling is expected to begin by the morning meal window.
+TYPICAL_FUELING_WINDOW_START_HOUR = 8
+# Eighteen hundred permits same-day decisions before late-meal deferral begins.
+FULL_DAY_FUELING_COVERAGE_HOUR = 18
 HEAVY_MEAL_CALORIES = 900
 
 SCIENCE_CITATIONS = {
@@ -135,7 +137,9 @@ def freeze_fit137_contract() -> dict:
             "status": "no_change",
             "silent": True,
             "change_type": "none",
-            "confidence.no_change_reason": "low_confidence | no_science_supported_change",
+            "confidence.no_change_reason": (
+                "low_confidence | incomplete_day_coverage | no_science_supported_change"
+            ),
         },
         "event_fields": [
             "id",
@@ -359,11 +363,16 @@ def _evaluate_pending_window(
     signals = _nutrition_signals(relevant_logs, nutrition_context, day_logs=day_logs)
     confidence = _workout_confidence(relevant_logs, signals)
     applies_to = "next_day" if str(plan_date) > str(pending.get("date")) else "today"
+    same_day_fueling_coverage = _same_day_fueling_coverage(
+        nutrition_context,
+        day_logs,
+        signals=signals,
+    )
     decision = _decide_change(
         signals,
         confidence,
         applies_to,
-        same_day_coverage_sufficient=_has_same_day_fueling_coverage(nutrition_context),
+        same_day_fueling_coverage=same_day_fueling_coverage,
     )
     patched = copy.deepcopy(recommendation or {})
     operations: list[dict] = []
@@ -413,11 +422,11 @@ def _evaluate_pending_window(
             "updated_live": bool(active_workout_open and decision["status"] == "applied"),
             "preserve_completed_work": True,
         },
-        "reason_metadata": {
-            "rules": decision["rules"],
-            "citations": _citations_for_rules(decision["rules"]),
-            "fit137_contract": freeze_fit137_contract(),
-        },
+        "reason_metadata": _reason_metadata(
+            decision,
+            applies_to=applies_to,
+            same_day_fueling_coverage=same_day_fueling_coverage,
+        ),
         "created_at": _iso(evaluated_at),
     }
     _assert_neutral_event(event)
@@ -473,13 +482,62 @@ def _workout_confidence(relevant_logs: list[dict], signals: list[dict]) -> dict:
     return {"score": score, "level": level}
 
 
-def _has_same_day_fueling_coverage(nutrition_context: dict) -> bool:
+def _same_day_fueling_coverage(
+    nutrition_context: dict,
+    day_logs: list[dict],
+    *,
+    signals: list[dict],
+) -> dict:
     totals = nutrition_context.get("totals") or {}
-    next_day_context = nutrition_context.get("next_day_context") or {}
-    return (
-        int(totals.get("entries_count") or 0) >= MIN_SAME_DAY_FUELING_ENTRIES
-        and int(next_day_context.get("late_entries_count") or 0) >= MIN_SAME_DAY_LATE_ENTRIES
-    )
+    percentages = nutrition_context.get("percentages") or {}
+    entries_count = int(totals.get("entries_count") or 0)
+    logged_hours = [hour for row in day_logs for hour in [_logged_hour(row)] if hour is not None]
+    coverage_hour = max(logged_hours) if logged_hours else None
+    target_fraction = _fueling_target_fraction(coverage_hour)
+    effective_calorie_pct_threshold = round(UNDER_FUELED_CALORIES_PCT * target_fraction, 3)
+    effective_protein_pct_threshold = round(LOW_PROTEIN_PCT * target_fraction, 3)
+    calories_pct = float(percentages.get("calories") or 0)
+    protein_pct = float(percentages.get("protein") or 0)
+    signal_codes = {signal["code"] for signal in signals}
+
+    if entries_count < MIN_SAME_DAY_FUELING_ENTRIES or coverage_hour is None:
+        mode = "incomplete"
+        sufficient = False
+    elif coverage_hour >= FULL_DAY_FUELING_COVERAGE_HOUR:
+        mode = "full_day"
+        sufficient = True
+        effective_calorie_pct_threshold = float(UNDER_FUELED_CALORIES_PCT)
+        effective_protein_pct_threshold = float(LOW_PROTEIN_PCT)
+    else:
+        mode = "prorated"
+        sufficient = (
+            (
+                "under_fueled" in signal_codes
+                and calories_pct < effective_calorie_pct_threshold
+            )
+            or (
+                "low_protein" in signal_codes
+                and protein_pct < effective_protein_pct_threshold
+            )
+        )
+
+    return {
+        "sufficient": sufficient,
+        "mode": mode,
+        "entries_count": entries_count,
+        "coverage_hour": coverage_hour,
+        "target_fraction": target_fraction,
+        "effective_calorie_pct_threshold": effective_calorie_pct_threshold,
+        "effective_protein_pct_threshold": effective_protein_pct_threshold,
+    }
+
+
+def _fueling_target_fraction(coverage_hour: int | None) -> float:
+    if coverage_hour is None:
+        return 0.0
+    window_duration = FULL_DAY_FUELING_COVERAGE_HOUR - TYPICAL_FUELING_WINDOW_START_HOUR
+    elapsed_hours = coverage_hour - TYPICAL_FUELING_WINDOW_START_HOUR
+    return round(max(0.0, min(1.0, elapsed_hours / window_duration)), 3)
 
 
 def _decide_change(
@@ -487,7 +545,7 @@ def _decide_change(
     confidence: dict,
     applies_to: str,
     *,
-    same_day_coverage_sufficient: bool = True,
+    same_day_fueling_coverage: dict | None = None,
 ) -> dict:
     codes = {signal["code"] for signal in signals}
     if confidence["score"] < MIN_WORKOUT_CONFIDENCE:
@@ -503,7 +561,7 @@ def _decide_change(
             }
         return _no_change("no_science_supported_change", "Preserved the workout; saved nutrition did not support a next-day change.")
     if {"under_fueled", "low_protein"} & codes:
-        if not same_day_coverage_sufficient:
+        if same_day_fueling_coverage is not None and not same_day_fueling_coverage["sufficient"]:
             return _no_change(
                 "incomplete_day_coverage",
                 "Preserved the workout because today's nutrition log does not yet cover enough of the day.",
@@ -531,6 +589,22 @@ def _no_change(reason_code: str, reason: str) -> dict:
         "no_change_reason": reason_code,
         "rules": [reason_code],
     }
+
+
+def _reason_metadata(
+    decision: dict,
+    *,
+    applies_to: str,
+    same_day_fueling_coverage: dict,
+) -> dict:
+    metadata = {
+        "rules": decision["rules"],
+        "citations": _citations_for_rules(decision["rules"]),
+        "fit137_contract": freeze_fit137_contract(),
+    }
+    if applies_to == "today":
+        metadata["same_day_fueling_coverage"] = copy.deepcopy(same_day_fueling_coverage)
+    return metadata
 
 
 def _apply_conservative_patch(
