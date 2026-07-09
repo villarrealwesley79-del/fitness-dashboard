@@ -3652,6 +3652,18 @@ def generate_next_workout(
     meso_week = _get_mesocycle_week(workouts, sessions_per_week)
     meso_plan = MESOCYCLE_PLAN.get(meso_week, MESOCYCLE_PLAN[1])
     try:
+        deload_status = detect_deload_need(workouts, soreness_data)
+    except (KeyError, TypeError, ValueError):
+        app.logger.warning(
+            "deload detector could not evaluate legacy workout data; continuing without forced deload",
+            exc_info=True,
+        )
+        deload_status = {"needed": False, "indicators": []}
+    deload_forced = bool(deload_status.get("needed"))
+    if deload_forced:
+        meso_week = 4
+        meso_plan = MESOCYCLE_PLAN[4]
+    try:
         oura_readiness = _get_oura_readiness_today(
             include_open_wearables=include_open_wearables_readiness
         )
@@ -3843,6 +3855,16 @@ def generate_next_workout(
 
     duration_str = f"{total_time} min"
 
+    mesocycle = {
+        "week": meso_week,
+        "phase": meso_plan["name"],
+        "volume_multiplier": round(volume_multiplier, 2),
+        "rpe_base": meso_plan["rpe_base"],
+    }
+    if deload_forced:
+        mesocycle["deload_forced"] = True
+        mesocycle["indicators"] = deload_status.get("indicators", [])
+
     recommendation = {
         "id": datetime.now().strftime("%Y%m%d%H%M%S"),
         "created_at": datetime.now().isoformat(),
@@ -3852,12 +3874,7 @@ def generate_next_workout(
         "estimated_duration": duration_str,
         "estimated_minutes": total_time,
         "available_time": available_time,
-        "mesocycle": {
-            "week": meso_week,
-            "phase": meso_plan["name"],
-            "volume_multiplier": round(volume_multiplier, 2),
-            "rpe_base": meso_plan["rpe_base"]
-        },
+        "mesocycle": mesocycle,
         "exercises": exercises,
         "cardio": cardio_data,
         "muscles_to_avoid": avoid_muscles,
