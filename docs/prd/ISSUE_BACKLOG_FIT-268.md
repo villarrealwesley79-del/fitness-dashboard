@@ -1,4 +1,76 @@
-# FIT-268 Issue Backlog — pending Linear workspace capacity
+# FIT-268 Issue Backlog — RESOLVED: all issues filed on 2026-07-09
+
+> **Status update (2026-07-09):** Workspace capacity was freed (95 old Done issues in the Personal team deleted, recoverable from Linear trash for 30 days). All 74 issues are now filed: FIT-269..FIT-276 (first batch), FIT-277 (owner-guard fail-open), and the 65 below. This document is retained as the audit trail of the payloads; Linear is the source of truth going forward.
+
+| ID | Title |
+|----|-------|
+| FIT-278 | Verify Open Food Facts attribution and rate limits |
+| FIT-279 | Validate body measurement date and tape fields |
+| FIT-280 | Verify Nutritionix quota, cache TTL, and redistribution |
+| FIT-281 | Define full local-data deletion boundaries |
+| FIT-282 | Pin Oura trends and sleep-summary contracts with tests |
+| FIT-283 | Surface provider fallback details in the review card |
+| FIT-284 | Productize the Navy calculator and tape-measure flow |
+| FIT-285 | Delete push subscriptions during account data deletion |
+| FIT-286 | Add cross-source ordering tests for food, WHOOP, and Open Wearables |
+| FIT-287 | Refresh stale Oura cache without requiring Settings |
+| FIT-288 | Add a machine-readable runtime artifact policy check |
+| FIT-289 | Remove raw provider payload from weather response |
+| FIT-290 | Add TTL or invalidation policy for food lookup caches |
+| FIT-291 | Add a non-mutating smoke mode for partially degraded local runtimes |
+| FIT-292 | Return CSV import row outcomes instead of only total upserts |
+| FIT-293 | Fix or remove the dashboard RPE chip contract |
+| FIT-294 | Make backup import transactional or explicitly resumable |
+| FIT-295 | Make Pro entitlement gates honest and explicit |
+| FIT-296 | Add an operator status command for launchd and smoke readiness |
+| FIT-297 | Add a real `/landing` route or remove the public page |
+| FIT-298 | Add visible warning when active workout draft cannot persist |
+| FIT-299 | Register or remove the Stripe blueprint contract |
+| FIT-300 | Separate metadata check naming from durable fact sync |
+| FIT-301 | Document or fix Plank target weight clamping |
+| FIT-302 | Add offline dashboard state QA beyond service-worker fallback |
+| FIT-303 | Wire scheduled reminder delivery or label preview-only in UI |
+| FIT-304 | Add end-to-end browser QA for push setup and click behavior |
+| FIT-305 | Add a vision health/preflight status endpoint for Settings and Log |
+| FIT-306 | Add browser QA for active workout modal states |
+| FIT-307 | Make configured session lifetime effective or remove the inert config |
+| FIT-308 | Add explicit tests for owner-only non-owner denial |
+| FIT-309 | Add staleness watchdog unit coverage with temporary SQLite DBs |
+| FIT-310 | Add focused tests for body and sleep endpoints |
+| FIT-311 | Add shellcheck/static validation for ops shell scripts |
+| FIT-312 | Redact raw send exception details from push test responses |
+| FIT-313 | Remove unsourced public metrics and testimonials or back them |
+| FIT-314 | Add credentialed provider smoke mode with safe output |
+| FIT-315 | Fix deload detector key mismatch so deload recommendation can fire |
+| FIT-316 | Add subscription retention and cleanup policy |
+| FIT-317 | Validate stored permission_state values |
+| FIT-318 | Wire or remove orphaned clear_food_logs/delete_user_data helpers |
+| FIT-319 | Add webhook idempotency and event audit trail |
+| FIT-320 | Add live mobile QA for multi-photo and offline replay states |
+| FIT-321 | Fix inert Oura HRV trend input in advanced analytics |
+| FIT-322 | Align progress insight type names with frontend styling |
+| FIT-323 | Replace history delete-by-index with stable ids |
+| FIT-324 | Align pricing copy with the single-owner app model |
+| FIT-325 | Resolve JSON settings vs SQL settings default drift |
+| FIT-326 | Add body-mass ingestion or remove it from helper SLA scope |
+| FIT-327 | Make progressive overload either visible or explicitly API-only |
+| FIT-328 | Add visible retry scheduling for offline meal sync |
+| FIT-329 | Add contract tests for advanced analytics thresholds |
+| FIT-330 | Clarify accepted/manual food-log filtering in data-store APIs |
+| FIT-331 | Add payload limits and rejection reporting for HAE sync |
+| FIT-332 | Add live sidecar smoke coverage outside unit fixtures |
+| FIT-333 | Reconcile forced pending review with the auto-log contract |
+| FIT-334 | Replace or label the H-E-B curated reference |
+| FIT-335 | Align body-fat-only saves with API validation |
+| FIT-336 | Clarify tomorrow-date tolerance in CSV imports |
+| FIT-337 | Fix bedtime consistency for midnight wraparound |
+| FIT-338 | Redact upstream Oura error detail before UI display |
+| FIT-339 | Rename or clarify `/api/health/sync` ownership |
+| FIT-340 | Harden Markdown export against partial workout rows |
+| FIT-341 | Preserve manual sleep visibility when Oura rows exist |
+| FIT-342 | Surface staleness watchdog evidence in Settings |
+
+---
 
 These verified, PRD-derived issues could not be filed on 2026-07-08 because the Linear workspace hit its free-plan issue limit mid-batch. They are priority-ordered and each maps 1:1 to a `save_issue` call (team `Fitness app`, state `Backlog`, related to FIT-268) once capacity is freed.
 
