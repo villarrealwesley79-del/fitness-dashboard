@@ -383,6 +383,7 @@ def init_data_db():
                 user_id         INTEGER NOT NULL DEFAULT 1,
                 normalized_text TEXT NOT NULL,
                 source          TEXT NOT NULL,
+                source_tier     TEXT NOT NULL,
                 response_json   TEXT NOT NULL,
                 fetched_at      TEXT NOT NULL,
                 PRIMARY KEY(user_id, normalized_text)
@@ -392,6 +393,7 @@ def init_data_db():
                 user_id       INTEGER NOT NULL DEFAULT 1,
                 barcode       TEXT NOT NULL,
                 source        TEXT NOT NULL,
+                source_tier   TEXT NOT NULL,
                 response_json TEXT NOT NULL,
                 fetched_at    TEXT NOT NULL,
                 PRIMARY KEY(user_id, barcode)
@@ -535,17 +537,28 @@ def init_data_db():
                     user_id         INTEGER NOT NULL DEFAULT 1,
                     normalized_text TEXT NOT NULL,
                     source          TEXT NOT NULL,
+                    source_tier     TEXT NOT NULL,
                     response_json   TEXT NOT NULL,
                     fetched_at      TEXT NOT NULL,
                     PRIMARY KEY(user_id, normalized_text)
                 )
             """)
             conn.execute("""
-                INSERT INTO branded_lookup_cache (user_id, normalized_text, source, response_json, fetched_at)
-                SELECT 1, normalized_text, source, response_json, fetched_at
+                INSERT INTO branded_lookup_cache (user_id, normalized_text, source, source_tier, response_json, fetched_at)
+                SELECT 1, normalized_text, source, source, response_json, fetched_at
                   FROM branded_lookup_cache_old
             """)
             conn.execute("DROP TABLE branded_lookup_cache_old")
+        else:
+            if "source_tier" not in existing_cache_cols:
+                conn.execute("ALTER TABLE branded_lookup_cache ADD COLUMN source_tier TEXT")
+                conn.execute("UPDATE branded_lookup_cache SET source_tier = source WHERE source_tier IS NULL")
+        existing_barcode_cache_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(barcode_lookup_cache)").fetchall()
+        }
+        if "source_tier" not in existing_barcode_cache_cols:
+            conn.execute("ALTER TABLE barcode_lookup_cache ADD COLUMN source_tier TEXT")
+            conn.execute("UPDATE barcode_lookup_cache SET source_tier = source WHERE source_tier IS NULL")
         conn.execute("""
             UPDATE food_logs
                SET client_id = NULL
@@ -1123,7 +1136,7 @@ def get_branded_lookup_cache(normalized_text: str, *, user_id: int = 1) -> Optio
     with _get_db() as conn:
         row = conn.execute(
             """
-            SELECT user_id, normalized_text, source, response_json, fetched_at
+            SELECT user_id, normalized_text, source, source_tier, response_json, fetched_at
               FROM branded_lookup_cache
              WHERE user_id = ? AND normalized_text = ?
             """,
@@ -1136,24 +1149,33 @@ def get_branded_lookup_cache(normalized_text: str, *, user_id: int = 1) -> Optio
     return result
 
 
-def save_branded_lookup_cache(normalized_text: str, source: str, response: dict, *, user_id: int = 1) -> None:
+def save_branded_lookup_cache(
+    normalized_text: str,
+    source: str,
+    response: dict,
+    *,
+    user_id: int = 1,
+    source_tier: str | None = None,
+) -> None:
     """Persist a source response for cache-first meal lookup."""
     key = (normalized_text or "").strip()
     if not key or not isinstance(response, dict):
         return
+    tier = (source_tier or source or "").strip()
     init_data_db()
     now_iso = datetime.now().isoformat(timespec="seconds")
     with _get_db() as conn:
         conn.execute(
             """
-            INSERT INTO branded_lookup_cache (user_id, normalized_text, source, response_json, fetched_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO branded_lookup_cache (user_id, normalized_text, source, source_tier, response_json, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, normalized_text) DO UPDATE SET
                 source = excluded.source,
+                source_tier = excluded.source_tier,
                 response_json = excluded.response_json,
                 fetched_at = excluded.fetched_at
             """,
-            (user_id, key, source, _json_dumps_or_none(response), now_iso),
+            (user_id, key, source, tier, _json_dumps_or_none(response), now_iso),
         )
         conn.commit()
 
@@ -1167,7 +1189,7 @@ def get_barcode_lookup_cache(barcode: str, *, user_id: int = 1) -> Optional[dict
     with _get_db() as conn:
         row = conn.execute(
             """
-            SELECT user_id, barcode, source, response_json, fetched_at
+            SELECT user_id, barcode, source, source_tier, response_json, fetched_at
               FROM barcode_lookup_cache
              WHERE user_id = ? AND barcode = ?
             """,
@@ -1180,24 +1202,33 @@ def get_barcode_lookup_cache(barcode: str, *, user_id: int = 1) -> Optional[dict
     return result
 
 
-def save_barcode_lookup_cache(barcode: str, source: str, response: dict, *, user_id: int = 1) -> None:
+def save_barcode_lookup_cache(
+    barcode: str,
+    source: str,
+    response: dict,
+    *,
+    user_id: int = 1,
+    source_tier: str | None = None,
+) -> None:
     """Persist a verified barcode lookup response for cache-first reuse."""
     key = (barcode or "").strip()
     if not key or not isinstance(response, dict):
         return
+    tier = (source_tier or source or "").strip()
     init_data_db()
     now_iso = datetime.now().isoformat(timespec="seconds")
     with _get_db() as conn:
         conn.execute(
             """
-            INSERT INTO barcode_lookup_cache (user_id, barcode, source, response_json, fetched_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO barcode_lookup_cache (user_id, barcode, source, source_tier, response_json, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, barcode) DO UPDATE SET
                 source = excluded.source,
+                source_tier = excluded.source_tier,
                 response_json = excluded.response_json,
                 fetched_at = excluded.fetched_at
             """,
-            (user_id, key, source, _json_dumps_or_none(response), now_iso),
+            (user_id, key, source, tier, _json_dumps_or_none(response), now_iso),
         )
         conn.commit()
 

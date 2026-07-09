@@ -138,25 +138,40 @@ def test_personal_vocab_correction_can_recover_after_new_accepts(tmp_path, monke
     assert result["calories"] == 680
 
 
-def test_personal_vocab_fuzzy_match_after_one_confirmed_mapping(tmp_path, monkeypatch):
+def test_personal_vocab_fuzzy_match_waits_for_exact_trust_threshold(tmp_path, monkeypatch):
     import data_store
 
     monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
     data_store.init_data_db()
     personal_vocab.record_accept(1, "chipotle chicken burrito", _estimate())
+
+    assert personal_vocab.lookup("chipotle chicken burito", user_id=1) is None
+
+
+def test_personal_vocab_fuzzy_match_preserves_original_certainty(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    estimate = _estimate(confidence=0.62, ambiguous=True)
+    for _ in range(3):
+        personal_vocab.record_accept(1, "chipotle chicken burrito", estimate)
 
     result = personal_vocab.lookup("chipotle chicken burito", user_id=1)
 
     assert result["source"] == "personal_vocab"
     assert result["item_name"] == "Chipotle chicken burrito"
+    assert result["confidence"] == 0.62
+    assert result["ambiguous"] is True
 
 
-def test_personal_vocab_matches_abbreviated_phrase_after_one_confirmed_mapping(tmp_path, monkeypatch):
+def test_personal_vocab_matches_abbreviated_phrase_after_trust_threshold(tmp_path, monkeypatch):
     import data_store
 
     monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
     data_store.init_data_db()
-    personal_vocab.record_accept(1, "chipotle chicken burrito", _estimate())
+    for _ in range(3):
+        personal_vocab.record_accept(1, "chipotle chicken burrito", _estimate())
 
     result = personal_vocab.lookup("chip ckn bur", user_id=1)
 
