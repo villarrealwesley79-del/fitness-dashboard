@@ -7568,6 +7568,16 @@ def meal_intake():
     # post-FIT-134/FIT-144; it is dropped here. Idempotent replay paths
     # upstream in this handler still return the legacy logged shape for
     # already-accepted meals.
+    replay_response = _meal_capture_idempotency_response(
+        user_id=user_id,
+        client_id=client_id,
+        has_image=has_image,
+        local_timestamp=local_timestamp,
+        local_date=local_date,
+        local_iso=local_iso,
+    )
+    if replay_response is not None:
+        return replay_response
     status = "pending_review"
     food_log = _meal_intake_persist(
         client_id, estimate, source=source, has_image=has_image,
@@ -7575,6 +7585,17 @@ def meal_intake():
         local_date=local_date, local_iso=local_iso,
         correction_state=CORRECTION_STATE_PENDING_REVIEW,
     )
+    if not _nutrition_entry_pending_review(food_log):
+        replay_response = _meal_capture_idempotency_response(
+            user_id=user_id,
+            client_id=client_id,
+            has_image=has_image,
+            local_timestamp=local_timestamp,
+            local_date=local_date,
+            local_iso=local_iso,
+        )
+        if replay_response is not None:
+            return replay_response
     payload = _review_payload_from_estimate(
         meal_id=client_id,
         estimate=estimate,
@@ -7675,6 +7696,16 @@ def meal_intake_barcode():
     }
     _merge_policy_reasons_into_uncertainty_notes(estimate, decision["reasons"])
 
+    replay_response = _meal_capture_idempotency_response(
+        user_id=user_id,
+        client_id=client_id,
+        has_image=False,
+        local_timestamp=local_timestamp or None,
+        local_date=local_date or None,
+        local_iso=local_iso or None,
+    )
+    if replay_response is not None:
+        return replay_response
     food_log = _meal_intake_persist(
         client_id,
         estimate,
@@ -7686,6 +7717,17 @@ def meal_intake_barcode():
         local_iso=local_iso or None,
         correction_state=CORRECTION_STATE_PENDING_REVIEW,
     )
+    if not _nutrition_entry_pending_review(food_log):
+        replay_response = _meal_capture_idempotency_response(
+            user_id=user_id,
+            client_id=client_id,
+            has_image=False,
+            local_timestamp=local_timestamp or None,
+            local_date=local_date or None,
+            local_iso=local_iso or None,
+        )
+        if replay_response is not None:
+            return replay_response
     payload = _review_payload_from_estimate(
         meal_id=client_id,
         estimate=estimate,
