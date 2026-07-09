@@ -79,7 +79,11 @@ def _client(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "get_oura_daily", lambda *args, **kwargs: {})
     monkeypatch.setattr(module, "_compute_data_freshness", lambda: {"open_wearables": {}})
     monkeypatch.setattr(module, "_whoop_recommendation_context", lambda _readiness: {"signals": {}, "source_conflict": None})
-    monkeypatch.setattr(module, "apply_wearable_modifiers", lambda _training, workout, **kwargs: {"next_workout": workout})
+    monkeypatch.setattr(
+        module,
+        "apply_wearable_modifiers",
+        lambda _training, workout, **kwargs: {"next_workout": workout, "load_source": None},
+    )
     monkeypatch.setattr(module, "build_open_wearables_recommendation_source", lambda *args, **kwargs: {})
     monkeypatch.setattr(module, "_wearable_sources_payload", lambda _freshness, _whoop_context: {})
     return module, module.app.test_client(), state
