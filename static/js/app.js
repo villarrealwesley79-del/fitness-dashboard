@@ -511,7 +511,7 @@
         if (workoutAdaptationNoticeState.fetching) return;
         workoutAdaptationNoticeState.fetching = true;
         try {
-            const payload = await api('/api/workout-adaptation-events?unacknowledged=true&limit=10');
+            const payload = await api(withActiveWorkoutAdaptationParams('/api/workout-adaptation-events?unacknowledged=true&limit=10'));
             const events = (payload && payload.events) || [];
             for (const event of events) {
                 if (!event || !event.id) continue;
@@ -1144,7 +1144,7 @@
     }
     async function getNextWorkout(force = false) {
         if (!force && state.nextWorkout) return state.nextWorkout;
-        const payload = await api('/api/next-workout', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+        const payload = await api(withActiveWorkoutAdaptationParams('/api/next-workout'), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
         state.nextWorkout = payload && payload.next_workout ? payload.next_workout : null;
         return state.nextWorkout;
     }
@@ -7090,6 +7090,32 @@
     // --- Active Workout flow -------------------------------------
     function exerciseName(ex) {
         return ex.exercise || ex.name || ex.machine || 'Exercise';
+    }
+
+    function activeWorkoutCompletedSets(activeWorkout = state.activeWorkout) {
+        const completed = {};
+        const exercises = activeWorkout && Array.isArray(activeWorkout.exercises)
+            ? activeWorkout.exercises
+            : [];
+        exercises.forEach((ex) => {
+            const name = String((ex && (ex.exercise || ex.name || ex.machine)) || '').trim();
+            const sets = ex && Array.isArray(ex.logged_sets) ? ex.logged_sets : [];
+            const doneCount = sets.filter((set) => set && set.done).length;
+            if (name && doneCount > 0) completed[name] = (completed[name] || 0) + doneCount;
+        });
+        return completed;
+    }
+
+    function withActiveWorkoutAdaptationParams(path) {
+        if (!state.activeWorkout) return path;
+        const params = new URLSearchParams();
+        params.set('active_workout_open', 'true');
+        const completedSets = activeWorkoutCompletedSets(state.activeWorkout);
+        if (Object.keys(completedSets).length) {
+            params.set('completed_sets', JSON.stringify(completedSets));
+        }
+        const query = params.toString();
+        return `${path}${path.includes('?') ? '&' : '?'}${query}`;
     }
 
     function exerciseMuscle(ex) {

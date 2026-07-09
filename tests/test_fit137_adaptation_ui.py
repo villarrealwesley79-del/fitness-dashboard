@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,20 +116,30 @@ def test_adaptation_does_not_surface_audit_log():
     assert "audit_log" not in block
 
 
-def test_adaptation_preserves_completed_active_work_via_identity_merge():
-    js = APP_JS.read_text()
-    apply_block = _block(
-        js,
-        "function applyWorkoutAdaptationToActiveWorkout(event)",
-        "function showWorkoutAdaptationNotice",
-    )
+def test_adaptation_requests_include_active_workout_params_runtime():
+    outputs = _run_fit257_runtime_fixtures_in_node()
 
-    # AC: only patch when a workout is active and the change applied live;
-    # reuse the FIT-179 identity-merge so completed sets survive.
-    assert "if (!state.activeWorkout) return;" in apply_block
-    assert "event.active_workout && event.active_workout.updated_live" in apply_block
-    assert "applyAdjustedRecommendationToActiveWorkout(nw, previous)" in apply_block
-    assert "renderActiveWorkout()" in apply_block
+    notice = outputs["notice"]
+    assert notice["pathname"] == "/api/workout-adaptation-events"
+    assert notice["unacknowledged"] == "true"
+    assert notice["limit"] == "10"
+    assert notice["active_workout_open"] == "true"
+    assert notice["completed_sets"] == {"Chest Press": 2, "Squat": 1}
+
+    next_workout = outputs["nextWorkout"]
+    assert next_workout["pathname"] == "/api/next-workout"
+    assert next_workout["active_workout_open"] == "true"
+    assert next_workout["completed_sets"] == {"Chest Press": 2, "Squat": 1}
+
+
+def test_adaptation_preserves_completed_active_work_via_identity_merge():
+    outputs = _run_fit257_runtime_fixtures_in_node()
+
+    merge = outputs["merge"]
+    assert merge["fetchedNextWorkout"] is True
+    assert merge["rendered"] is True
+    assert merge["previousDone"] is True
+    assert merge["previousReps"] == "8"
 
 
 def test_adaptation_fetch_is_hooked_to_dashboard_surfaces():
@@ -154,3 +169,123 @@ def test_adaptation_styles_present_and_calm():
     assert ".workout-adaptation-details {" in block
     assert ".workout-adaptation-chip {" in block
     assert "overflow-wrap: anywhere" in block
+
+
+def _run_fit257_runtime_fixtures_in_node() -> dict:
+    if not shutil.which("node"):
+        pytest.skip("FIT-257 runtime regression requires node to execute app.js")
+
+    js = APP_JS.read_text()
+    helper_source = _block(
+        js,
+        "function exerciseName(ex)",
+        "function exerciseMuscle",
+    )
+    fetch_source = _block(
+        js,
+        "async function fetchWorkoutAdaptationNotices()",
+        "function newWorkoutId",
+    )
+    next_workout_source = _block(
+        js,
+        "async function getNextWorkout(force = false)",
+        "async function getVitals",
+    )
+    merge_source = _block(
+        js,
+        "function applyWorkoutAdaptationToActiveWorkout(event)",
+        "function showWorkoutAdaptationNotice",
+    )
+    helper_source_json = json.dumps(helper_source)
+    fetch_source_json = json.dumps(fetch_source)
+    next_workout_source_json = json.dumps(next_workout_source)
+    merge_source_json = json.dumps(merge_source)
+    node_script = f"""
+const vm = require('node:vm');
+const helperSource = {helper_source_json};
+const fetchSource = {fetch_source_json};
+const nextWorkoutSource = {next_workout_source_json};
+const mergeSource = {merge_source_json};
+const sandbox = {{ module: {{ exports: {{}} }}, URLSearchParams, URL, console }};
+const runtimeSource = `
+const DASHBOARD_FETCH_TIMEOUT_MS = 30000;
+const calls = [];
+let rendered = false;
+let mergeCall = null;
+let fetchedNextWorkout = false;
+const state = {{
+  activeWorkout: {{
+    exercises: [
+      {{ name: 'Chest Press', logged_sets: [
+        {{ done: true, reps: '8', weight: '100' }},
+        {{ done: true, reps: '8', weight: '100' }},
+        {{ done: false, reps: '8', weight: '100' }},
+      ] }},
+      {{ exercise: 'Squat', logged_sets: [{{ done: true, reps: '5', weight: '185' }}] }},
+      {{ name: 'Rows', logged_sets: [{{ done: false, reps: '10', weight: '80' }}] }},
+    ],
+  }},
+  nextWorkout: null,
+}};
+const workoutAdaptationNoticeState = {{ fetching: false, seen: new Set() }};
+function workoutAdaptationIsRenderable() {{ return false; }}
+function showWorkoutAdaptationNotice() {{}}
+async function api(path, opts = {{}}) {{
+  calls.push({{ path, opts }});
+  if (String(path).startsWith('/api/next-workout')) {{
+    fetchedNextWorkout = true;
+    return {{ next_workout: {{ id: 'adapted-plan', exercises: [{{ name: 'Chest Press', target_sets: 2 }}] }} }};
+  }}
+  return {{ events: [] }};
+}}
+function applyAdjustedRecommendationToActiveWorkout(nw, previous) {{
+  mergeCall = {{ nw, previous }};
+}}
+function renderActiveWorkout() {{ rendered = true; }}
+function parseCall(index) {{
+  const url = new URL(calls[index].path, 'https://fitness.local');
+  const completedRaw = url.searchParams.get('completed_sets');
+  return {{
+    pathname: url.pathname,
+    unacknowledged: url.searchParams.get('unacknowledged'),
+    limit: url.searchParams.get('limit'),
+    active_workout_open: url.searchParams.get('active_workout_open'),
+    completed_sets: completedRaw ? JSON.parse(completedRaw) : null,
+  }};
+}}
+async function run() {{
+  await fetchWorkoutAdaptationNotices();
+  state.nextWorkout = null;
+  await getNextWorkout(true);
+  applyWorkoutAdaptationToActiveWorkout({{ active_workout: {{ updated_live: true }} }});
+  await Promise.resolve();
+  await Promise.resolve();
+  return {{
+    notice: parseCall(0),
+    nextWorkout: parseCall(1),
+    merge: {{
+      fetchedNextWorkout,
+      rendered,
+      previousDone: Boolean(mergeCall && mergeCall.previous[0].logged_sets[0].done),
+      previousReps: mergeCall && mergeCall.previous[0].logged_sets[0].reps,
+    }},
+  }};
+}}
+module.exports = {{ run }};
+` + helperSource + '\\n' + fetchSource + '\\n' + nextWorkoutSource + '\\n' + mergeSource;
+vm.runInNewContext(runtimeSource, sandbox);
+sandbox.module.exports.run().then((outputs) => {{
+  process.stdout.write(JSON.stringify(outputs));
+}}).catch((error) => {{
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+}});
+"""
+    result = subprocess.run(
+        ["node", "-e", node_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)

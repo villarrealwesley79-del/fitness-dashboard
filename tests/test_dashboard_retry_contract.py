@@ -193,7 +193,7 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
             and "training_recommendation=training_recommendation" in app_py
         )
     )
-    assert "api('/api/next-workout', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS })" in app_js
+    assert "api(withActiveWorkoutAdaptationParams('/api/next-workout'), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS })" in app_js
     assert "app-loader.js?v=20260629-fit253-open-wearables-link" in template
     assert "app.js?v=20260629-fit253-open-wearables-link" in (ROOT / "static" / "js" / "app-loader.js").read_text()
     assert "fitness-dashboard-v20260629-fit253-open-wearables-link" in sw
