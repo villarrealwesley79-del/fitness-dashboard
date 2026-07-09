@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from flask import Flask
 
@@ -104,6 +105,42 @@ def test_login_post_rejects_backslash_next_redirect(tmp_path, monkeypatch):
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/")
     assert "evil.example" not in response.headers["Location"]
+
+
+def test_login_rejects_tab_control_char_next_redirect(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("Wesley1226", "existing-password")
+    client = app.test_client()
+
+    client.post(
+        "/login",
+        data={"username": "Wesley1226", "password": "existing-password"},
+    )
+    get_response = client.get("/login?next=/%09/evil.example")
+    post_response = client.post(
+        "/login?next=/%09/evil.example",
+        data={"username": "Wesley1226", "password": "existing-password"},
+    )
+
+    for response in (get_response, post_response):
+        assert response.status_code == 302
+        location = urlsplit(response.headers["Location"])
+        assert location.path == "/"
+        assert not location.scheme
+        assert not location.netloc
+
+
+def test_login_rejects_cr_only_next_without_500(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("Wesley1226", "existing-password")
+
+    response = app.test_client().post(
+        "/login?next=%0D",
+        data={"username": "Wesley1226", "password": "existing-password"},
+    )
+
+    assert response.status_code == 302
+    assert urlsplit(response.headers["Location"]).path == "/"
 
 
 def test_login_rate_limit_ignores_spoofed_forwarded_for(tmp_path, monkeypatch):

@@ -295,6 +295,8 @@ def load_user(user_id):
 
 def _safe_next(next_page: str | None, *, reload_root: bool = False) -> str:
     next_page = next_page or url_for("index")
+    if any(ord(character) < 32 for character in next_page):
+        next_page = url_for("index")
     if "\\" in next_page or not next_page.startswith("/") or next_page.startswith("//"):
         next_page = url_for("index")
     if reload_root and next_page == "/":
