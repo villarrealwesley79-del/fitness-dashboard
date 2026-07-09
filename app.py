@@ -8067,30 +8067,35 @@ def meal_intake_accept(client_id: str):
     if "items" in data:
         meal_id = str(data.get("meal_id") or client_id).strip()
         if meal_id != client_id:
-            route_snapshot = get_meal_review_snapshot(user_id, client_id)
-            route_snapshot_items = (
-                route_snapshot.get("payload", {}).get("items") or []
-                if isinstance(route_snapshot, dict)
-                else []
-            )
-            route_has_placeholder = any(
-                isinstance(item, dict)
-                and _review_placeholder_nutrition_not_resolved({
-                    "estimate": {},
-                    "original_estimate": item.get("original_estimate"),
-                })
-                for item in route_snapshot_items
-            )
-            route_parent = _food_log_by_client_id(user_id, client_id)
-            if isinstance(route_parent, dict):
-                route_has_placeholder = route_has_placeholder or _review_placeholder_nutrition_not_resolved({
-                    "estimate": {},
-                    "original_estimate": {
-                        field: route_parent.get(field)
-                        for field in ("source", "calories", "protein_g", "carbs_g", "fat_g")
-                    },
-                })
-            if route_has_placeholder:
+            mismatch_has_placeholder = False
+            for review_id in (client_id, meal_id):
+                review_snapshot = get_meal_review_snapshot(user_id, review_id)
+                review_snapshot_items = (
+                    review_snapshot.get("payload", {}).get("items") or []
+                    if isinstance(review_snapshot, dict)
+                    else []
+                )
+                mismatch_has_placeholder = mismatch_has_placeholder or any(
+                    isinstance(item, dict)
+                    and _review_placeholder_nutrition_not_resolved({
+                        "estimate": {},
+                        "original_estimate": item.get("original_estimate"),
+                    })
+                    for item in review_snapshot_items
+                )
+                persisted_parent = _food_log_by_client_id(user_id, review_id)
+                if isinstance(persisted_parent, dict):
+                    mismatch_has_placeholder = (
+                        mismatch_has_placeholder
+                        or _review_placeholder_nutrition_not_resolved({
+                            "estimate": {},
+                            "original_estimate": {
+                                field: persisted_parent.get(field)
+                                for field in ("source", "calories", "protein_g", "carbs_g", "fat_g")
+                            },
+                        })
+                    )
+            if mismatch_has_placeholder:
                 return api_error(
                     "meal_id must match the pending barcode review route",
                     400,
