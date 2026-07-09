@@ -8066,12 +8066,15 @@ def meal_intake_accept(client_id: str):
                 for item in snapshot_items
                 if isinstance(item, dict) and isinstance(item.get("original_estimate"), dict)
             }
+            single_snapshot_original = (
+                next(iter(originals_by_id.values())) if len(snapshot_items) == 1 and len(originals_by_id) == 1 else None
+            )
             items_with_server_originals = []
             for item in items:
                 if not isinstance(item, dict):
                     items_with_server_originals.append(item)
                     continue
-                original = originals_by_id.get(str(item.get("item_id") or ""))
+                original = originals_by_id.get(str(item.get("item_id") or "")) or single_snapshot_original
                 items_with_server_originals.append(
                     {**item, "original_estimate": original} if isinstance(original, dict) else item
                 )

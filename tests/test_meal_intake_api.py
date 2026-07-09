@@ -4181,7 +4181,7 @@ def test_barcode_pending_source_accept_requires_real_nutrition_before_vocab_trai
     laundered = dict(pending_body["items"][0]["estimate"])
     laundered.update({"confidence": 0.8, "ambiguous": False, "source": "manual_review_estimate"})
     laundered_item = {
-        "item_id": pending_body["items"][0]["item_id"],
+        "item_id": "client-renamed-item",
         "state": "included",
         "estimate": laundered,
     }
