@@ -12333,8 +12333,8 @@ def open_wearables_setup_api():
         return api_error("Open Wearables setup value is too long", 400, code="invalid_field")
 
     profile_key = _open_wearables_profile_key()
-    existing_local_credential = str(OPEN_WEARABLES_LOCAL_CONFIG.get("password") or "").strip()
-    credential_for_mapping = credential_input or existing_local_credential or OPEN_WEARABLES_PASSWORD
+    existing_protected_credential = _load_open_wearables_password()
+    credential_for_mapping = credential_input or existing_protected_credential or OPEN_WEARABLES_PASSWORD
     if user_id:
         if not username or not credential_for_mapping:
             return jsonify({
@@ -12381,8 +12381,8 @@ def open_wearables_setup_api():
     if credential_input:
         next_config["password"] = credential_input
     else:
-        if existing_local_credential:
-            next_config["password"] = existing_local_credential
+        if existing_protected_credential:
+            next_config["password"] = existing_protected_credential
 
     if not _save_open_wearables_local_config(next_config):
         return jsonify({

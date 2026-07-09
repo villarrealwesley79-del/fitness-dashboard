@@ -534,20 +534,11 @@ def test_open_wearables_setup_save_preserves_sidecar_path_and_restart_flag(monke
     sidecar_env = tmp_path / "custom-open-wearables.env"
     saved_credential = "saved-" + "credential"
     monkeypatch.setattr(module, "OPEN_WEARABLES_CONFIG_FILE", str(config_file))
-    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {
-        "password": saved_credential,
-        "sidecar_env_path": str(sidecar_env),
-    })
-    monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "admin@example.test")
-    monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", saved_credential)
-    monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "11111111-1111-4111-8111-111111111111")
-    monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://localhost:8000")
-    monkeypatch.setattr(module, "OPEN_WEARABLES_SIDECAR_ENV_PATH", str(sidecar_env))
-    monkeypatch.setattr(module, "OPEN_WEARABLES_MANAGED_RESTART_REQUIRED", True)
     monkeypatch.setattr(module, "_fetch_open_wearables_provider_statuses", lambda: ([], "open_wearables_no_providers"))
     monkeypatch.setattr(module, "_open_wearables_login", lambda *_args, **_kwargs: ("safe-token", {}))
     monkeypatch.setattr(module, "_open_wearables_verified_user_id", lambda _base, _token, user_id, **_kwargs: user_id)
-    protected_store = {}
+    protected_store = {"password": saved_credential}
+    password_loads = []
     monkeypatch.setattr(
         module,
         "_save_open_wearables_password",
@@ -557,9 +548,23 @@ def test_open_wearables_setup_save_preserves_sidecar_path_and_restart_flag(monke
     monkeypatch.setattr(
         module,
         "_load_open_wearables_password",
-        lambda: protected_store.get("password", saved_credential),
+        lambda: password_loads.append(True) or protected_store.get("password", ""),
         raising=False,
     )
+    module._apply_open_wearables_runtime_config({
+        "base_url": "http://localhost:8000",
+        "username": "admin@example.test",
+        "user_id": "11111111-1111-4111-8111-111111111111",
+        "sidecar_env_path": str(sidecar_env),
+        "managed_connector_restart_required": True,
+    })
+    password_loads.clear()
+
+    def login_with_protected_password(*_args, **_kwargs):
+        assert password_loads
+        return "safe-token", {}
+
+    monkeypatch.setattr(module, "_open_wearables_login", login_with_protected_password)
 
     response = module.app.test_client().post("/api/open-wearables/setup", json={
         "base_url": "http://localhost:8000",
@@ -572,6 +577,7 @@ def test_open_wearables_setup_save_preserves_sidecar_path_and_restart_flag(monke
     assert "password" not in saved
     assert saved_credential not in config_file.read_text()
     assert protected_store["password"] == saved_credential
+    assert password_loads
     assert saved["sidecar_env_path"] == str(sidecar_env)
     assert saved["managed_connector_restart_required"] is True
     assert module.OPEN_WEARABLES_SIDECAR_ENV_PATH == str(sidecar_env)

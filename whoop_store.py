@@ -389,7 +389,10 @@ def _write_protected_material(db_path: str, token_payload: dict) -> str:
         fallback_override_env="WHOOP_PROTECTED_MATERIAL_DIR",
     )
     if storage == "keychain":
-        _delete_protected_secret_file(fallback_path)
+        try:
+            _delete_protected_secret_file(fallback_path)
+        except OSError:
+            pass
     return WHOOP_MATERIAL_REF
 
 

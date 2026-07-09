@@ -101,6 +101,21 @@ def test_connection_tokens_use_keychain_on_macos_without_plaintext_file(tmp_path
     assert whoop_store.load_connection_token_material(db_path) == {}
 
 
+def test_keychain_write_ignores_obsolete_plaintext_cleanup_error(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "whoop.sqlite3")
+    monkeypatch.setattr(whoop_store, "save_protected_secret", lambda *_args, **_kwargs: "keychain")
+    monkeypatch.setattr(
+        whoop_store,
+        "_delete_protected_secret_file",
+        lambda _path: (_ for _ in ()).throw(OSError("cleanup denied")),
+    )
+
+    assert whoop_store._write_protected_material(db_path, {
+        "access_token": "keychain-access",
+        "refresh_token": "keychain-refresh",
+    }) == whoop_store.WHOOP_MATERIAL_REF
+
+
 def test_disconnect_surfaces_keychain_delete_failure(tmp_path, monkeypatch):
     db_path = str(tmp_path / "whoop.sqlite3")
     whoop_store.init_whoop_db(db_path)
