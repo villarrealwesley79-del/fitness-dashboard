@@ -4884,7 +4884,7 @@ def api_next_workout():
     """Return only the active workout prescription for gym execution."""
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    current_plan = _current_workout_plan_for_fingerprint(fingerprint)
+    current_plan = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
     training_recommendation = _current_workout_training_recommendation()
     open_wearables_facts = _open_wearables_recommendation_facts()
     guarded_training_recommendation, open_wearables_modifier = _apply_open_wearables_recommendation_guard(
@@ -5166,7 +5166,7 @@ def api_dashboard():
         reason_bits.append(open_wearables_modifier["detail"])
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    next_workout = _current_workout_plan_for_fingerprint(fingerprint)
+    next_workout = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
     if not next_workout or next_workout.get("_fit136_lightweight_no_ow"):
         next_workout = generate_next_workout(
             WORKOUTS,
@@ -14781,6 +14781,15 @@ def smart_recommendation_api():
     active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
     active_open_requested = active_open_raw in {"1", "true", "yes"}
     completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
+    fingerprint = _workout_recommendation_fingerprint()
+    current_plan = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
+    if current_plan:
+        next_workout = current_plan
+        nutrition_context = _nutrition_context_for_date(
+            today,
+            hard_training_planned=_workout_looks_hard(next_workout),
+            food_log_entries=food_log_entries,
+        )
     if not active_open_requested or completed_sets_by_exercise:
         next_workout, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
             next_workout,
@@ -14791,6 +14800,8 @@ def smart_recommendation_api():
             completed_sets_by_exercise=completed_sets_by_exercise,
         )
         if workout_adaptation_events:
+            if current_plan:
+                _persist_current_workout_plan(next_workout, fingerprint)
             nutrition_context = _nutrition_context_for_date(
                 today,
                 hard_training_planned=_workout_looks_hard(next_workout),

@@ -24,14 +24,12 @@ def test_smart_recommendation_due_event_does_not_replace_current_swapped_plan(mo
     sidecar_plan["id"] = "fit-256-sidecar-plan"
     sidecar_plan["exercises"][0]["exercise"] = "Sidecar Press"
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: sidecar_plan)
-    monkeypatch.setattr(
-        module,
-        "_apply_due_workout_adaptations_for_plan",
-        lambda plan, **kwargs: (
-            plan,
-            [{"status": "applied", "reason": "test due adaptation"}],
-        ),
-    )
+    def apply_due_adaptation(plan, **_kwargs):
+        patched = copy.deepcopy(plan)
+        patched["exercises"][1]["exercise"] = "Adapted Pulldown"
+        return patched, [{"status": "applied", "reason": "test due adaptation"}]
+
+    monkeypatch.setattr(module, "_apply_due_workout_adaptations_for_plan", apply_due_adaptation)
     monkeypatch.setattr(
         module,
         "_whoop_recommendation_context",
@@ -68,3 +66,4 @@ def test_smart_recommendation_due_event_does_not_replace_current_swapped_plan(mo
     recommendation = later_swap.get_json()["recommendation"]
     assert recommendation["id"] == "fit-256-plan"
     assert recommendation["exercises"][0]["exercise"] == "Chest Press"
+    assert recommendation["exercises"][1]["exercise"] == "Adapted Pulldown"
