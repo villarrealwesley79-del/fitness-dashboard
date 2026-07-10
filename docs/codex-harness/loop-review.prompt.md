@@ -298,37 +298,57 @@ scanner is read-only.
 
 ### G. Live app walkthrough (UI-facing PRs)
 
-Applies when the PR adds or modifies templates, static assets, app-route or
-UI-rendering code, or user-facing copy; for any other PR record
-`walkthrough=skipped` and continue. From the gate-D worktree at the pinned SHA,
-boot the app in a fail-closed sandbox: a fresh throwaway
-`DATA_DIR="$(mktemp -d /private/tmp/fitness-review-ui.XXXXXX)"`, the same
-`env -i` discipline and venv interpreter as gate D,
-`SESSION_COOKIE_SECURE=false`, bound to 127.0.0.1 on a free ephemeral port,
-with a 120-second boot timeout waiting for the port. If the app fails to boot
-at the pinned SHA, that is a group-1 must-fix finding under a
-`CHANGES REQUESTED` verdict — a real defect, never a deferral.
+Applicability is decided by diff content, not file class: run this gate when
+any hunk touches a route handler or route decorator, `templates/`, `static/`,
+or user-facing strings; when classification is uncertain, run it. For any
+other PR record `walkthrough=skipped` and continue.
+
+Boot the app from the gate-D worktree at the pinned SHA under the FULL gate-D
+trusted-wrapper isolation — this gate executes PR-controlled code and must
+never be weaker than gate D: temporary `HOME`/`CFFIXED_USER_HOME`/`TMPDIR`,
+the temporary test-only keychain set as default and sole search target with
+readback proof, denied reads of the owner's real home and Keychain paths, and
+no network egress beyond loopback (the app's only legitimate traffic is the
+inbound playwright connection; wearable and vision egress is credential-gated
+off under `env -i`). Add a fresh throwaway
+`DATA_DIR="$(mktemp -d /private/tmp/fitness-review-ui.XXXXXX)"`,
+`SESSION_COOKIE_SECURE=false`, the venv interpreter, binding to 127.0.0.1 on
+a free ephemeral port, with a 120-second boot timeout waiting for the port.
+If this isolation or its proof is unavailable, post a `BLOCKED` verdict
+before executing PR code, exactly as gate D does — never a code verdict. If
+the app fails to boot at the pinned SHA but boots identically-sandboxed at
+the merge base, that is a group-1 must-fix finding under a
+`CHANGES REQUESTED` verdict; if the boot failure reproduces at the merge
+base, it is baseline debt — escalate on FIT-369 with `owner-attention` and
+defer the PR without a code verdict.
 
 Drive the running app headlessly with the Codex playwright wrapper
-(`/Users/admin/.codex/skills/playwright/scripts/playwright_cli.sh`): register
-the first user on the fresh auth DB (single-user mode permits exactly the
-first registration), then walk (a) the standard smoke path — login, dashboard
-render, and every top-level tab loading without server 5xx, template errors,
-or browser console errors — and (b) every flow named in the linked issue's
-acceptance criteria that the PR touches. Walk only those flows; never explore
-beyond them. The whole gate runs under the Section 6 600-second timeout.
+(`/Users/admin/.codex/skills/playwright/scripts/playwright_cli.sh`) using a
+per-PR named session with a fresh browser profile: register the first user on
+the fresh auth DB (single-user mode permits exactly the first registration),
+then walk (a) the standard smoke path — login, dashboard render, and every
+top-level tab loading without server 5xx, template errors, or browser console
+errors — and (b) every flow named in the linked issue's acceptance criteria
+that the PR touches. Walk only those flows; never explore beyond them. The
+whole gate runs under the Section 6 600-second timeout.
 
 Screenshot every visited state to
-`~/.codex/loops/fitness/evidence/PR-<number>/<nn>-<step>.png` — never inside
-the repository or worktree (`REPO_HYGIENE.md` bans committed runtime
-screenshots) — and list the absolute screenshot paths in the verdict comment's
-evidence section. Record `walkthrough=pass|fail|skipped` in `CHECKS_RUN`. A
-broken flow, server 5xx, template error, or console error on a touched flow is
-a group-1 must-fix finding; cosmetic issues on flows the PR does not touch are
-follow-up notes only. Kill the app's process group before leaving this gate,
-on every exit path. If playwright or chromium is unavailable or fails to
-launch, that is an infrastructure failure: handle it as a timeout deferral per
-Section 6, never as a code verdict.
+`~/.codex/loops/fitness/evidence/PR-<number>-<short-head-sha>/<nn>-<step>.png`
+— never inside the repository or worktree (`REPO_HYGIENE.md` bans committed
+runtime screenshots) — and list the screenshot paths in tilde form in the
+verdict comment's Review receipt. Record `walkthrough=pass|fail|skipped` in
+`CHECKS_RUN`. Blocking is scoped like gate F: a failure is a group-1 must-fix
+finding only when the PR introduces it — it occurs on a PR-touched flow, or
+it is absent when the same sandboxed walkthrough is repeated at the merge
+base. A failure that reproduces at the merge base, or occurs only on flows
+the PR does not touch, is baseline debt: record `walkthrough=pass`, note it
+as a follow-up, and escalate on FIT-369 when severe — never a group-1 finding
+against this PR. On every exit path, including the timeout-deferral path,
+kill the app's process group AND close the playwright session/browser via the
+wrapper so no chromium instance or profile survives the tick. If playwright
+or chromium is unavailable or fails to launch, that is an infrastructure
+failure: handle it as a timeout deferral per Section 6, never as a code
+verdict.
 
 ## 4. Codex review closeout contract
 
@@ -338,9 +358,13 @@ criteria gaps, correctness bugs, broken data flow, unnecessary scope, security a
 privacy issues, data loss, missing loading/error/blocked states when relevant, bad
 abstractions, missing tests, and efficiency: a flagrant performance regression
 introduced by the PR (an N+1 query, an unbounded or quadratic scan over health
-history on a hot path, blocking I/O inside a request handler) is a blocker;
-lesser optimization opportunities are should-fix or follow-up notes and never
-block a merge on their own.
+history on a hot path, or newly introduced long-blocking work on a hot request
+path beyond the codebase's existing baseline pattern — an unbounded external
+network call, subprocess, large-file parse, or sleep added to a frequently
+polled endpoint) is a blocker; routine synchronous sqlite reads and
+issue-scoped integration calls inside handlers are this codebase's normal
+pattern and are never flagged; lesser optimization opportunities are
+should-fix or follow-up notes and never block a merge on their own.
 
 Treat accepted/actionable findings as blockers. The review evidence must state:
 
@@ -454,7 +478,7 @@ Claude review
 
 Review receipt
 
-<codex-review; pytest; CI; mergeability; artifact/privacy; PR body; what was not tested>
+<codex-review; pytest; CI; mergeability; artifact/privacy; walkthrough result + screenshot paths (tilde form) or skipped; PR body; what was not tested>
 
 BLOCKER: kind=<kind|none> fingerprint=<sha256|none> retryWhen=<condition|none>
 
