@@ -4271,6 +4271,110 @@ def test_barcode_pending_source_accept_requires_real_nutrition_before_vocab_trai
     assert len(data_store.list_personal_vocab_entries(1)) == 1
 
 
+def test_multi_item_accept_all_zero_nonbarcode_estimate_does_not_train_vocab(monkeypatch, tmp_path):
+    """FIT-349 follow-up: _review_placeholder_nutrition_not_resolved only guarded
+    barcode_pending_source originals, so any other source label (e.g. a laundered
+    manual_review_estimate) could accept and train personal vocab on all-zero
+    server-sanitized nutrition. Vocab learning must be gated on the sanitized
+    calories/macros themselves, not the source label."""
+    monkeypatch.setenv("SECRET_KEY", "fit349-followup-zero-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "NUTRITION_DATA", [])
+    monkeypatch.setattr(module, "save_json", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+    client = module.app.test_client()
+
+    zero_estimate = _accepted_estimate(
+        calories=0,
+        protein_g=0,
+        carbs_g=0,
+        fat_g=0,
+        confidence=0.9,
+        ambiguous=False,
+        source="manual_review_estimate",
+    )
+    original_estimate = {
+        "source": "manual_review_estimate",
+        "calories": 0,
+        "protein_g": 0,
+        "carbs_g": 0,
+        "fat_g": 0,
+    }
+
+    res = client.post(
+        "/api/meal-intake/fit349-followup-zero-1/accept",
+        json={
+            "meal_id": "fit349-followup-zero-1",
+            "items": [
+                {
+                    "state": "included",
+                    "item_id": "zero-item-1",
+                    "estimate": zero_estimate,
+                    "original_estimate": original_estimate,
+                },
+            ],
+        },
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == 1
+    assert rows[0]["calories"] == 0
+    assert data_store.list_personal_vocab_entries(1) == []
+
+
+def test_single_item_accept_zero_calorie_manual_water_log_persists_without_training_vocab(monkeypatch, tmp_path):
+    """CRITICAL CONSTRAINT for the FIT-349 follow-up: deliberate zero-calorie
+    manual logging (water, black coffee) must still persist as a food_logs
+    row. The fix must not repurpose the all-zero-nutrition guard to reject
+    intentional zero-cal entries -- it should only withhold vocab training
+    on them, since an all-zero canonical resolution is useless to learn."""
+    monkeypatch.setenv("SECRET_KEY", "fit349-followup-water-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "NUTRITION_DATA", [])
+    monkeypatch.setattr(module, "save_json", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+    client = module.app.test_client()
+
+    water_estimate = _accepted_estimate(
+        item_name="Water",
+        portion_description="16 oz",
+        calories=0,
+        protein_g=0,
+        carbs_g=0,
+        fat_g=0,
+        sodium_mg=0,
+        fiber_g=0,
+        confidence=0.95,
+        ambiguous=False,
+        source="manual_review_estimate",
+    )
+
+    res = client.post(
+        "/api/meal-intake/fit349-followup-water-1/accept",
+        json={
+            "estimate": water_estimate,
+            "original_estimate": dict(water_estimate),
+            "text": "water",
+        },
+    )
+
+    assert res.status_code == 200, res.get_data(as_text=True)
+    body = res.get_json()
+    assert body["status"] == "logged"
+    assert body["food_log"]["calories"] == 0
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == 1
+    assert rows[0]["calories"] == 0
+    assert data_store.list_personal_vocab_entries(1) == []
+
+
 def test_barcode_pending_source_without_snapshot_still_requires_real_nutrition(monkeypatch):
     module = _client(monkeypatch)
     data_store.add_food_log(
