@@ -3722,9 +3722,10 @@ def generate_next_workout(
 
     volume_data = calculate_volume(workouts, weeks=4)
     muscle_groups = list(volume_data.keys()) or ["chest", "back", "quads", "shoulders"]
+    default_muscles = ["chest", "back", "quads", "shoulders", "hamstrings", "glutes", "adductors", "biceps", "triceps", "core", "calves"]
 
     readiness_scores = {}
-    for muscle in muscle_groups:
+    for muscle in default_muscles:
         readiness_scores[muscle] = get_readiness_score(muscle, soreness_data, volume_data, CARDIO_DATA, workouts)
 
     available_muscles = [
@@ -3734,7 +3735,6 @@ def generate_next_workout(
     ]
 
     # If not enough muscles available, add default ones
-    default_muscles = ["chest", "back", "quads", "shoulders", "hamstrings", "glutes", "adductors", "biceps", "triceps", "core", "calves"]
     for m in default_muscles:
         if m in readiness_scores and (
             readiness_scores[m]["score"] < 5
