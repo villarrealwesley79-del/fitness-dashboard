@@ -121,7 +121,14 @@ def test_analytics_advanced_uses_unknown_hrv_when_oura_lookup_or_trend_fails(
         monkeypatch.setattr(module, "get_oura_daily_range", get_rows)
     else:
         monkeypatch.setattr(
-            module, "get_oura_daily_range", lambda *_args, **_kwargs: [{"hrv": 60.0}]
+            module,
+            "get_oura_daily_range",
+            lambda *_args, **_kwargs: [
+                {"hrv": 60.0},
+                {"hrv": 60.0},
+                {"hrv": 60.0},
+                {"hrv": 60.0},
+            ],
         )
         compute_inputs = []
 
@@ -140,4 +147,38 @@ def test_analytics_advanced_uses_unknown_hrv_when_oura_lookup_or_trend_fails(
     if failure == "lookup":
         assert lookup_calls == [True]
     else:
-        assert compute_inputs == [[60.0]]
+        assert compute_inputs == [[60.0, 60.0, 60.0, 60.0]]
+
+
+@pytest.mark.parametrize("hrv_values", [[], [60.0, 61.0, 62.0]])
+def test_analytics_advanced_uses_unknown_hrv_for_sparse_oura_data(
+    monkeypatch, hrv_values
+):
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    monkeypatch.setattr(module, "SORENESS_DATA", [])
+    monkeypatch.setattr(module, "USER_SETTINGS", {"fatigue_threshold": 100})
+    monkeypatch.setattr(module, "calculate_volume", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        module, "calculate_sleep_debt", lambda *_args, **_kwargs: {"debt_minutes": 0}
+    )
+    monkeypatch.setattr(module, "_decayed_soreness", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(module, "_last_n_sessions_rpe", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        module,
+        "detect_deload_need",
+        lambda *_args, **_kwargs: {"needed": False, "weeks_since_deload": 0},
+    )
+    monkeypatch.setattr(
+        module,
+        "get_oura_daily_range",
+        lambda *_args, **_kwargs: [{"hrv": value} for value in hrv_values],
+    )
+
+    response = module.app.test_client().get("/api/analytics/advanced")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["factors"]["hrv_trend"] == "unknown"
+    assert payload["fatigue_score"] == 28.0
