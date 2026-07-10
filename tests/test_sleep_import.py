@@ -161,6 +161,35 @@ def test_sleep_import_rejects_mixed_batch_without_mutating_memory_or_disk(sleep_
     assert sleep_file.read_text(encoding="utf-8") == disk_before
 
 
+def test_sleep_import_treats_explicit_canonical_zero_as_supplied(sleep_api):
+    module, client, sleep_file, baseline = sleep_api
+    disk_before = sleep_file.read_text(encoding="utf-8")
+
+    response = _post(
+        client,
+        {
+            "entries": [
+                {
+                    "date": "2026-07-02",
+                    "sleep_duration_min": 0,
+                    "duration_min": 420,
+                    "time_in_bed_min": 0,
+                    "in_bed_min": 450,
+                    "deep_min": 1,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"] == [
+        {"row": 1, "field": "sleep_duration_min", "code": "contradictory_minutes"},
+        {"row": 1, "field": "time_in_bed_min", "code": "contradictory_minutes"},
+    ]
+    assert module.SLEEP_DATA == baseline
+    assert sleep_file.read_text(encoding="utf-8") == disk_before
+
+
 def test_sleep_import_skips_missing_date_rows(sleep_api):
     module, client, _sleep_file, _baseline = sleep_api
 

@@ -16315,7 +16315,9 @@ def sleep_import():
         return api_error('Provide entries[] or csv text', 400, code='invalid_field')
 
     def parse_minutes(r, field, alias=None):
-        value=r.get(field) or (r.get(alias) if alias else None)
+        value=r.get(field)
+        if value is None or value=='':
+            value=r.get(alias) if alias else None
         if value is None or value=='':
             return 0,False,None
         try:
