@@ -19,7 +19,6 @@ import hashlib
 import json
 from typing import Callable
 
-from recommendation_sources import build_open_wearables_recommendation_source
 from wearable_fact_store import (
     WearableDailyFact,
     list_recommendation_facts,
@@ -279,16 +278,3 @@ def apply_recommendation_guard(recommendation, facts, *, downgrade_once: Callabl
     if not modifier.get("applied"):
         return recommendation, modifier
     return downgrade_once(recommendation), modifier
-
-
-def recommendation_source_payload(freshness, *, db_file: str, profile_key: str, facts=None, modifier=None) -> dict:
-    facts = recommendation_facts(db_file, profile_key) if facts is None else facts
-    modifier = conservative_modifier(facts) if modifier is None else modifier
-    source_freshness = freshness
-    if isinstance(freshness, dict) and "open_wearables" in freshness:
-        source_freshness = freshness.get("open_wearables")
-    return build_open_wearables_recommendation_source(
-        source_freshness,
-        facts=facts,
-        modifier=modifier,
-    )
