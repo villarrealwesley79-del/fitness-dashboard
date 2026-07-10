@@ -8,10 +8,22 @@ if [ "${FITNESS_SKIP_PRE_PUSH_TESTS:-0}" = "1" ]; then
     exit 0
 fi
 
+# Git exports GIT_DIR/GIT_INDEX_FILE to hooks; in a linked worktree that breaks
+# `git rev-parse --show-toplevel` and any child git invocation (including the
+# guard scripts the suite exercises). Resolve everything from PWD instead.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 ROOT="$(git rev-parse --show-toplevel)"
 cd "${ROOT}"
 
-if command -v python >/dev/null 2>&1; then
+# Prefer the repo venv so the suite runs against pinned dependencies; linked
+# worktrees have no venv of their own, so fall back to the canonical checkout's
+# interpreter before trusting whatever python is on PATH.
+if [ -x "${ROOT}/venv/bin/python" ]; then
+    PYTHON_BIN="${ROOT}/venv/bin/python"
+elif [ -x "/Users/admin/fitness-dashboard/venv/bin/python" ]; then
+    PYTHON_BIN="/Users/admin/fitness-dashboard/venv/bin/python"
+elif command -v python >/dev/null 2>&1; then
     PYTHON_BIN="python"
 elif command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="python3"
