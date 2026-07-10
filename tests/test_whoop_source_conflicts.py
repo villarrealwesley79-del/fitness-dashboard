@@ -177,7 +177,13 @@ def test_next_workout_cache_matches_whoop_adjusted_response(fitness_app, monkeyp
     payload = response.get_json()
     adjusted_sets = payload["next_workout"]["exercises"][0]["target_sets"]
     assert adjusted_sets < 4
-    assert fitness_app.LAST_WORKOUT_RECOMMENDATION["exercises"][0]["target_sets"] == adjusted_sets
+    # FIT-256 finding 2: the wearable-modifier-adjusted plan is a display-time
+    # transform only. The canonical cache (ephemeral LAST_WORKOUT_RECOMMENDATION
+    # *and* the durable current_workout_plans row) must stay the base/programmed
+    # plan, not the WHOOP-clamped one -- otherwise a transient deload/caution
+    # reading gets fed back in as "current_plan" on the next request and
+    # durably re-persisted, permanently ratcheting target_sets down.
+    assert fitness_app.LAST_WORKOUT_RECOMMENDATION["exercises"][0]["target_sets"] == 4
 
     second_response = fitness_app.app.test_client().get("/api/next-workout")
     second_payload = second_response.get_json()

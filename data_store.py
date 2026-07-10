@@ -605,7 +605,20 @@ def init_data_db():
 
 
 def save_current_workout_plan(user_id: int, fingerprint: str, plan: dict) -> dict:
-    """Persist the current generated workout plan for one user."""
+    """Persist the current generated workout plan for one user.
+
+    KNOWN LIMITATION (FIT-256 finding 3): this is a blind
+    ``INSERT ... ON CONFLICT(user_id) DO UPDATE`` -- last write wins, with no
+    version/optimistic-lock check. `app._persist_current_workout_plan` guards
+    this with a process-local `threading.RLock`, which only serializes writes
+    within a single worker process; it gives no cross-process protection.
+    The app currently mitigates this by running gunicorn with a single worker
+    (see Dockerfile), which makes the process-local lock effectively global.
+    If this ever needs to scale to >1 worker/instance again, this function
+    needs a real compare-and-set (e.g. a `version` column, update only when
+    `version = expected_version`, caller reconciles on conflict) before that
+    change is safe.
+    """
     if not isinstance(plan, dict):
         raise ValueError("plan must be an object")
     if not fingerprint:

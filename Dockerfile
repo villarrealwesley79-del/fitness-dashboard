@@ -28,7 +28,15 @@ ENV PORT=8080 \
 EXPOSE 8080
 
 # Use gunicorn for production (already in requirements.txt)
-# --workers 1 avoids divergent per-process globals; --threads 1 avoids shared-global races
+# --workers 1 avoids divergent per-process globals (FIT-256). This masks
+# rather than eliminates the underlying TOCTOU race: `save_current_workout_plan`
+# still does a blind INSERT ... ON CONFLICT DO UPDATE with no version/optimistic
+# lock, so a future move back to >1 worker (or a multi-instance/Fly.io
+# multi-machine deploy) would reopen the same cross-process clobber risk.
+# --threads 1 is a no-op here: gunicorn's default sync worker class already
+# serves one request per worker with no thread concurrency to disable; it
+# only matters if the worker class is changed to `gthread`. Kept for
+# explicitness, not because it changes behavior.
 # --timeout 120 allows slow Oura sync calls
 CMD ["sh", "-c", "gunicorn app:app \
      --bind 0.0.0.0:${PORT} \

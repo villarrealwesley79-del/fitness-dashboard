@@ -4929,15 +4929,21 @@ def api_next_workout():
     today_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context(today_oura.get("readiness_score"))
+    # Wearable modifiers (WHOOP deload/caution) are a display-time transform
+    # only -- current_plan (the base/programmed plan) was already persisted
+    # above. Do NOT persist the modifier-mutated output: apply_wearable_modifiers
+    # one-directionally clamps target_sets/rpe/etc, and re-persisting it as the
+    # canonical durable plan would ratchet a transient wearable reading into a
+    # permanent reduction across restarts (FIT-256 finding 2).
     whoop_adjusted = apply_wearable_modifiers(
         guarded_training_recommendation,
         current_plan,
         whoop_signals=whoop_context["signals"],
         source_conflict=whoop_context["source_conflict"],
     )
-    current_plan = _persist_current_workout_plan(whoop_adjusted["next_workout"], fingerprint)
+    display_workout = whoop_adjusted["next_workout"]
     return jsonify({
-        "next_workout": _workout_with_auth_scope(current_plan),
+        "next_workout": _workout_with_auth_scope(display_workout),
         "workout_adaptation_events": [workout_adaptation.project_event(event) for event in workout_adaptation_events],
         "recommendation_sources": {
             **_recommendation_sources_payload(
@@ -5206,6 +5212,14 @@ def api_dashboard():
             )
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context(readiness_val)
+    # Persist the base/programmed plan (post-adaptation, pre-wearable-modifier)
+    # as the canonical durable plan BEFORE applying wearable modifiers.
+    # apply_wearable_modifiers one-directionally clamps target_sets/rpe/etc
+    # for display; re-persisting its output would ratchet a transient WHOOP
+    # deload/caution reading into a permanent reduction across restarts
+    # (FIT-256 finding 2). Wearable modifiers are applied as a display-time
+    # transform on the way out only.
+    _persist_current_workout_plan(next_workout, fingerprint)
     whoop_adjusted = apply_wearable_modifiers(
         guarded_dashboard_recommendation,
         next_workout,
@@ -5218,7 +5232,6 @@ def api_dashboard():
         hard_training_planned=_workout_looks_hard(next_workout),
         food_log_entries=food_log_entries,
     )
-    _persist_current_workout_plan(next_workout, fingerprint)
     nutrition_today_payload = _nutrition_today_public_payload(today_s, nutrition_context)
     return jsonify({
         "headline": {
@@ -15069,7 +15082,23 @@ def smart_recommendation_api():
     fingerprint = _workout_recommendation_fingerprint()
     current_plan = _current_workout_plan_for_fingerprint(fingerprint)
     stored_plan = get_current_workout_plan(_current_data_user_id())
-    canonical_plan = (stored_plan or {}).get("plan") or current_plan
+    # A stored plan whose fingerprint doesn't match today's fingerprint is
+    # only safe to treat as canonical if it was actually written *today*.
+    # A same-day mismatch is process-local cache churn (worker divergence,
+    # a weather-cache refresh, etc.) that a genuine same-day swap should
+    # survive -- but a stored plan left over from a *prior* day (e.g. a
+    # calendar-day rollover, since the fingerprint includes `day`) is
+    # stale and must not be resurrected and re-persisted under today's
+    # fingerprint (FIT-256 finding 1): doing so would serve yesterday's
+    # plan forever, since it would then satisfy every future fingerprint
+    # lookup for today. On a cross-day mismatch we fall back to
+    # `current_plan` (fingerprint-scoped) / regeneration instead.
+    stored_plan_written_today = bool(
+        stored_plan and str(stored_plan.get("updated_at") or "")[:10] == today
+    )
+    canonical_plan = (
+        (stored_plan.get("plan") if stored_plan_written_today else None) or current_plan
+    )
     if not active_open_requested or completed_sets_by_exercise:
         if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
             canonical_nutrition_context = _nutrition_context_for_date(
