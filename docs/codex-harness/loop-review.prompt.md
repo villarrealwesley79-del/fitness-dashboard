@@ -116,7 +116,7 @@ not require an unrelated code push for a changed mutable blocker.
 Persist mutable blockers in `state.json.reviewBlockers["<PR>:<headSHA>"]` as:
 
 ```json
-{"kind":"<body|ci|auth|linear|timeout|claude|merge|provenance>","fingerprint":"<sha256>","observedAt":"<UTC>","retryWhen":"<machine-checkable condition>","attempts":1,"baseSha":"<sha>","ciState":"<normalized summary>"}
+{"kind":"<body|ci|auth|linear|timeout|claude|merge|provenance|baseline-boot>","fingerprint":"<sha256>","observedAt":"<UTC>","retryWhen":"<machine-checkable condition>","attempts":1,"baseSha":"<sha>","ciState":"<normalized summary>"}
 ```
 
 The `BLOCKED` receipt repeats `kind`, `fingerprint`, and `retryWhen`. Before skipping
@@ -124,8 +124,9 @@ a blocked SHA, probe only its recorded condition: hash the current PR body for
 `body`, normalize pinned-SHA check states for `ci`, test auth/write capability for
 `auth`/`linear`, perform a bounded Claude availability probe for `claude`, and read
 back PR state/mergeability for `merge`. For `provenance`, hash and re-probe the head
-repository, author, base branch, and `loop-build` label. A changed fingerprint is
-eligible. A first timeout at a pinned SHA persists a `reviewBlockers` entry
+repository, author, base branch, and `loop-build` label. For `baseline-boot`,
+re-attempt the sandboxed merge-base boot or detect a changed head SHA. A changed
+fingerprint is eligible. A first timeout at a pinned SHA persists a `reviewBlockers` entry
 (`kind=timeout`, `attempts=1`) and retries silently on the next scheduled tick per
 Section 6; a second consecutive timeout at the same pinned SHA is terminal for that
 SHA and adds `owner-attention` per Section 6. Clear the entry only after a
@@ -329,12 +330,15 @@ skippable like every other non-code deferral.
 
 Drive the running app headlessly with the Codex playwright wrapper
 (`/Users/admin/.codex/skills/playwright/scripts/playwright_cli.sh`) using a
-per-PR named session with a fresh browser profile. The browser is bounded
-like the app: launch the session with non-loopback egress blocked (for
-example `--proxy-server` pointed at a dead loopback port with a
-`127.0.0.1`/`localhost` bypass, passed through the playwright launch config);
-if that restriction cannot be applied, post `BLOCKED` before executing PR
-code, exactly like an isolation failure. Any attempted non-loopback request
+per-PR named session with a fresh browser profile. Invoke the wrapper from a
+trusted non-PR directory and pass a loop-owned launch config via explicit
+`--config` — never rely on a cwd-resolved `playwright-cli.json`; a PR that
+adds a playwright config file is itself a pre-execution diff-gate block. The
+browser is bounded like the app: launch the session with non-loopback egress
+blocked (for example `--proxy-server` pointed at a dead loopback port with a
+`127.0.0.1`/`localhost` bypass, in that loop-owned launch config); if that
+restriction cannot be applied, post `BLOCKED` before executing PR code,
+exactly like an isolation failure. Any attempted non-loopback request
 from a PR-touched page is itself a finding (PR-introduced external egress),
 never silently allowed or silently dropped. Then: register the first user on
 the fresh auth DB (single-user mode permits exactly the first registration),
@@ -348,8 +352,8 @@ Screenshot every visited state to
 `~/.codex/loops/fitness/evidence/PR-<number>-<short-head-sha>/<nn>-<step>.png`
 — never inside the repository or worktree (`REPO_HYGIENE.md` bans committed
 runtime screenshots) — and list the screenshot paths in tilde form in the
-verdict comment's Review receipt. Record `walkthrough=pass|fail|skipped` in
-`CHECKS_RUN`. Blocking is scoped by PR-introduction, with the merge-base
+verdict comment's Review receipt. Record `walkthrough=pass|fail|skipped|blocked` in `CHECKS_RUN` — the
+BLOCKED and timeout-deferral exits record `blocked`. Blocking is scoped by PR-introduction, with the merge-base
 comparison taking explicit precedence: when any failure occurs, repeat the
 same sandboxed walkthrough at the merge base, unless the failure is on a
 PR-touched flow (which may be treated as PR-introduced without the base run).
