@@ -551,6 +551,12 @@ def test_open_wearables_setup_save_preserves_sidecar_path_and_restart_flag(monke
         lambda: password_loads.append(True) or protected_store.get("password", ""),
         raising=False,
     )
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {})
+    monkeypatch.setattr(
+        module,
+        "OPEN_WEARABLES_MANAGED_RESTART_REQUIRED",
+        module.OPEN_WEARABLES_MANAGED_RESTART_REQUIRED,
+    )
     module._apply_open_wearables_runtime_config({
         "base_url": "http://localhost:8000",
         "username": "admin@example.test",
