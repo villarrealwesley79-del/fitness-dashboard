@@ -7108,6 +7108,28 @@ def _review_placeholder_nutrition_not_resolved(item: dict) -> bool:
     return True
 
 
+def _review_estimate_lacks_trainable_nutrition(estimate: dict) -> bool:
+    """True when a server-sanitized estimate has no positive nutrition signal.
+
+    Applies the same "calories>0 and at least one macro>0" resolution rule
+    already used for barcode placeholders, but regardless of source label —
+    an all-zero canonical resolution is useless to learn from no matter why
+    it is zero. This only gates personal-vocab training; it must never be
+    used to block acceptance, since deliberate zero-calorie manual logs
+    (water, black coffee) are legitimate food_logs rows.
+    """
+    if not isinstance(estimate, dict):
+        return True
+    calories = estimate.get("calories")
+    if isinstance(calories, bool) or not isinstance(calories, (int, float)) or calories <= 0:
+        return True
+    for field in ("protein_g", "carbs_g", "fat_g"):
+        value = estimate.get(field)
+        if not isinstance(value, bool) and isinstance(value, (int, float)) and value > 0:
+            return False
+    return True
+
+
 def _review_placeholder_nutrition_item_ids_for_accept_items(items: list[dict]) -> list[str]:
     blocked_ids = []
     for index, raw in enumerate(items):
@@ -7428,6 +7450,7 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                 "estimate": estimate,
                 "original_estimate": record["original_for_log"],
             })
+            and not _review_estimate_lacks_trainable_nutrition(estimate)
             and claim_food_log_vocab_learning(user_id, item["client_id"])
         ):
             vocab_phrase = record["text_hint"] or _meal_vocab_learning_phrase(None, estimate)
@@ -8336,6 +8359,7 @@ def meal_intake_accept(client_id: str):
             "estimate": estimate,
             "original_estimate": original_for_log,
         })
+        and not _review_estimate_lacks_trainable_nutrition(estimate)
         and claim_food_log_vocab_learning(user_id, client_id)
     ):
         if corrected:
