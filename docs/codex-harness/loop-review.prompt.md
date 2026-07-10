@@ -116,7 +116,7 @@ not require an unrelated code push for a changed mutable blocker.
 Persist mutable blockers in `state.json.reviewBlockers["<PR>:<headSHA>"]` as:
 
 ```json
-{"kind":"<body|ci|auth|linear|timeout|claude|merge|provenance>","fingerprint":"<sha256>","observedAt":"<UTC>","retryWhen":"<machine-checkable condition>","attempts":1,"baseSha":"<sha>","ciState":"<normalized summary>"}
+{"kind":"<body|ci|auth|linear|timeout|claude|merge|provenance|baseline-boot>","fingerprint":"<sha256>","observedAt":"<UTC>","retryWhen":"<machine-checkable condition>","attempts":1,"baseSha":"<sha>","ciState":"<normalized summary>"}
 ```
 
 The `BLOCKED` receipt repeats `kind`, `fingerprint`, and `retryWhen`. Before skipping
@@ -124,8 +124,9 @@ a blocked SHA, probe only its recorded condition: hash the current PR body for
 `body`, normalize pinned-SHA check states for `ci`, test auth/write capability for
 `auth`/`linear`, perform a bounded Claude availability probe for `claude`, and read
 back PR state/mergeability for `merge`. For `provenance`, hash and re-probe the head
-repository, author, base branch, and `loop-build` label. A changed fingerprint is
-eligible. A first timeout at a pinned SHA persists a `reviewBlockers` entry
+repository, author, base branch, and `loop-build` label. For `baseline-boot`,
+re-attempt the sandboxed merge-base boot or detect a changed head SHA. A changed
+fingerprint is eligible. A first timeout at a pinned SHA persists a `reviewBlockers` entry
 (`kind=timeout`, `attempts=1`) and retries silently on the next scheduled tick per
 Section 6; a second consecutive timeout at the same pinned SHA is terminal for that
 SHA and adds `owner-attention` per Section 6. Clear the entry only after a
@@ -296,13 +297,92 @@ under a `CHANGES REQUESTED` verdict. Pre-existing slop in files the PR does not 
 is a follow-up note only and never blocks. This gate never edits anything; the
 scanner is read-only.
 
+### G. Live app walkthrough (UI-facing PRs)
+
+Applicability is decided by diff content, not file class: run this gate when
+any hunk touches a route handler or route decorator, `templates/`, `static/`,
+or user-facing strings; when classification is uncertain, run it. For any
+other PR record `walkthrough=skipped` and continue.
+
+Boot the app from the gate-D worktree at the pinned SHA under the FULL gate-D
+trusted-wrapper isolation — this gate executes PR-controlled code and must
+never be weaker than gate D: temporary `HOME`/`CFFIXED_USER_HOME`/`TMPDIR`,
+the temporary test-only keychain set as default and sole search target with
+readback proof, denied reads of the owner's real home and Keychain paths, and
+no network egress beyond loopback (the app's only legitimate traffic is the
+inbound playwright connection; wearable and vision egress is credential-gated
+off under `env -i`). Add a fresh throwaway
+`DATA_DIR="$(mktemp -d /private/tmp/fitness-review-ui.XXXXXX)"`,
+`SESSION_COOKIE_SECURE=false`, the venv interpreter, binding to 127.0.0.1 on
+a free ephemeral port, with a 120-second boot timeout waiting for the port.
+If this isolation or its proof is unavailable, post a `BLOCKED` verdict
+before executing PR code, exactly as gate D does — never a code verdict. If
+the app fails to boot at the pinned SHA but boots identically-sandboxed at
+the merge base, that is a group-1 must-fix finding under a
+`CHANGES REQUESTED` verdict; if the boot failure reproduces at the merge
+base, it is baseline debt: post a `CODEX VERDICT: BLOCKED` footer at the
+pinned SHA (an external precondition, not a code verdict), persist a
+`reviewBlockers` entry with `kind=baseline-boot`, a fingerprint over the
+merge-base SHA plus the boot-error signature, and retryWhen = the merge-base
+boot succeeds or the head SHA changes, apply `owner-attention`, and escalate
+on FIT-369 once per fingerprint — never once per tick — so the SHA is
+skippable like every other non-code deferral.
+
+Drive the running app headlessly with the Codex playwright wrapper
+(`/Users/admin/.codex/skills/playwright/scripts/playwright_cli.sh`) using a
+per-PR named session with a fresh browser profile. Invoke the wrapper from a
+trusted non-PR directory and pass a loop-owned launch config via explicit
+`--config` — never rely on a cwd-resolved `playwright-cli.json`; a PR that
+adds a playwright config file is itself a pre-execution diff-gate block. The
+browser is bounded like the app: launch the session with non-loopback egress
+blocked (for example `--proxy-server` pointed at a dead loopback port with a
+`127.0.0.1`/`localhost` bypass, in that loop-owned launch config); if that
+restriction cannot be applied, post `BLOCKED` before executing PR code,
+exactly like an isolation failure. Any attempted non-loopback request
+from a PR-touched page is itself a finding (PR-introduced external egress),
+never silently allowed or silently dropped. Then: register the first user on
+the fresh auth DB (single-user mode permits exactly the first registration),
+then walk (a) the standard smoke path — login, dashboard render, and every
+top-level tab loading without server 5xx, template errors, or browser console
+errors — and (b) every flow named in the linked issue's acceptance criteria
+that the PR touches. Walk only those flows; never explore beyond them. The
+whole gate runs under the Section 6 600-second timeout.
+
+Screenshot every visited state to
+`~/.codex/loops/fitness/evidence/PR-<number>-<short-head-sha>/<nn>-<step>.png`
+— never inside the repository or worktree (`REPO_HYGIENE.md` bans committed
+runtime screenshots) — and list the screenshot paths in tilde form in the
+verdict comment's Review receipt. Record `walkthrough=pass|fail|skipped|blocked` in `CHECKS_RUN` — the
+BLOCKED and timeout-deferral exits record `blocked`. Blocking is scoped by PR-introduction, with the merge-base
+comparison taking explicit precedence: when any failure occurs, repeat the
+same sandboxed walkthrough at the merge base, unless the failure is on a
+PR-touched flow (which may be treated as PR-introduced without the base run).
+A failure absent at the merge base is a group-1 must-fix finding. A failure
+that reproduces at the merge base is baseline debt — record
+`walkthrough=pass`, note it as a follow-up, and escalate on FIT-369 when
+severe — and a performed merge-base comparison always overrides the
+touched-flow shortcut. On every exit path, including the timeout-deferral path,
+kill the app's process group AND close the playwright session/browser via the
+wrapper so no chromium instance or profile survives the tick. If playwright
+or chromium is unavailable or fails to launch, that is an infrastructure
+failure: handle it as a timeout deferral per Section 6, never as a code
+verdict.
+
 ## 4. Codex review closeout contract
 
 Run the installed `codex-review` closeout contract against the actual base and pinned
 head, scoped ONLY to the linked Linear issue. Inspect the full diff for acceptance
 criteria gaps, correctness bugs, broken data flow, unnecessary scope, security and
 privacy issues, data loss, missing loading/error/blocked states when relevant, bad
-abstractions, and missing tests.
+abstractions, missing tests, and efficiency: a flagrant performance regression
+introduced by the PR (an N+1 query, an unbounded or quadratic scan over health
+history on a hot path, or newly introduced long-blocking work on a hot request
+path beyond the codebase's existing baseline pattern — an unbounded external
+network call, subprocess, large-file parse, or sleep added to a frequently
+polled endpoint) is a blocker; routine synchronous sqlite reads and
+issue-scoped integration calls inside handlers are this codebase's normal
+pattern and are never flagged; lesser optimization opportunities are
+should-fix or follow-up notes and never block a merge on their own.
 
 Treat accepted/actionable findings as blockers. The review evidence must state:
 
@@ -339,7 +419,8 @@ PR head before the loop may post a `CODEX VERDICT: READY TO MERGE` or apply
    Code OAuth token. Never print or persist tokens.
 4. Claude's review prompt must ask for correctness, health-data privacy
    (`REPO_HYGIENE` / `RELEASE_RUNBOOK` contracts), security-boundary, data-loss,
-   production failure modes, missing tests, and acceptance-criteria gaps. It must
+   flagrant PR-introduced efficiency regressions, production failure modes,
+   missing tests, and acceptance-criteria gaps. It must
    include the PR number, pinned head SHA, base branch, Linear issue ID, sanitized
    issue description/comments, acceptance criteria, the relevant sanitized text of
    `REPO_HYGIENE.md` and `RELEASE_RUNBOOK.md`, and the redacted diff. Capture that
@@ -347,8 +428,9 @@ PR head before the loop may post a `CODEX VERDICT: READY TO MERGE` or apply
    Do not include secrets, real health data, local database contents, `.env*`, or
    credentials.
 5. Treat any Claude finding in the blocking families (correctness, health-data
-   privacy under `REPO_HYGIENE` / `RELEASE_RUNBOOK`, security-boundary, or
-   data-loss) as a blocker unless the loop explicitly rejects it with concrete
+   privacy under `REPO_HYGIENE` / `RELEASE_RUNBOOK`, security-boundary,
+   data-loss, or a flagrant PR-introduced efficiency regression) as a blocker
+   unless the loop explicitly rejects it with concrete
    evidence in the verdict comment. Sub-blocking Claude findings may be recorded as
    follow-up notes but must not block approval by themselves.
 6. If Claude CLI is missing, unauthenticated, returns no parseable response, or
@@ -365,8 +447,9 @@ Claude unavailable or unparseable means no approval, ever.
 
 ## 6. Hard timeouts
 
-The full pytest run, `codex-review`, `claude -p`, and the kill-ai-slop `scan.mjs`
-sweep each receive a hard timeout of approximately 10 minutes (600 seconds). Every
+The full pytest run, `codex-review`, `claude -p`, the kill-ai-slop `scan.mjs`
+sweep, and the gate-G live app walkthrough (including its 120-second app boot)
+each receive a hard timeout of approximately 10 minutes (600 seconds). Every
 external read/write also has a bounded
 timeout: 60 seconds for GitHub/Linear comments, labels, Ready transitions, and
 readbacks; 120 seconds for squash merge. Use the execution tool's enforced timeout
@@ -413,7 +496,7 @@ Claude review
 
 Review receipt
 
-<codex-review; pytest; CI; mergeability; artifact/privacy; PR body; what was not tested>
+<codex-review; pytest; CI; mergeability; artifact/privacy; walkthrough result + screenshot paths (tilde form) or skipped; PR body; what was not tested>
 
 BLOCKER: kind=<kind|none> fingerprint=<sha256|none> retryWhen=<condition|none>
 
@@ -520,5 +603,5 @@ Final output is exactly one line, then the saved automation releases the outer l
 as its unconditional last action:
 
 ```text
-GOAL: <text> — achieved|blocked|no_work / STATUS: REVIEWED|WOULD_HAVE_MERGED|MERGED|NO_WORK|PRECONDITION_FAILED|LONG_RUNNING|OWNER_ATTENTION|PAUSED|FAILED / REVIEWED: <PR#: verdict @ sha>|none / OWNER_ATTENTION: <PR#+reason>|none / CHECKS_RUN: gh-auth=.. linear-write=.. fetch=.. ci=.. pytest=.. codex-review=.. artifact-privacy=.. slop=.. body=.. / NOTES: CLAUDE_REVIEW: passed|blocked|unavailable; LOOPY: used|unavailable; <prompt conflict, timeout, blocker, or none>
+GOAL: <text> — achieved|blocked|no_work / STATUS: REVIEWED|WOULD_HAVE_MERGED|MERGED|NO_WORK|PRECONDITION_FAILED|LONG_RUNNING|OWNER_ATTENTION|PAUSED|FAILED / REVIEWED: <PR#: verdict @ sha>|none / OWNER_ATTENTION: <PR#+reason>|none / CHECKS_RUN: gh-auth=.. linear-write=.. fetch=.. ci=.. pytest=.. codex-review=.. artifact-privacy=.. slop=.. walkthrough=.. body=.. / NOTES: CLAUDE_REVIEW: passed|blocked|unavailable; LOOPY: used|unavailable; <prompt conflict, timeout, blocker, or none>
 ```
