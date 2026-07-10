@@ -38,9 +38,11 @@ Before selecting a PR:
    `villarrealwesley79-del` before trusting verdict authors or performing any
    comment, label, Ready, or merge write.
 2. Prove Linear write reachability without creating an issue. Use the connected
-   Linear write path scoped to the existing `FIT loop escalations` issue; avoid a
-   noisy comment when the connector exposes a non-mutating capability check.
-3. Run `git fetch origin main` in `/Users/admin/fitness-dashboard`.
+   Linear write path scoped to the existing FIT-369 (FIT loop escalations) issue;
+   avoid a noisy comment when the connector exposes a non-mutating capability check.
+   Every escalation comment in this file targets that exact issue ID.
+3. Run `git fetch origin main` in `/Users/admin/fitness-dashboard` under an explicit
+   120-second process-group timeout.
 
 Any failure is `PRECONDITION_FAILED`: release the run lock and stop. A missing,
 queued, unreadable, or absent CI result is never passing.
@@ -123,11 +125,12 @@ a blocked SHA, probe only its recorded condition: hash the current PR body for
 `auth`/`linear`, perform a bounded Claude availability probe for `claude`, and read
 back PR state/mergeability for `merge`. For `provenance`, hash and re-probe the head
 repository, author, base branch, and `loop-build` label. A changed fingerprint is
-eligible. Timeouts
-retry on the next scheduled tick up to three attempts; after three unchanged
-timeouts, add `owner-attention` and wait for a new head or owner-clear comment. Clear
-the entry only after a non-BLOCKED terminal verdict, a confirmed merge, or a
-superseding head SHA. Retain it while the blocker is active.
+eligible. A first timeout at a pinned SHA persists a `reviewBlockers` entry
+(`kind=timeout`, `attempts=1`) and retries silently on the next scheduled tick per
+Section 6; a second consecutive timeout at the same pinned SHA is terminal for that
+SHA and adds `owner-attention` per Section 6. Clear the entry only after a
+non-BLOCKED terminal verdict, a confirmed merge, or a superseding head SHA. Retain it
+while the blocker is active.
 
 Verdict footers are:
 
@@ -191,10 +194,14 @@ the branch using new commits.
 
 Create a disposable detached worktree at the pinned SHA. Never modify the canonical
 checkout or the PR branch. After provenance validation, fetch the selected PR's
-exact head into a temporary local ref, verify the fetched object equals the pinned
-SHA, and create the detached worktree from that verified object; fetching only
-`origin/main` is insufficient. Before executing the pinned code, inspect the full diff
-through `gh` and run the read-only Codex review pass. Block before pytest if the PR
+exact head into a temporary local ref under an explicit 120-second process-group
+timeout, verify the fetched object equals the pinned SHA, and create the detached
+worktree from that verified object; fetching only `origin/main` is insufficient. A
+fetch timeout here is a timeout deferral per Section 6. Bind the worktree path to a
+variable when creating it, for example `REVIEW_WT=$(mktemp -d ...) && git worktree
+add --detach "$REVIEW_WT" "$PINNED_SHA"`. Before executing the pinned code, inspect
+the full diff through `gh` and run the read-only Codex review pass. Block before
+pytest if the PR
 changes the test network guard, adds access to owner-home absolute paths, bypasses
 `DATA_DIR`, introduces live-network/process/keychain behavior outside the linked
 issue, or changes the trusted worktree/test harness without explicit issue scope.
@@ -215,25 +222,28 @@ Claude, SSH-agent, cloud, connector, and application credentials. The wrapper mu
 deny reads of the owner's real home and Keychain paths while allowing only the
 unchanged baseline's required loopback and subprocess behavior. If this isolation
 or its proof is unavailable, post a blocked verdict before executing PR code. The
-unchanged `tests/conftest.py` live-network guard remains mandatory. The effective
-child command is:
+unchanged `tests/conftest.py` live-network guard remains mandatory. Run both the
+sanity-import and pytest commands from the disposable worktree root at `$REVIEW_WT`;
+never from the canonical checkout. The effective child command is:
 
 ```sh
 DATA_DIR="$(mktemp -d /private/tmp/fitness-review-data.XXXXXX)"
 trap 'rm -rf "$DATA_DIR"' EXIT
-env -i PATH="/Users/admin/fitness-dashboard/venv/bin:/opt/homebrew/Cellar/node@22/22.22.3/bin:/usr/bin:/bin" \
+cd "$REVIEW_WT"
+env -i PATH="/Users/admin/fitness-dashboard/venv/bin:/opt/homebrew/opt/node@22/bin:/usr/bin:/bin" \
   HOME="$REVIEW_HOME" CFFIXED_USER_HOME="$REVIEW_HOME" TMPDIR="$REVIEW_TMP" \
   PYTHONPATH=. DATA_DIR="$DATA_DIR" \
   /Users/admin/fitness-dashboard/venv/bin/python -c 'import flask, pytest'
-env -i PATH="/Users/admin/fitness-dashboard/venv/bin:/opt/homebrew/Cellar/node@22/22.22.3/bin:/usr/bin:/bin" \
+env -i PATH="/Users/admin/fitness-dashboard/venv/bin:/opt/homebrew/opt/node@22/bin:/usr/bin:/bin" \
   HOME="$REVIEW_HOME" CFFIXED_USER_HOME="$REVIEW_HOME" TMPDIR="$REVIEW_TMP" \
   PYTHONPATH=. DATA_DIR="$DATA_DIR" \
   /Users/admin/fitness-dashboard/venv/bin/python -m pytest -q
 ```
 
 Before the sanity import, require that the allowlisted Node binary resolves exactly
-to `/opt/homebrew/Cellar/node@22/22.22.3/bin/node` and reports `v22.22.3`; otherwise
-block rather than silently skipping the suite's JavaScript regression tests.
+to `/opt/homebrew/opt/node@22/bin/node` and reports a `v22.x` major version;
+otherwise block rather than silently skipping the suite's JavaScript regression
+tests.
 
 Fresh worktrees have no venv; never use a worktree-local interpreter. Never set
 `FITNESS_SKIP_PRE_PUSH_TESTS=1` and never rely on a hook. If an app/server must run,
@@ -275,6 +285,16 @@ In newly introduced diff content, also block real hostnames, tokens, personal pa
 credentials, live health data, database contents, generated health exports, and
 protected WHOOP material. Sanitized durable docs evidence is allowed only when
 intentional and referenced by the PR.
+
+### F. Kill-ai-slop sweep (report-only)
+
+Run `node /Users/admin/.codex/skills/kill-ai-slop/scripts/scan.mjs "$REVIEW_WT"
+--json` against the gate-D pinned-SHA worktree root at `$REVIEW_WT` — never the
+canonical checkout. Filter the reported hits to files the PR adds or modifies at the
+pinned SHA. A confirmed slop tell introduced by the PR is a group-1 must-fix finding
+under a `CHANGES REQUESTED` verdict. Pre-existing slop in files the PR does not touch
+is a follow-up note only and never blocks. This gate never edits anything; the
+scanner is read-only.
 
 ## 4. Codex review closeout contract
 
@@ -345,20 +365,28 @@ Claude unavailable or unparseable means no approval, ever.
 
 ## 6. Hard timeouts
 
-The full pytest run, `codex-review`, and `claude -p` each receive a hard timeout of
-approximately 10 minutes (600 seconds). Every external read/write also has a bounded
+The full pytest run, `codex-review`, `claude -p`, and the kill-ai-slop `scan.mjs`
+sweep each receive a hard timeout of approximately 10 minutes (600 seconds). Every
+external read/write also has a bounded
 timeout: 60 seconds for GitHub/Linear comments, labels, Ready transitions, and
 readbacks; 120 seconds for squash merge. Use the execution tool's enforced timeout
 or a process wrapper that kills the process group; do not merely watch the clock and
 do not use an unbounded wait. BSD/macOS compatibility is required.
 
-On a pre-merge timeout, post a three-group blocked verdict naming the exact command
-and timeout, persist its blocker entry, apply `loop-changes-requested`, remove stale
-`loop-approved`, report the timeout in the end-state line, release the run lock, and
-stop. On Ready/merge timeout, first perform a bounded `gh pr view` reconciliation. If
-merged, confirm the merged SHA and Linear auto-close. If still open, return it to
-Draft and post the latest `BLOCKED` footer with `kind=merge`. If readback is
-ambiguous, apply `owner-attention`, make no second merge attempt, and stop.
+On a pre-merge timeout, check the persisted `reviewBlockers` entry for this pinned
+SHA. If no `kind=timeout` entry exists yet for this exact pinned SHA, this is the
+first timeout: post no comment and change no labels. Persist a `reviewBlockers`
+entry (`kind=timeout`, `attempts=1`, the exact timed-out command) under
+`state.lock`, report the timeout in the end-state line only, release the run lock,
+and retry on the next tick. If a `kind=timeout` entry already exists for this exact
+pinned SHA, this is the second consecutive timeout: post a three-group blocked
+verdict naming the exact command and timeout, apply `loop-changes-requested` and
+`owner-attention`, remove stale `loop-approved`, report the timeout in the
+end-state line, release the run lock, and stop. On Ready/merge timeout, first perform a bounded `gh pr view`
+reconciliation. If merged, confirm the merged SHA and Linear auto-close. If still
+open, return it to Draft and post the latest `BLOCKED` footer with `kind=merge`. If
+readback is ambiguous, apply `owner-attention`, make no second merge attempt, and
+stop.
 
 ## 7. Verdict comment and labels
 
@@ -427,7 +455,8 @@ must-fix findings, CI is green, independent pytest passes, the branch contains
 current main, artifact/privacy and PR-body gates pass, and Claude review passes:
 
 1. While the PR is still Draft, run `git fetch origin main` again immediately before
-   merge. Pin the new
+   merge, under an explicit 120-second process-group timeout; a fetch timeout here is
+   a timeout deferral per Section 6. Pin the new
    `origin/main` SHA and prove it is an ancestor of the pinned PR head. If main
    advanced beyond the tested head, remove stale `loop-approved`, apply
    `loop-changes-requested`, post the behind-main must-fix evidence, and stop for the
@@ -483,12 +512,13 @@ no owner process is using it before removing it, then stop. Never hold `state.lo
 across a network call. Atomically update
 `lastReviewTick`, maintain the `reviewBlockers` schema from Section 2, and append the
 goal/status to the last 50 `goals`; preserve `idleTicks`, `parked`,
-`repairAttempts`, `claimIntent`, `mergeIntent`, and unknown keys. The review loop
+`repairAttempts`, `buildAttempts`, `claimIntent`, `mergeIntent`, and unknown keys.
+The review loop
 does not increment the build loop's drained-backlog idle counter.
 
 Final output is exactly one line, then the saved automation releases the outer lock
 as its unconditional last action:
 
 ```text
-GOAL: <text> — achieved|blocked|no_work / STATUS: REVIEWED|WOULD_HAVE_MERGED|MERGED|NO_WORK|PRECONDITION_FAILED|LONG_RUNNING|OWNER_ATTENTION|PAUSED|FAILED / REVIEWED: <PR#: verdict @ sha>|none / OWNER_ATTENTION: <PR#+reason>|none / CHECKS_RUN: gh-auth=.. linear-write=.. fetch=.. ci=.. pytest=.. codex-review=.. artifact-privacy=.. body=.. / NOTES: CLAUDE_REVIEW: passed|blocked|unavailable; LOOPY: used|unavailable; <prompt conflict, timeout, blocker, or none>
+GOAL: <text> — achieved|blocked|no_work / STATUS: REVIEWED|WOULD_HAVE_MERGED|MERGED|NO_WORK|PRECONDITION_FAILED|LONG_RUNNING|OWNER_ATTENTION|PAUSED|FAILED / REVIEWED: <PR#: verdict @ sha>|none / OWNER_ATTENTION: <PR#+reason>|none / CHECKS_RUN: gh-auth=.. linear-write=.. fetch=.. ci=.. pytest=.. codex-review=.. artifact-privacy=.. slop=.. body=.. / NOTES: CLAUDE_REVIEW: passed|blocked|unavailable; LOOPY: used|unavailable; <prompt conflict, timeout, blocker, or none>
 ```
