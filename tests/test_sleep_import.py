@@ -59,6 +59,18 @@ def test_sleep_import_rejects_invalid_minute_values(sleep_api, value, reason):
     }
 
 
+def test_sleep_import_returns_structured_error_for_huge_numeric_integer(sleep_api):
+    _module, client, _sleep_file, _baseline = sleep_api
+
+    response = _post(client, {"entries": [_row(sleep_duration_min=10**400)]})
+
+    assert response.status_code == 400
+    assert response.is_json
+    assert response.get_json()["error"]["details"] == [
+        {"row": 1, "field": "sleep_duration_min", "code": "invalid_number"}
+    ]
+
+
 @pytest.mark.parametrize(
     ("overrides", "details"),
     [
@@ -219,6 +231,38 @@ def test_sleep_import_rejects_partial_stage_and_awake_total_above_in_bed(sleep_a
                     "rem_min": 20,
                     "awake_min": 60,
                 }
+            ]
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"] == [
+        {"row": 1, "field": "awake_min", "code": "contradictory_minutes"}
+    ]
+
+
+def test_sleep_import_rejects_parentless_stage_total_above_daily_limit(sleep_api):
+    _module, client, _sleep_file, _baseline = sleep_api
+
+    response = _post(
+        client,
+        {"entries": [{"date": "2026-07-02", "deep_min": 800, "rem_min": 700}]},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"] == [
+        {"row": 1, "field": "stage_total_min", "code": "contradictory_minutes"}
+    ]
+
+
+def test_sleep_import_rejects_parentless_stage_and_awake_total_above_daily_limit(sleep_api):
+    _module, client, _sleep_file, _baseline = sleep_api
+
+    response = _post(
+        client,
+        {
+            "entries": [
+                {"date": "2026-07-02", "deep_min": 800, "rem_min": 500, "awake_min": 200}
             ]
         },
     )

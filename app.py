@@ -16322,7 +16322,7 @@ def sleep_import():
             return 0,False,None
         try:
             value=float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 0,True,'invalid_number'
         if not math.isfinite(value):
             return 0,True,'invalid_number'
@@ -16357,9 +16357,14 @@ def sleep_import():
         if len(errors)>error_count:
             continue
         stages=e['deep_min']+e['rem_min']+e['light_min']
+        stages_supplied=any(supplied[field] for field in ('deep_min','rem_min','light_min'))
+        if stages_supplied and stages>1440:
+            errors.append({'row':row_number,'field':'stage_total_min','code':'contradictory_minutes'})
+        if stages_supplied and supplied['awake_min'] and stages+e['awake_min']>1440:
+            errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
         if supplied['sleep_duration_min'] and supplied['time_in_bed_min'] and e['sleep_duration_min']>e['time_in_bed_min']:
             errors.append({'row':row_number,'field':'sleep_duration_min','code':'contradictory_minutes'})
-        if any(supplied[field] for field in ('deep_min','rem_min','light_min')):
+        if stages_supplied:
             if supplied['sleep_duration_min'] and stages>e['sleep_duration_min']:
                 errors.append({'row':row_number,'field':'sleep_duration_min','code':'contradictory_minutes'})
             if supplied['time_in_bed_min'] and stages>e['time_in_bed_min']:
@@ -16367,7 +16372,7 @@ def sleep_import():
         if supplied['awake_min'] and supplied['time_in_bed_min']:
             if e['awake_min']>e['time_in_bed_min']:
                 errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
-            elif any(supplied[field] for field in ('deep_min','rem_min','light_min')) and stages+e['awake_min']>e['time_in_bed_min']:
+            elif stages_supplied and stages+e['awake_min']>e['time_in_bed_min']:
                 errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
         if supplied['sleep_duration_min'] and supplied['awake_min'] and supplied['time_in_bed_min'] and e['sleep_duration_min']+e['awake_min']>e['time_in_bed_min']:
             errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
