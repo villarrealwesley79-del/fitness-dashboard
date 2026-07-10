@@ -63,7 +63,12 @@ def test_zero_history_with_all_canonical_muscles_sore_recommends_no_sore_targets
 
 
 def test_zero_history_avoids_sore_muscles_while_allowing_fresh_muscles(fitness_app):
-    sore_muscles = {"chest", "back", "quads"}
+    # Includes "hamstrings", which sits outside the legacy 4-muscle default
+    # {chest, back, quads, shoulders}. Pre-FIT-345, muscles outside that
+    # legacy set were never scored for readiness, so a sore-but-unscored
+    # muscle could leak into the recommendation via the "fill remaining
+    # slots" fallback despite being sore.
+    sore_muscles = {"chest", "back", "quads", "hamstrings"}
     fitness_app.SORENESS_DATA = _soreness(sore_muscles)
 
     recommendation = fitness_app.generate_next_workout(
@@ -89,7 +94,11 @@ def test_trained_muscle_soreness_still_excludes_that_muscle(fitness_app):
             "exercises": [{"machine": "Chest Press", "muscle_group": "chest", "sets": []}],
         }
     )
-    fitness_app.SORENESS_DATA = _soreness({"chest"})
+    # "hamstrings" is untrained (no volume history) and sits outside the
+    # legacy 4-muscle default {chest, back, quads, shoulders}. Pre-FIT-345,
+    # only trained/default-4 muscles were scored for readiness, so a sore
+    # untrained muscle like this could bypass the soreness gate entirely.
+    fitness_app.SORENESS_DATA = _soreness({"chest", "hamstrings"})
 
     recommendation = fitness_app.generate_next_workout(
         fitness_app.WORKOUTS,
@@ -97,5 +106,10 @@ def test_trained_muscle_soreness_still_excludes_that_muscle(fitness_app):
         available_time=45,
     )
 
-    assert "chest" not in _recommended_muscles(recommendation)
-    assert "chest" in {item["muscle"].lower() for item in recommendation["muscles_to_avoid"]}
+    recommended_muscles = _recommended_muscles(recommendation)
+    avoid_muscles = {item["muscle"].lower() for item in recommendation["muscles_to_avoid"]}
+
+    assert "chest" not in recommended_muscles
+    assert "chest" in avoid_muscles
+    assert "hamstrings" not in recommended_muscles
+    assert "hamstrings" in avoid_muscles
