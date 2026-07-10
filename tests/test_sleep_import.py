@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import inspect
 import json
 
 import pytest
@@ -188,6 +189,65 @@ def test_sleep_import_treats_explicit_canonical_zero_as_supplied(sleep_api):
     ]
     assert module.SLEEP_DATA == baseline
     assert sleep_file.read_text(encoding="utf-8") == disk_before
+
+
+def test_sleep_import_rejects_awake_only_partial_row_that_exceeds_in_bed(sleep_api):
+    _module, client, _sleep_file, _baseline = sleep_api
+
+    response = _post(
+        client,
+        {"entries": [{"date": "2026-07-02", "time_in_bed_min": 30, "awake_min": 60}]},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"] == [
+        {"row": 1, "field": "awake_min", "code": "contradictory_minutes"}
+    ]
+
+
+def test_sleep_import_rejects_partial_stage_and_awake_total_above_in_bed(sleep_api):
+    _module, client, _sleep_file, _baseline = sleep_api
+
+    response = _post(
+        client,
+        {
+            "entries": [
+                {
+                    "date": "2026-07-02",
+                    "time_in_bed_min": 100,
+                    "deep_min": 30,
+                    "rem_min": 20,
+                    "awake_min": 60,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"] == [
+        {"row": 1, "field": "awake_min", "code": "contradictory_minutes"}
+    ]
+
+
+def test_sleep_import_uses_per_row_error_tracking(sleep_api):
+    module, client, _sleep_file, _baseline = sleep_api
+
+    response = _post(
+        client,
+        {
+            "entries": [
+                _row(date="2026-07-02", deep_min="bad"),
+                _row(date="2026-07-03", rem_min="bad"),
+            ]
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"] == [
+        {"row": 1, "field": "deep_min", "code": "invalid_number"},
+        {"row": 2, "field": "rem_min", "code": "invalid_number"},
+    ]
+    assert "any(error['row']==row_number for error in errors)" not in inspect.getsource(module.sleep_import)
 
 
 def test_sleep_import_skips_missing_date_rows(sleep_api):

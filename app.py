@@ -16340,6 +16340,7 @@ def sleep_import():
         if not date: continue
         e={'date':date,'source':r.get('source') or 'apple_watch'}
         supplied={}
+        error_count=len(errors)
         for field,alias in (
             ('sleep_duration_min','duration_min'),
             ('time_in_bed_min','in_bed_min'),
@@ -16353,7 +16354,7 @@ def sleep_import():
             supplied[field]=is_supplied
             if error:
                 errors.append({'row':row_number,'field':field,'code':error})
-        if any(error['row']==row_number for error in errors):
+        if len(errors)>error_count:
             continue
         stages=e['deep_min']+e['rem_min']+e['light_min']
         if supplied['sleep_duration_min'] and supplied['time_in_bed_min'] and e['sleep_duration_min']>e['time_in_bed_min']:
@@ -16363,6 +16364,11 @@ def sleep_import():
                 errors.append({'row':row_number,'field':'sleep_duration_min','code':'contradictory_minutes'})
             if supplied['time_in_bed_min'] and stages>e['time_in_bed_min']:
                 errors.append({'row':row_number,'field':'time_in_bed_min','code':'contradictory_minutes'})
+        if supplied['awake_min'] and supplied['time_in_bed_min']:
+            if e['awake_min']>e['time_in_bed_min']:
+                errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
+            elif any(supplied[field] for field in ('deep_min','rem_min','light_min')) and stages+e['awake_min']>e['time_in_bed_min']:
+                errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
         if supplied['sleep_duration_min'] and supplied['awake_min'] and supplied['time_in_bed_min'] and e['sleep_duration_min']+e['awake_min']>e['time_in_bed_min']:
             errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
         e['sleep_start']=r.get('sleep_start')
