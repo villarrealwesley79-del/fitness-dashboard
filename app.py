@@ -4603,6 +4603,78 @@ def _persist_current_workout_plan(recommendation: dict, fingerprint: str) -> dic
     return recommendation
 
 
+def _wearable_adjusted_for_display(base_plan, guarded_recommendation, whoop_context) -> dict:
+    """Apply wearable (WHOOP deload/caution) modifiers to a base plan for
+    DISPLAY, given an already-built wearable context. Fail-open: if the modifier
+    transform raises, degrade to serving the base plan rather than 500-ing.
+
+    apply_wearable_modifiers deep-copies its input, so ``base_plan`` (and the
+    persisted canonical row it may point at) is never mutated. The returned dict
+    always carries ``next_workout``; the caller must NOT persist it (FIT-256
+    finding 2: the durable plan stays the base/programmed plan).
+    """
+    whoop_context = whoop_context or {}
+    try:
+        return apply_wearable_modifiers(
+            guarded_recommendation,
+            base_plan,
+            whoop_signals=whoop_context.get("signals"),
+            source_conflict=whoop_context.get("source_conflict"),
+        )
+    except Exception:
+        return {"next_workout": base_plan, "load_source": None}
+
+
+def _wearable_display_adjusted_plan(base_plan):
+    """Self-contained display-time wearable transform for surfaces that render a
+    persisted plan but don't already build the wearable context themselves
+    (``/gym-now``, ``/api/workout/swap``, ``/api/workout/adjust``).
+
+    FIT-256 finding 2 follow-up: the canonical persisted plan is always the
+    base/programmed plan (persisting the modifier-clamped output would ratchet a
+    transient wearable reading into a permanent set reduction). So every surface
+    that returns a plan to the user must re-derive the wearable-adjusted *view*
+    on the way out, or it would show un-clamped base sets/RPE during an active
+    deload/caution while ``/api/dashboard`` and ``/api/next-workout`` show the
+    clamped values -- the opposite of a recovery signal.
+
+    Mirrors the inputs ``/api/next-workout`` uses so those surfaces render
+    identical clamped values. Best-effort; returns ``base_plan`` unchanged on any
+    failure. Never persist the result.
+    """
+    if not isinstance(base_plan, dict) or not base_plan:
+        return base_plan
+    try:
+        training_recommendation = _current_workout_training_recommendation()
+        open_wearables_facts = _open_wearables_recommendation_facts()
+        guarded_recommendation, _open_wearables_modifier = _apply_open_wearables_recommendation_guard(
+            training_recommendation,
+            open_wearables_facts,
+        )
+        readiness_score = (get_oura_daily(OURA_DB_FILE, _today_str()) or {}).get("readiness_score")
+        whoop_context = _whoop_recommendation_context(readiness_score)
+    except Exception:
+        return base_plan
+    adjusted = _wearable_adjusted_for_display(base_plan, guarded_recommendation, whoop_context)
+    return adjusted.get("next_workout") or base_plan
+
+
+def _workout_with_display_and_auth_scope(base_plan):
+    """Display-time wearable transform + auth scope, for user-facing plan
+    responses on the swap/adjust/gym surfaces. See _wearable_display_adjusted_plan."""
+    return _workout_with_auth_scope(_wearable_display_adjusted_plan(base_plan))
+
+
+def _payload_with_recommendation_display_scope(payload: dict) -> dict:
+    """Like _payload_with_recommendation_auth_scope, but also applies the
+    display-time wearable transform to the embedded recommendation so
+    swap/adjust responses match /api/next-workout during an active deload."""
+    scoped = dict(payload)
+    if scoped.get("recommendation"):
+        scoped["recommendation"] = _workout_with_display_and_auth_scope(scoped["recommendation"])
+    return scoped
+
+
 def _is_lightweight_current_workout_plan(recommendation: dict | None) -> bool:
     return bool((recommendation or {}).get("_fit136_lightweight_no_ow"))
 
@@ -4934,12 +5006,10 @@ def api_next_workout():
     # above. Do NOT persist the modifier-mutated output: apply_wearable_modifiers
     # one-directionally clamps target_sets/rpe/etc, and re-persisting it as the
     # canonical durable plan would ratchet a transient wearable reading into a
-    # permanent reduction across restarts (FIT-256 finding 2).
-    whoop_adjusted = apply_wearable_modifiers(
-        guarded_training_recommendation,
-        current_plan,
-        whoop_signals=whoop_context["signals"],
-        source_conflict=whoop_context["source_conflict"],
+    # permanent reduction across restarts (FIT-256 finding 2). Fail-open so a
+    # modifier error degrades to the base plan instead of a 500.
+    whoop_adjusted = _wearable_adjusted_for_display(
+        current_plan, guarded_training_recommendation, whoop_context
     )
     display_workout = whoop_adjusted["next_workout"]
     return jsonify({
@@ -4973,6 +5043,10 @@ def gym_now():
             include_open_wearables_readiness=False,
         )
         workout["_fit136_lightweight_no_ow"] = True
+    # Render the wearable-adjusted (deload/caution-clamped) view so /gym-now
+    # shows the same sets/RPE as /api/next-workout during an active modifier;
+    # the persisted plan stays the base plan (FIT-256 finding 2, display-only).
+    workout = _wearable_display_adjusted_plan(workout)
     focus = html.escape(str(workout.get("focus") or workout.get("title") or "Workout"))
     estimated = workout.get("estimated_minutes") or workout.get("estimated_duration") or workout.get("available_time")
     rows = []
@@ -5218,13 +5292,12 @@ def api_dashboard():
     # for display; re-persisting its output would ratchet a transient WHOOP
     # deload/caution reading into a permanent reduction across restarts
     # (FIT-256 finding 2). Wearable modifiers are applied as a display-time
-    # transform on the way out only.
+    # transform on the way out only. Persisting the base first is safe: the base
+    # is the correct canonical value regardless, and the fail-open display
+    # transform below degrades to the base plan rather than 500-ing.
     _persist_current_workout_plan(next_workout, fingerprint)
-    whoop_adjusted = apply_wearable_modifiers(
-        guarded_dashboard_recommendation,
-        next_workout,
-        whoop_signals=whoop_context["signals"],
-        source_conflict=whoop_context["source_conflict"],
+    whoop_adjusted = _wearable_adjusted_for_display(
+        next_workout, guarded_dashboard_recommendation, whoop_context
     )
     next_workout = whoop_adjusted["next_workout"]
     nutrition_context = _nutrition_context_for_date(
@@ -9288,7 +9361,10 @@ def swap_workout_exercise():
     recommendation["exercises"] = exercises
     _persist_current_workout_plan(recommendation, fingerprint)
 
-    return jsonify({"status": "success", "recommendation": _workout_with_auth_scope(recommendation)})
+    # Persist the base plan (above), but return the wearable-adjusted view so an
+    # active deload/caution clamps every exercise -- including the untouched ones
+    # -- consistently with /api/next-workout (FIT-256 finding 2, display-only).
+    return jsonify({"status": "success", "recommendation": _workout_with_display_and_auth_scope(recommendation)})
 
 
 # ==================== AI COACH — ADJUST PLAN ====================
@@ -9768,12 +9844,12 @@ def adjust_workout():
             )
             _persist_current_workout_plan(payload["recommendation"], fingerprint)
             _ai_metric_log("ok", reason="deterministic_fallback: adapter_missing", constraint_len=len(constraint))
-            return jsonify(_payload_with_recommendation_auth_scope(payload))
+            return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
         return jsonify({
             "status": "fallback",
             "reason": "LM Studio adapter not available on this server",
-            "recommendation": _workout_with_auth_scope(recommendation),
+            "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
         })
@@ -9806,7 +9882,7 @@ def adjust_workout():
             # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
             if cached.get("recommendation"):
                 _persist_current_workout_plan(cached["recommendation"], fingerprint)
-            return jsonify(_payload_with_recommendation_auth_scope(cached))
+            return jsonify(_payload_with_recommendation_display_scope(cached))
 
     if route_candidate is None:
         if deterministic_swap:
@@ -9823,7 +9899,7 @@ def adjust_workout():
             )
             _persist_current_workout_plan(payload["recommendation"], fingerprint)
             _ai_metric_log("ok", reason="deterministic_fallback: preflight_unavailable", constraint_len=len(constraint), model_version=route_model_version)
-            return jsonify(_payload_with_recommendation_auth_scope(payload))
+            return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log(
             "fallback",
             constraint_len=len(constraint),
@@ -9833,7 +9909,7 @@ def adjust_workout():
         return jsonify({
             "status": "fallback",
             "reason": "LM Studio: all endpoints unavailable",
-            "recommendation": _workout_with_auth_scope(recommendation),
+            "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
         })
@@ -9873,7 +9949,7 @@ def adjust_workout():
                 model_version=route_model_version,
                 reason=f"deterministic_fallback: {reason_code}",
             )
-            return jsonify(_payload_with_recommendation_auth_scope(payload))
+            return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log(
             "fallback",
             constraint_len=len(constraint),
@@ -9883,7 +9959,7 @@ def adjust_workout():
         return jsonify({
             "status": "fallback",
             "reason": f"LM Studio: {exc}",
-            "recommendation": _workout_with_auth_scope(recommendation),
+            "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
         })
@@ -9914,7 +9990,7 @@ def adjust_workout():
         return jsonify({
             "status": "fallback",
             "reason": f"safety-rail error: {type(exc).__name__}",
-            "recommendation": _workout_with_auth_scope(recommendation),
+            "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
         })
@@ -9956,6 +10032,9 @@ def adjust_workout():
             equipment_pref,
         )
     )
+    # Cache and persist the BASE patched plan (display transform must not be
+    # baked into the cache or the durable row -- FIT-256 finding 2); apply the
+    # wearable display transform only on the outgoing response.
     _ai_cache_put(cache_write_key, payload)
     _persist_current_workout_plan(patched, fingerprint)
     _ai_metric_log(
@@ -9964,7 +10043,7 @@ def adjust_workout():
         constraint_len=len(constraint),
         model_version=actual_model_version,
     )
-    return jsonify(_payload_with_recommendation_auth_scope(payload))
+    return jsonify(_payload_with_recommendation_display_scope(payload))
 
 
 def _exercise_display_name(ex):
@@ -15635,7 +15714,13 @@ def complete_workout():
                 allow_stale_unsaved=True,
             )
             if current_plan and current_plan.get("id") == recommendation_id:
-                recommendation = current_plan
+                # Score adherence against the wearable-adjusted view the user
+                # actually saw (FIT-256 finding 2 follow-up): the canonical plan
+                # is the base plan, but /api/next-workout and /gym-now render the
+                # deload/caution-clamped sets. Comparing completed sets against
+                # the un-clamped base would falsely flag a deload-compliant user
+                # for "missed sets". Display-only; nothing is persisted here.
+                recommendation = _wearable_display_adjusted_plan(current_plan)
 
     # Calculate adherence: default `followed: True` only when no plan was
     # supposed to be followed (no `recommendation_id`). When a plan was named
