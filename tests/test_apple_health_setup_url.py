@@ -25,7 +25,20 @@ def test_setup_url_uses_configured_public_base_url(fitness_app, monkeypatch):
     assert payload == {
         "webhook_url": "https://fitness.example.test/api/apple-health/sync",
         "has_token": True,
+        "headers": {"X-Sync-Token": "fit32-contract-token"},
     }
+
+
+def test_setup_url_remains_owner_authenticated(fitness_app):
+    fitness_app.config.update(LOGIN_DISABLED=False)
+
+    response = fitness_app.test_client().get(
+        "/api/apple-health/sync/setup-url",
+        headers={"Accept": "application/json"},
+    )
+
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "Unauthorized"
 
 
 def test_setup_url_uses_explicit_webhook_url(fitness_app, monkeypatch):

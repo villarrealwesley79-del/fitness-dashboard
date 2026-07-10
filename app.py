@@ -78,6 +78,7 @@ from whoop_store import (
     clear_whoop_data,
     consume_oauth_state,
     create_oauth_state,
+    delete_protected_secret,
     disconnect_whoop,
     get_connection_status as get_whoop_connection_status,
     get_daily_fact as get_whoop_daily_fact,
@@ -10298,6 +10299,15 @@ def _load_open_wearables_password():
     ).strip()
 
 
+def _delete_open_wearables_password():
+    delete_protected_secret(
+        OPEN_WEARABLES_PASSWORD_SERVICE,
+        _open_wearables_password_account(),
+        fallback_path=_open_wearables_password_file(),
+        fallback_override_env=OPEN_WEARABLES_PASSWORD_FILE_ENV,
+    )
+
+
 def _write_open_wearables_config_file(config):
     tmp = None
     config_dir = os.path.dirname(os.path.abspath(OPEN_WEARABLES_CONFIG_FILE))
@@ -10948,14 +10958,26 @@ def _open_wearables_provider_actions(*, allow_managed_restart_clear=False):
 
 
 def _save_open_wearables_local_config(config):
+    password = str((config or {}).get("password") or "").strip()
+    previous_password = ""
+    password_saved = False
     try:
         safe_config = _open_wearables_non_secret_config(config)
-        password = str((config or {}).get("password") or "").strip()
+        previous_password = _load_open_wearables_password() if password else ""
         if password and not _save_open_wearables_password(password):
             return False
+        password_saved = bool(password)
         _write_open_wearables_config_file(safe_config)
         return True
     except Exception as exc:
+        if password_saved:
+            try:
+                if previous_password:
+                    _save_open_wearables_password(previous_password)
+                else:
+                    _delete_open_wearables_password()
+            except Exception as rollback_exc:
+                print(f"Warning: Could not restore Open Wearables password after config failure: {rollback_exc}")
         print(f"Warning: Could not save Open Wearables config: {exc}")
         return False
 

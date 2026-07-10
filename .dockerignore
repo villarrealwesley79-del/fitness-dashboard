@@ -13,6 +13,7 @@ server.log
 .flask-secret
 .health-sync-token
 .apple-health-first-sync
+.open-wearables-password
 .whoop-client-id
 .whoop-oauth-state*
 .whoop-token*
@@ -21,6 +22,7 @@ server.log
 **/.flask-secret
 **/.health-sync-token
 **/.apple-health-first-sync
+**/.open-wearables-password
 **/.whoop-client-id
 **/.whoop-oauth-state*
 **/.whoop-token*

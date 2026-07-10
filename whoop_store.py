@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import os
 import base64
+import ctypes
 import hashlib
 import sqlite3
-import subprocess
 import sys
 import tempfile
 import uuid
@@ -259,62 +259,115 @@ def _delete_protected_secret_file(path: str) -> None:
         return
 
 
-def _keychain_find(service: str, account: str) -> str:
-    result = subprocess.run(
-        ["security", "find-generic-password", "-s", service, "-a", account, "-w"],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=False,
+def _macos_security_framework():
+    framework = ctypes.CDLL("/System/Library/Frameworks/Security.framework/Security")
+    framework.SecKeychainAddGenericPassword.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    framework.SecKeychainAddGenericPassword.restype = ctypes.c_int32
+    framework.SecKeychainFindGenericPassword.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    framework.SecKeychainFindGenericPassword.restype = ctypes.c_int32
+    framework.SecKeychainItemFreeContent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    framework.SecKeychainItemFreeContent.restype = ctypes.c_int32
+    framework.SecKeychainItemDelete.argtypes = [ctypes.c_void_p]
+    framework.SecKeychainItemDelete.restype = ctypes.c_int32
+    return framework
+
+
+def _macos_keychain_add(service: str, account: str, secret_value: str) -> None:
+    framework = _macos_security_framework()
+    service_bytes = service.encode("utf-8")
+    account_bytes = account.encode("utf-8")
+    secret_bytes = secret_value.encode("utf-8")
+    status = framework.SecKeychainAddGenericPassword(
+        None,
+        len(service_bytes),
+        service_bytes,
+        len(account_bytes),
+        account_bytes,
+        len(secret_bytes),
+        secret_bytes,
+        None,
     )
-    if result.returncode != 0:
+    if status != 0:
+        raise RuntimeError(f"Could not save protected secret (Keychain status {status}).")
+
+
+def _keychain_find(service: str, account: str) -> str:
+    framework = _macos_security_framework()
+    service_bytes = service.encode("utf-8")
+    account_bytes = account.encode("utf-8")
+    length = ctypes.c_uint32()
+    data = ctypes.c_void_p()
+    item = ctypes.c_void_p()
+    status = framework.SecKeychainFindGenericPassword(
+        None,
+        len(service_bytes),
+        service_bytes,
+        len(account_bytes),
+        account_bytes,
+        ctypes.byref(length),
+        ctypes.byref(data),
+        ctypes.byref(item),
+    )
+    if status == -25300:
         return ""
-    return result.stdout.rstrip("\n")
+    if status != 0:
+        raise RuntimeError(f"Could not load protected secret (Keychain status {status}).")
+    try:
+        return ctypes.string_at(data.value, length.value).decode("utf-8")
+    finally:
+        framework.SecKeychainItemFreeContent(None, data)
 
 
 def _keychain_save(service: str, account: str, secret_value: str) -> None:
-    subprocess.run(
-        ["security", "delete-generic-password", "-s", service, "-a", account],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=False,
-    )
-    result = subprocess.run(
-        [
-            "security",
-            "add-generic-password",
-            "-U",
-            "-s",
-            service,
-            "-a",
-            account,
-            "-w",
-        ],
-        capture_output=True,
-        text=True,
-        input=f"{secret_value}\n",
-        timeout=5,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "Could not save protected secret.")
+    _keychain_delete(service, account)
+    _macos_keychain_add(service, account, secret_value)
 
 
 def _keychain_delete(service: str, account: str) -> None:
-    result = subprocess.run(
-        ["security", "delete-generic-password", "-s", service, "-a", account],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=False,
+    framework = _macos_security_framework()
+    service_bytes = service.encode("utf-8")
+    account_bytes = account.encode("utf-8")
+    length = ctypes.c_uint32()
+    data = ctypes.c_void_p()
+    item = ctypes.c_void_p()
+    status = framework.SecKeychainFindGenericPassword(
+        None,
+        len(service_bytes),
+        service_bytes,
+        len(account_bytes),
+        account_bytes,
+        ctypes.byref(length),
+        ctypes.byref(data),
+        ctypes.byref(item),
     )
-    if result.returncode == 0:
+    if status == -25300:
         return
-    stderr = (result.stderr or "").lower()
-    if "not found" in stderr or "could not be found" in stderr:
-        return
-    raise RuntimeError(result.stderr.strip() or "Could not delete protected secret.")
+    if status != 0:
+        raise RuntimeError(f"Could not find protected secret for deletion (Keychain status {status}).")
+    try:
+        delete_status = framework.SecKeychainItemDelete(item)
+    finally:
+        framework.SecKeychainItemFreeContent(None, data)
+    if delete_status != 0:
+        raise RuntimeError(f"Could not delete protected secret (Keychain status {delete_status}).")
 
 
 def save_protected_secret(

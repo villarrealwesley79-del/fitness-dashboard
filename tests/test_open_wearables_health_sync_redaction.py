@@ -780,6 +780,74 @@ def test_open_wearables_setup_reports_local_config_save_failure(monkeypatch, tmp
     assert payload["error"]["code"] == "config_save_failed"
 
 
+def test_open_wearables_config_write_failure_restores_previous_password(monkeypatch):
+    module = _fitness_app()
+    protected_store = {"password": "previous-credential"}
+    monkeypatch.setattr(
+        module,
+        "_load_open_wearables_password",
+        lambda: protected_store.get("password", ""),
+    )
+    monkeypatch.setattr(
+        module,
+        "_save_open_wearables_password",
+        lambda value: protected_store.update({"password": value}) is None,
+    )
+    monkeypatch.setattr(
+        module,
+        "_delete_open_wearables_password",
+        lambda: protected_store.pop("password", None),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module,
+        "_write_open_wearables_config_file",
+        lambda _config: (_ for _ in ()).throw(OSError("config write failed")),
+    )
+
+    saved = module._save_open_wearables_local_config({
+        "base_url": "http://localhost:8000",
+        "password": "replacement-credential",
+    })
+
+    assert saved is False
+    assert protected_store == {"password": "previous-credential"}
+
+
+def test_open_wearables_config_write_failure_removes_new_password(monkeypatch):
+    module = _fitness_app()
+    protected_store = {}
+    monkeypatch.setattr(
+        module,
+        "_load_open_wearables_password",
+        lambda: protected_store.get("password", ""),
+    )
+    monkeypatch.setattr(
+        module,
+        "_save_open_wearables_password",
+        lambda value: protected_store.update({"password": value}) is None,
+    )
+    monkeypatch.setattr(
+        module,
+        "_delete_open_wearables_password",
+        lambda: protected_store.pop("password", None),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module,
+        "_write_open_wearables_config_file",
+        lambda _config: (_ for _ in ()).throw(OSError("config write failed")),
+    )
+
+    saved = module._save_open_wearables_local_config({
+        "base_url": "http://localhost:8000",
+        "password": "new-credential",
+    })
+
+    assert saved is False
+    assert protected_store == {}
+
+
 def test_open_wearables_bootstrap_uses_sidecar_without_echoing_secret(monkeypatch, tmp_path):
     module = _fitness_app()
     config_file = tmp_path / "open_wearables_config.json"
@@ -1676,6 +1744,8 @@ def test_open_wearables_provider_actions_block_when_provider_omitted(monkeypatch
 
 def test_open_wearables_provider_actions_allow_manual_hub_without_sidecar(monkeypatch):
     module = _fitness_app()
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {})
+    monkeypatch.delenv("OW_SIDECAR_ENV_PATH", raising=False)
     monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "admin@example.test")
     monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "saved-credential")
     monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "11111111-1111-4111-8111-111111111111")
@@ -1695,6 +1765,8 @@ def test_open_wearables_provider_actions_allow_manual_hub_without_sidecar(monkey
 
 def test_open_wearables_authorization_allows_manual_hub_without_sidecar(monkeypatch):
     module = _fitness_app()
+    monkeypatch.setattr(module, "OPEN_WEARABLES_LOCAL_CONFIG", {})
+    monkeypatch.delenv("OW_SIDECAR_ENV_PATH", raising=False)
     monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "admin@example.test")
     monkeypatch.setattr(module, "OPEN_WEARABLES_PASSWORD", "saved-credential")
     monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "11111111-1111-4111-8111-111111111111")

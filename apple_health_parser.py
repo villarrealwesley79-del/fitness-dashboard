@@ -936,6 +936,7 @@ def register_apple_health_routes(flask_app):
         return jsonify({
             "webhook_url": base_url,
             "has_token": bool(token),
+            "headers": {"X-Sync-Token": token} if token else {},
         })
 
     @flask_app.route("/api/apple-health/status")

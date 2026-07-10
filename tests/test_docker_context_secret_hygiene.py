@@ -12,6 +12,8 @@ SENSITIVE_FILE_PATTERNS = {
     ".flask-secret",
     ".health-sync-token",
     ".apple-health-first-sync",
+    ".open-wearables-password",
+    ".whoop-protected-material*",
     ".env",
     ".env.*",
     "*.db",
@@ -115,11 +117,35 @@ def assert_no_sensitive_paths(paths: Iterable[str]) -> None:
 
 
 def test_dockerignore_excludes_known_secret_and_token_files() -> None:
-    for path in (".flask-secret", ".health-sync-token", ".apple-health-first-sync", ".env"):
+    for path in (
+        ".flask-secret",
+        ".health-sync-token",
+        ".apple-health-first-sync",
+        ".open-wearables-password",
+        ".whoop-protected-material-example.json",
+        ".env",
+    ):
         assert _is_dockerignored(path), f"{path} must be excluded from Docker context"
 
-    for path in ("support/.flask-secret", "support/.health-sync-token", "support/.env.prod"):
+    for path in (
+        "support/.flask-secret",
+        "support/.health-sync-token",
+        "support/.open-wearables-password",
+        "support/.whoop-protected-material-example.json",
+        "support/.env.prod",
+    ):
         assert _is_dockerignored(path), f"{path} must be excluded from Docker context"
+
+
+def test_gitignore_excludes_protected_fallback_files() -> None:
+    rules = {
+        line.strip()
+        for line in (ROOT / ".gitignore").read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert ".open-wearables-password" in rules
+    assert ".whoop-protected-material*" in rules
 
 
 def test_docker_build_context_has_no_sensitive_files() -> None:

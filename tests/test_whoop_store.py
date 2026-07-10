@@ -1,13 +1,41 @@
 from __future__ import annotations
 
 import os
+import secrets
 import sqlite3
+import sys
 from types import SimpleNamespace
 from datetime import datetime
 
 import pytest
 
 import whoop_store
+
+
+def _install_fake_keychain(monkeypatch, *, stored=None):
+    state = {
+        "stored": dict(stored or {}),
+        "fail_save": False,
+        "fail_delete": False,
+    }
+
+    def fake_save(service, account, secret):
+        if state["fail_save"]:
+            raise RuntimeError("keychain unavailable")
+        state["stored"][(service, account)] = secret
+
+    def fake_find(service, account):
+        return state["stored"].get((service, account), "")
+
+    def fake_delete(service, account):
+        if state["fail_delete"]:
+            raise RuntimeError("delete denied")
+        state["stored"].pop((service, account), None)
+
+    monkeypatch.setattr(whoop_store, "_keychain_save", fake_save)
+    monkeypatch.setattr(whoop_store, "_keychain_find", fake_find)
+    monkeypatch.setattr(whoop_store, "_keychain_delete", fake_delete)
+    return state
 
 
 def test_connection_tokens_round_trip_and_disconnect(tmp_path):
@@ -53,33 +81,7 @@ def test_connection_tokens_use_keychain_on_macos_without_plaintext_file(tmp_path
     whoop_store.init_whoop_db(db_path)
     monkeypatch.delenv("WHOOP_PROTECTED_MATERIAL_DIR", raising=False)
     monkeypatch.setattr(whoop_store, "sys", SimpleNamespace(platform="darwin"), raising=False)
-    stored = {}
-
-    class Completed:
-        def __init__(self, returncode=0, stdout="", stderr=""):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
-
-    def fake_run(args, **_kwargs):
-        service = args[args.index("-s") + 1]
-        account = args[args.index("-a") + 1]
-        key = (service, account)
-        if "add-generic-password" in args:
-            assert "keychain-access" not in args
-            assert "keychain-refresh" not in args
-            stored[key] = _kwargs.get("input", "").rstrip("\n")
-            return Completed()
-        if "find-generic-password" in args:
-            if key not in stored:
-                return Completed(returncode=44, stderr="not found")
-            return Completed(stdout=stored[key])
-        if "delete-generic-password" in args:
-            stored.pop(key, None)
-            return Completed()
-        raise AssertionError(f"unexpected security command: {args}")
-
-    monkeypatch.setattr(whoop_store, "subprocess", SimpleNamespace(run=fake_run), raising=False)
+    _install_fake_keychain(monkeypatch)
 
     whoop_store.save_connection_tokens(
         db_path,
@@ -99,6 +101,40 @@ def test_connection_tokens_use_keychain_on_macos_without_plaintext_file(tmp_path
     whoop_store.disconnect_whoop(db_path, disconnected_at=datetime(2026, 6, 25, 9, 0, 0))
 
     assert whoop_store.load_connection_token_material(db_path) == {}
+
+
+def test_keychain_save_uses_native_backend_without_subprocess(monkeypatch):
+    secret = "keychain-secret-that-must-not-enter-process-metadata"
+    saved = []
+    monkeypatch.setattr(whoop_store, "_keychain_delete", lambda *_args: None)
+    monkeypatch.setattr(
+        whoop_store,
+        "_macos_keychain_add",
+        lambda service, account, value: saved.append((service, account, value)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        whoop_store,
+        "_keychain_password_prompt",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("subprocess prompt used")),
+        raising=False,
+    )
+
+    whoop_store._keychain_save("fitness-dashboard-test", "test-account", secret)
+
+    assert saved == [("fitness-dashboard-test", "test-account", secret)]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS Keychain integration")
+def test_keychain_round_trip_preserves_long_secret():
+    service = f"fitness-dashboard-fit261-test-{secrets.token_hex(8)}"
+    account = f"temporary-{secrets.token_hex(8)}"
+    secret = secrets.token_urlsafe(192)
+    try:
+        whoop_store._keychain_save(service, account, secret)
+        assert whoop_store._keychain_find(service, account) == secret
+    finally:
+        whoop_store._keychain_delete(service, account)
 
 
 def test_keychain_write_ignores_obsolete_plaintext_cleanup_error(tmp_path, monkeypatch):
@@ -124,31 +160,21 @@ def test_disconnect_surfaces_keychain_delete_failure(tmp_path, monkeypatch):
     stored = {}
     fail_delete = {"enabled": False}
 
-    class Completed:
-        def __init__(self, returncode=0, stdout="", stderr=""):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
+    def fake_save(service, account, secret):
+        stored[(service, account)] = secret
 
-    def fake_run(args, **_kwargs):
-        service = args[args.index("-s") + 1]
-        account = args[args.index("-a") + 1]
+    def fake_find(service, account):
+        return stored.get((service, account), "")
+
+    def fake_delete(service, account):
         key = (service, account)
-        if "add-generic-password" in args:
-            stored[key] = _kwargs.get("input", "").rstrip("\n")
-            return Completed()
-        if "find-generic-password" in args:
-            if key not in stored:
-                return Completed(returncode=44, stderr="not found")
-            return Completed(stdout=stored[key])
-        if "delete-generic-password" in args:
-            if fail_delete["enabled"]:
-                return Completed(returncode=1, stderr="delete denied")
-            stored.pop(key, None)
-            return Completed()
-        raise AssertionError(f"unexpected security command: {args}")
+        if fail_delete["enabled"]:
+            raise RuntimeError("delete denied")
+        stored.pop(key, None)
 
-    monkeypatch.setattr(whoop_store, "subprocess", SimpleNamespace(run=fake_run), raising=False)
+    monkeypatch.setattr(whoop_store, "_keychain_save", fake_save)
+    monkeypatch.setattr(whoop_store, "_keychain_find", fake_find)
+    monkeypatch.setattr(whoop_store, "_keychain_delete", fake_delete)
     whoop_store.save_connection_tokens(
         db_path,
         {
@@ -172,33 +198,7 @@ def test_existing_whoop_material_file_migrates_to_keychain(tmp_path, monkeypatch
     monkeypatch.delenv("WHOOP_PROTECTED_MATERIAL_DIR", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(whoop_store, "sys", SimpleNamespace(platform="darwin"), raising=False)
-    stored = {}
-
-    class Completed:
-        def __init__(self, returncode=0, stdout="", stderr=""):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
-
-    def fake_run(args, **_kwargs):
-        service = args[args.index("-s") + 1]
-        account = args[args.index("-a") + 1]
-        key = (service, account)
-        if "add-generic-password" in args:
-            assert "legacy-access" not in args
-            assert "legacy-refresh" not in args
-            stored[key] = _kwargs.get("input", "").rstrip("\n")
-            return Completed()
-        if "find-generic-password" in args:
-            if key not in stored:
-                return Completed(returncode=44, stderr="not found")
-            return Completed(stdout=stored[key])
-        if "delete-generic-password" in args:
-            stored.pop(key, None)
-            return Completed()
-        raise AssertionError(f"unexpected security command: {args}")
-
-    monkeypatch.setattr(whoop_store, "subprocess", SimpleNamespace(run=fake_run), raising=False)
+    state = _install_fake_keychain(monkeypatch)
     legacy_path = whoop_store._protected_material_path(db_path)
     os.makedirs(os.path.dirname(legacy_path), exist_ok=True)
     with open(legacy_path, "w", encoding="utf-8") as handle:
@@ -209,27 +209,14 @@ def test_existing_whoop_material_file_migrates_to_keychain(tmp_path, monkeypatch
     assert material["session_value"] == "legacy-access"
     assert material["renewal_value"] == "legacy-refresh"
     assert not os.path.exists(legacy_path)
-    assert stored
+    assert state["stored"]
 
 
 def test_protected_secret_keychain_failure_uses_fallback_file(tmp_path, monkeypatch):
     fallback_path = str(tmp_path / "protected-secret")
     monkeypatch.setattr(whoop_store, "sys", SimpleNamespace(platform="darwin"), raising=False)
-
-    class Completed:
-        def __init__(self, returncode=0, stdout="", stderr=""):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
-
-    def fake_run(args, **_kwargs):
-        if "add-generic-password" in args:
-            return Completed(returncode=1, stderr="keychain unavailable")
-        if "find-generic-password" in args:
-            return Completed(returncode=44, stderr="not found")
-        return Completed()
-
-    monkeypatch.setattr(whoop_store, "subprocess", SimpleNamespace(run=fake_run), raising=False)
+    state = _install_fake_keychain(monkeypatch)
+    state["fail_save"] = True
 
     whoop_store.save_protected_secret(
         "fitness-dashboard-test-secret",
@@ -252,21 +239,12 @@ def test_protected_secret_keychain_failure_uses_fallback_file(tmp_path, monkeypa
 def test_protected_secret_fallback_overrides_stale_keychain_value(tmp_path, monkeypatch):
     fallback_path = str(tmp_path / "protected-secret")
     monkeypatch.setattr(whoop_store, "sys", SimpleNamespace(platform="darwin"), raising=False)
-
-    class Completed:
-        def __init__(self, returncode=0, stdout="", stderr=""):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
-
-    def fake_run(args, **_kwargs):
-        if "add-generic-password" in args:
-            return Completed(returncode=1, stderr="keychain unavailable")
-        if "find-generic-password" in args:
-            return Completed(stdout="stale-value")
-        return Completed(returncode=1, stderr="delete denied")
-
-    monkeypatch.setattr(whoop_store, "subprocess", SimpleNamespace(run=fake_run), raising=False)
+    state = _install_fake_keychain(
+        monkeypatch,
+        stored={("fitness-dashboard-test-secret", "test-account"): "stale-value"},
+    )
+    state["fail_save"] = True
+    state["fail_delete"] = True
 
     whoop_store.save_protected_secret(
         "fitness-dashboard-test-secret",
@@ -285,25 +263,8 @@ def test_protected_secret_fallback_overrides_stale_keychain_value(tmp_path, monk
 def test_protected_secret_keychain_success_removes_stale_fallback(tmp_path, monkeypatch):
     fallback_path = str(tmp_path / "protected-secret")
     monkeypatch.setattr(whoop_store, "sys", SimpleNamespace(platform="darwin"), raising=False)
-    state = {"fail_save": True, "stored": ""}
-
-    class Completed:
-        def __init__(self, returncode=0, stdout="", stderr=""):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
-
-    def fake_run(args, **_kwargs):
-        if "add-generic-password" in args:
-            if state["fail_save"]:
-                return Completed(returncode=1, stderr="keychain unavailable")
-            state["stored"] = _kwargs.get("input", "").rstrip("\n")
-            return Completed()
-        if "find-generic-password" in args:
-            return Completed(stdout=state["stored"])
-        return Completed()
-
-    monkeypatch.setattr(whoop_store, "subprocess", SimpleNamespace(run=fake_run), raising=False)
+    state = _install_fake_keychain(monkeypatch)
+    state["fail_save"] = True
     whoop_store.save_protected_secret(
         "fitness-dashboard-test-secret",
         "test-account",
@@ -331,21 +292,9 @@ def test_protected_secret_keychain_success_removes_stale_fallback(tmp_path, monk
 def test_delete_protected_secret_keeps_fallback_when_keychain_delete_fails(tmp_path, monkeypatch):
     fallback_path = str(tmp_path / "protected-secret")
     monkeypatch.setattr(whoop_store, "sys", SimpleNamespace(platform="darwin"), raising=False)
-
-    class Completed:
-        def __init__(self, returncode=0, stdout="", stderr=""):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
-
-    def fake_run(args, **_kwargs):
-        if "add-generic-password" in args:
-            return Completed(returncode=1, stderr="keychain unavailable")
-        if "delete-generic-password" in args:
-            return Completed(returncode=1, stderr="delete denied")
-        return Completed(returncode=44, stderr="not found")
-
-    monkeypatch.setattr(whoop_store, "subprocess", SimpleNamespace(run=fake_run), raising=False)
+    state = _install_fake_keychain(monkeypatch)
+    state["fail_save"] = True
+    state["fail_delete"] = True
     whoop_store.save_protected_secret(
         "fitness-dashboard-test-secret",
         "test-account",
@@ -368,23 +317,18 @@ def test_whoop_material_fallback_overrides_stale_keychain_value(tmp_path, monkey
     whoop_store.init_whoop_db(db_path)
     monkeypatch.delenv("WHOOP_PROTECTED_MATERIAL_DIR", raising=False)
     monkeypatch.setattr(whoop_store, "sys", SimpleNamespace(platform="darwin"), raising=False)
-
-    class Completed:
-        def __init__(self, returncode=0, stdout="", stderr=""):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
-
     stale_material = '{"session_value":"stale-access","renewal_value":"stale-refresh"}'
-
-    def fake_run(args, **_kwargs):
-        if "add-generic-password" in args:
-            return Completed(returncode=1, stderr="keychain unavailable")
-        if "find-generic-password" in args:
-            return Completed(stdout=stale_material)
-        return Completed(returncode=1, stderr="delete denied")
-
-    monkeypatch.setattr(whoop_store, "subprocess", SimpleNamespace(run=fake_run), raising=False)
+    state = _install_fake_keychain(
+        monkeypatch,
+        stored={
+            (
+                whoop_store.WHOOP_MATERIAL_REF,
+                whoop_store._protected_material_account(db_path),
+            ): stale_material,
+        },
+    )
+    state["fail_save"] = True
+    state["fail_delete"] = True
     whoop_store.save_connection_tokens(
         db_path,
         {
@@ -406,26 +350,15 @@ def test_existing_whoop_material_file_overrides_stale_keychain(tmp_path, monkeyp
     monkeypatch.delenv("WHOOP_PROTECTED_MATERIAL_DIR", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(whoop_store, "sys", SimpleNamespace(platform="darwin"), raising=False)
-    stored = {}
-
-    class Completed:
-        def __init__(self, returncode=0, stdout="", stderr=""):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
-
-    def fake_run(args, **_kwargs):
-        service = args[args.index("-s") + 1]
-        account = args[args.index("-a") + 1]
-        key = (service, account)
-        if "add-generic-password" in args:
-            stored[key] = _kwargs.get("input", "").rstrip("\n")
-            return Completed()
-        if "find-generic-password" in args:
-            return Completed(stdout='{"session_value":"stale-access","renewal_value":"stale-refresh"}')
-        return Completed()
-
-    monkeypatch.setattr(whoop_store, "subprocess", SimpleNamespace(run=fake_run), raising=False)
+    _install_fake_keychain(
+        monkeypatch,
+        stored={
+            (
+                whoop_store.WHOOP_MATERIAL_REF,
+                whoop_store._protected_material_account(db_path),
+            ): '{"session_value":"stale-access","renewal_value":"stale-refresh"}',
+        },
+    )
     legacy_path = whoop_store._protected_material_path(db_path)
     os.makedirs(os.path.dirname(legacy_path), exist_ok=True)
     with open(legacy_path, "w", encoding="utf-8") as handle:
