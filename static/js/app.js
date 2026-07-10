@@ -4717,9 +4717,8 @@
             retentionNote.hidden = !retentionApplies;
         }
 
-        // FIT-97: wire Delete to the existing DELETE endpoint. On success,
-        // remove the row from the inline list, close the modal, and let
-        // the user know via toast.
+        // FIT-228: the first click only opens confirmation. The confirmed
+        // delete is delayed for the existing meal undo window.
         const deleteBtn = $('btn-meal-detail-delete');
         if (deleteBtn) {
             // Replace any prior handler — re-binding cleanly avoids stale
@@ -4727,26 +4726,9 @@
             const fresh = deleteBtn.cloneNode(true);
             deleteBtn.parentNode.replaceChild(fresh, deleteBtn);
             fresh.disabled = !entry.client_id;
-            fresh.addEventListener('click', async () => {
+            fresh.addEventListener('click', () => {
                 if (!entry.client_id) return;
-                fresh.disabled = true;
-                try {
-                    await api(`/api/meal-intake/${encodeURIComponent(entry.client_id)}`, { method: 'DELETE' });
-                    modal.hidden = true;
-                    toast('Meal deleted', 'ok');
-                    // Force the trend card to re-fetch so the row updates
-                    // immediately without a manual reload.
-                    renderBodyInterpretationAndNutritionTrend();
-                    // FIT-107: notify the food-log sheet (if open) so it
-                    // can refresh its sections after a delete.
-                    document.dispatchEvent(new CustomEvent('fit107:meal-deleted', {
-                        detail: { client_id: entry.client_id },
-                    }));
-                } catch (err) {
-                    console.error(err);
-                    toast(apiErrorMessage(err, 'Delete failed'), 'err');
-                    fresh.disabled = false;
-                }
+                openMealDeleteConfirm(entry, modal);
             });
         }
 
@@ -4782,6 +4764,171 @@
         }
 
         modal.hidden = false;
+    }
+
+    const MEAL_DELETE_PENDING_KEY = 'fit228.pendingMealDeletes.v1';
+    const pendingMealDeleteTimers = new Map();
+
+    function readPendingMealDeletes() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(MEAL_DELETE_PENDING_KEY) || '{}');
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        } catch (_err) {
+            return {};
+        }
+    }
+
+    function writePendingMealDeletes(pending) {
+        localStorage.setItem(MEAL_DELETE_PENDING_KEY, JSON.stringify(pending));
+    }
+
+    function cancelPendingMealDelete(clientId) {
+        const timer = pendingMealDeleteTimers.get(clientId);
+        if (timer != null) clearTimeout(timer);
+        pendingMealDeleteTimers.delete(clientId);
+        const pending = readPendingMealDeletes();
+        delete pending[clientId];
+        writePendingMealDeletes(pending);
+    }
+
+    function rearmPendingMealDelete(clientId) {
+        const priorTimer = pendingMealDeleteTimers.get(clientId);
+        if (priorTimer != null) clearTimeout(priorTimer);
+        pendingMealDeleteTimers.set(
+            clientId,
+            setTimeout(() => commitPendingMealDelete(clientId), MEAL_UNDO_MS),
+        );
+    }
+
+    async function pendingMealDeleteAuthCheck(record) {
+        const queuedScope = String(record && record.auth_scope || '').trim();
+        if (!queuedScope) return { ok: false, terminal: true };
+        const liveScope = await fetchCurrentMealQueueAuthScope();
+        if (!liveScope.ok) return { ok: false, terminal: false };
+        return liveScope.scope === queuedScope
+            ? { ok: true, terminal: false }
+            : { ok: false, terminal: true };
+    }
+
+    async function commitPendingMealDelete(clientId) {
+        const pending = readPendingMealDeletes();
+        const record = pending[clientId];
+        if (!record) return;
+        try {
+            const authCheck = await pendingMealDeleteAuthCheck(record);
+            if (!authCheck.ok) {
+                if (authCheck.terminal) cancelPendingMealDelete(clientId);
+                else rearmPendingMealDelete(clientId);
+                return;
+            }
+            const result = await api(`/api/meal-intake/${encodeURIComponent(clientId)}`, { method: 'DELETE' });
+            if (!result || (result.removed !== true && result.status !== 'not_found')) {
+                throw new Error('meal was not removed');
+            }
+            cancelPendingMealDelete(clientId);
+            renderBodyInterpretationAndNutritionTrend();
+            document.dispatchEvent(new CustomEvent('fit107:meal-deleted', {
+                detail: { client_id: clientId },
+            }));
+        } catch (err) {
+            console.error(err);
+            rearmPendingMealDelete(clientId);
+            toast(apiErrorMessage(err, 'Delete failed'), 'err');
+        }
+    }
+
+    function armPendingMealDelete(clientId, deadline, onUndo = null) {
+        const priorTimer = pendingMealDeleteTimers.get(clientId);
+        if (priorTimer != null) clearTimeout(priorTimer);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+            commitPendingMealDelete(clientId);
+            return;
+        }
+        const timer = setTimeout(() => commitPendingMealDelete(clientId), remaining);
+        pendingMealDeleteTimers.set(clientId, timer);
+        toastUndo('Meal queued for deletion', () => {
+            cancelPendingMealDelete(clientId);
+            if (onUndo) onUndo();
+            toast('Meal kept', 'ok');
+        }, remaining);
+    }
+
+    function scheduleMealDelete(clientId, onUndo = null) {
+        const pending = readPendingMealDeletes();
+        const authScope = cachedMealQueueAuthScope();
+        if (!authScope) throw new Error('Could not verify the current sign-in.');
+        const deadline = Date.now() + MEAL_UNDO_MS;
+        pending[clientId] = { deadline, auth_scope: authScope };
+        writePendingMealDeletes(pending);
+        armPendingMealDelete(clientId, deadline, onUndo);
+    }
+
+    async function resumePendingMealDeletes() {
+        const pending = readPendingMealDeletes();
+        for (const [clientId, value] of Object.entries(pending)) {
+            const deadline = Number(value && value.deadline);
+            const authScope = String(value && value.auth_scope || '').trim();
+            if (!clientId || !Number.isFinite(deadline) || !authScope) {
+                cancelPendingMealDelete(clientId);
+                continue;
+            }
+            const authCheck = await pendingMealDeleteAuthCheck({ auth_scope: authScope });
+            if (!authCheck.ok) {
+                if (authCheck.terminal) cancelPendingMealDelete(clientId);
+                else rearmPendingMealDelete(clientId);
+                continue;
+            }
+            armPendingMealDelete(clientId, deadline);
+        }
+    }
+
+    function openMealDeleteConfirm(entry, detailModal) {
+        const confirmModal = $('modal-meal-delete-confirm');
+        const text = $('meal-delete-confirm-text');
+        const button = $('btn-confirm-meal-delete');
+        const cancelButton = $('btn-cancel-meal-delete');
+        const closeButton = $('btn-close-meal-delete');
+        const foodLogModal = $('modal-food-log');
+        if (!entry || !entry.client_id || !confirmModal || !text || !button || !cancelButton || !closeButton) return;
+
+        const itemName = (entry.item_name || entry.portion_description || 'this meal').trim();
+        text.textContent = `Delete ${itemName}? You can undo before it is removed.`;
+        if (detailModal) detailModal.hidden = true;
+
+        const restoreDetail = () => {
+            confirmModal.hidden = true;
+            if (detailModal) detailModal.hidden = false;
+        };
+        confirmModal.__fit192Close = restoreDetail;
+        [cancelButton, closeButton].forEach((control) => {
+            const freshControl = control.cloneNode(true);
+            control.parentNode.replaceChild(freshControl, control);
+            freshControl.addEventListener('click', restoreDetail);
+        });
+
+        const fresh = button.cloneNode(true);
+        button.parentNode.replaceChild(fresh, button);
+        fresh.addEventListener('click', () => {
+            const clientId = entry.client_id;
+            fresh.disabled = true;
+            confirmModal.hidden = true;
+            const foodLogWasOpen = !!(foodLogModal && !foodLogModal.hidden);
+            if (foodLogWasOpen) foodLogModal.hidden = true;
+            try {
+                scheduleMealDelete(clientId, () => {
+                    if (foodLogWasOpen) foodLogModal.hidden = false;
+                });
+            } catch (err) {
+                console.error(err);
+                if (foodLogWasOpen) foodLogModal.hidden = false;
+                if (detailModal) detailModal.hidden = false;
+                toast(apiErrorMessage(err, 'Delete failed'), 'err');
+            } finally {
+                fresh.disabled = false;
+            }
+        });
+        confirmModal.hidden = false;
     }
 
     function setMealDetailMode(mode) {
@@ -12376,6 +12523,7 @@
         aiStatusTimer = setInterval(refreshAiStatus, 60_000);
         renderSyncBanner();
         wireMealComposer();
+        resumePendingMealDeletes().catch((err) => console.warn('Pending meal delete recovery failed:', err));
         registerServiceWorker();
         refreshMealQueueAuthScope({ timeoutMs: 2500 })
             .then((scopeResult) => {

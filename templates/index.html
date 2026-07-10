@@ -1568,6 +1568,23 @@
         </div>
     </div>
 
+    <div id="modal-meal-delete-confirm" class="modal" role="dialog" aria-modal="true" aria-labelledby="meal-delete-confirm-title" hidden>
+        <div class="modal-sheet">
+            <div class="modal-head">
+                <h3 class="modal-title" id="meal-delete-confirm-title">Delete meal?</h3>
+                <button id="btn-close-meal-delete" class="modal-close" type="button" aria-label="close">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="dim" id="meal-delete-confirm-text">Delete this meal?</p>
+                <p class="dim delete-confirm-undo-hint">The meal stays saved during the undo window.</p>
+            </div>
+            <div class="modal-foot modal-foot-row">
+                <button id="btn-cancel-meal-delete" class="btn btn-ghost" type="button">Cancel</button>
+                <button id="btn-confirm-meal-delete" class="btn btn-danger" type="button">Delete</button>
+            </div>
+        </div>
+    </div>
+
     <div id="modal-delete-confirm" class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title" hidden>
         <div class="modal-sheet">
             <div class="modal-head">
