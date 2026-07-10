@@ -74,6 +74,33 @@ def test_warm_all_candidates_single_flight_skips_second_run(monkeypatch):
     }
 
 
+def test_warm_all_candidates_skips_when_inference_is_busy(monkeypatch):
+    monkeypatch.setattr(
+        local_vision_adapter,
+        "_preflight_candidate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("HTTP should not run")),
+    )
+    monkeypatch.setattr(
+        local_vision_adapter,
+        "_warm_candidate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("HTTP should not run")),
+    )
+
+    acquired = local_vision_adapter._VISION_INFERENCE_LOCK.acquire(blocking=False)
+    assert acquired is True
+    try:
+        result = local_vision_adapter.warm_all_candidates()
+    finally:
+        local_vision_adapter._VISION_INFERENCE_LOCK.release()
+
+    assert result == {
+        "started": False,
+        "status": "skipped",
+        "reason": "inference_busy",
+        "candidates": [],
+    }
+
+
 def test_warm_all_candidates_does_not_double_warm_after_preflight_load(monkeypatch):
     candidate = {"role": "primary", "url": "http://primary.test", "model": "primary-vision"}
     monkeypatch.setattr(local_vision_adapter, "_lm_studio_candidates", lambda: [candidate])

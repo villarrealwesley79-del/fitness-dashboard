@@ -143,6 +143,15 @@ def warm_all_candidates() -> dict[str, Any]:
             "reason": "already_running",
             "candidates": [],
         }
+    if not _VISION_INFERENCE_LOCK.acquire(blocking=False):
+        _KEEP_WARM_LOCK.release()
+        logger.info("LM Studio vision keep-warm skipped; vision inference is busy")
+        return {
+            "started": False,
+            "status": "skipped",
+            "reason": "inference_busy",
+            "candidates": [],
+        }
     try:
         results: list[dict[str, str]] = []
         for candidate in _lm_studio_candidates():
@@ -172,6 +181,7 @@ def warm_all_candidates() -> dict[str, Any]:
             "candidates": results,
         }
     finally:
+        _VISION_INFERENCE_LOCK.release()
         _KEEP_WARM_LOCK.release()
 
 
