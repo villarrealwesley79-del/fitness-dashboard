@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import fcntl
+from subprocess import SubprocessError
 import urllib.parse
 
 import pytest
@@ -282,6 +283,32 @@ def test_whoop_disconnect_reports_local_token_delete_failure(fitness_app, monkey
         fitness_app,
         "disconnect_whoop",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("locked token file")),
+    )
+
+    response = fitness_app.app.test_client().post("/api/whoop/disconnect")
+
+    assert response.status_code == 500
+    assert response.get_json()["error"]["code"] == "whoop_disconnect_failed"
+
+
+def test_whoop_disconnect_reports_protected_store_delete_failure(fitness_app, monkeypatch):
+    monkeypatch.setattr(
+        fitness_app,
+        "disconnect_whoop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("keychain delete denied")),
+    )
+
+    response = fitness_app.app.test_client().post("/api/whoop/disconnect")
+
+    assert response.status_code == 500
+    assert response.get_json()["error"]["code"] == "whoop_disconnect_failed"
+
+
+def test_whoop_disconnect_reports_subprocess_delete_failure(fitness_app, monkeypatch):
+    monkeypatch.setattr(
+        fitness_app,
+        "disconnect_whoop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SubprocessError("keychain timeout")),
     )
 
     response = fitness_app.app.test_client().post("/api/whoop/disconnect")

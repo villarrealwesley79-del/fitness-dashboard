@@ -1601,6 +1601,9 @@
                     <li>For each automation, set Frequency to <em>Daily</em>, Format to <em>JSON</em>, and Destination to <em>REST API</em> with URL:
                         <code class="setup-url" id="apple-webhook-url">https://admins-mac-mini.tail6c6490.ts.net:5050/api/apple-health/sync</code>
                     </li>
+                    <li id="apple-sync-header-step" hidden>Add this request header to each automation:
+                        <code class="setup-url" id="apple-sync-header">X-Sync-Token: —</code>
+                    </li>
                     <li>Save each automation. To backfill or test, tap <em>Manual Export</em>, confirm the date range, then tap <em>Begin Export</em>.</li>
                 </ol>
                 <p class="dim">Once the first sync lands, this card will flip to "Synced today" automatically.</p>

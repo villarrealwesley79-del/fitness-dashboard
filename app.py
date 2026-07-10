@@ -33,6 +33,7 @@ import tempfile
 import threading
 import fcntl
 import shutil
+from subprocess import SubprocessError
 
 try:
     from pywebpush import WebPushException, webpush
@@ -77,6 +78,7 @@ from whoop_store import (
     clear_whoop_data,
     consume_oauth_state,
     create_oauth_state,
+    delete_protected_secret,
     disconnect_whoop,
     get_connection_status as get_whoop_connection_status,
     get_daily_fact as get_whoop_daily_fact,
@@ -86,10 +88,12 @@ from whoop_store import (
     latest_whoop_freshness,
     list_whoop_daily_facts,
     list_whoop_sync_runs,
+    load_protected_secret,
     load_connection_token_material,
     finish_whoop_sync_run,
     mark_reauth_required,
     rotate_connection_tokens,
+    save_protected_secret,
     record_whoop_sync_run,
     save_connection_tokens,
     upsert_whoop_records,
@@ -10249,12 +10253,113 @@ def _load_open_wearables_local_config():
 
 
 OPEN_WEARABLES_LOCAL_CONFIG = _load_open_wearables_local_config()
+OPEN_WEARABLES_PASSWORD_SERVICE = "fitness-dashboard-open-wearables-password"
+OPEN_WEARABLES_PASSWORD_FILE_ENV = "OPEN_WEARABLES_PASSWORD_FILE"
+
+
+def _open_wearables_non_secret_config(config):
+    cleaned = dict(config or {})
+    cleaned.pop("password", None)
+    return cleaned
+
+
+def _open_wearables_password_account():
+    config_identity = hashlib.sha256(os.path.abspath(OPEN_WEARABLES_CONFIG_FILE).encode("utf-8")).hexdigest()[:16]
+    return f"open-wearables-{config_identity}"
+
+
+def _open_wearables_password_file():
+    override = os.environ.get(OPEN_WEARABLES_PASSWORD_FILE_ENV, "").strip()
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    config_dir = os.path.dirname(os.path.abspath(OPEN_WEARABLES_CONFIG_FILE))
+    return os.path.join(config_dir, ".open-wearables-password")
+
+
+def _save_open_wearables_password(password):
+    secret = str(password or "").strip()
+    if not secret:
+        return True
+    save_protected_secret(
+        OPEN_WEARABLES_PASSWORD_SERVICE,
+        _open_wearables_password_account(),
+        secret,
+        fallback_path=_open_wearables_password_file(),
+        fallback_override_env=OPEN_WEARABLES_PASSWORD_FILE_ENV,
+    )
+    return True
+
+
+def _load_open_wearables_password():
+    return load_protected_secret(
+        OPEN_WEARABLES_PASSWORD_SERVICE,
+        _open_wearables_password_account(),
+        fallback_path=_open_wearables_password_file(),
+        fallback_override_env=OPEN_WEARABLES_PASSWORD_FILE_ENV,
+    ).strip()
+
+
+def _delete_open_wearables_password():
+    delete_protected_secret(
+        OPEN_WEARABLES_PASSWORD_SERVICE,
+        _open_wearables_password_account(),
+        fallback_path=_open_wearables_password_file(),
+        fallback_override_env=OPEN_WEARABLES_PASSWORD_FILE_ENV,
+    )
+
+
+def _write_open_wearables_config_file(config):
+    tmp = None
+    config_dir = os.path.dirname(os.path.abspath(OPEN_WEARABLES_CONFIG_FILE))
+    os.makedirs(config_dir, exist_ok=True)
+    base = os.path.basename(OPEN_WEARABLES_CONFIG_FILE)
+    with JSON_DATA_LOCK:
+        fd, tmp = tempfile.mkstemp(
+            prefix=f".{base}.",
+            suffix=".tmp",
+            dir=config_dir,
+        )
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, default=str, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, OPEN_WEARABLES_CONFIG_FILE)
+            tmp = None
+            os.chmod(OPEN_WEARABLES_CONFIG_FILE, 0o600)
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+
+def _migrate_open_wearables_local_password(config):
+    password = str((config or {}).get("password") or "").strip()
+    if not password:
+        return config
+    safe_config = _open_wearables_non_secret_config(config)
+    try:
+        _save_open_wearables_password(password)
+        _write_open_wearables_config_file(safe_config)
+        return safe_config
+    except Exception as exc:
+        print(f"Warning: Could not migrate Open Wearables password to protected storage: {exc}")
+        return config
+
+
+OPEN_WEARABLES_LOCAL_CONFIG = _migrate_open_wearables_local_password(OPEN_WEARABLES_LOCAL_CONFIG)
 
 
 def _open_wearables_config_value(key, env_name, default=""):
     local_value = str(OPEN_WEARABLES_LOCAL_CONFIG.get(key) or "").strip()
     if local_value:
         return local_value
+    if key == "password":
+        protected_value = _load_open_wearables_password()
+        if protected_value:
+            return protected_value
     return os.environ.get(env_name, default).strip()
 
 
@@ -10414,6 +10519,7 @@ def _apply_open_wearables_runtime_config(config):
     global OPEN_WEARABLES_SERVICE_BASE, OPEN_WEARABLES_ALLOWED_HOSTS, OPEN_WEARABLES_PORTAL_URL
     global OPEN_WEARABLES_SIDECAR_ENV_PATH, OPEN_WEARABLES_MANAGED_RESTART_REQUIRED
     global OPEN_WEARABLES_BASE, OPEN_WEARABLES_LOGIN_URL
+    config = _open_wearables_non_secret_config(config)
     OPEN_WEARABLES_LOCAL_CONFIG = config
     OPEN_WEARABLES_USERNAME = _open_wearables_config_value("username", "OW_USERNAME")
     globals()["OPEN_WEARABLES_" + "PASSWORD"] = _open_wearables_config_value("password", "OW_PASSWORD")
@@ -10852,31 +10958,26 @@ def _open_wearables_provider_actions(*, allow_managed_restart_clear=False):
 
 
 def _save_open_wearables_local_config(config):
-    tmp = None
+    password = str((config or {}).get("password") or "").strip()
+    previous_password = ""
+    password_saved = False
     try:
-        config_dir = os.path.dirname(os.path.abspath(OPEN_WEARABLES_CONFIG_FILE))
-        os.makedirs(config_dir, exist_ok=True)
-        base = os.path.basename(OPEN_WEARABLES_CONFIG_FILE)
-        with JSON_DATA_LOCK:
-            fd, tmp = tempfile.mkstemp(
-                prefix=f".{base}.",
-                suffix=".tmp",
-                dir=config_dir,
-            )
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, default=str, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, OPEN_WEARABLES_CONFIG_FILE)
-            tmp = None
-            os.chmod(OPEN_WEARABLES_CONFIG_FILE, 0o600)
+        safe_config = _open_wearables_non_secret_config(config)
+        previous_password = _load_open_wearables_password() if password else ""
+        if password and not _save_open_wearables_password(password):
+            return False
+        password_saved = bool(password)
+        _write_open_wearables_config_file(safe_config)
         return True
-    except OSError as exc:
-        if tmp:
+    except Exception as exc:
+        if password_saved:
             try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+                if previous_password:
+                    _save_open_wearables_password(previous_password)
+                else:
+                    _delete_open_wearables_password()
+            except Exception as rollback_exc:
+                print(f"Warning: Could not restore Open Wearables password after config failure: {rollback_exc}")
         print(f"Warning: Could not save Open Wearables config: {exc}")
         return False
 
@@ -12254,8 +12355,8 @@ def open_wearables_setup_api():
         return api_error("Open Wearables setup value is too long", 400, code="invalid_field")
 
     profile_key = _open_wearables_profile_key()
-    existing_local_credential = str(OPEN_WEARABLES_LOCAL_CONFIG.get("password") or "").strip()
-    credential_for_mapping = credential_input or existing_local_credential or OPEN_WEARABLES_PASSWORD
+    existing_protected_credential = _load_open_wearables_password()
+    credential_for_mapping = credential_input or existing_protected_credential or OPEN_WEARABLES_PASSWORD
     if user_id:
         if not username or not credential_for_mapping:
             return jsonify({
@@ -12302,8 +12403,8 @@ def open_wearables_setup_api():
     if credential_input:
         next_config["password"] = credential_input
     else:
-        if existing_local_credential:
-            next_config["password"] = existing_local_credential
+        if existing_protected_credential:
+            next_config["password"] = existing_protected_credential
 
     if not _save_open_wearables_local_config(next_config):
         return jsonify({
@@ -13350,7 +13451,7 @@ def whoop_disconnect():
         try:
             invalidate_oauth_states(WHOOP_DB_FILE, user_binding=_whoop_user_binding())
             disconnect_whoop(WHOOP_DB_FILE)
-        except OSError:
+        except (OSError, RuntimeError, SubprocessError):
             return api_error(
                 "WHOOP local token material could not be removed. Disconnect was not completed.",
                 500,

@@ -144,13 +144,14 @@ For Apple Health / Health Auto Export setup, keep `HEALTH_SYNC_TOKEN` secret and
 FITNESS_DASHBOARD_PUBLIC_BASE_URL=https://<your-public-fitness-dashboard-host>
 ```
 
-The owner-only setup route will emit:
+The owner-only setup route returns the webhook URL and the request header to configure:
 
 ```text
-${FITNESS_DASHBOARD_PUBLIC_BASE_URL}/api/apple-health/sync?token=<HEALTH_SYNC_TOKEN>
+URL: ${FITNESS_DASHBOARD_PUBLIC_BASE_URL}/api/apple-health/sync
+Header: X-Sync-Token: <HEALTH_SYNC_TOKEN>
 ```
 
-Use `APPLE_HEALTH_WEBHOOK_URL` only when the sync endpoint is intentionally exposed at a different public path. The value should be the endpoint URL without the token; the setup route appends the token.
+Use `APPLE_HEALTH_WEBHOOK_URL` only when the sync endpoint is intentionally exposed at a different public path. Keep the token out of the URL.
 
 WHOOP setup is split between public client configuration and protected token
 material:

@@ -84,7 +84,8 @@ def _today(module) -> str:
 
 def _sync_apple_health_workout(module, workout: dict) -> None:
     response = module.app.test_client().post(
-        "/api/apple-health/sync?token=fit95-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit95-health-token"},
         json={"workouts": [workout]},
     )
     assert response.status_code == 200, response.get_data(as_text=True)
@@ -261,7 +262,8 @@ def test_daily_resting_hr_is_not_used_for_workout_intensity(fitness_app, monkeyp
     monkeypatch.setenv("APPLE_HEALTH_WORKOUT_HR_INTENSITY", "on")
     day = _today(fitness_app)
     response = fitness_app.app.test_client().post(
-        "/api/apple-health/sync?token=fit95-health-token",
+        "/api/apple-health/sync",
+        headers={"X-Sync-Token": "fit95-health-token"},
         json={
             "heart_rate": [{"date": day, "value": 180, "type": "resting"}],
             "workouts": [_apple_health_walk(fitness_app)],
