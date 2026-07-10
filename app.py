@@ -15414,25 +15414,29 @@ def complete_workout():
 
     # Find the recommendation. Live current-plan resolution must stay scoped to
     # the current data user because the production process is shared.
+    #
+    # FIT-256 follow-up: this used to also check the legacy `WORKOUT_RECOMMENDATIONS`
+    # history list by id first, but that list is only ever populated when
+    # generate_next_workout(..., persist=True) runs, and nothing in the app calls
+    # it with persist=True -- the list is always empty. That branch matched
+    # `rec` directly and bypassed the wearable-display transform below, so if it
+    # were ever fed data it would misscore adherence for a deload-compliant user
+    # (comparing completed sets against the un-clamped base plan). Removed as
+    # dead code rather than left as a latent trap.
     recommendation = None
     if recommendation_id:
-        for rec in WORKOUT_RECOMMENDATIONS:
-            if rec.get("id") == recommendation_id:
-                recommendation = rec
-                break
-        if recommendation is None:
-            current_plan = _current_workout_plan_for_fingerprint(
-                _workout_recommendation_fingerprint(),
-                allow_stale_unsaved=True,
-            )
-            if current_plan and current_plan.get("id") == recommendation_id:
-                # Score adherence against the wearable-adjusted view the user
-                # actually saw (FIT-256 finding 2 follow-up): the canonical plan
-                # is the base plan, but /api/next-workout and /gym-now render the
-                # deload/caution-clamped sets. Comparing completed sets against
-                # the un-clamped base would falsely flag a deload-compliant user
-                # for "missed sets". Display-only; nothing is persisted here.
-                recommendation = _wearable_display_adjusted_plan(current_plan)
+        current_plan = _current_workout_plan_for_fingerprint(
+            _workout_recommendation_fingerprint(),
+            allow_stale_unsaved=True,
+        )
+        if current_plan and current_plan.get("id") == recommendation_id:
+            # Score adherence against the wearable-adjusted view the user
+            # actually saw (FIT-256 finding 2 follow-up): the canonical plan
+            # is the base plan, but /api/next-workout and /gym-now render the
+            # deload/caution-clamped sets. Comparing completed sets against
+            # the un-clamped base would falsely flag a deload-compliant user
+            # for "missed sets". Display-only; nothing is persisted here.
+            recommendation = _wearable_display_adjusted_plan(current_plan)
 
     # Calculate adherence: default `followed: True` only when no plan was
     # supposed to be followed (no `recommendation_id`). When a plan was named
