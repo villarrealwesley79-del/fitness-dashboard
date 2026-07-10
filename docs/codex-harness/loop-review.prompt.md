@@ -296,13 +296,51 @@ under a `CHANGES REQUESTED` verdict. Pre-existing slop in files the PR does not 
 is a follow-up note only and never blocks. This gate never edits anything; the
 scanner is read-only.
 
+### G. Live app walkthrough (UI-facing PRs)
+
+Applies when the PR adds or modifies templates, static assets, app-route or
+UI-rendering code, or user-facing copy; for any other PR record
+`walkthrough=skipped` and continue. From the gate-D worktree at the pinned SHA,
+boot the app in a fail-closed sandbox: a fresh throwaway
+`DATA_DIR="$(mktemp -d /private/tmp/fitness-review-ui.XXXXXX)"`, the same
+`env -i` discipline and venv interpreter as gate D,
+`SESSION_COOKIE_SECURE=false`, bound to 127.0.0.1 on a free ephemeral port,
+with a 120-second boot timeout waiting for the port. If the app fails to boot
+at the pinned SHA, that is a group-1 must-fix finding under a
+`CHANGES REQUESTED` verdict — a real defect, never a deferral.
+
+Drive the running app headlessly with the Codex playwright wrapper
+(`/Users/admin/.codex/skills/playwright/scripts/playwright_cli.sh`): register
+the first user on the fresh auth DB (single-user mode permits exactly the
+first registration), then walk (a) the standard smoke path — login, dashboard
+render, and every top-level tab loading without server 5xx, template errors,
+or browser console errors — and (b) every flow named in the linked issue's
+acceptance criteria that the PR touches. Walk only those flows; never explore
+beyond them. The whole gate runs under the Section 6 600-second timeout.
+
+Screenshot every visited state to
+`~/.codex/loops/fitness/evidence/PR-<number>/<nn>-<step>.png` — never inside
+the repository or worktree (`REPO_HYGIENE.md` bans committed runtime
+screenshots) — and list the absolute screenshot paths in the verdict comment's
+evidence section. Record `walkthrough=pass|fail|skipped` in `CHECKS_RUN`. A
+broken flow, server 5xx, template error, or console error on a touched flow is
+a group-1 must-fix finding; cosmetic issues on flows the PR does not touch are
+follow-up notes only. Kill the app's process group before leaving this gate,
+on every exit path. If playwright or chromium is unavailable or fails to
+launch, that is an infrastructure failure: handle it as a timeout deferral per
+Section 6, never as a code verdict.
+
 ## 4. Codex review closeout contract
 
 Run the installed `codex-review` closeout contract against the actual base and pinned
 head, scoped ONLY to the linked Linear issue. Inspect the full diff for acceptance
 criteria gaps, correctness bugs, broken data flow, unnecessary scope, security and
 privacy issues, data loss, missing loading/error/blocked states when relevant, bad
-abstractions, and missing tests.
+abstractions, missing tests, and efficiency: a flagrant performance regression
+introduced by the PR (an N+1 query, an unbounded or quadratic scan over health
+history on a hot path, blocking I/O inside a request handler) is a blocker;
+lesser optimization opportunities are should-fix or follow-up notes and never
+block a merge on their own.
 
 Treat accepted/actionable findings as blockers. The review evidence must state:
 
@@ -339,7 +377,8 @@ PR head before the loop may post a `CODEX VERDICT: READY TO MERGE` or apply
    Code OAuth token. Never print or persist tokens.
 4. Claude's review prompt must ask for correctness, health-data privacy
    (`REPO_HYGIENE` / `RELEASE_RUNBOOK` contracts), security-boundary, data-loss,
-   production failure modes, missing tests, and acceptance-criteria gaps. It must
+   flagrant PR-introduced efficiency regressions, production failure modes,
+   missing tests, and acceptance-criteria gaps. It must
    include the PR number, pinned head SHA, base branch, Linear issue ID, sanitized
    issue description/comments, acceptance criteria, the relevant sanitized text of
    `REPO_HYGIENE.md` and `RELEASE_RUNBOOK.md`, and the redacted diff. Capture that
@@ -347,8 +386,9 @@ PR head before the loop may post a `CODEX VERDICT: READY TO MERGE` or apply
    Do not include secrets, real health data, local database contents, `.env*`, or
    credentials.
 5. Treat any Claude finding in the blocking families (correctness, health-data
-   privacy under `REPO_HYGIENE` / `RELEASE_RUNBOOK`, security-boundary, or
-   data-loss) as a blocker unless the loop explicitly rejects it with concrete
+   privacy under `REPO_HYGIENE` / `RELEASE_RUNBOOK`, security-boundary,
+   data-loss, or a flagrant PR-introduced efficiency regression) as a blocker
+   unless the loop explicitly rejects it with concrete
    evidence in the verdict comment. Sub-blocking Claude findings may be recorded as
    follow-up notes but must not block approval by themselves.
 6. If Claude CLI is missing, unauthenticated, returns no parseable response, or
@@ -365,8 +405,9 @@ Claude unavailable or unparseable means no approval, ever.
 
 ## 6. Hard timeouts
 
-The full pytest run, `codex-review`, `claude -p`, and the kill-ai-slop `scan.mjs`
-sweep each receive a hard timeout of approximately 10 minutes (600 seconds). Every
+The full pytest run, `codex-review`, `claude -p`, the kill-ai-slop `scan.mjs`
+sweep, and the gate-G live app walkthrough (including its 120-second app boot)
+each receive a hard timeout of approximately 10 minutes (600 seconds). Every
 external read/write also has a bounded
 timeout: 60 seconds for GitHub/Linear comments, labels, Ready transitions, and
 readbacks; 120 seconds for squash merge. Use the execution tool's enforced timeout
@@ -520,5 +561,5 @@ Final output is exactly one line, then the saved automation releases the outer l
 as its unconditional last action:
 
 ```text
-GOAL: <text> — achieved|blocked|no_work / STATUS: REVIEWED|WOULD_HAVE_MERGED|MERGED|NO_WORK|PRECONDITION_FAILED|LONG_RUNNING|OWNER_ATTENTION|PAUSED|FAILED / REVIEWED: <PR#: verdict @ sha>|none / OWNER_ATTENTION: <PR#+reason>|none / CHECKS_RUN: gh-auth=.. linear-write=.. fetch=.. ci=.. pytest=.. codex-review=.. artifact-privacy=.. slop=.. body=.. / NOTES: CLAUDE_REVIEW: passed|blocked|unavailable; LOOPY: used|unavailable; <prompt conflict, timeout, blocker, or none>
+GOAL: <text> — achieved|blocked|no_work / STATUS: REVIEWED|WOULD_HAVE_MERGED|MERGED|NO_WORK|PRECONDITION_FAILED|LONG_RUNNING|OWNER_ATTENTION|PAUSED|FAILED / REVIEWED: <PR#: verdict @ sha>|none / OWNER_ATTENTION: <PR#+reason>|none / CHECKS_RUN: gh-auth=.. linear-write=.. fetch=.. ci=.. pytest=.. codex-review=.. artifact-privacy=.. slop=.. walkthrough=.. body=.. / NOTES: CLAUDE_REVIEW: passed|blocked|unavailable; LOOPY: used|unavailable; <prompt conflict, timeout, blocker, or none>
 ```
