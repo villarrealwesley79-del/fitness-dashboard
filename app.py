@@ -16422,7 +16422,19 @@ def analytics_advanced():
         volume_landmarks.append({'muscle':m,'sets':sets,'landmarks':lm,'zone':zone})
     # fatigue composite
     try:
-        hrv_trend=compute_hrv_trend(OURA_DB_FILE).get('trend')
+        end = datetime.now().date()
+        start = end - timedelta(days=6)
+        rows = get_oura_daily_range(
+            OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+        )
+        hrv_values = [r.get("hrv") for r in rows if r.get("hrv") is not None]
+        if len(hrv_values) < 4:
+            hrv_trend = "unknown"
+        else:
+            hrv_label = compute_hrv_trend(hrv_values)
+            hrv_trend = {"improving": "up", "stable": "stable", "declining": "down"}.get(
+                hrv_label, "unknown"
+            )
     except Exception:
         hrv_trend='unknown'
     hrv_pen={'up':0,'stable':5,'down':12}.get(hrv_trend,6)
