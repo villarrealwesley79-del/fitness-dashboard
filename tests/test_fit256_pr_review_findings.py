@@ -316,3 +316,63 @@ def test_complete_workout_scores_adherence_against_deloaded_view(monkeypatch, tm
     # Doing the deload-clamped 2 sets must not be recorded as "missed sets".
     for change in chest_changes:
         assert "missed sets" not in (change.get("reason") or "")
+
+
+def test_complete_workout_ignores_stale_unadjusted_recommendations_list(monkeypatch, tmp_path):
+    """FIT-256 follow-up (dead branch removal) regression.
+
+    /api/complete-workout used to resolve `recommendation_id` first against
+    the legacy in-process `WORKOUT_RECOMMENDATIONS` list, matching a `rec`
+    directly WITHOUT running it through `_wearable_display_adjusted_plan`.
+    That list is only ever populated by generate_next_workout(...,
+    persist=True), which has zero call sites repo-wide, so the branch was
+    dead -- but if it were ever fed data it held the raw un-clamped BASE
+    plan, and a deload-compliant completion would have been misscored as
+    "missed sets" / "skipped" against it.
+
+    This test proves the branch is gone: even with a matching, un-adjusted
+    entry sitting in `WORKOUT_RECOMMENDATIONS` (simulating what the dead
+    `persist=True` path would have stored) and no corresponding row in the
+    fingerprint-scoped current-plan store, the completion is no longer
+    resolved against that stale entry. It correctly falls back to
+    `followed: None` (untracked) instead of falsely penalising the user.
+    """
+    module, client, _state = _client(monkeypatch, tmp_path)
+    _install_active_deload(monkeypatch, module)
+
+    # Simulate what the legacy persist=True path would have stored: the raw
+    # BASE plan (3 sets), not the deload-clamped display view (2 sets), with
+    # no matching row ever written to the fingerprint-scoped current-plan
+    # store (no /api/next-workout call precedes this).
+    stale_recommendation = _recommendation(module)
+    monkeypatch.setattr(module, "WORKOUT_RECOMMENDATIONS", [stale_recommendation])
+
+    # Complete only the deload-clamped 2 sets of Chest Press; Lat Pulldown
+    # (present on the stale plan) is not touched at all.
+    completed = client.post(
+        "/api/complete-workout",
+        json={
+            "recommendation_id": "fit-256-plan",
+            "exercises": [
+                {
+                    "machine": "Chest Press",
+                    "sets": [
+                        {"set_number": 1, "weight_lbs": 100, "reps": 10},
+                        {"set_number": 2, "weight_lbs": 100, "reps": 10},
+                    ],
+                }
+            ],
+        },
+    )
+    assert completed.status_code == 200
+    adherence = completed.get_json()["adherence"]
+    # Before the fix: the stale un-adjusted entry was matched directly, so
+    # Lat Pulldown was flagged "skipped" and followed=False -- both false
+    # positives driven by data that was never wearable-adjusted for display.
+    # After the fix: WORKOUT_RECOMMENDATIONS is never consulted, no
+    # persisted current-plan row matches the id, so the completion is
+    # correctly left untracked rather than penalised.
+    assert adherence["followed"] is None
+    assert adherence["skipped"] == []
+    assert adherence["modified"] == []
+    assert adherence["added"] == []
