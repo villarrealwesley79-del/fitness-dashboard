@@ -351,15 +351,24 @@ touching any file this tick did not author.
 
 Fresh worktrees have no venv. Always use this interpreter from the worktree root:
 
-Before either explicit pytest or the pre-push rerun, a trusted wrapper must create a
-temporary macOS keychain, set it as both the default and sole search target for the
-isolated child context, and verify the owner's login keychain is not visible. Run
-with a temporary `HOME` and `CFFIXED_USER_HOME` and a credential-free allowlisted
-environment. Save and restore the original default and search-list configuration
-even on timeout, and delete only the temporary keychain afterward. If isolation,
-verification, or restoration cannot be guaranteed, stop before running tests. This
-applies to the sanity import, explicit suite, installed review, and hook-triggered
-push; `DATA_DIR` isolation alone is insufficient.
+Before either explicit pytest or the pre-push rerun, a trusted wrapper must create
+a temporary macOS keychain INSIDE the temporary `HOME` (first
+`mkdir -p "$TEMP_HOME/Library/Preferences" "$TEMP_HOME/Library/Keychains"`), and
+run every `security` configuration command with `HOME` set to the temporary HOME
+so the keychain search list and default keychain are written to the temporary
+HOME's own preferences — never to the owner's user-global configuration:
+`security create-keychain`, `security list-keychains -d user -s "$KC"`,
+`security default-keychain -d user -s "$KC"`, `security unlock-keychain`. Prove
+isolation by readback in the child context: `list-keychains` and
+`default-keychain` show only the temporary keychain, and a lookup of a known
+login-keychain item fails there. Run with that temporary `HOME` and
+`CFFIXED_USER_HOME` and a credential-free allowlisted environment. No
+save/restore of the owner's configuration exists or is needed because it is
+never modified; delete only the temporary keychain afterward. A `-60006`
+status, any GUI prompt, or any failed readback means isolation is unavailable —
+stop before running tests. This applies to the sanity import, explicit suite,
+installed review, and hook-triggered push; `DATA_DIR` isolation alone is
+insufficient.
 
 ```sh
 TEST_DATA_DIR="$(mktemp -d /private/tmp/fitness-build-data.XXXXXX)"
