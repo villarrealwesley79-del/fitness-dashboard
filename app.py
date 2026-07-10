@@ -33,6 +33,7 @@ import tempfile
 import threading
 import fcntl
 import shutil
+from subprocess import SubprocessError
 
 try:
     from pywebpush import WebPushException, webpush
@@ -77,6 +78,7 @@ from whoop_store import (
     clear_whoop_data,
     consume_oauth_state,
     create_oauth_state,
+    delete_protected_secret,
     disconnect_whoop,
     get_connection_status as get_whoop_connection_status,
     get_daily_fact as get_whoop_daily_fact,
@@ -86,10 +88,12 @@ from whoop_store import (
     latest_whoop_freshness,
     list_whoop_daily_facts,
     list_whoop_sync_runs,
+    load_protected_secret,
     load_connection_token_material,
     finish_whoop_sync_run,
     mark_reauth_required,
     rotate_connection_tokens,
+    save_protected_secret,
     record_whoop_sync_run,
     save_connection_tokens,
     upsert_whoop_records,
@@ -3723,9 +3727,10 @@ def generate_next_workout(
 
     volume_data = calculate_volume(workouts, weeks=4)
     muscle_groups = list(volume_data.keys()) or ["chest", "back", "quads", "shoulders"]
+    default_muscles = ["chest", "back", "quads", "shoulders", "hamstrings", "glutes", "adductors", "biceps", "triceps", "core", "calves"]
 
     readiness_scores = {}
-    for muscle in muscle_groups:
+    for muscle in default_muscles:
         readiness_scores[muscle] = get_readiness_score(muscle, soreness_data, volume_data, CARDIO_DATA, workouts)
 
     available_muscles = [
@@ -3735,7 +3740,6 @@ def generate_next_workout(
     ]
 
     # If not enough muscles available, add default ones
-    default_muscles = ["chest", "back", "quads", "shoulders", "hamstrings", "glutes", "adductors", "biceps", "triceps", "core", "calves"]
     for m in default_muscles:
         if m in readiness_scores and (
             readiness_scores[m]["score"] < 5
@@ -7088,6 +7092,47 @@ def _review_blocked_item_ids_for_accept_items(items: list[dict]) -> list[str]:
     return blocked_ids
 
 
+def _review_placeholder_nutrition_not_resolved(item: dict) -> bool:
+    original = item.get("original_estimate")
+    if not isinstance(original, dict) or original.get("source") != "barcode_pending_source":
+        return False
+    if any(original.get(field) != 0 for field in ("calories", "protein_g", "carbs_g", "fat_g")):
+        return False
+    estimate = item.get("estimate")
+    if not isinstance(estimate, dict):
+        return True
+    try:
+        estimate = sanitize_meal_estimate(
+            estimate,
+            source=estimate.get("source") or "manual_review_estimate",
+            legacy_defaults=True,
+            plausible_ranges=True,
+        )
+    except MealEstimateValidationError:
+        return True
+    calories = estimate.get("calories")
+    if isinstance(calories, bool) or not isinstance(calories, (int, float)) or calories <= 0:
+        return True
+    for field in ("protein_g", "carbs_g", "fat_g"):
+        value = estimate.get(field)
+        if not isinstance(value, bool) and isinstance(value, (int, float)) and value > 0:
+            return False
+    return True
+
+
+def _review_placeholder_nutrition_item_ids_for_accept_items(items: list[dict]) -> list[str]:
+    blocked_ids = []
+    for index, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            continue
+        state = str(raw.get("state") or raw.get("item_state") or raw.get("status") or "included").strip().lower()
+        if state != "included":
+            continue
+        if _review_placeholder_nutrition_not_resolved(raw):
+            blocked_ids.append(str(raw.get("item_id") or f"item-{index + 1}"))
+    return blocked_ids
+
+
 def _review_payload_from_estimate(
     *,
     meal_id: str,
@@ -7270,6 +7315,14 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
         for item in prepared
         if item["state"] == "included" and item["client_id"] not in existing_client_ids
     ]
+    placeholder_ids = _review_placeholder_nutrition_item_ids_for_accept_items(items_to_check)
+    if placeholder_ids:
+        return api_error(
+            "barcode pending source requires real nutrition before acceptance",
+            422,
+            code="placeholder_nutrition_not_resolved",
+            details={"meal_id": meal_id, "save_blocked_item_ids": placeholder_ids},
+        )
     blocked_ids = _review_blocked_item_ids_for_accept_items(items_to_check)
     if blocked_ids:
         return jsonify({
@@ -7382,7 +7435,13 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
             item_state="included",
         )
         rows.append(food_log)
-        if claim_food_log_vocab_learning(user_id, item["client_id"]):
+        if (
+            not _review_placeholder_nutrition_not_resolved({
+                "estimate": estimate,
+                "original_estimate": record["original_for_log"],
+            })
+            and claim_food_log_vocab_learning(user_id, item["client_id"])
+        ):
             vocab_phrase = record["text_hint"] or _meal_vocab_learning_phrase(None, estimate)
             if record["corrected"]:
                 personal_vocab.record_correct(user_id, vocab_phrase, estimate)
@@ -8067,9 +8126,76 @@ def meal_intake_accept(client_id: str):
     user_id = _current_data_user_id()
     if "items" in data:
         meal_id = str(data.get("meal_id") or client_id).strip()
-        if get_meal_review_snapshot(user_id, meal_id):
-            items = data.get("items") if isinstance(data.get("items"), list) else []
-            blocked_ids = _review_blocked_item_ids_for_accept_items(items)
+        if meal_id != client_id:
+            mismatch_has_placeholder = False
+            for review_id in (client_id, meal_id):
+                review_snapshot = get_meal_review_snapshot(user_id, review_id)
+                review_snapshot_items = (
+                    review_snapshot.get("payload", {}).get("items") or []
+                    if isinstance(review_snapshot, dict)
+                    else []
+                )
+                mismatch_has_placeholder = mismatch_has_placeholder or any(
+                    isinstance(item, dict)
+                    and _review_placeholder_nutrition_not_resolved({
+                        "estimate": {},
+                        "original_estimate": item.get("original_estimate"),
+                    })
+                    for item in review_snapshot_items
+                )
+                persisted_parent = _food_log_by_client_id(user_id, review_id)
+                if isinstance(persisted_parent, dict):
+                    mismatch_has_placeholder = (
+                        mismatch_has_placeholder
+                        or _review_placeholder_nutrition_not_resolved({
+                            "estimate": {},
+                            "original_estimate": {
+                                field: persisted_parent.get(field)
+                                for field in ("source", "calories", "protein_g", "carbs_g", "fat_g")
+                            },
+                        })
+                    )
+            if mismatch_has_placeholder:
+                return api_error(
+                    "meal_id must match the pending barcode review route",
+                    400,
+                    code="invalid_field",
+                )
+        snapshot = get_meal_review_snapshot(user_id, meal_id)
+        if snapshot:
+            items = data.get("items")
+            if not isinstance(items, list):
+                return api_error("items must be a list", 400, code="invalid_field")
+            snapshot_items = snapshot.get("payload", {}).get("items") or []
+            originals_by_id = {
+                str(item.get("item_id")): item.get("original_estimate")
+                for item in snapshot_items
+                if isinstance(item, dict) and isinstance(item.get("original_estimate"), dict)
+            }
+            items_with_server_originals = []
+            seen_item_ids = set()
+            for item in items:
+                if not isinstance(item, dict):
+                    items_with_server_originals.append(item)
+                    continue
+                item_id = str(item.get("item_id") or "")
+                original = originals_by_id.get(item_id)
+                if not item_id or item_id in seen_item_ids or not isinstance(original, dict):
+                    return api_error("items must reference saved review items", 400, code="invalid_field")
+                seen_item_ids.add(item_id)
+                items_with_server_originals.append(
+                    {**item, "original_estimate": original}
+                )
+            data = {**data, "items": items_with_server_originals}
+            placeholder_ids = _review_placeholder_nutrition_item_ids_for_accept_items(items_with_server_originals)
+            if placeholder_ids:
+                return api_error(
+                    "barcode pending source requires real nutrition before acceptance",
+                    422,
+                    code="placeholder_nutrition_not_resolved",
+                    details={"meal_id": meal_id, "save_blocked_item_ids": placeholder_ids},
+                )
+            blocked_ids = _review_blocked_item_ids_for_accept_items(items_with_server_originals)
             if blocked_ids:
                 return jsonify({
                     "status": "blocked",
@@ -8077,6 +8203,28 @@ def meal_intake_accept(client_id: str):
                     "save_blocked_item_ids": blocked_ids,
                     "error": {"message": "review has blocked items"},
                 }), 409
+        else:
+            persisted_parent = _food_log_by_client_id(user_id, meal_id)
+            if isinstance(persisted_parent, dict):
+                persisted_original = {
+                    field: persisted_parent.get(field)
+                    for field in ("source", "calories", "protein_g", "carbs_g", "fat_g")
+                }
+                if (
+                    persisted_original["source"] == "barcode_pending_source"
+                    and all(persisted_original[field] == 0 for field in ("calories", "protein_g", "carbs_g", "fat_g"))
+                ):
+                    items = data.get("items")
+                    if isinstance(items, list):
+                        data = {
+                            **data,
+                            "items": [
+                                {**item, "original_estimate": persisted_original}
+                                if isinstance(item, dict)
+                                else item
+                                for item in items
+                            ],
+                        }
         result = _meal_intake_accept_multi(client_id, data)
         if _review_response_code(result) < 400:
             meal_id = str(data.get("meal_id") or client_id).strip()
@@ -8086,9 +8234,19 @@ def meal_intake_accept(client_id: str):
     if snapshot:
         snapshot_payload = snapshot["payload"]
         try:
-            snapshot_items = _review_snapshot_items_for_accept(snapshot_payload, data)
+            snapshot_accept_data = dict(data)
+            snapshot_accept_data.pop("original_estimate", None)
+            snapshot_items = _review_snapshot_items_for_accept(snapshot_payload, snapshot_accept_data)
         except MealEstimateValidationError as exc:
             return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
+        placeholder_ids = _review_placeholder_nutrition_item_ids_for_accept_items(snapshot_items)
+        if placeholder_ids:
+            return api_error(
+                "barcode pending source requires real nutrition before acceptance",
+                422,
+                code="placeholder_nutrition_not_resolved",
+                details={"meal_id": client_id, "save_blocked_item_ids": placeholder_ids},
+            )
         blocked_ids = _review_blocked_item_ids_for_accept_items(snapshot_items)
         if blocked_ids:
             return jsonify({
@@ -8117,6 +8275,29 @@ def meal_intake_accept(client_id: str):
     terminal = _meal_terminal_idempotency_response(user_id, client_id, originated_from_image)
     if terminal is not None:
         return terminal
+    stored_placeholder_original = None
+    existing = _food_log_by_client_id(user_id, client_id)
+    if isinstance(existing, dict):
+        stored_original = existing.get("original_estimate")
+        if not isinstance(stored_original, dict):
+            stored_original = {
+                field: existing.get(field)
+                for field in ("source", "calories", "protein_g", "carbs_g", "fat_g")
+            }
+        if _review_placeholder_nutrition_not_resolved({
+            "estimate": {},
+            "original_estimate": stored_original,
+        }):
+            stored_placeholder_original = stored_original
+        if _review_placeholder_nutrition_not_resolved({
+            "estimate": raw_estimate,
+            "original_estimate": stored_original,
+        }):
+            return api_error(
+                "barcode pending source requires real nutrition before acceptance",
+                422,
+                code="placeholder_nutrition_not_resolved",
+            )
     try:
         estimate = sanitize_meal_estimate(
             raw_estimate,
@@ -8142,13 +8323,14 @@ def meal_intake_accept(client_id: str):
     local_iso, err = _coerce_str(data.get("local_iso"), "local_iso", required=False, max_len=64)
     if err:
         return err
+    trusted_original = stored_placeholder_original or data.get("original_estimate")
     corrected = (
         bool(data.get("corrected"))
         or data.get("correction_state") == "corrected"
-        or _meal_accept_was_corrected(estimate, data.get("original_estimate"))
+        or _meal_accept_was_corrected(estimate, trusted_original)
     )
     correction_state = "corrected" if corrected else CORRECTION_STATE_ACCEPTED
-    original_for_log = _sanitize_original_estimate_for_log(data.get("original_estimate"), estimate)
+    original_for_log = _sanitize_original_estimate_for_log(trusted_original, estimate)
     food_log = _meal_intake_persist(
         client_id,
         estimate,
@@ -8161,7 +8343,13 @@ def meal_intake_accept(client_id: str):
         correction_state=correction_state,
         original_estimate=original_for_log,
     )
-    if claim_food_log_vocab_learning(user_id, client_id):
+    if (
+        not _review_placeholder_nutrition_not_resolved({
+            "estimate": estimate,
+            "original_estimate": original_for_log,
+        })
+        and claim_food_log_vocab_learning(user_id, client_id)
+    ):
         if corrected:
             vocab_phrase = text_hint or _meal_vocab_learning_phrase(None, estimate)
             personal_vocab.record_correct(user_id, vocab_phrase, estimate)
@@ -10299,12 +10487,113 @@ def _load_open_wearables_local_config():
 
 
 OPEN_WEARABLES_LOCAL_CONFIG = _load_open_wearables_local_config()
+OPEN_WEARABLES_PASSWORD_SERVICE = "fitness-dashboard-open-wearables-password"
+OPEN_WEARABLES_PASSWORD_FILE_ENV = "OPEN_WEARABLES_PASSWORD_FILE"
+
+
+def _open_wearables_non_secret_config(config):
+    cleaned = dict(config or {})
+    cleaned.pop("password", None)
+    return cleaned
+
+
+def _open_wearables_password_account():
+    config_identity = hashlib.sha256(os.path.abspath(OPEN_WEARABLES_CONFIG_FILE).encode("utf-8")).hexdigest()[:16]
+    return f"open-wearables-{config_identity}"
+
+
+def _open_wearables_password_file():
+    override = os.environ.get(OPEN_WEARABLES_PASSWORD_FILE_ENV, "").strip()
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    config_dir = os.path.dirname(os.path.abspath(OPEN_WEARABLES_CONFIG_FILE))
+    return os.path.join(config_dir, ".open-wearables-password")
+
+
+def _save_open_wearables_password(password):
+    secret = str(password or "").strip()
+    if not secret:
+        return True
+    save_protected_secret(
+        OPEN_WEARABLES_PASSWORD_SERVICE,
+        _open_wearables_password_account(),
+        secret,
+        fallback_path=_open_wearables_password_file(),
+        fallback_override_env=OPEN_WEARABLES_PASSWORD_FILE_ENV,
+    )
+    return True
+
+
+def _load_open_wearables_password():
+    return load_protected_secret(
+        OPEN_WEARABLES_PASSWORD_SERVICE,
+        _open_wearables_password_account(),
+        fallback_path=_open_wearables_password_file(),
+        fallback_override_env=OPEN_WEARABLES_PASSWORD_FILE_ENV,
+    ).strip()
+
+
+def _delete_open_wearables_password():
+    delete_protected_secret(
+        OPEN_WEARABLES_PASSWORD_SERVICE,
+        _open_wearables_password_account(),
+        fallback_path=_open_wearables_password_file(),
+        fallback_override_env=OPEN_WEARABLES_PASSWORD_FILE_ENV,
+    )
+
+
+def _write_open_wearables_config_file(config):
+    tmp = None
+    config_dir = os.path.dirname(os.path.abspath(OPEN_WEARABLES_CONFIG_FILE))
+    os.makedirs(config_dir, exist_ok=True)
+    base = os.path.basename(OPEN_WEARABLES_CONFIG_FILE)
+    with JSON_DATA_LOCK:
+        fd, tmp = tempfile.mkstemp(
+            prefix=f".{base}.",
+            suffix=".tmp",
+            dir=config_dir,
+        )
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, default=str, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, OPEN_WEARABLES_CONFIG_FILE)
+            tmp = None
+            os.chmod(OPEN_WEARABLES_CONFIG_FILE, 0o600)
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+
+def _migrate_open_wearables_local_password(config):
+    password = str((config or {}).get("password") or "").strip()
+    if not password:
+        return config
+    safe_config = _open_wearables_non_secret_config(config)
+    try:
+        _save_open_wearables_password(password)
+        _write_open_wearables_config_file(safe_config)
+        return safe_config
+    except Exception as exc:
+        print(f"Warning: Could not migrate Open Wearables password to protected storage: {exc}")
+        return config
+
+
+OPEN_WEARABLES_LOCAL_CONFIG = _migrate_open_wearables_local_password(OPEN_WEARABLES_LOCAL_CONFIG)
 
 
 def _open_wearables_config_value(key, env_name, default=""):
     local_value = str(OPEN_WEARABLES_LOCAL_CONFIG.get(key) or "").strip()
     if local_value:
         return local_value
+    if key == "password":
+        protected_value = _load_open_wearables_password()
+        if protected_value:
+            return protected_value
     return os.environ.get(env_name, default).strip()
 
 
@@ -10465,6 +10754,7 @@ def _apply_open_wearables_runtime_config(config):
     global OPEN_WEARABLES_SERVICE_BASE, OPEN_WEARABLES_ALLOWED_HOSTS, OPEN_WEARABLES_PORTAL_URL
     global OPEN_WEARABLES_SIDECAR_ENV_PATH, OPEN_WEARABLES_MANAGED_RESTART_REQUIRED
     global OPEN_WEARABLES_BASE, OPEN_WEARABLES_LOGIN_URL
+    config = _open_wearables_non_secret_config(config)
     OPEN_WEARABLES_LOCAL_CONFIG = config
     OPEN_WEARABLES_USERNAME = _open_wearables_config_value("username", "OW_USERNAME")
     globals()["OPEN_WEARABLES_" + "PASSWORD"] = _open_wearables_config_value("password", "OW_PASSWORD")
@@ -10903,31 +11193,26 @@ def _open_wearables_provider_actions(*, allow_managed_restart_clear=False):
 
 
 def _save_open_wearables_local_config(config):
-    tmp = None
+    password = str((config or {}).get("password") or "").strip()
+    previous_password = ""
+    password_saved = False
     try:
-        config_dir = os.path.dirname(os.path.abspath(OPEN_WEARABLES_CONFIG_FILE))
-        os.makedirs(config_dir, exist_ok=True)
-        base = os.path.basename(OPEN_WEARABLES_CONFIG_FILE)
-        with JSON_DATA_LOCK:
-            fd, tmp = tempfile.mkstemp(
-                prefix=f".{base}.",
-                suffix=".tmp",
-                dir=config_dir,
-            )
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, default=str, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, OPEN_WEARABLES_CONFIG_FILE)
-            tmp = None
-            os.chmod(OPEN_WEARABLES_CONFIG_FILE, 0o600)
+        safe_config = _open_wearables_non_secret_config(config)
+        previous_password = _load_open_wearables_password() if password else ""
+        if password and not _save_open_wearables_password(password):
+            return False
+        password_saved = bool(password)
+        _write_open_wearables_config_file(safe_config)
         return True
-    except OSError as exc:
-        if tmp:
+    except Exception as exc:
+        if password_saved:
             try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+                if previous_password:
+                    _save_open_wearables_password(previous_password)
+                else:
+                    _delete_open_wearables_password()
+            except Exception as rollback_exc:
+                print(f"Warning: Could not restore Open Wearables password after config failure: {rollback_exc}")
         print(f"Warning: Could not save Open Wearables config: {exc}")
         return False
 
@@ -12305,8 +12590,8 @@ def open_wearables_setup_api():
         return api_error("Open Wearables setup value is too long", 400, code="invalid_field")
 
     profile_key = _open_wearables_profile_key()
-    existing_local_credential = str(OPEN_WEARABLES_LOCAL_CONFIG.get("password") or "").strip()
-    credential_for_mapping = credential_input or existing_local_credential or OPEN_WEARABLES_PASSWORD
+    existing_protected_credential = _load_open_wearables_password()
+    credential_for_mapping = credential_input or existing_protected_credential or OPEN_WEARABLES_PASSWORD
     if user_id:
         if not username or not credential_for_mapping:
             return jsonify({
@@ -12353,8 +12638,8 @@ def open_wearables_setup_api():
     if credential_input:
         next_config["password"] = credential_input
     else:
-        if existing_local_credential:
-            next_config["password"] = existing_local_credential
+        if existing_protected_credential:
+            next_config["password"] = existing_protected_credential
 
     if not _save_open_wearables_local_config(next_config):
         return jsonify({
@@ -13401,7 +13686,7 @@ def whoop_disconnect():
         try:
             invalidate_oauth_states(WHOOP_DB_FILE, user_binding=_whoop_user_binding())
             disconnect_whoop(WHOOP_DB_FILE)
-        except OSError:
+        except (OSError, RuntimeError, SubprocessError):
             return api_error(
                 "WHOOP local token material could not be removed. Disconnect was not completed.",
                 500,

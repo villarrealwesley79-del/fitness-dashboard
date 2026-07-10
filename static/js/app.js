@@ -9292,8 +9292,11 @@
 
     async function openAppleSetup() {
         const urlEl = $('apple-webhook-url');
+        const headerStep = $('apple-sync-header-step');
+        const headerEl = $('apple-sync-header');
         const detail = $('apple-sync-detail');
         if (detail) detail.textContent = 'Checking…';
+        if (headerStep) headerStep.hidden = true;
 
         // Setup URL is split from routine status so Settings doesn't fetch
         // token material unless the setup modal is explicitly opened.
@@ -9308,6 +9311,11 @@
         try {
             const setup = await api('/api/apple-health/sync/setup-url');
             if (setup && setup.webhook_url) tokenizedUrl = setup.webhook_url;
+            const syncToken = setup && setup.headers && setup.headers['X-Sync-Token'];
+            if (syncToken && headerEl && headerStep) {
+                headerEl.textContent = `X-Sync-Token: ${syncToken}`;
+                headerStep.hidden = false;
+            }
         } catch {}
 
         if (urlEl) urlEl.textContent = tokenizedUrl;
