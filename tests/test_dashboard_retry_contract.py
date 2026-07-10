@@ -164,6 +164,7 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     dashboard endpoint, and phones must receive the new client bundle."""
     app_py = (ROOT / "app.py").read_text()
     auth_py = (ROOT / "auth.py").read_text()
+    fingerprint_py = (ROOT / "workout_recommendation_fingerprint.py").read_text()
     app_js = (ROOT / "static" / "js" / "app.js").read_text()
     template = (ROOT / "templates" / "index.html").read_text()
     sw = (ROOT / "static" / "js" / "sw.js").read_text()
@@ -172,19 +173,22 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "def _current_workout_training_recommendation():" in app_py
     assert "def _workout_recommendation_fingerprint():" in app_py
     assert "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint" in app_py
-    assert "\"day\": today_s" in app_py
-    assert "\"oura\": {" in app_py
+    assert "workout_recommendation_fingerprint.build_fingerprint(" in app_py
+    assert "day=today_s" in app_py
+    assert "\"day\": day" in fingerprint_py
+    assert "\"oura\": {" in fingerprint_py
     assert "get_oura_daily_range(OURA_DB_FILE" in app_py
-    assert "\"weather\": {" in app_py
-    assert "\"open_wearables\": {" in app_py
+    assert "\"weather\": {" in fingerprint_py
+    assert "\"open_wearables\": {" in fingerprint_py
     assert "_open_wearables_workout_inputs_live()" in app_py
-    assert '"configured": _open_wearables_workout_inputs_live()' in app_py
+    assert "open_wearables_configured=_open_wearables_workout_inputs_live()" in app_py
     assert "def _open_wearables_recommendation_marker(refresh=False):" in app_py
-    assert '"marker": _open_wearables_recommendation_marker()' in app_py
+    assert "open_wearables_marker=_open_wearables_recommendation_marker()" in app_py
     assert "include_open_wearables_readiness=False" in app_py
     assert "_open_wearables_workout_inputs_live()\n        or not LAST_WORKOUT_RECOMMENDATION" not in app_py
-    assert "\"apple_health\": {" in app_py
-    assert "file_marker(_apple_health_sync_db_file())" in app_py
+    assert "\"apple_health\": {" in fingerprint_py
+    assert "apple_health_sync_db_file=_apple_health_sync_db_file()" in app_py
+    assert "file_marker(apple_health_sync_db_file)" in fingerprint_py
     assert "healthkit_samples_workout_*.json" in app_py
     assert (
         "training_recommendation=_current_workout_training_recommendation()" in app_py
