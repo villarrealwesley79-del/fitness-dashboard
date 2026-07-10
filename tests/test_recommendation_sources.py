@@ -1,5 +1,6 @@
 from datetime import date
 
+import data_store
 from open_wearables_adapter import OpenWearablesProviderStatus
 from recommendation_sources import build_open_wearables_recommendation_source
 from wearable_fact_store import WearableDailyFact, upsert_daily_facts
@@ -37,6 +38,9 @@ def test_open_wearables_recommendation_source_uses_only_normalized_facts():
 
 
 def _seed_open_wearables_fact_route_context(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+
     import app as module
 
     db = tmp_path / "wearable-facts.sqlite3"
