@@ -319,12 +319,24 @@ before executing PR code, exactly as gate D does — never a code verdict. If
 the app fails to boot at the pinned SHA but boots identically-sandboxed at
 the merge base, that is a group-1 must-fix finding under a
 `CHANGES REQUESTED` verdict; if the boot failure reproduces at the merge
-base, it is baseline debt — escalate on FIT-369 with `owner-attention` and
-defer the PR without a code verdict.
+base, it is baseline debt: post a `CODEX VERDICT: BLOCKED` footer at the
+pinned SHA (an external precondition, not a code verdict), persist a
+`reviewBlockers` entry with `kind=baseline-boot`, a fingerprint over the
+merge-base SHA plus the boot-error signature, and retryWhen = the merge-base
+boot succeeds or the head SHA changes, apply `owner-attention`, and escalate
+on FIT-369 once per fingerprint — never once per tick — so the SHA is
+skippable like every other non-code deferral.
 
 Drive the running app headlessly with the Codex playwright wrapper
 (`/Users/admin/.codex/skills/playwright/scripts/playwright_cli.sh`) using a
-per-PR named session with a fresh browser profile: register the first user on
+per-PR named session with a fresh browser profile. The browser is bounded
+like the app: launch the session with non-loopback egress blocked (for
+example `--proxy-server` pointed at a dead loopback port with a
+`127.0.0.1`/`localhost` bypass, passed through the playwright launch config);
+if that restriction cannot be applied, post `BLOCKED` before executing PR
+code, exactly like an isolation failure. Any attempted non-loopback request
+from a PR-touched page is itself a finding (PR-introduced external egress),
+never silently allowed or silently dropped. Then: register the first user on
 the fresh auth DB (single-user mode permits exactly the first registration),
 then walk (a) the standard smoke path — login, dashboard render, and every
 top-level tab loading without server 5xx, template errors, or browser console
@@ -337,13 +349,15 @@ Screenshot every visited state to
 — never inside the repository or worktree (`REPO_HYGIENE.md` bans committed
 runtime screenshots) — and list the screenshot paths in tilde form in the
 verdict comment's Review receipt. Record `walkthrough=pass|fail|skipped` in
-`CHECKS_RUN`. Blocking is scoped like gate F: a failure is a group-1 must-fix
-finding only when the PR introduces it — it occurs on a PR-touched flow, or
-it is absent when the same sandboxed walkthrough is repeated at the merge
-base. A failure that reproduces at the merge base, or occurs only on flows
-the PR does not touch, is baseline debt: record `walkthrough=pass`, note it
-as a follow-up, and escalate on FIT-369 when severe — never a group-1 finding
-against this PR. On every exit path, including the timeout-deferral path,
+`CHECKS_RUN`. Blocking is scoped by PR-introduction, with the merge-base
+comparison taking explicit precedence: when any failure occurs, repeat the
+same sandboxed walkthrough at the merge base, unless the failure is on a
+PR-touched flow (which may be treated as PR-introduced without the base run).
+A failure absent at the merge base is a group-1 must-fix finding. A failure
+that reproduces at the merge base is baseline debt — record
+`walkthrough=pass`, note it as a follow-up, and escalate on FIT-369 when
+severe — and a performed merge-base comparison always overrides the
+touched-flow shortcut. On every exit path, including the timeout-deferral path,
 kill the app's process group AND close the playwright session/browser via the
 wrapper so no chromium instance or profile survives the tick. If playwright
 or chromium is unavailable or fails to launch, that is an infrastructure
