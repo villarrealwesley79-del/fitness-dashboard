@@ -62,6 +62,8 @@ LM_STUDIO_PREFLIGHT_TIMEOUT_SEC = float(_env_first(
 LM_STUDIO_LOAD_RETRY_LIMIT = int(_env_first("VISION_LM_STUDIO_LOAD_RETRY_LIMIT", default="2"))
 LM_STUDIO_LOAD_RETRY_BACKOFF_SEC = float(_env_first("VISION_LM_STUDIO_LOAD_RETRY_BACKOFF_SEC", default="1.0"))
 LM_STUDIO_WARMUP_TIMEOUT_SEC = float(_env_first("VISION_LM_STUDIO_WARMUP_TIMEOUT_SEC", default="45"))
+VISION_INFERENCE_LOCK_ACQUIRE_SEC = float(_env_first("VISION_INFERENCE_LOCK_ACQUIRE_SEC", default="2"))
+VISION_REQUEST_DEADLINE_SEC = float(_env_first("VISION_REQUEST_DEADLINE_SEC", default="95"))
 LM_STUDIO_MULTI_IMAGE_MAX_DIMENSION = int(_env_first(
     "VISION_LM_STUDIO_MULTI_IMAGE_MAX_DIMENSION",
     default="1024",
@@ -102,6 +104,28 @@ class LocalVisionError(RuntimeError):
 
 
 _KEEP_WARM_LOCK = threading.Lock()
+_VISION_INFERENCE_LOCK = threading.Semaphore(1)
+
+
+class _VisionRequestDeadline:
+    def __init__(self, seconds: float):
+        self.seconds = max(0.0, float(seconds))
+        self.started_at = time.monotonic()
+
+    def remaining(self) -> float:
+        return max(0.0, self.seconds - (time.monotonic() - self.started_at))
+
+    def check(self) -> None:
+        if self.remaining() <= 0:
+            raise LocalVisionError("LM Studio vision request deadline exceeded")
+
+    def timeout(self, requested: float) -> float:
+        self.check()
+        return min(float(requested), self.remaining())
+
+    def retry_sleep(self, requested: float) -> float:
+        self.check()
+        return min(float(requested), self.remaining())
 
 
 def warm_all_candidates() -> dict[str, Any]:
@@ -211,7 +235,13 @@ def describe_food_photo(
         raise LocalVisionError("image bytes are required")
     provider_name = (provider or "lm_studio").strip().lower()
     if provider_name == "lm_studio":
-        return _describe_lm_studio(images=images, context_text=context_text, timeout=timeout)
+        acquired = _VISION_INFERENCE_LOCK.acquire(timeout=max(0.0, VISION_INFERENCE_LOCK_ACQUIRE_SEC))
+        if not acquired:
+            raise LocalVisionError("busy: LM Studio vision inference already running")
+        try:
+            return _describe_lm_studio(images=images, context_text=context_text, timeout=timeout)
+        finally:
+            _VISION_INFERENCE_LOCK.release()
     if provider_name == "ollama":
         return _describe_ollama(images=images, context_text=context_text, timeout=timeout)
     raise LocalVisionError(f"unsupported local vision provider: {provider_name}")
@@ -244,15 +274,19 @@ def _describe_lm_studio(
     images: list[tuple[bytes, str]],
     context_text: str | None,
     timeout: float,
+    deadline: _VisionRequestDeadline | None = None,
 ) -> dict[str, Any]:
+    deadline = deadline or _VisionRequestDeadline(VISION_REQUEST_DEADLINE_SEC)
     errors: list[str] = []
     for candidate in _lm_studio_candidates():
+        deadline.check()
         try:
-            _preflight_candidate(candidate)
+            _preflight_candidate(candidate, deadline=deadline)
         except LocalVisionError as exc:
             errors.append(f"{candidate['role']} preflight: {exc}")
             continue
         for attempt in range(SCHEMA_RETRY_LIMIT + 1):
+            deadline.check()
             payload = _lm_studio_payload(
                 images=images,
                 context_text=context_text,
@@ -262,7 +296,8 @@ def _describe_lm_studio(
                 body = _post_json_with_load_retries(
                     f"{candidate['url']}/v1/chat/completions",
                     payload,
-                    timeout=timeout,
+                    timeout=deadline.timeout(timeout),
+                    deadline=deadline,
                 )
                 content_out = _lm_studio_message_content(body)
                 estimate = _parse_lm_studio_meal_estimate(content_out)
@@ -334,23 +369,29 @@ def _models_for(candidate: dict[str, str], timeout: float = LM_STUDIO_PREFLIGHT_
     return loaded
 
 
-def _preflight_candidate(candidate: dict[str, str]) -> bool:
+def _preflight_candidate(candidate: dict[str, str], deadline: _VisionRequestDeadline | None = None) -> bool:
     try:
-        loaded = _models_for(candidate, timeout=LM_STUDIO_PREFLIGHT_TIMEOUT_SEC)
+        timeout = deadline.timeout(LM_STUDIO_PREFLIGHT_TIMEOUT_SEC) if deadline else LM_STUDIO_PREFLIGHT_TIMEOUT_SEC
+        loaded = _models_for(candidate, timeout=timeout)
     except error.URLError as exc:
         raise LocalVisionError(f"unreachable: {exc}") from exc
     except TimeoutError as exc:
         raise LocalVisionError("timeout") from exc
+    except LocalVisionError:
+        raise
     except Exception as exc:
         raise LocalVisionError(f"preflight failed: {type(exc).__name__}") from exc
     if _target_loaded(loaded, candidate["model"]):
         return False
     try:
-        _warm_candidate(candidate)
+        _warm_candidate(candidate, deadline=deadline)
     except LocalVisionError as exc:
         raise LocalVisionError(f"model warmup failed: {_summarize_lm_studio_error(exc)}") from exc
     try:
-        loaded = _models_for(candidate, timeout=LM_STUDIO_PREFLIGHT_TIMEOUT_SEC)
+        timeout = deadline.timeout(LM_STUDIO_PREFLIGHT_TIMEOUT_SEC) if deadline else LM_STUDIO_PREFLIGHT_TIMEOUT_SEC
+        loaded = _models_for(candidate, timeout=timeout)
+    except LocalVisionError:
+        raise
     except Exception:
         return True
     if not _target_loaded(loaded, candidate["model"]):
@@ -358,7 +399,7 @@ def _preflight_candidate(candidate: dict[str, str]) -> bool:
     return True
 
 
-def _warm_candidate(candidate: dict[str, str]) -> None:
+def _warm_candidate(candidate: dict[str, str], deadline: _VisionRequestDeadline | None = None) -> None:
     payload = _lm_studio_payload(
         images=[(_WARMUP_PNG_BYTES, "image/png")],
         context_text="warm up vision model; return a minimal valid food estimate for this blank image",
@@ -367,7 +408,8 @@ def _warm_candidate(candidate: dict[str, str]) -> None:
     _post_json_with_load_retries(
         f"{candidate['url']}/v1/chat/completions",
         payload,
-        timeout=LM_STUDIO_WARMUP_TIMEOUT_SEC,
+        timeout=deadline.timeout(LM_STUDIO_WARMUP_TIMEOUT_SEC) if deadline else LM_STUDIO_WARMUP_TIMEOUT_SEC,
+        deadline=deadline,
     )
 
 
@@ -682,17 +724,27 @@ def _post_json(url: str, payload: dict[str, Any], *, timeout: float) -> dict[str
         raise LocalVisionError("invalid response JSON") from exc
 
 
-def _post_json_with_load_retries(url: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+def _post_json_with_load_retries(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    timeout: float,
+    deadline: _VisionRequestDeadline | None = None,
+) -> dict[str, Any]:
     attempts = max(1, LM_STUDIO_LOAD_RETRY_LIMIT + 1)
     last_error: LocalVisionError | None = None
     for attempt in range(attempts):
         try:
-            return _post_json(url, payload, timeout=timeout)
+            request_timeout = deadline.timeout(timeout) if deadline else timeout
+            return _post_json(url, payload, timeout=request_timeout)
         except LocalVisionError as exc:
             last_error = exc
             if attempt >= attempts - 1 or not _transient_load_error(exc):
                 raise
-            time.sleep(LM_STUDIO_LOAD_RETRY_BACKOFF_SEC * (attempt + 1))
+            sleep_seconds = LM_STUDIO_LOAD_RETRY_BACKOFF_SEC * (attempt + 1)
+            if deadline:
+                sleep_seconds = deadline.retry_sleep(sleep_seconds)
+            time.sleep(sleep_seconds)
     raise last_error or LocalVisionError("LM Studio request failed")
 
 

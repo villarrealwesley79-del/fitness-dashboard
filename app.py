@@ -222,6 +222,7 @@ OPEN_WEARABLES_CONFIG_FILE = data_path("open_wearables_config.json")
 WHOOP_CSV_MAX_BYTES = 512 * 1024
 WHOOP_CSV_MAX_ROWS = 5000
 AI_PENDING_SUGGESTIONS = {}
+_VISION_KEEP_WARM_THREAD = None
 
 # ==================== WEATHER (wttr.in) ====================
 # Lightweight cache to avoid hammering the free endpoint.
@@ -324,23 +325,48 @@ def _env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _start_vision_keep_warm_daemon():
-    """Opt-in, fire-and-forget LM Studio vision warmup for app startup."""
-    if vision_estimator.configured_provider() != "lm_studio":
-        return None
-    if not _env_flag_enabled("VISION_LM_STUDIO_KEEP_WARM"):
-        return None
+def _vision_keep_warm_interval_seconds() -> float:
+    raw = os.environ.get("VISION_LM_STUDIO_KEEP_WARM_INTERVAL_SEC", "900")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 900.0
 
-    def _do():
+
+def _run_vision_keep_warm_loop(*, interval_seconds: float | None = None) -> None:
+    interval = _vision_keep_warm_interval_seconds() if interval_seconds is None else interval_seconds
+    while True:
         try:
             result = vision_estimator.local_vision_adapter.warm_all_candidates()
             print(f"[fitness] Vision keep-warm finished: {result.get('status')}")
         except Exception as exc:
             print(f"[fitness] Vision keep-warm failed (non-fatal): {exc}")
+        if interval <= 0:
+            return
+        time.sleep(interval)
+
+
+def _start_vision_keep_warm_daemon():
+    """Opt-in LM Studio vision warmup loop for each app worker process."""
+    global _VISION_KEEP_WARM_THREAD
+    if vision_estimator.configured_provider() != "lm_studio":
+        return None
+    if not _env_flag_enabled("VISION_LM_STUDIO_KEEP_WARM"):
+        return None
+    thread_is_alive = getattr(_VISION_KEEP_WARM_THREAD, "is_alive", lambda: False)
+    if _VISION_KEEP_WARM_THREAD is not None and thread_is_alive():
+        return _VISION_KEEP_WARM_THREAD
+
+    def _do():
+        _run_vision_keep_warm_loop()
 
     thread = threading.Thread(target=_do, name="vision-keep-warm", daemon=True)
     thread.start()
+    _VISION_KEEP_WARM_THREAD = thread
     return thread
+
+
+_start_vision_keep_warm_daemon()
 
 
 # ==================== TRAINING GOAL CONFIGURATION ====================
@@ -7590,7 +7616,9 @@ def meal_intake():
                 "provider": estimate.get("vision_provider") or vision_estimator.configured_provider(),
                 "confidence": estimate.get("vision_confidence"),
             }
-        except vision_estimator.VisionEstimatorError as exc:
+        except Exception as exc:
+            if not isinstance(exc, vision_estimator.VisionEstimatorError):
+                app.logger.warning("Vision meal estimate failed before fallback", exc_info=True)
             public_vision_error = _meal_intake_public_vision_error(exc)
             if not text_raw:
                 return jsonify({

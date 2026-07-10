@@ -1481,6 +1481,53 @@ def test_meal_intake_image_provider_failure_uses_text_fallback(monkeypatch):
     assert body["vision_error"] == "vision_estimator_failed"
 
 
+def test_meal_intake_image_merge_exception_uses_text_fallback(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "lm_studio",
+            "item_description": "protein shake",
+            "portion_hint": "1 shake",
+            "confidence": "not-a-number",
+            "ambiguous": False,
+            "uncertainty_notes": [],
+        },
+    )
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Protein shake",
+        "portion_description": None,
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.86,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: {"client_id": r["client_id"], **r})
+
+    res = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "protein shake",
+            "client_id": "meal-vision-merge-fallback-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["status"] == "pending_review"
+    assert body["estimate"]["source"] == "ai_text_estimate"
+    assert body["vision_error"] == "vision_estimator_failed"
+
+
 def test_meal_intake_image_provider_failure_handles_text_parser_exception(monkeypatch):
     module = _client(monkeypatch)
     monkeypatch.setattr(

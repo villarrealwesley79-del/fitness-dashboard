@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
+from pathlib import Path
+import subprocess
+import sys
+import textwrap
 
 import local_vision_adapter
+import pytest
 
 
 def test_warm_all_candidates_warms_each_candidate_and_reports_failures(monkeypatch, caplog):
@@ -121,6 +127,7 @@ def test_start_vision_keep_warm_daemon_runs_fire_and_forget(monkeypatch):
             self.target()
 
     monkeypatch.setenv("VISION_LM_STUDIO_KEEP_WARM", "true")
+    monkeypatch.setenv("VISION_LM_STUDIO_KEEP_WARM_INTERVAL_SEC", "0")
     monkeypatch.setattr(module.vision_estimator, "configured_provider", lambda: "lm_studio")
     monkeypatch.setattr(module.threading, "Thread", FakeThread)
     monkeypatch.setattr(
@@ -134,3 +141,78 @@ def test_start_vision_keep_warm_daemon_runs_fire_and_forget(monkeypatch):
     assert isinstance(thread, FakeThread)
     assert started_threads == [{"name": "vision-keep-warm", "daemon": True}]
     assert warm_calls == ["warm"]
+
+
+def test_vision_keep_warm_starts_when_app_is_imported_under_gunicorn(tmp_path):
+    marker = tmp_path / "keep-warm-marker.txt"
+    script = textwrap.dedent(
+        """
+        import os
+        from pathlib import Path
+
+        import local_vision_adapter
+
+        marker = Path(os.environ["FIT258_KEEP_WARM_MARKER"])
+
+        def fake_warm_all_candidates():
+            marker.write_text("warm", encoding="utf-8")
+            return {"status": "ok", "candidates": []}
+
+        local_vision_adapter.warm_all_candidates = fake_warm_all_candidates
+
+        import app
+
+        thread = getattr(app, "_VISION_KEEP_WARM_THREAD", None)
+        if thread is not None:
+            thread.join(timeout=2)
+        print(marker.read_text(encoding="utf-8") if marker.exists() else "missing")
+        """
+    )
+    env = {
+        **os.environ,
+        "FIT258_KEEP_WARM_MARKER": str(marker),
+        "SECRET_KEY": "fit258-keep-warm-import",
+        "VISION_ESTIMATOR_PROVIDER": "lm_studio",
+        "VISION_LM_STUDIO_KEEP_WARM": "true",
+        "VISION_LM_STUDIO_KEEP_WARM_INTERVAL_SEC": "0",
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith("warm")
+
+
+def test_vision_keep_warm_worker_repeats_after_interval(monkeypatch):
+    module = importlib.import_module("app")
+    warm_calls = []
+    sleep_calls = []
+
+    class StopLoop(RuntimeError):
+        pass
+
+    monkeypatch.setattr(
+        module.vision_estimator.local_vision_adapter,
+        "warm_all_candidates",
+        lambda: warm_calls.append("warm") or {"status": "ok", "candidates": []},
+    )
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        raise StopLoop
+
+    monkeypatch.setattr(module.time, "sleep", fake_sleep)
+
+    with pytest.raises(StopLoop):
+        module._run_vision_keep_warm_loop(interval_seconds=17)
+
+    assert warm_calls == ["warm"]
+    assert sleep_calls == [17]
