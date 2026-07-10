@@ -34,6 +34,18 @@ def _food_log(client_id: str, *, user_id: int = 1, date: str = "2026-05-24", **o
     return data_store.add_food_log(user_id, record)
 
 
+def _full_day_fueling_logs(trigger_row: dict, *, client_id: str) -> list[dict]:
+    earlier_row = _food_log(
+        client_id,
+        meal_id=f"meal-{client_id}",
+        logged_at="2026-05-24T08:00:00",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+    )
+    return [earlier_row, trigger_row]
+
+
 def _recommendation():
     return {
         "id": "rec-1",
@@ -59,7 +71,7 @@ def _recommendation():
     }
 
 
-def _nutrition_context(*, calories_pct=100, protein_pct=100, sodium_mg=700):
+def _nutrition_context(*, calories_pct=100, protein_pct=100, sodium_mg=700, entries_count=1):
     return {
         "totals": {
             "calories": int(2200 * calories_pct / 100),
@@ -67,7 +79,7 @@ def _nutrition_context(*, calories_pct=100, protein_pct=100, sodium_mg=700):
             "carbs_g": 200,
             "fat_g": 70,
             "sodium_mg": sodium_mg,
-            "entries_count": 1,
+            "entries_count": entries_count,
         },
         "targets": {
             "calories": 2200,
@@ -144,15 +156,33 @@ def test_low_confidence_no_change_is_silent_contract(monkeypatch, tmp_path):
 
 def test_under_fueled_adaptation_reduces_and_clamps_to_available_time(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
-    start = datetime(2026, 5, 24, 12, 0, 0)
-    row = _food_log("under-fueled", calories=300, protein_g=8, confidence=0.9)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    earlier_row = _food_log(
+        "under-fueled-earlier",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        meal_id="meal-under-fueled-earlier",
+        logged_at="2026-05-24T08:00:00",
+    )
+    row = _food_log(
+        "under-fueled-evening",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        logged_at="2026-05-24T18:00:00",
+    )
     workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
 
     patched, events = workout_adaptation.apply_due_adaptations(
         1,
         _recommendation(),
-        food_log_entries=[row],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        food_log_entries=[earlier_row, row],
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=2,
+        ),
         settings={"available_time_minutes": 35},
         plan_date="2026-05-24",
         clock=start + timedelta(minutes=3, seconds=1),
@@ -165,6 +195,334 @@ def test_under_fueled_adaptation_reduces_and_clamps_to_available_time(monkeypatc
     assert patched["estimated_minutes"] <= 35
     assert event["patch"]["estimated_minutes"] <= 35
     assert any(op["op"].startswith("clamp") for op in event["patch"]["operations"])
+    coverage = event["reason_metadata"]["same_day_fueling_coverage"]
+    assert coverage["sufficient"] is True
+    assert coverage["mode"] == "full_day"
+    assert coverage["entries_count"] == 2
+    assert coverage["meal_windows_count"] == 2
+    assert coverage["first_coverage_hour"] == 8
+    assert coverage["first_coverage_minute"] == 8 * 60
+    assert coverage["coverage_hour"] == 18
+    assert coverage["coverage_span_hours"] == 10
+    assert coverage["coverage_minute"] == 18 * 60
+    assert coverage["coverage_span_minutes"] == 600
+    assert coverage["target_fraction"] == 1.0
+    assert coverage["effective_calorie_pct_threshold"] == 60.0
+    assert coverage["effective_protein_pct_threshold"] == 80.0
+
+
+def test_late_day_single_partial_meal_skips_volume_reduction(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 17, 43, 0)
+    row = _food_log(
+        "partial-day-late-meal",
+        calories=1100,
+        protein_g=75,
+        confidence=0.9,
+        logged_at="2026-05-24T17:43:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[row],
+        nutrition_context=_nutrition_context(
+            calories_pct=50,
+            protein_pct=50,
+            entries_count=1,
+        ),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    event = workout_adaptation.project_event(events[0])
+    assert event["status"] == "no_change"
+    assert event["silent"] is True
+    assert event["change_type"] == "none"
+    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
+    assert event["patch"]["estimated_minutes"] == 60
+    assert patched["estimated_minutes"] == 60
+    assert "incomplete_day_coverage" not in {
+        signal["code"] for signal in event["nutrition_context"]["signals"]
+    }
+    coverage = event["reason_metadata"]["same_day_fueling_coverage"]
+    assert coverage["sufficient"] is False
+    assert coverage["mode"] == "incomplete"
+    assert coverage["entries_count"] == 1
+    assert coverage["meal_windows_count"] == 1
+    assert coverage["first_coverage_hour"] == 17
+    assert coverage["first_coverage_minute"] == (17 * 60) + 43
+    assert coverage["coverage_hour"] == 17
+    assert coverage["coverage_span_hours"] == 0
+    assert coverage["coverage_minute"] == (17 * 60) + 43
+    assert coverage["coverage_span_minutes"] == 0
+
+
+def test_multi_item_meal_does_not_satisfy_same_day_coverage(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    first_row = _food_log(
+        "multi-item-first",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        meal_id="meal-multi-item",
+        logged_at="2026-05-24T18:00:00",
+    )
+    trigger_row = _food_log(
+        "multi-item-trigger",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        meal_id="meal-multi-item",
+        logged_at="2026-05-24T18:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [trigger_row], clock=start)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[first_row, trigger_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    event = workout_adaptation.project_event(events[0])
+    assert event["status"] == "no_change"
+    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
+    assert patched["estimated_minutes"] == 60
+    coverage = event["reason_metadata"]["same_day_fueling_coverage"]
+    assert coverage["entries_count"] == 2
+    assert coverage["meal_windows_count"] == 1
+    assert coverage["first_coverage_hour"] == 18
+    assert coverage["first_coverage_minute"] == 18 * 60
+    assert coverage["coverage_hour"] == 18
+    assert coverage["coverage_span_hours"] == 0
+    assert coverage["coverage_minute"] == 18 * 60
+    assert coverage["coverage_span_minutes"] == 0
+
+
+def test_late_two_hour_observation_does_not_satisfy_full_day_coverage(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    earlier_row = _food_log(
+        "late-first",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        meal_id="meal-late-first",
+        logged_at="2026-05-24T17:00:00",
+    )
+    trigger_row = _food_log(
+        "late-trigger",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        meal_id="meal-late-trigger",
+        logged_at="2026-05-24T18:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [trigger_row], clock=start)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[earlier_row, trigger_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    event = workout_adaptation.project_event(events[0])
+    assert event["status"] == "no_change"
+    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
+    assert patched["estimated_minutes"] == 60
+    coverage = event["reason_metadata"]["same_day_fueling_coverage"]
+    assert coverage["mode"] == "incomplete"
+    assert coverage["first_coverage_minute"] == 17 * 60
+    assert coverage["coverage_minute"] == 18 * 60
+    assert coverage["coverage_span_minutes"] == 60
+    assert coverage["first_coverage_hour"] == 17
+    assert coverage["coverage_hour"] == 18
+    assert coverage["coverage_span_hours"] == 1.0
+
+
+def test_one_minute_prorated_span_does_not_satisfy_coverage(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 9, 0, 0)
+    earlier_row = _food_log(
+        "minute-first",
+        calories=100,
+        protein_g=2,
+        confidence=0.9,
+        meal_id="meal-minute-first",
+        logged_at="2026-05-24T08:59:00",
+    )
+    trigger_row = _food_log(
+        "minute-trigger",
+        calories=100,
+        protein_g=2,
+        confidence=0.9,
+        meal_id="meal-minute-trigger",
+        logged_at="2026-05-24T09:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [trigger_row], clock=start)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[earlier_row, trigger_row],
+        nutrition_context=_nutrition_context(calories_pct=1, protein_pct=1, entries_count=2),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    event = workout_adaptation.project_event(events[0])
+    assert event["status"] == "no_change"
+    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
+    assert patched["estimated_minutes"] == 60
+    coverage = event["reason_metadata"]["same_day_fueling_coverage"]
+    assert coverage["mode"] == "incomplete"
+    assert coverage["first_coverage_minute"] == (8 * 60) + 59
+    assert coverage["coverage_minute"] == 9 * 60
+    assert coverage["coverage_span_minutes"] == 1
+    assert coverage["first_coverage_hour"] == 8
+    assert coverage["coverage_hour"] == 9
+    assert coverage["coverage_span_hours"] == 0.017
+
+
+def test_morning_full_entry_count_requires_prorated_deficit(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 12, 0, 0)
+    earlier_row = _food_log(
+        "morning-first",
+        calories=500,
+        protein_g=25,
+        meal_id="meal-morning-first",
+        logged_at="2026-05-24T08:00:00",
+    )
+    row = _food_log(
+        "morning-second",
+        calories=490,
+        protein_g=50,
+        logged_at="2026-05-24T12:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[earlier_row, row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=50, entries_count=2),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    event = workout_adaptation.project_event(events[0])
+    assert event["status"] == "no_change"
+    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
+    assert patched["estimated_minutes"] == 60
+    assert event["reason_metadata"]["same_day_fueling_coverage"] == {
+        "sufficient": False,
+        "mode": "prorated",
+        "entries_count": 2,
+        "meal_windows_count": 2,
+        "first_coverage_hour": 8,
+        "first_coverage_minute": 8 * 60,
+        "coverage_hour": 12,
+        "coverage_span_hours": 4,
+        "coverage_minute": 12 * 60,
+        "coverage_span_minutes": 240,
+        "target_fraction": 0.4,
+        "effective_calorie_pct_threshold": 24.0,
+        "effective_protein_pct_threshold": 32.0,
+    }
+
+
+def test_midday_prorated_deficit_reduces_volume(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 12, 0, 0)
+    earlier_row = _food_log(
+        "midday-first",
+        calories=200,
+        protein_g=10,
+        meal_id="meal-midday-first",
+        logged_at="2026-05-24T08:00:00",
+    )
+    row = _food_log(
+        "midday-second",
+        calories=240,
+        protein_g=20,
+        logged_at="2026-05-24T12:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[earlier_row, row],
+        nutrition_context=_nutrition_context(calories_pct=20, protein_pct=20, entries_count=2),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    event = workout_adaptation.project_event(events[0])
+    assert event["status"] == "applied"
+    assert event["change_type"] == "reduce_volume"
+    assert patched["estimated_minutes"] < 60
+    coverage = event["reason_metadata"]["same_day_fueling_coverage"]
+    assert coverage["sufficient"] is True
+    assert coverage["mode"] == "prorated"
+    assert coverage["meal_windows_count"] == 2
+    assert coverage["first_coverage_hour"] == 8
+    assert coverage["first_coverage_minute"] == 8 * 60
+    assert coverage["coverage_hour"] == 12
+    assert coverage["coverage_span_hours"] == 4
+    assert coverage["coverage_minute"] == 12 * 60
+    assert coverage["coverage_span_minutes"] == 240
+    assert coverage["target_fraction"] == 0.4
+
+
+def test_prorated_coverage_ignores_zero_percentage_without_a_signal(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 12, 0, 0)
+    earlier_row = _food_log(
+        "zero-protein-first",
+        calories=500,
+        protein_g=25,
+        meal_id="meal-zero-protein-first",
+        logged_at="2026-05-24T08:00:00",
+    )
+    row = _food_log(
+        "zero-protein-second",
+        calories=490,
+        protein_g=0,
+        logged_at="2026-05-24T12:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[earlier_row, row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=0, entries_count=2),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    event = workout_adaptation.project_event(events[0])
+    assert event["status"] == "no_change"
+    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
+    assert patched["estimated_minutes"] == 60
+    assert event["reason_metadata"]["same_day_fueling_coverage"]["sufficient"] is False
 
 
 def test_clamp_emits_cap_exceeded_marker_when_floor_exceeds_available_time():
@@ -442,8 +800,15 @@ def test_alcohol_signal_does_not_match_substrings_inside_food_names(monkeypatch,
 
 def test_active_workout_patch_preserves_completed_sets(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
-    start = datetime(2026, 5, 24, 12, 0, 0)
-    row = _food_log("active-under-fueled", calories=300, protein_g=8, confidence=0.9)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    row = _food_log(
+        "active-under-fueled",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        logged_at="2026-05-24T18:00:00",
+    )
+    day_logs = _full_day_fueling_logs(row, client_id="active-under-fueled-earlier")
     workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
 
     recommendation = _recommendation()
@@ -452,8 +817,12 @@ def test_active_workout_patch_preserves_completed_sets(monkeypatch, tmp_path):
     patched, events = workout_adaptation.apply_due_adaptations(
         1,
         recommendation,
-        food_log_entries=[row],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        food_log_entries=day_logs,
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=2,
+        ),
         settings={"available_time_minutes": 60},
         plan_date="2026-05-24",
         active_workout_open=True,
@@ -503,15 +872,26 @@ def test_guardrail_metadata_has_required_citations_and_neutral_language(monkeypa
 
 def test_neutral_language_guard_ignores_user_controlled_ids(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
-    start = datetime(2026, 5, 24, 12, 0, 0)
-    row = _food_log("bad-photo-1", calories=300, protein_g=8, confidence=0.9)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    row = _food_log(
+        "bad-photo-1",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        logged_at="2026-05-24T18:00:00",
+    )
+    day_logs = _full_day_fueling_logs(row, client_id="bad-photo-1-earlier")
     workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
 
     _patched, events = workout_adaptation.apply_due_adaptations(
         1,
         _recommendation(),
-        food_log_entries=[row],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        food_log_entries=day_logs,
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=2,
+        ),
         settings={"available_time_minutes": 60},
         plan_date="2026-05-24",
         clock=start + timedelta(minutes=3, seconds=1),
@@ -522,8 +902,15 @@ def test_neutral_language_guard_ignores_user_controlled_ids(monkeypatch, tmp_pat
 
 def test_clamp_preserves_generated_non_default_set_timing(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
-    start = datetime(2026, 5, 24, 12, 0, 0)
-    row = _food_log("strength-under-fueled", calories=300, protein_g=8, confidence=0.9)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    row = _food_log(
+        "strength-under-fueled",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        logged_at="2026-05-24T18:00:00",
+    )
+    day_logs = _full_day_fueling_logs(row, client_id="strength-under-fueled-earlier")
     recommendation = _recommendation()
     for exercise in recommendation["exercises"]:
         exercise.pop("time_per_set_minutes", None)
@@ -534,8 +921,12 @@ def test_clamp_preserves_generated_non_default_set_timing(monkeypatch, tmp_path)
     patched, events = workout_adaptation.apply_due_adaptations(
         1,
         recommendation,
-        food_log_entries=[row],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        food_log_entries=day_logs,
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=2,
+        ),
         settings={"available_time_minutes": 35},
         plan_date="2026-05-24",
         clock=start + timedelta(minutes=3, seconds=1),
@@ -607,19 +998,24 @@ def test_processed_food_log_client_id_cannot_schedule_duplicate_window(monkeypat
 
 def test_multiple_due_windows_do_not_stack_volume_reductions_in_one_poll(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
-    first = _food_log("due-one", calories=250, protein_g=5, confidence=0.9)
-    second = _food_log("due-two", meal_id="meal-2", calories=250, protein_g=5, confidence=0.9)
-    workout_adaptation.enqueue_accepted_food_logs(1, [first], clock=datetime(2026, 5, 24, 12, 0, 0))
-    workout_adaptation.enqueue_accepted_food_logs(1, [second], clock=datetime(2026, 5, 24, 13, 0, 0))
+    earlier = _food_log("due-coverage", meal_id="meal-due-coverage", logged_at="2026-05-24T08:00:00")
+    first = _food_log("due-one", calories=250, protein_g=5, confidence=0.9, logged_at="2026-05-24T18:00:00")
+    second = _food_log("due-two", meal_id="meal-2", calories=250, protein_g=5, confidence=0.9, logged_at="2026-05-24T19:00:00")
+    workout_adaptation.enqueue_accepted_food_logs(1, [first], clock=datetime(2026, 5, 24, 18, 0, 0))
+    workout_adaptation.enqueue_accepted_food_logs(1, [second], clock=datetime(2026, 5, 24, 19, 0, 0))
 
     patched, events = workout_adaptation.apply_due_adaptations(
         1,
         _recommendation(),
-        food_log_entries=[first, second],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        food_log_entries=[earlier, first, second],
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=3,
+        ),
         settings={"available_time_minutes": 60},
         plan_date="2026-05-24",
-        clock=datetime(2026, 5, 24, 13, 3, 1),
+        clock=datetime(2026, 5, 24, 19, 3, 1),
     )
 
     assert len(events) == 2
@@ -629,19 +1025,24 @@ def test_multiple_due_windows_do_not_stack_volume_reductions_in_one_poll(monkeyp
 
 def test_later_no_change_window_does_not_erase_prior_applied_patch(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
-    applied = _food_log("due-applied", calories=250, protein_g=5, confidence=0.9)
-    no_change = _food_log("due-no-change", meal_id="meal-no-change", calories=1100, protein_g=40, confidence=0.4)
-    workout_adaptation.enqueue_accepted_food_logs(1, [applied], clock=datetime(2026, 5, 24, 12, 0, 0))
-    workout_adaptation.enqueue_accepted_food_logs(1, [no_change], clock=datetime(2026, 5, 24, 13, 0, 0))
+    earlier = _food_log("due-later-coverage", meal_id="meal-due-later-coverage", logged_at="2026-05-24T08:00:00")
+    applied = _food_log("due-applied", calories=250, protein_g=5, confidence=0.9, logged_at="2026-05-24T18:00:00")
+    no_change = _food_log("due-no-change", meal_id="meal-no-change", calories=1100, protein_g=40, confidence=0.4, logged_at="2026-05-24T19:00:00")
+    workout_adaptation.enqueue_accepted_food_logs(1, [applied], clock=datetime(2026, 5, 24, 18, 0, 0))
+    workout_adaptation.enqueue_accepted_food_logs(1, [no_change], clock=datetime(2026, 5, 24, 19, 0, 0))
 
     patched, events = workout_adaptation.apply_due_adaptations(
         1,
         _recommendation(),
-        food_log_entries=[applied, no_change],
-        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        food_log_entries=[earlier, applied, no_change],
+        nutrition_context=_nutrition_context(
+            calories_pct=45,
+            protein_pct=25,
+            entries_count=3,
+        ),
         settings={"available_time_minutes": 60},
         plan_date="2026-05-24",
-        clock=datetime(2026, 5, 24, 13, 3, 1),
+        clock=datetime(2026, 5, 24, 19, 3, 1),
     )
 
     assert [workout_adaptation.project_event(event)["status"] for event in events] == ["applied", "no_change"]
