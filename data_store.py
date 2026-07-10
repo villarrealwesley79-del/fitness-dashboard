@@ -379,6 +379,13 @@ def init_data_db():
                 acknowledged_at     TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS current_workout_plans (
+                user_id       INTEGER PRIMARY KEY,
+                fingerprint   TEXT    NOT NULL,
+                plan_json     TEXT    NOT NULL,
+                updated_at    TEXT    NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS branded_lookup_cache (
                 user_id         INTEGER NOT NULL DEFAULT 1,
                 normalized_text TEXT NOT NULL,
@@ -595,6 +602,70 @@ def init_data_db():
             "ON workout_adaptation_events(user_id, acknowledged_at, created_at)"
         )
         conn.commit()
+
+
+def save_current_workout_plan(user_id: int, fingerprint: str, plan: dict) -> dict:
+    """Persist the current generated workout plan for one user.
+
+    KNOWN LIMITATION (FIT-256 finding 3): this is a blind
+    ``INSERT ... ON CONFLICT(user_id) DO UPDATE`` -- last write wins, with no
+    version/optimistic-lock check. `app._persist_current_workout_plan` guards
+    this with a process-local `threading.RLock`, which only serializes writes
+    within a single worker process; it gives no cross-process protection.
+    The app currently mitigates this by running gunicorn with a single worker
+    (see Dockerfile), which makes the process-local lock effectively global.
+    If this ever needs to scale to >1 worker/instance again, this function
+    needs a real compare-and-set (e.g. a `version` column, update only when
+    `version = expected_version`, caller reconciles on conflict) before that
+    change is safe.
+    """
+    if not isinstance(plan, dict):
+        raise ValueError("plan must be an object")
+    if not fingerprint:
+        raise ValueError("fingerprint is required")
+    now = datetime.now().isoformat(timespec="seconds")
+    plan_json = json.dumps(plan, sort_keys=True, default=str)
+    with _get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO current_workout_plans (user_id, fingerprint, plan_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                fingerprint=excluded.fingerprint,
+                plan_json=excluded.plan_json,
+                updated_at=excluded.updated_at
+            """,
+            (user_id, fingerprint, plan_json, now),
+        )
+        conn.commit()
+    return {"user_id": user_id, "fingerprint": fingerprint, "plan": json.loads(plan_json), "updated_at": now}
+
+
+def get_current_workout_plan(user_id: int, fingerprint: str | None = None) -> Optional[dict]:
+    """Return the persisted current workout plan for one user."""
+    sql = "SELECT * FROM current_workout_plans WHERE user_id = ?"
+    params: list = [user_id]
+    if fingerprint is not None:
+        sql += " AND fingerprint = ?"
+        params.append(fingerprint)
+    with _get_db() as conn:
+        row = conn.execute(sql, params).fetchone()
+    if not row:
+        return None
+    return {
+        "user_id": row["user_id"],
+        "fingerprint": row["fingerprint"],
+        "plan": _json_loads_or_none(row["plan_json"]) or {},
+        "updated_at": row["updated_at"],
+    }
+
+
+def delete_current_workout_plan(user_id: int) -> bool:
+    """Delete the persisted current workout plan for one user."""
+    with _get_db() as conn:
+        cursor = conn.execute("DELETE FROM current_workout_plans WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cursor.rowcount > 0
 
 
 # ── Body Data ─────────────────────────────────────────────────────────────────
@@ -2044,6 +2115,7 @@ def delete_user_data(user_id: int) -> None:
         "personal_vocab",
         "meal_acceptance_events",
         "meal_review_snapshots",
+        "current_workout_plans",
         "recovery_data",
         "user_settings",
     ]
@@ -2066,6 +2138,7 @@ def get_user_data_summary(user_id: int) -> dict:
         "personal_vocab",
         "meal_acceptance_events",
         "meal_review_snapshots",
+        "current_workout_plans",
         "recovery_data",
         "push_subscriptions",
     ]

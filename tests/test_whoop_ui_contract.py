@@ -81,6 +81,14 @@ def test_whoop_oauth_callback_query_is_not_logged_by_gunicorn_access_logs():
     assert "%(r)s" not in procfile
 
 
+def test_docker_gunicorn_uses_single_worker_with_threads():
+    dockerfile = (ROOT / "Dockerfile").read_text()
+
+    assert "--workers 1" in dockerfile
+    assert "--workers 2" not in dockerfile
+    assert "--threads 1" in dockerfile
+
+
 def test_whoop_frontend_calls_expected_status_sync_and_disconnect_endpoints():
     app_js = APP_JS.read_text()
 
@@ -207,7 +215,11 @@ def test_whoop_freshness_status_wins_over_connection_status_merge():
 def test_dashboard_recomputes_nutrition_after_whoop_adjustment():
     app_py = (ROOT / "app.py").read_text()
 
-    whoop_adjust = app_py.index("whoop_adjusted = apply_wearable_modifiers(")
+    # api_dashboard applies the wearable modifier as a display-time transform via
+    # the fail-open helper (FIT-256 finding 2); the ordering contract is unchanged:
+    # adjust -> recompute nutrition for the adjusted plan -> build the public payload.
+    route_start = app_py.index("def api_dashboard():")
+    whoop_adjust = app_py.index("whoop_adjusted = _wearable_adjusted_for_display(", route_start)
     recompute = app_py.index("nutrition_context = _nutrition_context_for_date(", whoop_adjust)
     public_payload = app_py.index("nutrition_today_payload = _nutrition_today_public_payload", recompute)
 
