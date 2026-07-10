@@ -30,7 +30,7 @@ At tick start:
    initial shape is:
 
    ```json
-   {"idleTicks":0,"goals":[],"parked":{},"repairAttempts":{},"reviewBlockers":{},"claimIntent":null,"mergeIntent":null,"lastBuildTick":null,"lastReviewTick":null}
+   {"idleTicks":0,"goals":[],"parked":{},"repairAttempts":{},"buildAttempts":{},"reviewBlockers":{},"claimIntent":null,"mergeIntent":null,"lastBuildTick":null,"lastReviewTick":null}
    ```
 
 4. Enumerate available capabilities without inventing any. GitHub writes go through
@@ -56,6 +56,11 @@ allowlist permits `fitness-dashboard-issue-closeout` to invoke exactly
 origin/main` as its closeout implementation. It does not permit selecting any other
 review skill or expanding the tick's scope.
 
+The kill-ai-slop scan is not an additional selected skill either. Section 6 permits
+invoking exactly `/Users/admin/.codex/skills/kill-ai-slop/scripts/scan.mjs` directly,
+never the interactive `kill-ai-slop` skill workflow. That workflow's `SKILL.md` asks
+the user before applying fixes, and that must never stall an unattended tick.
+
 Denylist for unattended ticks:
 
 - every `gstack*` skill or command
@@ -75,7 +80,8 @@ and continue. If used, write `LOOPY: used`.
 ## 1. Preflight
 
 - Run `gh auth status`, require `gh api user --jq .login` to equal
-  `villarrealwesley79-del`, and run `git fetch origin main`. Failure is
+  `villarrealwesley79-del`, and run `git fetch origin main` under Section 6's
+  120-second process-group-enforced git fetch timeout. Failure or a fetch timeout is
   `PRECONDITION_FAILED`; do not claim work or perform any GitHub/Linear mutation.
 - Confirm the canonical checkout is `/Users/admin/fitness-dashboard` and never edit
   it in place.
@@ -87,7 +93,8 @@ and continue. If used, write `LOOPY: used`.
 
 - Never set `FITNESS_SKIP_PRE_PUSH_TESTS=1`.
 - Never create Linear issues. The only escalation destination is the existing issue
-  `FIT loop escalations`; escalations are comments on it.
+  FIT-369 (`FIT loop escalations`); every escalation comment in this file targets
+  that exact issue ID.
 - If a Linear write becomes approval-blocked or otherwise fails mid-tick, preserve
   the branch/PR state through `gh`, add `owner-attention` to the relevant PR when one
   exists, report `OWNER_ATTENTION`, and stop. Never wait unbounded.
@@ -113,11 +120,12 @@ a mislabeled fork, an untrusted author's branch, an unauthenticated finding, or 
 finding for a different SHA. Proven behind-main/conflict repair does not need a
 comment, but it still needs repository, author, label, branch, and SHA provenance.
 
-Exclude a PR when `owner-attention` is present and
-`state.json.repairAttempts` records three failed rounds for its still-current
-finding. Keep it excluded until a new head SHA, a new review finding, or an explicit
-owner comment clears that exact blocker. This is the required "move on" state; never
-let a thresholded PR starve later repairs or backlog work.
+Exclude a PR when `owner-attention` is present and `state.json.repairAttempts`
+records three failed rounds total for the PR, summed across findings for any reason
+including Section 6 timeouts, since the last owner-clear or fully-green review. Keep
+it excluded until the next owner-clear, the next fully-green review, or an explicit
+owner comment resets the count. This is the required "move on" state; never let a
+thresholded PR starve later repairs or backlog work.
 
 This lane is exempt from backpressure. Pin the PR number, head branch, and current
 head SHA. The recorded repair path is
@@ -128,7 +136,9 @@ worktree over retained work. If the path does not exist, create a fresh repair
 worktree there. Record the path and repair round in `state.json`, then follow this
 order exactly:
 
-1. Fetch the PR branch and `origin/main`.
+1. Fetch the PR branch and `origin/main`, each under Section 6's 120-second
+   process-group-enforced git fetch timeout. A fetch timeout here counts as a failed
+   repair round in `state.json.repairAttempts`.
 2. Materialize the server guard and complete `.githooks/**` bundle from the pinned
    trusted `origin/main` tree into a throwaway directory outside the PR worktree.
    Reject symlinks and type changes. Do not run the materialized installer: the
@@ -157,10 +167,12 @@ order exactly:
    `loop-changes-requested` only when all must-fix findings are resolved, and keep the
    PR Draft for the review loop.
 
-Track failed rounds by PR plus normalized finding in `state.json.repairAttempts`.
-After three failed repair rounds on the same finding, apply `owner-attention`, comment
-the exact attempts and remaining blocker on `FIT loop escalations`, exclude that PR
-from the backpressure count, report `OWNER_ATTENTION`, and move on in later ticks.
+Track failed rounds in `state.json.repairAttempts`, keyed by PR plus normalized
+finding, as the per-finding evidence record. After three failed repair rounds total
+for the PR, summed across findings for any reason (Section 6 timeouts included) since
+the last owner-clear or fully-green review, apply `owner-attention`, comment the exact
+attempts and remaining blocker on FIT-369, exclude that PR from repair-lane selection
+and from the backpressure count, report `OWNER_ATTENTION`, and move on in later ticks.
 One repair round is the tick's complete unit even if it does not resolve the PR.
 
 At tick end, prune only worktrees whose branch is pushed or merged. Never prune a
@@ -186,6 +198,9 @@ the same suggested branch, and have no later owner takeover/clear comment; the
 current branch and worktree must also match the claim. If any field changed, park
 the intent and escalate without editing, unassigning, or changing the issue status.
 
+- Before resuming, check `state.json.buildAttempts` for the issue; if it already
+  records three strikes, do not resume here and follow the third-strike handling
+  below instead.
 - If its worktree or branch has unpushed work, resume that exact work as this tick's
   unit. Never prune or replace it.
 - If its branch is pushed, resume from that exact branch in a fresh guarded worktree
@@ -195,6 +210,16 @@ the intent and escalate without editing, unassigning, or changing the issue stat
   claim in `state.json`, report `OWNER_ATTENTION`, and stop.
 
 Do not let a crash, timeout, or pre-PR failure orphan an `In Progress` issue.
+
+Track failed or timed-out implementation and recovery rounds per issue in
+`state.json.buildAttempts`, keyed by issue id, written only under `state.lock`.
+Increment it on every failed or timed-out round for that issue, for any reason,
+including a Section 6 timeout. After three strikes, comment the exact attempts and
+blocker on FIT-369, unassign the issue and return it to Backlog (or apply
+`owner-attention` to its PR if one already exists), park it in `state.json.parked` so
+Section 4's eligibility filter excludes it, preserve the worktree, and report
+`OWNER_ATTENTION`. Clear the counter only on a new head SHA, changed issue evidence,
+or an explicit owner comment.
 
 Only after the repair and claim-recovery lanes are empty, count open Draft PRs
 carrying `loop-build`, excluding PRs with `owner-attention`. If the count is three
@@ -209,6 +234,7 @@ or more, perform a clean no-op tick:
 
 Run `linear-issue-preflight`. From the Fitness app team, consider unassigned FIT
 issues in `Backlog`, ordered by Linear priority (highest first), then oldest.
+FIT-369 is never a selection candidate and is never claimed.
 
 Before normal eligibility filtering, triage the highest-priority issue proposing
 native HealthKit work. Run the Section 5 refusal/escalation as this tick's bounded
@@ -231,7 +257,11 @@ unit of work: identify the FIT issue linked to the fixing PR/commit, post a Line
 comment with exact commit/file/test evidence, set the candidate duplicate-of that FIT
 issue, and move it to Linear's Duplicate state. Do not open a branch or PR. If no
 valid duplicate target can be proved, comment on `FIT loop escalations` and report
-`OWNER_ATTENTION`; never invent a target and never create an issue.
+`OWNER_ATTENTION`; never invent a target and never create an issue. In the same tick,
+park the candidate in `state.json` with its evidence fingerprint (issue id plus the
+`origin/main` commit evidence), mirroring the native-refusal and claim-failure parking
+paths, so Section 4's eligibility filter excludes it until the evidence or an owner
+comment changes.
 
 OWNER DECISION RECORDED BY FIT-368: the owner's setup instruction explicitly
 authorizes this narrow duplicate-of relation plus Duplicate-state transition when
@@ -274,7 +304,8 @@ Create Linear's exact suggested branch in that worktree, then run
 `scripts/install-worktree-guard.sh` inside it before editing. Never edit
 `/Users/admin/fitness-dashboard` in place. One FIT issue maps to one branch and one
 PR. Implement only the acceptance criteria; no opportunistic refactors, dependency
-changes, config rewrites, or cleanup.
+changes, config rewrites, or cleanup. Kill-ai-slop fixes scoped to files this tick
+authored are required, not opportunistic, and are exempt from this rule.
 
 Use codebase-memory-mcp for code discovery. Re-index the exact issue worktree when its
 graph is absent or stale. Add or update tests for changed behavior.
@@ -301,6 +332,23 @@ report `OWNER_ATTENTION`. Do not implement native HealthKit work.
 
 ## 6. Tests and runtime safety
 
+Before any other step here, run the kill-ai-slop scan. This is the opening block of
+the section, so it runs for both new-issue ticks and repair rounds; Section 2 step
+7's "Run the full Section 6 verification explicitly" already covers it. Skip it
+entirely when this tick authored no files, for example an empty re-trigger or a
+docs-only change. Otherwise, when this tick added or modified UI or user-facing copy
+files, run `node /Users/admin/.codex/skills/kill-ai-slop/scripts/scan.mjs
+<absolute-issue-worktree-root> --json` under the process-group-enforced 600-second
+timeout in the list below. Auto-apply fixes only to files this tick authored, as new
+commits, before pytest runs and before the Section 7 artifact sweep. Record the
+before/after hit counts in the Section 8 PR evidence list and in the CHECKS line's
+`slop-scan` field.
+
+OWNER DECISION RECORDED BY FIT-368: auto-applying kill-ai-slop fixes without asking,
+scoped strictly to files this tick authored, is the owner's explicit decision for
+unattended ticks. It does not authorize running the interactive skill workflow or
+touching any file this tick did not author.
+
 Fresh worktrees have no venv. Always use this interpreter from the worktree root:
 
 Before either explicit pytest or the pre-push rerun, a trusted wrapper must create a
@@ -324,12 +372,15 @@ Run the full suite explicitly; the pre-push hook is not the safety net. Paste th
 real result in PR and Linear evidence. Never set
 `FITNESS_SKIP_PRE_PUSH_TESTS=1`.
 
-The sanity import, full pytest, installed review/audit flow, and `git push` (including
-its pre-push pytest rerun) each get a process-group-enforced hard timeout of about 10
-minutes (600 seconds). Use an execution-tool timeout or a BSD/macOS-compatible
-wrapper that terminates the process group. Never wait unbounded. On timeout, preserve
-the worktree and unpushed work, record the exact command and recovery path in
-`state.json` and `FIT loop escalations`, report a bounded failure, and release the
+The sanity import, full pytest, installed review/audit flow, the kill-ai-slop
+`scan.mjs` scan, and `git push` (including its pre-push pytest rerun) each get a
+process-group-enforced hard timeout of about 10 minutes (600 seconds); `git fetch`
+gets the same process-group enforcement at a 120-second timeout. Use an
+execution-tool timeout or a BSD/macOS-compatible wrapper that terminates the process
+group. Never wait unbounded. On timeout, preserve the worktree and unpushed work,
+record the exact command and recovery path in `state.json` and `FIT loop
+escalations`, report a bounded failure, increment the current issue's or PR's
+`state.json.buildAttempts` or `state.json.repairAttempts` entry, and release the
 outer lock.
 
 The trusted pre-push hook resolves `python` from `PATH`. On every push, prefix PATH
@@ -409,7 +460,8 @@ Move the Linear issue to `In Review` when the PR opens. Follow
 `codex-proof-handoff`: never compress the receipt, especially the NOT-tested
 section, because Claude's end-of-backlog audit targets those seams. Post a standalone
 GitHub PR evidence comment with branch, commit, tests, review result, accepted/rejected
-findings, merge state, and exact omissions. Add the same closeout fields to Linear.
+findings, slop-scan before/after hit counts, merge state, and exact omissions. Add the
+same closeout fields to Linear.
 
 Never mark Ready and never merge. After every push, run:
 
@@ -440,7 +492,10 @@ Write `state.json` through a temp file plus atomic rename, preserve unknown keys
 then release `state.lock`.
 
 - A shipped PR, repaired PR, or duplicate closeout resets `idleTicks` to zero.
-- Only a proved empty-Backlog tick increments `idleTicks` by one.
+- Only a proved empty-Backlog tick increments `idleTicks` by one. FIT-369 is excluded
+  from that test; the Backlog counts as empty when only FIT-369 remains.
+- `idleTicks` may only increment when, additionally, no open `loop-build` PR remains
+  unreviewed or unmerged.
 - Backpressure, overlap, precondition failure, escalation, and long-running exits
   preserve `idleTicks`.
 - Append the tick goal/status to `goals`, capped at 50.
@@ -461,5 +516,5 @@ Final output is exactly one line, then the saved automation releases the outer l
 as its unconditional last action:
 
 ```text
-GOAL: <text> — achieved|blocked|no_work / STATUS: SHIPPED|FIXED_REVIEW|DUPLICATE|NO_WORK|PRECONDITION_FAILED|LONG_RUNNING|OWNER_ATTENTION|ESCALATED|PAUSED|IDLE_STOPPED|FAILED / ISSUE: FIT-XXX|none / PR: <url> label=loop-build|none / COMMITS: <shas>|none / CHECKS: sanity-import=.. pytest=.. diff-check=.. review=.. artifact-safety=.. / NOT_DONE: <plainly, including what was not tested> / NOTES: <Loopy; prompt conflict; blocker; or none>
+GOAL: <text> — achieved|blocked|no_work / STATUS: SHIPPED|FIXED_REVIEW|DUPLICATE|NO_WORK|PRECONDITION_FAILED|LONG_RUNNING|OWNER_ATTENTION|ESCALATED|PAUSED|IDLE_STOPPED|FAILED / ISSUE: FIT-XXX|none / PR: <url> label=loop-build|none / COMMITS: <shas>|none / CHECKS: sanity-import=.. pytest=.. diff-check=.. review=.. slop-scan=.. artifact-safety=.. / NOT_DONE: <plainly, including what was not tested> / NOTES: <Loopy; prompt conflict; blocker; or none>
 ```
