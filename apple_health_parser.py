@@ -15,8 +15,11 @@ import os
 import re
 import sqlite3
 import glob
-from datetime import datetime, timezone
+from copy import deepcopy
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
+from functools import lru_cache
 from typing import Optional
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from flask import jsonify, request
@@ -34,7 +37,7 @@ ACTIVITY_MAP = {
     14: "Stair Climbing", 16: "Dance", 20: "Core Training",
     22: "Functional Strength Training", 23: "Cross Training",
     25: "Other", 28: "High Intensity Interval Training",
-    30: "Rowing", 37: "Basketball", 39: "Jump Rope",
+    30: "Rowing", 32: "Curling", 36: "Pilates", 37: "Basketball", 39: "Jump Rope",
     40: "Kickboxing", 52: "Table Tennis", 54: "Tai Chi",
     55: "Volleyball", 58: "Wrestling", 64: "Stairs",
 }
@@ -42,7 +45,7 @@ ACTIVITY_MAP = {
 
 def _ms_to_iso(ms: float) -> str:
     try:
-        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
     except (ValueError, TypeError, OSError):
         return ""
 
@@ -75,6 +78,11 @@ def _local_date_from_iso(value) -> str:
         return text[:10]
 
 
+def _local_date_cutoff(days: int) -> str:
+    """Return a date cutoff in the same runtime-local timezone as file buckets."""
+    return (datetime.now(timezone.utc).astimezone() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
 def _apple_health_sync_db_path() -> str:
     return (
         os.environ.get(APPLE_HEALTH_SYNC_DB_ENV)
@@ -82,15 +90,27 @@ def _apple_health_sync_db_path() -> str:
     )
 
 
-def _load_json(pattern: str) -> dict:
-    files = sorted(glob.glob(os.path.join(HEALTH_DIR, pattern)), reverse=True)
-    if not files:
-        return {}
+@lru_cache(maxsize=8)
+def _load_json_cached(file_path: str, mtime_ns: int):
+    """Load one export file; callers receive a defensive copy."""
     try:
-        with open(files[0], "r") as f:
+        with open(file_path, "r") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _load_json(pattern: str, required_key: Optional[str] = None) -> dict:
+    files = sorted(glob.glob(os.path.join(HEALTH_DIR, pattern)), reverse=True)
+    for file_path in files:
+        try:
+            mtime_ns = os.stat(file_path).st_mtime_ns
+            data = _load_json_cached(file_path, mtime_ns)
+        except OSError:
+            continue
+        if required_key is None or (isinstance(data, dict) and required_key in data):
+            return deepcopy(data)
+    return {}
 
 
 def _clean_public_url(value: str) -> str:
@@ -174,8 +194,8 @@ def parse_sleep() -> list[dict]:
     return [{"date": d, "hours": round(h, 2)} for d, h in sorted(daily_sleep.items())]
 
 
-def parse_timeseries(metric_key: str, file_pattern: str) -> list[dict]:
-    data = _load_json(file_pattern)
+def parse_timeseries(metric_key: str, file_pattern: str, aggregation: str = "mean") -> list[dict]:
+    data = _load_json(file_pattern, required_key=metric_key)
     records = data.get(metric_key, [])
     daily: dict[str, list[float]] = defaultdict(list)
     for r in records:
@@ -184,26 +204,26 @@ def parse_timeseries(metric_key: str, file_pattern: str) -> list[dict]:
         if date_str and val is not None:
             daily[date_str].append(float(val))
     return [
-        {"date": d, "avg": round(sum(v) / len(v), 2),
+        {"date": d, "avg": round(sum(v) if aggregation == "sum" else sum(v) / len(v), 2),
          "min": round(min(v), 2), "max": round(max(v), 2), "samples": len(v)}
         for d, v in sorted(daily.items())
     ]
 
 
 def parse_steps() -> list[dict]:
-    return parse_timeseries("stepCount", "healthkit_timeseries_multi_20260111T221509Z.json")
+    return parse_timeseries("stepCount", "healthkit_timeseries_multi_*.json", "sum")
 
 
 def parse_active_energy() -> list[dict]:
-    return parse_timeseries("activeEnergyBurned", "healthkit_timeseries_multi_20260111T221509Z.json")
+    return parse_timeseries("activeEnergyBurned", "healthkit_timeseries_multi_*.json", "sum")
 
 
 def parse_rhr() -> list[dict]:
-    return parse_timeseries("restingHeartRate", "healthkit_timeseries_multi_20260111T221514Z.json")
+    return parse_timeseries("restingHeartRate", "healthkit_timeseries_multi_*.json")
 
 
 def parse_hrv() -> list[dict]:
-    return parse_timeseries("heartRateVariabilitySDNN", "healthkit_timeseries_multi_20260111T221514Z.json")
+    return parse_timeseries("heartRateVariabilitySDNN", "healthkit_timeseries_multi_*.json")
 
 
 def _workout_activity_name(workout: dict) -> str:
@@ -231,9 +251,8 @@ def get_summary() -> dict:
     workouts = [w for w in parse_workouts() if not _ignore_workout(w)]
     sleep = parse_sleep()
     steps = parse_steps()
-    now = datetime.now(timezone.utc)
-    cutoff7 = (now - __import__("datetime").timedelta(days=7)).strftime("%Y-%m-%d")
-    cutoff30 = (now - __import__("datetime").timedelta(days=30)).strftime("%Y-%m-%d")
+    cutoff7 = _local_date_cutoff(7)
+    cutoff30 = _local_date_cutoff(30)
     recent_sleep_7d = [s for s in sleep if s["date"] >= cutoff7]
     recent_steps_7d = [s for s in steps if s["date"] >= cutoff7]
     recent_workouts_7d = [w for w in workouts if w["date"] >= cutoff7]
@@ -278,19 +297,18 @@ def _get_sync_records(record_type: str, days: int = 0) -> list[dict]:
     if not os.path.exists(db_path):
         return []
     try:
-        conn = sqlite3.connect(db_path)
-        if days > 0:
-            cutoff = (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d")
-            rows = conn.execute(
-                "SELECT data_json FROM ah_sync_log WHERE record_type = ? AND record_date >= ? ORDER BY record_date",
-                (record_type, cutoff)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT data_json FROM ah_sync_log WHERE record_type = ? ORDER BY record_date",
-                (record_type,)
-            ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            if days > 0:
+                cutoff = _local_date_cutoff(days)
+                rows = conn.execute(
+                    "SELECT data_json FROM ah_sync_log WHERE record_type = ? AND record_date >= ? ORDER BY record_date",
+                    (record_type, cutoff)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT data_json FROM ah_sync_log WHERE record_type = ? ORDER BY record_date",
+                    (record_type,)
+                ).fetchall()
         records = []
         for (dj,) in rows:
             try:
@@ -318,23 +336,82 @@ def _normalize_sync_workout(workout: dict) -> dict:
     normalized["activity"] = activity
     normalized.setdefault("activity_type", activity)
     normalized.setdefault("date", normalized.get("startDate", "")[:10])
-    normalized.setdefault("duration_min", normalized.get("duration_minutes", 0))
+    duration_min = _workout_duration_minutes(normalized)
+    if duration_min is not None:
+        normalized["duration_min"] = duration_min
     normalized.setdefault("energy_kcal", normalized.get("total_energy_kcal", 0))
     normalized.setdefault("distance_m", normalized.get("distance_m", 0))
     normalized["avg_heart_rate"] = avg_hr
     return normalized
 
 
+WORKOUT_DEDUPE_START_TOLERANCE_SECONDS = 5 * 60
+WORKOUT_DEDUPE_DURATION_TOLERANCE_MINUTES = 5
+
+
+def _workout_start_datetime(workout: dict):
+    start = (
+        workout.get("start")
+        or workout.get("startDate")
+        or workout.get("start_time")
+    )
+    if not start:
+        return None
+    try:
+        start_text = str(start).strip()
+        normalized = start_text[:-1] + "+00:00" if start_text.endswith("Z") else start_text
+        parsed = datetime.fromisoformat(normalized)
+        return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _workout_duration_minutes(workout: dict):
+    for field in ("duration_min", "duration_minutes"):
+        try:
+            duration = float(workout.get(field))
+        except (TypeError, ValueError):
+            continue
+        if duration > 0:
+            return duration
+    try:
+        duration_seconds = float(workout.get("duration"))
+    except (TypeError, ValueError):
+        return None
+    return duration_seconds / 60 if duration_seconds > 0 else None
+
+
+def _same_workout(left: dict, right: dict) -> bool:
+    left_activity = _workout_activity_name(left).strip().lower()
+    right_activity = _workout_activity_name(right).strip().lower()
+    left_start = _workout_start_datetime(left)
+    right_start = _workout_start_datetime(right)
+    left_duration = _workout_duration_minutes(left)
+    right_duration = _workout_duration_minutes(right)
+    if left_start is not None and right_start is not None:
+        return (
+            left_activity == right_activity
+            and left_duration is not None
+            and right_duration is not None
+            and abs((left_start - right_start).total_seconds()) <= WORKOUT_DEDUPE_START_TOLERANCE_SECONDS
+            and abs(left_duration - right_duration) <= WORKOUT_DEDUPE_DURATION_TOLERANCE_MINUTES
+        )
+    return (
+        left.get("date", "") == right.get("date", "")
+        and left_activity == right_activity
+        and left_duration is not None
+        and right_duration is not None
+        and abs(left_duration - right_duration) <= WORKOUT_DEDUPE_DURATION_TOLERANCE_MINUTES
+    )
+
+
 def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
-    """Merge file-based and sync-based workouts, deduplicating by date+activity."""
-    seen = set()
+    """Merge file-based and sync-based workouts by start instant or fallback tuple."""
     merged = []
     for w in file_workouts + sync_workouts:
         if _ignore_workout(w):
             continue
-        key = (w.get("date", ""), w.get("activity", ""))
-        if key not in seen:
-            seen.add(key)
+        if not any(_same_workout(w, existing) for existing in merged):
             merged.append(w)
     return sorted(merged, key=lambda x: x.get("date", ""), reverse=True)
 
@@ -393,16 +470,24 @@ def register_apple_health_routes(flask_app):
         # Enrich with sync DB data
         sync_workouts = [
             w
-            for w in (_normalize_sync_workout(sw) for sw in _get_sync_records("workouts", 30))
+            for w in (_normalize_sync_workout(sw) for sw in _get_sync_records("workouts"))
             if not _ignore_workout(w)
         ]
+        workouts = _merge_workouts(
+            [w for w in parse_workouts() if not _ignore_workout(w)],
+            sync_workouts,
+        )
+        summary["workouts_total"] = len(workouts)
+        summary["workouts_7d"] = len([
+            workout for workout in workouts if workout.get("date", "") >= _local_date_cutoff(7)
+        ])
+        summary["workouts_30d"] = len([
+            workout for workout in workouts if workout.get("date", "") >= _local_date_cutoff(30)
+        ])
         sync_sleep = _get_sync_records("sleep", 30)
         sync_steps = _get_sync_records("steps", 30)
         sync_hr = _get_sync_records("heart_rate", 30)
         if sync_workouts or sync_sleep or sync_steps:
-            summary["workouts_total"] = summary.get("workouts_total", 0) + len(sync_workouts)
-            summary["workouts_7d"] = summary.get("workouts_7d", 0) + len([w for w in sync_workouts if w.get("date", "") >= (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=7)).strftime("%Y-%m-%d")])
-            summary["workouts_30d"] = summary.get("workouts_30d", 0) + len(sync_workouts)
             if sync_sleep:
                 # Use the shared helper so /summary and /sleep stay in sync.
                 vals = [_sleep_hours(s) for s in sync_sleep]
@@ -425,11 +510,11 @@ def register_apple_health_routes(flask_app):
             return jsonify({"workouts": [], "total": 0, "data_source": "unavailable"})
         days = request.args.get("days", 30, type=int)
         file_workouts = parse_workouts()
-        sync_workouts = _get_sync_records("workouts", days)
+        sync_workouts = _get_sync_records("workouts")
         sync_workouts = [_normalize_sync_workout(sw) for sw in sync_workouts]
         workouts = _merge_workouts(file_workouts, sync_workouts)
         if days > 0:
-            cutoff = (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d")
+            cutoff = _local_date_cutoff(days)
             workouts = [w for w in workouts if w.get("date", "") >= cutoff]
         return jsonify({"workouts": workouts, "total": len(workouts)})
 
@@ -446,7 +531,7 @@ def register_apple_health_routes(flask_app):
                 ss["hours"] = round(_sleep_hours(ss), 2)
         sleep = _merge_sleep(file_sleep, sync_sleep)
         if days > 0:
-            cutoff = (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d")
+            cutoff = _local_date_cutoff(days)
             sleep = [s for s in sleep if s.get("date", "") >= cutoff]
         return jsonify({"sleep": sleep, "total": len(sleep)})
 
@@ -462,7 +547,7 @@ def register_apple_health_routes(flask_app):
             ss.setdefault("avg", ss.get("value", ss.get("steps", 0)))
         steps = _merge_timeseries(file_steps, sync_steps)
         if days > 0:
-            cutoff = (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d")
+            cutoff = _local_date_cutoff(days)
             steps = [s for s in steps if s.get("date", "") >= cutoff]
         return jsonify({"steps": steps, "total": len(steps)})
 
@@ -489,7 +574,7 @@ def register_apple_health_routes(flask_app):
         rhr = _merge_timeseries(file_rhr, sync_rhr)
         hrv = _merge_timeseries(file_hrv, sync_hrv_norm)
         if days > 0:
-            cutoff = (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d")
+            cutoff = _local_date_cutoff(days)
             rhr = [r for r in rhr if r.get("date", "") >= cutoff]
             hrv = [h for h in hrv if h.get("date", "") >= cutoff]
         return jsonify({"rhr": rhr, "hrv": hrv})
