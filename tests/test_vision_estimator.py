@@ -311,6 +311,23 @@ def test_local_lm_studio_adapter_posts_image_and_parses_json(monkeypatch):
     assert "ambiguous=true" in captured["content"][0]["text"]
 
 
+def test_local_lm_studio_inference_lock_fails_fast_on_contention(monkeypatch):
+    monkeypatch.setattr(local_vision_adapter, "VISION_INFERENCE_LOCK_ACQUIRE_SEC", 0)
+    monkeypatch.setattr(
+        local_vision_adapter,
+        "_describe_lm_studio",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("inference should not start")),
+    )
+
+    acquired = local_vision_adapter._VISION_INFERENCE_LOCK.acquire(blocking=False)
+    assert acquired is True
+    try:
+        with pytest.raises(local_vision_adapter.LocalVisionError, match="already running"):
+            local_vision_adapter.describe_food_photo(b"fake-image", provider="lm_studio")
+    finally:
+        local_vision_adapter._VISION_INFERENCE_LOCK.release()
+
+
 def test_local_lm_studio_adapter_uses_temperature_env(monkeypatch):
     captured = {}
     monkeypatch.setattr(local_vision_adapter, "_preflight_candidate", lambda *_a, **_kw: None)
@@ -532,7 +549,7 @@ def test_local_lm_studio_preflight_warms_unloaded_candidate(monkeypatch):
         models_calls.append(timeout)
         return [] if len(models_calls) == 1 else ["primary-vision"]
 
-    def fake_post_json_with_load_retries(url, payload, *, timeout):
+    def fake_post_json_with_load_retries(url, payload, *, timeout, deadline=None):
         warm_calls.append((url, payload["model"], timeout, payload["messages"][0]["content"]))
         return {"choices": [{"message": {"content": json.dumps(_meal_estimate_payload())}}]}
 
@@ -547,6 +564,33 @@ def test_local_lm_studio_preflight_warms_unloaded_candidate(monkeypatch):
     assert warm_calls[0][1] == "primary-vision"
     assert warm_calls[0][2] == 7
     assert any(part.get("type") == "image_url" for part in warm_calls[0][3])
+
+
+def test_local_lm_studio_preflight_and_warmup_share_request_deadline(monkeypatch):
+    models_calls = []
+    warm_deadlines = []
+    candidate = {"role": "primary", "url": "http://primary.test", "model": "primary-vision"}
+
+    def fake_models_for(_candidate, timeout):
+        models_calls.append(timeout)
+        return [] if len(models_calls) == 1 else ["primary-vision"]
+
+    def fake_post_json_with_load_retries(url, payload, *, timeout, deadline=None):
+        warm_deadlines.append(deadline)
+        return {"choices": [{"message": {"content": json.dumps(_meal_estimate_payload())}}]}
+
+    monkeypatch.setattr(local_vision_adapter, "_models_for", fake_models_for)
+    monkeypatch.setattr(local_vision_adapter, "_post_json_with_load_retries", fake_post_json_with_load_retries)
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_PREFLIGHT_TIMEOUT_SEC", 7)
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_WARMUP_TIMEOUT_SEC", 45)
+
+    deadline = local_vision_adapter._VisionRequestDeadline(10)
+
+    local_vision_adapter._preflight_candidate(candidate, deadline=deadline)
+
+    assert warm_deadlines == [deadline]
+    assert len(models_calls) == 2
+    assert all(timeout <= 10 for timeout in models_calls)
 
 
 def test_local_lm_studio_retries_transient_load_400(monkeypatch):
@@ -570,6 +614,43 @@ def test_local_lm_studio_retries_transient_load_400(monkeypatch):
         timeout=1,
     ) == {"ok": True}
     assert len(attempts) == 3
+
+
+def test_local_lm_studio_load_retries_stop_at_request_deadline(monkeypatch):
+    attempts = []
+    sleeps = []
+    now = [100.0]
+
+    def fake_monotonic():
+        return now[0]
+
+    def fake_post_json(_url, _payload, *, timeout):
+        attempts.append(timeout)
+        now[0] += 0.8
+        raise local_vision_adapter.LocalVisionError("http 400: loading model")
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(local_vision_adapter.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(local_vision_adapter.time, "sleep", fake_sleep)
+    monkeypatch.setattr(local_vision_adapter, "_post_json", fake_post_json)
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_LOAD_RETRY_LIMIT", 2)
+    monkeypatch.setattr(local_vision_adapter, "LM_STUDIO_LOAD_RETRY_BACKOFF_SEC", 1)
+
+    deadline = local_vision_adapter._VisionRequestDeadline(1)
+
+    with pytest.raises(local_vision_adapter.LocalVisionError, match="deadline exceeded"):
+        local_vision_adapter._post_json_with_load_retries(
+            "http://primary.test/v1/chat/completions",
+            {"model": "primary-vision"},
+            timeout=45,
+            deadline=deadline,
+        )
+
+    assert len(attempts) == 1
+    assert sleeps == [pytest.approx(0.2)]
 
 
 def test_local_lm_studio_http_error_body_surfaces_oom(monkeypatch):
