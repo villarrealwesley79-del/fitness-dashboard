@@ -11,7 +11,6 @@ import logging
 import re
 import secrets
 import time
-from collections import defaultdict
 from contextlib import contextmanager
 from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request, redirect, url_for, render_template, flash, session
@@ -19,33 +18,35 @@ from flask_login import LoginManager, UserMixin, login_user, logout_user, login_
 from runtime_config import data_path
 from werkzeug.security import check_password_hash, generate_password_hash
 
-# ── Rate limiting (in-memory, per-client/user) ────────────
-# Tracks failed auth attempts: {identity: [(timestamp, ...), ...]}
+# ── Rate limiting (SQLite-backed, shared across workers) ──
 _RATE_LIMIT_WINDOW_SEC = 600   # 10 minutes
 _RATE_LIMIT_MAX_FAILS  = 10    # max failures before lockout
-_rate_fail_log: dict = defaultdict(list)
+_rate_limit_hmac_key: bytes | None = None
+
+
+def _rate_identity_hash(identity: str) -> str:
+    if _rate_limit_hmac_key is None:
+        raise RuntimeError("Rate-limit key is unavailable before auth initialization")
+    return hmac.new(
+        _rate_limit_hmac_key,
+        identity.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _rate_check(identity: str) -> bool:
     """Return True if the identity is allowed to attempt auth; False if locked out."""
-    now = time.time()
-    window_start = now - _RATE_LIMIT_WINDOW_SEC
-    attempts = [t for t in _rate_fail_log.get(identity, []) if t > window_start]
-    if attempts:
-        _rate_fail_log[identity] = attempts
-    else:
-        _rate_fail_log.pop(identity, None)
-    return len(attempts) < _RATE_LIMIT_MAX_FAILS
+    return _rate_check_all([identity])
 
 
 def _rate_record_fail(identity: str) -> None:
     """Record one failed auth attempt for the identity."""
-    _rate_fail_log[identity].append(time.time())
+    _rate_record_fail_all([identity])
 
 
 def _rate_reset(identity: str) -> None:
     """Clear rate-limit history for an identity on successful auth."""
-    _rate_fail_log.pop(identity, None)
+    _rate_reset_all([identity])
 
 
 def _rate_client_ip() -> str:
@@ -62,17 +63,128 @@ def _rate_keys(ip: str, username: str) -> list[str]:
 
 
 def _rate_check_all(identities: list[str]) -> bool:
-    return all(_rate_check(identity) for identity in identities)
+    identity_hashes = [_rate_identity_hash(identity) for identity in identities]
+    if not identity_hashes:
+        return True
+    placeholders = ", ".join("?" for _ in identity_hashes)
+    with _get_db() as conn:
+        conn.execute(
+            "DELETE FROM auth_rate_limit_attempts WHERE attempted_at <= ?",
+            (time.time() - _RATE_LIMIT_WINDOW_SEC,),
+        )
+        rows = conn.execute(
+            f"""
+            SELECT identity_hash, COUNT(*) AS attempt_count
+            FROM auth_rate_limit_attempts
+            WHERE identity_hash IN ({placeholders})
+            GROUP BY identity_hash
+            """,
+            identity_hashes,
+        ).fetchall()
+    counts = {row["identity_hash"]: row["attempt_count"] for row in rows}
+    return all(counts.get(identity_hash, 0) < _RATE_LIMIT_MAX_FAILS for identity_hash in identity_hashes)
+
+
+def _rate_reserve_attempt_all(identities: list[str]) -> str | None:
+    """Atomically reserve an auth attempt, or return None when any identity is locked."""
+    identity_hashes = [_rate_identity_hash(identity) for identity in identities]
+    attempt_id = secrets.token_hex(16)
+    now = time.time()
+    placeholders = ", ".join("?" for _ in identity_hashes)
+    with _get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM auth_rate_limit_attempts WHERE attempted_at <= ?",
+            (now - _RATE_LIMIT_WINDOW_SEC,),
+        )
+        rows = conn.execute(
+            f"""
+            SELECT identity_hash, COUNT(*) AS attempt_count
+            FROM auth_rate_limit_attempts
+            WHERE identity_hash IN ({placeholders})
+            GROUP BY identity_hash
+            """,
+            identity_hashes,
+        ).fetchall()
+        counts = {row["identity_hash"]: row["attempt_count"] for row in rows}
+        if any(counts.get(identity_hash, 0) >= _RATE_LIMIT_MAX_FAILS for identity_hash in identity_hashes):
+            return None
+        conn.executemany(
+            """
+            INSERT INTO auth_rate_limit_attempts (attempt_id, identity_hash, attempted_at, status)
+            VALUES (?, ?, ?, 'pending')
+            """,
+            [(attempt_id, identity_hash, now) for identity_hash in identity_hashes],
+        )
+    return attempt_id
+
+
+def _rate_release_attempt(attempt_id: str | None) -> None:
+    if not attempt_id:
+        return
+    with _get_db() as conn:
+        conn.execute(
+            "DELETE FROM auth_rate_limit_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        )
+
+
+def _rate_finalize_attempt(attempt_id: str) -> None:
+    with _get_db() as conn:
+        conn.execute(
+            "UPDATE auth_rate_limit_attempts SET status = 'failed' WHERE attempt_id = ?",
+            (attempt_id,),
+        )
+
+
+def _rate_complete_success(attempt_id: str, identities: list[str]) -> None:
+    identity_hashes = [_rate_identity_hash(identity) for identity in identities]
+    placeholders = ", ".join("?" for _ in identity_hashes)
+    with _get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM auth_rate_limit_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        )
+        conn.execute(
+            f"""
+            DELETE FROM auth_rate_limit_attempts
+            WHERE status = 'failed' AND identity_hash IN ({placeholders})
+            """,
+            identity_hashes,
+        )
 
 
 def _rate_record_fail_all(identities: list[str]) -> None:
-    for identity in identities:
-        _rate_record_fail(identity)
+    now = time.time()
+    attempt_id = secrets.token_hex(16)
+    with _get_db() as conn:
+        conn.execute(
+            "DELETE FROM auth_rate_limit_attempts WHERE attempted_at <= ?",
+            (now - _RATE_LIMIT_WINDOW_SEC,),
+        )
+        conn.executemany(
+            """
+            INSERT INTO auth_rate_limit_attempts (attempt_id, identity_hash, attempted_at, status)
+            VALUES (?, ?, ?, 'failed')
+            """,
+            [(attempt_id, _rate_identity_hash(identity), now) for identity in identities],
+        )
 
 
 def _rate_reset_all(identities: list[str]) -> None:
-    for identity in identities:
-        _rate_reset(identity)
+    identity_hashes = [_rate_identity_hash(identity) for identity in identities]
+    if not identity_hashes:
+        return
+    placeholders = ", ".join("?" for _ in identity_hashes)
+    with _get_db() as conn:
+        conn.execute(
+            f"""
+            DELETE FROM auth_rate_limit_attempts
+            WHERE status = 'failed' AND identity_hash IN ({placeholders})
+            """,
+            identity_hashes,
+        )
 
 # ── DB setup ──────────────────────────────────────────────
 AUTH_DB = data_path("auth.db")
@@ -130,6 +242,38 @@ def init_auth_db():
                 stripe_sub        TEXT,
                 created           TEXT    DEFAULT (datetime('now'))
             )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_rate_limit_attempts (
+                attempt_id   TEXT NOT NULL,
+                identity_hash TEXT NOT NULL,
+                attempted_at  REAL NOT NULL,
+                status        TEXT NOT NULL
+            )
+            """
+        )
+        rate_limit_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(auth_rate_limit_attempts)")
+        }
+        if "attempt_id" not in rate_limit_columns:
+            conn.execute("ALTER TABLE auth_rate_limit_attempts ADD COLUMN attempt_id TEXT")
+            conn.execute(
+                """
+                UPDATE auth_rate_limit_attempts
+                SET attempt_id = lower(hex(randomblob(16)))
+                WHERE attempt_id IS NULL
+                """
+            )
+        if "status" not in rate_limit_columns:
+            conn.execute(
+                "ALTER TABLE auth_rate_limit_attempts ADD COLUMN status TEXT NOT NULL DEFAULT 'failed'"
+            )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS auth_rate_limit_attempts_identity_time_idx
+            ON auth_rate_limit_attempts (identity_hash, attempted_at)
             """
         )
         # Migrate existing DBs that are missing the new columns
@@ -328,20 +472,26 @@ def login():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         rate_keys = _rate_keys(ip, username)
-        if not _rate_check_all(rate_keys):
-            flash("Too many failed attempts. Please wait 10 minutes before trying again.")
-            return render_template("login.html"), 429
+        attempt_id = None
         try:
+            attempt_id = _rate_reserve_attempt_all(rate_keys)
+            if not attempt_id:
+                flash("Too many failed attempts. Please wait 10 minutes before trying again.")
+                return render_template("login.html"), 429
             user = User.authenticate(username, password)
+            if user:
+                _rate_complete_success(attempt_id, rate_keys)
+                login_user(user)
+                return redirect(_safe_next(request.args.get("next")))
+            _rate_finalize_attempt(attempt_id)
         except sqlite3.Error:
             current_app.logger.exception("Auth database error during login")
+            try:
+                _rate_release_attempt(attempt_id)
+            except sqlite3.Error:
+                current_app.logger.exception("Could not release failed login rate-limit reservation")
             flash("Login service temporarily unavailable. Please try again shortly.")
             return render_template("login.html"), 503
-        if user:
-            _rate_reset_all(rate_keys)
-            login_user(user)
-            return redirect(_safe_next(request.args.get("next")))
-        _rate_record_fail_all(rate_keys)
         flash("Invalid username or password.")
     return render_template("login.html")
 
@@ -358,22 +508,43 @@ def register():
         password = request.form.get("password", "")
         email = request.form.get("email", "").strip() or None
         rate_keys = _rate_keys(ip, username)
-        if not _rate_check_all(rate_keys):
-            flash("Too many attempts. Please wait 10 minutes before trying again.")
-            return render_template("login.html", register=True), 429
-        if not username or not password:
-            flash("Username and password are required.")
-        elif len(password) < 8:
-            flash("Password must be at least 8 characters.")
-        elif User.get_by_username(username):
-            _rate_record_fail_all(rate_keys)
-            flash("Username already taken.")
-        else:
-            User.create(username, password, email=email)
-            _rate_reset_all(rate_keys)
-            user = User.authenticate(username, password)
-            login_user(user)
-            return redirect(url_for("index"))
+        attempt_id = None
+        try:
+            attempt_id = _rate_reserve_attempt_all(rate_keys)
+            if not attempt_id:
+                flash("Too many attempts. Please wait 10 minutes before trying again.")
+                return render_template("login.html", register=True), 429
+            if not username or not password:
+                _rate_release_attempt(attempt_id)
+                flash("Username and password are required.")
+            elif len(password) < 8:
+                _rate_release_attempt(attempt_id)
+                flash("Password must be at least 8 characters.")
+            elif User.get_by_username(username):
+                _rate_finalize_attempt(attempt_id)
+                flash("Username already taken.")
+            else:
+                User.create(username, password, email=email)
+                user = User.authenticate(username, password)
+                try:
+                    _rate_complete_success(attempt_id, rate_keys)
+                except sqlite3.Error:
+                    # Account creation has already committed. Preserve the
+                    # successful registration response rather than claiming
+                    # failure after creating a single-owner account.
+                    current_app.logger.exception(
+                        "Could not clear registration rate-limit state after account creation"
+                    )
+                login_user(user)
+                return redirect(url_for("index"))
+        except sqlite3.Error:
+            current_app.logger.exception("Auth database error during registration")
+            try:
+                _rate_release_attempt(attempt_id)
+            except sqlite3.Error:
+                current_app.logger.exception("Could not release failed registration rate-limit reservation")
+            flash("Registration service temporarily unavailable. Please try again shortly.")
+            return render_template("login.html", register=True), 503
     return render_template("login.html", register=True)
 
 
@@ -530,6 +701,8 @@ def init_auth(app):
             "Set SECRET_KEY env var or allow .flask-secret generation in the project dir."
         )
     app.secret_key = _secret
+    global _rate_limit_hmac_key
+    _rate_limit_hmac_key = _secret.encode("utf-8")
 
     # ── Session hardening ────────────────────────────────
     app.config["SESSION_COOKIE_HTTPONLY"]  = True           # JS can't read the cookie

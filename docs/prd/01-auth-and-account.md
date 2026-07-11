@@ -126,7 +126,7 @@ Failure → API/JSON callers receive HTTP 403 JSON with code `csrf_required`; HT
 
 Non-obvious behavior:
 
-- Login rate limiting is in-memory per Python process, not persisted across restarts and not shared across gunicorn workers.
+- Login and registration rate limiting stores hashed IP/username identities in `auth.db`, so the active 10-minute window is shared across workers and survives process restarts. Expired rows are pruned on subsequent auth activity, and successful auth clears the matching identities.
 - Login uses `X-Forwarded-For` before `remote_addr`, but there is no trusted-proxy check in the auth module.
 - POST login redirects to `next` without the same open-redirect normalization used by authenticated GET `/login`.
 - The public allowlist includes `/landing`, `/pricing`, `/webhook`, `/success`, and `/cancel`; `stripe_bp` is defined but never registered in this checkout, so `/pricing`, `/webhook`, `/success`, and `/cancel` 404 even though they are public-allowlisted. Reachability details are documented in [13-billing-stripe-landing.md](13-billing-stripe-landing.md).
@@ -135,7 +135,7 @@ Non-obvious behavior:
 
 Auth persistence is `AUTH_DB = data_path("auth.db")`. `runtime_config.DATA_DIR` is `os.environ["DATA_DIR"]` when set, otherwise the app directory. `data_path()` creates the directory before returning the path.
 
-`init_auth_db()` creates and migrates the `users` table. The migration adds `email`, `is_pro`, `stripe_customer`, and `stripe_sub` if missing. It does not remove legacy columns or backfill existing emails. The auth module commits through a context-managed SQLite connection and rolls back on exceptions.
+`init_auth_db()` creates and migrates the `users` table and creates `auth_rate_limit_attempts` with an identity/time index. Rate-limit rows contain SECRET_KEY-keyed HMAC-SHA-256 identity digests and timestamps, not raw IP addresses or usernames. Rotating `SECRET_KEY` makes prior digests unreachable and therefore resets the remaining active lockout window; expired/unreachable rows are pruned on later auth activity. The user migration adds `email`, `is_pro`, `stripe_customer`, and `stripe_sub` if missing. It does not remove legacy columns or backfill existing emails. The auth module commits through a context-managed SQLite connection and rolls back on exceptions.
 
 Password persistence rules:
 
