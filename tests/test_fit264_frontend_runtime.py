@@ -239,6 +239,130 @@ process.stdout.write(JSON.stringify({ calls, activeWorkout: e.state.activeWorkou
     assert output["activeWorkout"] is None
 
 
+def test_server_failure_workout_completion_stays_retryable():
+    output = run_app_js(
+        ["completeWorkout", "state"],
+        """
+const calls = [];
+const fields = {
+  'input[data-field="reps"]': { value: '8' },
+  'input[data-field="weight"]': { value: '100' },
+  'input[data-field="done"]': { checked: true },
+  'input[data-field="notes"]': { value: '' },
+};
+const row = { querySelector: (s) => fields[s] };
+sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row] };
+sandbox.elements['btn-complete-workout'] = { disabled: false, textContent: '' };
+sandbox.elements['modal-active'] = { hidden: false };
+e.state.activeWorkout = {
+  id: 'workout-server-failure', focus: 'strength', recommendation_id: 'rec-1',
+  exercises: [{ exercise: 'Squat', muscle_group: 'legs', logged_sets: [{}] }],
+  cardio: null,
+};
+sandbox.__fitSet.postCompleteWorkout(async () => ({
+  ok: false, status: 503, syncStatus: 'pending', reason: 'unavailable',
+}));
+sandbox.__fitSet.setActiveWorkoutStatus(() => {});
+sandbox.__fitSet.saveActiveWorkoutDraft(() => calls.push('save'));
+sandbox.__fitSet.enqueueOfflineWorkout((_payload, status) => calls.push(`enqueue:${status}`));
+sandbox.__fitSet.clearActiveWorkoutDraft(() => calls.push('clear-draft'));
+sandbox.__fitSet.clearAdjustIntent(() => {});
+sandbox.__fitSet.invalidateCaches(() => {});
+sandbox.__fitSet.loadTab(() => {});
+sandbox.__fitSet.openWorkoutSavedConfirm(() => {});
+sandbox.__fitSet.toast(() => {});
+await e.completeWorkout();
+process.stdout.write(JSON.stringify({ calls, activeWorkout: e.state.activeWorkout }));
+""",
+        mocks=[
+            "postCompleteWorkout", "setActiveWorkoutStatus", "saveActiveWorkoutDraft",
+            "enqueueOfflineWorkout", "clearActiveWorkoutDraft", "clearAdjustIntent",
+            "invalidateCaches", "loadTab", "openWorkoutSavedConfirm", "toast",
+        ],
+    )
+
+    assert output == {
+        "calls": ["save", "enqueue:pending", "clear-draft"],
+        "activeWorkout": None,
+    }
+
+
+def test_auth_required_workout_save_keeps_review_state_and_clears_local_draft():
+    output = run_app_js(
+        ["completeWorkout", "state"],
+        """
+const calls = [];
+const fields = {
+  'input[data-field="reps"]': { value: '8' },
+  'input[data-field="weight"]': { value: '100' },
+  'input[data-field="done"]': { checked: true },
+  'input[data-field="notes"]': { value: '' },
+};
+const row = { querySelector: (s) => fields[s] };
+sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row] };
+sandbox.elements['btn-complete-workout'] = { disabled: false, textContent: '' };
+e.state.activeWorkout = {
+  id: 'workout-auth-required', focus: 'strength', recommendation_id: 'rec-1',
+  exercises: [{ exercise: 'Squat', muscle_group: 'legs', logged_sets: [{}] }],
+  cardio: null,
+};
+sandbox.__fitSet.postCompleteWorkout(async () => ({
+  ok: false, status: 401, syncStatus: 'auth_required', reason: 'sign in', body: {},
+}));
+sandbox.__fitSet.setActiveWorkoutStatus(() => {});
+sandbox.__fitSet.saveActiveWorkoutDraft(() => calls.push('save'));
+sandbox.__fitSet.enqueueOfflineWorkout((_payload, status) => calls.push(`enqueue:${status}`));
+sandbox.__fitSet.updateQueueEntry(() => calls.push('update-queue'));
+sandbox.__fitSet.clearActiveWorkoutDraft(() => calls.push('clear-draft'));
+sandbox.__fitSet.toast(() => {});
+await e.completeWorkout();
+process.stdout.write(JSON.stringify({
+  calls,
+  queuedForSyncReview: e.state.activeWorkout.queuedForSyncReview,
+  saveState: e.state.activeWorkout.saveState,
+}));
+""",
+        mocks=[
+            "postCompleteWorkout", "setActiveWorkoutStatus", "saveActiveWorkoutDraft",
+            "enqueueOfflineWorkout", "updateQueueEntry", "clearActiveWorkoutDraft", "toast",
+        ],
+    )
+
+    assert output["calls"] == ["save", "enqueue:auth_required", "update-queue", "clear-draft"]
+    assert output["queuedForSyncReview"] is True
+    assert output["saveState"] == {
+        "message": "Sign in, then retry the workout from the sync queue.",
+        "variant": "err",
+    }
+
+
+def test_active_workout_draft_save_defers_until_auth_scope_settles():
+    output = run_app_js(
+        ["saveActiveWorkoutDraft", "settleActiveWorkoutDraftAfterAuthScope", "state"],
+        """
+const saved = [];
+sandbox.localStorage.setItem = (key, value) => saved.push({ key, value: JSON.parse(value) });
+e.state.activeWorkout = { id: 'deferred-workout', exercises: [], queuedForSyncReview: false };
+sandbox.__fitSet.activeWorkoutDraftScopeForWorkout(() => '');
+e.saveActiveWorkoutDraft({ syncDom: false });
+sandbox.__fitSet.activeWorkoutDraftScopeForWorkout(() => 'user:owner');
+sandbox.__fitSet.clearMealQueueAuthScopeRetry(() => {});
+sandbox.__fitSet.restoreActiveWorkoutDraft(() => {});
+e.settleActiveWorkoutDraftAfterAuthScope({ ok: true });
+process.stdout.write(JSON.stringify(saved));
+""",
+        mocks=[
+            "activeWorkoutDraftScopeForWorkout", "clearMealQueueAuthScopeRetry",
+            "restoreActiveWorkoutDraft",
+        ],
+    )
+
+    assert len(output) == 1
+    assert output[0]["key"] == "fit168:active-workout-draft:v1"
+    assert output[0]["value"]["auth_scope"] == "user:owner"
+    assert output[0]["value"]["workout"]["id"] == "deferred-workout"
+
+
 def test_whoop_disconnect_invalidates_dashboard_and_rerenders_settings():
     output = run_app_js(
         ["disconnectWhoop", "state"],

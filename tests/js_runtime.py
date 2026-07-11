@@ -57,11 +57,12 @@ vm.runInNewContext(source, sandbox, {{ filename: 'app.js' }});
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """
     result = subprocess.run(
-        ["node", "-e", script],
+        ["node", "-"],
         cwd=ROOT,
         check=False,
         capture_output=True,
         text=True,
+        input=script,
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
