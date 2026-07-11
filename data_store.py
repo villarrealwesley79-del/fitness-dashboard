@@ -2200,13 +2200,14 @@ def delete_food_log_by_client_id(user_id: int, client_id: str) -> bool:
             "SELECT meal_id FROM food_logs WHERE user_id = ? AND client_id = ? LIMIT 1",
             (user_id, client_id),
         ).fetchone()
-        _mark_source_workout_adaptations_stale(
-            conn,
-            user_id,
-            client_ids={client_id},
-            meal_ids={source["meal_id"]} if source and source["meal_id"] else set(),
-            reason="Source meal was deleted; this workout update is no longer current.",
-        )
+        if source:
+            _mark_source_workout_adaptations_stale(
+                conn,
+                user_id,
+                client_ids={client_id},
+                meal_ids={source["meal_id"]} if source["meal_id"] else set(),
+                reason="Source meal was deleted; this workout update is no longer current.",
+            )
         conn.execute(
             "DELETE FROM food_log_refresh_events WHERE user_id = ? AND client_id = ?",
             (user_id, client_id),
@@ -2229,13 +2230,14 @@ def delete_food_logs_by_meal_id(user_id: int, meal_id: str) -> int:
             "SELECT client_id FROM food_logs WHERE user_id = ? AND meal_id = ?",
             (user_id, key),
         ).fetchall()
-        _mark_source_workout_adaptations_stale(
-            conn,
-            user_id,
-            client_ids={row["client_id"] for row in source_rows if row["client_id"]},
-            meal_ids={key},
-            reason="Source meal was deleted; this workout update is no longer current.",
-        )
+        if source_rows:
+            _mark_source_workout_adaptations_stale(
+                conn,
+                user_id,
+                client_ids={row["client_id"] for row in source_rows if row["client_id"]},
+                meal_ids={key},
+                reason="Source meal was deleted; this workout update is no longer current.",
+            )
         conn.execute(
             "DELETE FROM food_log_refresh_events WHERE user_id = ? AND client_id IN "
             "(SELECT client_id FROM food_logs WHERE user_id = ? AND meal_id = ?)",

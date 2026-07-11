@@ -1118,6 +1118,42 @@ def test_deleting_source_food_log_marks_unacknowledged_adaptation_stale(monkeypa
     assert stored["reason"] == "Source meal was deleted; this workout update is no longer current."
 
 
+def test_retried_missing_client_delete_does_not_stale_adaptation(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    event = _saved_adaptation_event(
+        1,
+        client_id="already-deleted",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    assert data_store.delete_food_log_by_client_id(1, "already-deleted") is False
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "applied"
+
+
+def test_retried_missing_meal_delete_does_not_stale_adaptation(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    event = _saved_adaptation_event(
+        1,
+        client_id="missing-meal-client",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    assert data_store.delete_food_logs_by_meal_id(1, "meal-1") == 0
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "applied"
+
+
 def test_processed_food_log_client_id_cannot_schedule_duplicate_window(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     start = datetime(2026, 5, 24, 12, 0, 0)
