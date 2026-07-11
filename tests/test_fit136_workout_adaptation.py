@@ -1072,6 +1072,25 @@ def test_unacknowledged_feed_keeps_applied_event_visible_with_many_stale_rows(mo
     assert applied["id"] in {event["id"] for event in events}
 
 
+def test_full_adaptation_audit_feed_remains_newest_first(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    older_applied = _saved_adaptation_event(
+        1,
+        client_id="older-applied-source",
+        created_at="2026-05-24T12:03:01",
+    )
+    newer_silent = _saved_adaptation_event(
+        1,
+        client_id="newer-silent-source",
+        created_at="2026-05-24T13:03:01",
+        status="no_change",
+    )
+
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=False, limit=10)
+
+    assert [event["id"] for event in events[:2]] == [newer_silent["id"], older_applied["id"]]
+
+
 def test_correcting_source_food_log_marks_unacknowledged_adaptation_stale(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     _food_log("source-meal", meal_id="meal-1")

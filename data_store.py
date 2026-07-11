@@ -1316,25 +1316,31 @@ def list_workout_adaptation_events(
         clauses.append("created_at >= ?")
         params.append(since)
     where_sql = " AND ".join(clauses)
+    if unacknowledged:
+        order_sql = """
+            CASE
+              WHEN status IN ('applied', 'stale') AND silent = 0 THEN 0
+              ELSE 1
+            END,
+            ROW_NUMBER() OVER (
+              PARTITION BY CASE
+                WHEN status IN ('applied', 'stale') AND silent = 0 THEN status
+                ELSE 'silent'
+              END
+              ORDER BY created_at DESC
+            ),
+            CASE WHEN status = 'stale' THEN 0 ELSE 1 END,
+            created_at DESC
+        """
+    else:
+        order_sql = "created_at DESC"
     with _get_db() as conn:
         rows = conn.execute(
             f"""
             SELECT *
               FROM workout_adaptation_events
              WHERE {where_sql}
-             ORDER BY CASE
-                        WHEN status IN ('applied', 'stale') AND silent = 0 THEN 0
-                        ELSE 1
-                      END,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY CASE
-                          WHEN status IN ('applied', 'stale') AND silent = 0 THEN status
-                          ELSE 'silent'
-                        END
-                        ORDER BY created_at DESC
-                      ),
-                      CASE WHEN status = 'stale' THEN 0 ELSE 1 END,
-                      created_at DESC
+             ORDER BY {order_sql}
              LIMIT ?
             """,
             [*params, safe_limit],

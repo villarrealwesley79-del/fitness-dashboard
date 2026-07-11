@@ -422,6 +422,7 @@
         // sets survive. The backend has already patched its recommendation, so
         // the freshest next-workout fetch carries the adapted remaining work.
         if (!state.activeWorkout) return;
+        if (event.date !== today()) return;
         if (!(event.active_workout && event.active_workout.updated_live)) return;
         getNextWorkout(true).then((nw) => {
             if (!nw || !state.activeWorkout) return;

@@ -145,6 +145,40 @@ def test_adaptation_notice_renders_neutral_reason_and_collapsed_details():
     assert "if (event.status === 'applied') applyWorkoutAdaptationToActiveWorkout(event);" in notice
 
 
+def test_historical_notice_does_not_reapply_adaptation_to_active_workout():
+    js = APP_JS.read_text()
+    apply_block = _block(
+        js,
+        "function applyWorkoutAdaptationToActiveWorkout(event)",
+        "function showWorkoutAdaptationNotice(event)",
+    )
+
+    if not shutil.which("node"):
+        pytest.skip("historical adaptation regression requires node")
+    script = f"""
+const vm = require('node:vm');
+const source = `
+const state = {{ activeWorkout: {{ exercises: [] }} }};
+let nextWorkoutCalls = 0;
+function today() {{ return '2026-07-11'; }}
+function getNextWorkout() {{ nextWorkoutCalls += 1; return Promise.resolve(null); }}
+function applyAdjustedRecommendationToActiveWorkout() {{}}
+function renderActiveWorkout() {{}}
+${{{json.dumps(apply_block)}}}
+applyWorkoutAdaptationToActiveWorkout({{
+  date: '2026-07-10',
+  active_workout: {{ updated_live: true }},
+}});
+module.exports = nextWorkoutCalls;
+`;
+const sandbox = {{ module: {{ exports: null }}, console }};
+vm.runInNewContext(source, sandbox);
+process.stdout.write(JSON.stringify(sandbox.module.exports));
+"""
+    result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True)
+    assert json.loads(result.stdout) == 0
+
+
 def test_adaptation_dismiss_failure_does_not_duplicate_card():
     js = APP_JS.read_text()
     notice = _block(
@@ -303,6 +337,7 @@ async function api(path, opts = {{}}) {{
 function applyAdjustedRecommendationToActiveWorkout(nw, previous) {{
   mergeCall = {{ nw, previous }};
 }}
+function today() {{ return '2026-07-11'; }}
 function renderActiveWorkout() {{ rendered = true; }}
 function parseCall(index) {{
   const url = new URL(calls[index].path, 'https://fitness.local');
@@ -319,7 +354,10 @@ async function run() {{
   await fetchWorkoutAdaptationNotices();
   state.nextWorkout = null;
   await getNextWorkout(true);
-  applyWorkoutAdaptationToActiveWorkout({{ active_workout: {{ updated_live: true }} }});
+  applyWorkoutAdaptationToActiveWorkout({{
+    date: '2026-07-11',
+    active_workout: {{ updated_live: true }},
+  }});
   await Promise.resolve();
   await Promise.resolve();
   return {{
