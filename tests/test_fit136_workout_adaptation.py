@@ -971,6 +971,97 @@ def test_pending_window_claim_prevents_duplicate_events(monkeypatch, tmp_path):
     assert len(events) == 1
 
 
+def _saved_adaptation_event(user_id: int, *, client_id: str, created_at: str, status: str = "applied"):
+    pending = data_store.enqueue_workout_adaptation_pending(
+        user_id,
+        date="2026-05-24",
+        meal_id="meal-1",
+        food_log_client_ids=[client_id],
+        window_started_at="2026-05-24T12:00:00",
+        window_closes_at="2026-05-24T12:03:00",
+    )
+    return data_store.save_workout_adaptation_event(
+        user_id,
+        pending["id"],
+        {
+            "date": "2026-05-24",
+            "status": status,
+            "silent": status != "applied",
+            "change_type": "reduce_volume" if status == "applied" else "none",
+            "applies_to": "today",
+            "reason": "Adjusted the workout." if status == "applied" else "Preserved the workout.",
+            "trigger": {"meal_ids": ["meal-1"], "food_log_client_ids": [client_id]},
+            "created_at": created_at,
+        },
+    )
+
+
+def test_unacknowledged_feed_prioritizes_applied_events_over_newer_silent_rows(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    applied = _saved_adaptation_event(
+        1,
+        client_id="applied-source",
+        created_at="2026-05-24T12:03:01",
+    )
+    for index in range(11):
+        _saved_adaptation_event(
+            1,
+            client_id=f"silent-source-{index}",
+            created_at=f"2026-05-24T13:{index:02d}:00",
+            status="no_change",
+        )
+
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=True, limit=10)
+
+    assert applied["id"] in {event["id"] for event in events}
+    assert events[0]["id"] == applied["id"]
+
+
+def test_correcting_source_food_log_marks_unacknowledged_adaptation_stale(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    _food_log(
+        "source-meal",
+        meal_id="meal-1",
+        correction_state="corrected",
+        calories=650,
+    )
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "stale"
+    assert stored["reason"] == "Source meal changed; this workout update is no longer current."
+
+
+def test_deleting_source_food_log_marks_unacknowledged_adaptation_stale(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    assert data_store.delete_food_log_by_client_id(1, "source-meal") is True
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "stale"
+    assert stored["reason"] == "Source meal was deleted; this workout update is no longer current."
+
+
 def test_processed_food_log_client_id_cannot_schedule_duplicate_window(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     start = datetime(2026, 5, 24, 12, 0, 0)

@@ -1322,12 +1322,57 @@ def list_workout_adaptation_events(
             SELECT *
               FROM workout_adaptation_events
              WHERE {where_sql}
-             ORDER BY created_at DESC
+             ORDER BY CASE
+                        WHEN status = 'applied' AND silent = 0 THEN 0
+                        WHEN status = 'stale' AND silent = 0 THEN 1
+                        ELSE 2
+                      END,
+                      created_at DESC
              LIMIT ?
             """,
             [*params, safe_limit],
         ).fetchall()
     return [_workout_adaptation_event_payload(row) for row in rows]
+
+
+def _mark_source_workout_adaptations_stale(
+    conn,
+    user_id: int,
+    *,
+    client_ids: set[str] | None = None,
+    meal_ids: set[str] | None = None,
+    reason: str,
+) -> int:
+    client_ids = {value for value in (client_ids or set()) if value}
+    meal_ids = {value for value in (meal_ids or set()) if value}
+    if not client_ids and not meal_ids:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT id, trigger_json
+          FROM workout_adaptation_events
+         WHERE user_id = ? AND acknowledged_at IS NULL AND status = 'applied'
+        """,
+        (user_id,),
+    ).fetchall()
+    matching_ids = []
+    for row in rows:
+        trigger = _json_loads_or_none(row["trigger_json"]) or {}
+        if (
+            client_ids.intersection(trigger.get("food_log_client_ids") or [])
+            or meal_ids.intersection(trigger.get("meal_ids") or [])
+        ):
+            matching_ids.append(row["id"])
+    for event_id in matching_ids:
+        conn.execute(
+            """
+            UPDATE workout_adaptation_events
+               SET status = 'stale', silent = 0, reason = ?
+             WHERE id = ? AND user_id = ? AND acknowledged_at IS NULL
+            """,
+            (reason, event_id, user_id),
+        )
+    return len(matching_ids)
 
 
 def acknowledge_workout_adaptation_event(user_id: int, event_id: str) -> bool:
@@ -2124,6 +2169,17 @@ def delete_food_log_by_client_id(user_id: int, client_id: str) -> bool:
     if not client_id:
         return False
     with _get_db() as conn:
+        source = conn.execute(
+            "SELECT meal_id FROM food_logs WHERE user_id = ? AND client_id = ? LIMIT 1",
+            (user_id, client_id),
+        ).fetchone()
+        _mark_source_workout_adaptations_stale(
+            conn,
+            user_id,
+            client_ids={client_id},
+            meal_ids={source["meal_id"]} if source and source["meal_id"] else set(),
+            reason="Source meal was deleted; this workout update is no longer current.",
+        )
         conn.execute(
             "DELETE FROM food_log_refresh_events WHERE user_id = ? AND client_id = ?",
             (user_id, client_id),
@@ -2142,6 +2198,17 @@ def delete_food_logs_by_meal_id(user_id: int, meal_id: str) -> int:
     if not key:
         return 0
     with _get_db() as conn:
+        source_rows = conn.execute(
+            "SELECT client_id FROM food_logs WHERE user_id = ? AND meal_id = ?",
+            (user_id, key),
+        ).fetchall()
+        _mark_source_workout_adaptations_stale(
+            conn,
+            user_id,
+            client_ids={row["client_id"] for row in source_rows if row["client_id"]},
+            meal_ids={key},
+            reason="Source meal was deleted; this workout update is no longer current.",
+        )
         conn.execute(
             "DELETE FROM food_log_refresh_events WHERE user_id = ? AND client_id IN "
             "(SELECT client_id FROM food_logs WHERE user_id = ? AND meal_id = ?)",
@@ -2318,6 +2385,14 @@ def add_food_log(user_id: int, record: dict) -> dict:
                 _food_log_row_to_dict(row),
                 refresh_metadata,
                 now_iso,
+            )
+        if previous_row is not None and row is not None and entry["correction_state"] == "corrected":
+            _mark_source_workout_adaptations_stale(
+                conn,
+                user_id,
+                client_ids={entry["client_id"]} if entry.get("client_id") else set(),
+                meal_ids={entry["meal_id"]} if entry.get("meal_id") else set(),
+                reason="Source meal changed; this workout update is no longer current.",
             )
         conn.commit()
     return _food_log_row_to_dict(row) if row else {k: v for k, v in entry.items() if not k.endswith("_json")}

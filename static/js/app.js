@@ -374,10 +374,10 @@
     // --- FIT-137: nutrition-driven workout-adaptation confirmation ----
     // Read/display side of the FIT-136 seam. Mirrors the FIT-139 passive-notice
     // contract: poll the backend event feed, ack on dismiss, no client-side
-    // row diffing. A confirmation renders ONLY when FIT-136 reports an applied
-    // change to *today's* plan. No-change / low-confidence events arrive with
-    // `silent: true` and render nothing; next-day effects surface solely as
-    // #nw-why reasoning when tomorrow's plan opens, never as a toast here. The
+    // row diffing. Applied changes remain visible until acknowledgement, even
+    // after their original day. No-change / low-confidence events arrive with
+    // `silent: true` and render nothing. Stale source-meal events remain
+    // visible so the owner can see and dismiss the invalidated update. The
     // full adaptation audit log is backend-only — this code never fetches or
     // renders it, only the projected event's user-visible reason + signals.
     const workoutAdaptationNoticeState = {
@@ -386,14 +386,12 @@
     };
 
     function workoutAdaptationIsRenderable(event) {
-        // Applied-change gate. Silent (no-change / low-confidence) events and
-        // next-day effects render nothing; only an applied change to today's
-        // plan produces a confirmation.
+        // Applied changes and source-invalidated stale markers remain visible
+        // until acknowledgement. Silent no-change events still render nothing.
         if (!event || !event.id) return false;
         if (event.silent) return false;
-        if (event.status !== 'applied') return false;
+        if (!['applied', 'stale'].includes(event.status)) return false;
         if (event.change_type === 'none') return false;
-        if (event.applies_to !== 'today') return false;
         return true;
     }
 
@@ -454,7 +452,7 @@
         head.className = 'workout-adaptation-head';
         const kicker = document.createElement('span');
         kicker.className = 'workout-adaptation-kicker';
-        kicker.textContent = 'Workout updated';
+        kicker.textContent = event.status === 'stale' ? 'Workout update stale' : 'Workout updated';
         const dismiss = document.createElement('button');
         dismiss.type = 'button';
         dismiss.className = 'workout-adaptation-dismiss';

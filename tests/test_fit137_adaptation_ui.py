@@ -31,7 +31,7 @@ def test_adaptation_notice_uses_backend_event_feed_and_ack_endpoint():
     assert "seen: new Set()" in js
 
 
-def test_adaptation_notice_gates_on_applied_change_and_today():
+def test_adaptation_notice_keeps_unacknowledged_applied_and_stale_events_visible():
     js = APP_JS.read_text()
     gate = _block(
         js,
@@ -39,12 +39,12 @@ def test_adaptation_notice_gates_on_applied_change_and_today():
         "function workoutAdaptationSignalLabels",
     )
 
-    # AC1/AC8: silent (no-change / low-confidence) renders nothing; only an
-    # applied change to today's plan confirms. AC5: next-day never toasts here.
+    # Applied updates remain visible until acknowledgement even after their
+    # original day. A stale source-meal marker remains visible and dismissable.
     assert "if (event.silent) return false;" in gate
-    assert "if (event.status !== 'applied') return false;" in gate
+    assert "if (!['applied', 'stale'].includes(event.status)) return false;" in gate
     assert "if (event.change_type === 'none') return false;" in gate
-    assert "if (event.applies_to !== 'today') return false;" in gate
+    assert "event.applies_to !== 'today'" not in gate
 
 
 def test_adaptation_fetch_swallows_silent_and_nextday_events():
