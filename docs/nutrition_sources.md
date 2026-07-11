@@ -100,41 +100,52 @@ Which subset FIT-72 actually filters to is a repo-specific implementation choice
 
 ## 3. Open Food Facts (OFF)
 
-### Status: **partial — license confirmed via `world.openfoodfacts.org/data`; full attribution text and rate limits require verification at FIT-76 integration time**
+### Status: **verified 2026-07-11 against current first-party API and reuse documentation**
 
-Source: the OFF data page (https://world.openfoodfacts.org/data). The Terms of Use PDF and the OFF wiki's Reusing Data page were both unreachable at writeup time (404 / bot-protection respectively). Re-verify at FIT-76 implementation.
+Sources:
 
-### Endpoint (partial)
+- [Product Opener API introduction](https://openfoodfacts.github.io/documentation/docs/Product-Opener/api/) — API versions, required User-Agent shape, and endpoint rate limits.
+- [Product endpoint reference](https://openfoodfacts.github.io/documentation/docs/Product-Opener/v3/products/get-api-v3-product-code/) — User-Agent contact may be a URL or contact information.
+- [License tutorial](https://openfoodfacts.github.io/documentation/docs/Product-Opener/api/tutorials/license-be-on-the-legal-side/) — ODbL, DbCL, image licensing, and attribution guidance.
+- [Open Food Facts API reuse conditions](https://support.openfoodfacts.org/help/en-gb/12-donnees-api/94-y-a-t-il-des-conditions-pour-utiliser-l-api) — attribution/share-alike summary, User-Agent requirement, and per-endpoint rate limits.
+
+### Endpoint
 - **Base URL:** `https://world.openfoodfacts.org/api/v2/`
 - **Barcode lookup:** `/api/v2/product/<barcode>.json` (confirmed example on data page).
-- **Search endpoint:** the data page references an external API documentation site for endpoint shapes but doesn't repeat them. Verify at integration time.
+- **Search endpoint in this repo:** legacy `/cgi/search.pl`. The current OFF docs mark legacy full-text search as supported but recommend newer APIs for new integrations; structured v2 search remains available at `/api/v2/search`.
+- **Version posture:** v3 is recommended for new integrations and v2 is deprecated but supported. Migrating this existing client is outside FIT-278.
 
 ### Auth
-- No API key required (confirmed on the data page; no auth mentioned).
-- "Sending an HTTP header with your API call" is recommended — likely `User-Agent: <app-name>/<version> (<contact email>)` per OFF community convention, but this should be confirmed against the external API docs.
+- Read operations require no account or API key.
+- A custom `User-Agent` is required so OFF can identify/contact an app rather than classify it as a bot. The API introduction gives the strict example `AppName/Version (ContactEmail)`; the current product endpoint reference says `AppName/Version (URL or contact info)`. This repo does not publish an operator's private email and instead sends the public contact channel `FitnessDashboard/1.0 (https://github.com/villarrealwesley79-del/fitness-dashboard/issues)` on search and barcode requests. If OFF requests a monitored email for this deployment, update the constant before further live use rather than inventing or exposing a private address.
 
 ### License
 - **Open Database License (ODbL)** for the database itself.
 - **Database Contents License (DbCL)** for the individual content rows.
 - **Creative Commons Attribution-ShareAlike** for product images.
 
-### Attribution — REQUIRES VERIFICATION (research gap)
-- ODbL requires attribution for derived works. Format and placement: the data page references "Conditions for reuse" / "Terms and conditions" as separate docs that were not retrievable.
-- Best-effort default (until verified): each Settings panel that surfaces an OFF-sourced estimate should show `Source: Open Food Facts (ODbL/DbCL)` plus a link to the upstream product page (`/product/<barcode>`).
-- FIT-76's UI follow-up must verify the exact required attribution text against current OFF Terms before merge.
+### Attribution
+- Reuse must credit Open Food Facts, name the applicable license, and link to Open Food Facts or the specific product page when the reused data concerns one product.
+- Review/detail surfaces render `Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)` plus the verified product link when a barcode/product ID exists, otherwise the OFF home page.
+- Cache replay restores the same attribution and source link for older OFF cache rows before returning them to the UI; credential/raw-provider fields are not part of that projection.
+- The app currently consumes nutrition data, not OFF product images. The image license remains in the attribution text so a future image surface cannot silently omit the CC BY-SA requirement.
 
 ### Share-alike
-- ODbL is share-alike for the database; DbCL is permissive for individual rows.
-- Practical impact for this single-user app: minimal. We're not republishing the OFF database — just consuming individual rows for personal use. The attribution requirement remains.
+- ODbL carries attribution and share-alike obligations for covered databases/derivative databases; individual contents use DbCL and product images use CC BY-SA.
+- This local single-owner runtime does not publish its nutrition database. Before distributing a combined database, offline snapshot, or export containing OFF-derived records, re-check the ODbL/DbCL classification and make the required source/license disclosure and share-alike materials available. Do not assume local caching grants redistribution rights.
 
-### Rate limits (partial)
-- The data page suggests the social contract is "1 API call = 1 real scan by a user." Aggressive crawling / scraping is prohibited.
-- No specific per-second / per-hour limits documented. Be a good citizen: polite request cadence, `User-Agent` identifier, cache aggressively.
+### Rate limits and failure behavior
+- Product reads (`GET /api/v*/product` and product pages): **15 requests/minute/IP**.
+- Search (`GET /api/v*/search` and `GET /cgi/search.pl`): **10 requests/minute/IP**. OFF explicitly says not to implement search-as-you-type.
+- OFF can return HTTP 503 when global anti-abuse capacity is exceeded and can ban an IP that exceeds limits.
+- This app calls OFF only after an explicit meal submission/barcode action; it does not call OFF on each keystroke. Provider responses are cached locally (current OFF cache TTL: one day). Search variants share a six-second total timeout.
+- The client does not retry HTTP 429/503 or other HTTP failures. It returns no provider match and lets the deterministic lookup ladder continue, which prevents an automatic retry storm. Repeated manual submissions can still consume the per-IP quota; do not use the live client for batch imports or crawling. Use OFF data exports for bulk work.
 
 ### Production posture for this repo
 - OFF goes in the lookup chain between USDA FDC and LM Studio (FIT-76 placement).
-- Cache responses aggressively (TTL matching FIT-72's general policy; tightening only if FIT-76's attribution verification surfaces a constraint).
-- Surface the ODbL/DbCL attribution in the source-provenance UI (FIT-76 UI follow-up).
+- Keep OFF behind explicit submit/scan actions, preserve the custom User-Agent, and retain local caching. Do not add search-as-you-type or batch lookup against the live API.
+- Preserve the ODbL/DbCL attribution and product/source link through fresh results, cache replay, review cards, and detail surfaces.
+- Re-verify these first-party pages quarterly or before changing endpoints, caching, exports, or image use.
 
 ---
 

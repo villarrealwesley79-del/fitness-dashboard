@@ -13,7 +13,7 @@ OFF_SEARCH_URL = "https://world.openfoodfacts.org/cgi/search.pl"
 OFF_PRODUCT_URL = "https://world.openfoodfacts.org/api/v2/product"
 TIMEOUT_SECONDS = 5.0
 TOTAL_TIMEOUT_SECONDS = 6.0
-USER_AGENT = "FitnessDashboard/1.0 (https://github.com/villarrealwesley79-del/fitness-dashboard)"
+USER_AGENT = "FitnessDashboard/1.0 (https://github.com/villarrealwesley79-del/fitness-dashboard/issues)"
 LOCALE_QUERY_TOKENS = {
     "australia",
     "australian",
