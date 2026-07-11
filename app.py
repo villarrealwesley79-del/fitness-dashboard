@@ -13901,7 +13901,7 @@ def _normalize_whoop_record(record_type, record):
     )
     score = record.get("score") if isinstance(record.get("score"), dict) else {}
     score_state = record.get("score_state") or record.get("state") or "SCORED"
-    if isinstance(score, dict) and score.get("user_calibrating") is True:
+    if score.get("user_calibrating") is True or _whoop_truthy(record.get("user_calibrating")):
         score_state = "CALIBRATING"
     values = {
         "upstream_id": str(upstream_id),
