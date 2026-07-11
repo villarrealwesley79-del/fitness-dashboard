@@ -2960,6 +2960,18 @@
         const oura = state.oura;
         const reco = state.reco;
         const sleep = state.ouraSleep;
+        const dashboardSleepInconsistent = sleep && sleep.data_quality
+            && sleep.data_quality.status === 'inconsistent';
+        const sleepQualityWarning = sleep && sleep.data_quality
+            && sleep.data_quality.status === 'partial';
+        const sleepQualityAction = dashboardSleepInconsistent || sleepQualityWarning
+            ? [sleep.data_quality.source, sleep.data_quality.observed_at, 'Check sync'].filter(Boolean).join(' · ')
+            : null;
+        const excludedSleepDates = new Set(
+            sleep && sleep.data_quality && sleep.data_quality.excluded_dates
+                ? sleep.data_quality.excluded_dates
+                : []
+        );
 
         // FIT-127: per-field guards. paintDashboardFromState runs after every
         // .then(repaint) in renderDashboard AND after invalidateCaches() nulls
@@ -2984,7 +2996,8 @@
 
         if ($('dash-hrv')) $('dash-hrv').textContent = oura && oura.hrv != null ? `${oura.hrv} ms` : '--';
         if ($('dash-rhr')) $('dash-rhr').textContent = oura && oura.resting_hr != null ? `${oura.resting_hr} bpm` : '--';
-        if ($('dash-sleep')) $('dash-sleep').textContent = oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--';
+        if ($('dash-sleep')) $('dash-sleep').textContent = dashboardSleepInconsistent ? '--'
+            : (oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--');
 
         // Recommendation card — FIT-1 brief + FIT-2 honest freshness
         const nw = dash && dash.next_workout ? dash.next_workout : null;
@@ -3192,10 +3205,12 @@
         if ($('glance-steps-goal')) $('glance-steps-goal').textContent = oura && oura.steps != null ? `${Math.round((oura.steps / 10000) * 100)}% of 10,000` : 'Pending sync';
         if ($('glance-cal')) $('glance-cal').textContent = fmtInt(oura && oura.active_calories);
         if ($('glance-cal-goal')) $('glance-cal-goal').textContent = oura && oura.active_calories != null ? `${Math.round((oura.active_calories / 800) * 100)}% of 800` : '';
-        if ($('glance-sleep')) $('glance-sleep').textContent = oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--';
+        if ($('glance-sleep')) $('glance-sleep').textContent = dashboardSleepInconsistent ? '--'
+            : (oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--');
         if ($('glance-sleep-quality')) {
             const score = oura && oura.sleep_score;
-            $('glance-sleep-quality').textContent = score != null ? (score >= 85 ? 'Excellent' : score >= 70 ? 'Good' : 'Fair') : '—';
+            $('glance-sleep-quality').textContent = dashboardSleepInconsistent || sleepQualityWarning ? sleepQualityAction
+                : (score != null ? (score >= 85 ? 'Excellent' : score >= 70 ? 'Good' : 'Fair') : '—');
         }
         const bs = (dash && dash.body_stats) || {};
         if ($('glance-weight')) $('glance-weight').textContent = bs.latest_weight != null ? `${fmtDecimal(bs.latest_weight, 1)} lb` : '--';
@@ -3213,6 +3228,10 @@
         // placeholders so a prior session's insight doesn't linger as stale
         // guidance.
         if (reco) {
+            if (dashboardSleepInconsistent || sleepQualityWarning) {
+                if ($('insight-title')) $('insight-title').textContent = 'Sleep data needs review';
+                if ($('insight-body')) $('insight-body').textContent = sleepQualityAction;
+            } else {
             const recoFactors = reco.readiness_factors;
             let insightTitle = 'Recovery is on track';
             let insightBody = reco.reasoning || 'Keep your sleep consistent and you\'ll stay ready.';
@@ -3225,15 +3244,22 @@
                     insightBody = recoFactors.acwr.message;
                 }
             }
-            if ($('insight-title')) $('insight-title').textContent = insightTitle;
-            if ($('insight-body')) $('insight-body').textContent = insightBody;
+                if ($('insight-title')) $('insight-title').textContent = insightTitle;
+                if ($('insight-body')) $('insight-body').textContent = insightBody;
+            }
+        } else if (dashboardSleepInconsistent || sleepQualityWarning) {
+            if ($('insight-title')) $('insight-title').textContent = 'Sleep data needs review';
+            if ($('insight-body')) $('insight-body').textContent = sleepQualityAction;
         } else {
             if ($('insight-title')) $('insight-title').textContent = 'Gathering data…';
             if ($('insight-body')) $('insight-body').textContent = '';
         }
 
         // Sparkline: sleep scores from Oura trend
-        const sleepSeries = (sleep && sleep.trend_data ? sleep.trend_data : []).map((d) => d.score);
+        const sleepTrendRows = sleep && sleep.trend_data ? sleep.trend_data : [];
+        const safeSleepTrendRows = sleepTrendRows.filter((d) => d.score != null && !excludedSleepDates.has(d.date)
+            && (!dashboardSleepInconsistent || d.date !== sleep.data_quality.observed_at));
+        const sleepSeries = safeSleepTrendRows.map((d) => d.score);
         sparkline($('insight-sparkline'), sleepSeries, { color: '#22d3ee', height: 32 });
 
         // FIT-128/129: per-card retry chips. Each chip surfaces when its
@@ -3376,22 +3402,44 @@
         // Sparks from trends
         const trends = await getOuraTrends();
         const series = trends && trends.series ? trends.series : [];
+        const sleepInconsistent = sleep && sleep.data_quality && sleep.data_quality.status === 'inconsistent';
+        const sleepQualityWarning = sleep && sleep.data_quality && sleep.data_quality.status === 'partial';
+        const sleepQualityAction = sleepInconsistent || sleepQualityWarning
+            ? [sleep.data_quality.source, sleep.data_quality.observed_at, 'Check sync'].filter(Boolean).join(' · ')
+            : null;
+        const excludedSleepDates = new Set(
+            sleep && sleep.data_quality && sleep.data_quality.excluded_dates
+                ? sleep.data_quality.excluded_dates
+                : []
+        );
+        const safeSleepSeries = series.filter((s) => s.sleep_duration_min != null && !excludedSleepDates.has(s.day)
+            && (!sleepInconsistent || s.day !== sleep.data_quality.observed_at));
         sparkline($('spark-steps'), series.map((s) => s.steps), { color: '#22c55e' });
         sparkline($('spark-active-min'), series.map((s) => s.activity_score), { color: '#fbbf24' });
-        sparkline($('spark-sleep'), series.map((s) => (s.sleep_duration_min || 0) / 60), { color: '#a78bfa' });
+        sparkline($('spark-sleep'), safeSleepSeries.map((s) => (s.sleep_duration_min || 0) / 60), { color: '#a78bfa' });
 
         // Sleep details
         const last = sleep && sleep.last_night;
-        if (last) {
+        if (sleepInconsistent) {
+            $('v-sleep-dur').textContent = '--';
+            $('v-sleep-dur-sub').textContent = 'Sleep data inconsistent · Check Oura sync';
+            $('v-sleep-score').textContent = '--';
+            $('v-sleep-score-sub').textContent = sleep.data_quality.observed_at || '';
+        } else if (last) {
             $('v-sleep-dur').textContent = fmtDur(last.total_sleep_min);
-            $('v-sleep-dur-sub').textContent = `${Math.round(last.rem_sleep_min)}m REM · ${Math.round(last.deep_sleep_min)}m Deep`;
+            const remLabel = last.rem_sleep_min != null ? `${Math.round(last.rem_sleep_min)}m REM` : 'REM unknown';
+            const deepLabel = last.deep_sleep_min != null ? `${Math.round(last.deep_sleep_min)}m Deep` : 'Deep unknown';
+            $('v-sleep-dur-sub').textContent = `${remLabel} · ${deepLabel}`;
         } else {
             $('v-sleep-dur').textContent = '--';
             $('v-sleep-dur-sub').textContent = '—';
         }
-        $('v-sleep-score').textContent = oura && oura.sleep_score != null ? oura.sleep_score : '--';
-        const wa = sleep && sleep.week_average;
-        $('v-sleep-score-sub').textContent = wa && wa.score ? `avg ${wa.score} · 7d` : '';
+        if (!sleepInconsistent) {
+            $('v-sleep-score').textContent = oura && oura.sleep_score != null ? oura.sleep_score : '--';
+            const wa = sleep && sleep.week_average;
+            $('v-sleep-score-sub').textContent = sleepQualityWarning ? sleepQualityAction
+                : (wa && wa.score ? `avg ${wa.score} · 7d` : '');
+        }
 
         // Body
         const latest = body && body.history && body.history[0];
