@@ -150,7 +150,7 @@ Session persistence is Flask's signed cookie session. Secret key resolution is:
 2. `.flask-secret` file next to `auth.py`.
 3. Generated 128-character hex secret persisted to `.flask-secret` with mode `0600`.
 
-The app refuses to start with an empty secret or the literal default `dev-key-change-me`.
+Existing fallback files are read under a shared lock, including valid read-only mounts. Empty/missing fallback initialization holds an exclusive cross-process lock through read/generate/write/fsync, so cold-started workers cannot retain different secrets. If a new fallback cannot be persisted, startup fails and requires an explicit `SECRET_KEY`. The app also refuses to start with an empty secret or the literal default `dev-key-change-me`.
 
 ## 7. Enums & Constants
 

@@ -2,13 +2,20 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import os
 import sqlite3
+import stat
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from flask import Flask
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _make_auth_app(tmp_path, monkeypatch):
@@ -34,6 +41,42 @@ def _make_auth_app(tmp_path, monkeypatch):
 
     auth.init_auth(app)
     return app, auth
+
+
+def test_fallback_secret_is_identical_across_cold_started_processes(tmp_path):
+    secret_file = tmp_path / ".flask-secret"
+    script = "import auth, sys; print(auth._load_or_create_secret(sys.argv[1]))"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(secret_file)],
+            cwd=REPO_ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for _ in range(4)
+    ]
+    results = [process.communicate(timeout=10) for process in processes]
+
+    assert [process.returncode for process in processes] == [0, 0, 0, 0]
+    secrets_read = [stdout.strip() for stdout, _stderr in results]
+    assert len(set(secrets_read)) == 1
+    assert secret_file.read_text(encoding="utf-8") == secrets_read[0]
+    assert stat.S_IMODE(secret_file.stat().st_mode) == 0o600
+
+
+def test_existing_read_only_fallback_secret_remains_usable(tmp_path):
+    import auth
+
+    secret_file = tmp_path / ".flask-secret"
+    secret_file.write_text("stable-read-only-secret", encoding="utf-8")
+    secret_file.chmod(0o400)
+
+    assert auth._load_or_create_secret(str(secret_file)) == "stable-read-only-secret"
+    assert stat.S_IMODE(secret_file.stat().st_mode) == 0o400
 
 
 def test_owner_correct_password_authenticates(tmp_path, monkeypatch):

@@ -4,6 +4,7 @@ SQLite-backed, no SQLAlchemy. Minimal proof-of-concept for SaaS productization.
 """
 
 import os
+import fcntl
 import sqlite3
 import hmac
 import hashlib
@@ -22,6 +23,41 @@ from werkzeug.security import check_password_hash, generate_password_hash
 _RATE_LIMIT_WINDOW_SEC = 600   # 10 minutes
 _RATE_LIMIT_MAX_FAILS  = 10    # max failures before lockout
 _rate_limit_hmac_key: bytes | None = None
+
+
+def _load_or_create_secret(secret_file: str) -> str:
+    """Read or initialize the fallback secret under a cross-process file lock."""
+    try:
+        fd = os.open(secret_file, os.O_RDONLY)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise RuntimeError("Could not read the fallback SECRET_KEY") from exc
+    else:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            secret = handle.read().strip()
+            if secret:
+                return secret
+
+    try:
+        fd = os.open(secret_file, os.O_RDWR | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "r+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            secret = handle.read().strip()
+            if not secret:
+                secret = secrets.token_hex(64)
+                handle.seek(0)
+                handle.truncate()
+                handle.write(secret)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(secret_file, 0o600)
+            return secret
+    except OSError as exc:
+        raise RuntimeError(
+            "Could not persist the fallback SECRET_KEY; set SECRET_KEY explicitly"
+        ) from exc
 
 
 def _rate_identity_hash(identity: str) -> str:
@@ -680,21 +716,7 @@ def init_auth(app):
     _secret = os.environ.get("SECRET_KEY", "").strip()
     if not _secret:
         _secret_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".flask-secret")
-        try:
-            if os.path.exists(_secret_file):
-                with open(_secret_file) as _fh:
-                    _secret = _fh.read().strip()
-        except Exception:
-            _secret = ""
-        if not _secret:
-            _secret = secrets.token_hex(64)
-            try:
-                with open(_secret_file, "w") as _fh:
-                    _fh.write(_secret)
-                os.chmod(_secret_file, 0o600)
-                print(f"INFO: generated new Flask SECRET_KEY and persisted to {_secret_file}")
-            except Exception as _exc:
-                print(f"WARN: could not persist SECRET_KEY to {_secret_file}: {_exc}")
+        _secret = _load_or_create_secret(_secret_file)
     if not _secret or _secret == "dev-key-change-me":
         raise RuntimeError(
             "Refusing to start with default/empty SECRET_KEY. "
