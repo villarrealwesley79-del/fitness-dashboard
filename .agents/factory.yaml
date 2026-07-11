@@ -1,0 +1,20 @@
+linear:
+  team: Fitness app
+  # project intentionally omitted — Alex-style queue: all agent-ready issues in the team
+  labels:
+    ready: agent-ready
+    built: built
+    mergeable: merge-ready
+app:
+  boot: PORT={port} venv/bin/python3 app.py
+  test_port: 5099
+  preview_url: http://admins-mac-mini.tail6c6490.ts.net:{port}
+checks:
+  - python -m pytest -q
+notify:
+  slack_channel: "#factory"
+deploy:
+  auto: false
+  cmd: ""   # manual step: rebuild + launchctl kickstart — never run automatically
+non_goals_default:
+  - Do not modify the deterministic coach core; LLM features wrap it (intent patch), never replace it.
