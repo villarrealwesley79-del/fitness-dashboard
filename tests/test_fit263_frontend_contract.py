@@ -1,6 +1,11 @@
 """FIT-263 frontend regression contracts."""
 
+import json
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,7 +23,37 @@ def test_nutrition_hash_targets_existing_log_tab_and_unknown_tabs_fall_back():
     switch_block = _function_block("function switchTab(tabId)", "function initialTabFromHash")
 
     assert "if (hash === '#nutrition') return 'tab-log';" in hash_block
-    assert "document.getElementById(tabId) ? tabId : 'tab-dashboard'" in switch_block
+    assert "panel.classList.contains('tab-content') ? tabId : 'tab-dashboard'" in switch_block
+
+
+def test_non_panel_dom_id_falls_back_to_dashboard_at_runtime():
+    if not shutil.which("node"):
+        pytest.skip("FIT-263 tab runtime contract requires Node.js")
+
+    switch_block = _function_block("function switchTab(tabId)", "function initialTabFromHash")
+    script = f"""
+const state = {{ currentTab: null }};
+const panels = [
+  {{ id: 'tab-dashboard', classList: {{ toggle() {{}} }}, setAttribute() {{}} }},
+  {{ id: 'tab-log', classList: {{ toggle() {{}} }}, setAttribute() {{}} }},
+];
+const existing = {{
+  'tab-dashboard': {{ classList: {{ contains: (name) => name === 'tab-content' }} }},
+  'tab-log': {{ classList: {{ contains: (name) => name === 'tab-content' }} }},
+  'btn-ai-status': {{ classList: {{ contains: () => false }} }},
+}};
+const document = {{ getElementById: (id) => existing[id] || null }};
+const qsa = (selector) => selector === '.tab-content' ? panels : [];
+const loadTab = () => {{}};
+const window = {{ scrollTo() {{}} }};
+{switch_block}
+switchTab('btn-ai-status');
+process.stdout.write(JSON.stringify({{ currentTab: state.currentTab }}));
+"""
+    result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"currentTab": "tab-dashboard"}
 
 
 def test_barcode_scan_loop_reuses_cached_dom_elements():

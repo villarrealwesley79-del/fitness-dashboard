@@ -908,7 +908,8 @@
 
     // --- tab switching -------------------------------------------
     function switchTab(tabId) {
-        tabId = document.getElementById(tabId) ? tabId : 'tab-dashboard';
+        const panel = document.getElementById(tabId);
+        tabId = panel && panel.classList.contains('tab-content') ? tabId : 'tab-dashboard';
         state.currentTab = tabId;
         qsa('.tab-content').forEach((el) => {
             const active = el.id === tabId;
