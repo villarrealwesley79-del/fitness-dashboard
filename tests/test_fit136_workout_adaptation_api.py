@@ -153,7 +153,7 @@ def test_pending_manual_nutrition_does_not_schedule_workout_adaptation(monkeypat
     assert data_store.list_pending_workout_adaptation_windows(1) == []
 
 
-def test_workout_adaptation_events_endpoint_exposes_incomplete_coverage_contract(monkeypatch, tmp_path):
+def test_workout_adaptation_events_endpoint_is_read_only(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
     monkeypatch.setattr(module, "USER_SETTINGS", {"available_time_minutes": 35, "daily_calorie_target": 2200, "daily_protein_target_g": 150})
@@ -196,26 +196,18 @@ def test_workout_adaptation_events_endpoint_exposes_incomplete_coverage_contract
         clock=datetime(2026, 5, 24, 12, 0, 0),
     )
 
-    completed_sets = quote(json.dumps({"Chest Press": 1}))
-    response = client.get(
-        f"/api/workout-adaptation-events?active_workout_open=true&completed_sets={completed_sets}"
-    )
+    before_events = data_store.list_workout_adaptation_events(1, unacknowledged=False)
+    before_pending = data_store.list_pending_workout_adaptation_windows(1)
+    response = client.get("/api/workout-adaptation-events?unacknowledged=true")
+    repeated = client.get("/api/workout-adaptation-events?unacknowledged=true")
 
     assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["count"] == 1
-    event = payload["events"][0]
-    assert event["status"] == "no_change"
-    assert event["silent"] is True
-    assert event["change_type"] == "none"
-    assert event["active_workout"]["updated_live"] is False
-    assert event["patch"]["estimated_minutes"] == 60
-    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
-    assert event["reason_metadata"]["fit137_contract"]["endpoint"] == "/api/workout-adaptation-events"
-    assert "incomplete_day_coverage" in event["reason_metadata"]["fit137_contract"]["no_change_signal"]["confidence.no_change_reason"]
-    assert generate_calls[0]["consume_cardio_rotation"] is False
-    assert "include_open_wearables_readiness" not in generate_calls[0]
-    assert "training_recommendation" in generate_calls[0]
+    assert repeated.status_code == 200
+    assert response.get_json() == {"count": 0, "events": []}
+    assert repeated.get_json() == response.get_json()
+    assert data_store.list_workout_adaptation_events(1, unacknowledged=False) == before_events
+    assert data_store.list_pending_workout_adaptation_windows(1) == before_pending
+    assert generate_calls == []
 
 
 def test_next_workout_route_replays_due_adaptation_even_with_cached_plan(monkeypatch, tmp_path):

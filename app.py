@@ -9564,40 +9564,6 @@ def workout_adaptation_events():
     except (TypeError, ValueError):
         return api_error("limit must be an integer from 1 to 50", 400, code="invalid_field")
 
-    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
-    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
-    active_open_requested = active_open_raw in {"1", "true", "yes"}
-    active_workout_open = active_open_requested and bool(completed_sets_by_exercise)
-    today_s = _today_str()
-    food_log_entries = _food_log_entries_for_context(since=today_s)
-    adaptation_food_entries = _food_log_entries_for_context()
-    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
-    fingerprint = _workout_recommendation_fingerprint()
-    next_workout = _current_workout_plan_for_fingerprint(fingerprint)
-    if not next_workout:
-        next_workout = generate_next_workout(
-            WORKOUTS,
-            SORENESS_DATA,
-            training_recommendation=_current_workout_training_recommendation(),
-            consume_cardio_rotation=False,
-        )
-        _persist_current_workout_plan(next_workout, fingerprint)
-    nutrition_context = _nutrition_context_for_date(
-        today_s,
-        hard_training_planned=_workout_looks_hard(next_workout),
-        food_log_entries=food_log_entries,
-    )
-    if not active_open_requested or completed_sets_by_exercise:
-        next_workout, _events = _apply_due_workout_adaptations_for_plan(
-            next_workout,
-            date_s=today_s,
-            food_log_entries=adaptation_food_entries,
-            nutrition_context=nutrition_context,
-            active_workout_open=active_workout_open,
-            completed_sets_by_exercise=completed_sets_by_exercise,
-        )
-        _persist_current_workout_plan(next_workout, fingerprint)
-
     events = list_workout_adaptation_events(
         _current_data_user_id(),
         unacknowledged=unacknowledged,
