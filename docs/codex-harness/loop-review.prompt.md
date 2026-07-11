@@ -213,10 +213,18 @@ sandbox makes the unchanged baseline suite fail and is not a valid green gate.
 After the provenance and pre-execution diff gates pass, run the exact pinned suite
 through a trusted wrapper under an allowlisted environment. Create a temporary
 `HOME`, `CFFIXED_USER_HOME`, temp directory, runtime data directory, and temporary
-test-only macOS keychain; set that keychain as both the default and sole search
-target inside the isolated child context, prove both settings by readback, and prove
-the owner's login keychain is not visible there. Restore the original default and
-search-list state on every exit.
+test-only macOS keychain created INSIDE the temporary HOME (first
+`mkdir -p "$TEMP_HOME/Library/Preferences" "$TEMP_HOME/Library/Keychains"`). Run
+every `security` configuration command with `HOME` set to the temporary HOME so
+the keychain search list and default keychain are written to the temporary HOME's
+own preferences — never to the owner's user-global configuration:
+`security create-keychain`, `security list-keychains -d user -s "$KC"`,
+`security default-keychain -d user -s "$KC"`, `security unlock-keychain`. Prove
+isolation by readback in the child context: `list-keychains` and
+`default-keychain` show only the temporary keychain, and a lookup of a known
+login-keychain item fails there. No restore step exists or is needed because the
+owner's keychain configuration is never modified; a `-60006` status, any GUI
+prompt, or any failed readback means isolation is unavailable.
 Pass only `PATH`, `HOME`, `CFFIXED_USER_HOME`, `TMPDIR`, `DATA_DIR`, `PYTHONPATH`,
 locale, and explicit non-secret test values through `env -i`; omit GitHub, Linear,
 Claude, SSH-agent, cloud, connector, and application credentials. The wrapper must
@@ -307,8 +315,9 @@ other PR record `walkthrough=skipped` and continue.
 Boot the app from the gate-D worktree at the pinned SHA under the FULL gate-D
 trusted-wrapper isolation — this gate executes PR-controlled code and must
 never be weaker than gate D: temporary `HOME`/`CFFIXED_USER_HOME`/`TMPDIR`,
-the temporary test-only keychain set as default and sole search target with
-readback proof, denied reads of the owner's real home and Keychain paths, and
+the temporary test-only keychain configured inside the temporary HOME per gate
+D (the owner's keychain configuration is never modified) with readback proof,
+denied reads of the owner's real home and Keychain paths, and
 no network egress beyond loopback (the app's only legitimate traffic is the
 inbound playwright connection; wearable and vision egress is credential-gated
 off under `env -i`). Add a fresh throwaway
