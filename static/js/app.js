@@ -908,6 +908,7 @@
 
     // --- tab switching -------------------------------------------
     function switchTab(tabId) {
+        tabId = document.getElementById(tabId) ? tabId : 'tab-dashboard';
         state.currentTab = tabId;
         qsa('.tab-content').forEach((el) => {
             const active = el.id === tabId;
@@ -929,7 +930,7 @@
         if (hash === '#settings') return 'tab-settings';
         if (hash === '#history') return 'tab-history';
         if (hash === '#workout') return 'tab-workout';
-        if (hash === '#nutrition') return 'tab-nutrition';
+        if (hash === '#nutrition') return 'tab-log';
         return 'tab-dashboard';
     }
 
@@ -9638,6 +9639,7 @@
     let aiStatusTimer = null;
 
     async function refreshAiStatus() {
+        if (document.visibilityState === 'hidden') return;
         const dot = $('ai-status-dot');
         if (!dot) return;
         try {
@@ -9731,6 +9733,8 @@
         barcodeSubmitting: false,
         barcodeStream: null,
         barcodeDetector: null,
+        barcodeVideo: null,
+        barcodeInput: null,
         barcodeScanRaf: null,
         barcodeScanLastAt: 0,
         barcodeScanToken: 0,
@@ -11004,12 +11008,14 @@
             mealComposerState.barcodeStream.getTracks().forEach((track) => track.stop());
             mealComposerState.barcodeStream = null;
         }
-        const { barcodeVideo } = mealComposerEls();
+        const barcodeVideo = mealComposerState.barcodeVideo;
         if (barcodeVideo) {
             barcodeVideo.pause();
             barcodeVideo.srcObject = null;
             barcodeVideo.hidden = true;
         }
+        mealComposerState.barcodeVideo = null;
+        mealComposerState.barcodeInput = null;
     }
 
     function mealBarcodeScanCancelled(scanToken) {
@@ -11032,7 +11038,7 @@
     }
 
     async function startMealBarcodeScanner() {
-        const { barcodeVideo } = mealComposerEls();
+        const { barcodeVideo, barcodeInput } = mealComposerEls();
         if (!barcodeVideo || !barcodeDetectorSupported()) {
             setMealBarcodeStatus('Camera scan is not available here. Enter the barcode number instead.');
             return;
@@ -11041,6 +11047,8 @@
             stopMealBarcodeScanner();
         }
         mealComposerState.barcodeScanToken += 1;
+        mealComposerState.barcodeVideo = barcodeVideo;
+        mealComposerState.barcodeInput = barcodeInput;
         const scanToken = mealComposerState.barcodeScanToken;
         try {
             mealComposerState.barcodeDetector = new window.BarcodeDetector({
@@ -11080,7 +11088,8 @@
     }
 
     async function scanMealBarcodeFrame(now = 0) {
-        const { barcodeVideo, barcodeInput } = mealComposerEls();
+        const barcodeVideo = mealComposerState.barcodeVideo;
+        const barcodeInput = mealComposerState.barcodeInput;
         const detector = mealComposerState.barcodeDetector;
         if (!barcodeVideo || !detector || !mealComposerState.barcodeStream || mealComposerState.barcodeSubmitting) return;
         const scanToken = mealComposerState.barcodeScanToken;
@@ -11312,18 +11321,6 @@
         form.append('local_iso', localTime.local_iso);
 
         try {
-            // FIT-134: ?fit134=mock short-circuits to a synthetic multi-item
-            // payload so the new review UI can be exercised locally before
-            // FIT-135 lands the real backend. Production path is unchanged.
-            if (mealV2MockEnabled()) {
-                const payload = mealV2Mock.createMeal(textValue);
-                // FIT-138 multi-image refactor: the legacy single `file`
-                // variable no longer exists; use the first attached photo
-                // for the legacy imageFile field and the full list for
-                // imageFiles so the mock harness mirrors the real submit.
-                handleMealIntakeResponse(payload, { textValue, clientId, imageFile: files[0] || null, imageFiles: files, localTime });
-                return;
-            }
             const res = await fetch('/api/meal-intake', {
                 method: 'POST',
                 credentials: 'same-origin',
@@ -11460,13 +11457,8 @@
     // Activates when /api/meal-intake (or refresh) returns the new
     // contract shape: top-level meal_id, meal_totals, followup, items[]
     // with item_id/candidates/unclear/status, and save_blocked_item_ids[].
-    // Until FIT-135 (Codex, sibling-backend) lands that contract, legacy
-    // single-item responses fall through to the original review card and
-    // the existing accept/discard flow.
-    //
-    // A ?fit134=mock URL param swaps the real backend for an in-memory
-    // synthetic backend so the new UI can be exercised end-to-end locally
-    // before FIT-135 ships. The production path is unchanged.
+    // Legacy single-item responses fall through to the original review
+    // card and the existing accept/discard flow.
     //
     // Contract source: /Users/admin/.claude/plans/codex-is-owrking-on-shiny-ripple.md
     // (locked via codex-consensus-loop on 2026-05-22).
@@ -12034,15 +12026,11 @@
         }
         setMealV2PendingRefresh(mealId, true);
         try {
-            if (mealV2MockEnabled()) {
-                mealV2Mock.accept(mealId);
-            } else {
-                await api(`/api/meal-intake/${encodeURIComponent(mealId)}/accept`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(buildMealV2AcceptBody(entry)),
-                });
-            }
+            await api(`/api/meal-intake/${encodeURIComponent(mealId)}/accept`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(buildMealV2AcceptBody(entry)),
+            });
             removeMealV2Entry(mealId);
             renderMealPendingList();
             toast('Meal saved.', 'ok');
@@ -12059,11 +12047,7 @@
         if (!entry) return;
         setMealV2PendingRefresh(mealId, true);
         try {
-            if (mealV2MockEnabled()) {
-                mealV2Mock.discard(mealId);
-            } else {
-                await api(`/api/meal-intake/${encodeURIComponent(mealId)}`, { method: 'DELETE' });
-            }
+            await api(`/api/meal-intake/${encodeURIComponent(mealId)}`, { method: 'DELETE' });
             removeMealV2Entry(mealId);
             renderMealPendingList();
             toast('Meal discarded.', 'ok');
@@ -12076,9 +12060,6 @@
     }
 
     async function postMealV2Refresh(mealId, body) {
-        if (mealV2MockEnabled()) {
-            return mealV2Mock.refresh(mealId, body);
-        }
         return api(`/api/meal-intake/${encodeURIComponent(mealId)}/refresh`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -12142,157 +12123,6 @@
             return '';
         }
     }
-
-    // ── Mock backend (?fit134=mock) ─────────────────────────────────────
-    function mealV2MockEnabled() {
-        try {
-            const params = new URLSearchParams(window.location.search);
-            return params.get('fit134') === 'mock';
-        } catch (_) {
-            return false;
-        }
-    }
-
-    const mealV2Mock = {
-        store: new Map(),
-        createMeal(textValue) {
-            const mealId = 'mock-meal-' + Math.random().toString(36).slice(2, 10);
-            const payload = {
-                meal_id: mealId,
-                meal_type: this.inferMealType(textValue) || 'lunch',
-                followup: {
-                    available: true,
-                    question: 'How big was the side of rice — a small scoop, half a cup, or a full cup?',
-                    used: false,
-                },
-                items: [
-                    {
-                        item_id: mealId + '-i1',
-                        name: 'Grilled chicken breast',
-                        portion_description: '6 oz',
-                        calories: 280, protein_g: 53, carbs_g: 0, fat_g: 6, sodium_mg: 95, fiber_g: 0,
-                        confidence: 0.88,
-                        source: { kind: 'vision', label: 'AI estimate', link: null },
-                        unclear: false,
-                        candidates: [],
-                        status: 'included',
-                    },
-                    {
-                        item_id: mealId + '-i2',
-                        name: 'Side of rice',
-                        portion_description: 'small',
-                        calories: 160, protein_g: 3, carbs_g: 35, fat_g: 0, sodium_mg: 1, fiber_g: 0,
-                        confidence: 0.42,
-                        source: { kind: 'text', label: 'Text parser', link: null },
-                        unclear: true,
-                        candidates: [
-                            { candidate_id: 'c-rice-white-cup', name: 'White rice', portion_description: '1 cup', source: { kind: 'branded', label: 'USDA', link: '/api/sources/usda/white-rice' } },
-                            { candidate_id: 'c-rice-brown-cup', name: 'Brown rice', portion_description: '1 cup', source: { kind: 'branded', label: 'USDA', link: '/api/sources/usda/brown-rice' } },
-                        ],
-                        status: 'included',
-                    },
-                ],
-            };
-            this.recompute(payload);
-            this.store.set(mealId, payload);
-            return JSON.parse(JSON.stringify(payload));
-        },
-        refresh(mealId, body) {
-            const payload = this.store.get(mealId);
-            if (!payload) throw new Error('mock meal not found: ' + mealId);
-            const kind = body && body.kind;
-            const findItem = (id) => payload.items.find((x) => x.item_id === id);
-            if (kind === 'add_item') {
-                const text = String(body.text || '').trim();
-                const branded = /\b(heb|h-?e-?b|hot cheetos?|chipotle|bill miller|whataburger|coca-?cola|coke|pepsi|trader joe|costco|starbucks|mcdonalds?)\b/i.test(text);
-                const itemId = mealId + '-i' + (payload.items.length + 1);
-                payload.items.push({
-                    item_id: itemId,
-                    name: text || 'Added item',
-                    portion_description: branded ? 'looking up…' : '1 serving',
-                    calories: branded ? 240 : 120,
-                    protein_g: branded ? 3 : 2,
-                    carbs_g: branded ? 30 : 18,
-                    fat_g: branded ? 12 : 3,
-                    sodium_mg: branded ? 320 : 50,
-                    fiber_g: 1,
-                    confidence: branded ? 0.62 : 0.35,
-                    source: { kind: branded ? 'branded' : 'text', label: branded ? 'Branded lookup' : 'Text parser', link: branded ? '/api/sources/branded/' + encodeURIComponent(text.toLowerCase().replace(/\s+/g, '-')) : null },
-                    unclear: !branded,
-                    candidates: [],
-                    status: 'included',
-                });
-            } else if (kind === 'edit_portion') {
-                const it = findItem(body.item_id);
-                if (it) {
-                    it.portion_description = String(body.text || '').trim() || it.portion_description;
-                    it.unclear = false;
-                }
-            } else if (kind === 'followup_answer') {
-                payload.followup.used = true;
-                const unclear = payload.items.find((x) => x.status === 'included' && x.unclear);
-                if (unclear) unclear.unclear = false;
-            } else if (kind === 'choose_candidate') {
-                const it = findItem(body.item_id);
-                if (it) {
-                    const choice = (it.candidates || []).find((c) => c.candidate_id === body.candidate_id);
-                    if (choice) {
-                        it.name = choice.name;
-                        it.portion_description = choice.portion_description;
-                        it.source = choice.source || it.source;
-                        it.unclear = false;
-                        if (!Number.isFinite(Number(it.calories)) || it.calories === 0) it.calories = 200;
-                    }
-                    it.candidates = [];
-                }
-            } else if (kind === 'skip_item') {
-                const it = findItem(body.item_id);
-                if (it) it.status = 'skipped';
-            } else if (kind === 'delete_item') {
-                const it = findItem(body.item_id);
-                if (it) it.status = 'deleted';
-            } else if (kind === 'restore_item') {
-                const it = findItem(body.item_id);
-                if (it) it.status = 'included';
-            } else if (kind === 'set_meal_type') {
-                if (MEAL_TYPE_OPTIONS.includes(body.meal_type)) payload.meal_type = body.meal_type;
-            }
-            this.recompute(payload);
-            return JSON.parse(JSON.stringify(payload));
-        },
-        accept(mealId) {
-            if (!this.store.has(mealId)) throw new Error('mock meal not found: ' + mealId);
-            this.store.delete(mealId);
-            return { saved: true };
-        },
-        discard(mealId) {
-            this.store.delete(mealId);
-            return { removed: true };
-        },
-        recompute(payload) {
-            payload.save_blocked_item_ids = payload.items
-                .filter((it) => it.status === 'included' && it.unclear)
-                .map((it) => it.item_id);
-            const totals = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0, sodium_mg: 0, fiber_g: 0 };
-            payload.items
-                .filter((it) => it.status === 'included')
-                .forEach((it) => {
-                    MEAL_V2_MACRO_KEYS.forEach((k) => {
-                        const v = Number(it[k]);
-                        if (Number.isFinite(v)) totals[k] += v;
-                    });
-                });
-            MEAL_V2_MACRO_KEYS.forEach((k) => { totals[k] = Math.round(totals[k] * 10) / 10; });
-            payload.meal_totals = totals;
-        },
-        inferMealType(text) {
-            const t = String(text || '').toLowerCase();
-            if (/(breakfast|eggs?|bagel|cereal|oatmeal|pancake)/.test(t)) return 'breakfast';
-            if (/(lunch|sandwich|salad|burrito|taco)/.test(t)) return 'lunch';
-            if (/(dinner|steak|pasta|pizza|rice and|grill)/.test(t)) return 'dinner';
-            return 'snack';
-        },
-    };
 
     function clearMealComposerInputs() {
         const { text } = mealComposerEls();
@@ -12405,6 +12235,7 @@
         window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') saveActiveWorkoutDraftBeforePageHidden();
+            else refreshAiStatus();
         });
         window.addEventListener('online', () => {
             refreshMealQueueAuthScope()

@@ -231,17 +231,15 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "url.pathname.endsWith('.js')" in sw
 
 
-def test_dashboard_shell_defers_heavy_app_bundle_until_after_load():
-    """FIT-237: the dashboard document load must not wait on the 500 KB app
-    bundle. A tiny loader may boot the full app after the browser load event,
-    but index.html must not directly include app.js as a parser-blocking
-    script."""
+def test_dashboard_shell_loads_heavy_app_bundle_when_dom_is_ready():
+    """FIT-263: unrelated subresources must not delay dashboard interactivity."""
     template = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
 
     assert "app-loader.js?v=20260629-fit253-open-wearables-link" in template
     assert "<script src=\"/static/js/app.js" not in template
-    assert "window.addEventListener('load', loadAppBundle, { once: true });" in loader
+    assert "document.addEventListener('DOMContentLoaded', loadAppBundle, { once: true });" in loader
+    assert "window.addEventListener('load', loadAppBundle" not in loader
     assert "script.src = '/static/js/app.js?v=20260629-fit253-open-wearables-link';" in loader
     assert "script.async = true;" in loader
 

@@ -69,9 +69,9 @@ def test_branded_added_item_shows_lookup_state():
     # pendingRefresh state drives the "Looking up…" status indicator.
     assert "Looking up" in block
     assert "meal-review-v2--refreshing" in block
-    # The mock recognizes branded names and assigns a branded source.
-    assert "(heb|h-?e-?b|hot cheetos?|chipotle|bill miller|whataburger" in block
-    assert "Branded lookup" in block
+    # Production sends add-item text to the backend, which owns branded lookup.
+    assert "kind: 'add_item', text" in block
+    assert "postMealV2Refresh" in block
 
 
 # ── Scenario 4: Source viewer in-app (no target=_blank) ──
@@ -229,10 +229,9 @@ def test_skip_item_routes_through_backend_recompute():
     assert "data-action=\"restore-item\"" in block
     # The undo affordance only renders on removed items.
     assert "meal-review-v2-item-actions--removed" in block
-    # Mock backend recompute proves the rule for local exercise.
-    mock_recompute = block.split("recompute(payload) {", 1)[1].split("        }", 1)[0]
-    assert "it.status === 'included' && it.unclear" in mock_recompute
-    assert "payload.save_blocked_item_ids =" in mock_recompute
+    # The returned backend payload replaces local state, including blockers.
+    assert "function applyMealV2Refresh" in block
+    assert "save_blocked_item_ids" in block
 
 
 # ── Scenario 13: Meal type inferred + editable via collapsed-view chip ──
@@ -243,9 +242,8 @@ def test_meal_type_inferred_and_editable():
     # collapsed head, and change posts set_meal_type refresh.
     assert "data-action=\"set-meal-type\"" in block
     assert "kind: 'set_meal_type', meal_type: next" in block
-    # Mock inferMealType drives the default for local exercise.
-    assert "inferMealType(text)" in block
-    assert "breakfast|eggs?|bagel|cereal|oatmeal|pancake" in block
+    # The backend owns inference; the frontend validates its returned value.
+    assert "MEAL_TYPE_OPTIONS.includes(payload.meal_type)" in block
 
 
 # ── Scenario 14: No workout-skip / low-confidence-workout copy in food log UI ──
