@@ -502,7 +502,7 @@
 
         host.hidden = false;
         host.appendChild(card);
-        applyWorkoutAdaptationToActiveWorkout(event);
+        if (event.status === 'applied') applyWorkoutAdaptationToActiveWorkout(event);
     }
 
     async function fetchWorkoutAdaptationNotices() {

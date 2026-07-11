@@ -1375,6 +1375,33 @@ def _mark_source_workout_adaptations_stale(
     return len(matching_ids)
 
 
+_WORKOUT_ADAPTATION_SOURCE_FIELDS = (
+    "date",
+    "logged_at",
+    "meal_id",
+    "meal_type",
+    "item_name",
+    "portion_description",
+    "context_note",
+    "calories",
+    "protein_g",
+    "carbs_g",
+    "fat_g",
+    "sodium_mg",
+    "fiber_g",
+    "confidence",
+    "source",
+)
+
+
+def _workout_adaptation_source_changed(previous: dict, current: dict) -> bool:
+    """Return whether a persisted field used by adaptation logic changed."""
+    return any(
+        previous.get(field) != current.get(field)
+        for field in _WORKOUT_ADAPTATION_SOURCE_FIELDS
+    )
+
+
 def acknowledge_workout_adaptation_event(user_id: int, event_id: str) -> bool:
     """Mark one workout adaptation event acknowledged, scoped to the current user."""
     if not event_id:
@@ -2386,7 +2413,15 @@ def add_food_log(user_id: int, record: dict) -> dict:
                 refresh_metadata,
                 now_iso,
             )
-        if previous_row is not None and row is not None and entry["correction_state"] == "corrected":
+        if (
+            previous_row is not None
+            and row is not None
+            and entry["correction_state"] == "corrected"
+            and _workout_adaptation_source_changed(
+                _food_log_row_to_dict(previous_row),
+                _food_log_row_to_dict(row),
+            )
+        ):
             _mark_source_workout_adaptations_stale(
                 conn,
                 user_id,

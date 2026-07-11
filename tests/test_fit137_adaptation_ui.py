@@ -81,6 +81,7 @@ def test_adaptation_notice_renders_neutral_reason_and_collapsed_details():
     assert "role', 'status'" in notice
     assert "aria-live', 'polite'" in notice
     assert "workout-adaptation-dismiss" in notice
+    assert "if (event.status === 'applied') applyWorkoutAdaptationToActiveWorkout(event);" in notice
 
 
 def test_adaptation_dismiss_failure_does_not_duplicate_card():

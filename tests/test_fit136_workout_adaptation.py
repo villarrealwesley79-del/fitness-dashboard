@@ -1042,6 +1042,62 @@ def test_correcting_source_food_log_marks_unacknowledged_adaptation_stale(monkey
     assert stored["reason"] == "Source meal changed; this workout update is no longer current."
 
 
+def test_identical_corrected_food_log_replay_keeps_adaptation_applied(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    original = _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    replay = {
+        key: original.get(key)
+        for key in (
+            "client_id", "date", "logged_at", "meal_id", "item_name",
+            "portion_description", "meal_type", "calories", "protein_g",
+            "carbs_g", "fat_g", "sodium_mg", "fiber_g", "confidence", "source",
+        )
+    }
+    replay["correction_state"] = "corrected"
+    data_store.add_food_log(1, replay)
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "applied"
+
+
+def test_corrected_food_log_meal_reassignment_marks_adaptation_stale(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    original = _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    replay = {
+        key: original.get(key)
+        for key in (
+            "client_id", "date", "logged_at", "item_name", "portion_description",
+            "meal_type", "calories", "protein_g", "carbs_g", "fat_g",
+            "sodium_mg", "fiber_g", "confidence", "source",
+        )
+    }
+    replay.update(meal_id="meal-2", correction_state="corrected")
+    data_store.add_food_log(1, replay)
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "stale"
+
+
 def test_deleting_source_food_log_marks_unacknowledged_adaptation_stale(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     _food_log("source-meal", meal_id="meal-1")
