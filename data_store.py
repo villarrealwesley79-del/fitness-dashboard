@@ -2402,29 +2402,31 @@ def upsert_settings(user_id: int, settings: dict) -> None:
 
 
 # ── Account Management ────────────────────────────────────────────────────────
+DELETE_USER_DATA_TABLES = (
+    "body_data",
+    "cardio_data",
+    "nutrition_data",
+    "food_logs",
+    "food_log_refresh_events",
+    "workout_adaptation_pending",
+    "workout_adaptation_events",
+    "personal_vocab",
+    "meal_acceptance_events",
+    "meal_review_snapshots",
+    "current_workout_plans",
+    "recovery_data",
+    "user_settings",
+    "push_subscriptions",
+    "branded_lookup_cache",
+    "barcode_lookup_cache",
+)
+
+
 def delete_user_data(user_id: int) -> None:
-    """Permanently delete all data for a user (GDPR / account deletion)."""
-    tables = [
-        "body_data",
-        "cardio_data",
-        "nutrition_data",
-        "food_logs",
-        "food_log_refresh_events",
-        "workout_adaptation_pending",
-        "workout_adaptation_events",
-        "personal_vocab",
-        "meal_acceptance_events",
-        "meal_review_snapshots",
-        "current_workout_plans",
-        "recovery_data",
-        "user_settings",
-    ]
+    """Delete the documented user-scoped rows, not every local data store."""
     with _get_db() as conn:
-        for table in tables:
+        for table in DELETE_USER_DATA_TABLES:
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM push_subscriptions WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM branded_lookup_cache WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM barcode_lookup_cache WHERE user_id = ?", (user_id,))
         conn.commit()
 
 

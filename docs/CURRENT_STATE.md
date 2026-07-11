@@ -143,6 +143,7 @@ The repo supports primary and fallback LM Studio routes. Authenticated AI health
 - Release, restart, rollback, cache-bust, and Apple Health bridge checks are documented in `docs/RELEASE_RUNBOOK.md`.
 - Runtime/stale artifact policy is documented in `docs/REPO_HYGIENE.md`; do not delete runtime data during cleanup without explicit approval.
 - The app is single-owner by design; public multi-user mode would require per-user data stores.
+- There is no full local-data purge API or button. The internal structured-row deletion helper affects only documented `fitness_data.db` tables; full owner-operated boundaries and the read-only inventory are documented in `docs/LOCAL_DATA_DELETION.md`.
 - Apple Health Health Auto Export ingest derives `record_date` from the ISO timestamp's own timezone offset rather than slicing the first 10 characters.
 - If older Apple Health synced rows look misdated after travel, backfill by deleting the affected `health_auto_export` rows for the wrong `record_date` range from `apple_health_sync.db` and replaying the original HAE export payload; the widened `(source, record_type, record_date, record_key)` uniqueness will reinsert them under the corrected local day.
 - Side-specific soreness and joint limitations are not modeled yet.
