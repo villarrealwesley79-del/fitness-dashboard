@@ -5213,6 +5213,50 @@ def test_meal_intake_accept_persists_estimate(monkeypatch):
     assert captured["context_note"] == "movie theater popcorn"
 
 
+def test_direct_accept_ignores_client_asserted_correction_state(monkeypatch):
+    module = _client(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        module,
+        "add_food_log",
+        lambda _user_id, record: (captured.update(record), dict(record))[1],
+    )
+
+    response = module.app.test_client().post(
+        "/api/meal-intake/client-asserted-correction/accept",
+        json={
+            "estimate": _accepted_estimate(),
+            "original_estimate": _accepted_estimate(calories=900),
+            "correction_state": "corrected",
+            "corrected": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["correction_state"] == "accepted"
+
+
+def test_duplicate_accept_with_changed_payload_keeps_original_accepted_row(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    first = client.post(
+        "/api/meal-intake/duplicate-accept/accept",
+        json={"estimate": _accepted_estimate(calories=500)},
+    )
+    second = client.post(
+        "/api/meal-intake/duplicate-accept/accept",
+        json={"estimate": _accepted_estimate(calories=900)},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    stored = next(
+        row for row in data_store.get_food_logs(1) if row["client_id"] == "duplicate-accept"
+    )
+    assert stored["calories"] == 500
+    assert second.get_json()["error"]["code"] == "duplicate_client_id"
+
+
 def test_meal_intake_accept_uses_vision_description_for_image_only_vocab(monkeypatch):
     module = _client(monkeypatch)
     vocab_calls = []
@@ -5249,11 +5293,11 @@ def test_meal_intake_accept_uses_vision_description_for_image_only_vocab(monkeyp
     assert vocab_calls[0][1] == "Bill Miller BBQ cart with Bacon & Egg Taco and two Breakfast Sandwiches"
 
 
-def test_meal_intake_corrected_image_vocab_uses_user_phrase(monkeypatch):
+def test_meal_intake_client_correction_flag_does_not_train_as_correction(monkeypatch):
     module = _client(monkeypatch)
     vocab_calls = []
     monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: True)
-    monkeypatch.setattr(module.personal_vocab, "record_correct", lambda *args, **_kw: vocab_calls.append(args))
+    monkeypatch.setattr(module.personal_vocab, "record_accept", lambda *args, **_kw: vocab_calls.append(args))
     monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
 
     res = module.app.test_client().post(
@@ -5284,7 +5328,7 @@ def test_meal_intake_corrected_image_vocab_uses_user_phrase(monkeypatch):
     )
 
     assert res.status_code == 200, res.get_data(as_text=True)
-    assert vocab_calls[0][1] == "Bill Miller"
+    assert vocab_calls[0][1] == "Bill Miller BBQ cart with Bacon & Egg Taco and two Breakfast Sandwiches"
 
 
 def test_meal_intake_accept_requires_calories(monkeypatch):
