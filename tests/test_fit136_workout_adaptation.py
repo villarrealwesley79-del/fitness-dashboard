@@ -1017,6 +1017,61 @@ def test_unacknowledged_feed_prioritizes_applied_events_over_newer_silent_rows(m
     assert events[0]["id"] == applied["id"]
 
 
+def test_unacknowledged_feed_prioritizes_stale_transition_over_applied_rows(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("stale-source", meal_id="meal-stale")
+    stale = _saved_adaptation_event(
+        1,
+        client_id="stale-source",
+        created_at="2026-05-24T12:03:01",
+    )
+    _food_log(
+        "stale-source",
+        meal_id="meal-stale",
+        correction_state="corrected",
+        calories=650,
+    )
+    for index in range(10):
+        _saved_adaptation_event(
+            1,
+            client_id=f"applied-source-{index}",
+            created_at=f"2026-05-24T13:{index:02d}:00",
+        )
+
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=True, limit=10)
+
+    assert events[0]["id"] == stale["id"]
+    assert events[0]["status"] == "stale"
+
+
+def test_unacknowledged_feed_keeps_applied_event_visible_with_many_stale_rows(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    applied = _saved_adaptation_event(
+        1,
+        client_id="current-applied-source",
+        created_at="2026-05-24T13:00:00",
+    )
+    for index in range(10):
+        client_id = f"stale-source-{index}"
+        meal_id = f"meal-stale-{index}"
+        _food_log(client_id, meal_id=meal_id)
+        _saved_adaptation_event(
+            1,
+            client_id=client_id,
+            created_at=f"2026-05-24T12:{index:02d}:00",
+        )
+        _food_log(
+            client_id,
+            meal_id=meal_id,
+            correction_state="corrected",
+            calories=650 + index,
+        )
+
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=True, limit=10)
+
+    assert applied["id"] in {event["id"] for event in events}
+
+
 def test_correcting_source_food_log_marks_unacknowledged_adaptation_stale(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     _food_log("source-meal", meal_id="meal-1")

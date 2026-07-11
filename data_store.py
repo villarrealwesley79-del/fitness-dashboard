@@ -1323,10 +1323,17 @@ def list_workout_adaptation_events(
               FROM workout_adaptation_events
              WHERE {where_sql}
              ORDER BY CASE
-                        WHEN status = 'applied' AND silent = 0 THEN 0
-                        WHEN status = 'stale' AND silent = 0 THEN 1
-                        ELSE 2
+                        WHEN status IN ('applied', 'stale') AND silent = 0 THEN 0
+                        ELSE 1
                       END,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY CASE
+                          WHEN status IN ('applied', 'stale') AND silent = 0 THEN status
+                          ELSE 'silent'
+                        END
+                        ORDER BY created_at DESC
+                      ),
+                      CASE WHEN status = 'stale' THEN 0 ELSE 1 END,
                       created_at DESC
              LIMIT ?
             """,
