@@ -9464,6 +9464,13 @@ def food_logs_by_date(date):
     # client. Matches the FIT-9 retention rule: no image bytes or
     # original prompts.
     def _project(entry: dict) -> dict:
+        original_estimate = entry.get("original_estimate")
+        accepted_estimate = sanitize_accepted_estimate(entry.get("accepted_estimate"))
+        from_image = bool(
+            entry.get("from_image") is True
+            or isinstance(accepted_estimate, dict) and accepted_estimate.get("from_image") is True
+            or isinstance(original_estimate, dict) and original_estimate.get("from_image") is True
+        )
         return {
             "client_id": entry.get("client_id"),
             # FIT-100: include `date` so the correction flow can target
@@ -9482,8 +9489,8 @@ def food_logs_by_date(date):
             "source": entry.get("source"),
             "confidence": entry.get("confidence"),
             "correction_state": entry.get("correction_state"),
-            "accepted_estimate": sanitize_accepted_estimate(entry.get("accepted_estimate")),
-            "from_image": entry.get("from_image"),
+            "accepted_estimate": accepted_estimate,
+            "from_image": from_image,
         }
 
     entries = [_project(e) for e in same_day]

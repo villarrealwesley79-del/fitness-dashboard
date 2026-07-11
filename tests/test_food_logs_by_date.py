@@ -109,6 +109,29 @@ def test_returned_entries_use_bounded_projection(fitness_app, monkeypatch):
     assert entry["accepted_estimate"] is None
 
 
+def test_projection_derives_photo_provenance_from_sanitized_original(fitness_app, monkeypatch):
+    today = _today()
+    monkeypatch.setattr(
+        fitness_app,
+        "_food_log_entries_for_context",
+        lambda since=None, limit=None: [{
+            "client_id": "photo-fallback-1",
+            "date": today,
+            "logged_at": f"{today}T12:00:00",
+            "item_name": "Restaurant combo",
+            "calories": 900,
+            "source": "ai_text_estimate",
+            "correction_state": "corrected",
+            "original_estimate": {"from_image": True},
+        }],
+    )
+
+    response = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{today}")
+
+    assert response.status_code == 200
+    assert response.get_json()["entries"][0]["from_image"] is True
+
+
 def test_valid_iso_date_returns_200_even_when_empty(fitness_app):
     res = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{_today()}")
     assert res.status_code == 200

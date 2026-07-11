@@ -67,6 +67,34 @@ def test_food_log_preserves_final_values_and_sanitized_original_estimate(isolate
     assert rows[0]["original_estimate"] == saved["original_estimate"]
 
 
+def test_food_log_read_derives_photo_provenance_from_original_estimate(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+
+    saved = store.add_food_log(
+        user_id=1,
+        record={
+            "client_id": "photo-fallback-1",
+            "date": "2026-06-03",
+            "logged_at": "2026-06-03T12:30:00",
+            "item_name": "Restaurant combo",
+            "calories": 900,
+            "source": "ai_text_estimate",
+            "correction_state": "corrected",
+            "original_estimate": {
+                "item_name": "Restaurant combo",
+                "calories": 900,
+                "source": "ai_text_estimate",
+                "from_image": True,
+            },
+        },
+    )
+
+    assert saved["from_image"] is True
+    assert store.get_food_logs(1)[0]["from_image"] is True
+
+
+
 def test_food_log_persists_multi_item_meal_metadata(isolated_store):
     store, _ = isolated_store
     store.init_data_db()
