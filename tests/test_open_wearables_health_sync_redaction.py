@@ -1,5 +1,6 @@
 import importlib
 import json
+from datetime import datetime, timedelta, timezone
 
 
 def _fitness_app():
@@ -2155,12 +2156,13 @@ def test_open_wearables_mobile_invite_returns_sdk_code_without_secret(monkeypatc
     monkeypatch.setattr(module, "OPEN_WEARABLES_USER_ID", "11111111-1111-4111-8111-111111111111")
     monkeypatch.setattr(module, "OPEN_WEARABLES_SERVICE_BASE", "http://localhost:8000")
     monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-test-token")
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
 
     def fake_json_request(url, **kwargs):
         assert kwargs.get("method") == "POST"
         assert kwargs.get("token") == "safe-test-token"
         assert url.endswith("/api/v1/users/11111111-1111-4111-8111-111111111111/invitation-code")
-        return {"code": "ABCD2345", "expires_at": "2026-06-28T09:00:00Z"}
+        return {"code": "ABCD2345", "expires_at": expires_at}
 
     monkeypatch.setattr(module, "_ow_json_request", fake_json_request)
 
@@ -2177,6 +2179,7 @@ def test_open_wearables_mobile_invite_returns_sdk_code_without_secret(monkeypatc
     assert payload["invite"]["label"] == "Apple Health"
     assert payload["invite"]["server_url"] == "http://admins-mac-mini.tail6c6490.ts.net:8000"
     assert payload["invite"]["code"] == "ABCD2345"
+    assert datetime.fromisoformat(payload["invite"]["expires_at"].replace("Z", "+00:00")) > datetime.now(timezone.utc)
     assert "saved-credential" not in response.get_data(as_text=True)
 
 

@@ -8,6 +8,7 @@ no Flask imports, no database calls, and no raw prompt/image fields.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -61,7 +62,7 @@ def _number(value: Any, field: str, *, maximum: float | None = None) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise MealEstimateValidationError(f"{field} must be numeric")
     numeric = float(value)
-    if numeric < 0 or (maximum is not None and numeric > maximum):
+    if not math.isfinite(numeric) or numeric < 0 or (maximum is not None and numeric > maximum):
         raise MealEstimateValidationError(f"{field} outside plausible range")
     return numeric
 

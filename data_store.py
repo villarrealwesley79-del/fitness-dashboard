@@ -12,6 +12,7 @@ Created for Fitness Dashboard SaaS per-user isolation.
 """
 
 import json
+import math
 import sqlite3
 import hashlib
 from contextlib import contextmanager
@@ -81,13 +82,35 @@ FOOD_ESTIMATE_FIELDS = {
     "portion_basis",
     "brand_id",
     "underlying_source",
+    "underlying_sources",
     "off_attribution",
     "from_image",
     "personal_vocab_phrase",
     "vision_description",
     "vision_provider",
     "vision_confidence",
+    "_imported_pending_untrusted",
 }
+_ACCEPTED_NUTRITION_SOURCES = {"nutritionix", "usda_fdc", "open_food_facts", "heb_product_page"}
+_ACCEPTED_NUTRITION_WRAPPERS = {
+    "vision_claude",
+    "vision_lm_studio",
+    "vision_ollama",
+    "local_cache",
+}
+_CURRENT_ESTIMATE_PROJECTION_FIELDS = (
+    "item_name",
+    "portion_description",
+    "meal_type",
+    "calories",
+    "protein_g",
+    "carbs_g",
+    "fat_g",
+    "sodium_mg",
+    "fiber_g",
+    "confidence",
+    "source",
+)
 
 
 def _json_dumps_or_none(value):
@@ -123,7 +146,133 @@ def sanitize_food_estimate(estimate: Optional[dict]) -> Optional[dict]:
         }
         if cleaned:
             safe["off_attribution"] = cleaned
+    if "from_image" in safe and not isinstance(safe["from_image"], bool):
+        safe.pop("from_image", None)
+    if "_imported_pending_untrusted" in safe and safe["_imported_pending_untrusted"] is not True:
+        safe.pop("_imported_pending_untrusted", None)
     return safe or None
+
+
+def _has_accepted_mixed_provenance(estimate: Optional[dict]) -> bool:
+    if not isinstance(estimate, dict):
+        return False
+    source = str(estimate.get("source") or "").strip().lower()
+    underlying_source = str(estimate.get("underlying_source") or "").strip().lower()
+    provenance_parts = _provenance_components(source, underlying_source)
+    allowed_components = _ACCEPTED_NUTRITION_SOURCES | _ACCEPTED_NUTRITION_WRAPPERS | {"mixed_lookup"}
+    if not provenance_parts or not provenance_parts.issubset(allowed_components):
+        return False
+    is_mixed = "mixed_lookup" in provenance_parts
+    sources = estimate.get("underlying_sources")
+    return (
+        is_mixed
+        and not bool(estimate.get("ambiguous"))
+        and isinstance(sources, list)
+        and bool(sources)
+        and _has_valid_declared_underlying_sources(estimate)
+    )
+
+
+def _provenance_components(source: str, underlying_source: str) -> set[str]:
+    return {
+        part.strip()
+        for value in (source, underlying_source)
+        for part in value.split("+")
+        if part.strip()
+    }
+
+
+def _has_valid_declared_underlying_sources(estimate: Optional[dict]) -> bool:
+    if not isinstance(estimate, dict):
+        return False
+    sources = estimate.get("underlying_sources")
+    if sources is None:
+        return True
+    return (
+        isinstance(sources, list)
+        and bool(sources)
+        and all(
+            isinstance(value, str)
+            and value.strip().lower() in _ACCEPTED_NUTRITION_SOURCES
+            for value in sources
+        )
+    )
+
+
+def sanitize_accepted_estimate(estimate: Optional[dict]) -> Optional[dict]:
+    safe = sanitize_food_estimate(estimate)
+    if not safe:
+        return safe
+    sources = estimate.get("underlying_sources") if isinstance(estimate, dict) else None
+    if _has_accepted_mixed_provenance(estimate):
+        safe["underlying_sources"] = [value.strip().lower() for value in sources]
+    else:
+        safe.pop("underlying_sources", None)
+    return safe
+
+
+def _is_authorized_accepted_estimate_replacement(estimate: Optional[dict]) -> bool:
+    safe = sanitize_accepted_estimate(estimate)
+    if not isinstance(safe, dict):
+        return False
+    if bool(safe.get("ambiguous")):
+        return False
+    if not _has_valid_declared_underlying_sources(estimate):
+        return False
+    for field in ("calories", "protein_g", "carbs_g", "fat_g"):
+        value = safe.get(field)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            return False
+    for field in ("sodium_mg", "fiber_g"):
+        value = safe.get(field)
+        if value is None:
+            continue
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            return False
+    confidence = safe.get("confidence")
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not math.isfinite(confidence)
+        or not 0 <= confidence <= 1
+    ):
+        return False
+    source = str(safe.get("source") or "").strip().lower()
+    underlying_source = str(safe.get("underlying_source") or "").strip().lower()
+    provenance_parts = _provenance_components(source, underlying_source)
+    allowed_components = _ACCEPTED_NUTRITION_SOURCES | _ACCEPTED_NUTRITION_WRAPPERS | {"mixed_lookup"}
+    if not provenance_parts or not provenance_parts.issubset(allowed_components):
+        return False
+    if "mixed_lookup" in provenance_parts:
+        return _has_accepted_mixed_provenance(estimate)
+    providers = provenance_parts & _ACCEPTED_NUTRITION_SOURCES
+    if len(providers) != 1:
+        return False
+    declared_sources = estimate.get("underlying_sources") if isinstance(estimate, dict) else None
+    if declared_sources is not None:
+        return {
+            value.strip().lower()
+            for value in declared_sources
+        } == providers
+    return True
+
+
+def _project_accepted_estimate_onto_entry(entry: dict, accepted_estimate: Optional[dict]) -> None:
+    if not isinstance(accepted_estimate, dict):
+        return
+    for field in _CURRENT_ESTIMATE_PROJECTION_FIELDS:
+        if field in accepted_estimate:
+            entry[field] = accepted_estimate[field]
 
 
 def _endpoint_hash(endpoint: str) -> str:
@@ -311,6 +460,7 @@ def init_data_db():
                 source                 TEXT,
                 correction_state       TEXT,
                 original_estimate_json TEXT,
+                accepted_estimate_json TEXT,
                 meal_id                TEXT,
                 meal_item_id           TEXT,
                 item_index             INTEGER,
@@ -501,6 +651,7 @@ def init_data_db():
             "source": "TEXT",
             "correction_state": "TEXT",
             "original_estimate_json": "TEXT",
+            "accepted_estimate_json": "TEXT",
             "meal_id": "TEXT",
             "meal_item_id": "TEXT",
             "item_index": "INTEGER",
@@ -763,6 +914,7 @@ def add_nutrition_record(user_id: int, record: dict) -> None:
 def _food_log_row_to_dict(row) -> dict:
     d = _row_to_dict(row)
     d["original_estimate"] = _json_loads_or_none(d.pop("original_estimate_json", None))
+    d["accepted_estimate"] = _json_loads_or_none(d.pop("accepted_estimate_json", None))
     return d
 
 
@@ -1593,10 +1745,63 @@ def import_meal_review_snapshot(user_id: int, snapshot: dict) -> dict | None:
     payload = snapshot.get("payload")
     if not meal_id or not isinstance(payload, dict):
         return None
+    imported_payload = {
+        key: value
+        for key, value in payload.items()
+        if key not in {
+            "server_source_backed_candidate",
+            "_imported_candidates_untrusted",
+            "_imported_snapshot_untrusted",
+            "_material_correction_from_submission",
+        }
+    }
+    imported_payload["_imported_snapshot_untrusted"] = True
+    imported_items = payload.get("items")
+    if isinstance(imported_items, list):
+        imported_payload["items"] = []
+        used_item_ids = set()
+        for position, item in enumerate(imported_items, start=1):
+            if not isinstance(item, dict):
+                continue
+            imported_item = {
+                key: value
+                for key, value in item.items()
+                if key not in {
+                    "server_source_backed_candidate",
+                    "_imported_candidates_untrusted",
+                    "_imported_snapshot_untrusted",
+                    "_material_correction_from_submission",
+                }
+            }
+            item_id = str(imported_item.get("item_id") or "").strip()
+            if not item_id or item_id in used_item_ids:
+                item_id = f"item-{position}"
+            used_item_ids.add(item_id)
+            imported_item["item_id"] = item_id
+            try:
+                item_order = int(imported_item.get("item_order"))
+            except (TypeError, ValueError):
+                item_order = position
+            imported_item["item_order"] = item_order if item_order > 0 else position
+            candidates = item.get("candidates")
+            if isinstance(candidates, list):
+                imported_item["candidates"] = [
+                    {
+                        key: value
+                        for key, value in candidate.items()
+                        if key != "source_backed"
+                    }
+                    if isinstance(candidate, dict)
+                    else candidate
+                    for candidate in candidates
+                ]
+            imported_item["_imported_candidates_untrusted"] = bool(candidates)
+            imported_item["_imported_snapshot_untrusted"] = True
+            imported_payload["items"].append(imported_item)
     return save_meal_review_snapshot(
         user_id,
         meal_id=meal_id,
-        payload=payload,
+        payload=imported_payload,
         next_item_seq=snapshot.get("next_item_seq") or 1,
         applied_refreshes=snapshot.get("applied_refreshes") or {},
     )
@@ -1956,6 +2161,7 @@ def add_food_log(user_id: int, record: dict) -> dict:
     logged_at = record.get("logged_at") or record.get("timestamp") or now_iso
     date_s = record.get("date") or str(logged_at)[:10]
     original_estimate = sanitize_food_estimate(record.get("original_estimate") or record.get("estimate"))
+    accepted_estimate = sanitize_accepted_estimate(record.get("accepted_estimate"))
     entry = {
         "client_id": record.get("client_id") or None,
         "date": date_s,
@@ -1975,6 +2181,7 @@ def add_food_log(user_id: int, record: dict) -> dict:
         "source": record.get("source") or ("vision_estimate" if original_estimate else "manual"),
         "correction_state": record.get("correction_state") or ("accepted" if original_estimate else "manual"),
         "original_estimate_json": _json_dumps_or_none(original_estimate),
+        "accepted_estimate_json": _json_dumps_or_none(accepted_estimate),
         "meal_id": record.get("meal_id") or None,
         "meal_item_id": record.get("meal_item_id") or None,
         "item_index": record.get("item_index"),
@@ -1982,14 +2189,107 @@ def add_food_log(user_id: int, record: dict) -> dict:
         "created_at": record.get("created_at") or now_iso,
         "updated_at": now_iso,
     }
+    if (
+        entry["correction_state"] in {"accepted", "corrected"}
+        and _is_authorized_accepted_estimate_replacement(record.get("accepted_estimate"))
+    ):
+        _project_accepted_estimate_onto_entry(entry, accepted_estimate)
     refresh_metadata = _refresh_event_metadata(record)
     with _get_db() as conn:
         previous_row = None
-        if refresh_metadata is not None and entry.get("client_id"):
+        if entry.get("client_id"):
             previous_row = conn.execute(
                 "SELECT * FROM food_logs WHERE user_id = ? AND client_id = ? LIMIT 1",
                 (user_id, entry["client_id"]),
             ).fetchone()
+        previous = _food_log_row_to_dict(previous_row) if previous_row is not None else None
+        previous_is_terminal = bool(
+            isinstance(previous, dict)
+            and previous.get("correction_state") in {"accepted", "corrected"}
+        )
+        if previous_is_terminal:
+            previous_original = previous.get("original_estimate")
+            if isinstance(previous_original, dict):
+                entry["original_estimate_json"] = _json_dumps_or_none(previous_original)
+            has_explicit_current = _is_authorized_accepted_estimate_replacement(
+                record.get("accepted_estimate")
+            )
+            if not has_explicit_current:
+                entry["source"] = previous.get("source") or entry["source"]
+            else:
+                _project_accepted_estimate_onto_entry(entry, accepted_estimate)
+            if not has_explicit_current and entry["correction_state"] != "pending_review":
+                prior_current = previous.get("accepted_estimate") or previous_original
+                if isinstance(prior_current, dict):
+                    merged_current = dict(prior_current)
+                    core_nutrition_fields = {"calories", "protein_g", "carbs_g", "fat_g"}
+                    changed_nutrition = False
+                    for field in (
+                        "item_name",
+                        "portion_description",
+                        "meal_type",
+                        "calories",
+                        "protein_g",
+                        "carbs_g",
+                        "fat_g",
+                        "sodium_mg",
+                        "fiber_g",
+                        "confidence",
+                    ):
+                        value = entry.get(field)
+                        nullable_nutrition = {"carbs_g", "fat_g", "sodium_mg", "fiber_g", "confidence"}
+                        if field in nullable_nutrition and field in record and value is None:
+                            changed_nutrition = changed_nutrition or merged_current.get(field) is not None
+                            merged_current[field] = None
+                        elif value is not None and not (
+                            field in core_nutrition_fields | {"sodium_mg", "fiber_g", "confidence"}
+                            and (
+                                isinstance(value, bool)
+                                or not isinstance(value, (int, float))
+                                or not math.isfinite(value)
+                                or value < 0
+                                or (field == "confidence" and value > 1)
+                            )
+                        ):
+                            if field in core_nutrition_fields | {"sodium_mg", "fiber_g"}:
+                                changed_nutrition = changed_nutrition or merged_current.get(field) != value
+                            merged_current[field] = entry[field]
+                    if changed_nutrition:
+                        for field in (
+                            "external_food_id",
+                            "verified_source_url",
+                            "data_fetched_at",
+                            "portion_basis",
+                            "brand_id",
+                            "underlying_source",
+                            "underlying_sources",
+                            "off_attribution",
+                            "vision_description",
+                            "vision_provider",
+                            "vision_confidence",
+                        ):
+                            merged_current.pop(field, None)
+                        merged_current["source"] = "manual_review_estimate"
+                        entry["source"] = "manual_review_estimate"
+                    else:
+                        merged_current["source"] = entry["source"]
+                    finalized_current = sanitize_accepted_estimate(merged_current)
+                    entry["accepted_estimate_json"] = _json_dumps_or_none(finalized_current)
+                    if isinstance(finalized_current, dict):
+                        for field in (
+                            "item_name",
+                            "portion_description",
+                            "meal_type",
+                            "calories",
+                            "protein_g",
+                            "carbs_g",
+                            "fat_g",
+                            "sodium_mg",
+                            "fiber_g",
+                            "confidence",
+                        ):
+                            if field in finalized_current:
+                                entry[field] = finalized_current[field]
         cols = ["user_id"] + list(entry.keys())
         vals = [user_id] + [entry[c] for c in entry]
         placeholders = ", ".join(["?"] * len(cols))
