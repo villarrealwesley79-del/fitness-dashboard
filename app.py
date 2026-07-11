@@ -9131,7 +9131,12 @@ def meal_intake_accept(client_id: str):
         isinstance(existing, dict)
         and existing.get("correction_state") in {CORRECTION_STATE_ACCEPTED, "corrected"}
     ):
-        existing_estimate = _stored_food_log_baseline(existing)
+        existing_current = existing.get("accepted_estimate")
+        existing_estimate = (
+            existing_current
+            if isinstance(existing_current, dict)
+            else _stored_food_log_baseline(existing)
+        )
         if _review_estimate_differs(estimate, existing_estimate):
             return api_error(
                 "client_id already belongs to a different accepted meal",
@@ -9224,11 +9229,23 @@ def meal_intake_accept(client_id: str):
         protect_terminal_client_id=True,
     )
     if food_log.pop("_protected_client_id_conflict", False):
-        return api_error(
-            "client_id already belongs to a different accepted meal",
-            409,
-            code="duplicate_client_id",
+        accepted_current = food_log.get("accepted_estimate")
+        conflict_baseline = (
+            accepted_current
+            if isinstance(accepted_current, dict)
+            else _stored_food_log_baseline(food_log)
         )
+        if _review_estimate_differs(estimate, conflict_baseline):
+            return api_error(
+                "client_id already belongs to a different accepted meal",
+                409,
+                code="duplicate_client_id",
+            )
+        return jsonify({
+            "status": "logged",
+            "food_log": food_log,
+            "photo_retention": _food_photo_retention_payload(originated_from_image),
+        })
     if (
         not _review_placeholder_nutrition_not_resolved({
             "estimate": estimate,

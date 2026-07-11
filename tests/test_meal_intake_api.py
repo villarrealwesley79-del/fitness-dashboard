@@ -5309,6 +5309,72 @@ def test_protected_food_log_accept_is_atomic_across_connections(monkeypatch):
     assert stored["calories"] == winner["calories"]
 
 
+def test_concurrent_identical_food_log_accepts_are_idempotent(monkeypatch):
+    module = _client(monkeypatch)
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    barrier = Barrier(2)
+
+    def accept():
+        barrier.wait()
+        with module.app.test_client() as client:
+            return client.post(
+                "/api/meal-intake/concurrent-identical-accept/accept",
+                json={"estimate": _accepted_estimate(calories=500)},
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _index: accept(), range(2)))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert {response.get_json()["food_log"]["calories"] for response in responses} == {500}
+    stored = [
+        row for row in data_store.get_food_logs(1)
+        if row["client_id"] == "concurrent-identical-accept"
+    ]
+    assert len(stored) == 1
+
+
+def test_concurrent_identical_corrected_accepts_are_idempotent(monkeypatch):
+    module = _client(monkeypatch)
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    client_id = "concurrent-identical-corrected"
+    original = _accepted_estimate(calories=400)
+    data_store.add_food_log(1, {
+        "client_id": client_id,
+        "item_name": original["item_name"],
+        "calories": original["calories"],
+        "protein_g": original["protein_g"],
+        "carbs_g": original["carbs_g"],
+        "fat_g": original["fat_g"],
+        "source": original["source"],
+        "correction_state": "pending_review",
+        "original_estimate": original,
+    })
+    barrier = Barrier(2)
+
+    def accept():
+        barrier.wait()
+        with module.app.test_client() as client:
+            return client.post(
+                f"/api/meal-intake/{client_id}/accept",
+                json={"estimate": _accepted_estimate(calories=500)},
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _index: accept(), range(2)))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert {response.get_json()["food_log"]["calories"] for response in responses} == {500}
+    stored = next(row for row in data_store.get_food_logs(1) if row["client_id"] == client_id)
+    assert stored["correction_state"] == "corrected"
+    assert stored["original_estimate"]["calories"] == 400
+    assert stored["accepted_estimate"]["calories"] == 500
+
+
 def test_meal_intake_accept_uses_vision_description_for_image_only_vocab(monkeypatch):
     module = _client(monkeypatch)
     vocab_calls = []
