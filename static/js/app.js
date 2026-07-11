@@ -382,6 +382,7 @@
     // renders it, only the projected event's user-visible reason + signals.
     const workoutAdaptationNoticeState = {
         seen: new Set(),
+        statuses: new Map(),
         fetching: false,
     };
 
@@ -445,6 +446,7 @@
 
         const card = document.createElement('div');
         card.className = 'card workout-adaptation-card';
+        card.dataset.workoutAdaptationId = event.id;
         card.setAttribute('role', 'status');
         card.setAttribute('aria-live', 'polite');
 
@@ -513,8 +515,18 @@
             const events = (payload && payload.events) || [];
             for (const event of events) {
                 if (!event || !event.id) continue;
-                if (workoutAdaptationNoticeState.seen.has(event.id)) continue;
+                const previousStatus = workoutAdaptationNoticeState.statuses.get(event.id);
+                if (workoutAdaptationNoticeState.seen.has(event.id) && previousStatus === event.status) continue;
                 workoutAdaptationNoticeState.seen.add(event.id);
+                workoutAdaptationNoticeState.statuses.set(event.id, event.status);
+                if (previousStatus !== undefined) {
+                    const host = $('workout-adaptation-host');
+                    if (host) {
+                        for (const card of host.querySelectorAll('[data-workout-adaptation-id]')) {
+                            if (card.dataset.workoutAdaptationId === event.id) card.remove();
+                        }
+                    }
+                }
                 // Silent (no-change / low-confidence) and next-day events are
                 // intentionally swallowed — marked seen but never rendered.
                 if (!workoutAdaptationIsRenderable(event)) continue;

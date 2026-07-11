@@ -61,6 +61,67 @@ def test_adaptation_fetch_swallows_silent_and_nextday_events():
     assert "showWorkoutAdaptationNotice(event)" in fetch_block
 
 
+def test_adaptation_poll_replaces_card_when_server_status_changes():
+    js = APP_JS.read_text()
+    state_block = _block(
+        js,
+        "const workoutAdaptationNoticeState = {",
+        "function workoutAdaptationIsRenderable",
+    )
+    fetch_block = _block(
+        js,
+        "async function fetchWorkoutAdaptationNotices()",
+        "function newWorkoutId",
+    )
+
+    assert "statuses: new Map()" in state_block
+    assert "previousStatus === event.status" in fetch_block
+    assert "card.dataset.workoutAdaptationId === event.id" in fetch_block
+    assert "card.remove()" in fetch_block
+
+    if not shutil.which("node"):
+        pytest.skip("adaptation status transition regression requires node")
+    script = f"""
+const vm = require('node:vm');
+const fetchSource = {json.dumps(fetch_block)};
+const source = `
+let poll = 0;
+const shown = [];
+const cards = [];
+const host = {{
+  querySelectorAll() {{ return cards.filter((card) => !card.removed); }},
+}};
+const workoutAdaptationNoticeState = {{ fetching: false, seen: new Set(), statuses: new Map() }};
+function withActiveWorkoutAdaptationParams(path) {{ return path; }}
+function workoutAdaptationIsRenderable() {{ return true; }}
+function $(id) {{ return id === 'workout-adaptation-host' ? host : null; }}
+function showWorkoutAdaptationNotice(event) {{
+  shown.push(event.status);
+  cards.push({{
+    dataset: {{ workoutAdaptationId: event.id }},
+    removed: false,
+    remove() {{ this.removed = true; }},
+  }});
+}}
+async function api() {{
+  poll += 1;
+  return {{ events: [{{ id: 'event-1', status: poll === 1 ? 'applied' : 'stale' }}] }};
+}}
+${{fetchSource}}
+module.exports = async () => {{
+  await fetchWorkoutAdaptationNotices();
+  await fetchWorkoutAdaptationNotices();
+  return {{ shown, firstRemoved: cards[0].removed }};
+}};
+`;
+const sandbox = {{ module: {{ exports: {{}} }} }};
+vm.runInNewContext(source, sandbox);
+sandbox.module.exports().then((result) => process.stdout.write(JSON.stringify(result)));
+"""
+    result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True)
+    assert json.loads(result.stdout) == {"shown": ["applied", "stale"], "firstRemoved": True}
+
+
 def test_adaptation_notice_renders_neutral_reason_and_collapsed_details():
     js = APP_JS.read_text()
     notice = _block(
