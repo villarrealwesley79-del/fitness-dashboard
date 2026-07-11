@@ -2170,6 +2170,8 @@ def test_open_wearables_mobile_invite_returns_sdk_code_without_secret(monkeypatc
         "/api/open-wearables/mobile-invite/apple",
         json={},
         base_url="http://admins-mac-mini.tail6c6490.ts.net:5050",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+        environ_overrides={"fitness_dashboard.omit_auto_csrf_header": True},
     )
 
     assert response.status_code == 200
