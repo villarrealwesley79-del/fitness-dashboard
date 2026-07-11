@@ -21,11 +21,21 @@ from datetime import datetime, timedelta
 import pytest
 
 
+REFERENCE_NOW = datetime(2026, 7, 1, 12, 0, 0)
+
+
+class FrozenDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls.fromtimestamp(REFERENCE_NOW.timestamp(), tz=tz)
+
+
 @pytest.fixture()
 def fitness_app(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit93-bydate-secret")
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "datetime", FrozenDateTime)
     # Isolate the two backing stores so each test runs against a known
     # shape and doesn't depend on whatever's in food_logs.sqlite on disk.
     monkeypatch.setattr(module, "NUTRITION_DATA", [])
@@ -37,11 +47,11 @@ def fitness_app(monkeypatch):
 
 
 def _today() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    return REFERENCE_NOW.strftime("%Y-%m-%d")
 
 
 def _today_minus(days: int) -> str:
-    return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    return (REFERENCE_NOW - timedelta(days=days)).strftime("%Y-%m-%d")
 
 
 # ──────────────────────────────────────────────────────────────────

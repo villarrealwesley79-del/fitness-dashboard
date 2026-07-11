@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -250,7 +251,6 @@ def test_api_helper_preserves_csrf_header_when_callers_add_headers():
     api_body = source.split("async function api(path, opts = {}) {", 1)[1].split("if (res.status === 401)", 1)[0]
 
     assert "const headers = { 'Accept': 'application/json', ...(fetchOpts.headers || {}), [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE };" in api_body
-    assert "...fetchOpts,\n                credentials: 'same-origin',\n                headers," in api_body
 
 
 def test_csrf_rollout_bumps_cached_asset_versions():

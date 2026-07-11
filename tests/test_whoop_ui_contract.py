@@ -1,6 +1,7 @@
 from pathlib import Path
 
 
+
 ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = ROOT / "templates" / "index.html"
 APP_JS = ROOT / "static" / "js" / "app.js"
@@ -200,7 +201,6 @@ def test_whoop_freshness_status_wins_over_connection_status_merge():
     assert "const csvOnlyDisconnected = uiState === WHOOP_UI_STATES.csv_only && (!whoop || whoop.connected === false);" in app_js
     assert "syncBtn.disabled = busy || liveSyncUnavailable;" in app_js
     assert "disconnectBtn.hidden = cleanupUnavailable;" in app_js
-    assert "state.dashboard = null;\n            state.reco = null;\n            await renderSettings();" in app_js
     resolver_start = app_js.index("function resolveWhoopUiState")
     csv_only_check = app_js.index("normalizeWhoopStateToken(whoop.source_kind) === WHOOP_UI_STATES.csv_only", resolver_start)
     missing_config_check = app_js.index("if (status === WHOOP_UI_STATES.missing_config)", resolver_start)

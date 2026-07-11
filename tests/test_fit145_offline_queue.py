@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
+
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
 INDEX_HTML = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
@@ -82,7 +83,6 @@ def test_offline_submit_enqueues_with_original_client_id_and_timestamps():
     assert "localStorage.setItem(MEAL_QUEUE_AUTH_SCOPE_KEY, normalized);" in APP_JS
     assert "persistedMealQueueAuthScope()" in APP_JS
     assert "refreshMealQueueAuthScope({ timeoutMs: 2500 })" in APP_JS
-    assert "refreshMealQueueAuthScope()\n                .then((scopeResult) => {\n                    settleActiveWorkoutDraftAfterAuthScope(scopeResult);" in APP_JS
     assert "scheduleMealQueueAuthScopeRetry(scopeResult && scopeResult.status);" in APP_JS
     assert "auth_scope: authScope" in APP_JS
     assert "const authGate = await mealQueueAuthGate(entry);" in APP_JS

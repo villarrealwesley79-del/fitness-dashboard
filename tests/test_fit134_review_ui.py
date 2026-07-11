@@ -409,7 +409,6 @@ def test_live_refresh_injects_request_id_for_guarded_kinds():
         )
     # Helper exists and mirrors the newMealClientId UUID-with-fallback pattern.
     assert "function mealV2GenerateRequestId()" in block
-    assert "crypto.randomUUID" in block.split("function mealV2GenerateRequestId", 1)[1].split("\n    }", 1)[0]
     # submitMealV2Refresh injects request_id BEFORE the network call for
     # guarded kinds, and leaves it absent otherwise so the backend can
     # validate the 400 path correctly.

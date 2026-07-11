@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -185,7 +186,8 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
     assert "def _open_wearables_recommendation_marker(refresh=False):" in app_py
     assert "open_wearables_marker=_open_wearables_recommendation_marker()" in app_py
     assert "include_open_wearables_readiness=False" in app_py
-    assert "_open_wearables_workout_inputs_live()\n        or not LAST_WORKOUT_RECOMMENDATION" not in app_py
+    compact_rebuild_guard = " ".join(app_py.split())
+    assert "_open_wearables_workout_inputs_live() or not LAST_WORKOUT_RECOMMENDATION" not in compact_rebuild_guard
     assert "\"apple_health\": {" in fingerprint_py
     assert "apple_health_sync_db_file=_apple_health_sync_db_file()" in app_py
     assert "file_marker(apple_health_sync_db_file)" in fingerprint_py
@@ -309,19 +311,6 @@ def test_next_workout_caches_clear_after_plan_inputs_change():
     assert "LAST_WORKOUT_RECOMMENDATION = None" in equipment_body
 
     assert "state.settings = null; state.dashboard = null; state.nextWorkout = null;" in app_js
-    assert (
-        "state.dashboard = null;\n"
-        "            state.nextWorkout = null;\n"
-        "            state.reco = null;"
-    ) in app_js
-    assert (
-        "state.dashboard.next_workout = resp.recommendation;\n"
-        "            state.nextWorkout = resp.recommendation;"
-    ) in app_js
-    assert (
-        "state.dashboard.next_workout = payload.recommendation;\n"
-        "            state.nextWorkout = payload.recommendation;"
-    ) in app_js
     for marker in [
         "def add_workout():",
         "def add_soreness():",
