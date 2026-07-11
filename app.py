@@ -121,6 +121,7 @@ from data_store import (
     init_data_db,
     add_food_log,
     get_food_logs,
+    sanitize_accepted_estimate,
     get_meal_acceptance_event,
     get_meal_review_snapshot,
     list_meal_review_snapshots,
@@ -2279,6 +2280,12 @@ def _nutrition_entry_accepted(entry):
 def _food_log_import_record(food_log):
     """Return a copy safe for idempotent backup replay."""
     record = dict(food_log)
+    if record.get("correction_state") == CORRECTION_STATE_PENDING_REVIEW:
+        original = record.get("original_estimate")
+        record["original_estimate"] = {
+            **(original if isinstance(original, dict) else {}),
+            "_imported_pending_untrusted": True,
+        }
     if record.get("client_id"):
         return record
     identity = "|".join(
@@ -5629,7 +5636,7 @@ def add_nutrition():
     if client_id:
         entry["client_id"] = client_id
 
-    food_log = add_food_log(_current_data_user_id(), {
+    food_log_record = {
         **entry,
         "logged_at": logged_at,
         "source_timestamp": source_timestamp,
@@ -5642,7 +5649,11 @@ def add_nutrition():
         "correction_state": correction_state,
         "client_id": client_id,
         "original_estimate": data.get("original_estimate") or data.get("estimate"),
-    })
+    }
+    for field in ("carbs_g", "fat_g", "sodium_mg", "fiber_g", "confidence"):
+        if field not in data:
+            food_log_record.pop(field, None)
+    food_log = add_food_log(_current_data_user_id(), food_log_record)
     if _nutrition_entry_accepted(food_log):
         _enqueue_workout_adaptation_after_accept(_current_data_user_id(), [food_log])
 
@@ -5679,6 +5690,7 @@ _MEAL_ESTIMATE_SAFE_METADATA_FIELDS = (
     "portion_basis",
     "brand_id",
     "underlying_source",
+    "underlying_sources",
     "off_attribution",
     "vision_description",
     "vision_provider",
@@ -5740,6 +5752,13 @@ def _safe_estimate_metadata_scalar(value):
 
 
 def _safe_estimate_metadata_value(key: str, value):
+    if key == "from_image":
+        return value if isinstance(value, bool) else None
+    if key == "underlying_sources":
+        if not isinstance(value, list) or not value:
+            return None
+        safe = [str(source).strip().lower() for source in value if isinstance(source, str) and str(source).strip()]
+        return safe if len(safe) == len(value) else None
     if key == "fallback_reason":
         return value if isinstance(value, str) and value in FALLBACK_REASON_VALUES else None
     if key == "off_attribution":
@@ -5960,8 +5979,35 @@ def _combine_vision_item_lookups(
     same_brand = first_brand and all(str(item.get("brand") or "").strip() == first_brand for item, _lookup, _query in matched)
     labels = [_vision_item_label(item) for item, _lookup, _query in matched]
     portion_labels = [_vision_item_label(item, include_modifiers=True) for item, _lookup, _query in matched]
-    sources = {str(lookup.get("source") or "").strip() for _item, lookup, _query in matched if lookup.get("source")}
-    source = next(iter(sources)) if len(sources) == 1 else "mixed_lookup"
+    effective_sources = set()
+    complete_effective_provenance = True
+    for _item, lookup, _query in matched:
+        source_value = str(lookup.get("source") or "").strip().lower()
+        underlying_source = str(lookup.get("underlying_source") or "").strip().lower()
+        if source_value == "mixed_lookup":
+            underlying_sources = lookup.get("underlying_sources")
+            if (
+                isinstance(underlying_sources, list)
+                and underlying_sources
+                and not bool(lookup.get("ambiguous"))
+                and all(
+                    isinstance(value, str)
+                    and value.strip().lower() in _SOURCE_BACKED_NUTRITION_SOURCES
+                    for value in underlying_sources
+                )
+            ):
+                effective_sources.update(value.strip().lower() for value in underlying_sources)
+            else:
+                complete_effective_provenance = False
+        elif source_value == "personal_vocab":
+            complete_effective_provenance = False
+        elif source_value in _SOURCE_BACKED_NUTRITION_SOURCES:
+            effective_sources.add(source_value)
+        elif underlying_source in _SOURCE_BACKED_NUTRITION_SOURCES:
+            effective_sources.add(underlying_source)
+        else:
+            complete_effective_provenance = False
+    source = next(iter(effective_sources)) if complete_effective_provenance and len(effective_sources) == 1 else "mixed_lookup"
     confidences = [
         float(lookup.get("confidence"))
         for _item, lookup, _query in matched
@@ -5972,6 +6018,8 @@ def _combine_vision_item_lookups(
         notes.extend(str(note).strip() for note in (lookup.get("uncertainty_notes") or []) if str(note).strip())
     if missing:
         notes.append("Some cart items did not match verified nutrition data: " + ", ".join(missing[:3]))
+    if not complete_effective_provenance:
+        notes.append("Some cart items lacked verifiable source provenance.")
     item_name = "; ".join(labels)
     if same_brand:
         item_name = f"{first_brand} order: {item_name}"
@@ -5986,10 +6034,15 @@ def _combine_vision_item_lookups(
         "sodium_mg": _sum_lookup_number(matched, "sodium_mg"),
         "fiber_g": _sum_lookup_number(matched, "fiber_g"),
         "confidence": min(confidences) if confidences else 0.72,
-        "ambiguous": bool(missing) or any(bool(lookup.get("ambiguous")) for _item, lookup, _query in matched),
+        "ambiguous": (
+            bool(missing)
+            or not complete_effective_provenance
+            or any(bool(lookup.get("ambiguous")) for _item, lookup, _query in matched)
+        ),
         "uncertainty_notes": notes,
         "source": source,
         "underlying_source": source,
+        "underlying_sources": sorted(effective_sources),
         "portion_basis": "Structured vision item lookup: " + "; ".join(query for _item, _lookup, query in matched)[:700],
     }
     return estimate
@@ -6148,7 +6201,10 @@ _POLICY_REASON_NOTES = {
     "implausible_macros": "Macros look unusually high — please review.",
     "implausible_sodium": "Sodium estimate looks unusually high — please review.",
     "missing_calories": "Calories are missing from the estimate — please enter manually.",
+    "branded_combo_ai_only": "This branded combo is AI-only; replace it with a source-backed entry or make a material correction before it can count.",
 }
+
+_REVIEW_SNAPSHOT_TRUST_TOKEN = object()
 
 _MEAL_ESTIMATE_PROVENANCE_FIELDS = (
     "external_food_id",
@@ -6157,7 +6213,13 @@ _MEAL_ESTIMATE_PROVENANCE_FIELDS = (
     "portion_basis",
     "brand_id",
     "underlying_source",
+    "underlying_sources",
     "off_attribution",
+    "personal_vocab_phrase",
+    "vision_description",
+    "vision_provider",
+    "vision_confidence",
+    "from_image",
 )
 
 
@@ -6166,13 +6228,33 @@ def _copy_meal_estimate_provenance(estimate: dict, raw_estimate: dict) -> None:
     if not isinstance(raw_estimate, dict):
         return
     for key in _MEAL_ESTIMATE_PROVENANCE_FIELDS:
-        value = raw_estimate.get(key)
-        if isinstance(value, str):
-            cleaned = value.strip()
-            if cleaned:
-                estimate[key] = cleaned[:1000]
+        safe_value = _safe_estimate_metadata_value(key, raw_estimate.get(key))
+        if safe_value is not None:
+            estimate[key] = safe_value
     if isinstance(raw_estimate.get("items"), list):
         estimate["items"] = raw_estimate.get("items")
+
+
+def _honest_material_correction_estimate(
+    estimate: dict,
+    original: dict | None,
+    *,
+    imported_untrusted: bool = False,
+) -> dict:
+    corrected = dict(estimate)
+    for key in _MEAL_ESTIMATE_PROVENANCE_FIELDS:
+        corrected.pop(key, None)
+    corrected["source"] = "manual_review_estimate"
+    if isinstance(original, dict) and original.get("from_image") is True:
+        corrected["from_image"] = True
+    return corrected
+
+
+def _server_snapshot_estimate_with_photo_provenance(estimate: dict, original: dict | None) -> dict:
+    current = dict(estimate)
+    if isinstance(original, dict) and original.get("from_image") is True:
+        current["from_image"] = True
+    return current
 
 
 def _merge_policy_reasons_into_uncertainty_notes(estimate: dict, reasons: list) -> None:
@@ -6242,12 +6324,48 @@ def _meal_pending_review_response_payload(user_id: int, entry: dict) -> dict:
     snapshot = get_meal_review_snapshot(user_id, client_id) if client_id else None
     if snapshot:
         payload = copy.deepcopy(snapshot["payload"])
+        _review_normalize_imported_canes_payload(payload)
+        if bool(payload.get("_imported_snapshot_untrusted")):
+            if not payload.get("items") and _review_payload_is_ai_only_canes_combo(payload):
+                estimate = payload.get("estimate") if isinstance(payload.get("estimate"), dict) else {}
+                original = payload.get("original_estimate") if isinstance(payload.get("original_estimate"), dict) else estimate
+                legacy_item = _review_item_from_estimate(
+                    estimate,
+                    item_id="item-1",
+                    item_order=1,
+                    text=payload.get("text"),
+                    original_estimate=original,
+                    branded_combo_ai_only=True,
+                )
+                legacy_item["_imported_snapshot_untrusted"] = True
+                payload["items"] = [legacy_item]
+                payload = _review_recalculate(payload)
+        derived_branded_marker = False
+        for item in payload.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            estimate = item.get("estimate") if isinstance(item.get("estimate"), dict) else {}
+            if _review_snapshot_item_branded_combo_ai_only(item, estimate):
+                item["branded_combo_ai_only"] = True
+                derived_branded_marker = True
+        if derived_branded_marker:
+            payload = _review_recalculate(payload)
         payload["client_id"] = payload.get("client_id") or payload.get("meal_id") or client_id
         payload.setdefault("meal_id", client_id)
         payload.setdefault("estimate", _meal_pending_review_payload(entry)["estimate"])
         payload.setdefault("food_log", entry)
         payload.setdefault("logged_at", entry.get("logged_at"))
         payload["text_hint"] = entry.get("context_note") or payload.get("text_hint") or ""
+        if any(
+            isinstance(item, dict) and bool(item.get("branded_combo_ai_only"))
+            for item in payload.get("items") or []
+        ):
+            policy = dict(payload.get("policy") or {})
+            reasons = list(policy.get("reasons") or [])
+            if "branded_combo_ai_only" not in reasons:
+                reasons.append("branded_combo_ai_only")
+            policy["reasons"] = reasons
+            payload["policy"] = policy
         return payload
     return _meal_pending_review_payload(entry)
 
@@ -6308,13 +6426,33 @@ def _meal_pending_review_payload(entry: dict) -> dict:
         }
     except Exception:
         policy = {"confidence_band": "unknown", "reasons": ["pending_review"]}
-    return {
+    payload = {
         "client_id": entry.get("client_id"),
         "estimate": estimate,
         "text_hint": entry.get("context_note") or "",
         "logged_at": entry.get("logged_at"),
         "policy": policy,
     }
+    imported_pending_untrusted = isinstance(estimate, dict) and estimate.get("_imported_pending_untrusted") is True
+    if (
+        (_is_canes_box_combo(estimate) or _is_canes_box_combo_text(entry.get("context_note")))
+        and (imported_pending_untrusted or not _is_source_backed_nutrition(estimate))
+    ):
+        item = _review_item_from_estimate(
+            estimate,
+            item_id="item-1",
+            item_order=1,
+            text=entry.get("context_note"),
+            original_estimate=entry.get("original_estimate") if isinstance(entry.get("original_estimate"), dict) else estimate,
+            branded_combo_ai_only=True,
+        )
+        payload["items"] = [item]
+        payload["save_blocked_item_ids"] = ["item-1"]
+        payload["policy"] = {
+            **policy,
+            "reasons": [*policy.get("reasons", []), "branded_combo_ai_only"],
+        }
+    return payload
 
 
 def _meal_verified_refresh_event_metadata(
@@ -6384,6 +6522,7 @@ def _meal_intake_persist(
         or _local_date_from_iso(local_timestamp)
         or _today_str()
     )
+    original_for_record = dict(original_estimate) if isinstance(original_estimate, dict) else dict(estimate)
     record = {
         "client_id": client_id,
         "date": date_str,
@@ -6402,7 +6541,8 @@ def _meal_intake_persist(
         "confidence": estimate.get("confidence"),
         "source": source,
         "correction_state": correction_state,
-        "original_estimate": dict(original_estimate) if isinstance(original_estimate, dict) else dict(estimate),
+        "original_estimate": original_for_record,
+        "accepted_estimate": dict(estimate) if correction_state in {CORRECTION_STATE_ACCEPTED, "corrected"} else None,
         "meal_id": meal_id,
         "meal_item_id": meal_item_id,
         "item_index": item_index,
@@ -6460,7 +6600,7 @@ def _sanitize_original_estimate_for_log(original: dict | None, accepted: dict) -
         _preserve_safe_estimate_metadata(sanitized, original)
     except MealEstimateValidationError:
         return dict(accepted)
-    if bool(original.get("from_image")) or bool(accepted.get("from_image")) or _source_indicates_image(sanitized.get("source")):
+    if original.get("from_image") is True or accepted.get("from_image") is True:
         sanitized["from_image"] = True
     return sanitized
 
@@ -6512,8 +6652,7 @@ def _meal_item_phrase(item: dict) -> str | None:
 def _meal_item_has_image(item: dict) -> bool:
     for estimate in (item.get("estimate"), item.get("original_estimate")):
         if isinstance(estimate, dict):
-            source = estimate.get("source")
-            if bool(estimate.get("from_image")) or _source_indicates_image(source):
+            if estimate.get("from_image") is True:
                 return True
     return False
 
@@ -6564,7 +6703,7 @@ def _meal_capture_idempotency_response(
                 "estimate": pending["estimate"],
                 "food_log": existing_food_log,
                 "photo_retention": _food_photo_retention_payload(
-                    has_image or bool(pending["estimate"].get("from_image"))
+                has_image or pending["estimate"].get("from_image") is True
                 ),
                 "local_timestamp": local_timestamp,
                 "local_date": local_date,
@@ -6573,7 +6712,11 @@ def _meal_capture_idempotency_response(
             })
         return jsonify({
             "status": "logged",
-            "estimate": dict(existing_food_log.get("original_estimate") or {}),
+            "estimate": dict(
+                existing_food_log.get("accepted_estimate")
+                or existing_food_log.get("original_estimate")
+                or {}
+            ),
             "food_log": existing_food_log,
             "photo_retention": _food_photo_retention_payload(
                 has_image or _source_indicates_image(existing_food_log.get("source"))
@@ -6676,6 +6819,7 @@ def _review_sanitize_estimate(raw: dict, *, source: str | None = None) -> dict:
         "portion_basis",
         "brand_id",
         "underlying_source",
+        "underlying_sources",
         "off_attribution",
         "personal_vocab_phrase",
         "vision_description",
@@ -6721,6 +6865,7 @@ def _review_sanitize_candidates(raw_candidates) -> list[dict]:
             "confidence": estimate.get("confidence"),
             "unclear": bool(estimate.get("ambiguous")),
             "source": _review_source_from_estimate(estimate),
+            "source_backed": _is_source_backed_nutrition(estimate),
             "estimate": estimate,
         })
     return candidates
@@ -6735,6 +6880,8 @@ def _review_item_from_estimate(
     text: str | None = None,
     candidates=None,
     original_estimate: dict | None = None,
+    branded_combo_ai_only: bool = False,
+    server_source_backed_candidate: bool = False,
 ) -> dict:
     estimate = _review_sanitize_estimate(estimate, source=estimate.get("source") if isinstance(estimate, dict) else None)
     original = (
@@ -6761,12 +6908,15 @@ def _review_item_from_estimate(
         "candidates": _review_sanitize_candidates(candidates if candidates is not None else estimate.get("candidates")),
         "estimate": estimate,
         "original_estimate": original,
+        "branded_combo_ai_only": bool(branded_combo_ai_only),
+        "server_source_backed_candidate": bool(server_source_backed_candidate),
     }
 
 
 def _review_candidate_to_item(candidate: dict, item: dict) -> dict:
     estimate = _review_sanitize_estimate(candidate.get("estimate") or candidate)
     updated = dict(item)
+    imported_candidate = bool(item.get("_imported_candidates_untrusted"))
     updated.update({
         "name": estimate.get("item_name"),
         "portion": estimate.get("portion_description"),
@@ -6781,13 +6931,22 @@ def _review_candidate_to_item(candidate: dict, item: dict) -> dict:
         "unclear": bool(estimate.get("ambiguous")),
         "candidates": [],
         "estimate": estimate,
+        "server_source_backed_candidate": (
+            not imported_candidate and _is_source_backed_nutrition(estimate)
+        ),
     })
+    if imported_candidate:
+        updated["_untrusted_imported_candidate"] = True
+    else:
+        updated.pop("_untrusted_imported_candidate", None)
     return updated
 
 
 def _review_item_is_blocked(item: dict) -> bool:
     if item.get("status") != "included":
         return False
+    if _canes_box_combo_ai_only_needs_review(item):
+        return True
     if bool(item.get("unclear")):
         return True
     confidence = item.get("confidence")
@@ -6804,6 +6963,231 @@ def _review_item_is_blocked(item: dict) -> bool:
             return True
     sodium = item.get("sodium_mg")
     return bool(sodium is not None and (isinstance(sodium, bool) or not isinstance(sodium, (int, float)) or sodium < 0 or sodium > SODIUM_MG_MAX))
+
+
+_CANES_TOKEN_PATTERN = re.compile(r"(?:^|\s)canes(?:$|\s)")
+_BOX_COMBO_PATTERN = re.compile(r"(?:^|\s)box\s+combo(?:$|\s)")
+_SOURCE_BACKED_NUTRITION_SOURCES = {
+    "nutritionix",
+    "usda_fdc",
+    "open_food_facts",
+    "heb_product_page",
+}
+
+
+def _is_canes_box_combo(estimate: dict) -> bool:
+    if not isinstance(estimate, dict):
+        return False
+    text = estimate.get("item_name") or estimate.get("text")
+    return _is_canes_box_combo_text(text)
+
+
+def _is_canes_box_combo_text(text) -> bool:
+    normalized = branded_food_lookup.normalize_meal_text(str(text or ""))
+    return bool(
+        _CANES_TOKEN_PATTERN.search(normalized)
+        and _BOX_COMBO_PATTERN.search(normalized)
+    )
+
+
+def _is_source_backed_nutrition(estimate: dict) -> bool:
+    if not isinstance(estimate, dict):
+        return False
+    source = str(estimate.get("source") or "").strip().lower()
+    underlying_source = str(estimate.get("underlying_source") or "").strip().lower()
+    provenance_parts = {
+        part.strip()
+        for value in (source, underlying_source)
+        for part in value.split("+")
+        if part.strip()
+    }
+    if "personal_vocab" in provenance_parts or bool(estimate.get("ambiguous")):
+        return False
+    allowed_components = _SOURCE_BACKED_NUTRITION_SOURCES | {
+        "vision_claude",
+        "vision_lm_studio",
+        "vision_ollama",
+        "local_cache",
+        "mixed_lookup",
+    }
+    if not provenance_parts or not provenance_parts.issubset(allowed_components):
+        return False
+    declared_sources = estimate.get("underlying_sources")
+    if declared_sources is not None and not (
+        isinstance(declared_sources, list)
+        and bool(declared_sources)
+        and all(
+            isinstance(value, str)
+            and value.strip().lower() in _SOURCE_BACKED_NUTRITION_SOURCES
+            for value in declared_sources
+        )
+    ):
+        return False
+    if "mixed_lookup" in provenance_parts:
+        sources = estimate.get("underlying_sources")
+        return (
+            not bool(estimate.get("ambiguous"))
+            and isinstance(sources, list)
+            and bool(sources)
+            and all(isinstance(value, str) and value in _SOURCE_BACKED_NUTRITION_SOURCES for value in sources)
+        )
+    providers = provenance_parts & _SOURCE_BACKED_NUTRITION_SOURCES
+    if len(providers) != 1:
+        return False
+    if declared_sources is not None:
+        return {
+            value.strip().lower()
+            for value in declared_sources
+        } == providers
+    return True
+
+
+def _stored_food_log_baseline(existing: dict) -> dict:
+    original = existing.get("original_estimate")
+    baseline = dict(original) if isinstance(original, dict) else {}
+    for field in (
+        "item_name",
+        "portion_description",
+        "meal_type",
+        "calories",
+        "protein_g",
+        "carbs_g",
+        "fat_g",
+        "sodium_mg",
+        "fiber_g",
+        "confidence",
+        "source",
+    ):
+        if baseline.get(field) is None and existing.get(field) is not None:
+            baseline[field] = existing[field]
+    return baseline
+
+
+def _pending_canes_ai_only_original(existing: dict | None) -> dict | None:
+    if (
+        not isinstance(existing, dict)
+        or existing.get("correction_state") != CORRECTION_STATE_PENDING_REVIEW
+    ):
+        return None
+    original = _stored_food_log_baseline(existing)
+    if _is_canes_box_combo(original) or _is_canes_box_combo_text(existing.get("context_note")):
+        if original.get("_imported_pending_untrusted") is True:
+            return original
+        if _is_source_backed_nutrition(original):
+            return None
+        return original
+    return None
+
+
+def _imported_snapshot_needs_fresh_canes_resolution(user_id: int, client_id: str, payload: dict) -> bool:
+    return bool(
+        isinstance(payload, dict)
+        and payload.get("_imported_snapshot_untrusted")
+        and _pending_canes_ai_only_original(_food_log_by_client_id(user_id, client_id))
+    )
+
+
+def _apply_imported_pending_canes_parent(
+    items: list[dict],
+    payload: dict,
+    pending_original: dict | None,
+) -> list[dict]:
+    if not (
+        isinstance(payload, dict)
+        and bool(payload.get("_imported_snapshot_untrusted"))
+        and isinstance(pending_original, dict)
+    ):
+        return items
+    for item in items:
+        if not isinstance(item, dict) or item.get("state") != "included":
+            continue
+        item["branded_combo_ai_only"] = True
+        item["_imported_snapshot_untrusted"] = True
+        original = item.get("original_estimate") if isinstance(item.get("original_estimate"), dict) else None
+        if not isinstance(original, dict):
+            item["original_estimate"] = copy.deepcopy(pending_original)
+            continue
+        estimate = item.get("estimate") if isinstance(item.get("estimate"), dict) else None
+        if (
+            isinstance(estimate, dict)
+            and _is_material_nutrition_correction(estimate, original)
+            and not _review_estimate_differs(estimate, pending_original)
+        ):
+            item["estimate"] = _honest_material_correction_estimate(
+                estimate,
+                original,
+                imported_untrusted=True,
+            )
+            item["_material_correction_from_submission"] = True
+    return items
+
+
+def _canes_box_combo_ai_only_needs_review(item: dict) -> bool:
+    original = item.get("original_estimate") if isinstance(item, dict) else None
+    estimate = item.get("estimate") if isinstance(item, dict) else None
+    if not isinstance(original, dict) or not isinstance(estimate, dict):
+        return False
+    if not bool(item.get("branded_combo_ai_only")):
+        return False
+    if bool(item.get("_untrusted_imported_candidate")):
+        return True
+    if bool(item.get("_imported_snapshot_untrusted")):
+        return not bool(item.get("_material_correction_from_submission"))
+    if bool(item.get("server_source_backed_candidate")):
+        return False
+    return not _is_material_nutrition_correction(
+        estimate,
+        original,
+        submitted_nutrition_fields=item.get("_submitted_nutrition_fields"),
+    )
+
+
+_MATERIAL_NUTRITION_DELTAS = {
+    "calories": 50,
+    "protein_g": 5,
+    "carbs_g": 5,
+    "fat_g": 5,
+    "fiber_g": 3,
+    "sodium_mg": 100,
+}
+
+
+def _server_submitted_nutrition_fields(raw_estimate: dict) -> frozenset[str]:
+    if not isinstance(raw_estimate, dict):
+        return frozenset()
+    return frozenset(field for field in _MATERIAL_NUTRITION_DELTAS if field in raw_estimate)
+
+
+def _is_material_nutrition_correction(
+    submitted: dict,
+    original: dict | None,
+    *,
+    submitted_nutrition_fields: frozenset[str] | None = None,
+) -> bool:
+    if not isinstance(original, dict):
+        return False
+    try:
+        sanitized_original = sanitize_meal_estimate(
+            original,
+            source=original.get("source") or submitted.get("source") or "manual_review_estimate",
+            legacy_defaults=True,
+            plausible_ranges=True,
+        )
+    except MealEstimateValidationError:
+        return False
+    fields = (
+        _MATERIAL_NUTRITION_DELTAS
+        if submitted_nutrition_fields is None
+        else {
+            field: threshold
+            for field, threshold in _MATERIAL_NUTRITION_DELTAS.items()
+            if field in submitted_nutrition_fields
+        }
+    )
+    return any(
+        abs(float(submitted.get(field, 0)) - float(sanitized_original.get(field, 0))) >= threshold
+        for field, threshold in fields.items()
+    )
 
 
 def _review_sum_items(items: list[dict]) -> dict:
@@ -6928,6 +7312,7 @@ def _review_aggregate_estimate(payload: dict) -> dict:
             "portion_basis",
             "brand_id",
             "underlying_source",
+            "underlying_sources",
             "off_attribution",
             "from_image",
             "personal_vocab_phrase",
@@ -6943,7 +7328,18 @@ def _review_aggregate_estimate(payload: dict) -> dict:
 def _review_sync_pending_row(user_id: int, meal_id: str, payload: dict, aggregate: dict | None = None) -> dict | None:
     aggregate = aggregate or _review_aggregate_estimate(payload)
     existing = _food_log_by_client_id(user_id, meal_id)
-    text_hint = existing.get("context_note") if existing and not payload.get("has_image") else None
+    current_canes_ai_only = any(
+        isinstance(item, dict) and _canes_box_combo_ai_only_needs_review(item)
+        for item in payload.get("items") or []
+    )
+    text_hint = (
+        existing.get("context_note")
+        if existing and (
+            not payload.get("has_image")
+            or current_canes_ai_only
+        )
+        else None
+    )
     return _meal_intake_persist(
         meal_id,
         aggregate,
@@ -6963,9 +7359,12 @@ def _review_save_snapshot(user_id: int, meal_id: str, payload: dict, next_item_s
     aggregate = _review_aggregate_estimate(payload)
     payload["estimate"] = aggregate
     decision = evaluate_meal_log(aggregate)
+    reasons = [*decision["reasons"]]
+    if any(_canes_box_combo_ai_only_needs_review(item) for item in payload.get("items") or []):
+        reasons.append("branded_combo_ai_only")
     payload["policy"] = {
         "confidence_band": decision["confidence_band"],
-        "reasons": decision["reasons"],
+        "reasons": reasons,
     }
     food_log = _review_sync_pending_row(user_id, meal_id, payload, aggregate) if sync_pending else payload.get("food_log")
     if food_log is not None:
@@ -7025,20 +7424,136 @@ def _review_user_confirmed_estimate(raw_estimate: dict) -> dict:
     return estimate
 
 
+def _review_snapshot_item_branded_combo_ai_only(item: dict, estimate: dict) -> bool:
+    text = item.get("text") or item.get("name")
+    original = item.get("original_estimate") if isinstance(item.get("original_estimate"), dict) else {}
+    if bool(item.get("_imported_snapshot_untrusted")) and (
+        _is_canes_box_combo(estimate)
+        or _is_canes_box_combo(original)
+        or _is_canes_box_combo_text(text)
+    ):
+        return True
+    if bool(item.get("branded_combo_ai_only")):
+        return True
+    return (
+        (_is_canes_box_combo(estimate) or _is_canes_box_combo_text(text))
+        and not _is_source_backed_nutrition(estimate)
+    )
+
+
+def _review_payload_is_ai_only_canes_combo(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    estimate = payload.get("estimate") if isinstance(payload.get("estimate"), dict) else {}
+    original = payload.get("original_estimate") if isinstance(payload.get("original_estimate"), dict) else {}
+    is_combo = (
+        _is_canes_box_combo(estimate)
+        or _is_canes_box_combo(original)
+        or _is_canes_box_combo_text(payload.get("text"))
+    )
+    return is_combo and (
+        bool(payload.get("_imported_snapshot_untrusted"))
+        or (
+            not _is_source_backed_nutrition(estimate)
+            and not _is_source_backed_nutrition(original)
+        )
+    )
+
+
+def _review_normalize_imported_canes_payload(payload: dict) -> dict:
+    if not (isinstance(payload, dict) and bool(payload.get("_imported_snapshot_untrusted"))):
+        return payload
+    payload_is_combo = _review_payload_is_ai_only_canes_combo(payload)
+    if not payload.get("items") and payload_is_combo:
+        estimate = payload.get("estimate") if isinstance(payload.get("estimate"), dict) else {}
+        original = payload.get("original_estimate") if isinstance(payload.get("original_estimate"), dict) else estimate
+        legacy_item = _review_item_from_estimate(
+            estimate,
+            item_id="item-1",
+            item_order=1,
+            text=payload.get("text"),
+            original_estimate=original,
+            branded_combo_ai_only=True,
+        )
+        legacy_item["_imported_snapshot_untrusted"] = True
+        payload["items"] = [legacy_item]
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict) or not bool(item.get("_imported_snapshot_untrusted")):
+            continue
+        original = item.get("original_estimate") if isinstance(item.get("original_estimate"), dict) else {}
+        if not (payload_is_combo or _is_canes_box_combo(original)):
+            continue
+        item["branded_combo_ai_only"] = True
+        item["server_source_backed_candidate"] = False
+        candidates = item.get("candidates")
+        if isinstance(candidates, list):
+            item["_imported_candidates_untrusted"] = bool(candidates)
+            for candidate in candidates:
+                if isinstance(candidate, dict):
+                    candidate["source_backed"] = False
+    return payload
+
+
 def _review_snapshot_items_for_accept(payload: dict, legacy_accept_body: dict | None = None) -> list[dict]:
     items = []
     snapshot_items = sorted(payload.get("items") or [], key=lambda row: int(row.get("item_order") or 0))
+    payload_is_ai_only_combo = _review_payload_is_ai_only_canes_combo(payload)
     legacy_estimate = legacy_accept_body.get("estimate") if isinstance(legacy_accept_body, dict) else None
     if isinstance(legacy_estimate, dict) and len(snapshot_items) == 1:
         item = snapshot_items[0]
         submitted = _review_sanitize_legacy_accept_estimate(legacy_estimate)
-        if _review_estimate_differs(submitted, item.get("estimate")):
-            estimate = _review_user_confirmed_estimate(legacy_estimate)
-            original = legacy_accept_body.get("original_estimate") if isinstance(legacy_accept_body.get("original_estimate"), dict) else item.get("original_estimate")
+        server_estimate = item.get("estimate") if isinstance(item.get("estimate"), dict) else None
+        server_source_backed = bool(
+            item.get("server_source_backed_candidate")
+            and _is_source_backed_nutrition(server_estimate)
+        )
+        if server_source_backed and isinstance(server_estimate, dict):
+            original = item.get("original_estimate")
+            estimate = _server_snapshot_estimate_with_photo_provenance(server_estimate, original)
+            if legacy_estimate.get("meal_type") in _REVIEW_MEAL_TYPES:
+                estimate["meal_type"] = legacy_estimate["meal_type"]
             raw = {
                 "state": item.get("status") if item.get("status") in _REVIEW_STATUS_VALUES else "included",
                 "item_id": item.get("item_id"),
                 "estimate": estimate,
+                "branded_combo_ai_only": _review_snapshot_item_branded_combo_ai_only(item, server_estimate),
+                "server_source_backed_candidate": True,
+                "_untrusted_imported_candidate": bool(item.get("_untrusted_imported_candidate")),
+            }
+            if isinstance(original, dict):
+                raw["original_estimate"] = original
+            return [raw]
+        if _review_estimate_differs(submitted, item.get("estimate")):
+            estimate = _review_user_confirmed_estimate(legacy_estimate)
+            original = legacy_accept_body.get("original_estimate") if isinstance(legacy_accept_body.get("original_estimate"), dict) else item.get("original_estimate")
+            estimate = _honest_material_correction_estimate(
+                estimate,
+                original if isinstance(original, dict) else None,
+                imported_untrusted=(
+                    bool(payload.get("_imported_snapshot_untrusted"))
+                    or bool(item.get("_imported_snapshot_untrusted"))
+                ),
+            )
+            raw = {
+                "state": item.get("status") if item.get("status") in _REVIEW_STATUS_VALUES else "included",
+                "item_id": item.get("item_id"),
+                "estimate": estimate,
+                "branded_combo_ai_only": (
+                    _review_snapshot_item_branded_combo_ai_only(item, item.get("estimate") or {})
+                    or payload_is_ai_only_combo
+                ),
+                "server_source_backed_candidate": False,
+                "_untrusted_imported_candidate": bool(item.get("_untrusted_imported_candidate")),
+                "_imported_snapshot_untrusted": bool(
+                    payload.get("_imported_snapshot_untrusted")
+                    or item.get("_imported_snapshot_untrusted")
+                ),
+                "_material_correction_from_submission": _is_material_nutrition_correction(
+                    estimate,
+                    original if isinstance(original, dict) else {},
+                    submitted_nutrition_fields=_server_submitted_nutrition_fields(legacy_estimate),
+                ),
+                "_submitted_nutrition_fields": _server_submitted_nutrition_fields(legacy_estimate),
             }
             if isinstance(original, dict):
                 raw["original_estimate"] = original
@@ -7047,20 +7562,43 @@ def _review_snapshot_items_for_accept(payload: dict, legacy_accept_body: dict | 
     meal_type = payload.get("meal_type") if payload.get("meal_type") in _REVIEW_MEAL_TYPES else None
     for item in snapshot_items:
         estimate = dict(item.get("estimate") if isinstance(item.get("estimate"), dict) else _review_aggregate_estimate({"items": [item], "meal_type": payload.get("meal_type")}))
+        original = item.get("original_estimate") if isinstance(item.get("original_estimate"), dict) else {}
         if meal_type:
             estimate["meal_type"] = meal_type
+        source_backed = bool(item.get("server_source_backed_candidate")) and _is_source_backed_nutrition(estimate)
+        material_correction = bool(item.get("_material_correction_from_submission")) and _is_material_nutrition_correction(estimate, original)
+        if material_correction and not source_backed:
+            estimate = _honest_material_correction_estimate(
+                estimate,
+                original,
+                imported_untrusted=bool(
+                    payload.get("_imported_snapshot_untrusted")
+                    or item.get("_imported_snapshot_untrusted")
+                ),
+            )
         raw = {
             "state": item.get("status") if item.get("status") in _REVIEW_STATUS_VALUES else "included",
             "item_id": item.get("item_id"),
             "estimate": estimate,
+            "branded_combo_ai_only": (
+                _review_snapshot_item_branded_combo_ai_only(item, estimate)
+                or (payload_is_ai_only_combo and not source_backed)
+            ),
+            "server_source_backed_candidate": bool(item.get("server_source_backed_candidate")) and source_backed,
+            "_untrusted_imported_candidate": bool(item.get("_untrusted_imported_candidate")),
+            "_imported_snapshot_untrusted": bool(
+                payload.get("_imported_snapshot_untrusted")
+                or item.get("_imported_snapshot_untrusted")
+            ),
+            "_material_correction_from_submission": material_correction,
         }
-        if isinstance(item.get("original_estimate"), dict):
-            raw["original_estimate"] = item["original_estimate"]
+        if original:
+            raw["original_estimate"] = original
         items.append(raw)
     return items
 
 
-def _review_blocked_item_ids_for_accept_items(items: list[dict]) -> list[str]:
+def _review_blocked_item_ids_for_accept_items(items: list[dict], *, trusted_snapshot: bool = False) -> list[str]:
     blocked_ids = []
     for index, raw in enumerate(items):
         if not isinstance(raw, dict):
@@ -7069,12 +7607,34 @@ def _review_blocked_item_ids_for_accept_items(items: list[dict]) -> list[str]:
         if state != "included":
             continue
         item_id = str(raw.get("item_id") or f"item-{index + 1}")
+        estimate = raw.get("estimate") if isinstance(raw.get("estimate"), dict) else {}
+        if (
+            not trusted_snapshot
+            and (_is_canes_box_combo(estimate) or _is_canes_box_combo_text(raw.get("text")))
+        ):
+            blocked_ids.append(item_id)
+            continue
         review_item = _review_item_from_estimate(
-            raw.get("estimate") if isinstance(raw.get("estimate"), dict) else {},
+            estimate,
             item_id=item_id,
             item_order=index + 1,
             status="included",
+            original_estimate=raw.get("original_estimate") if isinstance(raw.get("original_estimate"), dict) else None,
+            branded_combo_ai_only=(trusted_snapshot and bool(raw.get("branded_combo_ai_only"))) or (
+                not trusted_snapshot
+                and (_is_canes_box_combo(estimate) or _is_canes_box_combo_text(raw.get("text")))
+            ),
+            server_source_backed_candidate=trusted_snapshot and bool(raw.get("server_source_backed_candidate")),
         )
+        if trusted_snapshot and bool(raw.get("_untrusted_imported_candidate")):
+            review_item["_untrusted_imported_candidate"] = True
+        if trusted_snapshot and bool(raw.get("_imported_snapshot_untrusted")):
+            review_item["_imported_snapshot_untrusted"] = True
+        if trusted_snapshot and bool(raw.get("_material_correction_from_submission")):
+            review_item["_material_correction_from_submission"] = True
+        submitted_nutrition_fields = raw.get("_submitted_nutrition_fields")
+        if trusted_snapshot and isinstance(submitted_nutrition_fields, frozenset):
+            review_item["_submitted_nutrition_fields"] = submitted_nutrition_fields
         if _review_item_is_blocked(review_item):
             blocked_ids.append(item_id)
     return blocked_ids
@@ -7178,6 +7738,10 @@ def _review_payload_from_estimate(
                 text=item_text,
                 candidates=raw_item.get("candidates"),
                 original_estimate=raw_item_estimate,
+                branded_combo_ai_only=bool(raw_item_estimate.get("branded_combo_ai_only")) or (
+                    bool(estimate.get("branded_combo_ai_only"))
+                    and not _is_source_backed_nutrition(raw_item_estimate)
+                ),
             ))
     if not items:
         items = [_review_item_from_estimate(
@@ -7187,6 +7751,7 @@ def _review_payload_from_estimate(
             status="included",
             text=text_hint,
             candidates=estimate.get("candidates") if isinstance(estimate, dict) else None,
+            branded_combo_ai_only=bool(estimate.get("branded_combo_ai_only")) if isinstance(estimate, dict) else False,
         )]
     payload = {
         "status": "pending_review",
@@ -7318,8 +7883,28 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                 "error": {"message": "meal_id already accepted with a different included item set"},
             }), 409
     for item in prepared:
-        if item["state"] == "included" and not isinstance(item["raw"].get("estimate"), dict):
+        if item["state"] != "included":
+            continue
+        raw_estimate = item["raw"].get("estimate")
+        if not isinstance(raw_estimate, dict):
             return jsonify({"error": {"message": "included items require estimate objects"}}), 400
+        try:
+            sanitize_meal_estimate(
+                raw_estimate,
+                source=raw_estimate.get("source") or "manual_review_estimate",
+                legacy_defaults=True,
+                plausible_ranges=True,
+            )
+        except MealEstimateValidationError as exc:
+            return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
+    trusted_snapshot = data.get("_review_snapshot_trust") is _REVIEW_SNAPSHOT_TRUST_TOKEN
+    if not trusted_snapshot:
+        for item in prepared:
+            if item["state"] != "included":
+                continue
+            _, err = _coerce_str(item["raw"].get("text"), "text", required=False, max_len=500)
+            if err:
+                return err
     items_to_check = [
         {**item["raw"], "item_id": item["meal_item_id"]}
         for item in prepared
@@ -7333,7 +7918,10 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
             code="placeholder_nutrition_not_resolved",
             details={"meal_id": meal_id, "save_blocked_item_ids": placeholder_ids},
         )
-    blocked_ids = _review_blocked_item_ids_for_accept_items(items_to_check)
+    blocked_ids = _review_blocked_item_ids_for_accept_items(
+        items_to_check,
+        trusted_snapshot=trusted_snapshot,
+    )
     if blocked_ids:
         return jsonify({
             "status": "blocked",
@@ -7341,6 +7929,8 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
             "save_blocked_item_ids": blocked_ids,
             "error": {"message": "review has blocked items"},
         }), 409
+    for item in prepared:
+        item["raw"].pop("_submitted_nutrition_fields", None)
     replaying_existing_event = False
     if existing_event:
         existing_event_ids = set(existing_event.get("included_client_ids") or [])
@@ -7394,7 +7984,7 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
         if not isinstance(raw_estimate, dict):
             return jsonify({"error": {"message": "included items require estimate objects"}}), 400
         source_hint = raw_estimate.get("source")
-        originated_from_image = bool(raw_estimate.get("from_image")) or _source_indicates_image(source_hint)
+        originated_from_image = raw_estimate.get("from_image") is True
         try:
             estimate = sanitize_meal_estimate(
                 raw_estimate,
@@ -7674,6 +8264,11 @@ def meal_intake():
     # surface but overrides the persistence decision so the capture
     # endpoint always routes to review before save.
     decision = evaluate_meal_log(estimate)
+    if (
+        _is_canes_box_combo_text(text_raw) or _is_canes_box_combo(estimate)
+    ) and not _is_source_backed_nutrition(estimate):
+        estimate["branded_combo_ai_only"] = True
+        decision["reasons"] = [*decision["reasons"], "branded_combo_ai_only"]
     response_extras["policy"] = {
         "confidence_band": decision["confidence_band"],
         "reasons": decision["reasons"],
@@ -7965,7 +8560,7 @@ def meal_intake_refresh(meal_id: str):
     if not snapshot:
         return jsonify({"error": {"message": "meal review snapshot not found"}}), 404
 
-    payload = copy.deepcopy(snapshot["payload"])
+    payload = _review_normalize_imported_canes_payload(copy.deepcopy(snapshot["payload"]))
     next_item_seq = int(snapshot.get("next_item_seq") or 1)
     applied = dict(snapshot.get("applied_refreshes") or {})
     request_id = str(data.get("request_id") or "").strip()
@@ -7993,6 +8588,9 @@ def meal_intake_refresh(meal_id: str):
             status="included",
             text=text,
             candidates=estimate.get("candidates"),
+            branded_combo_ai_only=(
+                _is_canes_box_combo_text(text) or _is_canes_box_combo(estimate)
+            ) and not _is_source_backed_nutrition(estimate),
         ))
         next_item_seq += 1
         payload = _review_maybe_create_followup(payload)
@@ -8009,6 +8607,12 @@ def meal_intake_refresh(meal_id: str):
         if item.get("status") != "included":
             return jsonify({"error": {"message": "item is not editable unless included"}}), 409
         estimate = _review_estimate_from_text(text, user_id=user_id, timestamp=payload.get("local_iso") or payload.get("local_timestamp"))
+        original = item.get("original_estimate") if isinstance(item.get("original_estimate"), dict) else item.get("estimate")
+        server_source_backed = _is_source_backed_nutrition(estimate)
+        material_correction = _is_material_nutrition_correction(estimate, original)
+        preserve_imported_untrusted = bool(item.get("_imported_snapshot_untrusted")) and not (
+            server_source_backed or material_correction
+        )
         replacement = _review_item_from_estimate(
             estimate,
             item_id=item["item_id"],
@@ -8016,8 +8620,20 @@ def meal_intake_refresh(meal_id: str):
             status="included",
             text=text,
             candidates=estimate.get("candidates"),
-            original_estimate=item.get("original_estimate") if isinstance(item.get("original_estimate"), dict) else item.get("estimate"),
+            original_estimate=original,
+            branded_combo_ai_only=(
+                bool(item.get("branded_combo_ai_only"))
+                and not (server_source_backed or material_correction)
+            ) or (
+                (_is_canes_box_combo_text(text) or _is_canes_box_combo(estimate))
+                and not _is_source_backed_nutrition(estimate)
+            ),
+            server_source_backed_candidate=server_source_backed,
         )
+        if preserve_imported_untrusted:
+            replacement["_imported_snapshot_untrusted"] = True
+        if material_correction:
+            replacement["_material_correction_from_submission"] = True
         _review_replace_item(payload, item_id, replacement)
         payload = _review_maybe_create_followup(payload)
 
@@ -8075,6 +8691,12 @@ def meal_intake_refresh(meal_id: str):
         skipped = bool(data.get("skipped"))
         if answer and not skipped:
             estimate = _review_estimate_from_text(answer, user_id=user_id, timestamp=payload.get("local_iso") or payload.get("local_timestamp"))
+            original = target.get("original_estimate") if isinstance(target.get("original_estimate"), dict) else target.get("estimate")
+            server_source_backed = _is_source_backed_nutrition(estimate)
+            material_correction = _is_material_nutrition_correction(estimate, original)
+            preserve_imported_untrusted = bool(target.get("_imported_snapshot_untrusted")) and not (
+                server_source_backed or material_correction
+            )
             replacement = _review_item_from_estimate(
                 estimate,
                 item_id=target["item_id"],
@@ -8082,8 +8704,20 @@ def meal_intake_refresh(meal_id: str):
                 status="included",
                 text=answer,
                 candidates=estimate.get("candidates"),
-                original_estimate=target.get("original_estimate") if isinstance(target.get("original_estimate"), dict) else target.get("estimate"),
+                original_estimate=original,
+                branded_combo_ai_only=(
+                    bool(target.get("branded_combo_ai_only"))
+                    and not (server_source_backed or material_correction)
+                ) or (
+                    (_is_canes_box_combo_text(answer) or _is_canes_box_combo(estimate))
+                    and not _is_source_backed_nutrition(estimate)
+                ),
+                server_source_backed_candidate=server_source_backed,
             )
+            if preserve_imported_untrusted:
+                replacement["_imported_snapshot_untrusted"] = True
+            if material_correction:
+                replacement["_material_correction_from_submission"] = True
             _review_replace_item(payload, target["item_id"], replacement)
         payload["followup"] = {"available": False, "question": None, "used": True, "target_item_id": None}
         payload = _review_recalculate(payload)
@@ -8138,6 +8772,24 @@ def meal_intake_accept(client_id: str):
     if "items" in data:
         meal_id = str(data.get("meal_id") or client_id).strip()
         if meal_id != client_id:
+            route_snapshot = get_meal_review_snapshot(user_id, client_id)
+            route_payload = route_snapshot.get("payload", {}) if isinstance(route_snapshot, dict) else {}
+            route_items = route_payload.get("items") or [] if isinstance(route_payload, dict) else []
+            if (
+                _review_payload_is_ai_only_canes_combo(route_payload)
+                or any(isinstance(item, dict) and bool(item.get("branded_combo_ai_only")) for item in route_items)
+            ):
+                return api_error("meal_id must match the pending branded-combo review route", 400, code="invalid_field")
+            if any(
+                _pending_canes_ai_only_original(_food_log_by_client_id(user_id, review_id))
+                for review_id in {client_id, meal_id}
+            ):
+                return jsonify({
+                    "status": "blocked",
+                    "meal_id": meal_id,
+                    "save_blocked_item_ids": ["item-1"],
+                    "error": {"message": "branded combo review is required before acceptance"},
+                }), 409
             mismatch_has_placeholder = False
             for review_id in (client_id, meal_id):
                 review_snapshot = get_meal_review_snapshot(user_id, review_id)
@@ -8177,7 +8829,16 @@ def meal_intake_accept(client_id: str):
             items = data.get("items")
             if not isinstance(items, list):
                 return api_error("items must be a list", 400, code="invalid_field")
-            snapshot_items = snapshot.get("payload", {}).get("items") or []
+            snapshot_payload = _review_normalize_imported_canes_payload(
+                copy.deepcopy(snapshot.get("payload", {}))
+            )
+            snapshot_items = snapshot_payload.get("items") or []
+            payload_is_ai_only_combo = _review_payload_is_ai_only_canes_combo(snapshot_payload)
+            snapshot_items_by_id = {
+                str(item.get("item_id")): item
+                for item in snapshot_items
+                if isinstance(item, dict)
+            }
             originals_by_id = {
                 str(item.get("item_id")): item.get("original_estimate")
                 for item in snapshot_items
@@ -8191,13 +8852,100 @@ def meal_intake_accept(client_id: str):
                     continue
                 item_id = str(item.get("item_id") or "")
                 original = originals_by_id.get(item_id)
+                snapshot_item = snapshot_items_by_id.get(item_id)
                 if not item_id or item_id in seen_item_ids or not isinstance(original, dict):
                     return api_error("items must reference saved review items", 400, code="invalid_field")
                 seen_item_ids.add(item_id)
-                items_with_server_originals.append(
-                    {**item, "original_estimate": original}
+                server_estimate = snapshot_item.get("estimate") if isinstance(snapshot_item, dict) else None
+                source_backed_estimate = _is_source_backed_nutrition(server_estimate)
+                submitted_estimate = item.get("estimate")
+                submitted_state = str(item.get("state") or item.get("item_state") or "included").strip().lower()
+                if submitted_state == "included":
+                    if not isinstance(submitted_estimate, dict):
+                        return jsonify({"error": {"message": "included items require estimate objects"}}), 400
+                    try:
+                        sanitize_meal_estimate(
+                            submitted_estimate,
+                            source=submitted_estimate.get("source") or "manual_review_estimate",
+                            legacy_defaults=True,
+                            plausible_ranges=True,
+                        )
+                    except MealEstimateValidationError as exc:
+                        return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
+                exact_fresh_server_snapshot = bool(
+                    source_backed_estimate
+                    and isinstance(server_estimate, dict)
+                    and isinstance(submitted_estimate, dict)
+                    and not bool(snapshot_payload.get("_imported_snapshot_untrusted"))
+                    and not bool(snapshot_item and snapshot_item.get("_imported_snapshot_untrusted"))
+                    and not payload_is_ai_only_combo
+                    and not _review_estimate_differs(submitted_estimate, server_estimate)
                 )
-            data = {**data, "items": items_with_server_originals}
+                server_source_backed_candidate = bool(
+                    source_backed_estimate
+                    and (
+                        snapshot_item and snapshot_item.get("server_source_backed_candidate")
+                        or exact_fresh_server_snapshot
+                    )
+                )
+                submitted_meal_type = submitted_estimate.get("meal_type") if isinstance(submitted_estimate, dict) else None
+                accepted_estimate = (
+                    _server_snapshot_estimate_with_photo_provenance(
+                        server_estimate,
+                        original,
+                    )
+                    if server_source_backed_candidate and isinstance(server_estimate, dict)
+                    else submitted_estimate
+                )
+                if server_source_backed_candidate and submitted_meal_type in _REVIEW_MEAL_TYPES:
+                    accepted_estimate["meal_type"] = submitted_meal_type
+                if not server_source_backed_candidate and isinstance(accepted_estimate, dict):
+                    accepted_estimate = _honest_material_correction_estimate(
+                        accepted_estimate,
+                        original,
+                        imported_untrusted=(
+                            bool(snapshot_payload.get("_imported_snapshot_untrusted"))
+                            or bool(snapshot_item and snapshot_item.get("_imported_snapshot_untrusted"))
+                        ),
+                    )
+                items_with_server_originals.append(
+                    {
+                        **item,
+                        "estimate": accepted_estimate,
+                        "original_estimate": original,
+                        "branded_combo_ai_only": (
+                            _review_snapshot_item_branded_combo_ai_only(
+                                snapshot_item,
+                                server_estimate if isinstance(server_estimate, dict) else {},
+                            )
+                            if isinstance(snapshot_item, dict)
+                            else False
+                        ) or (payload_is_ai_only_combo and not server_source_backed_candidate),
+                        "server_source_backed_candidate": server_source_backed_candidate,
+                        "_untrusted_imported_candidate": bool(
+                            snapshot_item and snapshot_item.get("_untrusted_imported_candidate")
+                        ),
+                        "_imported_snapshot_untrusted": bool(
+                            snapshot_payload.get("_imported_snapshot_untrusted")
+                            or snapshot_item and snapshot_item.get("_imported_snapshot_untrusted")
+                        ),
+                        "_material_correction_from_submission": (
+                            not server_source_backed_candidate
+                            and _is_material_nutrition_correction(
+                                accepted_estimate,
+                                original,
+                                submitted_nutrition_fields=_server_submitted_nutrition_fields(submitted_estimate),
+                            )
+                        ),
+                        "_submitted_nutrition_fields": _server_submitted_nutrition_fields(submitted_estimate),
+                    }
+                )
+            items_with_server_originals = _apply_imported_pending_canes_parent(
+                items_with_server_originals,
+                snapshot_payload,
+                _pending_canes_ai_only_original(_food_log_by_client_id(user_id, meal_id)),
+            )
+            data = {**data, "items": items_with_server_originals, "_review_snapshot_trust": _REVIEW_SNAPSHOT_TRUST_TOKEN}
             placeholder_ids = _review_placeholder_nutrition_item_ids_for_accept_items(items_with_server_originals)
             if placeholder_ids:
                 return api_error(
@@ -8206,7 +8954,7 @@ def meal_intake_accept(client_id: str):
                     code="placeholder_nutrition_not_resolved",
                     details={"meal_id": meal_id, "save_blocked_item_ids": placeholder_ids},
                 )
-            blocked_ids = _review_blocked_item_ids_for_accept_items(items_with_server_originals)
+            blocked_ids = _review_blocked_item_ids_for_accept_items(items_with_server_originals, trusted_snapshot=True)
             if blocked_ids:
                 return jsonify({
                     "status": "blocked",
@@ -8215,6 +8963,16 @@ def meal_intake_accept(client_id: str):
                     "error": {"message": "review has blocked items"},
                 }), 409
         else:
+            route_pending_canes = _pending_canes_ai_only_original(
+                _food_log_by_client_id(user_id, client_id)
+            )
+            if route_pending_canes is not None:
+                return jsonify({
+                    "status": "blocked",
+                    "meal_id": client_id,
+                    "save_blocked_item_ids": ["item-1"],
+                    "error": {"message": "branded combo review is required before acceptance"},
+                }), 409
             persisted_parent = _food_log_by_client_id(user_id, meal_id)
             if isinstance(persisted_parent, dict):
                 persisted_original = {
@@ -8248,6 +9006,11 @@ def meal_intake_accept(client_id: str):
             snapshot_accept_data = dict(data)
             snapshot_accept_data.pop("original_estimate", None)
             snapshot_items = _review_snapshot_items_for_accept(snapshot_payload, snapshot_accept_data)
+            snapshot_items = _apply_imported_pending_canes_parent(
+                snapshot_items,
+                snapshot_payload,
+                _pending_canes_ai_only_original(_food_log_by_client_id(user_id, client_id)),
+            )
         except MealEstimateValidationError as exc:
             return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
         placeholder_ids = _review_placeholder_nutrition_item_ids_for_accept_items(snapshot_items)
@@ -8258,7 +9021,7 @@ def meal_intake_accept(client_id: str):
                 code="placeholder_nutrition_not_resolved",
                 details={"meal_id": client_id, "save_blocked_item_ids": placeholder_ids},
             )
-        blocked_ids = _review_blocked_item_ids_for_accept_items(snapshot_items)
+        blocked_ids = _review_blocked_item_ids_for_accept_items(snapshot_items, trusted_snapshot=True)
         if blocked_ids:
             return jsonify({
                 "status": "blocked",
@@ -8269,6 +9032,7 @@ def meal_intake_accept(client_id: str):
         accept_body = dict(data)
         accept_body["meal_id"] = client_id
         accept_body["items"] = snapshot_items
+        accept_body["_review_snapshot_trust"] = _REVIEW_SNAPSHOT_TRUST_TOKEN
         for key in ("local_timestamp", "local_date", "local_iso"):
             if key not in accept_body and snapshot_payload.get(key):
                 accept_body[key] = snapshot_payload.get(key)
@@ -8279,7 +9043,7 @@ def meal_intake_accept(client_id: str):
     raw_estimate = data.get("estimate") or {}
     source_hint = raw_estimate.get("source") if isinstance(raw_estimate, dict) else None
     originated_from_image = (
-        bool(raw_estimate.get("from_image")) or _source_indicates_image(source_hint)
+        raw_estimate.get("from_image") is True
         if isinstance(raw_estimate, dict)
         else False
     )
@@ -8287,14 +9051,22 @@ def meal_intake_accept(client_id: str):
     if terminal is not None:
         return terminal
     stored_placeholder_original = None
+    stored_pending_original = None
+    stored_pending_canes_ai_only = False
+    stored_pending_source_backed_canes = False
     existing = _food_log_by_client_id(user_id, client_id)
     if isinstance(existing, dict):
-        stored_original = existing.get("original_estimate")
-        if not isinstance(stored_original, dict):
-            stored_original = {
-                field: existing.get(field)
-                for field in ("source", "calories", "protein_g", "carbs_g", "fat_g")
-            }
+        stored_original = _stored_food_log_baseline(existing)
+        if existing.get("correction_state") == CORRECTION_STATE_PENDING_REVIEW:
+            stored_pending_original = stored_original
+            stored_pending_canes_ai_only = _pending_canes_ai_only_original(existing) is not None
+            stored_pending_source_backed_canes = (
+                _is_source_backed_nutrition(stored_original)
+                and (
+                    _is_canes_box_combo(stored_original)
+                    or _is_canes_box_combo_text(existing.get("context_note"))
+                )
+            )
         if _review_placeholder_nutrition_not_resolved({
             "estimate": {},
             "original_estimate": stored_original,
@@ -8309,6 +9081,9 @@ def meal_intake_accept(client_id: str):
                 422,
                 code="placeholder_nutrition_not_resolved",
             )
+    text_hint, err = _coerce_str(data.get("text"), "text", required=False, max_len=500)
+    if err:
+        return err
     try:
         estimate = sanitize_meal_estimate(
             raw_estimate,
@@ -8322,7 +9097,58 @@ def meal_intake_accept(client_id: str):
         return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
     if originated_from_image:
         estimate["from_image"] = True
-    text_hint, _ = _coerce_str(data.get("text"), "text", required=False, max_len=500)
+    stored_pending_canes_correction_validated = False
+    stored_pending_source_backed_match = False
+    if stored_pending_canes_ai_only and isinstance(stored_pending_original, dict):
+        snapshotless_item = {
+            "status": "included",
+            "estimate": estimate,
+            "original_estimate": stored_pending_original,
+            "branded_combo_ai_only": True,
+            "server_source_backed_candidate": False,
+            "_submitted_nutrition_fields": _server_submitted_nutrition_fields(raw_estimate),
+        }
+        if _canes_box_combo_ai_only_needs_review(snapshotless_item):
+            return jsonify({
+                "status": "blocked",
+                "meal_id": client_id,
+                "save_blocked_item_ids": ["item-1"],
+                "error": {"message": "branded combo review is required before acceptance"},
+            }), 409
+        estimate = _honest_material_correction_estimate(
+            estimate,
+            stored_pending_original,
+            imported_untrusted=stored_pending_original.get("_imported_pending_untrusted") is True,
+        )
+        stored_pending_canes_correction_validated = True
+    elif stored_pending_source_backed_canes and isinstance(stored_pending_original, dict):
+        comparison_estimate = dict(estimate)
+        if stored_pending_original.get("meal_type") in _REVIEW_MEAL_TYPES:
+            comparison_estimate["meal_type"] = stored_pending_original["meal_type"]
+        if not _review_estimate_differs(comparison_estimate, stored_pending_original):
+            saved_estimate = dict(stored_pending_original)
+            if estimate.get("meal_type") in _REVIEW_MEAL_TYPES:
+                saved_estimate["meal_type"] = estimate["meal_type"]
+            estimate = saved_estimate
+            stored_pending_source_backed_match = True
+        elif _is_material_nutrition_correction(
+            estimate,
+            stored_pending_original,
+            submitted_nutrition_fields=_server_submitted_nutrition_fields(raw_estimate),
+        ):
+            estimate = _honest_material_correction_estimate(estimate, stored_pending_original)
+            stored_pending_source_backed_match = True
+    if (
+        not stored_pending_canes_correction_validated
+        and not stored_pending_source_backed_match
+        and (_is_canes_box_combo(estimate) or _is_canes_box_combo_text(text_hint))
+    ):
+        return jsonify({
+            "status": "blocked",
+            "meal_id": client_id,
+            "save_blocked_item_ids": ["item-1"],
+            "error": {"message": "branded combo review is required before acceptance"},
+        }), 409
     local_timestamp, err = _coerce_str(
         data.get("local_timestamp"), "local_timestamp", required=False, max_len=64
     )
@@ -8334,7 +9160,7 @@ def meal_intake_accept(client_id: str):
     local_iso, err = _coerce_str(data.get("local_iso"), "local_iso", required=False, max_len=64)
     if err:
         return err
-    trusted_original = stored_placeholder_original or data.get("original_estimate")
+    trusted_original = stored_pending_original or stored_placeholder_original or data.get("original_estimate")
     corrected = (
         bool(data.get("corrected"))
         or data.get("correction_state") == "corrected"
@@ -8628,6 +9454,7 @@ def food_logs_by_date(date):
             "source": entry.get("source"),
             "confidence": entry.get("confidence"),
             "correction_state": entry.get("correction_state"),
+            "accepted_estimate": sanitize_accepted_estimate(entry.get("accepted_estimate")),
             "from_image": entry.get("from_image"),
         }
 

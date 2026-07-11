@@ -345,6 +345,7 @@ def test_init_data_db_adds_food_log_columns_to_pre_existing_table(isolated_store
             )
             """
         )
+        conn.execute("INSERT INTO food_logs (user_id, date, logged_at, calories) VALUES (1, '2026-05-18', '2026-05-18T12:00:00', 500)")
         conn.commit()
 
     store.init_data_db()
@@ -354,6 +355,10 @@ def test_init_data_db_adds_food_log_columns_to_pre_existing_table(isolated_store
     assert "original_estimate_json" in cols
     assert "correction_state" in cols
     assert "source_timestamp" in cols
+    assert "accepted_estimate_json" in cols
+    rows = store.get_food_logs(1)
+    assert rows[0]["calories"] == 500
+    assert rows[0]["accepted_estimate"] is None
 
 
 def test_init_data_db_adds_food_log_upsert_conflict_target_to_pre_existing_table(isolated_store):

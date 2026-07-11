@@ -184,6 +184,3239 @@ def test_meal_intake_text_only_returns_pending_review_when_parser_is_confident(m
     assert persisted["source"] == "ai_text_estimate"
 
 
+def test_canes_box_combo_aliases_stay_pending_with_ai_only_policy_warning(monkeypatch):
+    module = _client(monkeypatch)
+    aliases = (
+        "Raising Cane's Box Combo",
+        "Raising Canes Box Combo",
+        "Cane's Box Combo",
+        "Canes Box Combo",
+    )
+
+    def fake_parser(text, **_kw):
+        return {
+            "estimate": _accepted_estimate(
+                item_name=text,
+                calories=840,
+                confidence=0.85,
+                source="ai_text_estimate",
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+
+    for index, alias in enumerate(aliases, start=1):
+        res = client.post(
+            "/api/meal-intake",
+            data={"text": alias, "client_id": f"canes-capture-{index}"},
+            content_type="multipart/form-data",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+
+        assert res.status_code == 200, res.get_data(as_text=True)
+        body = res.get_json()
+        assert body["status"] == "pending_review"
+        assert body["food_log"]["correction_state"] == "pending_review"
+        assert body["estimate"]["source"] == "ai_text_estimate"
+        assert "branded_combo_ai_only" in body["policy"]["reasons"]
+        assert any("AI-only" in note for note in body["estimate"]["uncertainty_notes"])
+
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == len(aliases)
+    assert all(row["correction_state"] == "pending_review" for row in rows)
+
+
+def test_canes_box_combo_unchanged_ai_only_accept_is_blocked_without_canonical_row(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Raising Cane's Box Combo",
+            calories=840,
+            confidence=0.85,
+            source="ai_text_estimate",
+        ),
+    )
+    client = module.app.test_client()
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Raising Cane's Box Combo", "client_id": "canes-unchanged"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+
+    accept = client.post(
+        "/api/meal-intake/canes-unchanged/accept",
+        json={"estimate": capture.get_json()["estimate"]},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert accept.status_code == 409
+    body = accept.get_json()
+    assert body["status"] == "blocked"
+    assert body["save_blocked_item_ids"] == ["item-1"]
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == 1
+    assert rows[0]["correction_state"] == "pending_review"
+
+
+def test_canes_box_combo_material_correction_preserves_ai_original(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            confidence=0.85,
+            source="ai_text_estimate",
+        ),
+    )
+    client = module.app.test_client()
+
+    correction_capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "canes-material-correction"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert correction_capture.status_code == 200, correction_capture.get_data(as_text=True)
+    corrected = dict(correction_capture.get_json()["estimate"])
+    corrected["calories"] += 80
+    correction_accept = client.post(
+        "/api/meal-intake/canes-material-correction/accept",
+        json={"estimate": corrected},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert correction_accept.status_code == 200, correction_accept.get_data(as_text=True)
+    correction_row = correction_accept.get_json()["food_logs"][0]
+    assert correction_row["correction_state"] == "corrected"
+    assert correction_row["source"] == "manual_review_estimate"
+    assert correction_row["original_estimate"]["source"] == "ai_text_estimate"
+    assert correction_row["original_estimate"]["calories"] == 840
+
+
+def test_canes_box_combo_policy_leaves_ordinary_accept_and_existing_blockers_unchanged(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+
+    ordinary = client.post(
+        "/api/meal-intake/ordinary-meal/accept",
+        json={"estimate": _accepted_estimate(item_name="Chicken bowl")},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert ordinary.status_code == 200, ordinary.get_data(as_text=True)
+    assert ordinary.get_json()["food_log"]["correction_state"] == "accepted"
+    blocked = module._review_item_from_estimate(
+        _accepted_estimate(item_name="Unclear meal", confidence=0.40, ambiguous=True),
+        item_id="item-1",
+        item_order=1,
+    )
+    assert module._review_item_is_blocked(blocked) is True
+
+
+def test_canes_raw_alias_marker_survives_parser_rephrasing_and_blocks_accept(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Raising Cane's 4-Finger Box Combo",
+            calories=840,
+            confidence=0.85,
+            source="ai_text_estimate",
+        ),
+    )
+    client = module.app.test_client()
+
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Raising Cane's Box Combo", "client_id": "canes-rephrased"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    body = capture.get_json()
+    assert "branded_combo_ai_only" in body["policy"]["reasons"]
+    assert body["items"][0]["branded_combo_ai_only"] is True
+    accept = client.post(
+        "/api/meal-intake/canes-rephrased/accept",
+        json={"estimate": body["estimate"]},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert accept.status_code == 409
+    assert accept.get_json()["save_blocked_item_ids"] == ["item-1"]
+
+
+def test_canes_accept_requires_material_nutrition_correction(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            confidence=0.85,
+            source="ai_text_estimate",
+        ),
+    )
+    client = module.app.test_client()
+
+    for suffix, change in (
+        ("meal-type", {"meal_type": "dinner"}),
+        ("name", {"item_name": "Canes combo"}),
+        ("portion", {"portion_description": "with extra sauce"}),
+        ("tiny-calorie", {"calories": 841}),
+    ):
+        client_id = f"canes-cosmetic-{suffix}"
+        capture = client.post(
+            "/api/meal-intake",
+            data={"text": "Canes Box Combo", "client_id": client_id},
+            content_type="multipart/form-data",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        estimate = dict(capture.get_json()["estimate"])
+        estimate.update(change)
+        accept = client.post(
+            f"/api/meal-intake/{client_id}/accept",
+            json={"estimate": estimate},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert accept.status_code == 409, accept.get_data(as_text=True)
+
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "canes-material-threshold"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    material = dict(capture.get_json()["estimate"])
+    material["calories"] += 50
+    accept = client.post(
+        "/api/meal-intake/canes-material-threshold/accept",
+        json={"estimate": material},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert accept.status_code == 200, accept.get_data(as_text=True)
+    assert accept.get_json()["food_logs"][0]["correction_state"] == "corrected"
+
+
+def test_canes_omitted_optional_nutrition_cannot_unlock_legacy_accept(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            sodium_mg=700,
+            fiber_g=6,
+            confidence=0.85,
+            source="ai_text_estimate",
+        ),
+    )
+    client = module.app.test_client()
+
+    client_id = "canes-omit-legacy"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    submitted = dict(capture.get_json()["estimate"])
+    submitted.pop("sodium_mg")
+    submitted.pop("fiber_g")
+    submitted["ambiguous"] = False
+    submitted["uncertainty_notes"] = []
+    accept = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": submitted},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert accept.status_code == 409, accept.get_data(as_text=True)
+
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == 1
+    assert rows[0]["correction_state"] == "pending_review"
+
+
+def test_canes_omitted_optional_nutrition_cannot_unlock_explicit_items_accept(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            sodium_mg=700,
+            fiber_g=6,
+            confidence=0.85,
+            source="ai_text_estimate",
+        ),
+    )
+    client = module.app.test_client()
+    client_id = "canes-omit-items"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    submitted = dict(capture.get_json()["estimate"])
+    submitted.pop("sodium_mg")
+    submitted.pop("fiber_g")
+    submitted["ambiguous"] = False
+    submitted["uncertainty_notes"] = []
+    accept = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={
+            "meal_id": client_id,
+            "items": [{"item_id": "item-1", "state": "included", "estimate": submitted}],
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert accept.status_code == 409, accept.get_data(as_text=True)
+
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == 1
+    assert rows[0]["correction_state"] == "pending_review"
+
+
+def test_canes_explicit_material_sodium_fiber_and_calorie_corrections_succeed(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            sodium_mg=700,
+            fiber_g=6,
+            confidence=0.85,
+            source="ai_text_estimate",
+        ),
+    )
+    client = module.app.test_client()
+
+    for suffix, field, value in (
+        ("sodium", "sodium_mg", 0),
+        ("fiber", "fiber_g", 0),
+        ("calories", "calories", 890),
+    ):
+        client_id = f"canes-explicit-{suffix}"
+        capture = client.post(
+            "/api/meal-intake",
+            data={"text": "Canes Box Combo", "client_id": client_id},
+            content_type="multipart/form-data",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert capture.status_code == 200, capture.get_data(as_text=True)
+        submitted = dict(capture.get_json()["estimate"])
+        submitted[field] = value
+        accept = client.post(
+            f"/api/meal-intake/{client_id}/accept",
+            json={"estimate": submitted},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert accept.status_code == 200, accept.get_data(as_text=True)
+        assert accept.get_json()["food_logs"][0]["correction_state"] == "corrected"
+
+
+def test_canes_natural_box_combo_phrasings_stay_pending_and_block_unchanged_accept(monkeypatch):
+    module = _client(monkeypatch)
+    phrases = (
+        "Raising Cane's 4-Finger Box Combo",
+        "Cane's four finger box combo",
+        "Box Combo from Cane's",
+    )
+
+    def fake_parser(text, **_kw):
+        return {
+            "estimate": _accepted_estimate(
+                item_name=text,
+                calories=840,
+                confidence=0.85,
+                source="ai_text_estimate",
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+
+    for index, phrase in enumerate(phrases, start=1):
+        client_id = f"canes-natural-{index}"
+        capture = client.post(
+            "/api/meal-intake",
+            data={"text": phrase, "client_id": client_id},
+            content_type="multipart/form-data",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert capture.status_code == 200, capture.get_data(as_text=True)
+        body = capture.get_json()
+        assert body["items"][0]["branded_combo_ai_only"] is True
+        assert "branded_combo_ai_only" in body["policy"]["reasons"]
+        accept = client.post(
+            f"/api/meal-intake/{client_id}/accept",
+            json={"estimate": body["estimate"]},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert accept.status_code == 409
+
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == len(phrases)
+    assert all(row["correction_state"] == "pending_review" for row in rows)
+
+
+def test_canes_accept_rejects_forged_source_and_accepts_server_selected_candidate(monkeypatch):
+    module = _client(monkeypatch)
+    source_backed_candidate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        confidence=0.90,
+        source="nutritionix",
+        external_food_id="server-canes-box",
+        verified_source_url="https://example.test/server-canes-box",
+    )
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            confidence=0.85,
+            source="ai_text_estimate",
+            candidates=[{"candidate_id": "verified-canes", "estimate": source_backed_candidate}],
+        ),
+    )
+    client = module.app.test_client()
+
+    forged_capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "canes-forged-source"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    forged = dict(forged_capture.get_json()["estimate"])
+    forged.update({
+        "source": "nutritionix",
+        "underlying_source": "usda_fdc",
+        "external_food_id": "forged",
+        "verified_source_url": "https://example.test/forged",
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    forged_accept = client.post(
+        "/api/meal-intake/canes-forged-source/accept",
+        json={
+            "meal_id": "canes-forged-source",
+            "items": [{"item_id": "item-1", "state": "included", "estimate": forged}],
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert forged_accept.status_code == 409
+
+    candidate_capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "canes-server-candidate"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert candidate_capture.status_code == 200, candidate_capture.get_data(as_text=True)
+    assert candidate_capture.get_json()["items"][0]["candidates"][0]["source_backed"] is True
+    selected = client.post(
+        "/api/meal-intake/canes-server-candidate/refresh",
+        json={"kind": "choose_candidate", "request_id": "canes-verified", "item_id": "item-1", "candidate_id": "verified-canes"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert selected.status_code == 200, selected.get_data(as_text=True)
+    assert "branded_combo_ai_only" not in selected.get_json()["policy"]["reasons"]
+    selected_estimate = dict(selected.get_json()["items"][0]["estimate"])
+    selected_estimate["meal_type"] = "dinner"
+    accept = client.post(
+        "/api/meal-intake/canes-server-candidate/accept",
+        json={
+            "meal_id": "canes-server-candidate",
+            "items": [{"item_id": "item-1", "state": "included", "estimate": selected_estimate}],
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert accept.status_code == 200, accept.get_data(as_text=True)
+    assert accept.get_json()["food_logs"][0]["source"] == "nutritionix"
+    assert accept.get_json()["food_logs"][0]["meal_type"] == "dinner"
+
+
+def test_canes_refresh_preserves_or_derives_marker_before_accept(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parser(text, **_kw):
+        if text == "ordinary lunch":
+            return {"estimate": _accepted_estimate(item_name="Chicken bowl", source="ai_text_estimate"), "fallback_used": False}
+        return {
+            "estimate": _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=840,
+                confidence=0.85,
+                source="ai_text_estimate",
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "canes-edit-marker"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    edited = client.post(
+        "/api/meal-intake/canes-edit-marker/refresh",
+        json={"kind": "edit_portion", "request_id": "canes-edit", "item_id": "item-1", "text": "Canes Box Combo"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    assert edited.status_code == 200, edited.get_data(as_text=True)
+    assert edited.get_json()["items"][0]["branded_combo_ai_only"] is True
+    assert "branded_combo_ai_only" in edited.get_json()["policy"]["reasons"]
+    blocked = client.post(
+        "/api/meal-intake/canes-edit-marker/accept",
+        json={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert blocked.status_code == 409
+
+    added_capture = client.post(
+        "/api/meal-intake",
+        data={"text": "ordinary lunch", "client_id": "canes-add-marker"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    added = client.post(
+        "/api/meal-intake/canes-add-marker/refresh",
+        json={"kind": "add_item", "request_id": "canes-add", "text": "Canes Box Combo"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert added_capture.status_code == 200, added_capture.get_data(as_text=True)
+    assert added.status_code == 200, added.get_data(as_text=True)
+    assert added.get_json()["items"][-1]["branded_combo_ai_only"] is True
+    assert "branded_combo_ai_only" in added.get_json()["policy"]["reasons"]
+
+
+def test_canes_followup_replacement_and_route_body_mismatch_cannot_bypass_marker(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parser(text, **_kw):
+        if text == "followup answer":
+            return {
+                "estimate": _accepted_estimate(
+                    item_name="Canes Box Combo",
+                    calories=840,
+                    confidence=0.85,
+                    source="ai_text_estimate",
+                ),
+                "fallback_used": False,
+            }
+        return {
+            "estimate": _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=840,
+                confidence=0.40,
+                ambiguous=True,
+                source="ai_text_estimate",
+                clarification_question="Which combo and portions were included?",
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "canes-followup-marker"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    followup = client.post(
+        "/api/meal-intake/canes-followup-marker/refresh",
+        json={"kind": "followup_answer", "request_id": "canes-followup", "answer": "followup answer"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    assert followup.status_code == 200, followup.get_data(as_text=True)
+    assert followup.get_json()["items"][0]["branded_combo_ai_only"] is True
+    assert client.post(
+        "/api/meal-intake/canes-followup-marker/accept",
+        json={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    ).status_code == 409
+
+    mismatch = client.post(
+        "/api/meal-intake/canes-followup-marker/accept",
+        json={
+            "meal_id": "different-meal",
+            "items": [{"item_id": "item-1", "state": "included", "estimate": followup.get_json()["estimate"]}],
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert mismatch.status_code == 400
+
+
+def test_canes_material_refresh_clears_warning_but_unresolved_refresh_keeps_it(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parser(text, **_kw):
+        calories = 890 if text == "material correction" else 840
+        return {
+            "estimate": _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=calories,
+                confidence=0.85,
+                source="ai_text_estimate",
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+    for client_id, edit_text, expected_warning in (
+        ("canes-unresolved-warning", "Canes Box Combo", True),
+        ("canes-material-warning", "material correction", False),
+    ):
+        client.post(
+            "/api/meal-intake",
+            data={"text": "Canes Box Combo", "client_id": client_id},
+            content_type="multipart/form-data",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        refreshed = client.post(
+            f"/api/meal-intake/{client_id}/refresh",
+            json={"kind": "edit_portion", "request_id": f"{client_id}-edit", "item_id": "item-1", "text": edit_text},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
+        assert ("branded_combo_ai_only" in refreshed.get_json()["policy"]["reasons"]) is expected_warning
+
+
+def test_direct_accept_rejects_unsnapshotted_ai_canes_combo(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+
+    accept = client.post(
+        "/api/meal-intake/canes-direct-accept/accept",
+        json={
+            "estimate": _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=840,
+                confidence=0.85,
+                source="ai_text_estimate",
+            )
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert accept.status_code == 409
+    assert data_store.get_food_logs(1) == []
+
+
+def test_direct_accept_rejects_unsnapshotted_canes_text_with_innocuous_estimate(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+
+    accept = client.post(
+        "/api/meal-intake/canes-direct-text/accept",
+        json={
+            "text": "Canes Box Combo",
+            "estimate": _accepted_estimate(
+                item_name="Chicken bowl",
+                calories=840,
+                confidence=0.85,
+                source="ai_text_estimate",
+            ),
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert accept.status_code == 409
+    assert data_store.get_food_logs(1) == []
+    assert data_store.get_meal_acceptance_event(1, "canes-direct-text") is None
+
+
+def test_direct_multi_accept_rejects_unsnapshotted_canes_item_text_atomically(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+
+    accept = client.post(
+        "/api/meal-intake/canes-direct-multi-text/accept",
+        json={
+            "meal_id": "canes-direct-multi-text",
+            "items": [
+                {
+                    "item_id": "safe",
+                    "state": "included",
+                    "text": "Garden salad",
+                    "estimate": _accepted_estimate(item_name="Garden salad", source="manual_review_estimate"),
+                },
+                {
+                    "item_id": "canes",
+                    "state": "included",
+                    "text": "Canes Box Combo",
+                    "estimate": _accepted_estimate(
+                        item_name="Chicken bowl",
+                        calories=840,
+                        confidence=0.85,
+                        source="ai_text_estimate",
+                    ),
+                },
+            ],
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert accept.status_code == 409
+    assert accept.get_json()["save_blocked_item_ids"] == ["canes"]
+    assert data_store.get_food_logs(1) == []
+    assert data_store.get_meal_acceptance_event(1, "canes-direct-multi-text") is None
+
+
+def test_direct_accept_allows_unrelated_single_and_multi_meals(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+
+    single = client.post(
+        "/api/meal-intake/ordinary-direct-single/accept",
+        json={
+            "text": "Chicken bowl",
+            "estimate": _accepted_estimate(item_name="Chicken bowl", source="manual_review_estimate"),
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    multi = client.post(
+        "/api/meal-intake/ordinary-direct-multi/accept",
+        json={
+            "meal_id": "ordinary-direct-multi",
+            "items": [
+                {
+                    "item_id": "salad",
+                    "state": "included",
+                    "text": "Garden salad",
+                    "estimate": _accepted_estimate(item_name="Garden salad", source="manual_review_estimate"),
+                },
+                {
+                    "item_id": "soup",
+                    "state": "included",
+                    "text": "Tomato soup",
+                    "estimate": _accepted_estimate(item_name="Tomato soup", source="manual_review_estimate"),
+                },
+            ],
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert single.status_code == 200, single.get_data(as_text=True)
+    assert multi.status_code == 200, multi.get_data(as_text=True)
+    assert len(data_store.get_food_logs(1)) == 3
+
+
+def test_direct_accept_rejects_forged_source_canes_combo_in_single_and_multi_shapes(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    forged = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        confidence=0.85,
+        source="nutritionix",
+        underlying_source="usda_fdc",
+        external_food_id="forged-canes",
+        verified_source_url="https://example.test/forged-canes",
+    )
+
+    single = client.post(
+        "/api/meal-intake/canes-direct-forged-single/accept",
+        json={"estimate": forged},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    multi = client.post(
+        "/api/meal-intake/canes-direct-forged-multi/accept",
+        json={"items": [{"item_id": "item-1", "state": "included", "estimate": forged}]},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert single.status_code == 409
+    assert multi.status_code == 409
+    assert data_store.get_food_logs(1) == []
+
+
+def test_canes_server_generated_source_backed_edit_and_followup_resolve_policy(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parser(text, **_kw):
+        if text == "source-backed refresh":
+            return {
+                "estimate": _accepted_estimate(
+                    item_name="Canes Box Combo",
+                    calories=920,
+                    confidence=0.90,
+                    source="nutritionix",
+                    external_food_id="server-canes-refresh",
+                    verified_source_url="https://example.test/server-canes-refresh",
+                ),
+                "fallback_used": False,
+            }
+        return {
+            "estimate": _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=840,
+                confidence=0.40 if text == "followup initial" else 0.85,
+                ambiguous=text == "followup initial",
+                source="ai_text_estimate",
+                clarification_question="Which combo and portions were included?" if text == "followup initial" else None,
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+
+    edit_capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "canes-source-edit"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    edit = client.post(
+        "/api/meal-intake/canes-source-edit/refresh",
+        json={"kind": "edit_portion", "request_id": "source-edit", "item_id": "item-1", "text": "source-backed refresh"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert edit_capture.status_code == 200, edit_capture.get_data(as_text=True)
+    assert edit.status_code == 200, edit.get_data(as_text=True)
+    assert edit.get_json()["items"][0]["server_source_backed_candidate"] is True
+    assert "branded_combo_ai_only" not in edit.get_json()["policy"]["reasons"]
+
+    followup_capture = client.post(
+        "/api/meal-intake",
+        data={"text": "followup initial", "client_id": "canes-source-followup"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    followup = client.post(
+        "/api/meal-intake/canes-source-followup/refresh",
+        json={"kind": "followup_answer", "request_id": "source-followup", "answer": "source-backed refresh"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert followup_capture.status_code == 200, followup_capture.get_data(as_text=True)
+    assert followup.status_code == 200, followup.get_data(as_text=True)
+    assert followup.get_json()["items"][0]["server_source_backed_candidate"] is True
+    assert "branded_combo_ai_only" not in followup.get_json()["policy"]["reasons"]
+
+
+def test_mixed_source_refresh_accept_exposes_current_provenance_at_public_boundaries(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parser(text, **_kw):
+        if text == "mixed refresh":
+            return {
+                "estimate": _accepted_estimate(
+                    item_name="Canes Box Combo",
+                    calories=920,
+                    source="mixed_lookup",
+                    underlying_source="mixed_lookup",
+                    underlying_sources=["nutritionix", "usda_fdc"],
+                ),
+                "fallback_used": False,
+            }
+        return {
+            "estimate": _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=840,
+                source="ai_text_estimate",
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "mixed-public"},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    refresh = client.post(
+        "/api/meal-intake/mixed-public/refresh",
+        json={
+            "kind": "edit_portion",
+            "request_id": "mixed-public-refresh",
+            "item_id": "item-1",
+            "text": "mixed refresh",
+        },
+        headers=headers,
+    )
+    assert capture.status_code == 200
+    assert refresh.status_code == 200
+    accepted = client.post(
+        "/api/meal-intake/mixed-public/accept",
+        json={},
+        headers=headers,
+    )
+    assert accepted.status_code == 200
+    row = accepted.get_json()["food_logs"][0]
+    assert row["accepted_estimate"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert row["original_estimate"]["source"] == "ai_text_estimate"
+    assert "underlying_sources" not in row["original_estimate"]
+    assert data_store.get_food_logs(1)[0]["accepted_estimate"] == row["accepted_estimate"]
+    by_date = client.get(f"/api/food-logs/by-date/{row['date']}")
+    assert by_date.status_code == 200
+    history_row = next(
+        entry
+        for entry in by_date.get_json()["entries"]
+        if entry["client_id"] == row["client_id"]
+    )
+    assert history_row["accepted_estimate"] == row["accepted_estimate"]
+    export = client.get("/api/export-backup")
+    assert export.status_code == 200
+    export_row = next(
+        entry
+        for entry in export.get_json()["data"]["food_logs"]
+        if entry["client_id"] == row["client_id"]
+    )
+    assert export_row["accepted_estimate"] == row["accepted_estimate"]
+
+
+def test_imported_forged_canes_snapshot_cannot_grant_source_backed_accept(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+        ),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "forged-imported-canes"},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200
+    exported = client.get("/api/export-backup")
+    snapshot = exported.get_json()["data"]["meal_review_snapshots"][0]
+    item = snapshot["payload"]["items"][0]
+    item["branded_combo_ai_only"] = True
+    item["server_source_backed_candidate"] = True
+    item["estimate"]["source"] = "ai_text_estimate"
+    item["original_estimate"]["source"] = "ai_text_estimate"
+
+    data_store.delete_user_data(1)
+    restored = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+
+    accepted = client.post(
+        "/api/meal-intake/forged-imported-canes/accept",
+        json={},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert not any(
+        row["correction_state"] in {"accepted", "corrected"}
+        for row in data_store.get_food_logs(1)
+    )
+    assert data_store.get_meal_acceptance_event(1, "forged-imported-canes") is None
+
+
+def test_imported_ordinary_snapshot_cannot_erase_pending_canes_parent(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            source="ai_text_estimate",
+        ),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "imported-ordinary-overwrite-canes"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    snapshot = client.get("/api/export-backup").get_json()["data"]["meal_review_snapshots"][0]
+    ordinary = _accepted_estimate(
+        item_name="Chicken bowl",
+        calories=500,
+        confidence=0.95,
+        source="manual_review_estimate",
+    )
+    snapshot["payload"] = {
+        "status": "pending_review",
+        "text": "Chicken bowl",
+        "estimate": ordinary,
+        "original_estimate": ordinary,
+        "items": [
+            {
+                "item_id": "item-1",
+                "item_order": 1,
+                "status": "included",
+                "text": "Chicken bowl",
+                "estimate": ordinary,
+                "original_estimate": ordinary,
+                "branded_combo_ai_only": False,
+                "candidates": [],
+            }
+        ],
+    }
+    restored = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == 1
+    assert rows[0]["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, client_id) is None
+
+
+def test_route_body_meal_id_cannot_bypass_imported_pending_canes_parent(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            source="ai_text_estimate",
+        ),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    meal_id = "body-pending-canes"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": meal_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    snapshot = client.get("/api/export-backup").get_json()["data"]["meal_review_snapshots"][0]
+    ordinary = _accepted_estimate(
+        item_name="Chicken bowl",
+        calories=500,
+        confidence=0.95,
+        source="manual_review_estimate",
+    )
+    snapshot["payload"] = {
+        "status": "pending_review",
+        "text": "Chicken bowl",
+        "estimate": ordinary,
+        "original_estimate": ordinary,
+        "items": [
+            {
+                "item_id": "item-1",
+                "item_order": 1,
+                "status": "included",
+                "text": "Chicken bowl",
+                "estimate": ordinary,
+                "original_estimate": ordinary,
+                "branded_combo_ai_only": False,
+                "candidates": [],
+            }
+        ],
+    }
+    restored = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+
+    accepted = client.post(
+        "/api/meal-intake/route-without-pending/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"item_id": "item-1", "state": "included", "estimate": ordinary}
+            ],
+        },
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert not any(
+        row["correction_state"] in {"accepted", "corrected"}
+        for row in data_store.get_food_logs(1)
+    )
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+
+
+def test_imported_canes_snapshot_without_candidates_cannot_claim_source_backed(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    forged_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="nutritionix",
+        external_food_id="imported-forged-canes",
+        verified_source_url="https://example.test/imported-forged-canes",
+    )
+    snapshot = {
+        "meal_id": "imported-canes-without-candidates",
+        "payload": {
+            "status": "pending_review",
+            "text": "Canes Box Combo",
+            "estimate": forged_estimate,
+            "original_estimate": forged_estimate,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "item_order": 1,
+                    "status": "included",
+                    "text": "Canes Box Combo",
+                    "estimate": forged_estimate,
+                    "original_estimate": forged_estimate,
+                    "branded_combo_ai_only": False,
+                    "candidates": [],
+                }
+            ],
+        },
+        "next_item_seq": 2,
+    }
+
+    restored = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+    accepted = client.post(
+        "/api/meal-intake/imported-canes-without-candidates/accept",
+        json={},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert not any(
+        row["correction_state"] in {"accepted", "corrected"}
+        for row in data_store.get_food_logs(1)
+    )
+    assert data_store.get_meal_acceptance_event(1, "imported-canes-without-candidates") is None
+
+
+def test_imported_candidate_cannot_retain_client_source_backed_flag(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    candidate_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+    )
+    snapshot = {
+        "meal_id": "imported-candidate-source-backed",
+        "payload": {
+            "status": "pending_review",
+            "text": "Canes Box Combo",
+            "estimate": _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=840,
+                source="ai_text_estimate",
+            ),
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "item_order": 1,
+                    "status": "included",
+                    "text": "Canes Box Combo",
+                    "estimate": _accepted_estimate(
+                        item_name="Canes Box Combo",
+                        calories=840,
+                        source="ai_text_estimate",
+                    ),
+                    "original_estimate": _accepted_estimate(
+                        item_name="Canes Box Combo",
+                        calories=840,
+                        source="ai_text_estimate",
+                    ),
+                    "candidates": [
+                        {
+                            "candidate_id": "forged-source-backed",
+                            "source_backed": True,
+                            "estimate": candidate_estimate,
+                        }
+                    ],
+                }
+            ],
+        },
+        "next_item_seq": 2,
+    }
+
+    restored = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+    stored = data_store.get_meal_review_snapshot(1, snapshot["meal_id"])
+    candidate = stored["payload"]["items"][0]["candidates"][0]
+    assert not candidate.get("source_backed")
+
+
+def test_material_canes_correction_drops_forged_current_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            source="ai_text_estimate",
+        ),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "material-forged-provenance"},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    item = capture.get_json()["items"][0]
+    material = dict(item["estimate"])
+    material.update(
+        calories=material["calories"] + 50,
+        source="nutritionix",
+        underlying_source="nutritionix",
+        external_food_id="forged-material-correction",
+        verified_source_url="https://example.test/forged-material-correction",
+    )
+
+    accepted = client.post(
+        "/api/meal-intake/material-forged-provenance/accept",
+        json={
+            "meal_id": "material-forged-provenance",
+            "items": [
+                {
+                    "item_id": item["item_id"],
+                    "state": "included",
+                    "estimate": material,
+                }
+            ],
+        },
+        headers=headers,
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    row = accepted.get_json()["food_logs"][0]
+    assert row["correction_state"] == "corrected"
+    assert row["source"] == "manual_review_estimate"
+    assert row["original_estimate"]["source"] == "ai_text_estimate"
+    assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+    assert "underlying_source" not in row["accepted_estimate"]
+    assert "external_food_id" not in row["accepted_estimate"]
+    assert "verified_source_url" not in row["accepted_estimate"]
+
+
+def test_snapshotless_canes_pending_row_uses_stored_ai_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            source="ai_text_estimate",
+        ),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "snapshotless-canes-pending"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    data_store.delete_meal_review_snapshot(1, client_id)
+    pending = data_store.get_food_logs(1)[0]
+    assert pending["correction_state"] == "pending_review"
+
+    innocuous = dict(capture.get_json()["items"][0]["estimate"])
+    innocuous.update(item_name="Chicken bowl", source="manual")
+    blocked = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": innocuous},
+        headers=headers,
+    )
+
+    assert blocked.status_code == 409, blocked.get_data(as_text=True)
+    assert data_store.get_food_logs(1)[0]["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, client_id) is None
+
+    material = dict(innocuous)
+    material.update(
+        item_name="Canes Box Combo",
+        calories=material["calories"] + 50,
+        source="nutritionix",
+        underlying_source="nutritionix",
+        external_food_id="forged-snapshotless-canes",
+    )
+    corrected = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={
+            "estimate": material,
+            "original_estimate": _accepted_estimate(
+                item_name="Chicken bowl",
+                calories=900,
+                source="nutritionix",
+            ),
+        },
+        headers=headers,
+    )
+    assert corrected.status_code == 200, corrected.get_data(as_text=True)
+    row = corrected.get_json()["food_log"]
+    assert row["correction_state"] == "corrected"
+    assert row["source"] == "manual_review_estimate"
+    assert row["original_estimate"]["source"] == "ai_text_estimate"
+    assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+
+
+def test_canes_personal_vocab_underlying_source_stays_untrusted(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            source="personal_vocab",
+            underlying_source="nutritionix",
+        ),
+        source="personal_vocab",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "canes-personal-vocab-underlying-source"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    item = capture.get_json()["items"][0]
+    assert item["branded_combo_ai_only"] is True
+
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert data_store.get_food_logs(1)[0]["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, client_id) is None
+
+
+def test_snapshotless_canes_omitted_optional_nutrition_stays_blocked(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            source="ai_text_estimate",
+        ),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "snapshotless-canes-omitted-optional-nutrition"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    data_store.delete_meal_review_snapshot(1, client_id)
+
+    unchanged = dict(capture.get_json()["items"][0]["estimate"])
+    unchanged.pop("sodium_mg")
+    unchanged.pop("fiber_g")
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": unchanged},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert data_store.get_food_logs(1)[0]["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, client_id) is None
+
+
+def test_snapshotless_canes_context_note_preserves_raw_alias_policy(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "snapshotless-canes-context-note"
+    original = _accepted_estimate(
+        item_name="Four chicken fingers, fries, toast, and drink",
+        calories=840,
+        source="ai_text_estimate",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": original["item_name"],
+            "context_note": "Canes Box Combo",
+            "calories": original["calories"],
+            "protein_g": original["protein_g"],
+            "carbs_g": original["carbs_g"],
+            "fat_g": original["fat_g"],
+            "sodium_mg": original["sodium_mg"],
+            "fiber_g": original["fiber_g"],
+            "source": "ai_text_estimate",
+            "correction_state": "pending_review",
+            "original_estimate": original,
+        },
+    )
+
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": dict(original)},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert data_store.get_food_logs(1)[0]["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, client_id) is None
+
+
+def test_snapshotless_pending_canes_parent_blocks_renamed_multi_accept(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            source="ai_text_estimate",
+        ),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "snapshotless-canes-renamed-multi"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    data_store.delete_meal_review_snapshot(1, client_id)
+
+    unchanged = capture.get_json()["estimate"]
+    renamed_items = []
+    for item_id, item_name, item_client_id in (
+        ("chicken", "Chicken fingers", client_id),
+        ("fries", "Fries", None),
+    ):
+        estimate = dict(unchanged)
+        estimate["item_name"] = item_name
+        estimate.update(
+            source="manual_review_estimate",
+            ambiguous=False,
+            uncertainty_notes=[],
+        )
+        for field in ("branded_combo_ai_only", "underlying_source", "underlying_sources"):
+            estimate.pop(field, None)
+        item = {
+            "item_id": item_id,
+            "state": "included",
+            "text": item_name,
+            "estimate": estimate,
+        }
+        if item_client_id:
+            item["client_id"] = item_client_id
+        renamed_items.append(item)
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"meal_id": client_id, "items": renamed_items},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == 1
+    assert rows[0]["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, client_id) is None
+
+
+def test_snapshotless_photo_assisted_canes_keeps_raw_alias_policy(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "claude",
+            "item_description": "Four chicken fingers, fries, toast, and drink",
+            "portion_hint": "one meal",
+            "confidence": 0.90,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "macro_estimate": {
+                "meal_type": "lunch",
+                "calories": 840,
+                "protein_g": 35,
+                "carbs_g": 45,
+                "fat_g": 18,
+                "sodium_mg": 700,
+                "fiber_g": 6,
+            },
+        },
+        lookup=None,
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "snapshotless-photo-assisted-canes"
+    capture = client.post(
+        "/api/meal-intake",
+        data={
+            "text": "Canes Box Combo",
+            "client_id": client_id,
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    assert capture.get_json()["items"][0]["branded_combo_ai_only"] is True
+    data_store.delete_meal_review_snapshot(1, client_id)
+
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": capture.get_json()["estimate"]},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert data_store.get_food_logs(1)[0]["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, client_id) is None
+
+
+def test_snapshotless_source_backed_pending_canes_accepts_saved_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "snapshotless-source-backed-canes"
+    original = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+        external_food_id="saved-nutritionix-canes",
+        verified_source_url="https://example.test/saved-nutritionix-canes",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": original["item_name"],
+            "context_note": "Canes Box Combo",
+            "calories": original["calories"],
+            "protein_g": original["protein_g"],
+            "carbs_g": original["carbs_g"],
+            "fat_g": original["fat_g"],
+            "sodium_mg": original["sodium_mg"],
+            "fiber_g": original["fiber_g"],
+            "source": "nutritionix",
+            "correction_state": "pending_review",
+            "original_estimate": original,
+        },
+    )
+
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": dict(original)},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    row = accepted.get_json()["food_log"]
+    assert row["source"] == "nutritionix"
+    assert row["original_estimate"]["source"] == "nutritionix"
+    assert row["accepted_estimate"]["source"] == "nutritionix"
+
+
+def test_snapshotless_source_backed_canes_material_correction_preserves_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "snapshotless-source-backed-canes-material"
+    original = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+        external_food_id="saved-nutritionix-canes-material",
+        verified_source_url="https://example.test/saved-nutritionix-canes-material",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": original["item_name"],
+            "context_note": "Canes Box Combo",
+            "calories": original["calories"],
+            "protein_g": original["protein_g"],
+            "carbs_g": original["carbs_g"],
+            "fat_g": original["fat_g"],
+            "sodium_mg": original["sodium_mg"],
+            "fiber_g": original["fiber_g"],
+            "source": "nutritionix",
+            "correction_state": "pending_review",
+            "original_estimate": original,
+        },
+    )
+    material = dict(original)
+    material.update(calories=material["calories"] + 50, source="manual_review_estimate")
+
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": material},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    row = accepted.get_json()["food_log"]
+    assert row["correction_state"] == "corrected"
+    assert row["calories"] == 970
+    assert row["source"] == "manual_review_estimate"
+    assert row["original_estimate"]["source"] == "nutritionix"
+    assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+
+
+def test_wrapped_mixed_accepted_estimate_round_trips_public_surfaces(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    wrapped = _accepted_estimate(
+        item_name="Vision Canes Box Combo",
+        calories=920,
+        source="vision_claude+mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+    row = data_store.add_food_log(
+        1,
+        {
+            "client_id": "wrapped-mixed-public",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": wrapped["item_name"],
+            "calories": wrapped["calories"],
+            "protein_g": wrapped["protein_g"],
+            "carbs_g": wrapped["carbs_g"],
+            "fat_g": wrapped["fat_g"],
+            "sodium_mg": wrapped["sodium_mg"],
+            "fiber_g": wrapped["fiber_g"],
+            "source": wrapped["source"],
+            "correction_state": "accepted",
+            "original_estimate": _accepted_estimate(
+                item_name=wrapped["item_name"],
+                calories=840,
+                source="ai_text_estimate",
+            ),
+            "accepted_estimate": wrapped,
+        },
+    )
+
+    assert row["accepted_estimate"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    reloaded = data_store.get_food_logs(1)[0]
+    assert reloaded["accepted_estimate"] == row["accepted_estimate"]
+    by_date = client.get("/api/food-logs/by-date/2026-05-18")
+    assert by_date.status_code == 200
+    history_row = by_date.get_json()["entries"][0]
+    assert history_row["accepted_estimate"] == row["accepted_estimate"]
+    export = client.get("/api/export-backup")
+    assert export.status_code == 200
+    assert export.get_json()["data"]["food_logs"][0]["accepted_estimate"] == row["accepted_estimate"]
+
+
+def test_personal_vocab_wrapped_mixed_provenance_is_untrusted_in_both_predicates(monkeypatch):
+    module = _client(monkeypatch)
+    personal_wrapped = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="personal_vocab+mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+
+    assert module._is_source_backed_nutrition(personal_wrapped) is False
+    assert data_store._is_authorized_accepted_estimate_replacement(personal_wrapped) is False
+
+
+def test_direct_provider_with_personal_vocab_underlying_component_is_untrusted(monkeypatch):
+    module = _client(monkeypatch)
+    tainted = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+        underlying_source="personal_vocab+mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+
+    assert module._is_source_backed_nutrition(tainted) is False
+    assert data_store._is_authorized_accepted_estimate_replacement(tainted) is False
+
+
+def test_direct_provider_with_invalid_mixed_marker_cannot_replace_current_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    invalid_mixed = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+        underlying_source="mixed_lookup",
+        underlying_sources=["ai_text_estimate"],
+    )
+
+    assert module._is_source_backed_nutrition(invalid_mixed) is False
+    assert data_store._is_authorized_accepted_estimate_replacement(invalid_mixed) is False
+
+
+def test_honest_material_correction_restores_trusted_image_boolean(monkeypatch):
+    module = _client(monkeypatch)
+    original = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="ai_text_estimate",
+        from_image=True,
+    )
+    corrected = module._honest_material_correction_estimate(
+        _accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=890,
+            source="manual_review_estimate",
+            from_image=False,
+        ),
+        original,
+    )
+
+    assert corrected["from_image"] is True
+
+
+def test_material_canes_correction_strips_client_provenance_metadata(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            source="ai_text_estimate",
+        ),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "material-canes-client-provenance"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    item = capture.get_json()["items"][0]
+    material = dict(item["estimate"])
+    material.update(
+        calories=material["calories"] + 50,
+        personal_vocab_phrase="forged personal phrase",
+        vision_description="forged visual evidence",
+        vision_provider="forged-provider",
+        vision_confidence=0.99,
+    )
+
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={
+            "meal_id": client_id,
+            "items": [
+                {"item_id": item["item_id"], "state": "included", "estimate": material}
+            ],
+        },
+        headers=headers,
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    persisted = accepted.get_json()["food_logs"][0]["accepted_estimate"]
+    for field in (
+        "personal_vocab_phrase",
+        "vision_description",
+        "vision_provider",
+        "vision_confidence",
+    ):
+        assert field not in persisted
+
+
+def test_ambiguous_direct_provider_cannot_accept_or_replace_terminal_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    original = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+        external_food_id="ambiguous-pending-canes",
+        verified_source_url="https://example.test/ambiguous-pending-canes",
+        ambiguous=True,
+    )
+    pending_id = "ambiguous-direct-pending-canes"
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": pending_id,
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": original["item_name"],
+            "context_note": "Canes Box Combo",
+            "calories": original["calories"],
+            "protein_g": original["protein_g"],
+            "carbs_g": original["carbs_g"],
+            "fat_g": original["fat_g"],
+            "sodium_mg": original["sodium_mg"],
+            "fiber_g": original["fiber_g"],
+            "source": "nutritionix",
+            "correction_state": "pending_review",
+            "original_estimate": original,
+        },
+    )
+    accepted = client.post(
+        f"/api/meal-intake/{pending_id}/accept",
+        json={"estimate": dict(original)},
+        headers=headers,
+    )
+    assert module._is_source_backed_nutrition(original) is False
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert data_store.get_food_logs(1)[0]["correction_state"] == "pending_review"
+
+    prior_current = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+    terminal_id = "ambiguous-direct-terminal"
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": terminal_id,
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": prior_current["item_name"],
+            "calories": prior_current["calories"],
+            "protein_g": prior_current["protein_g"],
+            "carbs_g": prior_current["carbs_g"],
+            "fat_g": prior_current["fat_g"],
+            "sodium_mg": prior_current["sodium_mg"],
+            "fiber_g": prior_current["fiber_g"],
+            "source": "mixed_lookup",
+            "correction_state": "corrected",
+            "original_estimate": _accepted_estimate(
+                item_name=prior_current["item_name"],
+                calories=840,
+                source="ai_text_estimate",
+            ),
+            "accepted_estimate": prior_current,
+        },
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": terminal_id,
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": original["item_name"],
+            "calories": 825,
+            "protein_g": original["protein_g"],
+            "carbs_g": original["carbs_g"],
+            "fat_g": original["fat_g"],
+            "sodium_mg": original["sodium_mg"],
+            "fiber_g": original["fiber_g"],
+            "source": "nutritionix",
+            "correction_state": "corrected",
+            "accepted_estimate": {**original, "calories": 825},
+        },
+    )
+    terminal = next(
+        row for row in data_store.get_food_logs(1) if row["client_id"] == terminal_id
+    )
+    assert terminal["accepted_estimate"]["source"] == "manual_review_estimate"
+    assert "underlying_sources" not in terminal["accepted_estimate"]
+
+
+def test_snapshotless_legacy_source_backed_canes_uses_food_log_row_baseline(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "snapshotless-legacy-source-backed-canes"
+    original = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+        external_food_id="legacy-nutritionix-canes",
+        verified_source_url="https://example.test/legacy-nutritionix-canes",
+    )
+    legacy_original = {
+        key: value
+        for key, value in original.items()
+        if key not in {"item_name", "meal_type"}
+    }
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": original["item_name"],
+            "meal_type": original["meal_type"],
+            "context_note": "Canes Box Combo",
+            "calories": original["calories"],
+            "protein_g": original["protein_g"],
+            "carbs_g": original["carbs_g"],
+            "fat_g": original["fat_g"],
+            "sodium_mg": original["sodium_mg"],
+            "fiber_g": original["fiber_g"],
+            "source": "nutritionix",
+            "correction_state": "pending_review",
+            "original_estimate": legacy_original,
+        },
+    )
+
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": dict(original)},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    row = accepted.get_json()["food_log"]
+    assert row["source"] == "nutritionix"
+    assert row["original_estimate"]["source"] == "nutritionix"
+    assert row["accepted_estimate"]["source"] == "nutritionix"
+
+
+def test_import_invalid_current_estimates_preserve_terminal_mixed_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    original_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="ai_text_estimate",
+    )
+    accepted_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+    cases = [
+        ("invalid-mixed-current", {"source": "mixed_lookup", "underlying_sources": []}),
+        ("manual-current", {"source": "manual"}),
+    ]
+    for client_id, current_estimate in cases:
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "date": "2026-05-18",
+                "logged_at": "2026-05-18T12:00:00",
+                "item_name": "Canes Box Combo",
+                "calories": 920,
+                "protein_g": 40,
+                "carbs_g": 60,
+                "fat_g": 30,
+                "sodium_mg": 1000,
+                "fiber_g": 4,
+                "source": "mixed_lookup",
+                "correction_state": "corrected",
+                "original_estimate": original_estimate,
+                "accepted_estimate": accepted_estimate,
+            },
+        )
+        restored = client.post(
+            "/api/import-backup",
+            json={
+                "data": {
+                    "food_logs": [
+                        {
+                            "client_id": client_id,
+                            "date": "2026-05-18",
+                            "logged_at": "2026-05-18T12:00:00",
+                            "item_name": "Canes Box Combo",
+                            "calories": 825,
+                            "protein_g": 38,
+                            "carbs_g": 54,
+                            "fat_g": 25,
+                            "sodium_mg": 920,
+                            "fiber_g": 5,
+                            "source": "mixed_lookup",
+                            "correction_state": "corrected",
+                            "original_estimate": original_estimate,
+                            "accepted_estimate": current_estimate,
+                        }
+                    ]
+                }
+            },
+        )
+        assert restored.status_code == 200, restored.get_data(as_text=True)
+        row = next(
+            row
+            for row in data_store.get_food_logs(1)
+            if row["client_id"] == client_id
+        )
+        assert row["calories"] == 825
+        assert row["original_estimate"] == original_estimate
+        assert row["accepted_estimate"]["calories"] == 825
+        assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+        assert "underlying_sources" not in row["accepted_estimate"]
+
+
+def test_import_partial_approved_current_preserves_terminal_mixed_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    original_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="ai_text_estimate",
+    )
+    accepted_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+    client_id = "partial-approved-current"
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": "Canes Box Combo",
+            "calories": 920,
+            "protein_g": 40,
+            "carbs_g": 60,
+            "fat_g": 30,
+            "sodium_mg": 1000,
+            "fiber_g": 4,
+            "source": "mixed_lookup",
+            "correction_state": "corrected",
+            "original_estimate": original_estimate,
+            "accepted_estimate": accepted_estimate,
+        },
+    )
+    restored = client.post(
+        "/api/import-backup",
+        json={
+            "data": {
+                "food_logs": [
+                    {
+                        "client_id": client_id,
+                        "date": "2026-05-18",
+                        "logged_at": "2026-05-18T12:00:00",
+                        "item_name": "Canes Box Combo",
+                        "calories": 825,
+                        "protein_g": 38,
+                        "carbs_g": 54,
+                        "fat_g": 25,
+                        "sodium_mg": 920,
+                        "fiber_g": 5,
+                        "source": "mixed_lookup",
+                        "correction_state": "corrected",
+                        "original_estimate": original_estimate,
+                        "accepted_estimate": {
+                            "source": "nutritionix",
+                            "calories": 900,
+                        },
+                    }
+                ]
+            }
+        },
+    )
+
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+    row = data_store.get_food_logs(1)[0]
+    assert row["calories"] == 825
+    assert row["original_estimate"] == original_estimate
+    assert row["accepted_estimate"]["calories"] == 825
+    assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+    assert "underlying_sources" not in row["accepted_estimate"]
+
+
+def test_history_correction_preserves_existing_mixed_current_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    original_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="ai_text_estimate",
+    )
+    accepted_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "history-mixed-provenance",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": "Canes Box Combo",
+            "calories": 920,
+            "protein_g": 40,
+            "carbs_g": 60,
+            "fat_g": 30,
+            "sodium_mg": 1000,
+            "fiber_g": 4,
+            "source": "mixed_lookup",
+            "correction_state": "corrected",
+            "original_estimate": original_estimate,
+            "accepted_estimate": accepted_estimate,
+        },
+    )
+
+    corrected = client.post(
+        "/api/add-nutrition",
+        json={
+            "client_id": "history-mixed-provenance",
+            "date": "2026-05-18",
+            "calories": 825,
+            "protein_g": 38,
+            "carbs_g": 54,
+            "fat_g": 25,
+            "sodium_mg": 920,
+            "fiber_g": 5,
+            "correction_state": "corrected",
+        },
+    )
+
+    assert corrected.status_code == 200, corrected.get_data(as_text=True)
+    row = corrected.get_json()["food_log"]
+    assert row["calories"] == 825
+    assert row["protein_g"] == 38.0
+    assert row["original_estimate"] == original_estimate
+    assert row["accepted_estimate"]["calories"] == 825
+    assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+    assert "underlying_sources" not in row["accepted_estimate"]
+
+    reloaded = data_store.get_food_logs(1)[0]
+    assert reloaded["original_estimate"] == original_estimate
+    assert reloaded["accepted_estimate"] == row["accepted_estimate"]
+    by_date = client.get("/api/food-logs/by-date/2026-05-18")
+    history_row = next(
+        entry
+        for entry in by_date.get_json()["entries"]
+        if entry["client_id"] == "history-mixed-provenance"
+    )
+    assert history_row["accepted_estimate"] == row["accepted_estimate"]
+    exported = client.get("/api/export-backup")
+    export_row = next(
+        entry
+        for entry in exported.get_json()["data"]["food_logs"]
+        if entry["client_id"] == "history-mixed-provenance"
+    )
+    assert export_row["accepted_estimate"] == row["accepted_estimate"]
+
+
+def test_legacy_top_level_canes_identity_blocks_component_snapshot_accept(monkeypatch):
+    module = _client(monkeypatch)
+    components = [
+        _accepted_estimate(
+            item_name="Chicken fingers",
+            portion_description="4 fingers",
+            calories=520,
+            source="nutritionix",
+        ),
+        _accepted_estimate(
+            item_name="Fries",
+            portion_description="1 serving",
+            calories=320,
+            source="ai_text_estimate",
+        ),
+    ]
+    top_level_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="ai_text_estimate",
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id="legacy-top-level-canes",
+        payload={
+            "status": "pending_review",
+            "text": "Canes Box Combo",
+            "estimate": top_level_estimate,
+            "original_estimate": top_level_estimate,
+            "items": [
+                {
+                    "item_id": "component-fingers",
+                    "item_order": 0,
+                    "status": "included",
+                    "text": "Chicken fingers",
+                    "estimate": components[0],
+                    "original_estimate": components[0],
+                    "candidates": [],
+                },
+                {
+                    "item_id": "component-fries",
+                    "item_order": 1,
+                    "status": "included",
+                    "text": "Fries",
+                    "estimate": components[1],
+                    "original_estimate": components[1],
+                    "candidates": [],
+                },
+            ],
+        },
+        next_item_seq=3,
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+
+    accepted = client.post(
+        "/api/meal-intake/legacy-top-level-canes/accept",
+        json={},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert set(accepted.get_json()["save_blocked_item_ids"]) == {
+        "component-fingers",
+        "component-fries",
+    }
+    assert not any(
+        row["correction_state"] in {"accepted", "corrected"}
+        for row in data_store.get_food_logs(1)
+    )
+    assert data_store.get_meal_acceptance_event(1, "legacy-top-level-canes") is None
+
+
+def test_imported_canes_candidate_cannot_reacquire_source_backed_trust(monkeypatch):
+    module = _client(monkeypatch)
+    forged_candidate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=1290,
+        protein_g=75,
+        carbs_g=120,
+        fat_g=55,
+        source="nutritionix",
+        external_food_id="invented-canes-candidate",
+        verified_source_url="https://example.test/invented-canes-candidate",
+    )
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            source="ai_text_estimate",
+            candidates=[
+                {
+                    "candidate_id": "imported-forged-nutritionix",
+                    "estimate": forged_candidate,
+                }
+            ],
+        ),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "imported-canes-candidate"},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    snapshot = client.get("/api/export-backup").get_json()["data"]["meal_review_snapshots"][0]
+
+    data_store.delete_user_data(1)
+    restored = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+
+    selected = client.post(
+        "/api/meal-intake/imported-canes-candidate/refresh",
+        json={
+            "kind": "choose_candidate",
+            "request_id": "choose-imported-forged-candidate",
+            "item_id": "item-1",
+            "candidate_id": "imported-forged-nutritionix",
+        },
+        headers=headers,
+    )
+    assert selected.status_code == 200, selected.get_data(as_text=True)
+    selected_item = selected.get_json()["items"][0]
+    accepted = client.post(
+        "/api/meal-intake/imported-canes-candidate/accept",
+        json={
+            "meal_id": "imported-canes-candidate",
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "state": "included",
+                    "estimate": selected_item["estimate"],
+                }
+            ],
+        },
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert selected_item["server_source_backed_candidate"] is False
+    assert not any(
+        row["correction_state"] in {"accepted", "corrected"}
+        for row in data_store.get_food_logs(1)
+    )
+    assert data_store.get_meal_acceptance_event(1, "imported-canes-candidate") is None
+
+
+def test_legacy_top_level_canes_identity_blocks_explicit_component_accept(monkeypatch):
+    module = _client(monkeypatch)
+    components = [
+        _accepted_estimate(
+            item_name="Chicken fingers",
+            portion_description="4 fingers",
+            calories=520,
+            source="nutritionix",
+        ),
+        _accepted_estimate(
+            item_name="Fries",
+            portion_description="1 serving",
+            calories=320,
+            source="ai_text_estimate",
+        ),
+    ]
+    top_level_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="ai_text_estimate",
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id="legacy-top-level-canes-explicit",
+        payload={
+            "status": "pending_review",
+            "text": "Canes Box Combo",
+            "estimate": top_level_estimate,
+            "original_estimate": top_level_estimate,
+            "items": [
+                {
+                    "item_id": "component-fingers",
+                    "item_order": 0,
+                    "status": "included",
+                    "text": "Chicken fingers",
+                    "estimate": components[0],
+                    "original_estimate": components[0],
+                    "candidates": [],
+                },
+                {
+                    "item_id": "component-fries",
+                    "item_order": 1,
+                    "status": "included",
+                    "text": "Fries",
+                    "estimate": components[1],
+                    "original_estimate": components[1],
+                    "candidates": [],
+                },
+            ],
+        },
+        next_item_seq=3,
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    items = [
+        {
+            "item_id": "component-fingers",
+            "state": "included",
+            "estimate": components[0],
+        },
+        {
+            "item_id": "component-fries",
+            "state": "included",
+            "estimate": components[1],
+        },
+    ]
+    accepted = client.post(
+        "/api/meal-intake/legacy-top-level-canes-explicit/accept",
+        json={"meal_id": "legacy-top-level-canes-explicit", "items": items},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert set(accepted.get_json()["save_blocked_item_ids"]) == {
+        "component-fingers",
+        "component-fries",
+    }
+    assert not any(
+        row["correction_state"] in {"accepted", "corrected"}
+        for row in data_store.get_food_logs(1)
+    )
+    assert data_store.get_meal_acceptance_event(1, "legacy-top-level-canes-explicit") is None
+
+    mismatched = client.post(
+        "/api/meal-intake/legacy-top-level-canes-explicit/accept",
+        json={"meal_id": "another-meal", "items": items},
+        headers=headers,
+    )
+    assert mismatched.status_code == 400, mismatched.get_data(as_text=True)
+    assert not any(
+        row["correction_state"] in {"accepted", "corrected"}
+        for row in data_store.get_food_logs(1)
+    )
+
+
+def test_manual_history_correction_preserves_mixed_current_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    original_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="ai_text_estimate",
+    )
+    accepted_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "manual-history-mixed-provenance",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": "Canes Box Combo",
+            "calories": 920,
+            "protein_g": 40,
+            "carbs_g": 60,
+            "fat_g": 30,
+            "sodium_mg": 1000,
+            "fiber_g": 4,
+            "source": "mixed_lookup",
+            "correction_state": "corrected",
+            "original_estimate": original_estimate,
+            "accepted_estimate": accepted_estimate,
+        },
+    )
+
+    corrected = client.post(
+        "/api/add-nutrition",
+        json={
+            "client_id": "manual-history-mixed-provenance",
+            "date": "2026-05-18",
+            "calories": 825,
+            "protein_g": 38,
+            "carbs_g": 54,
+            "fat_g": 25,
+            "sodium_mg": 920,
+            "fiber_g": 5,
+            "source": "manual",
+            "correction_state": "corrected",
+        },
+    )
+
+    assert corrected.status_code == 200, corrected.get_data(as_text=True)
+    row = corrected.get_json()["food_log"]
+    assert row["calories"] == 825
+    assert row["original_estimate"] == original_estimate
+    assert row["source"] == "manual_review_estimate"
+    assert row["accepted_estimate"]["calories"] == 825
+    assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+    assert "underlying_sources" not in row["accepted_estimate"]
+
+    reloaded = data_store.get_food_logs(1)[0]
+    assert reloaded["original_estimate"] == original_estimate
+    assert reloaded["accepted_estimate"] == row["accepted_estimate"]
+    history_row = next(
+        entry
+        for entry in client.get("/api/food-logs/by-date/2026-05-18").get_json()["entries"]
+        if entry["client_id"] == "manual-history-mixed-provenance"
+    )
+    assert history_row["accepted_estimate"] == row["accepted_estimate"]
+    export_row = next(
+        entry
+        for entry in client.get("/api/export-backup").get_json()["data"]["food_logs"]
+        if entry["client_id"] == "manual-history-mixed-provenance"
+    )
+    assert export_row["accepted_estimate"] == row["accepted_estimate"]
+
+
+def test_import_null_accepted_estimate_preserves_terminal_current_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    original_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="ai_text_estimate",
+    )
+    accepted_estimate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "import-null-mixed-provenance",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            "item_name": "Canes Box Combo",
+            "calories": 920,
+            "protein_g": 40,
+            "carbs_g": 60,
+            "fat_g": 30,
+            "sodium_mg": 1000,
+            "fiber_g": 4,
+            "source": "mixed_lookup",
+            "correction_state": "corrected",
+            "original_estimate": original_estimate,
+            "accepted_estimate": accepted_estimate,
+        },
+    )
+
+    restored = client.post(
+        "/api/import-backup",
+        json={
+            "data": {
+                "food_logs": [
+                    {
+                        "client_id": "import-null-mixed-provenance",
+                        "date": "2026-05-18",
+                        "logged_at": "2026-05-18T12:00:00",
+                        "item_name": "Canes Box Combo",
+                        "calories": 825,
+                        "protein_g": 38,
+                        "carbs_g": 54,
+                        "fat_g": 25,
+                        "sodium_mg": 920,
+                        "fiber_g": 5,
+                        "source": "mixed_lookup",
+                        "correction_state": "corrected",
+                        "original_estimate": original_estimate,
+                        "accepted_estimate": None,
+                    }
+                ]
+            }
+        },
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+
+    row = data_store.get_food_logs(1)[0]
+    assert row["calories"] == 825
+    assert row["original_estimate"] == original_estimate
+    assert row["accepted_estimate"]["calories"] == 825
+    assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+    assert "underlying_sources" not in row["accepted_estimate"]
+    history_row = next(
+        entry
+        for entry in client.get("/api/food-logs/by-date/2026-05-18").get_json()["entries"]
+        if entry["client_id"] == "import-null-mixed-provenance"
+    )
+    assert history_row["accepted_estimate"] == row["accepted_estimate"]
+    export_row = next(
+        entry
+        for entry in client.get("/api/export-backup").get_json()["data"]["food_logs"]
+        if entry["client_id"] == "import-null-mixed-provenance"
+    )
+    assert export_row["accepted_estimate"] == row["accepted_estimate"]
+
+
+def test_mixed_vision_cached_lookups_preserve_effective_sources(monkeypatch):
+    module = _client(monkeypatch)
+    matched = [
+        (
+            {"name": "Canes Box Combo", "brand": "Raising Cane's"},
+            _accepted_estimate(
+                item_name="Canes Box Combo",
+                source="local_cache",
+                underlying_source="nutritionix",
+            ),
+            "Canes Box Combo",
+        ),
+        (
+            {"name": "Fries", "brand": "Raising Cane's"},
+            _accepted_estimate(
+                item_name="Fries",
+                source="local_cache",
+                underlying_source="usda_fdc",
+            ),
+            "Fries",
+        ),
+    ]
+
+    estimate = module._combine_vision_item_lookups(matched, missing=[])
+
+    assert estimate["source"] == "mixed_lookup"
+    assert estimate["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert module._is_source_backed_nutrition(estimate) is True
+    resolved = module._review_candidate_to_item(
+        {"estimate": estimate},
+        {
+            "branded_combo_ai_only": True,
+            "original_estimate": _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=840,
+                source="ai_text_estimate",
+            ),
+        },
+    )
+    assert resolved["server_source_backed_candidate"] is True
+    assert module._review_item_is_blocked(resolved) is False
+
+
+def test_mixed_vision_nested_sources_flatten_with_cached_provider(monkeypatch):
+    module = _client(monkeypatch)
+    matched = [
+        (
+            {"name": "Chicken"},
+            _accepted_estimate(
+                item_name="Chicken",
+                source="mixed_lookup",
+                underlying_source="mixed_lookup",
+                underlying_sources=["nutritionix", "usda_fdc"],
+            ),
+            "Chicken",
+        ),
+        (
+            {"name": "Fries"},
+            _accepted_estimate(
+                item_name="Fries",
+                source="local_cache",
+                underlying_source="open_food_facts",
+            ),
+            "Fries",
+        ),
+    ]
+
+    estimate = module._combine_vision_item_lookups(matched, missing=[])
+
+    assert estimate["source"] == "mixed_lookup"
+    assert estimate["underlying_sources"] == [
+        "nutritionix",
+        "open_food_facts",
+        "usda_fdc",
+    ]
+    assert module._is_source_backed_nutrition(estimate) is True
+
+
+def test_mixed_vision_personal_vocab_source_cannot_launder_approved_underlying_source(monkeypatch):
+    module = _client(monkeypatch)
+    estimate = module._combine_vision_item_lookups(
+        [
+            (
+                {"name": "Canes Box Combo"},
+                _accepted_estimate(
+                    item_name="Canes Box Combo",
+                    source="personal_vocab",
+                    underlying_source="nutritionix",
+                ),
+                "Canes Box Combo",
+            )
+        ],
+        missing=[],
+    )
+
+    assert estimate["source"] == "mixed_lookup"
+    assert estimate["ambiguous"] is True
+    assert module._is_source_backed_nutrition(estimate) is False
+
+
+def test_wrapped_mixed_vision_source_is_source_backed_without_trusting_personal_vocab(monkeypatch):
+    module = _client(monkeypatch)
+    wrapped = _accepted_estimate(
+        item_name="Vision Canes Box Combo",
+        source="vision_claude+mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+
+    assert module._is_source_backed_nutrition(wrapped) is True
+    assert module._is_source_backed_nutrition(
+        {**wrapped, "source": "personal_vocab"}
+    ) is False
+
+
+def test_canes_unverified_vision_capture_stays_pending_and_blocks_unchanged_accept(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "claude",
+            "item_description": "Canes Box Combo",
+            "portion_hint": "1 combo",
+            "confidence": 0.90,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "macro_estimate": {
+                "meal_type": "lunch",
+                "calories": 840,
+                "protein_g": 35,
+                "carbs_g": 45,
+                "fat_g": 18,
+                "sodium_mg": 700,
+                "fiber_g": 6,
+            },
+        },
+        lookup=None,
+    )
+    client = module.app.test_client()
+
+    for suffix, text in (("photo-only", None), ("photo-assisted", "Canes Box Combo")):
+        client_id = f"canes-vision-{suffix}"
+        data = {
+            "client_id": client_id,
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        }
+        if text:
+            data["text"] = text
+        capture = client.post(
+            "/api/meal-intake",
+            data=data,
+            content_type="multipart/form-data",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert capture.status_code == 200, capture.get_data(as_text=True)
+        body = capture.get_json()
+        assert body["status"] == "pending_review"
+        assert body["food_log"]["correction_state"] == "pending_review"
+        assert body["estimate"]["source"] == "vision_claude_estimate"
+        assert body["items"][0]["branded_combo_ai_only"] is True
+        assert "branded_combo_ai_only" in body["policy"]["reasons"]
+        accept = client.post(
+            f"/api/meal-intake/{client_id}/accept",
+            json={"estimate": body["estimate"]},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        assert accept.status_code == 409
+
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == 2
+    assert all(row["correction_state"] == "pending_review" for row in rows)
+
+
+def test_canes_server_produced_source_backed_vision_estimate_is_not_overblocked(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "claude",
+            "item_description": "Canes Box Combo",
+            "portion_hint": "1 combo",
+            "confidence": 0.90,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+        },
+        lookup=_accepted_estimate(
+            item_name="Canes Box Combo",
+            portion_description="1 combo",
+            calories=920,
+            confidence=0.92,
+            source="nutritionix",
+            external_food_id="server-vision-canes",
+            verified_source_url="https://example.test/server-vision-canes",
+        ),
+    )
+    client = module.app.test_client()
+    capture = client.post(
+        "/api/meal-intake",
+        data={
+            "client_id": "canes-vision-source-backed",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    body = capture.get_json()
+    assert body["estimate"]["source"] == "vision_claude+nutritionix"
+    assert body["items"][0]["branded_combo_ai_only"] is False
+    accept = client.post(
+        "/api/meal-intake/canes-vision-source-backed/accept",
+        json={"estimate": body["estimate"]},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert accept.status_code == 200, accept.get_data(as_text=True)
+
+
+def test_photo_assisted_canes_source_backed_refresh_redacts_pending_context(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "claude",
+            "item_description": "Canes Box Combo",
+            "portion_hint": "one combo",
+            "confidence": 0.90,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "macro_estimate": {
+                "meal_type": "lunch",
+                "calories": 840,
+                "protein_g": 35,
+                "carbs_g": 45,
+                "fat_g": 18,
+                "sodium_mg": 700,
+                "fiber_g": 6,
+            },
+        },
+        lookup=None,
+    )
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=920,
+            source="nutritionix",
+            external_food_id="photo-refresh-canes",
+            verified_source_url="https://example.test/photo-refresh-canes",
+        ),
+        source="nutritionix",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "photo-refresh-canes-context"
+    capture = client.post(
+        "/api/meal-intake",
+        data={
+            "text": "Canes Box Combo",
+            "client_id": client_id,
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    assert data_store.get_food_logs(1)[0]["context_note"] == "Canes Box Combo"
+
+    refreshed = client.post(
+        f"/api/meal-intake/{client_id}/refresh",
+        json={
+            "kind": "edit_portion",
+            "request_id": "photo-refresh-source-backed",
+            "item_id": "item-1",
+            "text": "source-backed Canes refresh",
+        },
+        headers=headers,
+    )
+
+    assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
+    assert refreshed.get_json()["items"][0]["server_source_backed_candidate"] is True
+    assert data_store.get_food_logs(1)[0]["context_note"] is None
+
+
+def test_mixed_vision_lookup_source_trust_requires_complete_approved_components(monkeypatch):
+    module = _client(monkeypatch)
+    matched = [
+        ({"name": "Chicken"}, _accepted_estimate(item_name="Chicken", source="nutritionix"), "Chicken"),
+        ({"name": "Fries"}, _accepted_estimate(item_name="Fries", source="usda_fdc"), "Fries"),
+    ]
+    estimate = module._combine_vision_item_lookups(matched, missing=[])
+    assert estimate["source"] == "mixed_lookup"
+    assert estimate["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert module._is_source_backed_nutrition(estimate) is True
+    review_item = module._review_item_from_estimate(estimate, item_id="item-1", item_order=1)
+    assert review_item["estimate"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    aggregate = module._review_aggregate_estimate({"items": [review_item], "meal_type": "lunch"})
+    assert aggregate["underlying_sources"] == ["nutritionix", "usda_fdc"]
+
+    for invalid in (
+        module._combine_vision_item_lookups(matched, missing=["Drink"]),
+        {**estimate, "ambiguous": True},
+        {**estimate, "underlying_sources": []},
+        {**estimate, "underlying_sources": ["nutritionix", "ai_text_estimate"]},
+    ):
+        assert module._is_source_backed_nutrition(invalid) is False
+
+
+def test_legacy_snapshot_marker_fallback_blocks_ai_and_allows_source_backed(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parser(text, **_kw):
+        source = "nutritionix" if text == "verified legacy" else "ai_text_estimate"
+        estimate = _accepted_estimate(
+            item_name="Canes Box Combo", calories=840, confidence=0.85, source=source,
+            external_food_id="verified-legacy" if source == "nutritionix" else None,
+            verified_source_url="https://example.test/verified-legacy" if source == "nutritionix" else None,
+        )
+        if text == "mixed legacy":
+            estimate.update(source="mixed_lookup", underlying_source="mixed_lookup", underlying_sources=["nutritionix", "usda_fdc"])
+        return {"estimate": estimate, "fallback_used": False}
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    accepted_rows = []
+    for client_id, text, expected in (
+        ("legacy-ai-marker", "Canes Box Combo", 409),
+        ("legacy-source-marker", "verified legacy", 200),
+        ("legacy-mixed-marker", "mixed legacy", 200),
+    ):
+        capture = client.post("/api/meal-intake", data={"text": text, "client_id": client_id}, content_type="multipart/form-data", headers=headers)
+        snapshot = data_store.get_meal_review_snapshot(1, client_id)
+        snapshot["payload"]["items"][0].pop("branded_combo_ai_only", None)
+        data_store.save_meal_review_snapshot(1, meal_id=client_id, payload=snapshot["payload"], next_item_seq=snapshot["next_item_seq"], applied_refreshes=snapshot.get("applied_refreshes"))
+        accept = client.post(f"/api/meal-intake/{client_id}/accept", json={}, headers=headers)
+        assert capture.status_code == 200
+        assert accept.status_code == expected, accept.get_data(as_text=True)
+        if expected == 200:
+            accepted_rows.append(accept.get_json()["food_logs"][0])
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == 3
+    rows_by_client = {row["client_id"]: row for row in rows}
+    assert rows_by_client["legacy-ai-marker"]["correction_state"] == "pending_review"
+    assert next(row for row in rows if row["source"] == "nutritionix")["original_estimate"]["source"] == "nutritionix"
+    mixed_row = next(row for row in accepted_rows if row["source"] == "mixed_lookup")
+    assert mixed_row["accepted_estimate"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert data_store.get_meal_acceptance_event(1, "legacy-ai-marker") is None
+
+
+def test_mixed_accept_persists_current_provenance_without_mutating_ai_original(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    original = _accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate")
+    mixed = _accepted_estimate(item_name="Canes Box Combo", calories=920, source="mixed_lookup", underlying_source="mixed_lookup", underlying_sources=["nutritionix", "usda_fdc"])
+    row = module._meal_intake_persist("mixed-provenance", mixed, source="mixed_lookup", has_image=False, text_hint=None, original_estimate=original)
+    reloaded = data_store.get_food_logs(1)[0]
+    assert row["accepted_estimate"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert reloaded["accepted_estimate"] == row["accepted_estimate"]
+    assert reloaded["original_estimate"]["source"] == "ai_text_estimate"
+    assert "underlying_sources" not in reloaded["original_estimate"]
+
+
+def test_malformed_mixed_sources_are_not_persisted_or_trusted(monkeypatch):
+    module = _client(monkeypatch)
+    for sources in ([], ["nutritionix", 3], ["nutritionix", "ai_text_estimate"]):
+        estimate = _accepted_estimate(source="mixed_lookup", underlying_source="mixed_lookup", underlying_sources=sources)
+        assert module._is_source_backed_nutrition(estimate) is False
+        row = module._meal_intake_persist(f"bad-mixed-{len(sources)}-{str(sources)[-1]}", estimate, source="mixed_lookup", has_image=False, text_hint=None)
+        assert "underlying_sources" not in (row.get("accepted_estimate") or {})
+
+
+def test_canes_component_items_inherit_top_level_ai_only_marker(monkeypatch):
+    module = _client(monkeypatch)
+    component_items = [
+        {
+            "item_id": "chicken",
+            "estimate": _accepted_estimate(
+                item_name="Chicken fingers",
+                portion_description="4 fingers",
+                calories=520,
+                source="ai_text_estimate",
+            ),
+        },
+        {
+            "item_id": "fries",
+            "estimate": _accepted_estimate(
+                item_name="Crinkle-cut fries",
+                portion_description="1 serving",
+                calories=320,
+                source="ai_text_estimate",
+            ),
+        },
+    ]
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            confidence=0.85,
+            source="ai_text_estimate",
+            items=component_items,
+        ),
+    )
+    client = module.app.test_client()
+
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "canes-component-marker"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    body = capture.get_json()
+    assert [item["branded_combo_ai_only"] for item in body["items"]] == [True, True]
+    assert "branded_combo_ai_only" in body["policy"]["reasons"]
+    blocked = client.post(
+        "/api/meal-intake/canes-component-marker/accept",
+        json={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert blocked.status_code == 409
+    assert blocked.get_json()["save_blocked_item_ids"] == ["chicken", "fries"]
+    rows = data_store.get_food_logs(1)
+    assert len(rows) == 1
+    assert rows[0]["correction_state"] == "pending_review"
+
+
+def test_canes_source_backed_component_items_are_not_overblocked(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=920,
+            confidence=0.85,
+            source="ai_text_estimate",
+            items=[
+                {
+                    "item_id": "verified-combo",
+                    "estimate": _accepted_estimate(
+                        item_name="Canes Box Combo",
+                        portion_description="1 combo",
+                        calories=920,
+                        source="nutritionix",
+                        external_food_id="server-verified-component",
+                        verified_source_url="https://example.test/server-verified-component",
+                    ),
+                }
+            ],
+        ),
+    )
+    client = module.app.test_client()
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "canes-source-component"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    body = capture.get_json()
+    assert body["items"][0]["branded_combo_ai_only"] is False
+    assert "branded_combo_ai_only" not in body["policy"]["reasons"]
+    accept = client.post(
+        "/api/meal-intake/canes-source-component/accept",
+        json={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert accept.status_code == 200, accept.get_data(as_text=True)
+
+
+def test_canes_add_item_raw_alias_survives_parser_rephrasing(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parser(text, **_kw):
+        if text == "Canes Box Combo":
+            return {
+                "estimate": _accepted_estimate(
+                    item_name="Raising Cane's 4-Finger Box Combo",
+                    calories=840,
+                    confidence=0.85,
+                    source="ai_text_estimate",
+                ),
+                "fallback_used": False,
+            }
+        return {
+            "estimate": _accepted_estimate(calories=840, source="ai_text_estimate"),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "ordinary lunch", "client_id": "canes-add-rephrased"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    added = client.post(
+        "/api/meal-intake/canes-add-rephrased/refresh",
+        json={"kind": "add_item", "request_id": "add-rephrased", "text": "Canes Box Combo"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    assert added.status_code == 200, added.get_data(as_text=True)
+    assert added.get_json()["items"][-1]["branded_combo_ai_only"] is True
+    assert "branded_combo_ai_only" in added.get_json()["policy"]["reasons"]
+    assert client.post(
+        "/api/meal-intake/canes-add-rephrased/accept",
+        json={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    ).status_code == 409
+
+
+def test_canes_edit_portion_raw_alias_survives_parser_rephrasing(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parser(text, **_kw):
+        if text == "Canes Box Combo":
+            return {
+                "estimate": _accepted_estimate(
+                    item_name="Raising Cane's 4-Finger Box Combo",
+                    calories=840,
+                    confidence=0.85,
+                    source="ai_text_estimate",
+                ),
+                "fallback_used": False,
+            }
+        return {
+            "estimate": _accepted_estimate(calories=840, source="ai_text_estimate"),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "ordinary lunch", "client_id": "canes-edit-rephrased"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    edited = client.post(
+        "/api/meal-intake/canes-edit-rephrased/refresh",
+        json={
+            "kind": "edit_portion",
+            "request_id": "edit-rephrased",
+            "item_id": "item-1",
+            "text": "Canes Box Combo",
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    assert edited.status_code == 200, edited.get_data(as_text=True)
+    assert edited.get_json()["items"][0]["branded_combo_ai_only"] is True
+    assert "branded_combo_ai_only" in edited.get_json()["policy"]["reasons"]
+    assert client.post(
+        "/api/meal-intake/canes-edit-rephrased/accept",
+        json={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    ).status_code == 409
+
+
+def test_canes_followup_raw_alias_survives_parser_rephrasing(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parser(text, **_kw):
+        if text == "Canes Box Combo":
+            return {
+                "estimate": _accepted_estimate(
+                    item_name="Raising Cane's 4-Finger Box Combo",
+                    calories=840,
+                    confidence=0.85,
+                    source="ai_text_estimate",
+                ),
+                "fallback_used": False,
+            }
+        return {
+            "estimate": _accepted_estimate(
+                item_name="Unclear lunch",
+                calories=840,
+                confidence=0.40,
+                ambiguous=True,
+                source="ai_text_estimate",
+                clarification_question="What was in the meal?",
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "unclear lunch", "client_id": "canes-followup-rephrased"},
+        content_type="multipart/form-data",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    followup = client.post(
+        "/api/meal-intake/canes-followup-rephrased/refresh",
+        json={"kind": "followup_answer", "request_id": "followup-rephrased", "answer": "Canes Box Combo"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    assert followup.status_code == 200, followup.get_data(as_text=True)
+    assert followup.get_json()["items"][0]["branded_combo_ai_only"] is True
+    assert "branded_combo_ai_only" in followup.get_json()["policy"]["reasons"]
+    assert client.post(
+        "/api/meal-intake/canes-followup-rephrased/accept",
+        json={},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    ).status_code == 409
+
+
 def test_meal_intake_preserves_open_food_facts_attribution(monkeypatch):
     module = _client(monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
@@ -4801,3 +8034,1656 @@ def test_barcode_lookup_cache_round_trip_and_delete_user_data(tmp_path, monkeypa
     data_store.delete_user_data(1)
     assert data_store.get_barcode_lookup_cache("012345678905", user_id=1) is None
     assert data_store.get_barcode_lookup_cache("012345678905", user_id=2)["response_json"]["item_name"] == "User 2 bar"
+
+
+def test_non_boolean_image_provenance_is_not_granted_in_single_multi_or_original(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+
+    single_estimate = _accepted_estimate(from_image="false")
+    single = client.post(
+        "/api/meal-intake/nonboolean-image-single/accept",
+        json={"estimate": single_estimate},
+        headers=headers,
+    )
+    assert single.status_code == 200, single.get_data(as_text=True)
+    assert single.get_json()["food_log"]["accepted_estimate"].get("from_image") is None
+
+    multi_estimate = _accepted_estimate(item_name="Multi bowl", from_image=1)
+    multi = client.post(
+        "/api/meal-intake/nonboolean-image-multi/accept",
+        json={
+            "meal_id": "nonboolean-image-multi",
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "state": "included",
+                    "estimate": multi_estimate,
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert multi.status_code == 200, multi.get_data(as_text=True)
+    assert multi.get_json()["food_logs"][0]["accepted_estimate"].get("from_image") is None
+
+    original = _accepted_estimate(from_image="true")
+    accepted = _accepted_estimate(item_name="Trusted image", from_image=0)
+    sanitized = module._sanitize_original_estimate_for_log(original, accepted)
+    assert sanitized.get("from_image") is None
+    assert module._sanitize_original_estimate_for_log(
+        _accepted_estimate(from_image=True),
+        _accepted_estimate(),
+    )["from_image"] is True
+
+
+def test_terminal_capture_replay_returns_current_accepted_estimate_with_legacy_fallback(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    original = _accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate")
+    current = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+        external_food_id="terminal-replay-current",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "terminal-capture-current",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            **current,
+            "correction_state": "corrected",
+            "original_estimate": original,
+            "accepted_estimate": current,
+        },
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "terminal-capture-legacy",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:01:00",
+            **original,
+            "correction_state": "accepted",
+            "original_estimate": original,
+        },
+    )
+
+    current_replay = client.post(
+        "/api/meal-intake",
+        data={"text": "ignored", "client_id": "terminal-capture-current"},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    legacy_replay = client.post(
+        "/api/meal-intake",
+        data={"text": "ignored", "client_id": "terminal-capture-legacy"},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+
+    assert current_replay.status_code == 200, current_replay.get_data(as_text=True)
+    assert current_replay.get_json()["estimate"] == current
+    assert legacy_replay.status_code == 200, legacy_replay.get_data(as_text=True)
+    assert legacy_replay.get_json()["estimate"] == original
+
+
+def test_imported_pending_canes_food_log_cannot_grant_source_backed_accept(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    forged = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+        external_food_id="forged-imported-pending",
+    )
+    terminal = _accepted_estimate(item_name="Imported terminal", calories=510, source="nutritionix")
+    restored = client.post(
+        "/api/import-backup",
+        json={
+            "data": {
+                "food_logs": [
+                    {
+                        "client_id": "imported-pending-forged-canes",
+                        "date": "2026-05-18",
+                        "logged_at": "2026-05-18T12:00:00",
+                        **forged,
+                        "correction_state": "pending_review",
+                        "original_estimate": forged,
+                    },
+                    {
+                        "client_id": "imported-legitimate-terminal",
+                        "date": "2026-05-18",
+                        "logged_at": "2026-05-18T12:01:00",
+                        **terminal,
+                        "correction_state": "accepted",
+                        "original_estimate": terminal,
+                        "accepted_estimate": terminal,
+                    },
+                ]
+            }
+        },
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+    assert any(
+        row["client_id"] == "imported-legitimate-terminal"
+        for row in data_store.get_food_logs(1)
+    )
+
+    accepted = client.post(
+        "/api/meal-intake/imported-pending-forged-canes/accept",
+        json={"estimate": forged},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    pending = next(
+        row
+        for row in data_store.get_food_logs(1)
+        if row["client_id"] == "imported-pending-forged-canes"
+    )
+    assert pending["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, "imported-pending-forged-canes") is None
+
+
+def test_imported_canes_snapshot_stays_visibly_blocked_and_candidate_selection_cannot_resolve_it(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate"),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "imported-canes-visible-block"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    snapshot = client.get("/api/export-backup").get_json()["data"]["meal_review_snapshots"][0]
+    forged_candidate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+        external_food_id="forged-ui-candidate",
+    )
+    snapshot["payload"]["estimate"] = forged_candidate
+    snapshot["payload"]["original_estimate"] = forged_candidate
+    snapshot["payload"]["items"][0].update(
+        {
+            "estimate": forged_candidate,
+            "original_estimate": forged_candidate,
+            "branded_combo_ai_only": False,
+            "candidates": [
+                {
+                    "candidate_id": "forged-ui-candidate",
+                    "estimate": forged_candidate,
+                    "source_backed": True,
+                }
+            ],
+        }
+    )
+    restored = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+
+    pending = client.get("/api/meal-intake/pending")
+    assert pending.status_code == 200, pending.get_data(as_text=True)
+    entry = next(item for item in pending.get_json()["pending"] if item["meal_id"] == client_id)
+    assert entry["items"][0]["branded_combo_ai_only"] is True
+    assert "branded_combo_ai_only" in entry["policy"]["reasons"]
+    assert not entry["items"][0]["candidates"][0].get("source_backed")
+
+    selected = client.post(
+        f"/api/meal-intake/{client_id}/refresh",
+        json={
+            "kind": "choose_candidate",
+            "request_id": "select-imported-ui-candidate",
+            "item_id": "item-1",
+            "candidate_id": "forged-ui-candidate",
+        },
+        headers=headers,
+    )
+    assert selected.status_code == 200, selected.get_data(as_text=True)
+    assert selected.get_json()["items"][0]["branded_combo_ai_only"] is True
+    assert "branded_combo_ai_only" in selected.get_json()["policy"]["reasons"]
+    assert selected.get_json()["items"][0]["server_source_backed_candidate"] is False
+
+
+def test_negative_canonical_macros_cannot_replace_terminal_current_provenance(monkeypatch):
+    _client(monkeypatch)
+    original = _accepted_estimate(item_name="Terminal meal", calories=500, source="ai_text_estimate")
+    current = _accepted_estimate(item_name="Terminal meal", calories=540, source="nutritionix")
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "negative-canonical-macros",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            **current,
+            "correction_state": "corrected",
+            "original_estimate": original,
+            "accepted_estimate": current,
+        },
+    )
+    negative = _accepted_estimate(
+        item_name="Terminal meal",
+        calories=-1,
+        protein_g=-2,
+        carbs_g=-3,
+        fat_g=-4,
+        source="nutritionix",
+    )
+
+    assert not data_store._is_authorized_accepted_estimate_replacement(negative)
+    row = data_store.add_food_log(
+        1,
+        {
+            "client_id": "negative-canonical-macros",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:01:00",
+            **negative,
+            "correction_state": "corrected",
+            "accepted_estimate": negative,
+        },
+    )
+    assert row["calories"] == current["calories"]
+    assert row["accepted_estimate"]["calories"] == current["calories"]
+    assert row["accepted_estimate"]["source"] == "nutritionix"
+
+
+def test_terminal_partial_refresh_keeps_row_macros_coherent_with_accepted_estimate(monkeypatch):
+    _client(monkeypatch)
+    original = _accepted_estimate(item_name="Coherent meal", calories=500, source="ai_text_estimate")
+    current = _accepted_estimate(
+        item_name="Coherent meal",
+        calories=540,
+        protein_g=36,
+        carbs_g=48,
+        fat_g=20,
+        source="nutritionix",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "partial-terminal-refresh",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            **current,
+            "correction_state": "corrected",
+            "original_estimate": original,
+            "accepted_estimate": current,
+        },
+    )
+
+    refreshed = data_store.add_food_log(
+        1,
+        {
+            "client_id": "partial-terminal-refresh",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:01:00",
+            "calories": 620,
+            "correction_state": "corrected",
+        },
+    )
+
+    assert refreshed["calories"] == 620
+    for field in ("protein_g", "carbs_g", "fat_g"):
+        assert refreshed[field] == current[field]
+        assert refreshed["accepted_estimate"][field] == current[field]
+
+
+def test_all_declared_provenance_components_must_be_approved_for_trust(monkeypatch):
+    module = _client(monkeypatch)
+    contradictory = _accepted_estimate(
+        source="nutritionix",
+        underlying_source="nutritionix",
+        underlying_sources=["nutritionix", "personal_vocab"],
+    )
+    unapproved = _accepted_estimate(
+        source="nutritionix",
+        underlying_source="nutritionix",
+        underlying_sources=["nutritionix", "invented_provider"],
+    )
+
+    for estimate in (contradictory, unapproved):
+        assert module._is_source_backed_nutrition(estimate) is False
+        assert data_store._is_authorized_accepted_estimate_replacement(estimate) is False
+
+
+def test_legacy_meal_type_edit_keeps_trusted_snapshot_candidate_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    candidate = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+        external_food_id="legacy-meal-type-candidate",
+    )
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(
+            item_name="Canes Box Combo",
+            calories=840,
+            source="ai_text_estimate",
+            candidates=[{"candidate_id": "trusted-legacy", "estimate": candidate}],
+        ),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "legacy-meal-type-source-backed"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    selected = client.post(
+        f"/api/meal-intake/{client_id}/refresh",
+        json={
+            "kind": "choose_candidate",
+            "request_id": "choose-legacy-meal-type",
+            "item_id": "item-1",
+            "candidate_id": "trusted-legacy",
+        },
+        headers=headers,
+    )
+    assert selected.status_code == 200, selected.get_data(as_text=True)
+    submitted = dict(selected.get_json()["items"][0]["estimate"])
+    submitted["meal_type"] = "dinner"
+
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": submitted},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    row = accepted.get_json()["food_logs"][0]
+    assert row["meal_type"] == "dinner"
+    assert row["source"] == "nutritionix"
+    assert row["accepted_estimate"]["source"] == "nutritionix"
+    assert row["accepted_estimate"]["calories"] == candidate["calories"]
+
+
+def test_photo_source_backed_snapshot_accept_keeps_server_image_provenance(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parser(text, **_kw):
+        if text == "source-backed photo replacement":
+            return {
+                "estimate": _accepted_estimate(
+                    item_name="Canes Box Combo",
+                    calories=920,
+                    source="nutritionix",
+                    external_food_id="photo-source-backed-candidate",
+                ),
+                "fallback_used": False,
+            }
+        return {
+            "estimate": _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=840,
+                source="ai_text_estimate",
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "claude",
+            "item_description": "Canes Box Combo",
+            "portion_hint": "1 combo",
+            "confidence": 0.90,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+        },
+        lookup=None,
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "photo-source-backed-current-provenance"
+    capture = client.post(
+        "/api/meal-intake",
+        data={
+            "client_id": client_id,
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    refreshed = client.post(
+        f"/api/meal-intake/{client_id}/refresh",
+        json={
+            "kind": "edit_portion",
+            "request_id": "photo-source-backed-refresh",
+            "item_id": "item-1",
+            "text": "source-backed photo replacement",
+        },
+        headers=headers,
+    )
+    assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
+    item = refreshed.get_json()["items"][0]
+    assert item["server_source_backed_candidate"] is True
+    submitted = dict(item["estimate"])
+    submitted["from_image"] = "false"
+
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={
+            "meal_id": client_id,
+            "items": [
+                {
+                    "item_id": item["item_id"],
+                    "state": "included",
+                    "estimate": submitted,
+                }
+            ],
+        },
+        headers=headers,
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    row = accepted.get_json()["food_logs"][0]
+    assert row["accepted_estimate"]["from_image"] is True
+    exported = client.get("/api/export-backup").get_json()["data"]["food_logs"]
+    assert next(entry for entry in exported if entry["client_id"] == row["client_id"])["accepted_estimate"]["from_image"] is True
+
+
+def test_imported_item_original_canes_identity_stays_blocked_without_parent_row(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    meal_id = "imported-item-original-canes"
+    original = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="ai_text_estimate",
+    )
+    ordinary = _accepted_estimate(
+        item_name="Chicken bowl",
+        calories=500,
+        source="manual_review_estimate",
+    )
+    restored = client.post(
+        "/api/import-backup",
+        json={
+            "data": {
+                "meal_review_snapshots": [
+                    {
+                        "meal_id": meal_id,
+                        "payload": {
+                            "status": "pending_review",
+                            "text": "Chicken bowl",
+                            "estimate": ordinary,
+                            "original_estimate": ordinary,
+                            "items": [
+                                {
+                                    "item_id": "item-1",
+                                    "item_order": 1,
+                                    "status": "included",
+                                    "text": "Chicken bowl",
+                                    "estimate": ordinary,
+                                    "original_estimate": original,
+                                    "branded_combo_ai_only": False,
+                                    "candidates": [],
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        },
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+
+    refreshed = client.post(
+        f"/api/meal-intake/{meal_id}/refresh",
+        json={"kind": "set_meal_type", "request_id": "imported-original-hydrate", "meal_type": "dinner"},
+        headers=headers,
+    )
+    assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
+    assert refreshed.get_json()["items"][0]["branded_combo_ai_only"] is True
+    assert "branded_combo_ai_only" in refreshed.get_json()["policy"]["reasons"]
+
+    accepted = client.post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={},
+        headers=headers,
+    )
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert all(
+        row["correction_state"] == "pending_review"
+        for row in data_store.get_food_logs(1)
+    )
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+
+
+def test_food_log_current_projection_matches_accepted_estimate_for_inserts_and_replacements(monkeypatch):
+    _client(monkeypatch)
+    original = _accepted_estimate(item_name="Original AI meal", calories=600, source="ai_text_estimate")
+    accepted = _accepted_estimate(
+        item_name="Canonical lookup meal",
+        portion_description="1 verified serving",
+        meal_type="dinner",
+        calories=900,
+        protein_g=50,
+        carbs_g=70,
+        fat_g=30,
+        confidence=0.96,
+        source="nutritionix",
+    )
+    fresh = data_store.add_food_log(
+        1,
+        {
+            "client_id": "coherent-current-projection",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            **_accepted_estimate(item_name="Mismatched display", calories=500, source="manual_review_estimate"),
+            "correction_state": "accepted",
+            "original_estimate": original,
+            "accepted_estimate": accepted,
+        },
+    )
+    replacement = _accepted_estimate(
+        item_name="Replacement lookup meal",
+        portion_description="2 verified servings",
+        meal_type="lunch",
+        calories=960,
+        protein_g=55,
+        carbs_g=75,
+        fat_g=32,
+        confidence=0.98,
+        source="nutritionix",
+    )
+    updated = data_store.add_food_log(
+        1,
+        {
+            "client_id": "coherent-current-projection",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:01:00",
+            **_accepted_estimate(item_name="Still mismatched", calories=500, source="manual_review_estimate"),
+            "correction_state": "corrected",
+            "accepted_estimate": replacement,
+        },
+    )
+
+    for row, current in ((fresh, accepted), (updated, replacement)):
+        for field in (
+            "item_name",
+            "portion_description",
+            "meal_type",
+            "calories",
+            "protein_g",
+            "carbs_g",
+            "fat_g",
+            "sodium_mg",
+            "fiber_g",
+            "confidence",
+            "source",
+        ):
+            assert row[field] == current[field]
+            assert row["accepted_estimate"][field] == current[field]
+    assert updated["original_estimate"] == original
+
+
+def test_known_provider_wrappers_authorize_terminal_current_replacement(monkeypatch):
+    module = _client(monkeypatch)
+    wrappers = (
+        _accepted_estimate(source="local_cache", underlying_source="nutritionix"),
+        _accepted_estimate(source="vision_claude+nutritionix"),
+        _accepted_estimate(source="vision_claude+local_cache", underlying_source="nutritionix"),
+    )
+
+    for estimate in wrappers:
+        assert module._is_source_backed_nutrition(estimate) is True
+        assert data_store._is_authorized_accepted_estimate_replacement(estimate) is True
+
+
+def test_unknown_singular_provenance_component_rejects_app_and_storage_trust(monkeypatch):
+    module = _client(monkeypatch)
+    contradictory = _accepted_estimate(
+        source="nutritionix",
+        underlying_source="invented_provider",
+    )
+
+    assert module._is_source_backed_nutrition(contradictory) is False
+    assert data_store._is_authorized_accepted_estimate_replacement(contradictory) is False
+
+
+def test_imported_canes_snapshot_allows_new_material_correction_but_blocks_unchanged(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate"),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "imported-material-correction"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    snapshot = client.get("/api/export-backup").get_json()["data"]["meal_review_snapshots"][0]
+    restored = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+
+    unchanged = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": capture.get_json()["estimate"]},
+        headers=headers,
+    )
+    assert unchanged.status_code == 409, unchanged.get_data(as_text=True)
+
+    corrected = dict(capture.get_json()["estimate"])
+    corrected.update(calories=890, source="nutritionix", external_food_id="forged-imported-current")
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": corrected},
+        headers=headers,
+    )
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    row = accepted.get_json()["food_logs"][0]
+    assert row["correction_state"] == "corrected"
+    assert row["original_estimate"]["source"] == "ai_text_estimate"
+    assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+
+
+def test_provider_topology_rejects_contradictory_approved_paths(monkeypatch):
+    module = _client(monkeypatch)
+    invalid = (
+        _accepted_estimate(source="nutritionix", underlying_source="usda_fdc"),
+        _accepted_estimate(source="nutritionix+usda_fdc"),
+        _accepted_estimate(source="nutritionix", underlying_sources=["usda_fdc"]),
+    )
+    valid = (
+        _accepted_estimate(source="nutritionix", underlying_source="nutritionix"),
+        _accepted_estimate(source="local_cache", underlying_source="nutritionix"),
+        _accepted_estimate(source="vision_claude+nutritionix"),
+    )
+
+    for estimate in invalid:
+        assert module._is_source_backed_nutrition(estimate) is False
+        assert data_store._is_authorized_accepted_estimate_replacement(estimate) is False
+    for estimate in valid:
+        assert module._is_source_backed_nutrition(estimate) is True
+        assert data_store._is_authorized_accepted_estimate_replacement(estimate) is True
+
+
+def test_authorized_accepted_estimate_null_optional_fields_clear_top_level_projection(monkeypatch):
+    _client(monkeypatch)
+    original = _accepted_estimate(item_name="Original AI meal", source="ai_text_estimate")
+    current = _accepted_estimate(
+        item_name="Current lookup meal",
+        calories=900,
+        sodium_mg=1200,
+        fiber_g=8,
+        source="nutritionix",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "null-current-projection",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            **current,
+            "correction_state": "corrected",
+            "original_estimate": original,
+            "accepted_estimate": current,
+        },
+    )
+    replacement = dict(current)
+    replacement.update(calories=950, sodium_mg=None, fiber_g=None)
+    row = data_store.add_food_log(
+        1,
+        {
+            "client_id": "null-current-projection",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:01:00",
+            **current,
+            "correction_state": "corrected",
+            "accepted_estimate": replacement,
+        },
+    )
+
+    assert row["calories"] == 950
+    assert row["sodium_mg"] is None
+    assert row["fiber_g"] is None
+    assert row["accepted_estimate"]["sodium_mg"] is None
+    assert row["accepted_estimate"]["fiber_g"] is None
+
+
+def test_explicit_item_accept_validates_included_estimates_without_inspecting_nonincluded(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+
+    missing = client.post(
+        "/api/meal-intake/malformed-included/accept",
+        json={"meal_id": "malformed-included", "items": [{"item_id": "item-1", "state": "included"}]},
+        headers=headers,
+    )
+    null_nutrition = client.post(
+        "/api/meal-intake/malformed-null/accept",
+        json={
+            "meal_id": "malformed-null",
+            "items": [{"item_id": "item-1", "state": "included", "estimate": {"calories": None}}],
+        },
+        headers=headers,
+    )
+    non_numeric = client.post(
+        "/api/meal-intake/malformed-nonnumeric/accept",
+        json={
+            "meal_id": "malformed-nonnumeric",
+            "items": [{"item_id": "item-1", "state": "included", "estimate": _accepted_estimate(calories="bad")}],
+        },
+        headers=headers,
+    )
+    nonincluded = client.post(
+        "/api/meal-intake/nonincluded-without-estimate/accept",
+        json={
+            "meal_id": "nonincluded-without-estimate",
+            "items": [
+                {"item_id": "skip", "state": "skipped"},
+                {"item_id": "delete", "state": "deleted"},
+            ],
+        },
+        headers=headers,
+    )
+
+    assert missing.status_code == 400, missing.get_data(as_text=True)
+    assert null_nutrition.status_code == 400, null_nutrition.get_data(as_text=True)
+    assert non_numeric.status_code == 400, non_numeric.get_data(as_text=True)
+    assert nonincluded.status_code == 200, nonincluded.get_data(as_text=True)
+
+
+def test_imported_legacy_canes_hydration_exposes_blocked_save_warning(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate"),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "imported-legacy-hydration"
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    snapshot = client.get("/api/export-backup").get_json()["data"]["meal_review_snapshots"][0]
+    legacy = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        confidence=0.95,
+        source="ai_text_estimate",
+    )
+    snapshot["payload"] = {
+        "status": "pending_review",
+        "text": "Canes Box Combo",
+        "estimate": legacy,
+        "original_estimate": legacy,
+    }
+    restored = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+
+    pending = client.get("/api/meal-intake/pending")
+    assert pending.status_code == 200, pending.get_data(as_text=True)
+    entry = next(item for item in pending.get_json()["pending"] if item["meal_id"] == client_id)
+    assert entry["save_blocked_item_ids"] == ["item-1"]
+    assert "branded_combo_ai_only" in entry["policy"]["reasons"]
+
+
+def test_explicit_accept_preserves_fresh_server_source_backed_snapshot_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    trusted = _accepted_estimate(
+        item_name="Nutritionix chicken bowl",
+        calories=720,
+        source="nutritionix",
+        external_food_id="nutritionix:chicken-bowl",
+        verified_source_url="https://www.nutritionix.com/food/chicken-bowl",
+    )
+    _stub_parser(monkeypatch, module, estimate=trusted, source="nutritionix")
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "nutritionix chicken bowl", "client_id": "fresh-source-backed-explicit"},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    captured_item = capture.get_json()["items"][0]
+    assert captured_item["server_source_backed_candidate"] is False
+
+    accepted = client.post(
+        "/api/meal-intake/fresh-source-backed-explicit/accept",
+        json={
+            "meal_id": "fresh-source-backed-explicit",
+            "items": [{
+                "item_id": captured_item["item_id"],
+                "state": "included",
+                "estimate": captured_item["estimate"],
+            }],
+        },
+        headers=headers,
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    row = accepted.get_json()["food_logs"][0]
+    assert row["source"] == "nutritionix"
+    assert row["accepted_estimate"]["source"] == "nutritionix"
+    assert row["accepted_estimate"]["external_food_id"] == "nutritionix:chicken-bowl"
+
+
+def test_imported_itemless_legacy_canes_snapshot_refreshes_then_accepts_resolution(monkeypatch):
+    module = _client(monkeypatch)
+    original = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        confidence=0.85,
+        source="ai_text_estimate",
+    )
+
+    def fake_parser(text, **_kw):
+        if text == "larger Canes Box Combo":
+            estimate = _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=890,
+                confidence=0.85,
+                source="ai_text_estimate",
+            )
+        elif text == "Nutritionix Canes replacement":
+            estimate = _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=840,
+                source="nutritionix",
+                external_food_id="nutritionix:canes-box",
+                verified_source_url="https://www.nutritionix.com/food/canes-box",
+            )
+        else:
+            estimate = original
+        return {"estimate": estimate, "fallback_used": False}
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+
+    for client_id, refresh_text, expected_source in (
+        ("itemless-imported-material", "larger Canes Box Combo", "manual_review_estimate"),
+        ("itemless-imported-source", "Nutritionix Canes replacement", "nutritionix"),
+    ):
+        capture = client.post(
+            "/api/meal-intake",
+            data={"text": "Canes Box Combo", "client_id": client_id},
+            content_type="multipart/form-data",
+            headers=headers,
+        )
+        assert capture.status_code == 200, capture.get_data(as_text=True)
+
+    backup = client.get("/api/export-backup").get_json()["data"]
+    for snapshot in backup["meal_review_snapshots"]:
+        if snapshot["meal_id"] not in {"itemless-imported-material", "itemless-imported-source"}:
+            continue
+        snapshot["payload"] = {
+            "status": "pending_review",
+            "text": "Canes Box Combo",
+            "estimate": original,
+            "original_estimate": original,
+        }
+    restored = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": backup["meal_review_snapshots"]}},
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+
+    pending = client.get("/api/meal-intake/pending")
+    assert pending.status_code == 200, pending.get_data(as_text=True)
+    pending_by_id = {entry["meal_id"]: entry for entry in pending.get_json()["pending"]}
+    assert pending_by_id["itemless-imported-material"]["items"][0]["item_id"] == "item-1"
+    assert pending_by_id["itemless-imported-source"]["items"][0]["item_id"] == "item-1"
+
+    for client_id, refresh_text, expected_source in (
+        ("itemless-imported-material", "larger Canes Box Combo", "manual_review_estimate"),
+        ("itemless-imported-source", "Nutritionix Canes replacement", "nutritionix"),
+    ):
+        refreshed = client.post(
+            f"/api/meal-intake/{client_id}/refresh",
+            json={
+                "kind": "edit_portion",
+                "request_id": f"refresh-{client_id}",
+                "item_id": "item-1",
+                "text": refresh_text,
+            },
+            headers=headers,
+        )
+        assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
+        refreshed_item = refreshed.get_json()["items"][0]
+        accepted = client.post(
+            f"/api/meal-intake/{client_id}/accept",
+            json={
+                "meal_id": client_id,
+                "items": [{
+                    "item_id": "item-1",
+                    "state": "included",
+                    "estimate": refreshed_item["estimate"],
+                }],
+            },
+            headers=headers,
+        )
+        assert accepted.status_code == 200, accepted.get_data(as_text=True)
+        assert accepted.get_json()["food_logs"][0]["accepted_estimate"]["source"] == expected_source
+
+
+def test_imported_canes_refresh_keeps_untrusted_marker_until_material_resolution(monkeypatch):
+    module = _client(monkeypatch)
+    original = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        confidence=0.85,
+        source="ai_text_estimate",
+    )
+
+    def fake_parser(text, **_kw):
+        calories = 900 if text == "larger ordinary bowl" else 840
+        return {
+            "estimate": _accepted_estimate(
+                item_name="Chicken bowl",
+                calories=calories,
+                confidence=0.85,
+                source="ai_text_estimate",
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "imported-refresh-marker"
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=client_id,
+        payload={
+            "status": "pending_review",
+            "text": "Canes Box Combo",
+            "estimate": original,
+            "original_estimate": original,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "item_order": 1,
+                    "status": "included",
+                    "text": "Canes Box Combo",
+                    "estimate": original,
+                    "original_estimate": original,
+                    "branded_combo_ai_only": True,
+                }
+            ],
+        },
+        next_item_seq=2,
+        applied_refreshes={},
+    )
+    snapshot = client.get("/api/export-backup").get_json()["data"]["meal_review_snapshots"][0]
+    assert client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    ).status_code == 200
+
+    renamed = client.post(
+        f"/api/meal-intake/{client_id}/refresh",
+        json={
+            "kind": "edit_portion",
+            "request_id": "rename-imported-canes",
+            "item_id": "item-1",
+            "text": "ordinary chicken bowl",
+        },
+        headers=headers,
+    )
+    assert renamed.status_code == 200, renamed.get_data(as_text=True)
+    renamed_item = renamed.get_json()["items"][0]
+    assert renamed_item["branded_combo_ai_only"] is True
+    assert renamed_item["_imported_snapshot_untrusted"] is True
+    assert client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={},
+        headers=headers,
+    ).status_code == 409
+
+    corrected = client.post(
+        f"/api/meal-intake/{client_id}/refresh",
+        json={
+            "kind": "edit_portion",
+            "request_id": "correct-imported-canes",
+            "item_id": "item-1",
+            "text": "larger ordinary bowl",
+        },
+        headers=headers,
+    )
+    assert corrected.status_code == 200, corrected.get_data(as_text=True)
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={},
+        headers=headers,
+    )
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    assert accepted.get_json()["food_logs"][0]["correction_state"] == "corrected"
+
+
+def test_imported_canes_followup_keeps_untrusted_marker_after_rename(monkeypatch):
+    module = _client(monkeypatch)
+    original = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        ambiguous=True,
+        source="ai_text_estimate",
+    )
+    _stub_parser(
+        monkeypatch,
+        module,
+        estimate=_accepted_estimate(item_name="Chicken bowl", calories=840, source="ai_text_estimate"),
+        source="ai_text_estimate",
+    )
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "imported-followup-marker"
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=client_id,
+        payload={
+            "status": "pending_review",
+            "text": "Canes Box Combo",
+            "estimate": original,
+            "original_estimate": original,
+            "followup": {"available": True, "question": "Which meal?", "used": False, "target_item_id": "item-1"},
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "item_order": 1,
+                    "status": "included",
+                    "text": "Canes Box Combo",
+                    "unclear": True,
+                    "branded_combo_ai_only": True,
+                    "estimate": original,
+                    "original_estimate": original,
+                }
+            ],
+        },
+        next_item_seq=2,
+        applied_refreshes={},
+    )
+    snapshot = client.get("/api/export-backup").get_json()["data"]["meal_review_snapshots"][0]
+    assert client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    ).status_code == 200
+
+    refreshed = client.post(
+        f"/api/meal-intake/{client_id}/refresh",
+        json={"kind": "followup_answer", "request_id": "followup-imported-canes", "answer": "ordinary chicken bowl"},
+        headers=headers,
+    )
+
+    assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
+    item = refreshed.get_json()["items"][0]
+    assert item["branded_combo_ai_only"] is True
+    assert item["_imported_snapshot_untrusted"] is True
+    assert client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={},
+        headers=headers,
+    ).status_code == 409
+
+
+def test_explicit_server_candidate_accept_validates_raw_included_estimate(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    trusted = _accepted_estimate(item_name="Lookup bowl", calories=720, source="nutritionix")
+    original = _accepted_estimate(item_name="AI bowl", calories=700, source="ai_text_estimate")
+
+    for index, submitted_estimate in enumerate((None, "not-an-estimate", {"calories": "bad"}), start=1):
+        meal_id = f"raw-validation-before-substitution-{index}"
+        data_store.save_meal_review_snapshot(
+            1,
+            meal_id=meal_id,
+            payload={
+                "status": "pending_review",
+                "items": [
+                    {
+                        "item_id": "item-1",
+                        "item_order": 1,
+                        "status": "included",
+                        "estimate": trusted,
+                        "original_estimate": original,
+                        "server_source_backed_candidate": True,
+                    }
+                ],
+            },
+            next_item_seq=2,
+            applied_refreshes={},
+        )
+        response = client.post(
+            f"/api/meal-intake/{meal_id}/accept",
+            json={
+                "meal_id": meal_id,
+                "items": [{"item_id": "item-1", "state": "included", "estimate": submitted_estimate}],
+            },
+            headers=headers,
+        )
+        assert response.status_code == 400, response.get_data(as_text=True)
+
+
+def test_add_nutrition_explicit_nullable_fields_clear_terminal_current_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    current = _accepted_estimate(
+        item_name="Lookup meal",
+        calories=900,
+        sodium_mg=1200,
+        fiber_g=8,
+        source="nutritionix",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "explicit-null-terminal-merge",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            **current,
+            "correction_state": "corrected",
+            "original_estimate": _accepted_estimate(source="ai_text_estimate"),
+            "accepted_estimate": current,
+        },
+    )
+
+    response = client.post(
+        "/api/add-nutrition",
+        json={
+            "client_id": "explicit-null-terminal-merge",
+            "date": "2026-05-18",
+            "calories": 900,
+            "protein_g": 35,
+            "carbs_g": 45,
+            "fat_g": 18,
+            "sodium_mg": None,
+            "fiber_g": None,
+            "correction_state": "corrected",
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    row = response.get_json()["food_log"]
+    assert row["sodium_mg"] is None
+    assert row["fiber_g"] is None
+    assert row["accepted_estimate"]["sodium_mg"] is None
+    assert row["accepted_estimate"]["fiber_g"] is None
+
+
+def test_terminal_current_replacement_rejects_invalid_projected_numeric_values(monkeypatch):
+    _client(monkeypatch)
+    current = _accepted_estimate(item_name="Lookup meal", calories=900, source="nutritionix")
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "invalid-current-projection",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            **current,
+            "correction_state": "corrected",
+            "original_estimate": _accepted_estimate(source="ai_text_estimate"),
+            "accepted_estimate": current,
+        },
+    )
+
+    for field, value in (("sodium_mg", -1), ("fiber_g", "bad"), ("confidence", float("inf"))):
+        replacement = dict(current)
+        replacement.update(calories=950, **{field: value})
+        assert data_store._is_authorized_accepted_estimate_replacement(replacement) is False
+        row = data_store.add_food_log(
+            1,
+            {
+                "client_id": "invalid-current-projection",
+                "date": "2026-05-18",
+                "logged_at": "2026-05-18T12:01:00",
+                **current,
+                "calories": 950,
+                "correction_state": "corrected",
+                "accepted_estimate": replacement,
+            },
+        )
+        assert row["calories"] == 950
+        assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+        assert row["accepted_estimate"].get(field) == current.get(field)
+
+
+def test_imported_corrupt_snapshot_hydrates_without_pending_endpoint_failure(monkeypatch):
+    module = _client(monkeypatch)
+    legacy = _accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate")
+    _stub_parser(monkeypatch, module, estimate=legacy, source="ai_text_estimate")
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    capture = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": "corrupt-imported-snapshot"},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert capture.status_code == 200, capture.get_data(as_text=True)
+    snapshot = client.get("/api/export-backup").get_json()["data"]["meal_review_snapshots"][0]
+    snapshot["payload"]["items"] = [
+        None,
+        {
+            "item_id": None,
+            "item_order": "not-a-number",
+            "status": "included",
+            "estimate": legacy,
+            "original_estimate": legacy,
+        },
+    ]
+    imported = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+    assert imported.status_code == 200, imported.get_data(as_text=True)
+
+    pending = client.get("/api/meal-intake/pending")
+    assert pending.status_code == 200, pending.get_data(as_text=True)
+    entry = next(item for item in pending.get_json()["pending"] if item["meal_id"] == "corrupt-imported-snapshot")
+    assert entry["save_blocked_item_ids"]
+    assert "branded_combo_ai_only" in entry["policy"]["reasons"]
+
+
+def test_material_correction_does_not_inherit_authoritative_provider_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    original = _accepted_estimate(
+        item_name="Lookup bowl",
+        calories=700,
+        source="nutritionix",
+        external_food_id="nutritionix-original-id",
+        verified_source_url="https://example.test/original",
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id="material-correction-provenance",
+        payload={
+            "status": "pending_review",
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "item_order": 1,
+                    "status": "included",
+                    "estimate": original,
+                    "original_estimate": original,
+                }
+            ],
+        },
+        next_item_seq=2,
+        applied_refreshes={},
+    )
+    corrected = dict(original)
+    corrected.update(calories=750, source="nutritionix", external_food_id="forged-correction-id")
+
+    accepted = client.post(
+        "/api/meal-intake/material-correction-provenance/accept",
+        json={"estimate": corrected},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    row = accepted.get_json()["food_logs"][0]
+    assert row["original_estimate"] == original
+    assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+    assert "external_food_id" not in row["accepted_estimate"]
+    assert "verified_source_url" not in row["accepted_estimate"]
+
+
+def test_terminal_partial_current_does_not_merge_new_nutrition_with_old_provider(monkeypatch):
+    _client(monkeypatch)
+    original = _accepted_estimate(item_name="Original AI bowl", source="ai_text_estimate")
+    current = _accepted_estimate(
+        item_name="Lookup bowl",
+        calories=700,
+        source="nutritionix",
+        external_food_id="nutritionix-current-id",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "terminal-partial-provenance",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            **current,
+            "correction_state": "corrected",
+            "original_estimate": original,
+            "accepted_estimate": current,
+        },
+    )
+
+    updated = data_store.add_food_log(
+        1,
+        {
+            "client_id": "terminal-partial-provenance",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:01:00",
+            **current,
+            "calories": 750,
+            "source": "manual_review_estimate",
+            "correction_state": "corrected",
+            "accepted_estimate": {"source": "manual_review_estimate"},
+        },
+    )
+
+    assert updated["original_estimate"] == original
+    assert updated["source"] == "manual_review_estimate"
+    assert updated["accepted_estimate"]["calories"] == 750
+    assert updated["accepted_estimate"]["source"] == "manual_review_estimate"
+    assert "external_food_id" not in updated["accepted_estimate"]
+
+    preserved = data_store.add_food_log(
+        1,
+        {
+            "client_id": "terminal-partial-provenance",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:02:00",
+            "correction_state": "corrected",
+            "accepted_estimate": {"source": "manual_review_estimate"},
+        },
+    )
+    assert preserved["accepted_estimate"] == updated["accepted_estimate"]
+
+
+def test_supported_vision_wrappers_are_source_backed_in_app_and_storage(monkeypatch):
+    module = _client(monkeypatch)
+
+    for source in ("vision_lm_studio+nutritionix", "vision_ollama+nutritionix"):
+        estimate = _accepted_estimate(source=source, underlying_source="nutritionix")
+        assert module._is_source_backed_nutrition(estimate) is True
+        assert data_store._is_authorized_accepted_estimate_replacement(estimate) is True
+
+
+def test_legacy_pending_canes_hydration_derives_visible_branded_policy(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    today = module._today_str()
+    canes = _accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate")
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "snapshotless-legacy-canes-warning",
+            "date": today,
+            "logged_at": f"{today}T12:00:00",
+            "context_note": "Canes Box Combo",
+            **canes,
+            "correction_state": "pending_review",
+            "original_estimate": canes,
+        },
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id="legacy-snapshot-canes-warning",
+        payload={
+            "status": "pending_review",
+            "text": "Canes Box Combo",
+            "estimate": canes,
+            "original_estimate": canes,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "item_order": 1,
+                    "status": "included",
+                    "estimate": canes,
+                    "original_estimate": canes,
+                }
+            ],
+        },
+        next_item_seq=2,
+        applied_refreshes={},
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "legacy-snapshot-canes-warning",
+            "date": today,
+            "logged_at": f"{today}T12:00:00",
+            **canes,
+            "correction_state": "pending_review",
+            "original_estimate": canes,
+        },
+    )
+
+    pending = client.get("/api/meal-intake/pending")
+    assert pending.status_code == 200, pending.get_data(as_text=True)
+    rows = {entry["client_id"]: entry for entry in pending.get_json()["pending"]}
+    for client_id in ("snapshotless-legacy-canes-warning", "legacy-snapshot-canes-warning"):
+        assert rows[client_id]["save_blocked_item_ids"] == ["item-1"]
+        assert "branded_combo_ai_only" in rows[client_id]["policy"]["reasons"]
+
+
+def test_multi_item_accept_rejects_nonfinite_core_nutrition_atomically(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+
+    for field in ("calories", "protein_g", "carbs_g", "fat_g"):
+        for marker, value in (("nan", float("nan")), ("infinity", float("inf"))):
+            meal_id = f"nonfinite-{field}-{marker}"
+            estimate = _accepted_estimate()
+            estimate[field] = value
+            response = client.post(
+                f"/api/meal-intake/{meal_id}/accept",
+                json={
+                    "meal_id": meal_id,
+                    "items": [{"item_id": "item-1", "state": "included", "estimate": estimate}],
+                },
+                headers=headers,
+            )
+            assert response.status_code == 400, response.get_data(as_text=True)
+            assert data_store.get_food_logs(1) == []
+            assert data_store.get_meal_acceptance_event(1, meal_id) is None
+
+
+def test_imported_snapshot_cannot_forge_material_correction_attestation(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    estimate = _accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate")
+    snapshot = {
+        "meal_id": "imported-forged-material-attestation",
+        "payload": {
+            "status": "pending_review",
+            "text": "Canes Box Combo",
+            "estimate": estimate,
+            "original_estimate": estimate,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "item_order": 1,
+                    "status": "included",
+                    "text": "Canes Box Combo",
+                    "estimate": estimate,
+                    "original_estimate": estimate,
+                    "branded_combo_ai_only": True,
+                    "_material_correction_from_submission": True,
+                }
+            ],
+        },
+    }
+    imported = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+    assert imported.status_code == 200, imported.get_data(as_text=True)
+
+    accepted = client.post(
+        "/api/meal-intake/imported-forged-material-attestation/accept",
+        json={},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)
+    assert data_store.get_food_logs(1) == []
+    assert data_store.get_meal_acceptance_event(1, "imported-forged-material-attestation") is None
+
+
+def test_imported_material_correction_keeps_snapshot_original_not_pending_aggregate(monkeypatch):
+    module = _client(monkeypatch)
+
+    def fake_parser(text, **_kw):
+        calories = 890 if text == "Canes Box Combo larger" else 840
+        return {
+            "estimate": _accepted_estimate(
+                item_name="Canes Box Combo",
+                calories=calories,
+                source="ai_text_estimate",
+            ),
+            "fallback_used": False,
+        }
+
+    monkeypatch.setattr(module, "parse_meal_text", fake_parser)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    client_id = "imported-material-original"
+    captured = client.post(
+        "/api/meal-intake",
+        data={"text": "Canes Box Combo", "client_id": client_id},
+        content_type="multipart/form-data",
+        headers=headers,
+    )
+    assert captured.status_code == 200, captured.get_data(as_text=True)
+    refreshed = client.post(
+        f"/api/meal-intake/{client_id}/refresh",
+        json={
+            "kind": "edit_portion",
+            "request_id": "material-import-round-trip",
+            "item_id": "item-1",
+            "text": "Canes Box Combo larger",
+        },
+        headers=headers,
+    )
+    assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
+    snapshot = client.get("/api/export-backup").get_json()["data"]["meal_review_snapshots"][0]
+    imported = client.post(
+        "/api/import-backup",
+        json={"data": {"meal_review_snapshots": [snapshot]}},
+        headers=headers,
+    )
+    assert imported.status_code == 200, imported.get_data(as_text=True)
+
+    accepted = client.post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={},
+        headers=headers,
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    row = accepted.get_json()["food_logs"][0]
+    assert row["calories"] == 890
+    assert row["accepted_estimate"]["calories"] == 890
+    assert row["original_estimate"]["calories"] == 840
+    assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+
+
+def test_imported_pending_source_claim_hydrates_as_visible_canes_block(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    today = module._today_str()
+    claimed_source = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="nutritionix",
+        external_food_id="forged-imported-canes",
+    )
+    imported = client.post(
+        "/api/import-backup",
+        json={
+            "data": {
+                "food_logs": [
+                    {
+                        "client_id": "imported-pending-source-claim",
+                        "date": today,
+                        "logged_at": f"{today}T12:00:00",
+                        "context_note": "Canes Box Combo",
+                        **claimed_source,
+                        "correction_state": "pending_review",
+                        "original_estimate": claimed_source,
+                    }
+                ]
+            }
+        },
+        headers=headers,
+    )
+    assert imported.status_code == 200, imported.get_data(as_text=True)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "live-pending-source-backed",
+            "date": today,
+            "logged_at": f"{today}T12:00:00",
+            "context_note": "Canes Box Combo",
+            **claimed_source,
+            "correction_state": "pending_review",
+            "original_estimate": claimed_source,
+        },
+    )
+
+    pending = client.get("/api/meal-intake/pending")
+    assert pending.status_code == 200, pending.get_data(as_text=True)
+    rows = {entry["client_id"]: entry for entry in pending.get_json()["pending"]}
+    imported_row = rows["imported-pending-source-claim"]
+    assert imported_row["save_blocked_item_ids"] == ["item-1"]
+    assert "branded_combo_ai_only" in imported_row["policy"]["reasons"]
+    assert "branded_combo_ai_only" not in rows["live-pending-source-backed"]["policy"]["reasons"]
+
+    accepted = client.post(
+        "/api/meal-intake/imported-pending-source-claim/accept",
+        json={"estimate": claimed_source},
+        headers=headers,
+    )
+    assert accepted.status_code == 409, accepted.get_data(as_text=True)

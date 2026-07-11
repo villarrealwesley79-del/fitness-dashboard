@@ -11514,6 +11514,7 @@
             meal_id: payload.meal_id,
             meal_type: MEAL_TYPE_OPTIONS.includes(payload.meal_type) ? payload.meal_type : 'snack',
             meal_totals: payload.meal_totals || {},
+            policy: payload.policy || (existing && existing.policy) || {},
             followup: payload.followup || { available: false, question: null, used: false },
             save_blocked_item_ids: Array.isArray(payload.save_blocked_item_ids)
                 ? payload.save_blocked_item_ids.slice()
@@ -11646,6 +11647,10 @@
         const includedItems = entry.items.filter((it) => it.status === 'included');
         const blockedSet = new Set(entry.save_blocked_item_ids || []);
         const blocked = blockedSet.size > 0;
+        const isBrandedComboFollowup = entry.followup
+            && entry.items.some((item) => item
+                && item.item_id === entry.followup.target_item_id
+                && item.branded_combo_ai_only);
         const allRemoved = includedItems.length === 0 && entry.items.length > 0;
         const expanded = entry.expandedItems.size > 0 || blocked || allRemoved;
 
@@ -11679,7 +11684,8 @@
         const showFollowup = entry.followup
             && entry.followup.available
             && !entry.followup.used
-            && !entry.lastFollowupAnswered;
+            && !entry.lastFollowupAnswered
+            && !isBrandedComboFollowup;
         const followupHtml = showFollowup ? `
             <form class="meal-review-v2-followup" data-action="followup-form" role="region" aria-label="Follow-up question">
                 <div class="meal-review-v2-followup-q">${escapeHtml(entry.followup.question || '')}</div>
@@ -11751,7 +11757,10 @@
         const sourceKind = item.source && MEAL_V2_SOURCE_KINDS.includes(item.source.kind) ? item.source.kind : 'manual';
         const sourceLink = item.source && item.source.link ? String(item.source.link) : '';
         const confLabel = mealV2ConfidenceLabel(item.confidence);
-        const candidates = Array.isArray(item.candidates) ? item.candidates.slice(0, 3) : [];
+        const brandedComboAiOnly = !!item.branded_combo_ai_only;
+        const candidates = Array.isArray(item.candidates)
+            ? item.candidates.filter((candidate) => !brandedComboAiOnly || candidate.source_backed === true).slice(0, 3)
+            : [];
 
         const candidatesHtml = (isIncluded && candidates.length) ? `
             <div class="meal-review-v2-candidates" role="group" aria-label="Top choices">
@@ -11790,7 +11799,9 @@
             </div>
         `;
 
-        const blockedNote = blocked ? '<div class="meal-review-v2-item-blocked" role="alert">Save blocked — clarify, choose a top match, edit, or skip.</div>' : '';
+        const blockedNote = !blocked ? '' : brandedComboAiOnly
+            ? '<div class="meal-review-v2-item-blocked" role="alert">This is an AI-only restaurant combo. Use source-backed nutrition or make a material nutrition correction before saving.</div>'
+            : '<div class="meal-review-v2-item-blocked" role="alert">Save blocked — clarify, choose a top match, edit, or skip.</div>';
 
         const sourceChip = sourceLink ? `
             <button type="button" class="meal-review-v2-source-chip" data-action="open-source" data-source-link="${escapeHtml(sourceLink)}" data-source-label="${escapeHtml(sourceLabel)}" title="Open source details in app">
