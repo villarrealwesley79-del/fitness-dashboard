@@ -2196,6 +2196,11 @@ def add_food_log(user_id: int, record: dict) -> dict:
         _project_accepted_estimate_onto_entry(entry, accepted_estimate)
     refresh_metadata = _refresh_event_metadata(record)
     with _get_db() as conn:
+        protect_terminal_client_id = record.get("_protect_terminal_client_id") is True
+        if protect_terminal_client_id:
+            # Serialize the read/insert decision. Without an immediate write
+            # transaction, two first accepts can both observe an empty slot.
+            conn.execute("BEGIN IMMEDIATE")
         previous_row = None
         if entry.get("client_id"):
             previous_row = conn.execute(
@@ -2207,6 +2212,10 @@ def add_food_log(user_id: int, record: dict) -> dict:
             isinstance(previous, dict)
             and previous.get("correction_state") in {"accepted", "corrected"}
         )
+        if protect_terminal_client_id and previous_is_terminal:
+            conn.commit()
+            previous["_protected_client_id_conflict"] = True
+            return previous
         if previous_is_terminal:
             previous_original = previous.get("original_estimate")
             if isinstance(previous_original, dict):

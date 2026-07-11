@@ -6519,6 +6519,7 @@ def _meal_intake_persist(
     meal_item_id=None,
     item_index=None,
     item_state=None,
+    protect_terminal_client_id=False,
 ):
     """Persist a food estimate via the canonical food_logs path.
 
@@ -6573,6 +6574,7 @@ def _meal_intake_persist(
         "meal_item_id": meal_item_id,
         "item_index": item_index,
         "item_state": item_state,
+        "_protect_terminal_client_id": protect_terminal_client_id,
     }
     refresh_event = _meal_verified_refresh_event_metadata(
         estimate,
@@ -9125,18 +9127,9 @@ def meal_intake_accept(client_id: str):
         return jsonify({"error": {"message": f"invalid estimate: {exc}"}}), 400
     if originated_from_image:
         estimate["from_image"] = True
-    authorized_source_refresh = bool(
-        _meal_verified_refresh_event_metadata(
-            estimate,
-            correction_state=CORRECTION_STATE_ACCEPTED,
-            source=estimate.get("source") or "manual_review_estimate",
-            now_iso=datetime.now().isoformat(timespec="seconds"),
-        )
-    )
     if (
         isinstance(existing, dict)
         and existing.get("correction_state") in {CORRECTION_STATE_ACCEPTED, "corrected"}
-        and not authorized_source_refresh
     ):
         existing_estimate = _stored_food_log_baseline(existing)
         if _review_estimate_differs(estimate, existing_estimate):
@@ -9228,7 +9221,14 @@ def meal_intake_accept(client_id: str):
         local_iso=local_iso or None,
         correction_state=correction_state,
         original_estimate=original_for_log,
+        protect_terminal_client_id=True,
     )
+    if food_log.pop("_protected_client_id_conflict", False):
+        return api_error(
+            "client_id already belongs to a different accepted meal",
+            409,
+            code="duplicate_client_id",
+        )
     if (
         not _review_placeholder_nutrition_not_resolved({
             "estimate": estimate,

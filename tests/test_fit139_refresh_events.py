@@ -192,7 +192,7 @@ def _verified_estimate(**extra):
     return estimate
 
 
-def test_meal_accept_verified_source_update_records_refresh_event(monkeypatch, tmp_path):
+def test_meal_accept_rejects_client_asserted_verified_source_update(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
@@ -204,15 +204,12 @@ def test_meal_accept_verified_source_update_records_refresh_event(monkeypatch, t
         json={"estimate": _verified_estimate(), "text": "bolillo roll"},
     )
 
-    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "duplicate_client_id"
     events = data_store.list_food_log_refresh_events(1)
-    assert len(events) == 1
-    assert events[0]["client_id"] == "meal-verified-update"
-    assert events[0]["source"] == "open_food_facts"
-    assert events[0]["source_url"] == "https://world.openfoodfacts.org/product/roll"
-    assert events[0]["refreshed_at"] == "2026-05-25T10:00:00"
-    assert events[0]["prev_calories"] == 180
-    assert events[0]["new_calories"] == 230
+    assert events == []
+    stored = next(row for row in data_store.get_food_logs(1) if row["client_id"] == "meal-verified-update")
+    assert stored["calories"] == 180
 
 
 def test_meal_persist_corrected_verified_source_does_not_notify(monkeypatch, tmp_path):

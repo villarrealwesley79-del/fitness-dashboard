@@ -5257,6 +5257,58 @@ def test_duplicate_accept_with_changed_payload_keeps_original_accepted_row(monke
     assert second.get_json()["error"]["code"] == "duplicate_client_id"
 
 
+def test_duplicate_accept_cannot_claim_refresh_authority_from_request_metadata(monkeypatch):
+    module = _client(monkeypatch)
+    client = module.app.test_client()
+    first = client.post(
+        "/api/meal-intake/client-refresh-claim/accept",
+        json={"estimate": _accepted_estimate(calories=500)},
+    )
+    asserted_refresh = _accepted_estimate(calories=900)
+    asserted_refresh.update({
+        "underlying_source": "nutritionix",
+        "verified_source_url": "https://example.test/asserted",
+        "external_food_id": "asserted-id",
+    })
+    second = client.post(
+        "/api/meal-intake/client-refresh-claim/accept",
+        json={"estimate": asserted_refresh},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    stored = next(
+        row for row in data_store.get_food_logs(1) if row["client_id"] == "client-refresh-claim"
+    )
+    assert stored["calories"] == 500
+
+
+def test_protected_food_log_accept_is_atomic_across_connections(monkeypatch):
+    module = _client(monkeypatch)
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    barrier = Barrier(2)
+
+    def accept(calories):
+        barrier.wait()
+        with module.app.test_client() as client:
+            return client.post(
+                "/api/meal-intake/concurrent-accept/accept",
+                json={"estimate": _accepted_estimate(calories=calories)},
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(accept, (500, 900)))
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    winner = next(response.get_json()["food_log"] for response in responses if response.status_code == 200)
+    stored = next(
+        row for row in data_store.get_food_logs(1) if row["client_id"] == "concurrent-accept"
+    )
+    assert stored["calories"] == winner["calories"]
+
+
 def test_meal_intake_accept_uses_vision_description_for_image_only_vocab(monkeypatch):
     module = _client(monkeypatch)
     vocab_calls = []
