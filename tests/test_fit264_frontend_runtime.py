@@ -404,6 +404,46 @@ process.stdout.write(JSON.stringify(calls));
     assert output == ["clear-retry", "restore", "flush"]
 
 
+def test_boot_passes_refreshed_auth_scope_to_active_workout_settlement():
+    output = run_app_js(
+        ["boot"],
+        """
+const scopeResult = { ok: true, status: 'ready', scope: 'user:owner' };
+const settled = [];
+sandbox.addEventListener = () => {};
+sandbox.setInterval = () => 1;
+sandbox.__fitSet.renderGreeting(() => {});
+sandbox.__fitSet.wireEvents(() => {});
+sandbox.__fitSet.switchTabFromHash(() => {});
+sandbox.__fitSet.fetchFoodLogRefreshNotices(async () => {});
+sandbox.__fitSet.refreshAiStatus(() => {});
+sandbox.__fitSet.renderSyncBanner(() => {});
+sandbox.__fitSet.wireMealComposer(() => {});
+sandbox.__fitSet.registerServiceWorker(() => {});
+sandbox.__fitSet.refreshMealQueueAuthScope(async () => scopeResult);
+sandbox.__fitSet.settleActiveWorkoutDraftAfterAuthScope((result) => settled.push(result));
+sandbox.__fitSet.scheduleMealQueueAuthScopeRetry(() => {});
+sandbox.__fitSet.fetchWorkoutAdaptationNotices(async () => {});
+sandbox.__fitSet.cleanupOrphanedMealQueuePhotos(async () => {});
+sandbox.__fitSet.flushSyncQueue(() => {});
+sandbox.__fitSet.flushMealSyncQueue(() => {});
+e.boot();
+await new Promise((resolve) => setTimeout(resolve, 0));
+process.stdout.write(JSON.stringify(settled));
+""",
+        mocks=[
+            "renderGreeting", "wireEvents", "switchTabFromHash",
+            "fetchFoodLogRefreshNotices", "refreshAiStatus", "renderSyncBanner",
+            "wireMealComposer", "registerServiceWorker", "refreshMealQueueAuthScope",
+            "settleActiveWorkoutDraftAfterAuthScope", "scheduleMealQueueAuthScopeRetry",
+            "fetchWorkoutAdaptationNotices", "cleanupOrphanedMealQueuePhotos",
+            "flushSyncQueue", "flushMealSyncQueue",
+        ],
+    )
+
+    assert output == [{"ok": True, "status": "ready", "scope": "user:owner"}]
+
+
 def test_meal_undo_clears_status_before_toast_and_always_refreshes_macros():
     output = run_app_js(
         ["postMealUndo"],
