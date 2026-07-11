@@ -17133,7 +17133,6 @@ def navy_calc():
 def sleep_import():
     data,err=get_json_body(required=True)
     if err: return err
-    entries=[]
     if isinstance(data.get('entries'), list):
         raw=data['entries']
     elif isinstance(data.get('csv'), str):
@@ -17141,22 +17140,74 @@ def sleep_import():
         raw=list(csv.DictReader(io.StringIO(data['csv'])))
     else:
         return api_error('Provide entries[] or csv text', 400, code='invalid_field')
-    for r in raw:
+
+    def parse_minutes(r, field, alias=None):
+        value=r.get(field)
+        if value is None or value=='':
+            value=r.get(alias) if alias else None
+        if value is None or value=='':
+            return 0,False,None
+        try:
+            value=float(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0,True,'invalid_number'
+        if not math.isfinite(value):
+            return 0,True,'invalid_number'
+        if value<0 or value>1440:
+            return 0,True,'out_of_range'
+        return int(value),True,None
+
+    entries=[]
+    errors=[]
+    for row_number,r in enumerate(raw, start=1):
+        if not isinstance(r, dict):
+            errors.append({'row':row_number,'field':'row','code':'invalid_row'})
+            continue
         date=(r.get('date') or r.get('day') or '')[:10]
         if not date: continue
-        e={
-            'date':date,
-            'source': r.get('source') or 'apple_watch',
-            'sleep_duration_min': int(float(r.get('sleep_duration_min') or r.get('duration_min') or 0)),
-            'time_in_bed_min': int(float(r.get('time_in_bed_min') or r.get('in_bed_min') or 0)),
-            'deep_min': int(float(r.get('deep_min') or 0)),
-            'rem_min': int(float(r.get('rem_min') or 0)),
-            'light_min': int(float(r.get('light_min') or 0)),
-            'awake_min': int(float(r.get('awake_min') or 0)),
-            'sleep_start': r.get('sleep_start'),
-            'sleep_end': r.get('sleep_end')
-        }
+        e={'date':date,'source':r.get('source') or 'apple_watch'}
+        supplied={}
+        error_count=len(errors)
+        for field,alias in (
+            ('sleep_duration_min','duration_min'),
+            ('time_in_bed_min','in_bed_min'),
+            ('deep_min',None),
+            ('rem_min',None),
+            ('light_min',None),
+            ('awake_min',None),
+        ):
+            value,is_supplied,error=parse_minutes(r,field,alias)
+            e[field]=value
+            supplied[field]=is_supplied
+            if error:
+                errors.append({'row':row_number,'field':field,'code':error})
+        if len(errors)>error_count:
+            continue
+        stages=e['deep_min']+e['rem_min']+e['light_min']
+        stages_supplied=any(supplied[field] for field in ('deep_min','rem_min','light_min'))
+        if stages_supplied and stages>1440:
+            errors.append({'row':row_number,'field':'stage_total_min','code':'contradictory_minutes'})
+        if stages_supplied and supplied['awake_min'] and stages+e['awake_min']>1440:
+            errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
+        if supplied['sleep_duration_min'] and supplied['time_in_bed_min'] and e['sleep_duration_min']>e['time_in_bed_min']:
+            errors.append({'row':row_number,'field':'sleep_duration_min','code':'contradictory_minutes'})
+        if stages_supplied:
+            if supplied['sleep_duration_min'] and stages>e['sleep_duration_min']:
+                errors.append({'row':row_number,'field':'sleep_duration_min','code':'contradictory_minutes'})
+            if supplied['time_in_bed_min'] and stages>e['time_in_bed_min']:
+                errors.append({'row':row_number,'field':'time_in_bed_min','code':'contradictory_minutes'})
+        if supplied['awake_min'] and supplied['time_in_bed_min']:
+            if e['awake_min']>e['time_in_bed_min']:
+                errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
+            elif stages_supplied and stages+e['awake_min']>e['time_in_bed_min']:
+                errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
+        if supplied['sleep_duration_min'] and supplied['awake_min'] and supplied['time_in_bed_min'] and e['sleep_duration_min']+e['awake_min']>e['time_in_bed_min']:
+            errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
+        e['sleep_start']=r.get('sleep_start')
+        e['sleep_end']=r.get('sleep_end')
         entries.append(e)
+    if errors:
+        return api_error('Sleep import contains invalid rows', 400, code='invalid_sleep_rows', details=errors)
     with JSON_DATA_LOCK:
         merged={x.get('date'):x for x in SLEEP_DATA}
         for e in entries: merged[e['date']]=e
@@ -17249,7 +17300,19 @@ def analytics_advanced():
         volume_landmarks.append({'muscle':m,'sets':sets,'landmarks':lm,'zone':zone})
     # fatigue composite
     try:
-        hrv_trend=compute_hrv_trend(OURA_DB_FILE).get('trend')
+        end = datetime.now().date()
+        start = end - timedelta(days=6)
+        rows = get_oura_daily_range(
+            OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+        )
+        hrv_values = [r.get("hrv") for r in rows if r.get("hrv") is not None]
+        if len(hrv_values) < 4:
+            hrv_trend = "unknown"
+        else:
+            hrv_label = compute_hrv_trend(hrv_values)
+            hrv_trend = {"improving": "up", "stable": "stable", "declining": "down"}.get(
+                hrv_label, "unknown"
+            )
     except Exception:
         hrv_trend='unknown'
     hrv_pen={'up':0,'stable':5,'down':12}.get(hrv_trend,6)
