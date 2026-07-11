@@ -113,7 +113,7 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
     monkeypatch.setattr(
         fitness_app,
         "calculate_sleep_debt",
-        lambda *_args, **_kwargs: {"debt_minutes": 0, "status": "ok"},
+        lambda *_args, **_kwargs: {"debt_minutes": 0, "status": "ok", "sample_count": 1},
     )
     monkeypatch.setattr(
         fitness_app,
@@ -126,6 +126,11 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
     monkeypatch.setattr(
         fitness_app, "_compute_data_freshness", lambda *_args, **_kwargs: freshness
     )
+    monkeypatch.setattr(
+        fitness_app,
+        "_latest_oura_freshness",
+        lambda *_args, **_kwargs: ("fresh", "2026-05-18", "2026-05-18T07:00:00"),
+    )
 
     response = fitness_app.app.test_client().get("/api/recommendation/smart")
 
@@ -134,6 +139,12 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
     assert "freshness" in payload
     assert "confidence_level" in payload
     assert payload["confidence_level"] == "high"
+    assert payload["recommendation_sources"]["source_proof"]["oura"] == {
+        "used_for_recommendation": True,
+        "fields_used": ["hrv_trend", "readiness_score", "sleep_debt_minutes"],
+        "modifier_applied": False,
+        "ignored_reason": None,
+    }
 
 
 def _freshness_payload():
@@ -179,6 +190,7 @@ def _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, *, oura_ro
         lambda *_args, **_kwargs: {"bonus_points": 0},
     )
     monkeypatch.setattr(fitness_app, "_compute_data_freshness", lambda *_args, **_kwargs: _freshness_payload())
+    monkeypatch.setattr(fitness_app, "_latest_oura_freshness", lambda *_args, **_kwargs: ("missing", None, None))
     monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
     monkeypatch.setattr(fitness_app, "_food_log_entries_for_context", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(fitness_app, "_workout_looks_hard", lambda *_args, **_kwargs: False)
@@ -187,6 +199,36 @@ def _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, *, oura_ro
         "generate_next_workout",
         lambda *_args, **_kwargs: {"name": "Test workout", "cardio": {}},
     )
+
+
+def test_recommendation_smart_reports_stale_oura_inputs_it_still_consumes(fitness_app, monkeypatch):
+    _stub_smart_recommendation_dependencies(
+        monkeypatch,
+        fitness_app,
+        oura_row={"readiness_score": 20, "sleep_score": 30, "hrv": 10},
+    )
+    stale = _freshness_payload()
+    stale["oura"] = {
+        "status": "stale",
+        "last_data_point": "2026-05-01",
+        "last_sync_attempt": "2026-05-01T07:00:00",
+    }
+    monkeypatch.setattr(fitness_app, "_compute_data_freshness", lambda *_args, **_kwargs: stale)
+    monkeypatch.setattr(
+        fitness_app,
+        "_latest_oura_freshness",
+        lambda *_args, **_kwargs: ("stale", "2026-05-01", "2026-05-01T07:00:00"),
+    )
+
+    payload = fitness_app.app.test_client().get("/api/recommendation/smart").get_json()
+
+    assert payload["recommendation"] == "recovery"
+    assert payload["recommendation_sources"]["source_proof"]["oura"] == {
+        "used_for_recommendation": True,
+        "fields_used": ["readiness_score"],
+        "modifier_applied": True,
+        "ignored_reason": None,
+    }
 
 
 def test_recommendation_smart_uses_cache_only_weather_empty_cache(fitness_app, monkeypatch):
