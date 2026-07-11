@@ -267,3 +267,23 @@ def test_sleep_summary_preserves_missing_daily_duration(monkeypatch):
 
     assert payload["last_night"]["total_sleep_min"] is None
     assert payload["data_quality"] == {"status": "ok"}
+
+
+def test_sleep_summary_validates_supplied_zero_duration_without_score(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "fit234-secret")
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(oura_sleep_sync, "get_latest_sleep", lambda *_a, **_kw: [])
+    monkeypatch.setattr(oura_sleep_sync, "get_sleep_range", lambda *_a, **_kw: [])
+    monkeypatch.setattr(module, "get_oura_daily", lambda *_a, **_kw: {
+        "day": "2026-06-03",
+        "sleep_duration_min": 0,
+        "sleep_score": None,
+    })
+    monkeypatch.setattr(module, "get_oura_daily_range", lambda *_a, **_kw: [])
+
+    payload = module.app.test_client().get("/api/oura/sleep-summary").get_json()
+
+    assert payload["last_night"]["total_sleep_min"] == 0
+    assert payload["data_quality"]["status"] == "inconsistent"
+    assert payload["data_quality"]["reason"] == "implausible_duration"

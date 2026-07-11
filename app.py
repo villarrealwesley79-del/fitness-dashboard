@@ -14889,7 +14889,7 @@ def oura_sleep_summary():
             if not d:
                 return None
             dur = d.get("sleep_duration_min")
-            if not dur and not d.get("sleep_score"):
+            if dur is None and d.get("sleep_score") is None:
                 return None
             return {
                 "day": d.get("day"),
