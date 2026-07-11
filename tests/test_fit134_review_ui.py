@@ -497,3 +497,34 @@ def test_accept_body_conditionally_forwards_local_fields():
         assert f"if (entry.{field}) body.{field} = entry.{field};" in builder, (
             f"buildMealV2AcceptBody missing conditional forward for {field!r}"
         )
+
+
+def test_normalize_retains_policy_across_v2_refresh_replacements():
+    body = _normalize_body()
+    assert "policy: payload.policy || (existing && existing.policy) || {}" in body
+    apply_section = _v2_block().split("function applyMealV2Refresh", 1)[1].split("}\n", 1)[0]
+    assert "normalizeMealV2Entry(payload)" in apply_section
+
+
+def test_branded_combo_block_renders_resolution_alert_without_unavailable_actions():
+    block = _v2_block()
+    item_html = block.split("function buildMealReviewV2ItemHtml", 1)[1].split("\n    function ", 1)[0]
+    assert "const brandedComboAiOnly = !!item.branded_combo_ai_only" in item_html
+    assert 'role="alert"' in item_html
+    assert "AI-only restaurant combo" in item_html
+    assert "source-backed nutrition" in item_html
+    assert "material nutrition correction" in item_html
+    assert "isIncluded && candidates.length" in item_html
+    assert "!isBrandedComboFollowup" in block
+
+
+def test_ordinary_blocked_items_keep_generic_resolution_message():
+    item_html = _v2_block().split("function buildMealReviewV2ItemHtml", 1)[1].split("\n    function ", 1)[0]
+    assert "Save blocked — clarify, choose a top match, edit, or skip." in item_html
+
+
+def test_branded_combo_candidate_actions_use_server_source_backed_metadata():
+    item_html = _v2_block().split("function buildMealReviewV2ItemHtml", 1)[1].split("\n    function ", 1)[0]
+    assert "candidate.source_backed === true" in item_html
+    assert "!brandedComboAiOnly || candidate.source_backed === true" in item_html
+    assert "isIncluded && candidates.length" in item_html
