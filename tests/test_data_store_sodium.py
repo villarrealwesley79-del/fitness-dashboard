@@ -95,3 +95,15 @@ def test_add_nutrition_record_accepts_missing_sodium(isolated_store):
     )
     rows = store.get_nutrition_data(user_id=1)
     assert rows[0]["sodium_mg"] is None
+
+
+def test_food_log_current_estimate_round_trips_without_mutating_original(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+    original = {"item_name": "Canes Box Combo", "calories": 840, "source": "ai_text_estimate"}
+    accepted = {"item_name": "Canes Box Combo", "calories": 920, "source": "mixed_lookup", "underlying_sources": ["nutritionix", "usda_fdc"]}
+    immediate = store.add_food_log(1, {"client_id": "mixed-current", "date": "2026-05-18", "logged_at": "2026-05-18T12:00:00", "item_name": "Canes Box Combo", "calories": 920, "source": "mixed_lookup", "original_estimate": original, "accepted_estimate": accepted})
+    reloaded = store.get_food_logs(1)[0]
+    assert immediate["accepted_estimate"] == accepted
+    assert reloaded["accepted_estimate"] == accepted
+    assert reloaded["original_estimate"] == original

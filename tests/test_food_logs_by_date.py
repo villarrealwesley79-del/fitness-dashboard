@@ -101,11 +101,12 @@ def test_returned_entries_use_bounded_projection(fitness_app, monkeypatch):
     expected_keys = {
         "client_id", "date", "logged_at", "item_name", "portion_description", "meal_type",
         "calories", "protein_g", "carbs_g", "fat_g", "sodium_mg",
-        "source", "confidence", "correction_state", "from_image",
+        "source", "confidence", "correction_state", "accepted_estimate", "from_image",
     }
     assert set(entry.keys()) == expected_keys, (
         f"projection must be tight; unexpected keys: {set(entry) - expected_keys}"
     )
+    assert entry["accepted_estimate"] is None
 
 
 def test_valid_iso_date_returns_200_even_when_empty(fitness_app):
