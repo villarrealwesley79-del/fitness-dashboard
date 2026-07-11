@@ -9727,6 +9727,45 @@ def api_exercises():
     return jsonify({"exercises": options})
 
 
+BODY_TAPE_RANGES = {
+    "neck_in": (8.0, 30.0),
+    "waist_in": (18.0, 80.0),
+    "chest_in": (18.0, 80.0),
+    "hips_in": (18.0, 80.0),
+    "arms": (5.0, 30.0),
+    "legs": (10.0, 50.0),
+}
+
+
+def _body_measurement_date_or_none(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return None
+
+
+def _body_measurement_number_or_none(value, min_v, max_v):
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < min_v or number > max_v:
+        return None
+    return number
+
+
+def _safe_body_history_entry(raw):
+    entry = dict(raw)
+    entry["date"] = _body_measurement_date_or_none(entry.get("date"))
+    entry["weight_lbs"] = _body_measurement_number_or_none(entry.get("weight_lbs"), 50.0, 1000.0)
+    entry["body_fat_pct"] = _body_measurement_number_or_none(entry.get("body_fat_pct"), 1.0, 60.0)
+    for field, (min_v, max_v) in BODY_TAPE_RANGES.items():
+        entry[field] = _body_measurement_number_or_none(entry.get(field), min_v, max_v)
+    return entry
+
+
 @app.route('/api/add-body-measurement', methods=['POST'])
 def add_body_measurement():
     """Add body composition measurement (weight, body fat %)."""
@@ -9743,17 +9782,24 @@ def add_body_measurement():
     notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
     if err2:
         return err2
+    raw_date = data.get("date")
+    date_s = datetime.now().strftime("%Y-%m-%d") if raw_date is None else raw_date
+    if _body_measurement_date_or_none(date_s) is None:
+        return api_error("date must be a valid YYYY-MM-DD date", 400, code="invalid_field")
+    tape_values = {}
+    for field, (min_v, max_v) in BODY_TAPE_RANGES.items():
+        value, err2 = _coerce_float(data.get(field), field, min_v=min_v, max_v=max_v, allow_none=True)
+        if err2:
+            return err2
+        if value is not None and not math.isfinite(value):
+            return api_error(f"{field} must be a finite number", 400, code="invalid_field")
+        tape_values[field] = value
 
     entry = {
-        "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
+        "date": date_s,
         "weight_lbs": weight_lbs,
         "body_fat_pct": body_fat_pct,
-        "neck_in": data.get("neck_in"),
-        "waist_in": data.get("waist_in"),
-        "chest_in": data.get("chest_in"),
-        "hips_in": data.get("hips_in"),
-        "arms": data.get("arms"),
-        "legs": data.get("legs"),
+        **tape_values,
         "notes": notes,
         "created_at": datetime.now().isoformat(),
     }
@@ -9766,7 +9812,11 @@ def add_body_measurement():
 @app.route('/api/body-history')
 def body_history():
     """Return body measurement history with calculated fields."""
-    sorted_data = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
+    sorted_data = sorted(
+        (_safe_body_history_entry(entry) for entry in BODY_DATA if isinstance(entry, dict)),
+        key=lambda x: x.get("date") or "",
+        reverse=True,
+    )
 
     # Calculate weight changes and trend
     for i, entry in enumerate(sorted_data):
@@ -17108,7 +17158,10 @@ def _last_n_sessions_rpe(n=3):
 
 @app.route('/api/body-recomp')
 def body_recomp():
-    hist = sorted(BODY_DATA, key=lambda x: x.get('date') or '')
+    hist = sorted(
+        (_safe_body_history_entry(entry) for entry in BODY_DATA if isinstance(entry, dict)),
+        key=lambda x: x.get('date') or '',
+    )
     if not hist:
         return jsonify({"history": [], "summary": {}})
     dates=[h.get('date') for h in hist]
@@ -17125,8 +17178,9 @@ def body_recomp():
     tw=USER_SETTINGS.get('target_weight_lbs')
     curr=latest.get('weight_lbs')
     eta_weeks=None
-    if tw and curr and len(weights)>=14:
-        first=weights[max(0,len(weights)-14)]
+    recent_weights = weights[-14:]
+    if tw and curr and len(recent_weights) == 14 and all(weight is not None for weight in recent_weights):
+        first=recent_weights[0]
         weekly=(curr-first)/2.0
         if weekly!=0:
             eta_weeks=round((tw-curr)/weekly,1)

@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import pytest
+
+import app as module
+
+
+@pytest.fixture
+def client(monkeypatch, tmp_path):
+    monkeypatch.setattr(module, "BODY_DATA", [])
+    monkeypatch.setattr(module, "BODY_FILE", str(tmp_path / "body.json"))
+    monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    return module.app.test_client()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("date", "2026-02-30"),
+        ("date", "07/11/2026"),
+        ("date", ""),
+        ("neck_in", 7.9),
+        ("waist_in", 80.1),
+        ("chest_in", "wide"),
+        ("hips_in", float("nan")),
+        ("arms", 30.1),
+        ("legs", 9.9),
+    ],
+)
+def test_add_body_measurement_rejects_invalid_date_and_tape_fields(client, field, value):
+    response = client.post(
+        "/api/add-body-measurement",
+        json={"weight_lbs": 180, field: value},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_field"
+    assert module.BODY_DATA == []
+
+
+def test_add_body_measurement_normalizes_valid_date_and_tape_fields(client):
+    response = client.post(
+        "/api/add-body-measurement",
+        json={
+            "date": "2026-07-11",
+            "weight_lbs": 180,
+            "neck_in": "16.5",
+            "waist_in": 34,
+            "chest_in": 42,
+            "hips_in": 40,
+            "arms": 15,
+            "legs": 24,
+        },
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+
+    assert response.status_code == 200
+    measurement = response.get_json()["body_measurement"]
+    assert measurement["date"] == "2026-07-11"
+    assert measurement["neck_in"] == 16.5
+    assert measurement["waist_in"] == 34.0
+    assert measurement["chest_in"] == 42.0
+    assert measurement["hips_in"] == 40.0
+    assert measurement["arms"] == 15.0
+    assert measurement["legs"] == 24.0
+
+
+def test_body_history_projects_malformed_legacy_fields_safely(client):
+    module.BODY_DATA.extend(
+        [
+            {
+                "date": "not-a-date",
+                "weight_lbs": 10**1000,
+                "body_fat_pct": float("inf"),
+                "neck_in": "unknown",
+                "waist_in": 900,
+                "chest_in": None,
+                "hips_in": {},
+                "arms": [],
+                "legs": float("nan"),
+            },
+            {"date": "2026-07-11", "weight_lbs": 180, "body_fat_pct": 20},
+        ]
+    )
+
+    response = client.get("/api/body-history")
+
+    assert response.status_code == 200
+    malformed = response.get_json()["history"][1]
+    assert malformed["date"] is None
+    for field in (
+        "weight_lbs",
+        "body_fat_pct",
+        "neck_in",
+        "waist_in",
+        "chest_in",
+        "hips_in",
+        "arms",
+        "legs",
+    ):
+        assert malformed[field] is None
+
+    recomp = client.get("/api/body-recomp")
+    assert recomp.status_code == 200
+    assert recomp.get_json()["history"][0]["date"] is None
+    assert recomp.get_json()["history"][0]["weight_lbs"] is None
+
+
+def test_body_recomp_skips_invalid_legacy_weight_in_eta_window(client, monkeypatch):
+    monkeypatch.setitem(module.USER_SETTINGS, "target_weight_lbs", 170)
+    module.BODY_DATA.extend(
+        {"date": f"2026-06-{day:02d}", "weight_lbs": "invalid" if day == 1 else 180 - day / 10}
+        for day in range(1, 15)
+    )
+
+    response = client.get("/api/body-recomp")
+
+    assert response.status_code == 200
+    assert response.get_json()["summary"]["eta_weeks"] is None
