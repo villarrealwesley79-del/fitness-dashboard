@@ -9574,6 +9574,58 @@ def workout_adaptation_events():
     return jsonify({"events": projected, "count": len(projected)})
 
 
+@app.route('/api/workout-adaptation-events/evaluate', methods=["POST"])
+def evaluate_workout_adaptation_events():
+    """Explicitly evaluate due FIT-136 windows before polling the event feed."""
+    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
+    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
+    active_open_requested = active_open_raw in {"1", "true", "yes"}
+    active_workout_open = active_open_requested and bool(completed_sets_by_exercise)
+    today_s = _today_str()
+    food_log_entries = _food_log_entries_for_context(since=today_s)
+    adaptation_food_entries = _food_log_entries_for_context()
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
+    fingerprint = _workout_recommendation_fingerprint()
+    next_workout = _current_workout_plan_for_fingerprint(fingerprint)
+    stored_plan = get_current_workout_plan(_current_data_user_id())
+    if (
+        not next_workout
+        and stored_plan
+        and str(stored_plan.get("updated_at") or "")[:10] == today_s
+        and not _is_lightweight_current_workout_plan(stored_plan.get("plan"))
+    ):
+        next_workout = stored_plan.get("plan")
+    if not next_workout:
+        training_recommendation, _open_wearables_modifier = _apply_open_wearables_recommendation_guard(
+            _current_workout_training_recommendation(),
+            _open_wearables_recommendation_facts(),
+        )
+        next_workout = generate_next_workout(
+            WORKOUTS,
+            SORENESS_DATA,
+            training_recommendation=training_recommendation,
+            consume_cardio_rotation=False,
+        )
+        _persist_current_workout_plan(next_workout, fingerprint)
+    nutrition_context = _nutrition_context_for_date(
+        today_s,
+        hard_training_planned=_workout_looks_hard(next_workout),
+        food_log_entries=food_log_entries,
+    )
+    events = []
+    if not active_open_requested or completed_sets_by_exercise:
+        next_workout, events = _apply_due_workout_adaptations_for_plan(
+            next_workout,
+            date_s=today_s,
+            food_log_entries=adaptation_food_entries,
+            nutrition_context=nutrition_context,
+            active_workout_open=active_workout_open,
+            completed_sets_by_exercise=completed_sets_by_exercise,
+        )
+        _persist_current_workout_plan(next_workout, fingerprint)
+    return jsonify({"status": "success", "evaluated_count": len(events)})
+
+
 @app.route('/api/workout-adaptation-events/<event_id>/ack', methods=["POST"])
 def ack_workout_adaptation_event(event_id: str):
     event_id = (event_id or "").strip()

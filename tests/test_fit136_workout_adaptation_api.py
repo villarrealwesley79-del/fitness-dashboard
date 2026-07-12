@@ -210,6 +210,92 @@ def test_workout_adaptation_events_endpoint_is_read_only(monkeypatch, tmp_path):
     assert generate_calls == []
 
 
+def test_workout_adaptation_evaluation_endpoint_processes_due_windows_idempotently(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(module, "USER_SETTINGS", {"available_time_minutes": 35, "daily_calorie_target": 2200, "daily_protein_target_g": 150})
+    generate_calls = []
+
+    def fake_generate_next_workout(*_args, **kwargs):
+        generate_calls.append(kwargs)
+        return _recommendation()
+
+    monkeypatch.setattr(module, "generate_next_workout", fake_generate_next_workout)
+    monkeypatch.setattr(module, "_current_workout_training_recommendation", lambda: "train")
+    monkeypatch.setattr(module, "_open_wearables_recommendation_facts", lambda: {"risk": "high"})
+    monkeypatch.setattr(
+        module,
+        "_apply_open_wearables_recommendation_guard",
+        lambda recommendation, facts: ("recovery", {"detail": "guarded"}),
+    )
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    monkeypatch.setattr(module, "SORENESS_DATA", [])
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+
+    row = data_store.add_food_log(
+        1,
+        {
+            "client_id": "fit233-explicit-evaluate",
+            "date": "2026-05-24",
+            "logged_at": "2026-05-24T12:00:00",
+            "meal_id": "meal-explicit-evaluate",
+            "item_name": "Small snack",
+            "calories": 250,
+            "protein_g": 5,
+            "carbs_g": 40,
+            "fat_g": 4,
+            "sodium_mg": 200,
+            "confidence": 0.9,
+            "correction_state": "accepted",
+        },
+    )
+    workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [row],
+        clock=datetime(2026, 5, 24, 12, 0, 0),
+    )
+
+    first = client.post("/api/workout-adaptation-events/evaluate")
+    repeated = client.post("/api/workout-adaptation-events/evaluate")
+    feed = client.get("/api/workout-adaptation-events?unacknowledged=true")
+
+    assert first.status_code == 200
+    assert repeated.status_code == 200
+    assert first.get_json()["evaluated_count"] == 1
+    assert repeated.get_json()["evaluated_count"] == 0
+    assert feed.get_json()["count"] == 1
+    assert len(data_store.list_workout_adaptation_events(1, unacknowledged=False)) == 1
+    assert data_store.list_pending_workout_adaptation_windows(1) == []
+    assert generate_calls[0]["training_recommendation"] == "recovery"
+
+
+def test_workout_adaptation_evaluation_preserves_same_day_canonical_plan(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "new-fingerprint")
+    monkeypatch.setattr(module, "_current_workout_plan_for_fingerprint", lambda _fingerprint: None)
+    canonical = {**_recommendation(), "id": "user-customized-plan"}
+    monkeypatch.setattr(
+        module,
+        "get_current_workout_plan",
+        lambda _user_id, **_kwargs: {
+            "plan": canonical,
+            "fingerprint": "old-fingerprint",
+            "updated_at": "2026-05-24T18:30:00",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "generate_next_workout",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("must preserve same-day plan")),
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert module.LAST_WORKOUT_RECOMMENDATION["id"] == "user-customized-plan"
+
+
 def test_next_workout_route_replays_due_adaptation_even_with_cached_plan(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
@@ -256,7 +342,7 @@ def test_next_workout_route_replays_due_adaptation_even_with_cached_plan(monkeyp
     assert "_fit136_lightweight_no_ow" not in payload["next_workout"]
 
 
-def test_active_workout_poll_without_completed_sets_defers_pending_window(monkeypatch, tmp_path):
+def test_active_workout_evaluation_without_completed_sets_defers_pending_window(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
     monkeypatch.setattr(module, "USER_SETTINGS", {"available_time_minutes": 35, "daily_calorie_target": 2200, "daily_protein_target_g": 150})
@@ -289,10 +375,10 @@ def test_active_workout_poll_without_completed_sets_defers_pending_window(monkey
         clock=datetime(2026, 5, 24, 12, 0, 0),
     )
 
-    response = client.get("/api/workout-adaptation-events?active_workout_open=true")
+    response = client.post("/api/workout-adaptation-events/evaluate?active_workout_open=true")
 
     assert response.status_code == 200
-    assert response.get_json()["count"] == 0
+    assert response.get_json()["evaluated_count"] == 0
     assert len(data_store.list_pending_workout_adaptation_windows(1)) == 1
 
 

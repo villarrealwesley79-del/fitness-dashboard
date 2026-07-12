@@ -119,12 +119,24 @@ def test_adaptation_does_not_surface_audit_log():
 def test_adaptation_requests_include_active_workout_params_runtime():
     outputs = _run_fit257_runtime_fixtures_in_node()
 
+    evaluation = outputs["evaluation"]
+    assert evaluation["pathname"] == "/api/workout-adaptation-events/evaluate"
+    assert evaluation["method"] == "POST"
+    assert evaluation["active_workout_open"] == "true"
+    assert evaluation["completed_sets"] == {"Chest Press": 2, "Squat": 1}
+
     notice = outputs["notice"]
     assert notice["pathname"] == "/api/workout-adaptation-events"
+    assert notice["method"] is None
     assert notice["unacknowledged"] == "true"
     assert notice["limit"] == "10"
-    assert notice["active_workout_open"] == "true"
-    assert notice["completed_sets"] == {"Chest Press": 2, "Squat": 1}
+
+    assert outputs["evaluationFailurePaths"][0].startswith(
+        "/api/workout-adaptation-events/evaluate?"
+    )
+    assert outputs["evaluationFailurePaths"][1] == (
+        "/api/workout-adaptation-events?unacknowledged=true&limit=10"
+    )
 
     next_workout = outputs["nextWorkout"]
     assert next_workout["pathname"] == "/api/next-workout"
@@ -213,6 +225,7 @@ const calls = [];
 let rendered = false;
 let mergeCall = null;
 let fetchedNextWorkout = false;
+let failEvaluation = false;
 const state = {{
   activeWorkout: {{
     exercises: [
@@ -232,6 +245,9 @@ function workoutAdaptationIsRenderable() {{ return false; }}
 function showWorkoutAdaptationNotice() {{}}
 async function api(path, opts = {{}}) {{
   calls.push({{ path, opts }});
+  if (failEvaluation && String(path).startsWith('/api/workout-adaptation-events/evaluate')) {{
+    throw new Error('evaluation unavailable');
+  }}
   if (String(path).startsWith('/api/next-workout')) {{
     fetchedNextWorkout = true;
     return {{ next_workout: {{ id: 'adapted-plan', exercises: [{{ name: 'Chest Press', target_sets: 2 }}] }} }};
@@ -247,6 +263,7 @@ function parseCall(index) {{
   const completedRaw = url.searchParams.get('completed_sets');
   return {{
     pathname: url.pathname,
+    method: calls[index].opts.method || null,
     unacknowledged: url.searchParams.get('unacknowledged'),
     limit: url.searchParams.get('limit'),
     active_workout_open: url.searchParams.get('active_workout_open'),
@@ -260,9 +277,17 @@ async function run() {{
   applyWorkoutAdaptationToActiveWorkout({{ active_workout: {{ updated_live: true }} }});
   await Promise.resolve();
   await Promise.resolve();
+  const evaluation = parseCall(0);
+  const notice = parseCall(1);
+  const nextWorkout = parseCall(2);
+  calls.length = 0;
+  failEvaluation = true;
+  await fetchWorkoutAdaptationNotices();
   return {{
-    notice: parseCall(0),
-    nextWorkout: parseCall(1),
+    evaluation,
+    notice,
+    nextWorkout,
+    evaluationFailurePaths: calls.map((call) => call.path),
     merge: {{
       fetchedNextWorkout,
       rendered,

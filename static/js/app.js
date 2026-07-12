@@ -511,7 +511,15 @@
         if (workoutAdaptationNoticeState.fetching) return;
         workoutAdaptationNoticeState.fetching = true;
         try {
-            const payload = await api(withActiveWorkoutAdaptationParams('/api/workout-adaptation-events?unacknowledged=true&limit=10'));
+            try {
+                await api(withActiveWorkoutAdaptationParams('/api/workout-adaptation-events/evaluate'), {
+                    method: 'POST',
+                    timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS,
+                });
+            } catch (err) {
+                console.warn('workout adaptation evaluation failed:', err);
+            }
+            const payload = await api('/api/workout-adaptation-events?unacknowledged=true&limit=10');
             const events = (payload && payload.events) || [];
             for (const event of events) {
                 if (!event || !event.id) continue;
