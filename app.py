@@ -4620,6 +4620,29 @@ def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
     if recommendation is None:
         return None
     scoped = dict(recommendation)
+    rpe_targets = []
+    for exercise in recommendation.get("exercises") or []:
+        try:
+            target = float(exercise.get("rpe_target"))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= target <= 10:
+            rpe_targets.append(target)
+    if rpe_targets:
+        minimum = min(rpe_targets)
+        maximum = max(rpe_targets)
+
+        def _format_rpe(value):
+            return str(int(value)) if value.is_integer() else str(value)
+
+        label = _format_rpe(minimum)
+        if maximum != minimum:
+            label = f"{label}–{_format_rpe(maximum)}"
+        scoped["rpe_range"] = {
+            "min": int(minimum) if minimum.is_integer() else minimum,
+            "max": int(maximum) if maximum.is_integer() else maximum,
+            "label": label,
+        }
     scoped["auth_scope"] = _current_auth_scope()
     return scoped
 
