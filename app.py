@@ -12547,10 +12547,10 @@ def fetch_open_wearables_data():
     end_date = (today + timedelta(days=1)).strftime("%Y-%m-%d")
 
     endpoints = {
-        "sleep": f"{_open_wearables_user_base()}/events/sleep?start_date={start_date}&end_date={end_date}",
+        "sleep": f"{_open_wearables_user_base()}/events/sleep?start_date={start_date}&end_date={end_date}&limit=100",
         "workouts": f"{_open_wearables_user_base()}/events/workouts?start_date={start_date}&end_date={end_date}&limit=100",
-        "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?start_date={start_date}&end_date={end_date}",
-        "recovery_summary": f"{_open_wearables_user_base()}/summaries/recovery?start_date={start_date}&end_date={end_date}",
+        "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?start_date={start_date}&end_date={end_date}&limit=100",
+        "recovery_summary": f"{_open_wearables_user_base()}/summaries/recovery?start_date={start_date}&end_date={end_date}&limit=100",
         "body_summary": f"{_open_wearables_user_base()}/summaries/body",
     }
 
@@ -12568,7 +12568,7 @@ def fetch_open_wearables_data():
         result["errors"]["auth"] = "missing_token"
         return result
 
-    def fetch_workout_pages(url):
+    def fetch_paginated_pages(url, domain):
         combined = []
         current_url = url
         first_payload = None
@@ -12590,11 +12590,15 @@ def fetch_open_wearables_data():
                 result_payload["data"] = combined
                 return result_payload
             current_url = f"{url}&cursor={urllib.parse.quote(str(cursor), safe='')}"
-        raise RuntimeError("open_wearables_workout_pagination_limit")
+        raise RuntimeError(f"open_wearables_{domain}_pagination_limit")
 
     for key, url in endpoints.items():
         try:
-            result[key] = fetch_workout_pages(url) if key == "workouts" else _ow_request(url, headers=headers)
+            result[key] = (
+                _ow_request(url, headers=headers)
+                if key == "body_summary"
+                else fetch_paginated_pages(url, key)
+            )
         except Exception as e:
             result["errors"][key] = str(e)
             result[key] = None
@@ -12608,7 +12612,10 @@ def _extract_open_wearables_sleep(payload):
     if not events:
         return None
 
-    best = max(events, key=lambda e: e.get("event_time") or datetime.min)
+    main_sleep_events = [event for event in events if event.get("is_nap") is not True]
+    if not main_sleep_events:
+        return None
+    best = max(main_sleep_events, key=lambda e: e.get("event_time") or datetime.min)
     best_time = best.get("event_time")
     duration = best.get("duration_min")
     avg_hr = best.get("avg_hr")

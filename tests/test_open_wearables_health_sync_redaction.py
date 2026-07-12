@@ -35,6 +35,18 @@ def test_open_wearables_sleep_extractor_maps_bridge_stage_minute_fields():
     assert sleep["duration_min"] == 420
 
 
+def test_open_wearables_sleep_extractor_does_not_replace_main_sleep_with_latest_nap():
+    module = _fitness_app()
+
+    sleep = module._extract_open_wearables_sleep({"data": [
+        {"end_time": "2026-06-28T07:00:00Z", "sleep_duration_seconds": 25200, "is_nap": False},
+        {"end_time": "2026-06-28T15:00:00Z", "sleep_duration_seconds": 1800, "is_nap": True},
+    ]})
+
+    assert sleep["duration_min"] == 420
+    assert sleep["is_nap"] is False
+
+
 def test_open_wearables_activity_extractor_preserves_zero_values():
     module = _fitness_app()
 
@@ -1294,7 +1306,27 @@ def test_open_wearables_fetch_fails_closed_at_workout_pagination_cap(monkeypatch
     payload = module.fetch_open_wearables_data()
 
     assert payload["workouts"] is None
-    assert payload["errors"]["workouts"] == "open_wearables_workout_pagination_limit"
+    assert payload["errors"]["workouts"] == "open_wearables_workouts_pagination_limit"
+
+
+def test_open_wearables_fetch_paginates_activity_summaries(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        if "/summaries/activity" not in url:
+            return {"data": [], "pagination": {"has_more": False}}
+        if "cursor=" in url:
+            return {"data": [{"date": "2026-06-29"}], "pagination": {"has_more": False}}
+        return {"data": [{"date": "2026-06-28"}], "pagination": {"has_more": True, "next_cursor": "next"}}
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    assert [row["date"] for row in payload["activity_summary"]["data"]] == ["2026-06-28", "2026-06-29"]
 
 
 def test_open_wearables_recommendation_marker_cache_is_profile_scoped(monkeypatch):
