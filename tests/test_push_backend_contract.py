@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 
 import data_store
 
@@ -210,6 +211,41 @@ def test_push_test_notification_revokes_gone_subscription(monkeypatch, tmp_path)
     assert body["status"] == "gone"
     assert body["revoked"] is True
     assert client.get("/api/push/subscriptions").get_json()["subscriptions"] == []
+
+
+def test_push_test_notification_sanitizes_delivery_failure(monkeypatch, tmp_path, caplog):
+    module = _app(monkeypatch, tmp_path)
+    monkeypatch.setenv("FITNESS_PUSH_VAPID_PRIVATE_KEY", "private-test-key")
+
+    class FailedResponse:
+        status_code = 502
+
+    class FailedPush(Exception):
+        response = FailedResponse()
+
+    def fake_webpush(**_kwargs):
+        raise FailedPush("provider rejected auth-secret and public-key")
+
+    monkeypatch.setattr(module, "webpush", fake_webpush)
+    client = module.app.test_client()
+    saved = client.post("/api/push/subscriptions", json={"subscription": _subscription()}).get_json()["subscription"]
+
+    with caplog.at_level(logging.WARNING, logger=module.app.logger.name):
+        res = client.post("/api/push/test", json={"endpoint_hash": saved["endpoint_hash"]})
+
+    assert res.status_code == 502
+    body = res.get_json()
+    assert body["status"] == "server_error"
+    assert body["error"] == {
+        "code": "push_delivery_failed",
+        "message": "Push service could not deliver the test notification",
+    }
+    assert "provider rejected" not in str(body)
+    assert "auth-secret" not in caplog.text
+    assert "public-key" not in caplog.text
+    assert "https://push.example.test/send/abc" not in caplog.text
+    assert "FailedPush" in caplog.text
+    assert "status_code=502" in caplog.text
 
 
 def test_push_test_notification_reports_missing_vapid_private_key(monkeypatch, tmp_path):

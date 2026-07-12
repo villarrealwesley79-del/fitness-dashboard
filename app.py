@@ -15321,11 +15321,19 @@ def _send_web_push(subscription: dict, payload: dict):
         status_code = getattr(response, "status_code", None)
         if status_code in {404, 410}:
             return {"ok": False, "status": "gone", "status_code": status_code, "error": "subscription gone"}
+        app.logger.warning(
+            "Push delivery failed exception_type=%s status_code=%s",
+            type(exc).__name__,
+            status_code,
+        )
         return {
             "ok": False,
             "status": "server_error",
             "status_code": status_code or 500,
-            "error": str(exc),
+            "error": {
+                "code": "push_delivery_failed",
+                "message": "Push service could not deliver the test notification",
+            },
         }
     return {
         "ok": True,
