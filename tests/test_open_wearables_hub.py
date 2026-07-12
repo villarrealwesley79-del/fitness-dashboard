@@ -263,10 +263,41 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     assert workout["source_provider"] == "apple_health"
     assert workout["original_label"] == "Evening Lift"
     assert workout["value"] == 55
-    assert by_metric["weight"]["date"] == "2026-06-28"
+    assert by_metric["weight"]["date"] == "2026-06-29"
+    assert by_metric["weight"]["freshness"] == "unknown"
+    assert by_metric["weight"]["source_id"] == "undated-latest"
+    assert by_metric["resting_heart_rate"]["value"] == 53
+    assert by_metric["resting_heart_rate_average"]["value"] == 53
     assert by_metric["body_temperature"]["date"] == "2026-06-27"
     run = next(fact for fact in workout_facts if fact["source_id"] == "workout-2")
     assert run["category"] == "cardio"
+
+
+def test_store_wearable_facts_uses_observation_freshness_and_tolerates_partial_errors(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": "2026-06-29T10:00:00",
+            "recovery_summary": {"data": [
+                {"date": "2026-06-29", "recovery_score": 80},
+                {"date": "2026-06-25", "recovery_score": 60},
+            ]},
+            "errors": {"body_summary": "unsupported"},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts, list_wearable_sources
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    freshness = {fact["date"]: fact["freshness"] for fact in facts}
+    assert freshness == {"2026-06-29": "fresh", "2026-06-25": "stale"}
+    assert list_wearable_sources(db_file, profile_key="profile-42")[0]["status"] == "fresh"
 
 
 def test_recommendation_facts_filters_provider_and_freshness(tmp_path):

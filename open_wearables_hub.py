@@ -14,7 +14,7 @@ values and callables so it never has to import back from app.py.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 import hashlib
 import json
 from typing import Callable
@@ -76,6 +76,20 @@ def _workout_category(label: object) -> str | None:
     if any(word in text for word in ("run", "walk", "cycle", "bike", "swim", "cardio")):
         return "cardio"
     return "other"
+
+
+def _fact_freshness(date_s: str, fetched_at: str) -> str:
+    try:
+        observed = date.fromisoformat(str(date_s)[:10])
+        fetched = date.fromisoformat(str(fetched_at)[:10])
+    except (TypeError, ValueError):
+        return "unknown"
+    age_days = (fetched - observed).days
+    if age_days <= 0:
+        return "fresh"
+    if age_days == 1:
+        return "aging"
+    return "stale"
 
 
 def payload_marker(payload):
@@ -220,7 +234,6 @@ def store_wearable_facts(
     data = data if isinstance(data, dict) else {}
     fetched_at = data.get("fetched_at") if isinstance(data.get("fetched_at"), str) else now().isoformat()
     errors = data.get("errors") if isinstance(data.get("errors"), dict) else {}
-    status = "error" if errors else "fresh"
     replacement_source_dates = {}
 
     def mark_replacement_sources(raw_row, date_s):
@@ -237,19 +250,19 @@ def store_wearable_facts(
         date_s = latest["date"].strftime("%Y-%m-%d")
         added_activity_fact = False
         if latest.get("steps") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "steps", latest.get("steps"), "count", confidence="medium", freshness=status))
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "steps", latest.get("steps"), "count", confidence="medium", freshness=_fact_freshness(date_s, fetched_at)))
             added_activity_fact = True
         if latest.get("resting") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "resting_heart_rate", latest.get("resting"), "bpm", confidence="medium", freshness=status))
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "resting_heart_rate", latest.get("resting"), "bpm", confidence="medium", freshness=_fact_freshness(date_s, fetched_at)))
             added_activity_fact = True
         if latest.get("active_minutes") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "active_minutes", latest.get("active_minutes"), "min", confidence="medium", freshness=status))
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "active_minutes", latest.get("active_minutes"), "min", confidence="medium", freshness=_fact_freshness(date_s, fetched_at)))
             added_activity_fact = True
         if latest.get("active_calories") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "active_calories", latest.get("active_calories"), "kcal", confidence="medium", freshness=status))
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "active_calories", latest.get("active_calories"), "kcal", confidence="medium", freshness=_fact_freshness(date_s, fetched_at)))
             added_activity_fact = True
         if latest.get("distance") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "distance", latest.get("distance"), "m", confidence="medium", freshness=status))
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "distance", latest.get("distance"), "m", confidence="medium", freshness=_fact_freshness(date_s, fetched_at)))
             added_activity_fact = True
         if added_activity_fact:
             mark_replacement_sources(latest.get("raw"), date_s)
@@ -259,14 +272,14 @@ def store_wearable_facts(
         date_s = (sleep.get("event_time") or fetched_at)[:10]
         added_sleep_fact = False
         if sleep.get("duration_min") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_duration", sleep.get("duration_min"), "min", confidence="medium", freshness=status))
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_duration", sleep.get("duration_min"), "min", confidence="medium", freshness=_fact_freshness(date_s, fetched_at)))
             added_sleep_fact = True
         if sleep.get("avg_hr") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_avg_heart_rate", sleep.get("avg_hr"), "bpm", confidence="medium", freshness=status))
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_avg_heart_rate", sleep.get("avg_hr"), "bpm", confidence="medium", freshness=_fact_freshness(date_s, fetched_at)))
             added_sleep_fact = True
         for stage, value in (sleep.get("stages_min") or {}).items():
             if value is not None and stage in {"deep", "rem", "light", "awake"}:
-                facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", f"sleep_{stage}_duration", value, "min", confidence="medium", freshness=status))
+                facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", f"sleep_{stage}_duration", value, "min", confidence="medium", freshness=_fact_freshness(date_s, fetched_at)))
                 added_sleep_fact = True
         if added_sleep_fact:
             mark_replacement_sources(sleep.get("raw"), date_s)
@@ -292,14 +305,14 @@ def store_wearable_facts(
                 if value is not None:
                     facts.append(WearableDailyFact(
                         date_s, "open_wearables", "Open Wearables", metric, value, unit,
-                        confidence="medium", freshness=status, source_provider=provider,
+                        confidence="medium", freshness=_fact_freshness(date_s, fetched_at), source_provider=provider,
                     ))
             if payload_key == "recovery_summary":
                 sleep_seconds = _number(row, "sleep_duration_seconds")
                 if sleep_seconds is not None:
                     facts.append(WearableDailyFact(
                         date_s, "open_wearables", "Open Wearables", "sleep_duration",
-                        sleep_seconds / 60.0, "min", confidence="medium", freshness=status,
+                        sleep_seconds / 60.0, "min", confidence="medium", freshness=_fact_freshness(date_s, fetched_at),
                         source_provider=provider,
                     ))
             if len(facts) > before_count:
@@ -310,25 +323,28 @@ def store_wearable_facts(
         provider = _source_provider(body)
         before_count = len(facts)
         body_groups = (
-            (body.get("slow_changing") if isinstance(body.get("slow_changing"), dict) else body, {
+            (body.get("slow_changing") if isinstance(body.get("slow_changing"), dict) else body, True, {
                 "weight": (("weight_kg", "weight"), "kg"),
                 "body_fat_percent": (("body_fat_percent", "body_fat"), "%"),
                 "muscle_mass": (("muscle_mass_kg", "muscle_mass"), "kg"),
                 "body_mass_index": (("bmi", "body_mass_index"), "kg/m2"),
             }),
-            (body.get("averaged") if isinstance(body.get("averaged"), dict) else {}, {
-                "resting_heart_rate": (("resting_heart_rate_bpm",), "bpm"),
-                "heart_rate_variability_sdnn": (("avg_hrv_sdnn_ms",), "ms"),
-                "heart_rate_variability_rmssd": (("avg_hrv_rmssd_ms",), "ms"),
+            (body.get("averaged") if isinstance(body.get("averaged"), dict) else {}, False, {
+                "resting_heart_rate_average": (("resting_heart_rate_bpm",), "bpm"),
+                "heart_rate_variability_sdnn_average": (("avg_hrv_sdnn_ms",), "ms"),
+                "heart_rate_variability_rmssd_average": (("avg_hrv_rmssd_ms",), "ms"),
             }),
         )
-        for values, mappings in body_groups:
+        for values, undated, mappings in body_groups:
             for metric, (aliases, unit) in mappings.items():
                 value = _number(values, *aliases)
                 if value is not None:
+                    fact_date = fetched_at[:10] if undated else date_s
                     facts.append(WearableDailyFact(
-                        date_s, "open_wearables", "Open Wearables", metric, value, unit,
-                        confidence="medium", freshness=status, source_provider=provider,
+                        fact_date, "open_wearables", "Open Wearables", metric, value, unit,
+                        confidence=("low" if undated else "medium"),
+                        freshness=("unknown" if undated else _fact_freshness(date_s, fetched_at)),
+                        source_id=("undated-latest" if undated else None), source_provider=provider,
                     ))
         if len(facts) > before_count:
             mark_replacement_sources(body, date_s)
@@ -342,7 +358,7 @@ def store_wearable_facts(
                 measured_date = str(latest.get(measured_at_key) or date_s)[:10]
                 facts.append(WearableDailyFact(
                     measured_date, "open_wearables", "Open Wearables", metric, value, "c",
-                    confidence="medium", freshness=status, source_provider=provider,
+                    confidence="medium", freshness=_fact_freshness(measured_date, fetched_at), source_provider=provider,
                 ))
                 mark_replacement_sources(body, measured_date)
 
@@ -378,15 +394,17 @@ def store_wearable_facts(
             if value is not None:
                 facts.append(WearableDailyFact(
                     date_s, "open_wearables", "Open Wearables", metric, value, unit,
-                    confidence="medium", freshness=status, **provenance,
+                    confidence="medium", freshness=_fact_freshness(date_s, fetched_at), **provenance,
                 ))
         if len(facts) > before_count:
             mark_replacement_sources(row, date_s)
 
+    usable_facts = [fact for fact in facts if fact.freshness in {"fresh", "aging"}]
+    source_status = "fresh" if usable_facts else ("error" if errors and not facts else "stale")
     upsert_wearable_source(db_file, {
         "provider_id": "open_wearables",
         "label": "Open Wearables",
-        "status": status,
+        "status": source_status,
         "last_data_point": max(replacement_source_dates.values()) if replacement_source_dates else fetched_at[:10],
         "last_sync_attempt": fetched_at,
         "capabilities": {
@@ -397,7 +415,7 @@ def store_wearable_facts(
             "replacement_sources": sorted(replacement_source_dates),
             "replacement_source_dates": replacement_source_dates,
         },
-        "used_for_recommendation": status != "error",
+        "used_for_recommendation": bool(usable_facts),
     }, profile_key=profile_key)
 
     if facts:
