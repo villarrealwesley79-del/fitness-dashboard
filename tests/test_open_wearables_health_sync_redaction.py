@@ -1253,9 +1253,9 @@ def test_open_wearables_fetch_includes_today_and_paginates_workouts(monkeypatch)
         if "/events/workouts" not in url:
             return {"data": []}
         if "cursor=" in url:
-            return {"data": [{"id": "workout-2"}], "pagination": {"has_more": False}}
+            return {"events": [{"id": "workout-2"}], "pagination": {"has_more": False}}
         return {
-            "data": [{"id": "workout-1"}],
+            "events": [{"id": "workout-1"}],
             "pagination": {"has_more": True, "next_cursor": "page 2"},
         }
 

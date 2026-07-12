@@ -12585,6 +12585,8 @@ def fetch_open_wearables_data():
             cursor = pagination.get("next_cursor")
             if not pagination.get("has_more") or not cursor:
                 result_payload = dict(first_payload)
+                for row_key in ("events", "items"):
+                    result_payload.pop(row_key, None)
                 result_payload["data"] = combined
                 return result_payload
             current_url = f"{url}&cursor={urllib.parse.quote(str(cursor), safe='')}"
