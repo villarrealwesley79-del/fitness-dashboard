@@ -56,7 +56,7 @@
       "id": "json_stores",
       "examples": ["data_workouts.json", "data_nutrition.json"],
       "gitignore_rule": "data_*.json",
-      "dockerignore_rule": "data_*.json",
+      "dockerignore_rule": "**/data_*.json",
       "documentation_marker": "data_*.json"
     }
   ]

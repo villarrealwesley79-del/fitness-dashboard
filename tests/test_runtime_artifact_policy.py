@@ -17,6 +17,15 @@ def _rules(path):
 
 def _matches(example, rule):
     normalized = example.strip("/")
+    if rule.startswith("**/"):
+        recursive_rule = rule[3:]
+        if _matches(normalized, recursive_rule):
+            return True
+        parts = normalized.split("/")
+        return any(
+            _matches("/".join(parts[index:]), recursive_rule)
+            for index in range(1, len(parts))
+        )
     if rule.endswith("/"):
         directory = rule.strip("/")
         return normalized == directory or normalized.startswith(f"{directory}/")

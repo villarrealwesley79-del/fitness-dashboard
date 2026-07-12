@@ -6,7 +6,7 @@ __pycache__/
 *.db
 *.sqlite3
 *.sqlite
-data_*.json
+**/data_*.json
 server.log
 .git/
 .gitignore
