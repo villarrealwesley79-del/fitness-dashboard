@@ -129,7 +129,7 @@ ACWR: `/api/acwr` returns the server-side 28-day training-load calculation. It i
 
 Adherence: `/api/adherence` reads persisted `WORKOUTS`, not session-local completed workouts. It counts all completed workouts, narrows adherence denominator to workouts with `recommendation_id`, counts only rows whose `adherence.followed` is exactly `true`, and reports skipped exercises from `adherence.skipped`.
 
-Progressive overload: `/api/progressive-overload` returns top-set weight trends for a fixed list of eight major exercises. It does not compute e1RM; it tracks the highest raw `weight_lbs` per exercise per date and compares the latest two dates.
+Progressive overload: `/api/progressive-overload` is intentionally API-only. No Stats or Body card consumes it. It returns top-set weight trends for the fixed list `Chest Press`, `Lat Pulldown`, `Mid Row`, `Leg Press`, `Leg Curl`, `Seated Dip`, `Shoulder Press`, and `Biceps Curl`, and includes that scope in the response so callers can distinguish tracked from excluded exercises. It does not compute e1RM; it tracks the highest raw `weight_lbs` per exercise per date and compares the latest two dates.
 
 Weather: Settings calls `/api/weather` to fetch current wttr.in weather for explicit `?location`, then last cached location, then hardcoded `San_Antonio`. Dashboard and smart recommendation use `_cached_wttr` only, so they can include hot/cold context when cache is warm without making a live network call.
 
@@ -149,7 +149,7 @@ Markdown export: `/api/export-md` streams a `text/markdown` attachment named `wo
 | GET | `/api/adherence` | Owner session | API consumer [TBC]; tests and history surfaces depend on adherence rows | none | adherence totals | Real |
 | GET | `/api/muscle-fatigue` | Owner session | Stats muscle recovery | none | object keyed by muscle | Real |
 | GET | `/api/acwr` | Owner session | API consumer and recommendation factors | none | `{acwr, acute_load, chronic_load, risk, message}` | Real |
-| GET | `/api/progressive-overload` | Owner session | Backend/API progress trend; UI [TBC] | none | `{exercises}` | Real |
+| GET | `/api/progressive-overload` | Owner session | API-only progress trend | none | `{scope, exercises}` | Real |
 | GET | `/api/analytics/advanced` | Owner session | Cached loader; UI direct rendering [TBC] | none | advanced analytics object | Real |
 | GET | `/api/vitals` | Owner session | Vitals tab | none | `{weight, heart_rate, sleep, activity, source}` | Real |
 | GET | `/api/weather` | Owner session | Settings weather status | `location` query optional | weather object | Real external provider, best-effort |
@@ -283,7 +283,7 @@ Advanced analytics reads settings values from `data_settings.json`, especially `
 
 `tests/test_freshness.py` and `tests/test_dynamic_cardio_recommendations.py` cover weather cache-only behavior for dashboard/smart recommendation consumers.
 
-Coverage gaps: no focused tests were found for `/api/add-body-measurement`, `/api/body-history`, `/api/body-recomp`, `/api/body/navy-calc`, `/api/sleep/import`, `/api/sleep/analytics`, `/api/progressive-overload`, `/api/analytics/advanced`, or `/api/export-md`.
+Coverage gaps: no focused tests were found for `/api/add-body-measurement`, `/api/body-history`, `/api/body-recomp`, `/api/body/navy-calc`, `/api/sleep/import`, `/api/sleep/analytics`, `/api/analytics/advanced`, or `/api/export-md`. Focused progressive-overload coverage verifies included, excluded, and empty-history cases.
 
 ## 13. Gaps & Issue Candidates
 
