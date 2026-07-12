@@ -12621,6 +12621,7 @@ def _extract_open_wearables_sleep(payload):
         "duration_min": int(round(duration)) if duration is not None else None,
         "avg_hr": int(round(avg_hr)) if avg_hr is not None else None,
         "event_time": best_time.isoformat() if best_time else None,
+        "observed_at": best.get("observed_at"),
         "recent": recent,
         "raw": best.get("raw"),
         "stages_min": best.get("stages_min") or {},
@@ -12649,6 +12650,13 @@ def _extract_open_wearables_sleep_events(payload):
                 if dt.tzinfo is not None:
                     dt = dt.astimezone().replace(tzinfo=None)
                 return dt
+        return None
+
+    def _observed_at(ev):
+        for key in ("end_time", "endTime", "end", "timestamp", "created_at", "start_time", "startTime", "start", "date"):
+            value = ev.get(key)
+            if value is not None:
+                return str(value)
         return None
 
     parsed = []
@@ -12709,6 +12717,7 @@ def _extract_open_wearables_sleep_events(payload):
 
         parsed.append({
             "event_time": dt,
+            "observed_at": _observed_at(ev),
             "duration_min": duration,
             "stages_min": stage_minutes,
             "avg_hr": avg_hr,

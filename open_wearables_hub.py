@@ -309,24 +309,25 @@ def store_wearable_facts(
         sleep_provenance = {
             "source_id": str(_first_value(sleep_raw, "id", "event_id") or "") or None,
             "source_provider": _source_provider(sleep_raw),
-            "observed_at": sleep.get("event_time"),
+            "observed_at": sleep.get("observed_at") or sleep.get("event_time"),
         }
+        sleep_observed_at = sleep_provenance["observed_at"]
         added_sleep_fact = False
         if sleep.get("duration_min") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_duration", sleep.get("duration_min"), "min", confidence="medium", freshness=_fact_freshness(sleep.get("event_time"), fetched_at), **sleep_provenance))
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_duration", sleep.get("duration_min"), "min", confidence="medium", freshness=_fact_freshness(sleep_observed_at, fetched_at), **sleep_provenance))
             added_sleep_fact = True
         if sleep.get("avg_hr") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_avg_heart_rate", sleep.get("avg_hr"), "bpm", confidence="medium", freshness=_fact_freshness(sleep.get("event_time"), fetched_at), **sleep_provenance))
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_avg_heart_rate", sleep.get("avg_hr"), "bpm", confidence="medium", freshness=_fact_freshness(sleep_observed_at, fetched_at), **sleep_provenance))
             added_sleep_fact = True
         for stage, value in (sleep.get("stages_min") or {}).items():
             if value is not None and stage in {"deep", "rem", "light", "awake"}:
-                facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", f"sleep_{stage}_duration", value, "min", confidence="medium", freshness=_fact_freshness(sleep.get("event_time"), fetched_at), **sleep_provenance))
+                facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", f"sleep_{stage}_duration", value, "min", confidence="medium", freshness=_fact_freshness(sleep_observed_at, fetched_at), **sleep_provenance))
                 added_sleep_fact = True
         if sleep.get("efficiency_percent") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_efficiency", sleep.get("efficiency_percent"), "%", confidence="medium", freshness=_fact_freshness(sleep.get("event_time"), fetched_at), **sleep_provenance))
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_efficiency", sleep.get("efficiency_percent"), "%", confidence="medium", freshness=_fact_freshness(sleep_observed_at, fetched_at), **sleep_provenance))
             added_sleep_fact = True
         if sleep.get("is_nap") is not None:
-            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_is_nap", sleep.get("is_nap"), "boolean", confidence="medium", freshness=_fact_freshness(sleep.get("event_time"), fetched_at), **sleep_provenance))
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_is_nap", sleep.get("is_nap"), "boolean", confidence="medium", freshness=_fact_freshness(sleep_observed_at, fetched_at), **sleep_provenance))
             added_sleep_fact = True
         if added_sleep_fact:
             mark_replacement_sources(sleep.get("raw"), date_s)

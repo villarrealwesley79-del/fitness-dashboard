@@ -147,3 +147,22 @@ def test_replace_source_ids_preserves_prior_rows_when_validation_fails(tmp_path)
         )
 
     assert list_recommendation_facts(str(db), profile_key="profile-1")[0]["value"] == 82.4
+
+
+def test_open_wearables_source_read_ages_with_its_facts(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    upsert_wearable_source(str(db), {
+        "provider_id": "open_wearables",
+        "label": "Open Wearables",
+        "status": "fresh",
+        "used_for_recommendation": True,
+    }, profile_key="profile-1")
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        "2020-01-01", "open_wearables", "Open Wearables", "recovery_score", 80,
+        "score", freshness="fresh",
+    )], profile_key="profile-1")
+
+    source = list_wearable_sources(str(db), profile_key="profile-1")[0]
+
+    assert source["status"] == "stale"
+    assert source["used_for_recommendation"] is False

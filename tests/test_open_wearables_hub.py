@@ -454,3 +454,16 @@ def test_recommendation_facts_keeps_latest_usable_fact_per_metric_before_limit(t
     facts = hub.recommendation_facts(db_file, "profile-1", limit=30)
 
     assert any(fact["metric"] == "sleep_duration" for fact in facts)
+
+
+def test_recommendation_facts_uses_observation_time_as_same_day_tiebreaker(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    upsert_daily_facts(db_file, [
+        WearableDailyFact(today, "open_wearables", "Open Wearables", "sleep_duration", 300, "min", freshness="fresh", source_id="sleep-1", observed_at=f"{today}T06:00:00+00:00"),
+        WearableDailyFact(today, "open_wearables", "Open Wearables", "sleep_duration", 420, "min", freshness="fresh", source_id="sleep-2", observed_at=f"{today}T08:00:00+00:00"),
+    ], profile_key="profile-1")
+
+    [fact] = hub.recommendation_facts(db_file, "profile-1", limit=1)
+
+    assert fact["value"] == 420

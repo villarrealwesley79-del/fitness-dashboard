@@ -30,6 +30,7 @@ def test_open_wearables_sleep_extractor_maps_bridge_stage_minute_fields():
     assert sleep["stages_min"] == {"awake": 35, "light": 210, "deep": 95, "rem": 140}
     assert sleep["efficiency_percent"] == 91.5
     assert sleep["is_nap"] is False
+    assert sleep["observed_at"] == "2026-06-28T07:00:00Z"
 
 
 def test_open_wearables_activity_extractor_preserves_zero_values():

@@ -343,15 +343,28 @@ def list_wearable_sources(db_path: str, profile_key: str | int | None = None) ->
         ).fetchall()
     result = []
     for row in rows:
+        status = row["status"]
+        used_for_recommendation = bool(row["used_for_recommendation"])
+        if row["provider_id"] == "open_wearables" and status != "error" and used_for_recommendation:
+            has_usable_fact = bool(list_recommendation_facts(
+                db_path,
+                limit=1,
+                profile_key=scoped_profile,
+                provider_id="open_wearables",
+                usable_only=True,
+            ))
+            if not has_usable_fact:
+                status = "stale"
+                used_for_recommendation = False
         result.append({
             "source": row["provider_id"],
             "provider_id": row["provider_id"],
             "label": row["label"],
-            "status": row["status"],
+            "status": status,
             "last_data_point": row["last_data_point"],
             "last_sync_attempt": row["last_sync_attempt"],
             "capabilities": json.loads(row["capabilities_json"] or "{}"),
-            "used_for_recommendation": bool(row["used_for_recommendation"]),
+            "used_for_recommendation": used_for_recommendation,
         })
     return result
 
@@ -378,7 +391,7 @@ def list_recommendation_facts(
                     AND ((observed_at IS NOT NULL AND datetime(observed_at) >= datetime(?))
                          OR (observed_at IS NULL AND date >= ?))
               ))
-            ORDER BY date DESC, provider_id, metric
+            ORDER BY date DESC, provider_id, metric, COALESCE(observed_at, '') DESC, updated_at DESC, source_id
             LIMIT ?
             """,
             (
