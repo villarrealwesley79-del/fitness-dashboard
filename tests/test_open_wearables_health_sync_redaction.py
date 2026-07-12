@@ -1269,6 +1269,25 @@ def test_open_wearables_fetch_includes_today_and_paginates_workouts(monkeypatch)
     assert any("cursor=page%202" in url for url in requested)
 
 
+def test_open_wearables_fetch_fails_closed_at_workout_pagination_cap(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        if "/events/workouts" in url:
+            return {"data": [{"id": url}], "pagination": {"has_more": True, "next_cursor": "next"}}
+        return {"data": []}
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    assert payload["workouts"] is None
+    assert payload["errors"]["workouts"] == "open_wearables_workout_pagination_limit"
+
+
 def test_open_wearables_recommendation_marker_cache_is_profile_scoped(monkeypatch):
     module = _fitness_app()
     monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])

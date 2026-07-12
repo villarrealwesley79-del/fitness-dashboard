@@ -12588,9 +12588,7 @@ def fetch_open_wearables_data():
                 result_payload["data"] = combined
                 return result_payload
             current_url = f"{url}&cursor={urllib.parse.quote(str(cursor), safe='')}"
-        result_payload = dict(first_payload or {})
-        result_payload["data"] = combined
-        return result_payload
+        raise RuntimeError("open_wearables_workout_pagination_limit")
 
     for key, url in endpoints.items():
         try:

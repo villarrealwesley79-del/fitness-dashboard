@@ -7,7 +7,7 @@ material are rejected before persistence.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 
@@ -371,7 +371,7 @@ def list_recommendation_facts(
             """,
             (
                 scoped_profile, provider_id, provider_id, 1 if usable_only else 0,
-                (datetime.now() - timedelta(hours=48)).isoformat(), usable_cutoff, int(limit),
+                (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat(), usable_cutoff, int(limit),
             ),
         ).fetchall()
     facts = []
