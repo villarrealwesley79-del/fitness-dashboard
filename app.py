@@ -15645,11 +15645,13 @@ def smart_recommendation_api():
     # consumption of cached Oura factors and report their direct freshness.
     oura_usable = any((
         readiness is not None,
-        hrv_sample_count >= 4 and hrv_trend and hrv_trend != "unknown",
+        (
+            hrv_sample_count >= 4 or hrv_trend == "declining"
+        ) and hrv_trend and hrv_trend != "unknown",
         (sleep_debt.get("sample_count") or 0) > 0,
     ))
     recommendation_readiness = readiness
-    recommendation_hrv_trend = hrv_trend if hrv_sample_count >= 4 else "unknown"
+    recommendation_hrv_trend = hrv_trend
     recommendation_sleep_debt = sleep_debt
 
     effective_readiness = _effective_readiness_from(recommendation_readiness, recovery_bonus)
@@ -15919,7 +15921,9 @@ def smart_recommendation_api():
             (
                 "hrv_trend",
                 recommendation_hrv_trend
-                if hrv_sample_count >= 4 and recommendation_hrv_trend != "unknown"
+                if (
+                    hrv_sample_count >= 4 or recommendation_hrv_trend == "declining"
+                ) and recommendation_hrv_trend != "unknown"
                 else None,
             ),
             (

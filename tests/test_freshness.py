@@ -231,7 +231,7 @@ def test_recommendation_smart_reports_stale_oura_inputs_it_still_consumes(fitnes
     }
 
 
-def test_recommendation_smart_ignores_hrv_trend_without_enough_samples(fitness_app, monkeypatch):
+def test_recommendation_smart_discloses_sparse_hrv_trend_when_it_changes_recommendation(fitness_app, monkeypatch):
     _stub_smart_recommendation_dependencies(
         monkeypatch,
         fitness_app,
@@ -242,8 +242,8 @@ def test_recommendation_smart_ignores_hrv_trend_without_enough_samples(fitness_a
 
     payload = fitness_app.app.test_client().get("/api/recommendation/smart").get_json()
 
-    assert payload["recommendation"] == "moderate"
-    assert "hrv_trend" not in payload["recommendation_sources"]["source_proof"]["oura"]["fields_used"]
+    assert payload["recommendation"] == "recovery"
+    assert "hrv_trend" in payload["recommendation_sources"]["source_proof"]["oura"]["fields_used"]
 
 
 def test_recommendation_smart_uses_cache_only_weather_empty_cache(fitness_app, monkeypatch):
