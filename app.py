@@ -12544,11 +12544,11 @@ def fetch_open_wearables_data():
 
     today = datetime.now().date()
     start_date = (today - timedelta(days=6)).strftime("%Y-%m-%d")
-    end_date = today.strftime("%Y-%m-%d")
+    end_date = (today + timedelta(days=1)).strftime("%Y-%m-%d")
 
     endpoints = {
         "sleep": f"{_open_wearables_user_base()}/events/sleep?start_date={start_date}&end_date={end_date}",
-        "workouts": f"{_open_wearables_user_base()}/events/workouts?start_date={start_date}&end_date={end_date}",
+        "workouts": f"{_open_wearables_user_base()}/events/workouts?start_date={start_date}&end_date={end_date}&limit=100",
         "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?start_date={start_date}&end_date={end_date}",
         "recovery_summary": f"{_open_wearables_user_base()}/summaries/recovery?start_date={start_date}&end_date={end_date}",
         "body_summary": f"{_open_wearables_user_base()}/summaries/body",
@@ -12568,9 +12568,33 @@ def fetch_open_wearables_data():
         result["errors"]["auth"] = "missing_token"
         return result
 
+    def fetch_workout_pages(url):
+        combined = []
+        current_url = url
+        first_payload = None
+        for _ in range(5):
+            payload = _ow_request(current_url, headers=headers)
+            if first_payload is None:
+                first_payload = payload
+            if not isinstance(payload, dict):
+                return payload
+            rows = payload.get("data") or payload.get("events") or payload.get("items") or []
+            if isinstance(rows, list):
+                combined.extend(rows)
+            pagination = payload.get("pagination") if isinstance(payload.get("pagination"), dict) else {}
+            cursor = pagination.get("next_cursor")
+            if not pagination.get("has_more") or not cursor:
+                result_payload = dict(first_payload)
+                result_payload["data"] = combined
+                return result_payload
+            current_url = f"{url}&cursor={urllib.parse.quote(str(cursor), safe='')}"
+        result_payload = dict(first_payload or {})
+        result_payload["data"] = combined
+        return result_payload
+
     for key, url in endpoints.items():
         try:
-            result[key] = _ow_request(url, headers=headers)
+            result[key] = fetch_workout_pages(url) if key == "workouts" else _ow_request(url, headers=headers)
         except Exception as e:
             result["errors"][key] = str(e)
             result[key] = None

@@ -1241,6 +1241,34 @@ def test_open_wearables_sync_uses_current_profile_user_mapping(monkeypatch):
     assert not any("open-wearables-user-1" in url for url in requested)
 
 
+def test_open_wearables_fetch_includes_today_and_paginates_workouts(monkeypatch):
+    module = _fitness_app()
+    requested = []
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        requested.append(url)
+        if "/events/workouts" not in url:
+            return {"data": []}
+        if "cursor=" in url:
+            return {"data": [{"id": "workout-2"}], "pagination": {"has_more": False}}
+        return {
+            "data": [{"id": "workout-1"}],
+            "pagination": {"has_more": True, "next_cursor": "page 2"},
+        }
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    assert [row["id"] for row in payload["workouts"]["data"]] == ["workout-1", "workout-2"]
+    recovery_url = next(url for url in requested if "/summaries/recovery" in url)
+    assert f"end_date={(datetime.now().date() + timedelta(days=1)).isoformat()}" in recovery_url
+    assert any("cursor=page%202" in url for url in requested)
+
+
 def test_open_wearables_recommendation_marker_cache_is_profile_scoped(monkeypatch):
     module = _fitness_app()
     monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])

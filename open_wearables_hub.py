@@ -334,6 +334,7 @@ def store_wearable_facts(
                 "heart_rate_variability_rmssd_average": (("avg_hrv_rmssd_ms",), "ms"),
             }),
         )
+        trusted_body_fact_added = False
         for values, undated, mappings in body_groups:
             for metric, (aliases, unit) in mappings.items():
                 value = _number(values, *aliases)
@@ -345,6 +346,9 @@ def store_wearable_facts(
                         freshness=("unknown" if undated else _fact_freshness(date_s, fetched_at)),
                         source_id=("undated-latest" if undated else None), source_provider=provider,
                     ))
+                    trusted_body_fact_added = trusted_body_fact_added or not undated
+        if trusted_body_fact_added and _fact_freshness(date_s, fetched_at) in {"fresh", "aging"}:
+            mark_replacement_sources(body, date_s)
         latest = body.get("latest") if isinstance(body.get("latest"), dict) else {}
         for metric, value_key, measured_at_key in (
             ("body_temperature", "body_temperature_celsius", "body_temperature_measured_at"),
