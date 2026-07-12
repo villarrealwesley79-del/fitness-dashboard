@@ -918,10 +918,20 @@ def _food_log_row_to_dict(row) -> dict:
     return d
 
 
-def get_food_logs(user_id: int, limit: Optional[int] = None, since: Optional[str] = None) -> list[dict]:
-    """Return accepted food logs for user, sorted by logged_at desc."""
+def _query_food_logs(
+    user_id: int,
+    limit: Optional[int] = None,
+    since: Optional[str] = None,
+    *,
+    accepted_only: bool = False,
+) -> list[dict]:
     sql = "SELECT * FROM food_logs WHERE user_id = ?"
     params: list = [user_id]
+    if accepted_only:
+        sql += (
+            " AND (correction_state IS NULL "
+            "OR LOWER(TRIM(correction_state)) IN ('manual', 'accepted', 'corrected'))"
+        )
     if since:
         sql += " AND date >= ?"
         params.append(since)
@@ -931,6 +941,20 @@ def get_food_logs(user_id: int, limit: Optional[int] = None, since: Optional[str
     with _get_db() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [_food_log_row_to_dict(r) for r in rows]
+
+
+def get_food_logs(user_id: int, limit: Optional[int] = None, since: Optional[str] = None) -> list[dict]:
+    """Return all food-log rows, including entries awaiting review, newest first."""
+    return _query_food_logs(user_id, limit=limit, since=since)
+
+
+def get_accepted_food_logs(
+    user_id: int,
+    limit: Optional[int] = None,
+    since: Optional[str] = None,
+) -> list[dict]:
+    """Return logs accepted for nutrition use, including manual and corrected rows."""
+    return _query_food_logs(user_id, limit=limit, since=since, accepted_only=True)
 
 
 def _numeric_delta_reaches_threshold(before: object, after: object, threshold: float) -> bool:

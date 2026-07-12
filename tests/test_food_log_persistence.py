@@ -67,6 +67,45 @@ def test_food_log_preserves_final_values_and_sanitized_original_estimate(isolate
     assert rows[0]["original_estimate"] == saved["original_estimate"]
 
 
+def test_food_log_queries_distinguish_all_rows_from_accepted_rows(isolated_store):
+    store, db_path = isolated_store
+    store.init_data_db()
+
+    states = ("pending_review", "review", "", "draft", "manual", "accepted", "corrected")
+    for index, state in enumerate(states):
+        store.add_food_log(
+            user_id=1,
+            record={
+                "client_id": f"food-{state}",
+                "date": "2026-05-18",
+                "logged_at": f"2026-05-18T12:{index:02d}:00",
+                "item_name": state,
+                "correction_state": state,
+            },
+        )
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE food_logs SET correction_state = '' WHERE client_id = 'food-'"
+        )
+        conn.commit()
+
+    assert [row["correction_state"] for row in store.get_food_logs(1)] == [
+        "corrected",
+        "accepted",
+        "manual",
+        "draft",
+        "",
+        "review",
+        "pending_review",
+    ]
+    assert [row["correction_state"] for row in store.get_accepted_food_logs(1)] == [
+        "corrected",
+        "accepted",
+        "manual",
+    ]
+
+
 def test_food_log_persists_multi_item_meal_metadata(isolated_store):
     store, _ = isolated_store
     store.init_data_db()
