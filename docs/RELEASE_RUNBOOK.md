@@ -84,6 +84,34 @@ asset URL instead of a cached previous bundle.
 
 For backend-only or docs-only releases, no asset version change is required.
 
+## Stripe Webhook Event History
+
+The Stripe blueprint is intentionally dormant and is not registered by the
+current application. This audit facility applies to direct blueprint integration
+tests and to a future deployment that explicitly registers that blueprint; the
+current production app does not serve `/webhook` or create this database.
+
+Verified Stripe webhook deliveries are recorded in
+the `stripe_webhook_events` table in `$DATA_DIR/auth.db`. Keeping the audit row
+and entitlement assignment in the same SQLite transaction makes retries safe
+after process interruption. The audit table stores only the Stripe
+event ID, event type, Stripe event timestamp, local receipt/completion
+timestamps, and processing status. It does not store webhook signatures or raw
+payloads.
+
+Inspect recent processing state on the host without copying the database into
+the repository:
+
+```bash
+sqlite3 "$DATA_DIR/auth.db" \
+  "SELECT event_id, event_type, event_created_at, status, received_at, processed_at FROM stripe_webhook_events ORDER BY received_at DESC LIMIT 25;"
+```
+
+`processing` exists only inside the transaction. `processed` means the local
+entitlement assignment and audit marker committed together. `failed` means the
+transaction rolled back and Stripe should retry the delivery; a later successful
+retry updates the same event row.
+
 ## Rollback
 
 1. Identify the last known-good commit or merged pull request.

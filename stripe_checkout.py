@@ -7,15 +7,113 @@ package is not in requirements.txt, so registering it would fail at import time.
 """
 
 import os
+import sqlite3
+from datetime import datetime, timezone
 import stripe
 from flask import Blueprint, redirect, render_template, request, url_for, flash, current_app
 from flask_login import login_required, current_user
+from runtime_config import data_path
 
 stripe_bp = Blueprint('stripe_bp', __name__)
 
 STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
 STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
 STRIPE_PRICE_ID = os.environ.get('STRIPE_PRICE_ID', '')
+
+
+def _utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _stripe_event_db():
+    return data_path('auth.db')
+
+
+def _init_stripe_event_db(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+            event_id        TEXT PRIMARY KEY,
+            event_type      TEXT NOT NULL,
+            event_created_at INTEGER,
+            status          TEXT NOT NULL,
+            received_at     TEXT NOT NULL,
+            processed_at    TEXT
+        )
+        """
+    )
+
+
+def _process_event_once(event, side_effect):
+    """Run one verified Stripe event once and retain metadata-only audit state."""
+    event_id = event.get('id')
+    if not isinstance(event_id, str) or not event_id.strip():
+        raise ValueError('Stripe event id is required')
+
+    conn = sqlite3.connect(_stripe_event_db(), timeout=5)
+    try:
+        _init_stripe_event_db(conn)
+        conn.execute('BEGIN IMMEDIATE')
+        existing = conn.execute(
+            'SELECT status FROM stripe_webhook_events WHERE event_id = ?',
+            (event_id,),
+        ).fetchone()
+        if existing and existing[0] == 'processed':
+            conn.commit()
+            return False
+
+        received_at = _utc_now()
+        conn.execute(
+            """
+            INSERT INTO stripe_webhook_events (
+                event_id, event_type, event_created_at, status, received_at, processed_at
+            ) VALUES (?, ?, ?, 'processing', ?, NULL)
+            ON CONFLICT(event_id) DO UPDATE SET
+                event_type=excluded.event_type,
+                event_created_at=excluded.event_created_at,
+                status='processing',
+                received_at=excluded.received_at,
+                processed_at=NULL
+            """,
+            (event_id, event.get('type', ''), event.get('created'), received_at),
+        )
+        try:
+            side_effect(conn)
+        except Exception:
+            conn.rollback()
+            _record_failed_event(event)
+            raise
+        conn.execute(
+            """
+            UPDATE stripe_webhook_events
+            SET status='processed', processed_at=?
+            WHERE event_id=?
+            """,
+            (_utc_now(), event_id),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def _record_failed_event(event):
+    with sqlite3.connect(_stripe_event_db(), timeout=5) as conn:
+        _init_stripe_event_db(conn)
+        now = _utc_now()
+        conn.execute(
+            """
+            INSERT INTO stripe_webhook_events (
+                event_id, event_type, event_created_at, status, received_at, processed_at
+            ) VALUES (?, ?, ?, 'failed', ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+                event_type=excluded.event_type,
+                event_created_at=excluded.event_created_at,
+                status='failed',
+                processed_at=excluded.processed_at
+            """,
+            (event['id'], event.get('type', ''), event.get('created'), now, now),
+        )
 
 
 def get_stripe():
@@ -90,6 +188,18 @@ def webhook():
         current_app.logger.warning(f'Stripe webhook error: {e}')
         return 'Invalid payload or signature', 400
 
+    try:
+        _process_event_once(event, lambda conn: _apply_stripe_event(event, conn))
+    except ValueError:
+        return 'Invalid Stripe event', 400
+    except Exception:
+        current_app.logger.exception('Stripe webhook processing failed')
+        return 'Stripe webhook processing failed', 500
+
+    return '', 200
+
+
+def _apply_stripe_event(event, conn):
     event_type = event.get('type', '')
 
     if event_type == 'checkout.session.completed':
@@ -97,18 +207,27 @@ def webhook():
         user_id = session_obj.get('metadata', {}).get('user_id')
         stripe_customer = session_obj.get('customer')
         stripe_sub = session_obj.get('subscription')
-        _mark_user_pro(user_id, stripe_customer=stripe_customer, stripe_sub=stripe_sub)
+        if user_id:
+            conn.execute(
+                "UPDATE users SET is_pro=1, stripe_customer=?, stripe_sub=? WHERE id=?",
+                (stripe_customer, stripe_sub, int(user_id)),
+            )
+            current_app.logger.info('Stripe checkout entitlement applied')
 
     elif event_type in ('customer.subscription.deleted', 'customer.subscription.paused'):
         sub = event['data']['object']
-        _revoke_user_pro(sub.get('id'))
+        stripe_sub_id = sub.get('id')
+        if stripe_sub_id:
+            conn.execute(
+                "UPDATE users SET is_pro=0, stripe_sub=NULL WHERE stripe_sub=?",
+                (stripe_sub_id,),
+            )
+            current_app.logger.info('Stripe subscription entitlement revoked')
 
     elif event_type == 'invoice.payment_failed':
         # Optional: log but don't revoke immediately — let Stripe retry first
         sub_id = event['data']['object'].get('subscription')
         current_app.logger.warning(f'Payment failed for subscription {sub_id}')
-
-    return '', 200
 
 
 def _mark_user_pro(user_id, stripe_customer=None, stripe_sub=None):
@@ -119,8 +238,9 @@ def _mark_user_pro(user_id, stripe_customer=None, stripe_sub=None):
         from auth import User
         User.mark_pro(int(user_id), stripe_customer=stripe_customer, stripe_sub=stripe_sub)
         current_app.logger.info(f'User {user_id} upgraded to Pro (customer={stripe_customer})')
-    except Exception as e:
-        current_app.logger.error(f'Could not mark user {user_id} as pro: {e}')
+    except Exception:
+        current_app.logger.exception('Could not update Pro entitlement')
+        raise
 
 
 def _revoke_user_pro(stripe_sub_id):
@@ -139,5 +259,6 @@ def _revoke_user_pro(stripe_sub_id):
         if row:
             User.revoke_pro(row["id"])
             current_app.logger.info(f'Pro revoked for user {row["id"]} (sub={stripe_sub_id})')
-    except Exception as e:
-        current_app.logger.error(f'Could not revoke pro for sub {stripe_sub_id}: {e}')
+    except Exception:
+        current_app.logger.exception('Could not revoke Pro entitlement')
+        raise
