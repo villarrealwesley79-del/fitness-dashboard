@@ -5,6 +5,33 @@ import pytest
 
 
 @pytest.mark.parametrize(
+    ("hrv_values", "expected"),
+    [
+        ([], "unknown"),
+        ([60.0, 61.0, 62.0], "unknown"),
+        ([60.0, 60.0, 60.0, 64.0, 64.0, 64.0], "improving"),
+    ],
+)
+def test_get_recent_hrv_trend_preserves_sparse_data_behavior(
+    monkeypatch, hrv_values, expected
+):
+    module = importlib.import_module("app")
+    calls = []
+
+    def get_rows(db_path, start_date, end_date):
+        calls.append((db_path, start_date, end_date))
+        return [{"hrv": value} for value in hrv_values]
+
+    monkeypatch.setattr(module, "get_oura_daily_range", get_rows)
+
+    assert module.get_recent_hrv_trend() == expected
+    assert len(calls) == 1
+    db_path, start_date, end_date = calls[0]
+    assert db_path == module.OURA_DB_FILE
+    assert date.fromisoformat(end_date) - date.fromisoformat(start_date) == timedelta(days=6)
+
+
+@pytest.mark.parametrize(
     ("needed", "expected_deload_recommended"),
     [(True, True), (False, False)],
 )

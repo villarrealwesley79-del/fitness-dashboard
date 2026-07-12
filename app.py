@@ -4766,6 +4766,22 @@ def _payload_with_recommendation_auth_scope(payload: dict) -> dict:
     return scoped
 
 
+def get_recent_hrv_trend(days=7):
+    """Return the recent Oura HRV trend, or unknown when data is sparse/unavailable."""
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=days - 1)
+        rows = get_oura_daily_range(
+            OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+        )
+        hrv_values = [row.get("hrv") for row in rows if row.get("hrv") is not None]
+        if len(hrv_values) < 4:
+            return "unknown"
+        return compute_hrv_trend(hrv_values)
+    except Exception:
+        return "unknown"
+
+
 def _current_workout_training_recommendation():
     """Mirror the dashboard's readiness context for lightweight workout loads."""
     today_s = _today_str()
@@ -4780,14 +4796,7 @@ def _current_workout_training_recommendation():
     max_soreness = max((s.get("soreness_level") or 0) for s in recent_soreness) if recent_soreness else 0
     signal = "TRAIN" if (readiness_val is not None and readiness_val >= 70 and max_soreness < 7) else "RECOVER"
 
-    hrv_trend = "unknown"
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
-    except Exception:
-        pass
+    hrv_trend = get_recent_hrv_trend()
 
     last_completed = summarize_recent_completion(WORKOUTS, hours=24)
     last_hours_ago = last_completed.get("hours_ago") if last_completed else None
@@ -5084,14 +5093,7 @@ def api_dashboard():
     acwr = calculate_acwr(WORKOUTS)
     sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
     recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
-    hrv_trend = "unknown"
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
-    except Exception:
-        pass
+    hrv_trend = get_recent_hrv_trend()
 
     # Body stats
     body_stats = {}
@@ -15558,14 +15560,7 @@ def smart_recommendation_api():
         pass
 
     # HRV trend (best-effort)
-    hrv_trend = "unknown"
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
-    except Exception:
-        pass
+    hrv_trend = get_recent_hrv_trend()
 
     recent = filter_recent_soreness(SORENESS_DATA, hours=24)
     avoid_set = {s.get("muscle") for s in recent if (s.get("soreness_level") or 0) >= 6 and s.get("muscle")}
@@ -17327,22 +17322,10 @@ def analytics_advanced():
         zone='below_mv' if sets<lm['mv'] else 'mv' if sets<lm['mev'] else 'mev_to_mav' if sets<=lm['mav_max'] else 'mrv_risk' if sets>=lm['mrv'] else 'mav_high'
         volume_landmarks.append({'muscle':m,'sets':sets,'landmarks':lm,'zone':zone})
     # fatigue composite
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(
-            OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
-        )
-        hrv_values = [r.get("hrv") for r in rows if r.get("hrv") is not None]
-        if len(hrv_values) < 4:
-            hrv_trend = "unknown"
-        else:
-            hrv_label = compute_hrv_trend(hrv_values)
-            hrv_trend = {"improving": "up", "stable": "stable", "declining": "down"}.get(
-                hrv_label, "unknown"
-            )
-    except Exception:
-        hrv_trend='unknown'
+    hrv_label = get_recent_hrv_trend()
+    hrv_trend = {"improving": "up", "stable": "stable", "declining": "down"}.get(
+        hrv_label, "unknown"
+    )
     hrv_pen={'up':0,'stable':5,'down':12}.get(hrv_trend,6)
     sleep=calculate_sleep_debt(OURA_DB_FILE,7)
     sleep_pen=min(20,max(0,(sleep.get('debt_minutes') or 0)/30))
