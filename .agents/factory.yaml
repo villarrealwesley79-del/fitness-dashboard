@@ -20,7 +20,7 @@ checks:
   - python -m pytest -q
 notify:
   slack_channel: "#factory"
-  blocked_channel: "#factory-blocked"
+  blocked_channel: "C0BGN2D9RV4"
   # Empty/absent is the single-user-workspace default: any reactor's 🚀 or ❌
   # counts as authorized. Populate with resolved Slack member IDs only as
   # optional hardening to restrict reactions in a multi-member workspace.
