@@ -12535,7 +12535,7 @@ def fetch_open_wearables_data():
             "activity_summary": None,
             "recovery_summary": None,
             "body_summary": None,
-            "fetched_at": datetime.now().isoformat(),
+            "fetched_at": datetime.now().astimezone().isoformat(),
             "errors": {"config": f"missing:{','.join(missing)}"},
         }
 
@@ -12560,7 +12560,7 @@ def fetch_open_wearables_data():
         "activity_summary": None,
         "recovery_summary": None,
         "body_summary": None,
-        "fetched_at": datetime.now().isoformat(),
+        "fetched_at": datetime.now().astimezone().isoformat(),
         "errors": {},
     }
 

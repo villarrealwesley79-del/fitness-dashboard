@@ -14,7 +14,7 @@ values and callables so it never has to import back from app.py.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from typing import Callable
@@ -85,16 +85,32 @@ def _workout_category(label: object) -> str | None:
     return "other"
 
 
+def _workout_local_date(observed_at: str, zone_offset: object) -> str:
+    try:
+        observed = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+        offset_text = str(zone_offset or "").strip()
+        sign = -1 if offset_text.startswith("-") else 1
+        hours_text, minutes_text = offset_text.lstrip("+-").split(":", 1)
+        target_zone = timezone(sign * timedelta(hours=int(hours_text), minutes=int(minutes_text)))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=target_zone)
+        return observed.astimezone(target_zone).date().isoformat()
+    except (TypeError, ValueError):
+        return str(observed_at)[:10]
+
+
 def _fact_freshness(date_s: str, fetched_at: str) -> str:
     try:
         observed_text = str(date_s).replace("Z", "+00:00")
         fetched_text = str(fetched_at).replace("Z", "+00:00")
         observed = datetime.fromisoformat(observed_text)
         fetched = datetime.fromisoformat(fetched_text)
-        if observed.tzinfo is None and fetched.tzinfo is not None:
-            observed = observed.replace(tzinfo=fetched.tzinfo)
-        elif fetched.tzinfo is None and observed.tzinfo is not None:
-            fetched = fetched.replace(tzinfo=observed.tzinfo)
+        if observed.tzinfo is None:
+            observed = observed.astimezone()
+        if fetched.tzinfo is None:
+            fetched = fetched.astimezone()
+        observed = observed.astimezone(timezone.utc)
+        fetched = fetched.astimezone(timezone.utc)
     except (TypeError, ValueError):
         return "unknown"
     age_hours = (fetched - observed).total_seconds() / 3600.0
@@ -144,7 +160,7 @@ def sync_count(payload):
         value = payload.get(key)
         if isinstance(value, list):
             return len(value)
-    return None
+    return 1 if payload else 0
 
 
 def sync_error_code(key):
@@ -378,7 +394,7 @@ def store_wearable_facts(
 
     for row in _payload_rows(data.get("workouts")):
         observed_at = str(_first_value(row, "start", "start_time", "date") or fetched_at)
-        date_s = observed_at[:10]
+        date_s = _workout_local_date(observed_at, row.get("zone_offset"))
         before_count = len(facts)
         canonical_type = _first_value(row, "type", "activity_type", "workout_type", "sport")
         original_label = _first_value(row, "name", "activity_type", "workout_type", "sport", "type")

@@ -72,6 +72,12 @@ def test_sync_metadata_defaults_fetched_at_when_missing():
     assert metadata["errors"] == {}
 
 
+def test_sync_metadata_counts_single_body_summary():
+    metadata = hub.sync_metadata({"body_summary": {"slow_changing": {"weight_kg": 82.4}}})
+
+    assert metadata["counts"]["body_summary"] == 1
+
+
 def test_status_source_projects_fields_from_status_payload():
     source = hub.status_source({
         "status": "connected",
@@ -220,7 +226,7 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
             },
         },
         "workouts": {"events": [{
-            "id": "workout-1", "start": "2026-06-28T18:00:00Z",
+            "id": "workout-1", "start": "2026-06-29T04:00:00Z", "zone_offset": "-05:00",
             "duration_seconds": 3300, "type": "strength_training", "name": "Evening Lift",
             "provider": "apple_health", "calories_kcal": 410,
             "avg_heart_rate_bpm": 132, "max_heart_rate_bpm": 171,
@@ -263,7 +269,8 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     assert workout["source_provider"] == "apple_health"
     assert workout["original_label"] == "Evening Lift"
     assert workout["value"] == 55
-    assert workout["observed_at"] == "2026-06-28T18:00:00Z"
+    assert workout["observed_at"] == "2026-06-29T04:00:00Z"
+    assert workout["date"] == "2026-06-28"
     assert workout["freshness"] == "fresh"
     assert by_metric["weight"]["date"] == "2026-06-29"
     assert by_metric["weight"]["freshness"] == "unknown"
