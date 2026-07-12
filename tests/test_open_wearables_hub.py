@@ -354,7 +354,7 @@ def test_empty_sync_keeps_source_active_while_persisted_fact_is_usable(tmp_path)
     today = date.today().isoformat()
     upsert_daily_facts(db_file, [WearableDailyFact(
         today, "open_wearables", "Open Wearables", "recovery_score", 80,
-        "score", freshness="fresh",
+        "score", freshness="fresh", used_for_recommendation=True,
     )], profile_key="profile-42")
 
     hub.store_wearable_facts(
@@ -379,7 +379,7 @@ def test_failed_sync_reports_error_even_with_usable_cached_fact(tmp_path):
     today = date.today().isoformat()
     upsert_daily_facts(db_file, [WearableDailyFact(
         today, "open_wearables", "Open Wearables", "recovery_score", 80,
-        "score", freshness="fresh",
+        "score", freshness="fresh", used_for_recommendation=True,
     )], profile_key="profile-42")
 
     hub.store_wearable_facts(
@@ -424,7 +424,7 @@ def test_recommendation_facts_filters_provider_and_freshness(tmp_path):
     upsert_daily_facts(
         db_file,
         [
-            WearableDailyFact(today, "open_wearables", "Open Wearables", "steps", 1200, "count", freshness="fresh"),
+            WearableDailyFact(today, "open_wearables", "Open Wearables", "steps", 1200, "count", freshness="fresh", used_for_recommendation=True),
             WearableDailyFact(today, "oura", "Oura", "readiness", 70, "score", freshness="fresh"),
             WearableDailyFact("2026-06-20", "open_wearables", "Open Wearables", "steps", 900, "count", freshness="stale"),
         ],
@@ -446,7 +446,7 @@ def test_recommendation_facts_filters_before_applying_limit(tmp_path):
         for index in range(25)
     ]
     rows.append(WearableDailyFact(
-        today, "open_wearables", "Open Wearables", "steps", 9000, "count", freshness="aging"
+        today, "open_wearables", "Open Wearables", "steps", 9000, "count", freshness="aging", used_for_recommendation=True
     ))
     upsert_daily_facts(db_file, rows, profile_key="profile-1")
 
@@ -459,7 +459,7 @@ def test_recommendation_facts_recomputes_age_for_orphaned_fresh_rows(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     upsert_daily_facts(db_file, [WearableDailyFact(
         "2020-01-01", "open_wearables", "Open Wearables", "recovery_score", 80,
-        "score", freshness="fresh",
+        "score", freshness="fresh", used_for_recommendation=True,
     )], profile_key="profile-1")
 
     assert hub.recommendation_facts(db_file, "profile-1") == []
@@ -469,12 +469,12 @@ def test_recommendation_facts_keeps_latest_usable_fact_per_metric_before_limit(t
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     today = date.today()
     rows = [
-        WearableDailyFact(today.isoformat(), "open_wearables", "Open Wearables", f"metric_{index}", index, freshness="fresh")
+        WearableDailyFact(today.isoformat(), "open_wearables", "Open Wearables", f"metric_{index}", index, freshness="fresh", used_for_recommendation=True)
         for index in range(25)
     ]
     rows.append(WearableDailyFact(
         (today - timedelta(days=1)).isoformat(), "open_wearables", "Open Wearables",
-        "sleep_duration", 300, "min", freshness="aging",
+        "sleep_duration", 300, "min", freshness="aging", used_for_recommendation=True,
     ))
     upsert_daily_facts(db_file, rows, profile_key="profile-1")
 
@@ -487,8 +487,8 @@ def test_recommendation_facts_uses_observation_time_as_same_day_tiebreaker(tmp_p
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     today = date.today().isoformat()
     upsert_daily_facts(db_file, [
-        WearableDailyFact(today, "open_wearables", "Open Wearables", "sleep_duration", 300, "min", freshness="fresh", source_id="sleep-1", observed_at=f"{today}T06:00:00+00:00"),
-        WearableDailyFact(today, "open_wearables", "Open Wearables", "sleep_duration", 420, "min", freshness="fresh", source_id="sleep-2", observed_at=f"{today}T08:00:00+00:00"),
+        WearableDailyFact(today, "open_wearables", "Open Wearables", "sleep_duration", 300, "min", freshness="fresh", source_id="sleep-1", observed_at=f"{today}T06:00:00+00:00", used_for_recommendation=True),
+        WearableDailyFact(today, "open_wearables", "Open Wearables", "sleep_duration", 420, "min", freshness="fresh", source_id="sleep-2", observed_at=f"{today}T08:00:00+00:00", used_for_recommendation=True),
     ], profile_key="profile-1")
 
     [fact] = hub.recommendation_facts(db_file, "profile-1", limit=1)

@@ -384,6 +384,8 @@ def list_recommendation_facts(
         profile_key = ?
         AND (? IS NULL OR provider_id = ?)
         AND (? = 0 OR (
+            used_for_recommendation = 1
+            AND
             freshness IN ('fresh', 'aging')
             AND ((observed_at IS NOT NULL AND datetime(observed_at) >= datetime(?))
                  OR (observed_at IS NULL AND date >= ?))
@@ -422,6 +424,16 @@ def list_recommendation_facts(
         ).fetchall()
     facts = []
     for row in rows:
+        effective_freshness = row["freshness"]
+        if usable_only:
+            if row["observed_at"]:
+                observed = datetime.fromisoformat(str(row["observed_at"]).replace("Z", "+00:00"))
+                if observed.tzinfo is None:
+                    observed = observed.astimezone()
+                age_hours = (datetime.now(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds() / 3600.0
+                effective_freshness = "fresh" if age_hours < 24 else "aging"
+            else:
+                effective_freshness = "fresh" if row["date"] == datetime.now().date().isoformat() else "aging"
         facts.append({
             "date": row["date"],
             "provider_id": row["provider_id"],
@@ -431,7 +443,7 @@ def list_recommendation_facts(
             "unit": row["unit"],
             "band": row["band"],
             "confidence": row["confidence"],
-            "freshness": row["freshness"],
+            "freshness": effective_freshness,
             "conflict_state": row["conflict_state"],
             "category": row["category"],
             "source_id": row["source_id"] or None,

@@ -15,6 +15,7 @@ values and callables so it never has to import back from app.py.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 import hashlib
 import json
 from typing import Callable
@@ -456,6 +457,10 @@ def store_wearable_facts(
             mark_replacement_sources(row, date_s)
 
     if facts:
+        facts = [
+            replace(fact, used_for_recommendation=fact.freshness in {"fresh", "aging"})
+            for fact in facts
+        ]
         replace_source_ids = (
             {"undated-latest"}
             if any(fact.source_id == "undated-latest" for fact in facts)
@@ -474,7 +479,14 @@ def store_wearable_facts(
         provider_id="open_wearables",
         usable_only=True,
     )
-    source_status = "error" if errors and not facts else ("fresh" if persisted_usable else "stale")
+    if errors and not facts:
+        source_status = "error"
+    elif any(fact["freshness"] == "fresh" for fact in persisted_usable):
+        source_status = "fresh"
+    elif persisted_usable:
+        source_status = "aging"
+    else:
+        source_status = "stale"
     trusted_dates = list(replacement_source_dates.values())
     trusted_dates.extend(fact.date for fact in facts if fact.freshness != "unknown")
     trusted_dates.extend(fact["date"] for fact in persisted_usable)
