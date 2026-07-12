@@ -291,6 +291,11 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     assert hub._workout_category("stair_climbing") == "cardio"
     assert hub._workout_category("hiking") == "cardio"
     assert hub._workout_category("core_training") == "strength_training"
+    assert hub._workout_category("Indoor Cycling") == "cardio"
+    assert hub._workout_category("Trail Running") == "cardio"
+    assert hub._workout_category("Mountain Biking") == "cardio"
+    assert hub._workout_category("Rowing Machine") == "cardio"
+    assert hub._workout_category("Stair Climbing") == "cardio"
 
 
 def test_store_wearable_facts_uses_observation_freshness_and_tolerates_partial_errors(tmp_path):
@@ -320,6 +325,28 @@ def test_store_wearable_facts_uses_observation_freshness_and_tolerates_partial_e
     freshness = {fact["date"]: fact["freshness"] for fact in facts}
     assert freshness == {today.isoformat(): "fresh", stale_day.isoformat(): "stale"}
     assert list_wearable_sources(db_file, profile_key="profile-42")[0]["status"] == "fresh"
+
+
+def test_recovery_facts_preserve_same_day_provider_identity(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    hub.store_wearable_facts(
+        {"fetched_at": f"{today}T10:00:00", "recovery_summary": {"data": [
+            {"date": today, "recovery_score": 70, "source": {"provider": "oura"}},
+            {"date": today, "recovery_score": 80, "source": {"provider": "whoop"}},
+        ]}},
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda row: [row["source"]["provider"]],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    recovery = [fact for fact in facts if fact["metric"] == "recovery_score"]
+    assert {fact["source_id"] for fact in recovery} == {"oura", "whoop"}
 
 
 def test_empty_sync_keeps_source_active_while_persisted_fact_is_usable(tmp_path):

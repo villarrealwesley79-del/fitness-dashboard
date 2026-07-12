@@ -68,7 +68,7 @@ def _source_provider(row: dict) -> str | None:
 
 
 def _workout_category(label: object) -> str | None:
-    text = str(label or "").strip().lower()
+    text = str(label or "").strip().lower().replace("-", "_").replace(" ", "_")
     if not text:
         return None
     strength_types = {"strength_training", "core_training", "traditional_strength_training", "functional_strength_training"}
@@ -347,13 +347,18 @@ def store_wearable_facts(
         for row in _payload_rows(data.get(payload_key)):
             date_s = _row_date(row, fetched_at)
             provider = _source_provider(row)
+            recovery_provenance = {
+                "source_id": str(_first_value(row, "id", "summary_id") or provider or "") or None,
+                "source_provider": provider,
+                "observed_at": str(_first_value(row, "recorded_at", "timestamp", "date") or date_s),
+            }
             before_count = len(facts)
             for metric, (aliases, unit) in mappings.items():
                 value = _number(row, *aliases)
                 if value is not None:
                     facts.append(WearableDailyFact(
                         date_s, "open_wearables", "Open Wearables", metric, value, unit,
-                        confidence="medium", freshness=_fact_freshness(date_s, fetched_at), source_provider=provider,
+                        confidence="medium", freshness=_fact_freshness(date_s, fetched_at), **recovery_provenance,
                     ))
             if payload_key == "recovery_summary":
                 sleep_seconds = _number(row, "sleep_duration_seconds")
@@ -361,7 +366,7 @@ def store_wearable_facts(
                     facts.append(WearableDailyFact(
                         date_s, "open_wearables", "Open Wearables", "sleep_duration",
                         sleep_seconds / 60.0, "min", confidence="medium", freshness=_fact_freshness(date_s, fetched_at),
-                        source_provider=provider,
+                        **recovery_provenance,
                     ))
             if len(facts) > before_count:
                 mark_replacement_sources(row, date_s)
