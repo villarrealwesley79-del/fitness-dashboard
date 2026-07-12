@@ -31,6 +31,10 @@ def _make_auth_app(tmp_path, monkeypatch):
     def protected():
         return "protected"
 
+    @app.route("/api/protected")
+    def api_protected():
+        return {"status": "protected"}
+
     auth.init_auth(app)
     return app, auth
 
@@ -266,6 +270,56 @@ def test_valid_owner_id_allows_only_configured_user(tmp_path, monkeypatch):
 
     assert auth._is_owner_user_id(configured_owner.id) is True
     assert auth._is_owner_user_id(first_user.id) is False
+
+
+def test_authenticated_non_owner_is_denied_browser_route(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("owner", "existing-password")
+    auth.User.create("member", "existing-password")
+    client = app.test_client()
+    client.post(
+        "/login", data={"username": "member", "password": "existing-password"}
+    )
+
+    response = client.get("/protected")
+
+    assert response.status_code == 403
+    assert response.get_data(as_text=True) == "Forbidden"
+
+
+def test_authenticated_non_owner_is_denied_api_route_with_json(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("owner", "existing-password")
+    auth.User.create("member", "existing-password")
+    client = app.test_client()
+    client.post(
+        "/login", data={"username": "member", "password": "existing-password"}
+    )
+
+    response = client.get("/api/protected")
+
+    assert response.status_code == 403
+    assert response.is_json
+    assert response.get_json() == {"error": "Forbidden"}
+
+
+def test_multi_user_mode_permits_authenticated_non_owner(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("owner", "existing-password")
+    auth.User.create("member", "existing-password")
+    monkeypatch.setenv("FITNESS_DASHBOARD_SINGLE_USER", "false")
+    client = app.test_client()
+    client.post(
+        "/login", data={"username": "member", "password": "existing-password"}
+    )
+
+    browser_response = client.get("/protected")
+    api_response = client.get("/api/protected")
+
+    assert browser_response.status_code == 200
+    assert browser_response.get_data(as_text=True) == "protected"
+    assert api_response.status_code == 200
+    assert api_response.get_json() == {"status": "protected"}
 
 
 def test_no_users_remains_permissive_for_first_run_setup(tmp_path, monkeypatch):
