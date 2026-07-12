@@ -98,7 +98,7 @@ Food-source and lookup constants:
 
 | Value | Meaning | Provenance |
 | --- | --- | --- |
-| `cache`, `heb_product_page`, `nutritionix`, `usda_fdc`, `open_food_facts` | Text lookup source priority. | `branded_food_lookup.py:19` |
+| `cache`, `heb_curated_reference`, `nutritionix`, `usda_fdc`, `open_food_facts` | Text lookup source priority. | `branded_food_lookup.py:19` |
 | `cache`, `nutritionix_barcode`, `usda_fdc_barcode`, `open_food_facts_barcode` | Barcode lookup source priority. | `branded_food_lookup.py:23` |
 | Barcode lengths | `8`, `12`, `13`, `14` | Accepted barcode lengths. | `branded_food_lookup.py:24` |
 | `KJ_PER_KCAL` | `4.184` | Energy conversion. | `branded_food_lookup.py:27` |

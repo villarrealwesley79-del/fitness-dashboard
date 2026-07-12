@@ -144,7 +144,7 @@ Behavior → `heb_product_lookup.py` returns a hardcoded estimate from an offici
 
 Validation → Matching is token-based and exact enough to prevent neighboring H-E-B products from inheriting the curated estimate.
 
-Success → Estimate source `heb_product_page`, confidence 0.88, verified URL to the H-E-B product page.
+Success → Estimate source `heb_curated_reference`, confidence 0.88, verified URL to the H-E-B product page.
 
 Failure → Lookup continues to later sources or falls back to review/manual parsing.
 
@@ -185,14 +185,14 @@ No provider responses are committed by this feature at runtime. The smoke covera
 
 | Name | Values | Meaning |
 | --- | --- | --- |
-| Text source priority | `cache`, `heb_product_page`, `nutritionix`, `usda_fdc`, `open_food_facts` | Default text lookup order. |
+| Text source priority | `cache`, `heb_curated_reference`, `nutritionix`, `usda_fdc`, `open_food_facts` | Default text lookup order. |
 | Barcode source priority | `cache`, `nutritionix_barcode`, `usda_fdc_barcode`, `open_food_facts_barcode` | Default barcode lookup order; excludes H-E-B page lookup. |
 | Cache TTL | 180 days | Max age for text/barcode lookup cache rows. Nutritionix ToS compatibility is unverified. |
 | Barcode lengths | 8, 12, 13, 14 | Supported UPC/EAN/GTIN normalized digit lengths. |
 | Nutritionix source tags | `nutritionix`, `nutritionix_barcode` | Text and UPC estimates from Nutritionix. |
 | USDA source tags | `usda_fdc`, `usda_fdc_barcode` | Text and barcode estimates from FoodData Central. |
 | Open Food Facts source tags | `open_food_facts`, `open_food_facts_barcode` | Text/search and barcode/product estimates from OFF. |
-| Local/curated source tags | `local_cache`, `heb_product_page` | Cache replay and curated H-E-B product reference. |
+| Local/curated source tags | `local_cache`, `heb_curated_reference` | Cache replay and curated H-E-B product reference. Historical persisted rows may retain legacy tag `heb_product_page`; cache replay relabels it as curated. |
 | Manual fallback source | `barcode_pending_source` | Unknown barcode manual-review estimate created by app route. |
 | USDA text data types | `Branded`, `Foundation`, `SR Legacy` | Data types requested for text search. |
 | USDA barcode data types | `Branded` | Data type requested for barcode search. |

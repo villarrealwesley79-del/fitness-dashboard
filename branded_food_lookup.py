@@ -17,9 +17,15 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 CACHE_TTL_DAYS = 180
 FALLBACK_CACHE_TTL_DAYS = 1
-LONG_LIVED_CACHE_SOURCE_TIERS = {"heb_product_page", "nutritionix", "nutritionix_barcode"}
-SOURCE_PRIORITY = ("cache", "heb_product_page", "nutritionix", "usda_fdc", "open_food_facts")
-# H-E-B is text-path only via `heb_product_page`; do not add it to the
+LEGACY_HEB_CURATED_SOURCE = "heb_product_page"
+LONG_LIVED_CACHE_SOURCE_TIERS = {
+    LEGACY_HEB_CURATED_SOURCE,
+    "heb_curated_reference",
+    "nutritionix",
+    "nutritionix_barcode",
+}
+SOURCE_PRIORITY = ("cache", "heb_curated_reference", "nutritionix", "usda_fdc", "open_food_facts")
+# H-E-B is text-path only via `heb_curated_reference`; do not add it to the
 # barcode ladder without a real provider. FIT-218 AC4 excludes scraping or
 # hardcoded barcode rows as substitute provider coverage.
 BARCODE_SOURCE_PRIORITY = ("cache", "nutritionix_barcode", "usda_fdc_barcode", "open_food_facts_barcode")
@@ -243,7 +249,7 @@ def lookup(
             if nutritionix:
                 _save_cache_best_effort(normalized, nutritionix["source"], nutritionix, user_id=user_id)
                 return nutritionix
-        elif source == "heb_product_page":
+        elif source == "heb_curated_reference":
             try:
                 heb = heb_product_lookup.lookup(lookup_text)
             except Exception:
@@ -282,7 +288,7 @@ def lookup_barcode(barcode: str, *, user_id: int = 1) -> dict[str, Any] | None:
     """Return a sanitized estimate from barcode cache or structured barcode providers.
 
     H-E-B private-label handling is intentionally text-only through `lookup()`;
-    `lookup_barcode()` must not route to `heb_product_page`.
+    `lookup_barcode()` must not route to `heb_curated_reference`.
     """
     normalized = normalize_barcode(barcode)
     if not normalized:
@@ -410,7 +416,10 @@ def _cache_lookup(normalized: str, *, user_id: int = 1) -> dict[str, Any] | None
         return None
     estimate = dict(payload)
     estimate["source"] = "local_cache"
-    estimate.setdefault("underlying_source", row.get("source"))
+    underlying_source = estimate.get("underlying_source") or row.get("source")
+    if underlying_source == LEGACY_HEB_CURATED_SOURCE:
+        underlying_source = "heb_curated_reference"
+    estimate["underlying_source"] = underlying_source
     return _sanitize_with_provenance(estimate)
 
 
