@@ -494,17 +494,14 @@ def store_wearable_facts(
 
 
 def recommendation_facts(db_file: str, profile_key: str, limit: int = 20) -> list[dict]:
-    facts = list_recommendation_facts(
+    return list_recommendation_facts(
         db_file,
-        limit=1000,
+        limit=limit,
         profile_key=profile_key,
         provider_id="open_wearables",
         usable_only=True,
+        latest_per_metric=True,
     )
-    latest_by_metric = {}
-    for fact in facts:
-        latest_by_metric.setdefault(fact["metric"], fact)
-    return list(latest_by_metric.values())[:limit]
 
 
 def conservative_modifier(facts) -> dict:

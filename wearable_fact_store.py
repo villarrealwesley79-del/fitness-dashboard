@@ -375,25 +375,46 @@ def list_recommendation_facts(
     profile_key: str | int | None = None,
     provider_id: str | None = None,
     usable_only: bool = False,
+    latest_per_metric: bool = False,
 ) -> list[dict]:
     init_wearable_fact_db(db_path)
     scoped_profile = _normalize_profile_key(profile_key)
     usable_cutoff = (datetime.now().date() - timedelta(days=1)).isoformat()
+    where_clause = """
+        profile_key = ?
+        AND (? IS NULL OR provider_id = ?)
+        AND (? = 0 OR (
+            freshness IN ('fresh', 'aging')
+            AND ((observed_at IS NOT NULL AND datetime(observed_at) >= datetime(?))
+                 OR (observed_at IS NULL AND date >= ?))
+        ))
+    """
+    order_clause = "date DESC, provider_id, metric, COALESCE(observed_at, '') DESC, updated_at DESC, source_id"
+    query = (
+        f"""
+        SELECT * FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY metric ORDER BY {order_clause}
+            ) AS metric_rank
+            FROM wearable_daily_facts
+            WHERE {where_clause}
+        )
+        WHERE metric_rank = 1
+        ORDER BY {order_clause}
+        LIMIT ?
+        """
+        if latest_per_metric
+        else f"""
+        SELECT * FROM wearable_daily_facts
+        WHERE {where_clause}
+        ORDER BY {order_clause}
+        LIMIT ?
+        """
+    )
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            """
-            SELECT * FROM wearable_daily_facts
-            WHERE profile_key = ?
-              AND (? IS NULL OR provider_id = ?)
-              AND (? = 0 OR (
-                    freshness IN ('fresh', 'aging')
-                    AND ((observed_at IS NOT NULL AND datetime(observed_at) >= datetime(?))
-                         OR (observed_at IS NULL AND date >= ?))
-              ))
-            ORDER BY date DESC, provider_id, metric, COALESCE(observed_at, '') DESC, updated_at DESC, source_id
-            LIMIT ?
-            """,
+            query,
             (
                 scoped_profile, provider_id, provider_id, 1 if usable_only else 0,
                 (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat(), usable_cutoff, int(limit),
