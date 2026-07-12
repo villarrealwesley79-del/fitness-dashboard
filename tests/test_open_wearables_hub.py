@@ -317,3 +317,19 @@ def test_recommendation_facts_filters_provider_and_freshness(tmp_path):
     assert len(facts) == 1
     assert facts[0]["provider_id"] == "open_wearables"
     assert facts[0]["freshness"] == "fresh"
+
+
+def test_recommendation_facts_filters_before_applying_limit(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    rows = [
+        WearableDailyFact("2026-06-29", "open_wearables", "Open Wearables", f"unknown_{index}", index, freshness="unknown")
+        for index in range(25)
+    ]
+    rows.append(WearableDailyFact(
+        "2026-06-28", "open_wearables", "Open Wearables", "steps", 9000, "count", freshness="aging"
+    ))
+    upsert_daily_facts(db_file, rows, profile_key="profile-1")
+
+    facts = hub.recommendation_facts(db_file, "profile-1", limit=1)
+
+    assert [fact["metric"] for fact in facts] == ["steps"]

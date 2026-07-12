@@ -424,11 +424,13 @@ def store_wearable_facts(
 
 
 def recommendation_facts(db_file: str, profile_key: str, limit: int = 20) -> list[dict]:
-    return [
-        fact for fact in list_recommendation_facts(db_file, limit=limit, profile_key=profile_key)
-        if fact.get("provider_id") == "open_wearables"
-        and fact.get("freshness") in {"fresh", "aging"}
-    ]
+    return list_recommendation_facts(
+        db_file,
+        limit=limit,
+        profile_key=profile_key,
+        provider_id="open_wearables",
+        usable_only=True,
+    )
 
 
 def conservative_modifier(facts) -> dict:

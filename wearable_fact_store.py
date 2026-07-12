@@ -338,7 +338,13 @@ def list_wearable_sources(db_path: str, profile_key: str | int | None = None) ->
     return result
 
 
-def list_recommendation_facts(db_path: str, limit: int = 30, profile_key: str | int | None = None) -> list[dict]:
+def list_recommendation_facts(
+    db_path: str,
+    limit: int = 30,
+    profile_key: str | int | None = None,
+    provider_id: str | None = None,
+    usable_only: bool = False,
+) -> list[dict]:
     init_wearable_fact_db(db_path)
     scoped_profile = _normalize_profile_key(profile_key)
     with sqlite3.connect(db_path) as conn:
@@ -347,10 +353,12 @@ def list_recommendation_facts(db_path: str, limit: int = 30, profile_key: str | 
             """
             SELECT * FROM wearable_daily_facts
             WHERE profile_key = ?
+              AND (? IS NULL OR provider_id = ?)
+              AND (? = 0 OR freshness IN ('fresh', 'aging'))
             ORDER BY date DESC, provider_id, metric
             LIMIT ?
             """,
-            (scoped_profile, int(limit)),
+            (scoped_profile, provider_id, provider_id, 1 if usable_only else 0, int(limit)),
         ).fetchall()
     facts = []
     for row in rows:
