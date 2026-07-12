@@ -5,15 +5,15 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    ("hrv_values", "expected"),
+    ("hrv_values", "minimum_samples", "expected"),
     [
-        ([], "unknown"),
-        ([60.0, 61.0, 62.0], "unknown"),
-        ([60.0, 60.0, 60.0, 64.0, 64.0, 64.0], "improving"),
+        ([], None, "stable"),
+        ([60.0, 61.0, 62.0], 4, "unknown"),
+        ([60.0, 60.0, 60.0, 64.0, 64.0, 64.0], 4, "improving"),
     ],
 )
 def test_get_recent_hrv_trend_preserves_sparse_data_behavior(
-    monkeypatch, hrv_values, expected
+    monkeypatch, hrv_values, minimum_samples, expected
 ):
     module = importlib.import_module("app")
     calls = []
@@ -24,7 +24,7 @@ def test_get_recent_hrv_trend_preserves_sparse_data_behavior(
 
     monkeypatch.setattr(module, "get_oura_daily_range", get_rows)
 
-    assert module.get_recent_hrv_trend() == expected
+    assert module.get_recent_hrv_trend(minimum_samples=minimum_samples) == expected
     assert len(calls) == 1
     db_path, start_date, end_date = calls[0]
     assert db_path == module.OURA_DB_FILE

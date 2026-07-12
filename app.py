@@ -4766,7 +4766,7 @@ def _payload_with_recommendation_auth_scope(payload: dict) -> dict:
     return scoped
 
 
-def get_recent_hrv_trend(days=7):
+def get_recent_hrv_trend(days=7, minimum_samples=None):
     """Return the recent Oura HRV trend, or unknown when data is sparse/unavailable."""
     try:
         end = datetime.now().date()
@@ -4775,7 +4775,7 @@ def get_recent_hrv_trend(days=7):
             OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
         )
         hrv_values = [row.get("hrv") for row in rows if row.get("hrv") is not None]
-        if len(hrv_values) < 4:
+        if minimum_samples is not None and len(hrv_values) < minimum_samples:
             return "unknown"
         return compute_hrv_trend(hrv_values)
     except Exception:
@@ -17322,7 +17322,7 @@ def analytics_advanced():
         zone='below_mv' if sets<lm['mv'] else 'mv' if sets<lm['mev'] else 'mev_to_mav' if sets<=lm['mav_max'] else 'mrv_risk' if sets>=lm['mrv'] else 'mav_high'
         volume_landmarks.append({'muscle':m,'sets':sets,'landmarks':lm,'zone':zone})
     # fatigue composite
-    hrv_label = get_recent_hrv_trend()
+    hrv_label = get_recent_hrv_trend(minimum_samples=4)
     hrv_trend = {"improving": "up", "stable": "stable", "declining": "down"}.get(
         hrv_label, "unknown"
     )
