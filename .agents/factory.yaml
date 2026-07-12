@@ -1,0 +1,36 @@
+repository:
+  slug: villarrealwesley79-del/fitness-dashboard
+linear:
+  team: Fitness app
+  # project intentionally omitted; repository label still isolates this repo
+  labels:
+    ready: agent-ready
+    built: built
+    mergeable: merge-ready
+    changes_requested: changes-requested
+    blocked: factory-blocked
+    repository: factory-repo-villarrealwesley79-del-fitness-dashboard-05027bd8
+app:
+  # Factory worktrees share the canonical repository virtualenv. The absolute
+  # interpreter executes app.py from the exact worktree cwd without copying a
+  # virtualenv into every linked worktree.
+  # Bind only the Mac mini's Tailnet interface, not the physical LAN.
+  boot: HOST=100.90.15.93 PORT={port} /Users/admin/fitness-dashboard/venv/bin/python3 app.py
+  # One verified port serializes owner previews safely. Add only ports verified
+  # non-production and free if concurrent previews are wanted.
+  preview_ports: [5099]
+  preview_url: http://admins-mac-mini.tail6c6490.ts.net:{port}
+checks:
+  - /Users/admin/fitness-dashboard/venv/bin/python3 -m pytest -q
+notify:
+  slack_channel: "#factory"
+  blocked_channel: "C0BGN2D9RV4"
+  # Empty/absent is the single-user-workspace default: any reactor's 🚀 or ❌
+  # counts as authorized. Populate with resolved Slack member IDs only as
+  # optional hardening to restrict reactions in a multi-member workspace.
+  approver_user_ids: []
+deploy:
+  auto: false
+  cmd: ""
+non_goals_default:
+  - Do not modify the deterministic coach core; LLM features wrap it (intent patch), never replace it.
