@@ -16,9 +16,9 @@ app:
   # virtualenv into every linked worktree.
   # Bind only the Mac mini's Tailnet interface, not the physical LAN.
   boot: HOST=100.90.15.93 PORT={port} /Users/admin/fitness-dashboard/venv/bin/python3 app.py
-  # One verified port serializes owner previews safely. Add only ports verified
-  # non-production and free if concurrent previews are wanted.
-  preview_ports: [5099]
+  # Operator-verified non-production preview ports (no listeners, no launchd
+  # plist references). Three ports allow concurrent durable owner previews.
+  preview_ports: [5099, 5098, 5097]
   preview_url: http://admins-mac-mini.tail6c6490.ts.net:{port}
 checks:
   - /Users/admin/fitness-dashboard/venv/bin/python3 -m pytest -q
