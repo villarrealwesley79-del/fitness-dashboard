@@ -27,6 +27,57 @@ from wearable_fact_store import (
 )
 
 
+def _payload_rows(payload) -> list[dict]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("summaries", "events", "data", "items", "records", "days"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+    return [payload]
+
+
+def _first_value(row: dict, *keys):
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _number(row: dict, *keys):
+    value = _first_value(row, *keys)
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_date(row: dict, fallback: str) -> str:
+    value = _first_value(row, "date", "day", "summary_date", "end", "end_time", "start", "start_time", "timestamp")
+    return str(value or fallback)[:10]
+
+
+def _source_provider(row: dict) -> str | None:
+    source = row.get("source")
+    value = source.get("provider") if isinstance(source, dict) else None
+    value = value or row.get("provider") or row.get("provider_id")
+    return str(value) if value is not None else None
+
+
+def _workout_category(label: object) -> str | None:
+    text = str(label or "").strip().lower()
+    if not text:
+        return None
+    if any(word in text for word in ("strength", "lift", "weight", "resistance")):
+        return "strength_training"
+    if any(word in text for word in ("run", "walk", "cycle", "bike", "swim", "cardio")):
+        return "cardio"
+    return "other"
+
+
 def payload_marker(payload):
     """Return a stable marker for live hub inputs without carrying timestamps."""
     if payload is None:
@@ -76,12 +127,14 @@ def sync_error_code(key):
         "sleep": "open_wearables_sync_error",
         "workouts": "open_wearables_sync_error",
         "activity_summary": "open_wearables_sync_error",
+        "recovery_summary": "open_wearables_sync_error",
+        "body_summary": "open_wearables_sync_error",
     }
     return stable_codes.get(str(key), "open_wearables_sync_error")
 
 
 def public_error_key(key):
-    public_names = {"auth", "config", "sleep", "workouts", "activity_summary"}
+    public_names = {"auth", "config", "sleep", "workouts", "activity_summary", "recovery_summary", "body_summary"}
     name = str(key)
     return name if name in public_names else "sync"
 
@@ -89,7 +142,7 @@ def public_error_key(key):
 def sync_metadata(data, *, now: Callable[[], datetime] = datetime.now) -> dict:
     data = data if isinstance(data, dict) else {}
     counts = {}
-    for key in ("sleep", "workouts", "activity_summary"):
+    for key in ("sleep", "workouts", "activity_summary", "recovery_summary", "body_summary"):
         count = sync_count(data.get(key))
         if count is not None:
             counts[key] = count
@@ -192,6 +245,12 @@ def store_wearable_facts(
         if latest.get("active_minutes") is not None:
             facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "active_minutes", latest.get("active_minutes"), "min", confidence="medium", freshness=status))
             added_activity_fact = True
+        if latest.get("active_calories") is not None:
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "active_calories", latest.get("active_calories"), "kcal", confidence="medium", freshness=status))
+            added_activity_fact = True
+        if latest.get("distance") is not None:
+            facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "distance", latest.get("distance"), "m", confidence="medium", freshness=status))
+            added_activity_fact = True
         if added_activity_fact:
             mark_replacement_sources(latest.get("raw"), date_s)
 
@@ -205,8 +264,108 @@ def store_wearable_facts(
         if sleep.get("avg_hr") is not None:
             facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_avg_heart_rate", sleep.get("avg_hr"), "bpm", confidence="medium", freshness=status))
             added_sleep_fact = True
+        for stage, value in (sleep.get("stages_min") or {}).items():
+            if value is not None and stage in {"deep", "rem", "light", "awake"}:
+                facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", f"sleep_{stage}_duration", value, "min", confidence="medium", freshness=status))
+                added_sleep_fact = True
         if added_sleep_fact:
             mark_replacement_sources(sleep.get("raw"), date_s)
+
+    metric_groups = (
+        ("recovery_summary", {
+            "recovery_score": (("recovery_score", "score", "readiness_score"), "score"),
+            "heart_rate_variability": (("avg_hrv_sdnn_ms", "hrv", "hrv_ms", "heart_rate_variability"), "ms"),
+            "resting_heart_rate": (("resting_heart_rate_bpm", "resting_heart_rate", "resting_hr", "rhr"), "bpm"),
+            "blood_oxygen": (("avg_spo2_percent", "spo2", "blood_oxygen", "oxygen_saturation"), "%"),
+            "sleep_efficiency": (("sleep_efficiency_percent",), "%"),
+            "respiratory_rate": (("respiratory_rate", "breathing_rate"), "breaths/min"),
+            "skin_temperature": (("skin_temperature", "temperature_delta"), "c"),
+        }),
+    )
+    for payload_key, mappings in metric_groups:
+        for row in _payload_rows(data.get(payload_key)):
+            date_s = _row_date(row, fetched_at)
+            provider = _source_provider(row)
+            before_count = len(facts)
+            for metric, (aliases, unit) in mappings.items():
+                value = _number(row, *aliases)
+                if value is not None:
+                    facts.append(WearableDailyFact(
+                        date_s, "open_wearables", "Open Wearables", metric, value, unit,
+                        confidence="medium", freshness=status, source_provider=provider,
+                    ))
+            if payload_key == "recovery_summary":
+                sleep_seconds = _number(row, "sleep_duration_seconds")
+                if sleep_seconds is not None:
+                    facts.append(WearableDailyFact(
+                        date_s, "open_wearables", "Open Wearables", "sleep_duration",
+                        sleep_seconds / 60.0, "min", confidence="medium", freshness=status,
+                        source_provider=provider,
+                    ))
+            if len(facts) > before_count:
+                mark_replacement_sources(row, date_s)
+
+    for body in _payload_rows(data.get("body_summary")):
+        date_s = _row_date(body.get("averaged") if isinstance(body.get("averaged"), dict) else body, fetched_at)
+        provider = _source_provider(body)
+        before_count = len(facts)
+        body_groups = (
+            (body.get("slow_changing") if isinstance(body.get("slow_changing"), dict) else body, {
+                "weight": (("weight_kg", "weight"), "kg"),
+                "body_fat_percent": (("body_fat_percent", "body_fat"), "%"),
+                "muscle_mass": (("muscle_mass_kg", "muscle_mass"), "kg"),
+                "body_mass_index": (("bmi", "body_mass_index"), "kg/m2"),
+            }),
+            (body.get("averaged") if isinstance(body.get("averaged"), dict) else {}, {
+                "resting_heart_rate": (("resting_heart_rate_bpm",), "bpm"),
+                "heart_rate_variability_sdnn": (("avg_hrv_sdnn_ms",), "ms"),
+                "heart_rate_variability_rmssd": (("avg_hrv_rmssd_ms",), "ms"),
+            }),
+            (body.get("latest") if isinstance(body.get("latest"), dict) else {}, {
+                "body_temperature": (("body_temperature_celsius",), "c"),
+                "skin_temperature": (("skin_temperature_celsius",), "c"),
+            }),
+        )
+        for values, mappings in body_groups:
+            for metric, (aliases, unit) in mappings.items():
+                value = _number(values, *aliases)
+                if value is not None:
+                    facts.append(WearableDailyFact(
+                        date_s, "open_wearables", "Open Wearables", metric, value, unit,
+                        confidence="medium", freshness=status, source_provider=provider,
+                    ))
+        if len(facts) > before_count:
+            mark_replacement_sources(body, date_s)
+
+    for row in _payload_rows(data.get("workouts")):
+        date_s = _row_date(row, fetched_at)
+        before_count = len(facts)
+        original_label = _first_value(row, "activity_type", "workout_type", "sport", "name", "type")
+        provenance = {
+            "category": _workout_category(original_label),
+            "source_id": str(_first_value(row, "id", "event_id", "workout_id") or "") or None,
+            "source_provider": _source_provider(row),
+            "original_label": str(original_label) if original_label is not None else None,
+        }
+        workout_metrics = {
+            "workout_duration": ((_first_value(row, "duration_min", "duration_minutes")), "min"),
+            "workout_active_calories": ((_first_value(row, "active_calories", "calories")), "kcal"),
+            "workout_load": ((_first_value(row, "load", "strain", "training_load")), "score"),
+            "workout_avg_heart_rate": ((_first_value(row, "avg_hr", "average_heart_rate")), "bpm"),
+            "workout_max_heart_rate": ((_first_value(row, "max_hr", "max_heart_rate")), "bpm"),
+        }
+        for metric, (raw_value, unit) in workout_metrics.items():
+            try:
+                value = float(raw_value) if raw_value is not None else None
+            except (TypeError, ValueError):
+                value = None
+            if value is not None:
+                facts.append(WearableDailyFact(
+                    date_s, "open_wearables", "Open Wearables", metric, value, unit,
+                    confidence="medium", freshness=status, **provenance,
+                ))
+        if len(facts) > before_count:
+            mark_replacement_sources(row, date_s)
 
     upsert_wearable_source(db_file, {
         "provider_id": "open_wearables",

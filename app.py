@@ -12526,13 +12526,15 @@ def _open_wearables_complete_oauth_callback(provider, code, state):
 
 
 def fetch_open_wearables_data():
-    """Fetch sleep, workouts, and activity summaries from local Open Wearables bridge (best-effort)."""
+    """Fetch coaching-safe wearable domains from the Open Wearables bridge (best-effort)."""
     missing = _missing_open_wearables_config()
     if missing:
         return {
             "sleep": None,
             "workouts": None,
             "activity_summary": None,
+            "recovery_summary": None,
+            "body_summary": None,
             "fetched_at": datetime.now().isoformat(),
             "errors": {"config": f"missing:{','.join(missing)}"},
         }
@@ -12548,12 +12550,16 @@ def fetch_open_wearables_data():
         "sleep": f"{_open_wearables_user_base()}/events/sleep?start_date={start_date}&end_date={end_date}",
         "workouts": f"{_open_wearables_user_base()}/events/workouts?start_date={start_date}&end_date={end_date}",
         "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?start_date={start_date}&end_date={end_date}",
+        "recovery_summary": f"{_open_wearables_user_base()}/summaries/recovery?start_date={start_date}&end_date={end_date}",
+        "body_summary": f"{_open_wearables_user_base()}/summaries/body",
     }
 
     result = {
         "sleep": None,
         "workouts": None,
         "activity_summary": None,
+        "recovery_summary": None,
+        "body_summary": None,
         "fetched_at": datetime.now().isoformat(),
         "errors": {},
     }
@@ -12593,6 +12599,7 @@ def _extract_open_wearables_sleep(payload):
         "event_time": best_time.isoformat() if best_time else None,
         "recent": recent,
         "raw": best.get("raw"),
+        "stages_min": best.get("stages_min") or {},
     }
 
 
@@ -12710,8 +12717,9 @@ def _extract_open_wearables_activity_summaries(payload):
             average = None
 
         steps = item.get("steps")
-        active_calories = item.get("active_calories") or item.get("calories_active")
+        active_calories = item.get("active_calories_kcal") or item.get("active_calories") or item.get("calories_active")
         active_minutes = item.get("active_minutes") or item.get("active_min") or item.get("active_duration_min")
+        distance = item.get("distance_meters") or item.get("distance")
         try:
             steps = int(float(steps)) if steps is not None else None
         except Exception:
@@ -12724,6 +12732,10 @@ def _extract_open_wearables_activity_summaries(payload):
             active_minutes = int(float(active_minutes)) if active_minutes is not None else None
         except Exception:
             active_minutes = None
+        try:
+            distance = float(distance) if distance is not None else None
+        except Exception:
+            distance = None
 
         summaries.append({
             "date": dt.date(),
@@ -12732,6 +12744,7 @@ def _extract_open_wearables_activity_summaries(payload):
             "steps": steps,
             "active_calories": active_calories,
             "active_minutes": active_minutes,
+            "distance": distance,
             "raw": item,
         })
     return summaries

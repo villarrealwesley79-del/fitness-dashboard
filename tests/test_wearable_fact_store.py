@@ -86,3 +86,41 @@ def test_wearable_fact_store_rejects_raw_or_secret_fields(tmp_path):
             "metric": "sleep",
             "value": {"raw": {"access_token": "leak"}},
         }])
+
+
+def test_wearable_fact_store_adds_safe_provenance_columns_to_existing_schema(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "facts.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.execute("""
+            CREATE TABLE wearable_daily_facts (
+                profile_key TEXT NOT NULL DEFAULT '1', date TEXT NOT NULL,
+                provider_id TEXT NOT NULL, source_label TEXT NOT NULL, metric TEXT NOT NULL,
+                value_json TEXT, unit TEXT, band TEXT, confidence TEXT NOT NULL,
+                freshness TEXT NOT NULL, conflict_state TEXT,
+                used_for_recommendation INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+                PRIMARY KEY (profile_key, date, provider_id, metric)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE wearable_sources (
+                profile_key TEXT NOT NULL DEFAULT '1', provider_id TEXT NOT NULL,
+                label TEXT NOT NULL, status TEXT NOT NULL, last_data_point TEXT,
+                last_sync_attempt TEXT, capabilities_json TEXT,
+                used_for_recommendation INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+                PRIMARY KEY (profile_key, provider_id)
+            )
+        """)
+
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        "2026-06-28", "open_wearables", "Open Wearables", "workout_duration", 55, "min",
+        category="strength_training", source_id="workout-1",
+        source_provider="apple_health", original_label="Traditional Strength Training",
+    )])
+
+    fact = list_recommendation_facts(str(db))[0]
+    assert fact["category"] == "strength_training"
+    assert fact["source_id"] == "workout-1"
+    assert fact["source_provider"] == "apple_health"
+    assert fact["original_label"] == "Traditional Strength Training"

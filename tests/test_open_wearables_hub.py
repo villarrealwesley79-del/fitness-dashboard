@@ -200,6 +200,60 @@ def test_store_wearable_facts_is_profile_scoped(tmp_path):
     assert open_wearables_source["capabilities"]["replacement_sources"] == ["oura"]
 
 
+def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    data = {
+        "fetched_at": "2026-06-29T10:00:00",
+        "activity_summary": {"summaries": [{"day": "2026-06-28", "steps": 8200}]},
+        "sleep": {"events": [{"end": "2026-06-28T07:00:00Z", "duration_min": 430}]},
+        "recovery_summary": {"summaries": [{
+            "date": "2026-06-28", "recovery_score": 72, "hrv": 48,
+            "resting_heart_rate": 53, "spo2": 97,
+        }]},
+        "body_summary": {
+            "source": {"provider": "oura"},
+            "slow_changing": {"weight_kg": 82.4, "body_fat_percent": 17.2},
+            "averaged": {"period_end": "2026-06-28T23:59:00Z", "resting_heart_rate_bpm": 53},
+            "latest": {},
+        },
+        "workouts": {"events": [{
+            "id": "workout-1", "start": "2026-06-28T18:00:00Z",
+            "duration_min": 55, "activity_type": "Traditional Strength Training",
+            "provider": "apple_health", "active_calories": 410,
+        }]},
+    }
+
+    count = hub.store_wearable_facts(
+        data,
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [
+            {"date": date(2026, 6, 28), "steps": 8200, "resting": None, "active_minutes": None, "raw": {}}
+        ],
+        sleep_extractor=lambda _payload: {
+            "duration_min": 430, "avg_hr": None, "event_time": "2026-06-28T07:00:00",
+            "recent": True, "raw": {},
+        },
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    by_metric = {fact["metric"]: fact for fact in facts}
+    assert count == len(facts)
+    assert {
+        "steps", "sleep_duration", "recovery_score", "heart_rate_variability",
+        "resting_heart_rate", "blood_oxygen", "weight", "body_fat_percent",
+        "workout_duration", "workout_active_calories",
+    }.issubset(by_metric)
+    workout = by_metric["workout_duration"]
+    assert workout["category"] == "strength_training"
+    assert workout["source_id"] == "workout-1"
+    assert workout["source_provider"] == "apple_health"
+    assert workout["original_label"] == "Traditional Strength Training"
+
+
 def test_recommendation_facts_filters_provider_and_freshness(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     upsert_daily_facts(

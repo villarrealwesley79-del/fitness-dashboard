@@ -135,7 +135,7 @@ The local config file is `DATA_DIR/open_wearables_config.json` and is saved chmo
 | `used_for_recommendation` | Boolean | Yes | Derived | True for safe usable facts | Whether recommendation engine can consume it. |
 | `updated_at` | ISO datetime | Yes | Now | Server timestamp | Last local write. |
 
-Open Wearables bridge currently stores these metrics when present: `steps`, `resting_heart_rate`, `active_minutes`, `sleep_duration`, and `sleep_avg_heart_rate`.
+Open Wearables bridge stores explicit coaching-safe scalar facts when present across sleep, recovery, activity/load, body, and workouts. Workout facts also preserve safe history provenance (`category`, `source_id`, `source_provider`, and `original_label`). Raw payloads, samples, provider user ids, and secret fields remain outside the local fact store and API projection.
 
 ## 4. Interactions & Flows
 
@@ -227,7 +227,7 @@ Failure -> Stable codes include `cloud_provider`, `mobile_invite_not_ready`, `mo
 
 Trigger -> Owner clicks Sync or another route requests health sync.
 
-Behavior -> Backend logs into Open Wearables, fetches the last seven days of sleep, workouts, and activity summaries, counts records, stores normalized safe facts for `/api/open-wearables/sync`, and returns metadata only. Fact storage is intentionally coarse: at most the latest activity-summary day and latest sleep day are persisted as recommendation facts.
+Behavior -> Backend logs into Open Wearables, fetches the last seven days of sleep, workouts, activity summaries, and recovery summaries plus the current body summary, counts records, stores normalized safe facts for `/api/open-wearables/sync`, and returns metadata only. The latest activity and sleep facts are stored alongside explicit scalar recovery/body facts and sanitized workout-history facts.
 
 Validation -> `/api/health/sync` returns metadata counts but does not store facts. It still refreshes the in-memory per-profile recommendation marker cache used by recommendation inputs. `/api/open-wearables/sync` stores selected safe facts and returns `facts_upserted`. Forbidden raw/secret fields are rejected by the fact store if they enter a fact payload.
 
