@@ -11313,7 +11313,7 @@ def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
     """Fetch current weather from wttr.in (best-effort).
 
     Returns dict:
-      {available, location, temp_f, humidity_pct, condition, feelslike_f, raw}
+      {available, location, temp_f, humidity_pct, condition, feelslike_f, source}
     """
     now = int(time.time())
     cached = _cached_wttr(location, max_age_s=max_age_s)
@@ -11337,7 +11337,6 @@ def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
             "feelslike_f": feels_f,
             "humidity_pct": humidity,
             "condition": condition,
-            "raw": {"current_condition": cur},
         }
         _WEATHER_CACHE.update({"ts": now, "location": location, "data": data, "error": None})
         return {"available": True, "location": location, **data, "source": "api"}
