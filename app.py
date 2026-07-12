@@ -4294,17 +4294,19 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     total_sessions = len(workouts)
     total_sets = sum(len(e.get("sets", [])) for w in workouts for e in w.get("exercises", []))
     total_volume = sum(
-        s["weight_lbs"] * s["reps"]
+        s.get("weight_lbs") * s.get("reps")
         for w in workouts
         for e in w.get("exercises", [])
         for s in e.get("sets", [])
+        if isinstance(s.get("weight_lbs"), (int, float))
+        and isinstance(s.get("reps"), (int, float))
     )
 
     # Exercise frequency
     exercise_freq = {}
     for w in workouts:
         for e in w.get("exercises", []):
-            machine = e["machine"]
+            machine = e.get("machine") or "N/A"
             exercise_freq[machine] = exercise_freq.get(machine, 0) + 1
 
     top_exercises = sorted(exercise_freq.items(), key=lambda x: -x[1])[:5]
@@ -4316,7 +4318,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
         session_types[st] = session_types.get(st, 0) + 1
 
     # Date range
-    dates = [w["date"] for w in workouts]
+    dates = [w.get("date") for w in workouts if w.get("date")]
 
     return {
         "total_sessions": total_sessions,
@@ -16768,14 +16770,27 @@ def export_markdown():
     lines.append("| Date | Machine | Set | Reps | Weight | Volume | Notes |")
     lines.append("|------|---------|-----|------|--------|--------|-------|")
 
-    for workout in sorted(WORKOUTS, key=lambda x: x["date"]):
+    for workout in sorted(WORKOUTS, key=lambda x: x.get("date") or ""):
+        workout_date = workout.get("date") or "N/A"
         for exercise in workout.get("exercises", []):
-            machine = exercise["machine"]
-            for idx, s in enumerate(exercise.get("sets", [])):
-                volume = s["weight_lbs"] * s["reps"]
+            machine = exercise.get("machine") or "N/A"
+            sets = exercise.get("sets", [])
+            if not sets:
+                lines.append(
+                    f"| {workout_date} | {machine} | N/A | N/A | N/A | N/A | Non-strength/watch-only row |"
+                )
+                continue
+            for idx, s in enumerate(sets):
+                reps = s.get("reps")
+                weight = s.get("weight_lbs")
+                volume = weight * reps if isinstance(weight, (int, float)) and isinstance(reps, (int, float)) else "N/A"
                 notes = s.get("notes", "")
                 set_number = s.get("set_number") or idx + 1
-                lines.append(f"| {workout['date']} | {machine} | {set_number} | {s['reps']} | {s['weight_lbs']} | {volume} | {notes} |")
+                lines.append(
+                    f"| {workout_date} | {machine} | {set_number} | "
+                    f"{reps if reps is not None else 'N/A'} | "
+                    f"{weight if weight is not None else 'N/A'} | {volume} | {notes} |"
+                )
 
     lines.append("")
     lines.append("---")
