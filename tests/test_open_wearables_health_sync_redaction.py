@@ -143,6 +143,30 @@ def test_health_sync_exception_uses_stable_error_response(monkeypatch):
         assert fragment not in body
 
 
+def test_open_wearables_metadata_sync_alias_preserves_legacy_health_route(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(
+        module,
+        "fetch_open_wearables_data",
+        lambda: {
+            "sleep": None,
+            "workouts": [],
+            "activity_summary": None,
+            "fetched_at": "2026-07-12T12:00:00",
+            "errors": {},
+        },
+    )
+    client = module.app.test_client()
+
+    legacy_response = client.post("/api/health/sync")
+    owned_response = client.post("/api/open-wearables/metadata-sync")
+
+    assert legacy_response.status_code == 200
+    assert owned_response.status_code == 200
+    assert owned_response.get_json() == legacy_response.get_json()
+    assert owned_response.get_json()["source"] == "open_wearables"
+
+
 def test_open_wearables_fetch_blocks_unallowlisted_remote_before_network(monkeypatch):
     module = _fitness_app()
     monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "user")

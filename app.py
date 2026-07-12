@@ -12886,9 +12886,10 @@ def add_cors_headers(response):
     return response
 
 
-@app.route('/api/health/sync', methods=['POST'])
+@app.route('/api/health/sync', methods=['POST'])  # Legacy Open Wearables metadata route.
+@app.route('/api/open-wearables/metadata-sync', methods=['POST'])
 def health_sync():
-    """Manually pull Open Wearables sleep/workout data."""
+    """Manually pull Open Wearables metadata; this is not an Apple Health webhook."""
     try:
         data = fetch_open_wearables_data()
         return jsonify(open_wearables_hub.sync_metadata(data))
