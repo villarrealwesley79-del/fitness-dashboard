@@ -16,13 +16,14 @@ import math
 import sqlite3
 import hashlib
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterator, Optional
 import uuid
 from runtime_config import data_path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 DATA_DB = data_path("fitness_data.db")
+PUSH_SUBSCRIPTION_REVOKED_RETENTION_DAYS = 30
 
 REFRESH_CALORIE_DELTA_THRESHOLD = 1
 REFRESH_MACRO_DELTA_THRESHOLD = 0.5
@@ -386,6 +387,22 @@ def revoke_push_subscription(user_id: int, endpoint_hash: str) -> bool:
         )
         conn.commit()
     return cur.rowcount > 0
+
+
+def prune_revoked_push_subscriptions(now: Optional[datetime] = None) -> int:
+    """Delete revoked Web Push credentials after the 30-day retention window."""
+    cutoff = (now or datetime.now()) - timedelta(days=PUSH_SUBSCRIPTION_REVOKED_RETENTION_DAYS)
+    with _get_db() as conn:
+        cur = conn.execute(
+            """
+            DELETE FROM push_subscriptions
+            WHERE revoked_at IS NOT NULL
+              AND datetime(revoked_at) < datetime(?)
+            """,
+            (cutoff.isoformat(timespec="seconds"),),
+        )
+        conn.commit()
+    return cur.rowcount
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -753,6 +770,7 @@ def init_data_db():
             "ON workout_adaptation_events(user_id, acknowledged_at, created_at)"
         )
         conn.commit()
+    prune_revoked_push_subscriptions()
 
 
 def save_current_workout_plan(user_id: int, fingerprint: str, plan: dict) -> dict:
