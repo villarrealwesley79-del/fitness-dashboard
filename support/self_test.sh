@@ -7,6 +7,27 @@ set -euo pipefail
 # cookie. Offline unit and route-shape coverage lives under tests/ and runs with
 # pytest.
 
+SMOKE_MODE="strict"
+usage() {
+  cat <<'EOF'
+Usage: bash support/self_test.sh [--route-only]
+
+Default strict mode validates AI model routing, sends a rejected workout POST,
+and runs the read-only file-descriptor regression check.
+
+--route-only  Keep authenticated GET route, redaction, and FD checks, but
+              downgrade AI model-health validation and skip the workout POST.
+EOF
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --route-only) SMOKE_MODE="route-only" ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
 BASE_URL="${BASE_URL:-http://127.0.0.1:5050}"
 COOKIE="${COOKIE:-}"
 SMOKE_USERNAME="${FITNESS_SMOKE_USERNAME:-${SMOKE_USERNAME:-}}"
@@ -172,6 +193,7 @@ hit "/api/weather"
 hit "/api/recommendation/smart"
 hit "/api/ai/health"
 
+if [ "$SMOKE_MODE" = "strict" ]; then
 python3 - <<'PY'
 import json
 import os
@@ -207,8 +229,15 @@ else:
         sys.exit(1)
     print("WARN: ASUS primary route is degraded; Mac fallback is active")
 PY
+else
+  echo "SKIP: strict AI health validation (--route-only)"
+fi
 
-post_expect_error "/api/complete-workout" '{"client_workout_id":"smoke-invalid-empty","offline":true,"exercises":[]}' "400"
+if [ "$SMOKE_MODE" = "strict" ]; then
+  post_expect_error "/api/complete-workout" '{"client_workout_id":"smoke-invalid-empty","offline":true,"exercises":[]}' "400"
+else
+  echo "SKIP: rejected workout POST (--route-only)"
+fi
 
 if ! command -v lsof >/dev/null 2>&1; then
   echo "FAIL: lsof is required for FD leak regression check" >&2
