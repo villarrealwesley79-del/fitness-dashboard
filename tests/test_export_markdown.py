@@ -38,7 +38,8 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
                 "date": "2026-07-12",
                 "exercises": [
                     {"sets": [{"reps": 10}, {"weight_lbs": 20}]},
-                    {"machine": "Apple Watch Import", "sets": []},
+                    {"machine": "Apple Watch Import", "sets": None},
+                    {"machine": "Legacy Import"},
                 ],
             }
         ],
@@ -51,6 +52,7 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
     assert "| 2026-07-12 | N/A | 1 | 10 | N/A | N/A |  |" in body
     assert "| 2026-07-12 | N/A | 2 | N/A | 20 | N/A |  |" in body
     assert "| 2026-07-12 | Apple Watch Import | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "| 2026-07-12 | Legacy Import | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
 
 
 def test_markdown_export_handles_empty_history(monkeypatch):

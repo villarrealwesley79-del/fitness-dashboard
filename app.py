@@ -4292,12 +4292,12 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
         return {}
 
     total_sessions = len(workouts)
-    total_sets = sum(len(e.get("sets", [])) for w in workouts for e in w.get("exercises", []))
+    total_sets = sum(len(e.get("sets") or []) for w in workouts for e in w.get("exercises", []))
     total_volume = sum(
         s.get("weight_lbs") * s.get("reps")
         for w in workouts
         for e in w.get("exercises", [])
-        for s in e.get("sets", [])
+        for s in e.get("sets") or []
         if isinstance(s.get("weight_lbs"), (int, float))
         and isinstance(s.get("reps"), (int, float))
     )
@@ -16774,7 +16774,7 @@ def export_markdown():
         workout_date = workout.get("date") or "N/A"
         for exercise in workout.get("exercises", []):
             machine = exercise.get("machine") or "N/A"
-            sets = exercise.get("sets", [])
+            sets = exercise.get("sets") or []
             if not sets:
                 lines.append(
                     f"| {workout_date} | {machine} | N/A | N/A | N/A | N/A | Non-strength/watch-only row |"
