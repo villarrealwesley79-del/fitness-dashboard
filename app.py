@@ -15649,7 +15649,7 @@ def smart_recommendation_api():
         (sleep_debt.get("sample_count") or 0) > 0,
     ))
     recommendation_readiness = readiness
-    recommendation_hrv_trend = hrv_trend
+    recommendation_hrv_trend = hrv_trend if hrv_sample_count >= 4 else "unknown"
     recommendation_sleep_debt = sleep_debt
 
     effective_readiness = _effective_readiness_from(recommendation_readiness, recovery_bonus)
