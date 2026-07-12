@@ -70,6 +70,15 @@ bash scripts/install-launchd-agents.sh install
 This manages both `com.fitness-dashboard` and
 `com.fitness-dashboard.staleness` in `~/Library/LaunchAgents`.
 
+Inspect the local runtime without changing it:
+
+```bash
+bash scripts/fitness-status.sh
+```
+
+The status command reports both launchd agents, the listener PID, `DATA_DIR`,
+the redacted last Apple Health staleness line, and smoke-test prerequisites.
+
 Run the authenticated smoke test against a local server:
 
 ```bash
