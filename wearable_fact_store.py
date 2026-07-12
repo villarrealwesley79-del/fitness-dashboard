@@ -33,7 +33,7 @@ class WearableDailyFact:
     provider_id: str
     source_label: str
     metric: str
-    value: float | str | None
+    value: float | str | bool | None
     unit: str | None = None
     band: str | None = None
     confidence: str = "unknown"
@@ -242,10 +242,12 @@ def upsert_daily_facts(
         rows.append(payload)
     with sqlite3.connect(db_path) as conn:
         for source_id in replace_source_ids or set():
-            conn.execute(
-                "DELETE FROM wearable_daily_facts WHERE profile_key = ? AND source_id = ?",
-                (scoped_profile, source_id),
-            )
+            providers = {row["provider_id"] for row in rows if row.get("source_id") == source_id}
+            for provider_id in providers:
+                conn.execute(
+                    "DELETE FROM wearable_daily_facts WHERE profile_key = ? AND provider_id = ? AND source_id = ?",
+                    (scoped_profile, provider_id, source_id),
+                )
         for row in rows:
             conn.execute(
                 """

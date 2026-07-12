@@ -12624,6 +12624,8 @@ def _extract_open_wearables_sleep(payload):
         "recent": recent,
         "raw": best.get("raw"),
         "stages_min": best.get("stages_min") or {},
+        "efficiency_percent": best.get("efficiency_percent"),
+        "is_nap": best.get("is_nap"),
     }
 
 
@@ -12699,11 +12701,19 @@ def _extract_open_wearables_sleep_events(payload):
         except Exception:
             avg_hr = None
 
+        efficiency = ev.get("efficiency_percent")
+        try:
+            efficiency = float(efficiency) if efficiency is not None else None
+        except Exception:
+            efficiency = None
+
         parsed.append({
             "event_time": dt,
             "duration_min": duration,
             "stages_min": stage_minutes,
             "avg_hr": avg_hr,
+            "efficiency_percent": efficiency,
+            "is_nap": ev.get("is_nap") if isinstance(ev.get("is_nap"), bool) else None,
             "raw": ev,
         })
 

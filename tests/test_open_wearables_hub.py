@@ -246,7 +246,8 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
         ],
         sleep_extractor=lambda _payload: {
             "duration_min": 430, "avg_hr": None, "event_time": "2026-06-28T07:00:00",
-            "recent": True, "raw": {},
+            "recent": True, "efficiency_percent": 91.5, "is_nap": False,
+            "raw": {"id": "sleep-1", "source": {"provider": "oura"}},
         },
         row_replacement_sources=lambda _row: [],
     )
@@ -259,7 +260,7 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     assert {
         "steps", "sleep_duration", "recovery_score", "heart_rate_variability",
         "resting_heart_rate", "blood_oxygen", "weight", "body_fat_percent",
-        "workout_duration", "workout_active_calories",
+        "workout_duration", "workout_active_calories", "sleep_efficiency", "sleep_is_nap",
     }.issubset(by_metric)
     workout_facts = [fact for fact in facts if fact["metric"] == "workout_duration"]
     assert len(workout_facts) == 2
@@ -278,6 +279,10 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     assert by_metric["resting_heart_rate"]["value"] == 53
     assert by_metric["resting_heart_rate_average"]["value"] == 53
     assert by_metric["body_temperature"]["date"] == "2026-06-27"
+    assert by_metric["sleep_duration"]["source_id"] == "sleep-1"
+    assert by_metric["sleep_duration"]["source_provider"] == "oura"
+    assert by_metric["sleep_duration"]["observed_at"] == "2026-06-28T07:00:00"
+    assert by_metric["steps"]["observed_at"] == "2026-06-28"
     run = next(fact for fact in workout_facts if fact["source_id"] == "workout-2")
     assert run["category"] == "cardio"
     assert hub._workout_category("indoor_cycling") == "cardio"
