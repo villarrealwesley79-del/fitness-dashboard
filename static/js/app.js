@@ -2960,6 +2960,8 @@
         const oura = state.oura;
         const reco = state.reco;
         const sleep = state.ouraSleep;
+        const dashboardSleepQualityKnown = sleep && sleep.data_quality
+            && sleep.data_quality.status;
         const dashboardSleepInconsistent = sleep && sleep.data_quality
             && sleep.data_quality.status === 'inconsistent';
         const sleepQualityWarning = sleep && sleep.data_quality
@@ -2996,7 +2998,7 @@
 
         if ($('dash-hrv')) $('dash-hrv').textContent = oura && oura.hrv != null ? `${oura.hrv} ms` : '--';
         if ($('dash-rhr')) $('dash-rhr').textContent = oura && oura.resting_hr != null ? `${oura.resting_hr} bpm` : '--';
-        if ($('dash-sleep')) $('dash-sleep').textContent = dashboardSleepInconsistent ? '--'
+        if ($('dash-sleep')) $('dash-sleep').textContent = !dashboardSleepQualityKnown || dashboardSleepInconsistent ? '--'
             : (oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--');
 
         // Recommendation card — FIT-1 brief + FIT-2 honest freshness
@@ -3205,7 +3207,7 @@
         if ($('glance-steps-goal')) $('glance-steps-goal').textContent = oura && oura.steps != null ? `${Math.round((oura.steps / 10000) * 100)}% of 10,000` : 'Pending sync';
         if ($('glance-cal')) $('glance-cal').textContent = fmtInt(oura && oura.active_calories);
         if ($('glance-cal-goal')) $('glance-cal-goal').textContent = oura && oura.active_calories != null ? `${Math.round((oura.active_calories / 800) * 100)}% of 800` : '';
-        if ($('glance-sleep')) $('glance-sleep').textContent = dashboardSleepInconsistent ? '--'
+        if ($('glance-sleep')) $('glance-sleep').textContent = !dashboardSleepQualityKnown || dashboardSleepInconsistent ? '--'
             : (oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--');
         if ($('glance-sleep-quality')) {
             const score = oura && oura.sleep_score;

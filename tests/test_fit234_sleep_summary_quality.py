@@ -80,7 +80,8 @@ def test_vitals_renderer_blocks_inconsistent_sleep_values():
     assert "sleep.data_quality.status === 'inconsistent'" in source
     assert "Sleep data inconsistent" in source
     assert "const dashboardSleepInconsistent = sleep && sleep.data_quality" in source
-    assert "dashboardSleepInconsistent ? '--'" in source
+    assert "const dashboardSleepQualityKnown = sleep && sleep.data_quality" in source
+    assert source.count("!dashboardSleepQualityKnown || dashboardSleepInconsistent ? '--'") == 2
     assert "sleep.data_quality.source, sleep.data_quality.observed_at, 'Check sync'" in source
     assert "d.date !== sleep.data_quality.observed_at" in source
     assert "s.day !== sleep.data_quality.observed_at" in source
