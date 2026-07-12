@@ -61,6 +61,10 @@ def test_sleep_analytics_prefers_oura_per_date_and_fills_manual_gaps(monkeypatch
                 "date": "not-a-date",
                 "sleep_duration_min": 400,
             },
+            {
+                "date": "2026-7-1",
+                "sleep_duration_min": 380,
+            },
         ],
     )
 
@@ -69,8 +73,10 @@ def test_sleep_analytics_prefers_oura_per_date_and_fills_manual_gaps(monkeypatch
     assert response.status_code == 200
     history = response.get_json()["history"]
     assert [(row["date"], row["source"]) for row in history] == [
+        ("2026-07-01", "manual"),
         ("2026-07-11", "manual"),
         ("2026-07-12", "oura"),
     ]
-    assert history[0]["sleep_duration_min"] == 420
-    assert history[1]["sleep_duration_min"] == 450
+    assert history[0]["sleep_duration_min"] == 380
+    assert history[1]["sleep_duration_min"] == 420
+    assert history[2]["sleep_duration_min"] == 450
