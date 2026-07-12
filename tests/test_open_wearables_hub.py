@@ -296,6 +296,18 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     assert hub._workout_category("Mountain Biking") == "cardio"
     assert hub._workout_category("Rowing Machine") == "cardio"
     assert hub._workout_category("Stair Climbing") == "cardio"
+    for workout_type in (
+        "mixed_cardio", "hiit", "running_treadmill", "cycling_stationary",
+        "swimming_pool", "swimming_open_water", "stair_climbing_machine",
+    ):
+        assert hub._workout_category(workout_type) == "cardio"
+
+
+def test_future_observation_is_not_recommendation_eligible(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    fetched_at = datetime.now().astimezone()
+    future = fetched_at + timedelta(days=2)
+    assert hub._fact_freshness(future.isoformat(), fetched_at.isoformat()) == "unknown"
 
 
 def test_store_wearable_facts_uses_observation_freshness_and_tolerates_partial_errors(tmp_path):

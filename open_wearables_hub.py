@@ -78,6 +78,8 @@ def _workout_category(label: object) -> str | None:
         "cycling", "mountain_biking", "indoor_cycling", "cyclocross", "e_biking",
         "swimming", "pool_swimming", "open_water_swimming", "elliptical",
         "rowing", "rowing_machine", "stair_climbing", "cardio_training",
+        "mixed_cardio", "hiit", "running_treadmill", "cycling_stationary",
+        "swimming_pool", "swimming_open_water", "stair_climbing_machine",
     }
     if text in strength_types or any(word in text for word in ("strength", "lift", "weight", "resistance")):
         return "strength_training"
@@ -115,6 +117,8 @@ def _fact_freshness(date_s: str, fetched_at: str) -> str:
     except (TypeError, ValueError):
         return "unknown"
     age_hours = (fetched - observed).total_seconds() / 3600.0
+    if age_hours < -1:
+        return "unknown"
     if age_hours < 24:
         return "fresh"
     if age_hours < 48:

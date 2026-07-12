@@ -389,6 +389,7 @@ def list_recommendation_facts(
             freshness IN ('fresh', 'aging')
             AND ((observed_at IS NOT NULL AND datetime(observed_at) >= datetime(?))
                  OR (observed_at IS NULL AND date >= ?))
+            AND (observed_at IS NULL OR datetime(observed_at) <= datetime(?))
         ))
     """
     order_clause = "date DESC, provider_id, metric, COALESCE(observed_at, '') DESC, updated_at DESC, source_id"
@@ -419,7 +420,8 @@ def list_recommendation_facts(
             query,
             (
                 scoped_profile, provider_id, provider_id, 1 if usable_only else 0,
-                (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat(), usable_cutoff, int(limit),
+                (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat(), usable_cutoff,
+                (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(), int(limit),
             ),
         ).fetchall()
     facts = []
