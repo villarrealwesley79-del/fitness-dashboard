@@ -1,0 +1,19 @@
+{
+  "viewport": {"width": 390, "height": 844},
+  "states": [
+    {"id": "recovered-draft", "selector": "#active-workout-status", "expected_text": "Recovered unsaved workout details from this device."},
+    {"id": "dirty-close", "selector": "#modal-active", "expected_text": "Upper Workout"},
+    {"id": "swap", "selector": "#swap-modal-title", "expected_text": "Swap: Chest Press"},
+    {"id": "adjust", "selector": "#adjust-modal-title", "expected_text": "Adjust Plan"},
+    {"id": "delete-remove", "selector": ".active-empty", "expected_text": "No exercises left in this workout."},
+    {"id": "set-completion", "selector": "#active-workout-progress", "expected_text": "Set 2 of 3"},
+    {"id": "cardio-completion", "selector": ".active-cardio-check", "expected_text": "Completed recommended cardio"},
+    {"id": "save-error", "selector": "#active-workout-status", "expected_text": "Save needs review — see the sync queue."},
+    {"id": "queued", "selector": "#saved-title", "expected_text": "Queued for sync."},
+    {"id": "conflicted", "selector": "#active-workout-status", "expected_text": "Server reported a conflict — see the sync queue."},
+    {"id": "saved", "selector": "#saved-title", "expected_text": "Logged."},
+    {"id": "empty", "selector": ".active-empty", "expected_text": "No exercises left in this workout."},
+    {"id": "blocked", "selector": "#active-workout-status", "expected_text": "Sign in, then retry the workout from the sync queue."},
+    {"id": "warning", "selector": "#active-workout-status", "expected_text": "Validation failed: log at least one set before completing this workout."}
+  ]
+}
