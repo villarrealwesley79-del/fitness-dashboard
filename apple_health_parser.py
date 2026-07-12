@@ -23,12 +23,19 @@ from functools import lru_cache
 from typing import Optional
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from flask import jsonify, request
+from werkzeug.exceptions import RequestEntityTooLarge
 from runtime_config import clean_public_url, data_path, public_base_url
 
 HEALTH_DIR = os.path.expanduser("~/Documents/Health")
 PUBLIC_BASE_URL_ENV = "FITNESS_DASHBOARD_PUBLIC_BASE_URL"
 APPLE_HEALTH_WEBHOOK_URL_ENV = "APPLE_HEALTH_WEBHOOK_URL"
 APPLE_HEALTH_SYNC_DB_ENV = "APPLE_HEALTH_SYNC_DB"
+
+# Health Auto Export batches are expected to be small daily deltas. These fixed
+# ceilings bound local parsing and SQLite work without creating another runtime
+# configuration surface.
+APPLE_HEALTH_MAX_REQUEST_BYTES = 1024 * 1024
+APPLE_HEALTH_MAX_RECORDS_PER_SYNC = 5000
 
 ACTIVITY_MAP = {
     1: "Walking", 2: "Running", 3: "Cycling", 4: "Hiking",
@@ -599,8 +606,35 @@ def register_apple_health_routes(flask_app):
             skipped_count INTEGER NOT NULL DEFAULT 0,
             total_count INTEGER NOT NULL DEFAULT 0,
             remote_addr TEXT,
+            outcome_code TEXT NOT NULL DEFAULT 'ok',
+            rejection_counts_json TEXT NOT NULL DEFAULT '{}',
+            payload_bytes INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now'))
         )""")
+        event_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(ah_sync_events)").fetchall()
+        }
+
+        def _add_event_column(column_name, definition):
+            if column_name in event_columns:
+                return
+            try:
+                conn.execute(f"ALTER TABLE ah_sync_events ADD COLUMN {definition}")
+            except sqlite3.OperationalError:
+                # Another local worker may have completed this additive migration
+                # after our PRAGMA read. Only tolerate that exact resulting state.
+                current_columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(ah_sync_events)").fetchall()
+                }
+                if column_name not in current_columns:
+                    raise
+
+        _add_event_column("outcome_code", "outcome_code TEXT NOT NULL DEFAULT 'ok'")
+        _add_event_column(
+            "rejection_counts_json", "rejection_counts_json TEXT NOT NULL DEFAULT '{}'"
+        )
+        _add_event_column("payload_bytes", "payload_bytes INTEGER NOT NULL DEFAULT 0")
         # Migrate legacy DBs: add record_key column + rebuild the table so the
         # old UNIQUE(source, record_type, record_date) constraint gets replaced
         # with the widened UNIQUE(... record_key) version. SQLite can't ALTER a
@@ -698,6 +732,72 @@ def register_apple_health_routes(flask_app):
                 merged[key] = existing.get(key)
         return merged
 
+    def _raw_sync_record_count(payload):
+        """Count submitted HAE records without retaining or copying raw rows."""
+        if not isinstance(payload, dict):
+            return 0
+        count = 0
+        blocks = [payload]
+        if isinstance(payload.get("data"), dict):
+            blocks.append(payload["data"])
+        for data_block in blocks:
+            workouts = data_block.get("workouts")
+            if isinstance(workouts, list):
+                count += len(workouts)
+            metrics = data_block.get("metrics")
+            if isinstance(metrics, list):
+                for metric in metrics:
+                    if isinstance(metric, dict) and isinstance(metric.get("data"), list):
+                        count += len(metric["data"])
+            for record_type in ("heart_rate", "hrv", "sleep", "steps", "active_energy"):
+                records = data_block.get(record_type)
+                if isinstance(records, list):
+                    count += len(records)
+        return count
+
+    def _write_sync_attempt(
+        conn, *, inserted, rejection_counts, total_count, payload_bytes, outcome_code
+    ):
+        skipped = sum(rejection_counts.values())
+        conn.execute(
+            """INSERT INTO ah_sync_events
+               (source, inserted_count, skipped_count, total_count, remote_addr,
+                outcome_code, rejection_counts_json, payload_bytes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "health_auto_export",
+                inserted,
+                skipped,
+                total_count,
+                (request.headers.get("X-Forwarded-For") or request.remote_addr or "")
+                .split(",")[0]
+                .strip(),
+                outcome_code,
+                json.dumps(rejection_counts, sort_keys=True, separators=(",", ":")),
+                payload_bytes,
+            ),
+        )
+
+    def _reject_sync_attempt(code, count, *, total_count, payload_bytes):
+        rejection_counts = {code: count}
+        _init_ah_sync_db()
+        with sqlite3.connect(_apple_health_sync_db_path()) as conn:
+            _write_sync_attempt(
+                conn,
+                inserted=0,
+                rejection_counts=rejection_counts,
+                total_count=total_count,
+                payload_bytes=payload_bytes,
+                outcome_code=code,
+            )
+        return jsonify({
+            "status": "rejected",
+            "code": code,
+            "inserted": 0,
+            "skipped": count,
+            "rejection_counts": rejection_counts,
+        }), 413
+
     _init_ah_sync_db()
 
     # Auto-provision HEALTH_SYNC_TOKEN so the sync endpoint works out of the box.
@@ -743,7 +843,10 @@ def register_apple_health_routes(flask_app):
             return {}
 
         # Already in our internal shape (top-level workouts/steps/heart_rate/sleep).
-        if any(k in payload for k in ("workouts", "steps", "heart_rate", "sleep", "active_energy")):
+        if any(
+            k in payload
+            for k in ("workouts", "steps", "heart_rate", "hrv", "sleep", "active_energy")
+        ):
             return payload
 
         # HAE wraps everything in {"data": {...}}.
@@ -886,9 +989,35 @@ def register_apple_health_routes(flask_app):
         if not supplied or not _hmac.compare_digest(supplied, expected):
             return jsonify({"error": "invalid or missing sync token"}), 401
 
+        request.max_content_length = APPLE_HEALTH_MAX_REQUEST_BYTES
+        payload_bytes = request.content_length
+        if payload_bytes is not None and payload_bytes > APPLE_HEALTH_MAX_REQUEST_BYTES:
+            return _reject_sync_attempt(
+                "payload_too_large", 1, total_count=0, payload_bytes=payload_bytes
+            )
+        if payload_bytes is None:
+            try:
+                payload_bytes = len(request.get_data(cache=True))
+            except RequestEntityTooLarge:
+                return _reject_sync_attempt(
+                    "payload_too_large",
+                    1,
+                    total_count=0,
+                    payload_bytes=APPLE_HEALTH_MAX_REQUEST_BYTES + 1,
+                )
+
         data = request.get_json(force=True, silent=True) or {}
         if not data:
             return jsonify({"error": "No JSON body provided"}), 400
+
+        record_count = _raw_sync_record_count(data)
+        if record_count > APPLE_HEALTH_MAX_RECORDS_PER_SYNC:
+            return _reject_sync_attempt(
+                "record_limit_exceeded",
+                record_count,
+                total_count=record_count,
+                payload_bytes=payload_bytes,
+            )
 
         # Normalize Health Auto Export's native format into the internal schema.
         # HAE sends either:
@@ -898,12 +1027,19 @@ def register_apple_health_routes(flask_app):
         # We accept either transparently so the user doesn't have to customize
         # the HAE export template.
         data = _normalize_hae_payload(data)
+        normalized_record_count = sum(
+            len(data.get(record_type))
+            for record_type in ("workouts", "heart_rate", "hrv", "sleep", "steps", "active_energy")
+            if isinstance(data.get(record_type), list)
+        )
 
         _init_ah_sync_db()
         conn = sqlite3.connect(_apple_health_sync_db_path())
         try:
             inserted = 0
-            skipped = 0
+            rejection_counts = defaultdict(int)
+            if normalized_record_count < record_count:
+                rejection_counts["invalid_record"] = record_count - normalized_record_count
 
             for record_type in ("workouts", "heart_rate", "hrv", "sleep", "steps", "active_energy"):
                 records = data.get(record_type)
@@ -911,9 +1047,17 @@ def register_apple_health_routes(flask_app):
                     continue
                 for rec in records:
                     # Each record must have a 'date' field
+                    if not isinstance(rec, dict):
+                        rejection_counts["invalid_record"] += 1
+                        continue
                     rec_date = _local_date_from_iso(rec.get("date") or rec.get("startDate"))
-                    if not rec_date:
-                        skipped += 1
+                    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", rec_date):
+                        rejection_counts["invalid_record"] += 1
+                        continue
+                    try:
+                        datetime.strptime(rec_date, "%Y-%m-%d")
+                    except ValueError:
+                        rejection_counts["invalid_record"] += 1
                         continue
                     try:
                         stored_rec = dict(rec)
@@ -939,21 +1083,19 @@ def register_apple_health_routes(flask_app):
                         if cur.rowcount and cur.rowcount > 0:
                             inserted += 1
                         else:
-                            skipped += 1
+                            rejection_counts["duplicate_record"] += 1
                     except Exception:
-                        skipped += 1
+                        rejection_counts["invalid_record"] += 1
 
-            conn.execute(
-                """INSERT INTO ah_sync_events
-                   (source, inserted_count, skipped_count, total_count, remote_addr)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (
-                    "health_auto_export",
-                    inserted,
-                    skipped,
-                    inserted + skipped,
-                    (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip(),
-                ),
+            skipped = sum(rejection_counts.values())
+            outcome_code = "ok" if not skipped else ("partial" if inserted else "rejected")
+            _write_sync_attempt(
+                conn,
+                inserted=inserted,
+                rejection_counts=dict(rejection_counts),
+                total_count=record_count,
+                payload_bytes=payload_bytes,
+                outcome_code=outcome_code,
             )
             conn.commit()
 
@@ -966,6 +1108,7 @@ def register_apple_health_routes(flask_app):
             "status": "ok",
             "inserted": inserted,
             "skipped": skipped,
+            "rejection_counts": dict(rejection_counts),
             "sync_token": now_iso,
         })
 
