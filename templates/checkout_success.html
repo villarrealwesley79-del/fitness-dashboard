@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Payment Successful — FitOS</title>
+  <title>Checkout Status — FitOS</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root { --bg: #0d1117; --bg2: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --green: #3fb950; --green-bg: #238636; }
@@ -24,14 +24,24 @@
       padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 600;
     }
     a:hover { opacity: .85; }
+    .refresh { margin-top: 12px; background: transparent; border: 1px solid var(--border); }
   </style>
 </head>
 <body>
   <div class="box">
-    <div class="icon">🎉</div>
-    <h1>Payment Successful!</h1>
+    {% if is_active %}
+    <div class="icon" aria-hidden="true">✓</div>
+    <h1>Payment successful</h1>
     <p>Your Pro account is now active. Enjoy unlimited data, multi-user access, and priority support.</p>
+    {% else %}
+    <div class="icon" aria-hidden="true">…</div>
+    <h1>Activation pending</h1>
+    <p>We are still confirming your checkout. Refresh this page after a moment; Pro will appear as soon as payment is verified.</p>
+    {% endif %}
     <a href="/">Go to Dashboard</a>
+    {% if not is_active %}
+    <a class="refresh" href="">Refresh status</a>
+    {% endif %}
   </div>
 </body>
 </html>
