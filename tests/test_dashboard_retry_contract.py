@@ -357,7 +357,7 @@ def test_render_dashboard_resets_error_sentinels_and_maps_dashboard_to_reco():
     # .then chains, so match on the .then structure rather than literal text.
     import re
     dash_then = re.search(
-        r"getDashboard\(\)\.then\(\s*\(\)\s*=>\s*settle\(true,\s*'recoError'\)\s*,"
+        r"getDashboard\(true,\s*isRecoCurrent\)\.then\(\s*\(\)\s*=>\s*settle\(true,\s*'recoError'\)\s*,"
         r"\s*\(\)\s*=>\s*settle\(false,\s*'recoError'\)\s*\)",
         body,
     )
@@ -542,7 +542,7 @@ def test_paint_retry_chip_guards_on_both_generations():
     # otherwise an older in-flight fetch could land between retryFn start and
     # the bump and still touch the sentinel.
     bump_idx = helper.index("const clickSentinelGen = ++dashboardSentinelGen[sentinelKey];")
-    try_idx = helper.index("try { await retryFn();")
+    try_idx = helper.index("try { await retryFn(isCurrent);")
     assert bump_idx < try_idx, (
         "sentinel-gen bump must occur BEFORE retryFn is awaited"
     )
