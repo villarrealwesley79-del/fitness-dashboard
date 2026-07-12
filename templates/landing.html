@@ -196,43 +196,34 @@
     }
     .hero-cta { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
 
-    /* ── SOCIAL PROOF ── */
-    .social-proof {
-      text-align: center;
-      padding: 1.5rem 2rem 3rem;
-      color: var(--muted); font-size: 0.85rem;
-    }
-    .social-proof .avatars {
-      display: inline-flex; gap: -8px; margin-right: 0.6rem;
-    }
-    .avatar {
-      width: 28px; height: 28px; border-radius: 50%;
-      border: 2px solid var(--bg);
-      display: inline-flex; align-items: center; justify-content: center;
-      font-size: 0.7rem; font-weight: 700;
-      margin-left: -6px;
-    }
-    .a1 { background: #e76f51; }
-    .a2 { background: #2a9d8f; }
-    .a3 { background: #e9c46a; color: #333; }
-    .a4 { background: var(--purple); }
-
-    /* ── STATS BAND ── */
-    .stats-band {
+    /* ── PRODUCT BOUNDARIES ── */
+    .product-boundaries {
       border-top: 1px solid var(--border);
       border-bottom: 1px solid var(--border);
       background: var(--bg2);
-      display: flex; justify-content: center; gap: 4rem;
-      padding: 2rem;
-      flex-wrap: wrap;
+      padding-top: 4rem;
+      padding-bottom: 4rem;
     }
-    .stat-item { text-align: center; }
-    .stat-item .val {
-      font-size: 2rem; font-weight: 800;
-      color: var(--accent); line-height: 1;
+    .boundaries-list {
+      margin-top: 2rem;
+      max-width: 680px;
     }
-    .stat-item .lbl {
-      font-size: 0.78rem; color: var(--muted); margin-top: 0.3rem;
+    .boundaries-list > div {
+      display: grid;
+      grid-template-columns: minmax(120px, 1fr) 2fr;
+      gap: 1.5rem;
+      padding: 1rem 0;
+      border-top: 1px solid var(--border);
+    }
+    .boundaries-list > div:last-child { border-bottom: 1px solid var(--border); }
+    .boundaries-list dt { font-weight: 700; }
+    .boundaries-list dd { color: var(--muted); }
+
+    @media (max-width: 600px) {
+      .boundaries-list > div {
+        grid-template-columns: 1fr;
+        gap: 0.25rem;
+      }
     }
 
     /* ── SECTION ── */
@@ -323,30 +314,6 @@
     .price-features .chk { color: var(--green); font-weight: 700; }
     .price-features .muted-chk { color: var(--muted); }
 
-    /* ── TESTIMONIALS ── */
-    .testimonials-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 1.25rem; margin-top: 3rem;
-    }
-    .testimonial {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 10px; padding: 1.4rem;
-    }
-    .testimonial .quote { font-size: 0.9rem; color: var(--muted); margin-bottom: 1rem; }
-    .testimonial .author {
-      display: flex; align-items: center; gap: 0.7rem;
-    }
-    .author-avatar {
-      width: 36px; height: 36px; border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 0.85rem; font-weight: 700;
-    }
-    .author-name { font-size: 0.85rem; font-weight: 700; }
-    .author-title { font-size: 0.75rem; color: var(--muted); }
-    .stars { color: #e9c46a; font-size: 0.85rem; margin-bottom: 0.6rem; }
-
     /* ── FAQ ── */
     .faq-list { margin-top: 3rem; max-width: 680px; }
     details {
@@ -434,7 +401,6 @@
     /* ── RESPONSIVE ── */
     @media (max-width: 600px) {
       nav { padding: 0 1rem; }
-      .stats-band { gap: 2rem; }
       .hero { padding: 4rem 1rem 3rem; }
       section { padding: 3.5rem 1rem; }
     }
@@ -471,24 +437,19 @@
   </div>
 </div>
 
-<!-- ── SOCIAL PROOF ── -->
-<div class="social-proof">
-  <span class="avatars">
-    <span class="avatar a1">JL</span>
-    <span class="avatar a2">MR</span>
-    <span class="avatar a3">AK</span>
-    <span class="avatar a4">TC</span>
-  </span>
-  Join fitness-focused people who train smarter — not just harder
-</div>
-
-<!-- ── STATS BAND ── -->
-<div class="stats-band">
-  <div class="stat-item"><div class="val">87%</div><div class="lbl">of users hit weekly volume goal</div></div>
-  <div class="stat-item"><div class="val">$9</div><div class="lbl">per month, no contracts</div></div>
-  <div class="stat-item"><div class="val">7-day</div><div class="lbl">free trial, no card needed</div></div>
-  <div class="stat-item"><div class="val">Oura</div><div class="lbl">Ring integration built-in</div></div>
-</div>
+<!-- ── PRODUCT BOUNDARIES ── -->
+<section class="product-boundaries" aria-labelledby="product-boundaries-title">
+  <div class="section-inner">
+    <h2 class="section-title" id="product-boundaries-title">Product boundaries</h2>
+    <p class="section-sub">How FitOS handles ownership, health data, recommendations, and AI.</p>
+    <dl class="boundaries-list">
+      <div><dt>Deployment</dt><dd>Single-owner</dd></div>
+      <div><dt>Data</dt><dd>Local-first</dd></div>
+      <div><dt>Recommendations</dt><dd>Deterministic rules with source proof</dd></div>
+      <div><dt>AI</dt><dd>Explanation at the edges</dd></div>
+    </dl>
+  </div>
+</section>
 
 <!-- ── DASHBOARD MOCKUP ── -->
 <section id="features">
@@ -497,7 +458,7 @@
     <h2 class="section-title">Your entire training picture, in one place.</h2>
     <p class="section-sub">
       Real-time recovery status, workout logs, body composition trends, and
-      AI-powered recommendations — all in a mobile-first dashboard.
+      source-backed training recommendations — all in a mobile-first dashboard.
     </p>
 
     <div class="mockup-wrapper">
@@ -622,40 +583,6 @@
         <div>
           <h3>Log your workout</h3>
           <p>Log sets, reps, soreness, and notes from your phone. FitOS tracks trends and adjusts recommendations over time.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ── TESTIMONIALS ── -->
-<section id="testimonials">
-  <div class="section-inner">
-    <div class="section-label">What People Say</div>
-    <h2 class="section-title">Built for people who actually track their training.</h2>
-    <div class="testimonials-grid">
-      <div class="testimonial">
-        <div class="stars">★★★★★</div>
-        <p class="quote">"Finally a dashboard that tells me to rest when I actually need to. Stopped overtraining within the first two weeks."</p>
-        <div class="author">
-          <div class="author-avatar" style="background:#e76f51">JL</div>
-          <div><div class="author-name">James L.</div><div class="author-title">Intermediate lifter, 3 years</div></div>
-        </div>
-      </div>
-      <div class="testimonial">
-        <div class="stars">★★★★★</div>
-        <p class="quote">"I've tried Strong, JEFIT, and Hevy. FitOS is the only one that actually incorporates my Oura data into the decision."</p>
-        <div class="author">
-          <div class="author-avatar" style="background:#2a9d8f">MR</div>
-          <div><div class="author-name">Maria R.</div><div class="author-title">CrossFit athlete, 5 years</div></div>
-        </div>
-      </div>
-      <div class="testimonial">
-        <div class="stars">★★★★★</div>
-        <p class="quote">"The body recomposition tracking is exactly what I needed. Seeing the correlation between sleep, food, and weight is eye-opening."</p>
-        <div class="author">
-          <div class="author-avatar" style="background:#bc8cff">TC</div>
-          <div><div class="author-name">Tyler C.</div><div class="author-title">Fitness hobbyist, 2 years</div></div>
         </div>
       </div>
     </div>
