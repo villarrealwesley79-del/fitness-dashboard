@@ -26,6 +26,13 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fit286-fingerprint")
     monkeypatch.setattr(module, "_workout_with_auth_scope", lambda workout: workout)
     monkeypatch.setattr(module.workout_adaptation, "project_event", lambda event: event)
+    persisted_plans = []
+
+    def persist_plan(plan, _fingerprint):
+        persisted_plans.append(copy.deepcopy(plan))
+        return plan
+
+    monkeypatch.setattr(module, "_persist_current_workout_plan", persist_plan)
     monkeypatch.setattr(
         module,
         "generate_next_workout",
@@ -104,6 +111,7 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     payload = response.get_json()
     exercise = payload["next_workout"]["exercises"][0]
     assert adaptation_calls == [[286]]
+    assert len(persisted_plans) == 1
     assert exercise["target_sets"] == 2  # food sets 3 first; WHOOP's 0.8 clamp runs afterward
     assert exercise["rationale"].count("Food adaptation applied") == 1
     assert exercise["rationale"].count("WHOOP modifier applied") == 1
@@ -113,6 +121,10 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     }]
 
     open_wearables_detail = payload["recommendation_sources"]["open_wearables"]["detail"]
+    assert payload["recommendation_sources"]["open_wearables"]["applied_modifiers"] == [
+        "sleep_caution"
+    ]
+    assert "330 min" in open_wearables_detail
     reasoning = payload["reasoning"]
     assert reasoning.count(whoop_explanation) == 1
     assert reasoning.count(conflict_explanation) == 1
