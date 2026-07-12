@@ -556,6 +556,16 @@ def init_data_db():
                 PRIMARY KEY(user_id, barcode)
             );
 
+            CREATE TABLE IF NOT EXISTS lookup_cache_refresh_events (
+                id                TEXT PRIMARY KEY,
+                user_id           INTEGER NOT NULL,
+                cache_kind        TEXT NOT NULL,
+                cache_key         TEXT NOT NULL,
+                old_response_json TEXT NOT NULL,
+                new_response_json TEXT NOT NULL,
+                refreshed_at      TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS personal_vocab (
                 user_id              INTEGER NOT NULL,
                 normalized_input     TEXT    NOT NULL,
@@ -1388,6 +1398,10 @@ def save_branded_lookup_cache(
     init_data_db()
     now_iso = datetime.now().isoformat(timespec="seconds")
     with _get_db() as conn:
+        previous = conn.execute(
+            "SELECT response_json FROM branded_lookup_cache WHERE user_id = ? AND normalized_text = ?",
+            (user_id, key),
+        ).fetchone()
         conn.execute(
             """
             INSERT INTO branded_lookup_cache (user_id, normalized_text, source, source_tier, response_json, fetched_at)
@@ -1399,6 +1413,9 @@ def save_branded_lookup_cache(
                 fetched_at = excluded.fetched_at
             """,
             (user_id, key, source, tier, _json_dumps_or_none(response), now_iso),
+        )
+        _record_lookup_cache_refresh(
+            conn, user_id, "branded", key, previous, response, now_iso
         )
         conn.commit()
 
@@ -1441,6 +1458,10 @@ def save_barcode_lookup_cache(
     init_data_db()
     now_iso = datetime.now().isoformat(timespec="seconds")
     with _get_db() as conn:
+        previous = conn.execute(
+            "SELECT response_json FROM barcode_lookup_cache WHERE user_id = ? AND barcode = ?",
+            (user_id, key),
+        ).fetchone()
         conn.execute(
             """
             INSERT INTO barcode_lookup_cache (user_id, barcode, source, source_tier, response_json, fetched_at)
@@ -1453,7 +1474,79 @@ def save_barcode_lookup_cache(
             """,
             (user_id, key, source, tier, _json_dumps_or_none(response), now_iso),
         )
+        _record_lookup_cache_refresh(
+            conn, user_id, "barcode", key, previous, response, now_iso
+        )
         conn.commit()
+
+
+def _record_lookup_cache_refresh(
+    conn: sqlite3.Connection,
+    user_id: int,
+    cache_kind: str,
+    cache_key: str,
+    previous_row: sqlite3.Row | None,
+    response: dict,
+    refreshed_at: str,
+) -> None:
+    if previous_row is None:
+        return
+    old_response = _json_loads_or_none(previous_row["response_json"])
+    if old_response == response:
+        return
+    conn.execute(
+        """
+        INSERT INTO lookup_cache_refresh_events (
+            id, user_id, cache_kind, cache_key,
+            old_response_json, new_response_json, refreshed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(uuid.uuid4()), user_id, cache_kind, cache_key,
+            _json_dumps_or_none(old_response) or "{}",
+            _json_dumps_or_none(response) or "{}",
+            refreshed_at,
+        ),
+    )
+    conn.execute(
+        """
+        DELETE FROM lookup_cache_refresh_events
+         WHERE user_id = ?
+           AND rowid NOT IN (
+               SELECT rowid
+                 FROM lookup_cache_refresh_events
+                WHERE user_id = ?
+                ORDER BY rowid DESC
+                LIMIT 100
+           )
+        """,
+        (user_id, user_id),
+    )
+
+
+def list_lookup_cache_refresh_events(user_id: int, *, limit: int = 50) -> list[dict]:
+    """Return recent changed-value refreshes for food lookup caches."""
+    init_data_db()
+    safe_limit = min(max(int(limit or 50), 1), 50)
+    with _get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, user_id, cache_kind, cache_key,
+                   old_response_json, new_response_json, refreshed_at
+              FROM lookup_cache_refresh_events
+             WHERE user_id = ?
+             ORDER BY refreshed_at DESC, rowid DESC
+             LIMIT ?
+            """,
+            (user_id, safe_limit),
+        ).fetchall()
+    events = []
+    for row in rows:
+        event = dict(row)
+        event["old_response"] = _json_loads_or_none(event.pop("old_response_json")) or {}
+        event["new_response"] = _json_loads_or_none(event.pop("new_response_json")) or {}
+        events.append(event)
+    return events
 
 
 def get_personal_vocab_entry(user_id: int, normalized_input: str) -> Optional[dict]:
@@ -2425,6 +2518,7 @@ def delete_user_data(user_id: int) -> None:
         conn.execute("DELETE FROM push_subscriptions WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM branded_lookup_cache WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM barcode_lookup_cache WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM lookup_cache_refresh_events WHERE user_id = ?", (user_id,))
         conn.commit()
 
 

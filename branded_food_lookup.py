@@ -218,8 +218,9 @@ def lookup(
     brand_hint: str | None = None,
     source_priority: tuple[str, ...] | list[str] | None = None,
     user_id: int = 1,
+    force_refresh: bool = False,
 ) -> dict[str, Any] | None:
-    """Return a sanitized estimate from cache/Nutritionix/USDA, or None."""
+    """Return a sanitized estimate, bypassing cache when force_refresh is true."""
     lookup_text = _text_with_brand_hint(text, brand_hint)
     normalized = normalize_meal_text(lookup_text)
     if not normalized:
@@ -229,6 +230,8 @@ def lookup(
 
     for source in priorities:
         if source == "cache":
+            if force_refresh:
+                continue
             try:
                 cached = _cache_lookup(normalized, user_id=user_id)
             except Exception:
@@ -278,7 +281,12 @@ def normalize_barcode(value: str) -> str | None:
     return None
 
 
-def lookup_barcode(barcode: str, *, user_id: int = 1) -> dict[str, Any] | None:
+def lookup_barcode(
+    barcode: str,
+    *,
+    user_id: int = 1,
+    force_refresh: bool = False,
+) -> dict[str, Any] | None:
     """Return a sanitized estimate from barcode cache or structured barcode providers.
 
     H-E-B private-label handling is intentionally text-only through `lookup()`;
@@ -289,6 +297,8 @@ def lookup_barcode(barcode: str, *, user_id: int = 1) -> dict[str, Any] | None:
         return None
     for source in BARCODE_SOURCE_PRIORITY:
         if source == "cache":
+            if force_refresh:
+                continue
             try:
                 cached = _barcode_cache_lookup(normalized, user_id=user_id)
             except Exception:
