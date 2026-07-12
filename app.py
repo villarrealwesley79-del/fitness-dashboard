@@ -2182,11 +2182,15 @@ def _apply_due_workout_adaptations_for_plan(
         if any(event.get("status") == "applied" for event in events):
             patched["_fit136_base_recommendation"] = adaptation_base
             patched["_fit136_last_adapted_plan"] = _fit136_visible_workout_plan(patched)
-            patched["_fit136_adaptation_event_ids"] = [
+            existing_event_ids = (next_workout or {}).get("_fit136_adaptation_event_ids") or []
+            patched["_fit136_adaptation_event_ids"] = list(dict.fromkeys([
+                *existing_event_ids,
+                *[
                 event.get("id")
                 for event in events
                 if event.get("status") == "applied" and event.get("id")
-            ]
+                ],
+            ]))
         elif events:
             return next_workout, events
         return patched, events
@@ -15984,7 +15988,7 @@ def smart_recommendation_api():
         )
     except Exception:
         persisted_adaptation_events = []
-    food_adaptation_event = next((
+    food_adaptation_events = [
         event
         for event in [*workout_adaptation_events, *persisted_adaptation_events]
         if isinstance(event, dict)
@@ -15996,18 +16000,23 @@ def smart_recommendation_api():
                 and (event.get("after_remaining_plan") or {}) == legacy_adapted_plan
             )
         )
-    ), None)
-    food_adaptation_applied = food_adaptation_event is not None
-    food_modifier_effective = bool(
-        food_adaptation_event
-        and (food_adaptation_event.get("before_remaining_plan") or {})
-        != (food_adaptation_event.get("after_remaining_plan") or {})
+    ]
+    food_adaptation_events = list({
+        event.get("id") or id(event): event
+        for event in food_adaptation_events
+    }.values())
+    food_adaptation_applied = bool(food_adaptation_events)
+    food_modifier_effective = any(
+        (event.get("before_remaining_plan") or {})
+        != (event.get("after_remaining_plan") or {})
+        for event in food_adaptation_events
     )
     food_fields = []
     if food_adaptation_applied:
         food_signal_codes = {
             signal.get("code")
-            for signal in (food_adaptation_event.get("nutrition_context") or {}).get("signals") or []
+            for event in food_adaptation_events
+            for signal in (event.get("nutrition_context") or {}).get("signals") or []
             if isinstance(signal, dict) and signal.get("code")
         }
         food_field_by_signal = {
@@ -16025,7 +16034,10 @@ def smart_recommendation_api():
             for field in food_field_by_signal.get(code, set())
         })
         food_fields.append("confidence")
-        if (food_adaptation_event.get("reason_metadata") or {}).get("same_day_fueling_coverage"):
+        if any(
+            (event.get("reason_metadata") or {}).get("same_day_fueling_coverage")
+            for event in food_adaptation_events
+        ):
             food_fields.extend(["entry_count", "meal_timing", "meal_window_count"])
         food_fields = sorted(set(food_fields))
     weather_fields = []
