@@ -12666,20 +12666,21 @@ def _extract_open_wearables_sleep_events(payload):
         dt = _event_time(ev)
         if dt is None:
             continue
-        duration = (
-            ev.get("duration_min")
-            or ev.get("duration_minutes")
-            or ev.get("sleep_duration_min")
-            or ev.get("total_sleep_min")
-            or ev.get("duration")
-            or ev.get("sleep_duration")
-            or ev.get("duration_seconds")
-        )
+        duration = ev.get("sleep_duration_seconds")
+        duration_is_seconds = duration is not None
+        if duration is None:
+            for key in ("duration_min", "duration_minutes", "sleep_duration_min", "total_sleep_min", "duration", "sleep_duration"):
+                if ev.get(key) is not None:
+                    duration = ev.get(key)
+                    break
+        if duration is None and ev.get("duration_seconds") is not None:
+            duration = ev.get("duration_seconds")
+            duration_is_seconds = True
         try:
             duration = float(duration) if duration is not None else None
         except Exception:
             duration = None
-        if duration is not None and duration > 1000:
+        if duration is not None and (duration_is_seconds or duration > 1000):
             duration = duration / 60.0
 
         stages = ev.get("stages") or {}

@@ -15,6 +15,7 @@ def test_open_wearables_sleep_extractor_maps_bridge_stage_minute_fields():
     sleep = module._extract_open_wearables_sleep({"events": [{
         "end_time": "2026-06-28T07:00:00Z",
         "duration_seconds": 28800,
+        "sleep_duration_seconds": 25200,
         "stages": {
             "awake_minutes": 35,
             "light_minutes": 210,
@@ -31,6 +32,7 @@ def test_open_wearables_sleep_extractor_maps_bridge_stage_minute_fields():
     assert sleep["efficiency_percent"] == 91.5
     assert sleep["is_nap"] is False
     assert sleep["observed_at"] == "2026-06-28T07:00:00Z"
+    assert sleep["duration_min"] == 420
 
 
 def test_open_wearables_activity_extractor_preserves_zero_values():
