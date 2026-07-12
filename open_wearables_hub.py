@@ -431,13 +431,26 @@ def store_wearable_facts(
         if len(facts) > before_count:
             mark_replacement_sources(row, date_s)
 
-    usable_facts = [fact for fact in facts if fact.freshness in {"fresh", "aging"}]
-    source_status = "fresh" if usable_facts else ("error" if errors and not facts else "stale")
+    if facts:
+        upsert_daily_facts(db_file, facts, profile_key=profile_key)
+    persisted_usable = list_recommendation_facts(
+        db_file,
+        limit=100,
+        profile_key=profile_key,
+        provider_id="open_wearables",
+        usable_only=True,
+    )
+    source_status = "fresh" if persisted_usable else ("error" if errors and not facts else "stale")
+    last_data_point = (
+        max(replacement_source_dates.values())
+        if replacement_source_dates
+        else max((fact["date"] for fact in persisted_usable), default=fetched_at[:10])
+    )
     upsert_wearable_source(db_file, {
         "provider_id": "open_wearables",
         "label": "Open Wearables",
         "status": source_status,
-        "last_data_point": max(replacement_source_dates.values()) if replacement_source_dates else fetched_at[:10],
+        "last_data_point": last_data_point,
         "last_sync_attempt": fetched_at,
         "capabilities": {
             "metrics": True,
@@ -447,11 +460,8 @@ def store_wearable_facts(
             "replacement_sources": sorted(replacement_source_dates),
             "replacement_source_dates": replacement_source_dates,
         },
-        "used_for_recommendation": bool(usable_facts),
+        "used_for_recommendation": bool(persisted_usable),
     }, profile_key=profile_key)
-
-    if facts:
-        upsert_daily_facts(db_file, facts, profile_key=profile_key)
     return len({(fact.date, fact.provider_id, fact.metric, fact.source_id or "") for fact in facts})
 
 

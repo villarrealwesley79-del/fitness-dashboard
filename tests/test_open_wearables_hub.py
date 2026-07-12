@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import open_wearables_hub as hub
 from wearable_fact_store import WearableDailyFact, upsert_daily_facts
@@ -290,13 +290,15 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
 
 def test_store_wearable_facts_uses_observation_freshness_and_tolerates_partial_errors(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today()
+    stale_day = today - timedelta(days=4)
 
     hub.store_wearable_facts(
         {
-            "fetched_at": "2026-06-29T10:00:00",
+            "fetched_at": f"{today.isoformat()}T10:00:00",
             "recovery_summary": {"data": [
-                {"date": "2026-06-29", "recovery_score": 80},
-                {"date": "2026-06-25", "recovery_score": 60},
+                {"date": today.isoformat(), "recovery_score": 80},
+                {"date": stale_day.isoformat(), "recovery_score": 60},
             ]},
             "errors": {"body_summary": "unsupported"},
         },
@@ -311,8 +313,33 @@ def test_store_wearable_facts_uses_observation_freshness_and_tolerates_partial_e
 
     facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
     freshness = {fact["date"]: fact["freshness"] for fact in facts}
-    assert freshness == {"2026-06-29": "fresh", "2026-06-25": "stale"}
+    assert freshness == {today.isoformat(): "fresh", stale_day.isoformat(): "stale"}
     assert list_wearable_sources(db_file, profile_key="profile-42")[0]["status"] == "fresh"
+
+
+def test_empty_sync_keeps_source_active_while_persisted_fact_is_usable(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        today, "open_wearables", "Open Wearables", "recovery_score", 80,
+        "score", freshness="fresh",
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {"fetched_at": datetime.now().astimezone().isoformat()},
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_wearable_sources
+
+    source = list_wearable_sources(db_file, profile_key="profile-42")[0]
+    assert source["status"] == "fresh"
+    assert source["used_for_recommendation"] is True
+    assert source["last_data_point"] == today
 
 
 def test_recommendation_facts_filters_provider_and_freshness(tmp_path):
