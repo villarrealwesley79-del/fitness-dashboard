@@ -73,7 +73,7 @@ def _workout_category(label: object) -> str | None:
         return None
     if any(word in text for word in ("strength", "lift", "weight", "resistance")):
         return "strength_training"
-    if any(word in text for word in ("run", "walk", "cycle", "bike", "swim", "cardio")):
+    if any(word in text for word in ("run", "walk", "cycl", "bik", "swim", "cardio")):
         return "cardio"
     return "other"
 
@@ -321,7 +321,6 @@ def store_wearable_facts(
     for body in _payload_rows(data.get("body_summary")):
         date_s = _row_date(body.get("averaged") if isinstance(body.get("averaged"), dict) else body, fetched_at)
         provider = _source_provider(body)
-        before_count = len(facts)
         body_groups = (
             (body.get("slow_changing") if isinstance(body.get("slow_changing"), dict) else body, True, {
                 "weight": (("weight_kg", "weight"), "kg"),
@@ -346,8 +345,6 @@ def store_wearable_facts(
                         freshness=("unknown" if undated else _fact_freshness(date_s, fetched_at)),
                         source_id=("undated-latest" if undated else None), source_provider=provider,
                     ))
-        if len(facts) > before_count:
-            mark_replacement_sources(body, date_s)
         latest = body.get("latest") if isinstance(body.get("latest"), dict) else {}
         for metric, value_key, measured_at_key in (
             ("body_temperature", "body_temperature_celsius", "body_temperature_measured_at"),

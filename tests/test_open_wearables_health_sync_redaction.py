@@ -26,6 +26,19 @@ def test_open_wearables_sleep_extractor_maps_bridge_stage_minute_fields():
     assert sleep["stages_min"] == {"awake": 35, "light": 210, "deep": 95, "rem": 140}
 
 
+def test_open_wearables_activity_extractor_preserves_zero_values():
+    module = _fitness_app()
+
+    [summary] = module._extract_open_wearables_activity_summaries({"data": [{
+        "date": "2026-06-28",
+        "active_calories_kcal": 0,
+        "distance_meters": 0,
+    }]})
+
+    assert summary["active_calories"] == 0
+    assert summary["distance"] == 0
+
+
 def test_health_sync_returns_redacted_open_wearables_metadata(monkeypatch):
     module = _fitness_app()
     field_s = "sec" + "ret"

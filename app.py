@@ -12719,9 +12719,15 @@ def _extract_open_wearables_activity_summaries(payload):
             average = None
 
         steps = item.get("steps")
-        active_calories = item.get("active_calories_kcal") or item.get("active_calories") or item.get("calories_active")
+        active_calories = item.get("active_calories_kcal")
+        if active_calories is None:
+            active_calories = item.get("active_calories")
+        if active_calories is None:
+            active_calories = item.get("calories_active")
         active_minutes = item.get("active_minutes") or item.get("active_min") or item.get("active_duration_min")
-        distance = item.get("distance_meters") or item.get("distance")
+        distance = item.get("distance_meters")
+        if distance is None:
+            distance = item.get("distance")
         try:
             steps = int(float(steps)) if steps is not None else None
         except Exception:

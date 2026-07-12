@@ -271,6 +271,7 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     assert by_metric["body_temperature"]["date"] == "2026-06-27"
     run = next(fact for fact in workout_facts if fact["source_id"] == "workout-2")
     assert run["category"] == "cardio"
+    assert hub._workout_category("indoor_cycling") == "cardio"
 
 
 def test_store_wearable_facts_uses_observation_freshness_and_tolerates_partial_errors(tmp_path):
