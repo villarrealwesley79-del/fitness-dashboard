@@ -288,6 +288,31 @@ def test_recommendation_smart_uses_warm_cached_weather_without_live_fetch(fitnes
     ]
 
 
+def test_recommendation_smart_does_not_claim_out_of_window_apple_health_workouts(fitness_app, monkeypatch):
+    _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, oura_row=None)
+    monkeypatch.setattr(
+        fitness_app,
+        "_recommendation_workouts_with_apple_health",
+        lambda *_args, **_kwargs: [
+            {
+                "date": "2000-01-01",
+                "source": "apple_health",
+                "recommendation_load": 100,
+                "apple_health": {"hr_intensity_applied": True},
+            }
+        ],
+    )
+
+    payload = fitness_app.app.test_client().get("/api/recommendation/smart").get_json()
+
+    assert payload["recommendation_sources"]["source_proof"]["apple_health"] == {
+        "used_for_recommendation": False,
+        "fields_used": [],
+        "modifier_applied": False,
+        "ignored_reason": "missing_data",
+    }
+
+
 def test_recommendation_smart_oura_cache_miss_does_not_fetch_live_oura(fitness_app, monkeypatch):
     _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, oura_row=None)
     monkeypatch.setattr(fitness_app, "_WEATHER_CACHE", {"location": "San_Antonio"})

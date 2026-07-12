@@ -209,3 +209,14 @@ def test_oura_modifier_tracks_rules_even_when_their_net_category_cancels():
         "declining",
         {"debt_minutes": 0},
     ) is True
+
+
+def test_oura_modifier_does_not_claim_a_local_recovery_bonus_threshold_change():
+    import app as module
+
+    assert module._oura_modifier_rule_applied(
+        80,
+        {"bonus_points": 10},
+        "stable",
+        {"debt_minutes": 0},
+    ) is False

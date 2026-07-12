@@ -15564,12 +15564,11 @@ def _oura_modifier_rule_applied(readiness, recovery_bonus, hrv_trend, sleep_debt
     """Whether an Oura-owned rule changed the category at its application step."""
     recommendation = "moderate"
     applied = False
-    effective_readiness = _effective_readiness_from(readiness, recovery_bonus)
-    if effective_readiness is not None:
+    if readiness is not None:
         next_recommendation = recommendation
-        if effective_readiness < 70:
+        if readiness < 70:
             next_recommendation = "recovery"
-        elif effective_readiness > 85:
+        elif readiness > 85:
             next_recommendation = "intensity"
         applied = applied or next_recommendation != recommendation
         recommendation = next_recommendation
@@ -15938,7 +15937,12 @@ def smart_recommendation_api():
     apple_health_workouts_used = [
         workout
         for workout in recommendation_workouts
-        if isinstance(workout, dict) and workout.get("source") == "apple_health"
+        if isinstance(workout, dict)
+        and workout.get("source") == "apple_health"
+        and (workout_date := _parse_iso_date_or_datetime(workout.get("date"))) is not None
+        and datetime.now().date() - timedelta(days=27)
+        <= workout_date.date()
+        <= datetime.now().date()
     ]
     if apple_health_workouts_used:
         apple_health_fields.append("recent_workout_load")
