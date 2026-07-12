@@ -263,6 +263,8 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     assert workout["source_provider"] == "apple_health"
     assert workout["original_label"] == "Evening Lift"
     assert workout["value"] == 55
+    assert workout["observed_at"] == "2026-06-28T18:00:00Z"
+    assert workout["freshness"] == "fresh"
     assert by_metric["weight"]["date"] == "2026-06-29"
     assert by_metric["weight"]["freshness"] == "unknown"
     assert by_metric["weight"]["source_id"] == "undated-latest"
@@ -272,6 +274,11 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     run = next(fact for fact in workout_facts if fact["source_id"] == "workout-2")
     assert run["category"] == "cardio"
     assert hub._workout_category("indoor_cycling") == "cardio"
+    assert hub._workout_category("elliptical") == "cardio"
+    assert hub._workout_category("rowing_machine") == "cardio"
+    assert hub._workout_category("stair_climbing") == "cardio"
+    assert hub._workout_category("hiking") == "cardio"
+    assert hub._workout_category("core_training") == "strength_training"
 
 
 def test_store_wearable_facts_uses_observation_freshness_and_tolerates_partial_errors(tmp_path):

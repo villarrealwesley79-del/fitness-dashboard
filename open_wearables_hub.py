@@ -14,7 +14,7 @@ values and callables so it never has to import back from app.py.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
 import hashlib
 import json
 from typing import Callable
@@ -71,23 +71,36 @@ def _workout_category(label: object) -> str | None:
     text = str(label or "").strip().lower()
     if not text:
         return None
-    if any(word in text for word in ("strength", "lift", "weight", "resistance")):
+    strength_types = {"strength_training", "core_training", "traditional_strength_training", "functional_strength_training"}
+    cardio_types = {
+        "running", "trail_running", "treadmill", "walking", "hiking", "trail_hiking",
+        "cycling", "mountain_biking", "indoor_cycling", "cyclocross", "e_biking",
+        "swimming", "pool_swimming", "open_water_swimming", "elliptical",
+        "rowing", "rowing_machine", "stair_climbing", "cardio_training",
+    }
+    if text in strength_types or any(word in text for word in ("strength", "lift", "weight", "resistance")):
         return "strength_training"
-    if any(word in text for word in ("run", "walk", "cycl", "bik", "swim", "cardio")):
+    if text in cardio_types:
         return "cardio"
     return "other"
 
 
 def _fact_freshness(date_s: str, fetched_at: str) -> str:
     try:
-        observed = date.fromisoformat(str(date_s)[:10])
-        fetched = date.fromisoformat(str(fetched_at)[:10])
+        observed_text = str(date_s).replace("Z", "+00:00")
+        fetched_text = str(fetched_at).replace("Z", "+00:00")
+        observed = datetime.fromisoformat(observed_text)
+        fetched = datetime.fromisoformat(fetched_text)
+        if observed.tzinfo is None and fetched.tzinfo is not None:
+            observed = observed.replace(tzinfo=fetched.tzinfo)
+        elif fetched.tzinfo is None and observed.tzinfo is not None:
+            fetched = fetched.replace(tzinfo=observed.tzinfo)
     except (TypeError, ValueError):
         return "unknown"
-    age_days = (fetched - observed).days
-    if age_days <= 0:
+    age_hours = (fetched - observed).total_seconds() / 3600.0
+    if age_hours < 24:
         return "fresh"
-    if age_days == 1:
+    if age_hours < 48:
         return "aging"
     return "stale"
 
@@ -364,7 +377,8 @@ def store_wearable_facts(
                 mark_replacement_sources(body, measured_date)
 
     for row in _payload_rows(data.get("workouts")):
-        date_s = str(_first_value(row, "start", "start_time", "date") or fetched_at)[:10]
+        observed_at = str(_first_value(row, "start", "start_time", "date") or fetched_at)
+        date_s = observed_at[:10]
         before_count = len(facts)
         canonical_type = _first_value(row, "type", "activity_type", "workout_type", "sport")
         original_label = _first_value(row, "name", "activity_type", "workout_type", "sport", "type")
@@ -373,6 +387,7 @@ def store_wearable_facts(
             "source_id": str(_first_value(row, "id", "event_id", "workout_id") or "") or None,
             "source_provider": _source_provider(row),
             "original_label": str(original_label) if original_label is not None else None,
+            "observed_at": observed_at,
         }
         workout_metrics = {
             "workout_duration": ((_first_value(row, "duration_min", "duration_minutes")), "min"),
@@ -395,7 +410,7 @@ def store_wearable_facts(
             if value is not None:
                 facts.append(WearableDailyFact(
                     date_s, "open_wearables", "Open Wearables", metric, value, unit,
-                    confidence="medium", freshness=_fact_freshness(date_s, fetched_at), **provenance,
+                    confidence="medium", freshness=_fact_freshness(observed_at, fetched_at), **provenance,
                 ))
         if len(facts) > before_count:
             mark_replacement_sources(row, date_s)

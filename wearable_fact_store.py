@@ -43,6 +43,7 @@ class WearableDailyFact:
     source_id: str | None = None
     source_provider: str | None = None
     original_label: str | None = None
+    observed_at: str | None = None
     used_for_recommendation: bool = False
     updated_at: str | None = None
 
@@ -81,6 +82,7 @@ def init_wearable_fact_db(db_path: str) -> None:
         _ensure_column(conn, "wearable_daily_facts", "source_id", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "wearable_daily_facts", "source_provider", "TEXT")
         _ensure_column(conn, "wearable_daily_facts", "original_label", "TEXT")
+        _ensure_column(conn, "wearable_daily_facts", "observed_at", "TEXT")
         _ensure_column(conn, "wearable_sources", "profile_key", "TEXT NOT NULL DEFAULT '1'")
         _migrate_profile_key_primary_keys(conn)
 
@@ -104,6 +106,7 @@ def _create_wearable_fact_tables(conn: sqlite3.Connection) -> None:
             source_id TEXT NOT NULL DEFAULT '',
             source_provider TEXT,
             original_label TEXT,
+            observed_at TEXT,
             used_for_recommendation INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (profile_key, date, provider_id, metric, source_id)
@@ -155,6 +158,7 @@ def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> None:
                 source_id TEXT NOT NULL DEFAULT '',
                 source_provider TEXT,
                 original_label TEXT,
+                observed_at TEXT,
                 used_for_recommendation INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (profile_key, date, provider_id, metric, source_id)
@@ -166,11 +170,11 @@ def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> None:
             INSERT OR REPLACE INTO wearable_daily_facts (
                 profile_key, date, provider_id, source_label, metric, value_json, unit, band,
                 confidence, freshness, conflict_state, category, source_id, source_provider,
-                original_label, used_for_recommendation, updated_at
+                original_label, observed_at, used_for_recommendation, updated_at
             )
             SELECT COALESCE(profile_key, '1'), date, provider_id, source_label, metric, value_json, unit, band,
                 confidence, freshness, conflict_state, category, COALESCE(source_id, ''), source_provider,
-                original_label, used_for_recommendation, updated_at
+                original_label, observed_at, used_for_recommendation, updated_at
             FROM wearable_daily_facts_legacy
             """
         )
@@ -238,8 +242,8 @@ def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict], prof
                 INSERT INTO wearable_daily_facts (
                     profile_key, date, provider_id, source_label, metric, value_json, unit, band,
                     confidence, freshness, conflict_state, category, source_id, source_provider,
-                    original_label, used_for_recommendation, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    original_label, observed_at, used_for_recommendation, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(profile_key, date, provider_id, metric, source_id) DO UPDATE SET
                     source_label=excluded.source_label,
                     value_json=excluded.value_json,
@@ -252,6 +256,7 @@ def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict], prof
                     source_id=excluded.source_id,
                     source_provider=excluded.source_provider,
                     original_label=excluded.original_label,
+                    observed_at=excluded.observed_at,
                     used_for_recommendation=excluded.used_for_recommendation,
                     updated_at=excluded.updated_at
                 """,
@@ -271,6 +276,7 @@ def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict], prof
                     row.get("source_id"),
                     row.get("source_provider"),
                     row.get("original_label"),
+                    row.get("observed_at"),
                     1 if row.get("used_for_recommendation") else 0,
                     row.get("updated_at") or now,
                 ),
@@ -355,11 +361,18 @@ def list_recommendation_facts(
             SELECT * FROM wearable_daily_facts
             WHERE profile_key = ?
               AND (? IS NULL OR provider_id = ?)
-              AND (? = 0 OR (freshness IN ('fresh', 'aging') AND date >= ?))
+              AND (? = 0 OR (
+                    freshness IN ('fresh', 'aging')
+                    AND ((observed_at IS NOT NULL AND datetime(observed_at) >= datetime(?))
+                         OR (observed_at IS NULL AND date >= ?))
+              ))
             ORDER BY date DESC, provider_id, metric
             LIMIT ?
             """,
-            (scoped_profile, provider_id, provider_id, 1 if usable_only else 0, usable_cutoff, int(limit)),
+            (
+                scoped_profile, provider_id, provider_id, 1 if usable_only else 0,
+                (datetime.now() - timedelta(hours=48)).isoformat(), usable_cutoff, int(limit),
+            ),
         ).fetchall()
     facts = []
     for row in rows:
@@ -378,6 +391,7 @@ def list_recommendation_facts(
             "source_id": row["source_id"] or None,
             "source_provider": row["source_provider"],
             "original_label": row["original_label"],
+            "observed_at": row["observed_at"],
             "used_for_recommendation": bool(row["used_for_recommendation"]),
             "updated_at": row["updated_at"],
         })
