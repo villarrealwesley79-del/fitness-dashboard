@@ -15602,11 +15602,14 @@ def smart_recommendation_api():
 
     # HRV trend (best-effort)
     hrv_trend = "unknown"
+    hrv_sample_count = 0
     try:
         end = datetime.now().date()
         start = end - timedelta(days=6)
         rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
+        hrv_values = [r.get("hrv") for r in rows if r.get("hrv") is not None]
+        hrv_sample_count = len(hrv_values)
+        hrv_trend = compute_hrv_trend(hrv_values)
     except Exception:
         pass
 
@@ -15642,7 +15645,7 @@ def smart_recommendation_api():
     # consumption of cached Oura factors and report their direct freshness.
     oura_usable = any((
         readiness is not None,
-        hrv_trend and hrv_trend != "unknown",
+        hrv_sample_count >= 4 and hrv_trend and hrv_trend != "unknown",
         (sleep_debt.get("sample_count") or 0) > 0,
     ))
     recommendation_readiness = readiness
@@ -15913,7 +15916,12 @@ def smart_recommendation_api():
         field
         for field, value in (
             ("readiness_score", recommendation_readiness),
-            ("hrv_trend", None if recommendation_hrv_trend == "unknown" else recommendation_hrv_trend),
+            (
+                "hrv_trend",
+                recommendation_hrv_trend
+                if hrv_sample_count >= 4 and recommendation_hrv_trend != "unknown"
+                else None,
+            ),
             (
                 "sleep_debt_minutes",
                 recommendation_sleep_debt.get("debt_minutes")

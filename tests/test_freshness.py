@@ -141,7 +141,7 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
     assert payload["confidence_level"] == "high"
     assert payload["recommendation_sources"]["source_proof"]["oura"] == {
         "used_for_recommendation": True,
-        "fields_used": ["hrv_trend", "readiness_score", "sleep_debt_minutes"],
+        "fields_used": ["readiness_score", "sleep_debt_minutes"],
         "modifier_applied": False,
         "ignored_reason": None,
     }
