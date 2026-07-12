@@ -16018,7 +16018,10 @@ def smart_recommendation_api():
         if weather.get(temperature_field) is not None:
             weather_temperature = float(weather.get(temperature_field))
             weather_fields.append(temperature_field)
-            if weather.get("humidity_pct") is not None and weather_temperature >= 90:
+            if (
+                weather.get("humidity_pct") is not None
+                and 90 <= weather_temperature < 95
+            ):
                 weather_fields.append("humidity_pct")
     source_inputs = {
         "open_wearables_modifier_applied": bool(open_wearables_modifier.get("applied")),

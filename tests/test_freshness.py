@@ -283,6 +283,9 @@ def test_recommendation_smart_uses_warm_cached_weather_without_live_fetch(fitnes
     weather = response.get_json()["weather"]
     assert weather["source"] == "cache"
     assert weather["temp_f"] == 98
+    assert response.get_json()["recommendation_sources"]["source_proof"]["weather"]["fields_used"] == [
+        "feelslike_f"
+    ]
 
 
 def test_recommendation_smart_oura_cache_miss_does_not_fetch_live_oura(fitness_app, monkeypatch):
