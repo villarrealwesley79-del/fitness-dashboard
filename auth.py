@@ -339,6 +339,7 @@ def login():
             return render_template("login.html"), 503
         if user:
             _rate_reset_all(rate_keys)
+            session.permanent = True
             login_user(user)
             return redirect(_safe_next(request.args.get("next")))
         _rate_record_fail_all(rate_keys)
@@ -372,6 +373,7 @@ def register():
             User.create(username, password, email=email)
             _rate_reset_all(rate_keys)
             user = User.authenticate(username, password)
+            session.permanent = True
             login_user(user)
             return redirect(url_for("index"))
     return render_template("login.html", register=True)

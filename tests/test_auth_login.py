@@ -3,6 +3,9 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -78,6 +81,46 @@ def test_login_success_sets_session_and_reaches_protected_route(tmp_path, monkey
     assert response.headers["Location"].endswith("/")
     assert "Set-Cookie" in response.headers
     assert client.get("/protected").status_code == 200
+
+
+def test_login_session_cookie_expires_after_configured_lifetime(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("Wesley1226", "existing-password")
+    client = app.test_client()
+    before_login = datetime.now(timezone.utc)
+
+    response = client.post(
+        "/login",
+        data={"username": "Wesley1226", "password": "existing-password"},
+    )
+    after_login = datetime.now(timezone.utc)
+
+    cookie = SimpleCookie()
+    cookie.load(response.headers["Set-Cookie"])
+    expires_at = parsedate_to_datetime(cookie[app.config["SESSION_COOKIE_NAME"]]["expires"])
+    expected_lifetime = app.config["PERMANENT_SESSION_LIFETIME"]
+    tolerance = timedelta(seconds=1)
+    assert before_login + expected_lifetime - tolerance <= expires_at
+    assert expires_at <= after_login + expected_lifetime + tolerance
+
+
+def test_registration_session_cookie_expires_after_configured_lifetime(tmp_path, monkeypatch):
+    app, _auth = _make_auth_app(tmp_path, monkeypatch)
+    before_registration = datetime.now(timezone.utc)
+
+    response = app.test_client().post(
+        "/register",
+        data={"username": "Wesley1226", "password": "existing-password"},
+    )
+    after_registration = datetime.now(timezone.utc)
+
+    cookie = SimpleCookie()
+    cookie.load(response.headers["Set-Cookie"])
+    expires_at = parsedate_to_datetime(cookie[app.config["SESSION_COOKIE_NAME"]]["expires"])
+    expected_lifetime = app.config["PERMANENT_SESSION_LIFETIME"]
+    tolerance = timedelta(seconds=1)
+    assert before_registration + expected_lifetime - tolerance <= expires_at
+    assert expires_at <= after_registration + expected_lifetime + tolerance
 
 
 def test_login_post_rejects_external_next_redirect(tmp_path, monkeypatch):
