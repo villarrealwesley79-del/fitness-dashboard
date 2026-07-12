@@ -1,4 +1,6 @@
 import importlib
+import io
+import urllib.error
 
 
 def _fitness_app(monkeypatch, tmp_path):
@@ -60,3 +62,32 @@ def test_oura_sync_success_returns_summary(monkeypatch, tmp_path):
     assert payload["latest_records"] == 2
     assert payload["latest_days"] == ["2026-05-18", "2026-05-17"]
     assert calls["api_token"] == "test-token"
+
+
+def test_oura_sync_redacts_upstream_response_body(monkeypatch, tmp_path):
+    app = _fitness_app(monkeypatch, tmp_path)
+    monkeypatch.setenv("OURA_API_TOKEN", "test-token")
+    oura_sleep_sync = importlib.import_module("oura_sleep_sync")
+    raw_detail = b'{"error":"invalid_token","token":"oura-secret-token-value"}'
+
+    def fail_sync(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "https://api.ouraring.com/v2/usercollection/sleep",
+            401,
+            "Unauthorized",
+            {},
+            io.BytesIO(raw_detail),
+        )
+
+    monkeypatch.setattr(oura_sleep_sync, "sync_sleep_data", fail_sync)
+
+    response = app.test_client().post("/api/oura/sync-sleep", json={"days_back": 7})
+
+    assert response.status_code == 502
+    payload = response.get_json()
+    assert payload["error"] == {
+        "code": "oura_api_error",
+        "message": "Oura API returned HTTP 401.",
+    }
+    assert "oura-secret-token-value" not in response.get_data(as_text=True)
+    assert "invalid_token" not in response.get_data(as_text=True)
