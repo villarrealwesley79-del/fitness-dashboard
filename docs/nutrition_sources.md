@@ -192,6 +192,29 @@ Local food history was not available in the clean FIT-98 worktree, so the additi
 
 Follow-up filed: FIT-123 tracks the direct-lookup gate blocking regional restaurant queries before branded provider lookup.
 
+### Opt-in credentialed provider smoke
+
+Run this only in a shell where `NUTRITIONIX_APP_ID`, `NUTRITIONIX_APP_KEY`,
+and/or `USDA_FDC_API_KEY` are already exported. Do not put credential values on
+the command line or paste the generated report into an untrusted destination.
+
+```sh
+venv/bin/python scripts/smoke_branded_lookup_coverage.py --credentialed --json
+```
+
+`--credentialed` is the explicit opt-in for the credentialed evidence report.
+The report prints only whether each credentialed provider is configured; credential values
+are redacted from every report field. Cache reads are skipped and cache writes
+are disabled by default. Add `--include-cache` only when existing cache rows are
+part of the intended smoke; writes remain disabled. Add `--respect-gate` to run
+with the production direct-lookup gate instead of the default coverage-matrix
+bypass.
+
+The report records provider status, actual source priority, cache mode, and
+direct-gate mode. Each query is categorized as `provider unavailable`, `no
+match`, `wrong-chain match`, or `accepted match`; an accepted row records the
+provider separately.
+
 | Category | Query | Outcome | Matched item | Calories | Source URL | Confidence | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | required | bill miller bacon and egg taco | provider unavailable |  |  |  |  | FIT-98 Bill Miller BBQ query; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |

@@ -231,3 +231,142 @@ def test_provider_status_marks_respect_gate_mode():
     status = smoke.provider_status(respect_direct_lookup_gate=True)
 
     assert status["direct_lookup_gate"] == "production gate respected"
+
+
+def test_credentialed_report_formats_safe_metadata_and_categories():
+    results = [
+        smoke.CoverageResult(
+            category="required",
+            query="bill miller brisket sandwich",
+            outcome="nutritionix",
+            matched_item="Bill Miller BBQ brisket sandwich",
+            calories="610",
+            source_url="https://www.nutritionix.com/",
+            confidence="0.85",
+            notes="test query",
+        ),
+        smoke.CoverageResult(
+            category="required",
+            query="bill miller taco",
+            outcome="provider unavailable",
+            matched_item="",
+            calories="",
+            source_url="",
+            confidence="",
+            notes="nutritionix skipped: missing credentials",
+        ),
+        smoke.CoverageResult(
+            category="proxy",
+            query="whataburger patty melt",
+            outcome="miss/fallback gap",
+            matched_item="",
+            calories="",
+            source_url="",
+            confidence="",
+            notes="nutritionix returned Wrong Chain patty melt without verifying expected chain whataburger",
+        ),
+        smoke.CoverageResult(
+            category="proxy",
+            query="taco cabana taco",
+            outcome="miss/fallback gap",
+            matched_item="",
+            calories="",
+            source_url="",
+            confidence="",
+            notes="nutritionix, usda_fdc reached with no verified match",
+        ),
+    ]
+
+    report = smoke.credentialed_report(results, env=CONFIGURED_ENV)
+
+    assert report["provider_status"] == {
+        "heb_product_page": "no credentials required",
+        "nutritionix": "configured",
+        "usda_fdc": "configured",
+        "open_food_facts": "no credentials required",
+    }
+    assert report["source_priority"] == [
+        "heb_product_page",
+        "nutritionix",
+        "usda_fdc",
+        "open_food_facts",
+    ]
+    assert report["cache_mode"] == "reads skipped; writes disabled"
+    assert report["direct_gate_mode"] == "bypassed; production result recorded per row"
+    assert [row["category"] for row in report["results"]] == [
+        "accepted match",
+        "provider unavailable",
+        "wrong-chain match",
+        "no match",
+    ]
+    rendered = smoke.render_credentialed_report(report)
+    assert "- cache mode: reads skipped; writes disabled" in rendered
+    assert "| required | bill miller brisket sandwich | accepted match | nutritionix |" in rendered
+
+
+def test_credentialed_report_redacts_secret_values_from_all_output():
+    secret = "credential-value-that-must-not-appear"
+    report = smoke.credentialed_report(
+        [
+            smoke.CoverageResult(
+                category="required",
+                query=f"query containing {secret}",
+                outcome="nutritionix",
+                matched_item=f"item containing {secret}",
+                calories="100",
+                source_url=f"https://example.test/?api_key={secret}",
+                confidence="0.80",
+                notes=f"provider error included {secret}",
+            )
+        ],
+        env={
+            "NUTRITIONIX_APP_ID": secret,
+            "NUTRITIONIX_APP_KEY": "second-secret",
+            "USDA_FDC_API_KEY": "third-secret",
+        },
+    )
+
+    rendered = smoke.render_credentialed_report(report, as_json=True)
+
+    assert secret not in rendered
+    assert "second-secret" not in rendered
+    assert "third-secret" not in rendered
+    assert "[REDACTED]" in rendered
+
+
+def test_credentialed_report_keeps_wrong_chain_category_when_another_provider_is_unavailable():
+    result = smoke.CoverageResult(
+        category="required",
+        query="bill miller brisket sandwich",
+        outcome="provider unavailable",
+        matched_item="",
+        calories="",
+        source_url="",
+        confidence="",
+        notes=(
+            "nutritionix returned Wrong Chain brisket sandwich without verifying expected chain bill miller; "
+            "usda_fdc skipped: missing USDA_FDC_API_KEY"
+        ),
+    )
+
+    report = smoke.credentialed_report([result], env={"NUTRITIONIX_APP_ID": "id", "NUTRITIONIX_APP_KEY": "key"})
+
+    assert report["results"][0]["category"] == "wrong-chain match"
+
+
+def test_credentialed_report_keeps_accepted_fallback_after_earlier_wrong_chain():
+    result = smoke.CoverageResult(
+        category="required",
+        query="bill miller brisket sandwich",
+        outcome="usda_fdc",
+        matched_item="BRISKET SANDWICH",
+        calories="242",
+        source_url="https://fdc.nal.usda.gov/",
+        confidence="0.80",
+        notes="nutritionix returned Wrong Chain item without verifying expected chain bill miller",
+    )
+
+    report = smoke.credentialed_report([result], env=CONFIGURED_ENV)
+
+    assert report["results"][0]["category"] == "accepted match"
+    assert report["results"][0]["provider"] == "usda_fdc"

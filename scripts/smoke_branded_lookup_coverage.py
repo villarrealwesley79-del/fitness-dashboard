@@ -341,6 +341,112 @@ def markdown_table(results: list[CoverageResult]) -> str:
     return "\n".join(lines)
 
 
+_CREDENTIAL_ENV_KEYS = (
+    "NUTRITIONIX_APP_ID",
+    "NUTRITIONIX_APP_KEY",
+    "USDA_FDC_API_KEY",
+)
+
+
+def credentialed_report(
+    results: list[CoverageResult],
+    *,
+    include_cache: bool = False,
+    respect_direct_lookup_gate: bool = False,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build the safe, stable report shape for an opt-in credentialed smoke run."""
+    env = os.environ if env is None else env
+    status = provider_status(
+        include_cache=include_cache,
+        respect_direct_lookup_gate=respect_direct_lookup_gate,
+        env=env,
+    )
+    source_priority = [source for source in branded_food_lookup.SOURCE_PRIORITY if source != "cache"]
+    if include_cache:
+        source_priority = list(branded_food_lookup.SOURCE_PRIORITY)
+
+    rows = []
+    for result in results:
+        if result.outcome not in {"provider unavailable", "miss/fallback gap"}:
+            category = "accepted match"
+            provider = result.outcome
+        elif "without verifying expected chain" in result.notes:
+            category = "wrong-chain match"
+            provider = ""
+        elif result.outcome == "provider unavailable":
+            category = "provider unavailable"
+            provider = ""
+        elif result.outcome == "miss/fallback gap":
+            category = "no match"
+            provider = ""
+        row = _redact_credentials(asdict(result), env)
+        row["provider"] = provider
+        row["category"] = category
+        row["query_group"] = result.category
+        rows.append(row)
+
+    report = {
+        "provider_status": {
+            "heb_product_page": "no credentials required",
+            "nutritionix": status["nutritionix"],
+            "usda_fdc": status["usda_fdc"],
+            "open_food_facts": status["open_food_facts"],
+        },
+        "source_priority": source_priority,
+        "cache_mode": "reads enabled; writes disabled" if include_cache else "reads skipped; writes disabled",
+        "direct_gate_mode": (
+            "production gate respected"
+            if respect_direct_lookup_gate
+            else "bypassed; production result recorded per row"
+        ),
+        "results": rows,
+    }
+    return report
+
+
+def _redact_credentials(value: Any, env: dict[str, str]) -> Any:
+    secrets = tuple(str(env.get(key) or "") for key in _CREDENTIAL_ENV_KEYS)
+    secrets = tuple(secret for secret in secrets if secret)
+    if isinstance(value, dict):
+        return {key: _redact_credentials(item, env) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_credentials(item, env) for item in value]
+    if isinstance(value, str):
+        for secret in secrets:
+            value = value.replace(secret, "[REDACTED]")
+    return value
+
+
+def render_credentialed_report(report: dict[str, Any], *, as_json: bool = False) -> str:
+    if as_json:
+        return json.dumps(report, indent=2)
+    lines = [
+        "Credentialed provider smoke report:",
+        f"- provider status: {json.dumps(report['provider_status'], sort_keys=True)}",
+        f"- source priority: {', '.join(report['source_priority'])}",
+        f"- cache mode: {report['cache_mode']}",
+        f"- direct-gate mode: {report['direct_gate_mode']}",
+        "",
+        "| Query group | Query | Category | Provider | Matched item | Calories | Source URL | Confidence | Notes |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in report["results"]:
+        values = (
+            row["query_group"],
+            row["query"],
+            row["category"],
+            row["provider"],
+            row["matched_item"],
+            row["calories"],
+            row["source_url"],
+            row["confidence"],
+            row["notes"],
+        )
+        lines.append("| " + " | ".join(_escape_markdown_cell(value) for value in values) + " |")
+    return "\n".join(lines)
+
+
 def _escape_markdown_cell(value: object) -> str:
     return str(value).replace("\n", " ").replace("|", "\\|")
 
@@ -348,6 +454,11 @@ def _escape_markdown_cell(value: object) -> str:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Print JSON instead of Markdown.")
+    parser.add_argument(
+        "--credentialed",
+        action="store_true",
+        help="Emit the redacted credentialed-provider evidence report shape.",
+    )
     parser.add_argument("--force-lookup", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--respect-gate", action="store_true", help="Respect the production direct-lookup gate.")
     parser.add_argument("--include-cache", action="store_true", help="Read existing local cache rows.")
@@ -369,7 +480,14 @@ def main() -> int:
         include_cache=include_cache,
         respect_direct_lookup_gate=respect_direct_lookup_gate,
     )
-    if args.json:
+    if args.credentialed:
+        report = credentialed_report(
+            results,
+            include_cache=include_cache,
+            respect_direct_lookup_gate=respect_direct_lookup_gate,
+        )
+        print(render_credentialed_report(report, as_json=args.json))
+    elif args.json:
         print(json.dumps({"provider_status": status, "results": [asdict(result) for result in results]}, indent=2))
     else:
         print("Provider status:")
