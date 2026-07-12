@@ -17275,11 +17275,19 @@ def sleep_analytics():
         row = dict(manual_row)
         row['source'] = row.get('source') or 'manual'
         date = row.get('date')
+        try:
+            datetime.strptime(date, '%Y-%m-%d')
+        except (TypeError, ValueError):
+            continue
         if date and (date not in dedup or row.get('source') == 'apple_watch'):
             dedup[date] = row
     for row in oura_rows:
-        if row.get('date'):
-            dedup[row['date']] = row
+        date = row.get('date')
+        try:
+            datetime.strptime(date, '%Y-%m-%d')
+        except (TypeError, ValueError):
+            continue
+        dedup[date] = row
     rows = sorted(dedup.values(), key=lambda x: x.get('date'))
     if not rows: return jsonify({'history':[],'consistency_score':None,'sleep_perf_correlation':None})
     import statistics, math

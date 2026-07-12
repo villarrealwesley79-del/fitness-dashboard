@@ -57,6 +57,10 @@ def test_sleep_analytics_prefers_oura_per_date_and_fills_manual_gaps(monkeypatch
                 "sleep_start": "2026-07-11T23:15:00",
                 "sleep_duration_min": 390,
             },
+            {
+                "date": "not-a-date",
+                "sleep_duration_min": 400,
+            },
         ],
     )
 
