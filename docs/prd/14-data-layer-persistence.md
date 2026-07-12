@@ -26,7 +26,7 @@ The data layer has few direct screens, but it powers nearly every surface:
 | AI coach surfaces | Persist adjust/analyze cache and metrics in SQLite; rely on local history and wearable fact stores for context. |
 | Admin/debug smoke tests | Depend on `DATA_DIR` isolation, authenticated session cookies, and route-level persistence paths. |
 
-Backend-only consumers include recommendation generation, AI fact context, Apple Health sync, WHOOP sync/import, Open Wearables fact sync, and push alerts. `delete_user_data` exists as an unwired helper used by tests; no user-facing account-data deletion flow currently exists.
+Backend-only consumers include recommendation generation, AI fact context, Apple Health sync, WHOOP sync/import, Open Wearables fact sync, and push alerts. There is no bulk account-data deletion/reset helper or user-facing flow; FIT-318 removed the prior test-only helpers rather than exposing an unconfirmed destructive product action.
 
 ## 3. Field Inventory
 
@@ -211,7 +211,7 @@ History normalization makes mixed sources business-readable. Strength-like label
 
 Synthetic-history cleanup is intentionally manual and constrained. The cleanup doc identifies suspected synthetic runtime rows on 2026-04-12, 2026-04-13, and 2026-04-14. The script only edits runtime JSON files and requires exact ids plus expected counts to apply.
 
-Retention is mostly indefinite. JSON history, SQLite logs, wearable facts, food logs, and caches remain until cleared, imported over, or manually cleaned. `delete_user_data` is an unwired test-only helper today; no user-facing account-data-deletion flow currently exists. Explicit bounded reads exist for API payloads: wearable facts limit defaults to 30 and clamps to 100; WHOOP daily facts export limits to 366; workout adaptation event list clamps to 1-50; sync-run/fact helper limits clamp internally. Cache TTLs are limited: weather cache max age is 600 seconds; Oura source label is "live" only when sync attempt is under 1 hour old. Lookup cache TTLs are not evident in `data_store.py` [TBC: cache invalidation may live in food feature code].
+Retention is mostly indefinite. JSON history, SQLite logs, wearable facts, food logs, and caches remain until cleared through a feature-specific path, imported over, or manually cleaned. There is no bulk account-data deletion/reset API or helper. Explicit bounded reads exist for API payloads: wearable facts limit defaults to 30 and clamps to 100; WHOOP daily facts export limits to 366; workout adaptation event list clamps to 1-50; sync-run/fact helper limits clamp internally. Cache TTLs are limited: weather cache max age is 600 seconds; Oura source label is "live" only when sync attempt is under 1 hour old. Lookup cache TTLs are not evident in `data_store.py` [TBC: cache invalidation may live in food feature code].
 
 ## 7. Enums & Constants
 
@@ -339,7 +339,7 @@ WHOOP access/refresh token values are stored in a protected material file outsid
 
 Wearable facts are public coaching facts only. The store rejects raw provider payloads, records/samples, secrets, token fields, and `user_id`. Profile scoping uses `profile_key` rather than raw user id.
 
-Known security/privacy risks remain: Open Wearables/Apple Health token and URL handling is covered by existing FIT-261; `delete_user_data` is unwired and omits push subscriptions; backup export includes food and health-derived data in plain JSON by design. Flask auth persists `.flask-secret` in the project directory rather than `DATA_DIR`.
+Known security/privacy risks remain: Open Wearables/Apple Health token and URL handling is covered by existing FIT-261; the product has no account-data deletion flow; backup export includes food and health-derived data in plain JSON by design. Flask auth persists `.flask-secret` in the project directory rather than `DATA_DIR`.
 
 ## 10. Business Rules
 
@@ -412,16 +412,12 @@ Coverage gaps:
   - Ensure backups and public status payloads never include secret-bearing values.
 - **Duplicate-of:** FIT-261
 
-### IC-3: Delete push subscriptions during account data deletion
+### IC-3: Delete push subscriptions during account data deletion (retired)
 - **Type:** Privacy
 - **Priority:** high
 - **Where:** data_store.py:1955
-- **Problem:** `delete_user_data` deletes many user-scoped tables and lookup caches, but it does not delete or revoke `push_subscriptions`, which include endpoint URLs and subscription JSON.
-- **Why it matters:** A user data deletion flow can leave notification endpoints and browser subscription material behind.
-- **Acceptance criteria:**
-  - `delete_user_data` deletes or revokes push subscriptions for the user.
-  - Data summary includes push subscription counts.
-  - Tests cover deletion of active and revoked subscriptions.
+- **Decision:** FIT-318 removed the unwired bulk deletion helper and its test-only contract. The product does not expose account-data deletion, so there is no deletion path that can silently retain push subscriptions.
+- **Follow-up boundary:** Any future account-data deletion feature requires an owner-confirmed product flow and explicit coverage for every user-scoped store, including active and revoked push subscriptions.
 - **Duplicate-of:** none
 
 ### IC-4: Resolve JSON settings vs SQL settings default drift

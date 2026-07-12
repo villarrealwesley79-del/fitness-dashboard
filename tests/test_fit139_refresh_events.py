@@ -300,40 +300,6 @@ def test_refresh_event_ack_cannot_cross_user_boundary(monkeypatch, tmp_path):
     assert data_store.list_food_log_refresh_events(2)[0]["acknowledged_at"] is None
 
 
-def test_delete_user_data_purges_refresh_events(monkeypatch, tmp_path):
-    _isolated_db(monkeypatch, tmp_path)
-    _food_log("delete-user-1", calories=180, protein_g=6)
-    _food_log(
-        "delete-user-1",
-        calories=230,
-        protein_g=8,
-        refresh_event={"source_label": "Verified source"},
-    )
-
-    assert data_store.list_food_log_refresh_events(1)
-
-    data_store.delete_user_data(1)
-
-    assert data_store.list_food_log_refresh_events(1) == []
-
-
-def test_clear_food_logs_purges_refresh_events(monkeypatch, tmp_path):
-    _isolated_db(monkeypatch, tmp_path)
-    _food_log("clear-1", calories=180, protein_g=6)
-    _food_log(
-        "clear-1",
-        calories=230,
-        protein_g=8,
-        refresh_event={"source_label": "Verified source"},
-    )
-
-    assert data_store.list_food_log_refresh_events(1)
-
-    data_store.clear_food_logs(1)
-
-    assert data_store.list_food_log_refresh_events(1) == []
-
-
 def test_delete_food_log_by_client_id_purges_only_matching_refresh_event(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     _food_log("delete-client-1", calories=180, protein_g=6)

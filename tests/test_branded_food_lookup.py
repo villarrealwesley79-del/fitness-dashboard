@@ -1537,8 +1537,6 @@ def test_data_store_cache_round_trip(tmp_path, monkeypatch):
     data_store.save_branded_lookup_cache("banana", "usda_fdc", {**response, "item_name": "User 2 banana"}, user_id=2)
     assert data_store.get_branded_lookup_cache("banana", user_id=2)["response_json"]["item_name"] == "User 2 banana"
 
-    data_store.delete_user_data(1)
-    assert data_store.get_branded_lookup_cache("banana", user_id=1) is None
     assert data_store.get_branded_lookup_cache("banana", user_id=2)["response_json"]["item_name"] == "User 2 banana"
 
 

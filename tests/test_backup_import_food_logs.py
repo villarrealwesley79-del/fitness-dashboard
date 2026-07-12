@@ -114,7 +114,9 @@ def test_backup_round_trips_personal_vocab(tmp_path, monkeypatch):
     assert {row["normalized_input"] for row in vocab_rows} == {"chip ckn bur", "skip me"}
     assert meal_events[0]["meal_id"] == "discarded-meal-1"
 
-    data_store.delete_user_data(1)
+    data_store.delete_personal_vocab_entry(1, "chip ckn bur")
+    data_store.delete_personal_vocab_entry(1, "skip me")
+    data_store.delete_meal_acceptance_event(1, "discarded-meal-1")
     restored = client.post("/api/import-backup", json={"data": {
         "personal_vocab": vocab_rows,
         "meal_acceptance_events": meal_events,

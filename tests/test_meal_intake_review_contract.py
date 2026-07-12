@@ -265,7 +265,7 @@ def test_snapshot_lifecycle_delete_and_backup_round_trip(monkeypatch, tmp_path):
     assert len(snapshots) == 1
     assert snapshots[0]["meal_id"] == "fit144-lifecycle-1"
 
-    data_store.delete_user_data(1)
+    data_store.delete_meal_review_snapshot(1, "fit144-lifecycle-1")
     assert data_store.get_meal_review_snapshot(1, "fit144-lifecycle-1") is None
 
     restored = client.post("/api/import-backup", json={"data": {"meal_review_snapshots": snapshots}})

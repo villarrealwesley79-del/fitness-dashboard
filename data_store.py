@@ -2011,16 +2011,6 @@ def upsert_personal_vocab_entry(
     return result
 
 
-def clear_food_logs(user_id: int) -> None:
-    """Delete accepted food logs for a user before a full backup restore."""
-    with _get_db() as conn:
-        conn.execute("DELETE FROM workout_adaptation_events WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM workout_adaptation_pending WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM food_log_refresh_events WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM food_logs WHERE user_id = ?", (user_id,))
-        conn.commit()
-
-
 def food_log_exists_by_client_id(user_id: int, client_id: str) -> bool:
     """Return whether a user-scoped client_id already has a food-log row."""
     if not client_id:
@@ -2398,33 +2388,6 @@ def upsert_settings(user_id: int, settings: dict) -> None:
     """
     with _get_db() as conn:
         conn.execute(sql, vals[:6])
-        conn.commit()
-
-
-# ── Account Management ────────────────────────────────────────────────────────
-def delete_user_data(user_id: int) -> None:
-    """Permanently delete all data for a user (GDPR / account deletion)."""
-    tables = [
-        "body_data",
-        "cardio_data",
-        "nutrition_data",
-        "food_logs",
-        "food_log_refresh_events",
-        "workout_adaptation_pending",
-        "workout_adaptation_events",
-        "personal_vocab",
-        "meal_acceptance_events",
-        "meal_review_snapshots",
-        "current_workout_plans",
-        "recovery_data",
-        "user_settings",
-    ]
-    with _get_db() as conn:
-        for table in tables:
-            conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM push_subscriptions WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM branded_lookup_cache WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM barcode_lookup_cache WHERE user_id = ?", (user_id,))
         conn.commit()
 
 

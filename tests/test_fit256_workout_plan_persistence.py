@@ -318,19 +318,6 @@ def test_gym_now_lightweight_plan_does_not_seed_next_workout(monkeypatch, tmp_pa
     assert "_fit136_lightweight_no_ow" not in workout
 
 
-def test_delete_user_data_purges_current_workout_plan(monkeypatch, tmp_path):
-    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
-    data_store.init_data_db()
-    data_store.save_current_workout_plan(1, "fp-user-1", {"id": "fit-256-plan"})
-
-    assert data_store.get_user_data_summary(1)["current_workout_plans"] == 1
-
-    data_store.delete_user_data(1)
-
-    assert data_store.get_current_workout_plan(1) is None
-    assert data_store.get_user_data_summary(1)["current_workout_plans"] == 0
-
-
 def test_current_plan_cache_read_waits_for_owner_metadata(monkeypatch, tmp_path):
     module, _unused_client, _state = _client(monkeypatch, tmp_path)
     plan = _recommendation(module)

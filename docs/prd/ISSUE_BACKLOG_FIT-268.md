@@ -105,7 +105,7 @@ PRD [06-nutrition-data-sources.md § IC-1](https://github.com/villarrealwesley79
 - **Priority:** High  |  **Labels:** Privacy  |  **Project:** Fitness Dashboard: Product Hardening
 
 **Problem**
-`delete_user_data` deletes many user-scoped tables and lookup caches, but it does not delete or revoke `push_subscriptions`, which include endpoint URLs and subscription JSON.
+The former test-only bulk deletion helper was updated by FIT-285 to delete active and revoked `push_subscriptions`. FIT-318 subsequently removed the still-unwired helper instead of exposing an unconfirmed destructive product flow.
 
 **Where**
 data_store.py:1955
@@ -114,9 +114,8 @@ data_store.py:1955
 A user data deletion flow can leave notification endpoints and browser subscription material behind.
 
 **Acceptance criteria**
-- `delete_user_data` deletes or revokes push subscriptions for the user.
-  - Data summary includes push subscription counts.
-  - Tests cover deletion of active and revoked subscriptions.
+- Retired by FIT-318: there is no bulk account-data deletion helper or product flow.
+- A future owner-confirmed deletion feature must cover active and revoked push subscriptions and every other user-scoped store.
 
 **Source**
 PRD [14-data-layer-persistence.md § IC-3](https://github.com/villarrealwesley79-del/fitness-dashboard/blob/villarrealwesley79/fit-268-reverse-engineer-per-feature-prds-and-documentation-for/docs/prd/14-data-layer-persistence.md) — reverse-engineered documentation pass FIT-268 (PR #226). Verification: CONFIRMED by independent code review.
@@ -1386,6 +1385,9 @@ Dead data-mutation helpers are a foot-gun and imply a deletion feature that does
 **Acceptance criteria**
 - Decide: expose a product flow (owner-only, confirmed) or delete the helpers
 - Docs updated to match the decision
+
+**Decision**
+FIT-318 deletes both test-only helpers. No account-data deletion/reset product flow is exposed; tests use feature-specific deletion paths where scenario setup requires cleanup.
 
 **Source**
 PRD [14-data-layer-persistence.md § V-1](https://github.com/villarrealwesley79-del/fitness-dashboard/blob/villarrealwesley79/fit-268-reverse-engineer-per-feature-prds-and-documentation-for/docs/prd/14-data-layer-persistence.md) — reverse-engineered documentation pass FIT-268 (PR #226). Verification: CONFIRMED by independent code review.

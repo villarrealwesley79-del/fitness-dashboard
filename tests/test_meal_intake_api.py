@@ -1123,7 +1123,7 @@ def test_imported_forged_canes_snapshot_cannot_grant_source_backed_accept(monkey
     item["estimate"]["source"] = "ai_text_estimate"
     item["original_estimate"]["source"] = "ai_text_estimate"
 
-    data_store.delete_user_data(1)
+    data_store.delete_meal_review_snapshot(1, "forged-imported-canes")
     restored = client.post(
         "/api/import-backup",
         json={"data": {"meal_review_snapshots": [snapshot]}},
@@ -2497,7 +2497,7 @@ def test_imported_canes_candidate_cannot_reacquire_source_backed_trust(monkeypat
     assert capture.status_code == 200, capture.get_data(as_text=True)
     snapshot = client.get("/api/export-backup").get_json()["data"]["meal_review_snapshots"][0]
 
-    data_store.delete_user_data(1)
+    data_store.delete_meal_review_snapshot(1, "imported-canes-candidate")
     restored = client.post(
         "/api/import-backup",
         json={"data": {"meal_review_snapshots": [snapshot]}},
@@ -8065,7 +8065,7 @@ def test_meal_intake_photo_text_item_breakdown_preserves_image_origin(monkeypatc
     assert all(item["estimate"].get("from_image") is True for item in body["items"])
 
 
-def test_barcode_lookup_cache_round_trip_and_delete_user_data(tmp_path, monkeypatch):
+def test_barcode_lookup_cache_round_trip_is_user_scoped(tmp_path, monkeypatch):
     monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
     data_store.init_data_db()
     response = _barcode_estimate()
@@ -8078,8 +8078,6 @@ def test_barcode_lookup_cache_round_trip_and_delete_user_data(tmp_path, monkeypa
     assert row["response_json"] == response
     assert data_store.get_barcode_lookup_cache("012345678905", user_id=2)["response_json"]["item_name"] == "User 2 bar"
 
-    data_store.delete_user_data(1)
-    assert data_store.get_barcode_lookup_cache("012345678905", user_id=1) is None
     assert data_store.get_barcode_lookup_cache("012345678905", user_id=2)["response_json"]["item_name"] == "User 2 bar"
 
 
