@@ -366,6 +366,26 @@ def test_failed_sync_reports_error_even_with_usable_cached_fact(tmp_path):
     assert source["used_for_recommendation"] is True
 
 
+def test_undated_body_latest_replaces_prior_projection(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    for fetched_at in ("2026-06-28T10:00:00", "2026-06-29T10:00:00"):
+        hub.store_wearable_facts(
+            {"fetched_at": fetched_at, "body_summary": {"slow_changing": {"weight_kg": 82.4}}},
+            db_file=db_file,
+            profile_key="profile-42",
+            activity_extractor=lambda _payload: [],
+            sleep_extractor=lambda _payload: None,
+            row_replacement_sources=lambda _row: [],
+        )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    weights = [fact for fact in facts if fact["metric"] == "weight"]
+    assert len(weights) == 1
+    assert weights[0]["date"] == "2026-06-29"
+
+
 def test_recommendation_facts_filters_provider_and_freshness(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     today = date.today().isoformat()
@@ -411,3 +431,21 @@ def test_recommendation_facts_recomputes_age_for_orphaned_fresh_rows(tmp_path):
     )], profile_key="profile-1")
 
     assert hub.recommendation_facts(db_file, "profile-1") == []
+
+
+def test_recommendation_facts_keeps_latest_usable_fact_per_metric_before_limit(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today()
+    rows = [
+        WearableDailyFact(today.isoformat(), "open_wearables", "Open Wearables", f"metric_{index}", index, freshness="fresh")
+        for index in range(25)
+    ]
+    rows.append(WearableDailyFact(
+        (today - timedelta(days=1)).isoformat(), "open_wearables", "Open Wearables",
+        "sleep_duration", 300, "min", freshness="aging",
+    ))
+    upsert_daily_facts(db_file, rows, profile_key="profile-1")
+
+    facts = hub.recommendation_facts(db_file, "profile-1", limit=30)
+
+    assert any(fact["metric"] == "sleep_duration" for fact in facts)

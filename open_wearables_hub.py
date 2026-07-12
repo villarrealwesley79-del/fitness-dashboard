@@ -21,6 +21,7 @@ from typing import Callable
 
 from wearable_fact_store import (
     WearableDailyFact,
+    delete_facts_by_source_id,
     list_recommendation_facts,
     upsert_daily_facts,
     upsert_wearable_source,
@@ -432,6 +433,10 @@ def store_wearable_facts(
             mark_replacement_sources(row, date_s)
 
     if facts:
+        if any(fact.source_id == "undated-latest" for fact in facts):
+            delete_facts_by_source_id(
+                db_file, "open_wearables", "undated-latest", profile_key=profile_key
+            )
         upsert_daily_facts(db_file, facts, profile_key=profile_key)
     persisted_usable = list_recommendation_facts(
         db_file,
@@ -465,13 +470,17 @@ def store_wearable_facts(
 
 
 def recommendation_facts(db_file: str, profile_key: str, limit: int = 20) -> list[dict]:
-    return list_recommendation_facts(
+    facts = list_recommendation_facts(
         db_file,
-        limit=limit,
+        limit=1000,
         profile_key=profile_key,
         provider_id="open_wearables",
         usable_only=True,
     )
+    latest_by_metric = {}
+    for fact in facts:
+        latest_by_metric.setdefault(fact["metric"], fact)
+    return list(latest_by_metric.values())[:limit]
 
 
 def conservative_modifier(facts) -> dict:

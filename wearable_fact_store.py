@@ -415,6 +415,21 @@ def delete_provider_data(db_path: str, provider_id: str, profile_key: str | int 
         )
 
 
+def delete_facts_by_source_id(
+    db_path: str,
+    provider_id: str,
+    source_id: str,
+    profile_key: str | int | None = None,
+) -> None:
+    init_wearable_fact_db(db_path)
+    scoped_profile = _normalize_profile_key(profile_key)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM wearable_daily_facts WHERE profile_key = ? AND provider_id = ? AND source_id = ?",
+            (scoped_profile, provider_id, source_id),
+        )
+
+
 def latest_wearable_freshness(db_path: str, profile_key: str | int | None = None) -> dict:
     sources = list_wearable_sources(db_path, profile_key=profile_key)
     return {
