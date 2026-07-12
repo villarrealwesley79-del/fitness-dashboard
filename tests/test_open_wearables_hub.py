@@ -342,6 +342,30 @@ def test_empty_sync_keeps_source_active_while_persisted_fact_is_usable(tmp_path)
     assert source["last_data_point"] == today
 
 
+def test_failed_sync_reports_error_even_with_usable_cached_fact(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        today, "open_wearables", "Open Wearables", "recovery_score", 80,
+        "score", freshness="fresh",
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {"fetched_at": datetime.now().astimezone().isoformat(), "errors": {"auth": "missing_token"}},
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_wearable_sources
+
+    source = list_wearable_sources(db_file, profile_key="profile-42")[0]
+    assert source["status"] == "error"
+    assert source["used_for_recommendation"] is True
+
+
 def test_recommendation_facts_filters_provider_and_freshness(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     today = date.today().isoformat()

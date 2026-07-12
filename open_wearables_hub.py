@@ -440,12 +440,11 @@ def store_wearable_facts(
         provider_id="open_wearables",
         usable_only=True,
     )
-    source_status = "fresh" if persisted_usable else ("error" if errors and not facts else "stale")
-    last_data_point = (
-        max(replacement_source_dates.values())
-        if replacement_source_dates
-        else max((fact["date"] for fact in persisted_usable), default=fetched_at[:10])
-    )
+    source_status = "error" if errors and not facts else ("fresh" if persisted_usable else "stale")
+    trusted_dates = list(replacement_source_dates.values())
+    trusted_dates.extend(fact.date for fact in facts if fact.freshness != "unknown")
+    trusted_dates.extend(fact["date"] for fact in persisted_usable)
+    last_data_point = max(trusted_dates, default=fetched_at[:10])
     upsert_wearable_source(db_file, {
         "provider_id": "open_wearables",
         "label": "Open Wearables",
