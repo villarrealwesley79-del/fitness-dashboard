@@ -321,10 +321,6 @@ def store_wearable_facts(
                 "heart_rate_variability_sdnn": (("avg_hrv_sdnn_ms",), "ms"),
                 "heart_rate_variability_rmssd": (("avg_hrv_rmssd_ms",), "ms"),
             }),
-            (body.get("latest") if isinstance(body.get("latest"), dict) else {}, {
-                "body_temperature": (("body_temperature_celsius",), "c"),
-                "skin_temperature": (("skin_temperature_celsius",), "c"),
-            }),
         )
         for values, mappings in body_groups:
             for metric, (aliases, unit) in mappings.items():
@@ -336,13 +332,27 @@ def store_wearable_facts(
                     ))
         if len(facts) > before_count:
             mark_replacement_sources(body, date_s)
+        latest = body.get("latest") if isinstance(body.get("latest"), dict) else {}
+        for metric, value_key, measured_at_key in (
+            ("body_temperature", "body_temperature_celsius", "body_temperature_measured_at"),
+            ("skin_temperature", "skin_temperature_celsius", "skin_temperature_measured_at"),
+        ):
+            value = _number(latest, value_key)
+            if value is not None:
+                measured_date = str(latest.get(measured_at_key) or date_s)[:10]
+                facts.append(WearableDailyFact(
+                    measured_date, "open_wearables", "Open Wearables", metric, value, "c",
+                    confidence="medium", freshness=status, source_provider=provider,
+                ))
+                mark_replacement_sources(body, measured_date)
 
     for row in _payload_rows(data.get("workouts")):
         date_s = _row_date(row, fetched_at)
         before_count = len(facts)
-        original_label = _first_value(row, "activity_type", "workout_type", "sport", "name", "type")
+        canonical_type = _first_value(row, "type", "activity_type", "workout_type", "sport")
+        original_label = _first_value(row, "name", "activity_type", "workout_type", "sport", "type")
         provenance = {
-            "category": _workout_category(original_label),
+            "category": _workout_category(canonical_type),
             "source_id": str(_first_value(row, "id", "event_id", "workout_id") or "") or None,
             "source_provider": _source_provider(row),
             "original_label": str(original_label) if original_label is not None else None,

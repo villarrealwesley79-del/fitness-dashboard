@@ -214,16 +214,19 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
             "source": {"provider": "oura"},
             "slow_changing": {"weight_kg": 82.4, "body_fat_percent": 17.2},
             "averaged": {"period_end": "2026-06-28T23:59:00Z", "resting_heart_rate_bpm": 53},
-            "latest": {},
+            "latest": {
+                "body_temperature_celsius": 36.7,
+                "body_temperature_measured_at": "2026-06-27T22:00:00Z",
+            },
         },
         "workouts": {"events": [{
             "id": "workout-1", "start": "2026-06-28T18:00:00Z",
-            "duration_seconds": 3300, "activity_type": "Traditional Strength Training",
+            "duration_seconds": 3300, "type": "strength_training", "name": "Evening Lift",
             "provider": "apple_health", "calories_kcal": 410,
             "avg_heart_rate_bpm": 132, "max_heart_rate_bpm": 171,
         }, {
             "id": "workout-2", "start": "2026-06-28T07:00:00Z",
-            "duration_seconds": 1800, "activity_type": "Run",
+            "duration_seconds": 1800, "type": "running", "name": "Morning Miles",
             "provider": "apple_health", "calories_kcal": 260,
         }]},
     }
@@ -258,9 +261,12 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     assert workout["category"] == "strength_training"
     assert workout["source_id"] == "workout-1"
     assert workout["source_provider"] == "apple_health"
-    assert workout["original_label"] == "Traditional Strength Training"
+    assert workout["original_label"] == "Evening Lift"
     assert workout["value"] == 55
     assert by_metric["weight"]["date"] == "2026-06-28"
+    assert by_metric["body_temperature"]["date"] == "2026-06-27"
+    run = next(fact for fact in workout_facts if fact["source_id"] == "workout-2")
+    assert run["category"] == "cardio"
 
 
 def test_recommendation_facts_filters_provider_and_freshness(tmp_path):
