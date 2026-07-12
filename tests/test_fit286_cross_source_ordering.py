@@ -33,10 +33,13 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
         return plan
 
     monkeypatch.setattr(module, "_persist_current_workout_plan", persist_plan)
-    monkeypatch.setattr(
-        module,
-        "generate_next_workout",
-        lambda *_args, **_kwargs: {
+    generated_recommendations = []
+    modifier_sequence = []
+
+    def generate_workout(*_args, training_recommendation=None, **_kwargs):
+        modifier_sequence.append("generate")
+        generated_recommendations.append(training_recommendation)
+        return {
             "title": "Cross-source fixture",
             "estimated_minutes": 60,
             "estimated_duration": "60 min",
@@ -47,8 +50,9 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
                 "rpe_target": 8,
                 "rationale": "Base plan",
             }],
-        },
-    )
+        }
+
+    monkeypatch.setattr(module, "generate_next_workout", generate_workout)
 
     whoop_explanation = "WHOOP recovery 34 triggered one deload modifier"
     conflict_explanation = "Oura readiness and WHOOP recovery disagree; WHOOP stays conservative"
@@ -82,6 +86,24 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
             "used_for_recommendation": True,
         }],
     )
+    original_open_wearables_guard = module._apply_open_wearables_recommendation_guard
+    open_wearables_guard_calls = []
+
+    def track_open_wearables_guard(recommendation, facts):
+        modifier_sequence.append("open_wearables")
+        result = original_open_wearables_guard(recommendation, facts)
+        open_wearables_guard_calls.append({
+            "input": recommendation,
+            "output": result[0],
+            "modifier": result[1],
+        })
+        return result
+
+    monkeypatch.setattr(
+        module,
+        "_apply_open_wearables_recommendation_guard",
+        track_open_wearables_guard,
+    )
 
     accepted_food = [{
         "id": 286,
@@ -112,6 +134,11 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     exercise = payload["next_workout"]["exercises"][0]
     assert adaptation_calls == [[286]]
     assert len(persisted_plans) == 1
+    persisted_exercise = persisted_plans[0]["exercises"][0]
+    assert persisted_exercise["target_sets"] == 3
+    assert persisted_exercise["rationale"].count("Food adaptation applied") == 1
+    assert "WHOOP modifier applied" not in persisted_exercise["rationale"]
+    assert "_whoop_modifier_signature" not in persisted_plans[0]
     assert exercise["target_sets"] == 2  # food sets 3 first; WHOOP's 0.8 clamp runs afterward
     assert exercise["rationale"].count("Food adaptation applied") == 1
     assert exercise["rationale"].count("WHOOP modifier applied") == 1
@@ -124,6 +151,12 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     assert payload["recommendation_sources"]["open_wearables"]["applied_modifiers"] == [
         "sleep_caution"
     ]
+    assert len(open_wearables_guard_calls) == 1
+    assert open_wearables_guard_calls[0]["modifier"]["applied_modifiers"] == [
+        "sleep_caution"
+    ]
+    assert generated_recommendations == [open_wearables_guard_calls[0]["output"]]
+    assert modifier_sequence.index("open_wearables") < modifier_sequence.index("generate")
     assert "330 min" in open_wearables_detail
     reasoning = payload["reasoning"]
     assert reasoning.count(whoop_explanation) == 1
