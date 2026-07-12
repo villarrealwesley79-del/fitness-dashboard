@@ -90,7 +90,7 @@ def test_sleep_import_accepts_valid_and_midnight_crossing_windows(sleep_api):
 
     assert response.status_code == 200
     assert [entry["sleep_start"] for entry in module.SLEEP_DATA[-2:]] == [
-        "23:30",
+        "2026-07-01T23:30:00",
         "2026-07-02T23:30:00",
     ]
 
@@ -112,6 +112,16 @@ def test_sleep_import_accepts_valid_and_midnight_crossing_windows(sleep_api):
         (
             {"sleep_start": "23:30", "sleep_end": "07:00", "time_in_bed_min": 449},
             [{"row": 1, "field": "time_in_bed_min", "code": "contradictory_minutes"}],
+        ),
+        (
+            {
+                "sleep_start": "23:30",
+                "sleep_end": "07:00",
+                "sleep_duration_min": 420,
+                "time_in_bed_min": "",
+                "awake_min": 60,
+            },
+            [{"row": 1, "field": "awake_min", "code": "contradictory_minutes"}],
         ),
     ],
 )

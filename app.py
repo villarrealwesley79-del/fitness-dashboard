@@ -17270,17 +17270,34 @@ def sleep_import():
                     errors.append({'row':row_number,'field':'sleep_end','code':'contradictory_timestamp'})
                     continue
             else:
-                anchor=datetime(2000,1,1)
-                start_dt=datetime.combine(anchor.date(),start_value)
-                end_dt=datetime.combine(anchor.date(),end_value)
+                try:
+                    anchor_date=datetime.strptime(date, '%Y-%m-%d').date()
+                except ValueError:
+                    anchor_date=datetime(2000,1,1).date()
+                start_dt=datetime.combine(anchor_date,start_value)
+                end_dt=datetime.combine(anchor_date,end_value)
                 if end_dt<=start_dt:
-                    end_dt+=timedelta(days=1)
+                    start_dt-=timedelta(days=1)
                 window_minutes=(end_dt-start_dt).total_seconds()/60
+                e['sleep_start']=start_dt.isoformat()
+                e['sleep_end']=end_dt.isoformat()
             if supplied['time_in_bed_min'] and e['time_in_bed_min']!=int(window_minutes):
                 errors.append({'row':row_number,'field':'time_in_bed_min','code':'contradictory_minutes'})
                 continue
             if supplied['sleep_duration_min'] and e['sleep_duration_min']>window_minutes:
                 errors.append({'row':row_number,'field':'sleep_duration_min','code':'contradictory_minutes'})
+                continue
+            if stages_supplied and stages>window_minutes:
+                errors.append({'row':row_number,'field':'stage_total_min','code':'contradictory_minutes'})
+                continue
+            if supplied['awake_min'] and e['awake_min']>window_minutes:
+                errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
+                continue
+            if stages_supplied and supplied['awake_min'] and stages+e['awake_min']>window_minutes:
+                errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
+                continue
+            if supplied['sleep_duration_min'] and supplied['awake_min'] and e['sleep_duration_min']+e['awake_min']>window_minutes:
+                errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
                 continue
         entries.append(e)
     if errors:
