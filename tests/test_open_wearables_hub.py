@@ -282,7 +282,7 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     assert by_metric["sleep_duration"]["source_id"] == "sleep-1"
     assert by_metric["sleep_duration"]["source_provider"] == "oura"
     assert by_metric["sleep_duration"]["observed_at"] == "2026-06-28T07:00:00"
-    assert by_metric["steps"]["observed_at"] == "2026-06-28"
+    assert by_metric["steps"]["observed_at"] is None
     run = next(fact for fact in workout_facts if fact["source_id"] == "workout-2")
     assert run["category"] == "cardio"
     assert hub._workout_category("indoor_cycling") == "cardio"

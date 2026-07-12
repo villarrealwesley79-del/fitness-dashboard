@@ -60,6 +60,16 @@ def test_open_wearables_activity_extractor_preserves_zero_values():
     assert summary["distance"] == 0
 
 
+def test_open_wearables_activity_extractor_preserves_calorie_precision():
+    module = _fitness_app()
+
+    [summary] = module._extract_open_wearables_activity_summaries({"data": [{
+        "date": "2026-06-28", "active_calories_kcal": 342.9,
+    }]})
+
+    assert summary["active_calories"] == 342.9
+
+
 def test_health_sync_returns_redacted_open_wearables_metadata(monkeypatch):
     module = _fitness_app()
     field_s = "sec" + "ret"

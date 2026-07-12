@@ -286,7 +286,7 @@ def store_wearable_facts(
         activity_provenance = {
             "source_id": str(_first_value(activity_raw, "id", "summary_id") or "") or None,
             "source_provider": _source_provider(activity_raw),
-            "observed_at": date_s,
+            "observed_at": None,
         }
         added_activity_fact = False
         if latest.get("steps") is not None:
@@ -355,7 +355,11 @@ def store_wearable_facts(
             recovery_provenance = {
                 "source_id": str(_first_value(row, "id", "summary_id") or provider or "") or None,
                 "source_provider": provider,
-                "observed_at": str(_first_value(row, "recorded_at", "timestamp", "date") or date_s),
+                "observed_at": (
+                    str(_first_value(row, "recorded_at", "timestamp"))
+                    if _first_value(row, "recorded_at", "timestamp") is not None
+                    else None
+                ),
             }
             before_count = len(facts)
             for metric, (aliases, unit) in mappings.items():

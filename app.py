@@ -12784,7 +12784,7 @@ def _extract_open_wearables_activity_summaries(payload):
         except Exception:
             steps = None
         try:
-            active_calories = int(float(active_calories)) if active_calories is not None else None
+            active_calories = float(active_calories) if active_calories is not None else None
         except Exception:
             active_calories = None
         try:
