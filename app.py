@@ -9847,6 +9847,12 @@ def protocols():
     })
 
 
+@app.route('/api/vision/health', methods=['GET'])
+def vision_health():
+    """Return sanitized, non-mutating readiness for meal photo analysis."""
+    return jsonify(vision_estimator.health_status())
+
+
 @app.route('/api/settings', methods=['GET', 'POST'])
 def settings():
     """Get or update user settings including training goal and available time."""
