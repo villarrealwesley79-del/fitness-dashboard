@@ -318,6 +318,11 @@ def _safe_next(next_page: str | None, *, reload_root: bool = False) -> str:
 
 
 # ── Routes ────────────────────────────────────────────────
+@auth_bp.route("/landing")
+def landing():
+    return render_template("landing.html")
+
+
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET" and current_user.is_authenticated:
