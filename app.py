@@ -2157,6 +2157,7 @@ def _apply_due_workout_adaptations_for_plan(
     nutrition_context: dict,
     active_workout_open: bool = False,
     completed_sets_by_exercise: dict[str, int] | None = None,
+    raise_on_error: bool = False,
 ) -> tuple[dict, list[dict]]:
     """Evaluate closed FIT-136 windows against a generated remaining plan."""
     current_visible_plan = _fit136_visible_workout_plan(next_workout or {})
@@ -2187,6 +2188,8 @@ def _apply_due_workout_adaptations_for_plan(
         return patched, events
     except Exception:
         app.logger.warning("workout adaptation evaluation failed", exc_info=True)
+        if raise_on_error:
+            raise
         return next_workout, []
 
 
@@ -9614,14 +9617,22 @@ def evaluate_workout_adaptation_events():
     )
     events = []
     if not active_open_requested or completed_sets_by_exercise:
-        next_workout, events = _apply_due_workout_adaptations_for_plan(
-            next_workout,
-            date_s=today_s,
-            food_log_entries=adaptation_food_entries,
-            nutrition_context=nutrition_context,
-            active_workout_open=active_workout_open,
-            completed_sets_by_exercise=completed_sets_by_exercise,
-        )
+        try:
+            next_workout, events = _apply_due_workout_adaptations_for_plan(
+                next_workout,
+                date_s=today_s,
+                food_log_entries=adaptation_food_entries,
+                nutrition_context=nutrition_context,
+                active_workout_open=active_workout_open,
+                completed_sets_by_exercise=completed_sets_by_exercise,
+                raise_on_error=True,
+            )
+        except Exception:
+            return api_error(
+                "workout adaptation evaluation failed",
+                500,
+                code="evaluation_failed",
+            )
         _persist_current_workout_plan(next_workout, fingerprint)
     return jsonify({"status": "success", "evaluated_count": len(events)})
 

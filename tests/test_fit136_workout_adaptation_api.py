@@ -296,6 +296,22 @@ def test_workout_adaptation_evaluation_preserves_same_day_canonical_plan(monkeyp
     assert module.LAST_WORKOUT_RECOMMENDATION["id"] == "user-customized-plan"
 
 
+def test_workout_adaptation_evaluation_reports_engine_failure(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation())
+    monkeypatch.setattr(
+        workout_adaptation,
+        "apply_due_adaptations",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("evaluation failed")),
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 500
+    assert response.get_json()["error"]["code"] == "evaluation_failed"
+
+
 def test_next_workout_route_replays_due_adaptation_even_with_cached_plan(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
