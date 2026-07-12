@@ -8,7 +8,8 @@ def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monke
     monkeypatch.setenv("SECRET_KEY", "fit286-test-secret")
     monkeypatch.setenv("HEALTH_SYNC_TOKEN", "fit286-health-token")
     module = importlib.import_module("app")
-    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setitem(module.app.config, "TESTING", True)
+    monkeypatch.setitem(module.app.config, "LOGIN_DISABLED", True)
     _stub_smart_recommendation_dependencies(
         monkeypatch,
         module,
