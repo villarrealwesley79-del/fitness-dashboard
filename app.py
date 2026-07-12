@@ -17185,6 +17185,18 @@ def sleep_import():
             return 0,True,'out_of_range'
         return int(value),True,None
 
+    def parse_sleep_timestamp(value):
+        if value is None or value == '':
+            return None,None
+        if not isinstance(value, str):
+            return None,'invalid_timestamp'
+        try:
+            if 'T' in value or ' ' in value:
+                return ('datetime', datetime.fromisoformat(value)),None
+            return ('time', datetime.strptime(value, '%H:%M').time()),None
+        except ValueError:
+            return None,'invalid_timestamp'
+
     entries=[]
     errors=[]
     for row_number,r in enumerate(raw, start=1):
@@ -17233,6 +17245,43 @@ def sleep_import():
             errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
         e['sleep_start']=r.get('sleep_start')
         e['sleep_end']=r.get('sleep_end')
+        timestamp_error_count=len(errors)
+        parsed_start,start_error=parse_sleep_timestamp(e['sleep_start'])
+        parsed_end,end_error=parse_sleep_timestamp(e['sleep_end'])
+        if start_error:
+            errors.append({'row':row_number,'field':'sleep_start','code':start_error})
+        if end_error:
+            errors.append({'row':row_number,'field':'sleep_end','code':end_error})
+        if len(errors)>timestamp_error_count:
+            continue
+        if parsed_start and parsed_end:
+            start_kind,start_value=parsed_start
+            end_kind,end_value=parsed_end
+            if start_kind!=end_kind:
+                errors.append({'row':row_number,'field':'sleep_end','code':'invalid_timestamp'})
+                continue
+            if start_kind=='datetime':
+                try:
+                    window_minutes=(end_value-start_value).total_seconds()/60
+                except TypeError:
+                    errors.append({'row':row_number,'field':'sleep_end','code':'invalid_timestamp'})
+                    continue
+                if window_minutes<=0:
+                    errors.append({'row':row_number,'field':'sleep_end','code':'contradictory_timestamp'})
+                    continue
+            else:
+                anchor=datetime(2000,1,1)
+                start_dt=datetime.combine(anchor.date(),start_value)
+                end_dt=datetime.combine(anchor.date(),end_value)
+                if end_dt<=start_dt:
+                    end_dt+=timedelta(days=1)
+                window_minutes=(end_dt-start_dt).total_seconds()/60
+            if supplied['time_in_bed_min'] and e['time_in_bed_min']!=int(window_minutes):
+                errors.append({'row':row_number,'field':'time_in_bed_min','code':'contradictory_minutes'})
+                continue
+            if supplied['sleep_duration_min'] and e['sleep_duration_min']>window_minutes:
+                errors.append({'row':row_number,'field':'sleep_duration_min','code':'contradictory_minutes'})
+                continue
         entries.append(e)
     if errors:
         return api_error('Sleep import contains invalid rows', 400, code='invalid_sleep_rows', details=errors)
