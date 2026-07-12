@@ -217,6 +217,7 @@ BODY_FILE = data_path("data_body.json")
 SLEEP_FILE = data_path("data_sleep.json")
 NUTRITION_FILE = data_path("data_nutrition.json")
 OURA_DB_FILE = data_path("oura_daily.sqlite3")
+OURA_STATUS_CACHE_TTL_SECONDS = 2 * 60 * 60
 WHOOP_DB_FILE = data_path("whoop.sqlite3")
 WEARABLE_FACTS_DB_FILE = data_path("wearable_facts.sqlite3")
 OPEN_WEARABLES_CONFIG_FILE = data_path("open_wearables_config.json")
@@ -14491,6 +14492,22 @@ def whoop_recommendation_signals():
         }
     )
 
+def _oura_status_cache_is_stale(cached, *, now=None):
+    created_at = (cached or {}).get("created_at")
+    if not created_at:
+        return False
+    try:
+        observed = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if observed.tzinfo is not None:
+        observed = observed.astimezone().replace(tzinfo=None)
+    current = now or datetime.now()
+    if current.tzinfo is not None:
+        current = current.astimezone().replace(tzinfo=None)
+    return (current - observed).total_seconds() > OURA_STATUS_CACHE_TTL_SECONDS
+
+
 @app.route('/api/oura/status')
 def oura_status():
     """Return today's Oura readiness, HRV, and sleep score.
@@ -14521,10 +14538,17 @@ def oura_status():
                 pass
         return steps, activity_score, activity_day
 
-    # Prefer DB cached values (unless force refresh)
+    cached = None
+    # Prefer DB cached values unless explicitly refreshed or a known-age row is
+    # stale and the server has a token for a best-effort automatic refresh.
     if not force_refresh:
         cached = get_oura_daily(OURA_DB_FILE, today)
-        if cached:
+        auto_refresh = bool(
+            cached
+            and os.environ.get("OURA_API_TOKEN", "").strip()
+            and _oura_status_cache_is_stale(cached)
+        )
+        if cached and not auto_refresh:
             steps, activity_score, activity_day = _best_effort_steps_activity(
                 cached.get("steps"),
                 cached.get("activity_score"),
@@ -14583,6 +14607,16 @@ def oura_status():
 
     try:
         readiness_score, sleep_score, hrv, metrics, raw = client.get_today_metrics(today)
+        if cached:
+            readiness_score = (
+                readiness_score
+                if readiness_score is not None
+                else cached.get("readiness_score")
+            )
+            sleep_score = (
+                sleep_score if sleep_score is not None else cached.get("sleep_score")
+            )
+            hrv = hrv if hrv is not None else cached.get("hrv")
 
         # Oura daily_activity can lag by a day; keep readiness/sleep on "today", but
         # store activity metrics against their actual day when possible.
