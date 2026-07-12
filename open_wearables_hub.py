@@ -363,7 +363,7 @@ def store_wearable_facts(
                 mark_replacement_sources(body, measured_date)
 
     for row in _payload_rows(data.get("workouts")):
-        date_s = _row_date(row, fetched_at)
+        date_s = str(_first_value(row, "start", "start_time", "date") or fetched_at)[:10]
         before_count = len(facts)
         canonical_type = _first_value(row, "type", "activity_type", "workout_type", "sport")
         original_label = _first_value(row, "name", "activity_type", "workout_type", "sport", "type")

@@ -7,7 +7,7 @@ material are rejected before persistence.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import sqlite3
 
@@ -347,6 +347,7 @@ def list_recommendation_facts(
 ) -> list[dict]:
     init_wearable_fact_db(db_path)
     scoped_profile = _normalize_profile_key(profile_key)
+    usable_cutoff = (datetime.now().date() - timedelta(days=1)).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -354,11 +355,11 @@ def list_recommendation_facts(
             SELECT * FROM wearable_daily_facts
             WHERE profile_key = ?
               AND (? IS NULL OR provider_id = ?)
-              AND (? = 0 OR freshness IN ('fresh', 'aging'))
+              AND (? = 0 OR (freshness IN ('fresh', 'aging') AND date >= ?))
             ORDER BY date DESC, provider_id, metric
             LIMIT ?
             """,
-            (scoped_profile, provider_id, provider_id, 1 if usable_only else 0, int(limit)),
+            (scoped_profile, provider_id, provider_id, 1 if usable_only else 0, usable_cutoff, int(limit)),
         ).fetchall()
     facts = []
     for row in rows:

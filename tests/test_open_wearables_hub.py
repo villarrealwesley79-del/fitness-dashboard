@@ -302,11 +302,12 @@ def test_store_wearable_facts_uses_observation_freshness_and_tolerates_partial_e
 
 def test_recommendation_facts_filters_provider_and_freshness(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
     upsert_daily_facts(
         db_file,
         [
-            WearableDailyFact("2026-06-28", "open_wearables", "Open Wearables", "steps", 1200, "count", freshness="fresh"),
-            WearableDailyFact("2026-06-28", "oura", "Oura", "readiness", 70, "score", freshness="fresh"),
+            WearableDailyFact(today, "open_wearables", "Open Wearables", "steps", 1200, "count", freshness="fresh"),
+            WearableDailyFact(today, "oura", "Oura", "readiness", 70, "score", freshness="fresh"),
             WearableDailyFact("2026-06-20", "open_wearables", "Open Wearables", "steps", 900, "count", freshness="stale"),
         ],
         profile_key="profile-1",
@@ -321,15 +322,26 @@ def test_recommendation_facts_filters_provider_and_freshness(tmp_path):
 
 def test_recommendation_facts_filters_before_applying_limit(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
     rows = [
-        WearableDailyFact("2026-06-29", "open_wearables", "Open Wearables", f"unknown_{index}", index, freshness="unknown")
+        WearableDailyFact(today, "open_wearables", "Open Wearables", f"unknown_{index}", index, freshness="unknown")
         for index in range(25)
     ]
     rows.append(WearableDailyFact(
-        "2026-06-28", "open_wearables", "Open Wearables", "steps", 9000, "count", freshness="aging"
+        today, "open_wearables", "Open Wearables", "steps", 9000, "count", freshness="aging"
     ))
     upsert_daily_facts(db_file, rows, profile_key="profile-1")
 
     facts = hub.recommendation_facts(db_file, "profile-1", limit=1)
 
     assert [fact["metric"] for fact in facts] == ["steps"]
+
+
+def test_recommendation_facts_recomputes_age_for_orphaned_fresh_rows(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        "2020-01-01", "open_wearables", "Open Wearables", "recovery_score", 80,
+        "score", freshness="fresh",
+    )], profile_key="profile-1")
+
+    assert hub.recommendation_facts(db_file, "profile-1") == []
