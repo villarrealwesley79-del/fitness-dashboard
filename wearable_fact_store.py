@@ -224,7 +224,12 @@ def _normalize_profile_key(profile_key: str | int | None) -> str:
     return text or "1"
 
 
-def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict], profile_key: str | int | None = None) -> int:
+def upsert_daily_facts(
+    db_path: str,
+    facts: list[WearableDailyFact | dict],
+    profile_key: str | int | None = None,
+    replace_source_ids: set[str] | None = None,
+) -> int:
     init_wearable_fact_db(db_path)
     now = datetime.now().isoformat()
     scoped_profile = _normalize_profile_key(profile_key)
@@ -236,6 +241,11 @@ def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict], prof
         payload["source_id"] = str(payload.get("source_id") or "")
         rows.append(payload)
     with sqlite3.connect(db_path) as conn:
+        for source_id in replace_source_ids or set():
+            conn.execute(
+                "DELETE FROM wearable_daily_facts WHERE profile_key = ? AND source_id = ?",
+                (scoped_profile, source_id),
+            )
         for row in rows:
             conn.execute(
                 """
@@ -415,19 +425,6 @@ def delete_provider_data(db_path: str, provider_id: str, profile_key: str | int 
         )
 
 
-def delete_facts_by_source_id(
-    db_path: str,
-    provider_id: str,
-    source_id: str,
-    profile_key: str | int | None = None,
-) -> None:
-    init_wearable_fact_db(db_path)
-    scoped_profile = _normalize_profile_key(profile_key)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "DELETE FROM wearable_daily_facts WHERE profile_key = ? AND provider_id = ? AND source_id = ?",
-            (scoped_profile, provider_id, source_id),
-        )
 
 
 def latest_wearable_freshness(db_path: str, profile_key: str | int | None = None) -> dict:

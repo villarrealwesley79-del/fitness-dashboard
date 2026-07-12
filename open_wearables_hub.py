@@ -21,7 +21,6 @@ from typing import Callable
 
 from wearable_fact_store import (
     WearableDailyFact,
-    delete_facts_by_source_id,
     list_recommendation_facts,
     upsert_daily_facts,
     upsert_wearable_source,
@@ -433,11 +432,17 @@ def store_wearable_facts(
             mark_replacement_sources(row, date_s)
 
     if facts:
-        if any(fact.source_id == "undated-latest" for fact in facts):
-            delete_facts_by_source_id(
-                db_file, "open_wearables", "undated-latest", profile_key=profile_key
-            )
-        upsert_daily_facts(db_file, facts, profile_key=profile_key)
+        replace_source_ids = (
+            {"undated-latest"}
+            if any(fact.source_id == "undated-latest" for fact in facts)
+            else None
+        )
+        upsert_daily_facts(
+            db_file,
+            facts,
+            profile_key=profile_key,
+            replace_source_ids=replace_source_ids,
+        )
     persisted_usable = list_recommendation_facts(
         db_file,
         limit=100,

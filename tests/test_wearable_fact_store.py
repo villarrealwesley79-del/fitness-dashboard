@@ -124,3 +124,26 @@ def test_wearable_fact_store_adds_safe_provenance_columns_to_existing_schema(tmp
     assert fact["source_id"] == "workout-1"
     assert fact["source_provider"] == "apple_health"
     assert fact["original_label"] == "Traditional Strength Training"
+
+
+def test_replace_source_ids_preserves_prior_rows_when_validation_fails(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    prior = WearableDailyFact(
+        "2026-06-28", "open_wearables", "Open Wearables", "weight", 82.4, "kg",
+        source_id="undated-latest", freshness="unknown",
+    )
+    upsert_daily_facts(str(db), [prior], profile_key="profile-1")
+
+    with pytest.raises(ValueError):
+        upsert_daily_facts(
+            str(db),
+            [{
+                "date": "2026-06-29", "provider_id": "open_wearables",
+                "source_label": "Open Wearables", "metric": "weight",
+                "value": {"raw": "forbidden"}, "source_id": "undated-latest",
+            }],
+            profile_key="profile-1",
+            replace_source_ids={"undated-latest"},
+        )
+
+    assert list_recommendation_facts(str(db), profile_key="profile-1")[0]["value"] == 82.4
