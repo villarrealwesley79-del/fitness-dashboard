@@ -15,7 +15,16 @@ resolve_data_dir() {
     return
   fi
   if [ -f "$APP_PLIST" ]; then
-    plist_data_dir="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:DATA_DIR' "$APP_PLIST" 2>/dev/null || true)"
+    plist_data_dir="$(python3 - "$APP_PLIST" 2>/dev/null <<'PY' || true
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as plist_file:
+    plist = plistlib.load(plist_file)
+
+print(plist.get("EnvironmentVariables", {}).get("DATA_DIR", ""), end="")
+PY
+)"
     if [ -n "$plist_data_dir" ]; then
       printf '%s' "$plist_data_dir"
       return
