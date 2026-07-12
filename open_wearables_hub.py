@@ -56,7 +56,7 @@ def _number(row: dict, *keys):
 
 
 def _row_date(row: dict, fallback: str) -> str:
-    value = _first_value(row, "date", "day", "summary_date", "end", "end_time", "start", "start_time", "timestamp")
+    value = _first_value(row, "date", "day", "summary_date", "period_end", "end", "end_time", "start", "start_time", "timestamp")
     return str(value or fallback)[:10]
 
 
@@ -349,11 +349,17 @@ def store_wearable_facts(
         }
         workout_metrics = {
             "workout_duration": ((_first_value(row, "duration_min", "duration_minutes")), "min"),
-            "workout_active_calories": ((_first_value(row, "active_calories", "calories")), "kcal"),
+            "workout_active_calories": ((_first_value(row, "calories_kcal", "active_calories", "calories")), "kcal"),
             "workout_load": ((_first_value(row, "load", "strain", "training_load")), "score"),
-            "workout_avg_heart_rate": ((_first_value(row, "avg_hr", "average_heart_rate")), "bpm"),
-            "workout_max_heart_rate": ((_first_value(row, "max_hr", "max_heart_rate")), "bpm"),
+            "workout_avg_heart_rate": ((_first_value(row, "avg_heart_rate_bpm", "avg_hr", "average_heart_rate")), "bpm"),
+            "workout_max_heart_rate": ((_first_value(row, "max_heart_rate_bpm", "max_hr", "max_heart_rate")), "bpm"),
         }
+        if workout_metrics["workout_duration"][0] is None:
+            duration_seconds = _number(row, "duration_seconds")
+            workout_metrics["workout_duration"] = (
+                duration_seconds / 60.0 if duration_seconds is not None else None,
+                "min",
+            )
         for metric, (raw_value, unit) in workout_metrics.items():
             try:
                 value = float(raw_value) if raw_value is not None else None
@@ -386,7 +392,7 @@ def store_wearable_facts(
 
     if facts:
         upsert_daily_facts(db_file, facts, profile_key=profile_key)
-    return len(facts)
+    return len({(fact.date, fact.provider_id, fact.metric, fact.source_id or "") for fact in facts})
 
 
 def recommendation_facts(db_file: str, profile_key: str, limit: int = 20) -> list[dict]:

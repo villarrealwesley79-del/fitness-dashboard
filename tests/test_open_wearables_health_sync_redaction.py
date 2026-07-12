@@ -9,6 +9,23 @@ def _fitness_app():
     return module
 
 
+def test_open_wearables_sleep_extractor_maps_bridge_stage_minute_fields():
+    module = _fitness_app()
+
+    sleep = module._extract_open_wearables_sleep({"events": [{
+        "end_time": "2026-06-28T07:00:00Z",
+        "duration_seconds": 28800,
+        "stages": {
+            "awake_minutes": 35,
+            "light_minutes": 210,
+            "deep_minutes": 95,
+            "rem_minutes": 140,
+        },
+    }]})
+
+    assert sleep["stages_min"] == {"awake": 35, "light": 210, "deep": 95, "rem": 140}
+
+
 def test_health_sync_returns_redacted_open_wearables_metadata(monkeypatch):
     module = _fitness_app()
     field_s = "sec" + "ret"

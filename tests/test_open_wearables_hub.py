@@ -218,8 +218,13 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
         },
         "workouts": {"events": [{
             "id": "workout-1", "start": "2026-06-28T18:00:00Z",
-            "duration_min": 55, "activity_type": "Traditional Strength Training",
-            "provider": "apple_health", "active_calories": 410,
+            "duration_seconds": 3300, "activity_type": "Traditional Strength Training",
+            "provider": "apple_health", "calories_kcal": 410,
+            "avg_heart_rate_bpm": 132, "max_heart_rate_bpm": 171,
+        }, {
+            "id": "workout-2", "start": "2026-06-28T07:00:00Z",
+            "duration_seconds": 1800, "activity_type": "Run",
+            "provider": "apple_health", "calories_kcal": 260,
         }]},
     }
 
@@ -247,11 +252,15 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
         "resting_heart_rate", "blood_oxygen", "weight", "body_fat_percent",
         "workout_duration", "workout_active_calories",
     }.issubset(by_metric)
-    workout = by_metric["workout_duration"]
+    workout_facts = [fact for fact in facts if fact["metric"] == "workout_duration"]
+    assert len(workout_facts) == 2
+    workout = next(fact for fact in workout_facts if fact["source_id"] == "workout-1")
     assert workout["category"] == "strength_training"
     assert workout["source_id"] == "workout-1"
     assert workout["source_provider"] == "apple_health"
     assert workout["original_label"] == "Traditional Strength Training"
+    assert workout["value"] == 55
+    assert by_metric["weight"]["date"] == "2026-06-28"
 
 
 def test_recommendation_facts_filters_provider_and_freshness(tmp_path):

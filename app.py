@@ -12653,6 +12653,8 @@ def _extract_open_wearables_sleep_events(payload):
         if isinstance(stages, dict):
             for key in ("deep", "rem", "light", "awake"):
                 val = stages.get(key)
+                if val is None:
+                    val = stages.get(f"{key}_minutes")
                 try:
                     val = float(val) if val is not None else None
                 except Exception:

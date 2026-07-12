@@ -78,7 +78,7 @@ def init_wearable_fact_db(db_path: str) -> None:
         _create_wearable_fact_tables(conn)
         _ensure_column(conn, "wearable_daily_facts", "profile_key", "TEXT NOT NULL DEFAULT '1'")
         _ensure_column(conn, "wearable_daily_facts", "category", "TEXT")
-        _ensure_column(conn, "wearable_daily_facts", "source_id", "TEXT")
+        _ensure_column(conn, "wearable_daily_facts", "source_id", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "wearable_daily_facts", "source_provider", "TEXT")
         _ensure_column(conn, "wearable_daily_facts", "original_label", "TEXT")
         _ensure_column(conn, "wearable_sources", "profile_key", "TEXT NOT NULL DEFAULT '1'")
@@ -101,12 +101,12 @@ def _create_wearable_fact_tables(conn: sqlite3.Connection) -> None:
             freshness TEXT NOT NULL,
             conflict_state TEXT,
             category TEXT,
-            source_id TEXT,
+            source_id TEXT NOT NULL DEFAULT '',
             source_provider TEXT,
             original_label TEXT,
             used_for_recommendation INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL,
-            PRIMARY KEY (profile_key, date, provider_id, metric)
+            PRIMARY KEY (profile_key, date, provider_id, metric, source_id)
         )
         """
     )
@@ -135,7 +135,7 @@ def _primary_key_columns(conn: sqlite3.Connection, table: str) -> list[str]:
 
 def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> None:
     daily_pk = _primary_key_columns(conn, "wearable_daily_facts")
-    if daily_pk != ["profile_key", "date", "provider_id", "metric"]:
+    if daily_pk != ["profile_key", "date", "provider_id", "metric", "source_id"]:
         conn.execute("ALTER TABLE wearable_daily_facts RENAME TO wearable_daily_facts_legacy")
         conn.execute(
             """
@@ -152,12 +152,12 @@ def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> None:
                 freshness TEXT NOT NULL,
                 conflict_state TEXT,
                 category TEXT,
-                source_id TEXT,
+                source_id TEXT NOT NULL DEFAULT '',
                 source_provider TEXT,
                 original_label TEXT,
                 used_for_recommendation INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL,
-                PRIMARY KEY (profile_key, date, provider_id, metric)
+                PRIMARY KEY (profile_key, date, provider_id, metric, source_id)
             )
             """
         )
@@ -169,7 +169,7 @@ def _migrate_profile_key_primary_keys(conn: sqlite3.Connection) -> None:
                 original_label, used_for_recommendation, updated_at
             )
             SELECT COALESCE(profile_key, '1'), date, provider_id, source_label, metric, value_json, unit, band,
-                confidence, freshness, conflict_state, category, source_id, source_provider,
+                confidence, freshness, conflict_state, category, COALESCE(source_id, ''), source_provider,
                 original_label, used_for_recommendation, updated_at
             FROM wearable_daily_facts_legacy
             """
@@ -229,6 +229,7 @@ def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict], prof
         payload = fact.public_dict() if isinstance(fact, WearableDailyFact) else dict(fact)
         validate_public_fact_payload(payload)
         payload["profile_key"] = _normalize_profile_key(payload.get("profile_key") or scoped_profile)
+        payload["source_id"] = str(payload.get("source_id") or "")
         rows.append(payload)
     with sqlite3.connect(db_path) as conn:
         for row in rows:
@@ -239,7 +240,7 @@ def upsert_daily_facts(db_path: str, facts: list[WearableDailyFact | dict], prof
                     confidence, freshness, conflict_state, category, source_id, source_provider,
                     original_label, used_for_recommendation, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(profile_key, date, provider_id, metric) DO UPDATE SET
+                ON CONFLICT(profile_key, date, provider_id, metric, source_id) DO UPDATE SET
                     source_label=excluded.source_label,
                     value_json=excluded.value_json,
                     unit=excluded.unit,
@@ -365,7 +366,7 @@ def list_recommendation_facts(db_path: str, limit: int = 30, profile_key: str | 
             "freshness": row["freshness"],
             "conflict_state": row["conflict_state"],
             "category": row["category"],
-            "source_id": row["source_id"],
+            "source_id": row["source_id"] or None,
             "source_provider": row["source_provider"],
             "original_label": row["original_label"],
             "used_for_recommendation": bool(row["used_for_recommendation"]),
