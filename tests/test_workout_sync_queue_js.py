@@ -216,3 +216,63 @@ process.stdout.write(JSON.stringify({{
             "notes": "WHOOP switch proof",
         },
     }
+
+
+def test_active_workout_draft_storage_failure_keeps_session_and_shows_warning():
+    if not shutil.which("node"):
+        pytest.skip("FIT-298 draft persistence fixture requires node")
+
+    helper_source = _app_js_block("const ACTIVE_WORKOUT_DRAFT_KEY", "function buildLoggedSets")
+    node_script = f"""
+const vm = require('node:vm');
+const helperSource = {json.dumps(helper_source)};
+const warning = {{ hidden: true, textContent: '' }};
+const activeWorkout = {{
+  id: 'workout-fit298',
+  focus: 'Full Body',
+  dirty: true,
+  exercises: [],
+}};
+const sandbox = {{
+  console,
+  state: {{ activeWorkout }},
+  elements: {{
+    'active-workout-body': {{ rows: [] }},
+    'active-workout-persistence-warning': warning,
+  }},
+  $: (id) => sandbox.elements[id] || null,
+  qsa: () => [],
+  qs: () => null,
+  localStorage: {{
+    getItem: () => null,
+    setItem: () => {{ throw new Error('QuotaExceededError'); }},
+    removeItem: () => {{}},
+  }},
+  _mealQueueAuthScope: 'user:fit298',
+  renderActiveWorkout: () => {{}},
+  toast: () => {{}},
+}};
+vm.createContext(sandbox);
+vm.runInContext(helperSource, sandbox);
+vm.runInContext('saveActiveWorkoutDraft({{ syncDom: false }});', sandbox);
+process.stdout.write(JSON.stringify({{
+  sameWorkout: sandbox.state.activeWorkout === activeWorkout,
+  warningHidden: warning.hidden,
+  warningText: warning.textContent,
+}}));
+"""
+    result = subprocess.run(
+        ["node", "-e", node_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    observed = json.loads(result.stdout)
+    assert observed == {
+        "sameWorkout": True,
+        "warningHidden": False,
+        "warningText": (
+            "This workout still works, but it cannot be recovered after closing or reloading this page."
+        ),
+    }
