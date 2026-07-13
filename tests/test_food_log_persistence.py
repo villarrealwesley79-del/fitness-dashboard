@@ -94,6 +94,45 @@ def test_food_log_read_derives_photo_provenance_from_original_estimate(isolated_
     assert store.get_food_logs(1)[0]["from_image"] is True
 
 
+def test_food_log_read_preserves_unknown_photo_provenance(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+
+    saved = store.add_food_log(
+        user_id=1,
+        record={
+            "client_id": "legacy-unknown-1",
+            "date": "2026-06-03",
+            "logged_at": "2026-06-03T12:30:00",
+            "item_name": "Legacy meal",
+            "calories": 500,
+        },
+    )
+
+    assert saved["from_image"] is None
+    assert store.get_food_logs(1)[0]["from_image"] is None
+
+
+def test_food_log_read_preserves_explicit_false_photo_provenance(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+
+    saved = store.add_food_log(
+        user_id=1,
+        record={
+            "client_id": "explicit-text-1",
+            "date": "2026-06-03",
+            "logged_at": "2026-06-03T12:30:00",
+            "item_name": "Text meal",
+            "calories": 500,
+            "original_estimate": {"from_image": False},
+        },
+    )
+
+    assert saved["from_image"] is False
+    assert store.get_food_logs(1)[0]["from_image"] is False
+
+
 
 def test_food_log_persists_multi_item_meal_metadata(isolated_store):
     store, _ = isolated_store

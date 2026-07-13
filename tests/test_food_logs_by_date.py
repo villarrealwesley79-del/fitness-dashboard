@@ -132,6 +132,69 @@ def test_projection_derives_photo_provenance_from_sanitized_original(fitness_app
     assert response.get_json()["entries"][0]["from_image"] is True
 
 
+def test_projection_preserves_unknown_photo_provenance(fitness_app, monkeypatch):
+    today = _today()
+    monkeypatch.setattr(
+        fitness_app,
+        "_food_log_entries_for_context",
+        lambda since=None, limit=None: [{
+            "client_id": "legacy-unknown-1",
+            "date": today,
+            "logged_at": f"{today}T12:00:00",
+            "item_name": "Legacy meal",
+            "calories": 500,
+        }],
+    )
+
+    response = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{today}")
+
+    assert response.status_code == 200
+    assert response.get_json()["entries"][0]["from_image"] is None
+
+
+def test_projection_preserves_explicit_false_photo_provenance(fitness_app, monkeypatch):
+    today = _today()
+    monkeypatch.setattr(
+        fitness_app,
+        "_food_log_entries_for_context",
+        lambda since=None, limit=None: [{
+            "client_id": "explicit-text-1",
+            "date": today,
+            "logged_at": f"{today}T12:00:00",
+            "item_name": "Text meal",
+            "calories": 500,
+            "original_estimate": {"from_image": False},
+        }],
+    )
+
+    response = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{today}")
+
+    assert response.status_code == 200
+    assert response.get_json()["entries"][0]["from_image"] is False
+
+
+def test_projection_keeps_top_level_true_over_nested_false(fitness_app, monkeypatch):
+    today = _today()
+    monkeypatch.setattr(
+        fitness_app,
+        "_food_log_entries_for_context",
+        lambda since=None, limit=None: [{
+            "client_id": "photo-conflict-1",
+            "date": today,
+            "logged_at": f"{today}T12:00:00",
+            "item_name": "Photo meal",
+            "calories": 500,
+            "from_image": True,
+            "accepted_estimate": {"from_image": False},
+        }],
+    )
+
+    response = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{today}")
+
+    assert response.status_code == 200
+    assert response.get_json()["entries"][0]["from_image"] is True
+
+
 def test_valid_iso_date_returns_200_even_when_empty(fitness_app):
     res = fitness_app.app.test_client().get(f"/api/food-logs/by-date/{_today()}")
     assert res.status_code == 200

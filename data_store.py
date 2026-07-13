@@ -915,12 +915,28 @@ def _food_log_row_to_dict(row) -> dict:
     d = _row_to_dict(row)
     d["original_estimate"] = _json_loads_or_none(d.pop("original_estimate_json", None))
     d["accepted_estimate"] = _json_loads_or_none(d.pop("accepted_estimate_json", None))
-    d["from_image"] = bool(
-        isinstance(d["accepted_estimate"], dict)
-        and d["accepted_estimate"].get("from_image") is True
-        or isinstance(d["original_estimate"], dict)
-        and d["original_estimate"].get("from_image") is True
+    from_image = d.get("from_image")
+    accepted_from_image = (
+        d["accepted_estimate"].get("from_image")
+        if isinstance(d["accepted_estimate"], dict)
+        else None
     )
+    original_from_image = (
+        d["original_estimate"].get("from_image")
+        if isinstance(d["original_estimate"], dict)
+        else None
+    )
+    if (
+        accepted_from_image is True
+        or original_from_image is True
+    ):
+        from_image = True
+    elif (
+        from_image is not True
+        and (accepted_from_image is False or original_from_image is False)
+    ):
+        from_image = False
+    d["from_image"] = from_image
     return d
 
 

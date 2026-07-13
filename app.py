@@ -9466,11 +9466,27 @@ def food_logs_by_date(date):
     def _project(entry: dict) -> dict:
         original_estimate = entry.get("original_estimate")
         accepted_estimate = sanitize_accepted_estimate(entry.get("accepted_estimate"))
-        from_image = bool(
-            entry.get("from_image") is True
-            or isinstance(accepted_estimate, dict) and accepted_estimate.get("from_image") is True
-            or isinstance(original_estimate, dict) and original_estimate.get("from_image") is True
+        from_image = entry.get("from_image")
+        accepted_from_image = (
+            accepted_estimate.get("from_image")
+            if isinstance(accepted_estimate, dict)
+            else None
         )
+        original_from_image = (
+            original_estimate.get("from_image")
+            if isinstance(original_estimate, dict)
+            else None
+        )
+        if (
+            accepted_from_image is True
+            or original_from_image is True
+        ):
+            from_image = True
+        elif (
+            from_image is not True
+            and (accepted_from_image is False or original_from_image is False)
+        ):
+            from_image = False
         return {
             "client_id": entry.get("client_id"),
             # FIT-100: include `date` so the correction flow can target
