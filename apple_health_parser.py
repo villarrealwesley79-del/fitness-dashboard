@@ -417,6 +417,7 @@ def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
     remaining = [workout for workout in candidates if _workout_start_datetime(workout)]
     without_start = [workout for workout in candidates if not _workout_start_datetime(workout)]
     merged = []
+    timed_components = []
     while remaining:
         component = [remaining.pop(0)]
         changed = True
@@ -427,12 +428,19 @@ def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
                     component.append(workout)
                     remaining.remove(workout)
                     changed = True
+        timed_components.append(component)
         merged.append(min(
             component,
             key=lambda workout: _workout_start_datetime(workout)
             or datetime.max.replace(tzinfo=timezone.utc),
         ))
     for workout in without_start:
+        if any(
+            _same_workout(workout, member)
+            for component in timed_components
+            for member in component
+        ):
+            continue
         if not any(_same_workout(workout, existing) for existing in merged):
             merged.append(workout)
     return sorted(merged, key=lambda x: x.get("date", ""), reverse=True)
