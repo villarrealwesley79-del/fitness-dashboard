@@ -17266,12 +17266,23 @@ def sleep_import():
                 continue
             if start_kind=='datetime':
                 try:
+                    record_date=datetime.strptime(date, '%Y-%m-%d').date()
+                except ValueError:
+                    errors.append({'row':row_number,'field':'date','code':'invalid_date'})
+                    continue
+                try:
                     window_minutes=(end_value-start_value).total_seconds()/60
                 except TypeError:
                     errors.append({'row':row_number,'field':'sleep_end','code':'invalid_timestamp'})
                     continue
                 if window_minutes<=0:
                     errors.append({'row':row_number,'field':'sleep_end','code':'contradictory_timestamp'})
+                    continue
+                if window_minutes>1440:
+                    errors.append({'row':row_number,'field':'sleep_end','code':'out_of_range'})
+                    continue
+                if end_value.date()!=record_date or start_value.date() not in {record_date,record_date-timedelta(days=1)}:
+                    errors.append({'row':row_number,'field':'date','code':'contradictory_timestamp'})
                     continue
             else:
                 try:

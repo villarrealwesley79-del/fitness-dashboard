@@ -119,6 +119,14 @@ def test_sleep_import_accepts_valid_and_midnight_crossing_windows(sleep_api):
         ),
         (
             {
+                "date": "2026-07-02",
+                "sleep_start": "2026-06-01T23:30:00",
+                "sleep_end": "2026-06-02T07:00:00",
+            },
+            [{"row": 1, "field": "date", "code": "contradictory_timestamp"}],
+        ),
+        (
+            {
                 "sleep_start": "2026-07-01T23:00:00",
                 "sleep_end": "2026-07-03T07:00:00",
                 "time_in_bed_min": "",
