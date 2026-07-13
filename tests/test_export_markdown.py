@@ -54,6 +54,7 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
     assert "| 2026-07-12 | N/A | 2 | N/A | 20 | N/A |  |" in body
     assert "| 2026-07-12 | Apple Watch Import | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
     assert "| 2026-07-12 | Legacy Import | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "| 2026-07-13 | N/A | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
     assert "*Total Sessions: 2*" in body
 
 

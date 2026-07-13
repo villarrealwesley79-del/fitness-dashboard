@@ -16800,7 +16800,13 @@ def export_markdown():
 
     for workout in sorted(WORKOUTS, key=lambda x: x.get("date") or ""):
         workout_date = workout.get("date") or "N/A"
-        for exercise in workout.get("exercises") or []:
+        exercises = workout.get("exercises") or []
+        if not exercises:
+            lines.append(
+                f"| {workout_date} | N/A | N/A | N/A | N/A | N/A | Non-strength/watch-only row |"
+            )
+            continue
+        for exercise in exercises:
             machine = exercise.get("machine") or "N/A"
             sets = exercise.get("sets") or []
             if not sets:
