@@ -12087,9 +12087,9 @@
     }
 
     // ── In-app source viewer ────────────────────────────────────────────
-    // The contract guarantees source.link is null, a same-origin route, or a
-    // backend-sanitized URL safe for an in-app sandboxed viewer. We never
-    // open target=_blank on these links per FIT-134 acceptance.
+    // The contract guarantees source.link is null, a same-origin route, or the
+    // specifically trusted Open Food Facts product/home origin. We never open
+    // target=_blank on these links per FIT-134 acceptance.
     function openMealV2SourceViewer(link, label) {
         if (!link) return;
         const safe = sanitizeMealV2SourceLink(link);
@@ -12129,15 +12129,25 @@
         // escape the current origin once rendered in an iframe src — the
         // browser pairs it with the current page's protocol against the
         // attacker-controlled host. Always resolve through new URL() and
-        // require the resolved origin to equal window.location.origin,
-        // with an extra explicit reject for "//"-leading inputs so that
-        // even a buggy URL polyfill cannot widen the surface.
+        // allow only the current origin or the exact HTTPS Open Food Facts
+        // product/home origin, with an extra explicit reject for "//"-leading
+        // inputs so that even a buggy URL polyfill cannot widen the surface.
         if (value.startsWith('//')) return '';
         try {
             const u = new URL(value, window.location.origin);
-            if (u.origin !== window.location.origin) return '';
-            if (u.protocol !== window.location.protocol) return '';
-            return u.pathname + u.search + u.hash;
+            if (u.origin === window.location.origin) {
+                if (u.protocol !== window.location.protocol) return '';
+                return u.pathname + u.search + u.hash;
+            }
+            const trustedOffOrigin = 'https://world.openfoodfacts.org';
+            const trustedOffPath = u.pathname === '/' || u.pathname.startsWith('/product/');
+            if (
+                u.origin !== trustedOffOrigin
+                || u.username
+                || u.password
+                || !trustedOffPath
+            ) return '';
+            return u.href;
         } catch (_) {
             return '';
         }
