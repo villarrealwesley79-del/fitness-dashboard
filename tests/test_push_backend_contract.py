@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 
 import data_store
 
@@ -147,6 +148,52 @@ def test_push_reminder_preview_uses_stored_subscription_degradation_state(monkey
     assert body["support_state"] == "not_installed"
 
 
+def test_push_subscription_normalizes_invalid_permission_state_before_preview(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_compute_data_freshness", lambda now=None: {
+        "oura": {"status": "fresh"},
+        "apple_health": {"status": "fresh"},
+        "food": {"status": "fresh", "pending_review": False},
+    })
+    client = module.app.test_client()
+
+    saved = client.post(
+        "/api/push/subscriptions",
+        json={"subscription": _subscription(), "permission_state": "unexpected"},
+    ).get_json()["subscription"]
+
+    assert saved["permission_state"] is None
+    assert client.get("/api/push/subscriptions").get_json()["subscriptions"][0]["permission_state"] is None
+    assert client.get("/api/push/reminders/preview").get_json()["support_state"] == "ready"
+
+
+def test_push_subscription_preserves_supported_permission_states(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+
+    for permission_state in ("granted", "denied", "default", None):
+        saved = client.post(
+            "/api/push/subscriptions",
+            json={"subscription": _subscription(), "permission_state": permission_state},
+        ).get_json()["subscription"]
+
+        assert saved["permission_state"] == permission_state
+
+
+def test_push_subscription_normalizes_non_scalar_permission_state(monkeypatch, tmp_path):
+    module = _app(monkeypatch, tmp_path)
+    client = module.app.test_client()
+
+    for permission_state in (["denied"], {"value": "denied"}):
+        response = client.post(
+            "/api/push/subscriptions",
+            json={"subscription": _subscription(), "permission_state": permission_state},
+        )
+
+        assert response.status_code == 200
+        assert response.get_json()["subscription"]["permission_state"] is None
+
+
 def test_push_vapid_public_key_endpoint_uses_server_config(monkeypatch, tmp_path):
     module = _app(monkeypatch, tmp_path)
     monkeypatch.setenv("FITNESS_PUSH_VAPID_PUBLIC_KEY", "public-test-key")
@@ -210,6 +257,41 @@ def test_push_test_notification_revokes_gone_subscription(monkeypatch, tmp_path)
     assert body["status"] == "gone"
     assert body["revoked"] is True
     assert client.get("/api/push/subscriptions").get_json()["subscriptions"] == []
+
+
+def test_push_test_notification_sanitizes_delivery_failure(monkeypatch, tmp_path, caplog):
+    module = _app(monkeypatch, tmp_path)
+    monkeypatch.setenv("FITNESS_PUSH_VAPID_PRIVATE_KEY", "private-test-key")
+
+    class FailedResponse:
+        status_code = 502
+
+    class FailedPush(Exception):
+        response = FailedResponse()
+
+    def fake_webpush(**_kwargs):
+        raise FailedPush("provider rejected auth-secret and public-key")
+
+    monkeypatch.setattr(module, "webpush", fake_webpush)
+    client = module.app.test_client()
+    saved = client.post("/api/push/subscriptions", json={"subscription": _subscription()}).get_json()["subscription"]
+
+    with caplog.at_level(logging.WARNING, logger=module.app.logger.name):
+        res = client.post("/api/push/test", json={"endpoint_hash": saved["endpoint_hash"]})
+
+    assert res.status_code == 502
+    body = res.get_json()
+    assert body["status"] == "server_error"
+    assert body["error"] == {
+        "code": "push_delivery_failed",
+        "message": "Push service could not deliver the test notification",
+    }
+    assert "provider rejected" not in str(body)
+    assert "auth-secret" not in caplog.text
+    assert "public-key" not in caplog.text
+    assert "https://push.example.test/send/abc" not in caplog.text
+    assert "FailedPush" in caplog.text
+    assert "status_code=502" in caplog.text
 
 
 def test_push_test_notification_reports_missing_vapid_private_key(monkeypatch, tmp_path):
