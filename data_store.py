@@ -1434,8 +1434,14 @@ _WORKOUT_ADAPTATION_SOURCE_FIELDS = (
 
 def _workout_adaptation_source_changed(previous: dict, current: dict) -> bool:
     """Return whether a persisted field used by adaptation logic changed."""
+    def comparable_value(row: dict, field: str):
+        value = row.get(field)
+        if field == "portion_description" and value == "":
+            return None
+        return value
+
     return any(
-        previous.get(field) != current.get(field)
+        comparable_value(previous, field) != comparable_value(current, field)
         for field in _WORKOUT_ADAPTATION_SOURCE_FIELDS
     )
 
@@ -2476,7 +2482,7 @@ def add_food_log(user_id: int, record: dict) -> dict:
         if (
             previous_row is not None
             and row is not None
-            and entry["correction_state"] in {"accepted", "corrected"}
+            and entry["correction_state"] != "pending_review"
             and _workout_adaptation_source_changed(
                 _food_log_row_to_dict(previous_row),
                 _food_log_row_to_dict(row),

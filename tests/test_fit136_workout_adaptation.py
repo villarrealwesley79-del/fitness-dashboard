@@ -1143,6 +1143,57 @@ def test_changed_accepted_source_food_log_marks_unacknowledged_adaptation_stale(
     assert stored["status"] == "stale"
 
 
+def test_changed_manual_source_food_log_marks_unacknowledged_adaptation_stale(
+    monkeypatch,
+    tmp_path,
+):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    _food_log(
+        "source-meal",
+        meal_id="meal-1",
+        correction_state="manual",
+        calories=650,
+    )
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "stale"
+
+
+def test_rejected_pending_source_update_keeps_adaptation_applied(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    _food_log(
+        "source-meal",
+        meal_id="meal-1",
+        correction_state="pending_review",
+        calories=650,
+    )
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "applied"
+
+
 def test_identical_corrected_food_log_replay_keeps_adaptation_applied(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     original = _food_log("source-meal", meal_id="meal-1")
@@ -1161,6 +1212,37 @@ def test_identical_corrected_food_log_replay_keeps_adaptation_applied(monkeypatc
         )
     }
     replay["correction_state"] = "corrected"
+    data_store.add_food_log(1, replay)
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "applied"
+
+
+def test_legacy_blank_portion_and_explicit_null_are_same_adaptation_source(
+    monkeypatch,
+    tmp_path,
+):
+    _isolated_db(monkeypatch, tmp_path)
+    original = _food_log("source-meal", meal_id="meal-1", portion_description="")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    replay = {
+        key: original.get(key)
+        for key in (
+            "client_id", "date", "logged_at", "meal_id", "item_name", "meal_type",
+            "calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g",
+            "confidence", "source",
+        )
+    }
+    replay.update(portion_description=None, correction_state="corrected")
     data_store.add_food_log(1, replay)
 
     stored = next(

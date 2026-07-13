@@ -4757,6 +4757,7 @@
                     // Force the trend card to re-fetch so the row updates
                     // immediately without a manual reload.
                     renderBodyInterpretationAndNutritionTrend();
+                    fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
                     // FIT-107: notify the food-log sheet (if open) so it
                     // can refresh its sections after a delete.
                     document.dispatchEvent(new CustomEvent('fit107:meal-deleted', {
@@ -4912,6 +4913,7 @@
             modal.hidden = true;
             toast('Correction saved', 'ok');
             renderBodyInterpretationAndNutritionTrend();
+            fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
         } catch (err) {
             console.error(err);
             showError(apiErrorMessage(err, 'Save failed'));

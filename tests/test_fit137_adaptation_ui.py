@@ -239,9 +239,11 @@ const values = {{
 }};
 function $(id) {{ return {{ value: values[id] || '', hidden: false, textContent: '' }}; }}
 let sentPayload = null;
+let adaptationFetches = 0;
 async function api(_path, options) {{ sentPayload = JSON.parse(options.body); }}
 function toast() {{}}
 function renderBodyInterpretationAndNutritionTrend() {{}}
+function fetchWorkoutAdaptationNotices() {{ adaptationFetches += 1; return Promise.resolve(); }}
 ${{{json.dumps(save_block)}}}
 (async () => {{
   await saveMealCorrection(
@@ -249,7 +251,7 @@ ${{{json.dumps(save_block)}}}
     {{ hidden: false }},
     {{ disabled: false }},
   );
-  module.exports = sentPayload.portion_description;
+  module.exports = {{ portion: sentPayload.portion_description, adaptationFetches }};
 }})();
 `;
 const sandbox = {{ module: {{ exports: 'unset' }}, console }};
@@ -257,7 +259,23 @@ vm.runInNewContext(source, sandbox);
 setImmediate(() => process.stdout.write(JSON.stringify(sandbox.module.exports)));
 """
     result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True)
-    assert json.loads(result.stdout) is None
+    assert json.loads(result.stdout) == {"portion": None, "adaptationFetches": 1}
+
+
+def test_meal_delete_refreshes_visible_adaptation_notice():
+    js = APP_JS.read_text()
+    detail_block = _block(
+        js,
+        "function openMealDetailModal(entry, listContainer)",
+        "function setMealDetailMode(mode)",
+    )
+    delete_success = _block(
+        detail_block,
+        "await api(`/api/meal-intake/${encodeURIComponent(entry.client_id)}`",
+        "} catch (err)",
+    )
+
+    assert "fetchWorkoutAdaptationNotices()" in delete_success
 
 
 def test_adaptation_dismiss_failure_does_not_duplicate_card():
