@@ -17254,6 +17254,10 @@ def sleep_import():
             errors.append({'row':row_number,'field':'sleep_end','code':end_error})
         if len(errors)>timestamp_error_count:
             continue
+        if bool(parsed_start)!=bool(parsed_end):
+            missing_field='sleep_end' if parsed_start else 'sleep_start'
+            errors.append({'row':row_number,'field':missing_field,'code':'missing_timestamp'})
+            continue
         if parsed_start and parsed_end:
             start_kind,start_value=parsed_start
             end_kind,end_value=parsed_end
@@ -17273,7 +17277,8 @@ def sleep_import():
                 try:
                     anchor_date=datetime.strptime(date, '%Y-%m-%d').date()
                 except ValueError:
-                    anchor_date=datetime(2000,1,1).date()
+                    errors.append({'row':row_number,'field':'date','code':'invalid_date'})
+                    continue
                 start_dt=datetime.combine(anchor_date,start_value)
                 end_dt=datetime.combine(anchor_date,end_value)
                 if end_dt<=start_dt:

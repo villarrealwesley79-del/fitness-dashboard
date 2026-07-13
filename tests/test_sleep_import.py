@@ -103,6 +103,14 @@ def test_sleep_import_accepts_valid_and_midnight_crossing_windows(sleep_api):
             [{"row": 1, "field": "sleep_start", "code": "invalid_timestamp"}],
         ),
         (
+            {"sleep_start": "23:30", "sleep_end": None},
+            [{"row": 1, "field": "sleep_end", "code": "missing_timestamp"}],
+        ),
+        (
+            {"date": "2026-02-30", "sleep_start": "23:30", "sleep_end": "07:00"},
+            [{"row": 1, "field": "date", "code": "invalid_date"}],
+        ),
+        (
             {
                 "sleep_start": "2026-07-03T07:00:00",
                 "sleep_end": "2026-07-02T23:30:00",
