@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import importlib
+import json
 import logging
 
 import pytest
@@ -241,6 +242,79 @@ def test_recommendation_smart_uses_warm_cached_weather_without_live_fetch(fitnes
     weather = response.get_json()["weather"]
     assert weather["source"] == "cache"
     assert weather["temp_f"] == 98
+
+
+def test_fetch_weather_normalizes_provider_payload_for_response_and_cache(fitness_app, monkeypatch):
+    provider_condition = {
+        "temp_F": "98",
+        "FeelsLikeF": "101",
+        "humidity": "50",
+        "weatherDesc": [{"value": "Hot"}],
+        "provider_only": "must-not-leak",
+    }
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return json.dumps({"current_condition": [provider_condition]}).encode("utf-8")
+
+    weather_cache = {"ts": 0, "location": "San_Antonio", "data": None, "error": None}
+    monkeypatch.setattr(fitness_app, "_WEATHER_CACHE", weather_cache)
+    monkeypatch.setattr(fitness_app.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+
+    weather = fitness_app._fetch_wttr("San_Antonio")
+
+    assert weather == {
+        "available": True,
+        "location": "San_Antonio",
+        "temp_f": 98.0,
+        "feelslike_f": 101.0,
+        "humidity_pct": 50.0,
+        "condition": "Hot",
+        "source": "api",
+    }
+    assert weather_cache["data"] == {
+        "temp_f": 98.0,
+        "feelslike_f": 101.0,
+        "humidity_pct": 50.0,
+        "condition": "Hot",
+    }
+
+
+def test_weather_api_returns_same_normalized_fields_from_cache(fitness_app, monkeypatch):
+    monkeypatch.setattr(
+        fitness_app,
+        "_WEATHER_CACHE",
+        {
+            "ts": int(fitness_app.time.time()),
+            "location": "San_Antonio",
+            "data": {
+                "temp_f": 98.0,
+                "feelslike_f": 101.0,
+                "humidity_pct": 50.0,
+                "condition": "Hot",
+            },
+            "error": None,
+        },
+    )
+
+    response = fitness_app.app.test_client().get("/api/weather")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "available": True,
+        "location": "San_Antonio",
+        "temp_f": 98.0,
+        "feelslike_f": 101.0,
+        "humidity_pct": 50.0,
+        "condition": "Hot",
+        "source": "cache",
+    }
 
 
 def test_recommendation_smart_oura_cache_miss_does_not_fetch_live_oura(fitness_app, monkeypatch):

@@ -21,10 +21,8 @@ KDF_PREFIXES = ("scrypt:", "pbkdf2:")
 def isolated_auth_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     auth_db = tmp_path / "auth.db"
     monkeypatch.setattr(auth, "AUTH_DB", str(auth_db))
-    auth._rate_fail_log.clear()
     auth.init_auth_db()
     yield auth_db
-    auth._rate_fail_log.clear()
 
 
 def test_new_users_are_stored_with_slow_kdf(isolated_auth_db: Path) -> None:
