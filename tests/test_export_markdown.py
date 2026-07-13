@@ -199,7 +199,14 @@ def test_markdown_export_marks_partial_strength_volume_unknown(monkeypatch):
     monkeypatch.setattr(
         module,
         "WORKOUTS",
-        [{"source": "watch", "session_type": "strength", "exercises": []}],
+        [
+            {
+                "source": "watch",
+                "activity_type": {"invalid": "metadata"},
+                "session_type": "strength",
+                "exercises": [],
+            }
+        ],
     )
     response = app.test_client().get("/api/export-md")
 

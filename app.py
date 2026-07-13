@@ -4295,6 +4295,15 @@ def _is_finite_workout_number(value) -> bool:
         return False
 
 
+def _workout_export_source_label(workout: dict) -> str:
+    normalized = dict(workout)
+    for key in ("activity_type", "activity", "session_type"):
+        value = normalized.get(key)
+        if not isinstance(value, str) or not value.strip():
+            normalized.pop(key, None)
+    return history_source_label(normalized)
+
+
 def calculate_workout_summary_stats(workouts: list) -> dict:
     """Calculate comprehensive workout statistics."""
     workouts = [workout for workout in workouts if isinstance(workout, dict)]
@@ -4307,7 +4316,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     total_volume_valid = True
     exercise_freq = {}
     for w in workouts:
-        is_watch_workout = history_source_label(w) == "Watch"
+        is_watch_workout = _workout_export_source_label(w) == "Watch"
         exercises = w.get("exercises")
         if exercises is None:
             if not is_watch_workout:
@@ -16877,7 +16886,7 @@ def export_markdown():
         workout_date = _markdown_export_cell(
             workout_date_value if isinstance(workout_date_value, str) and workout_date_value else None
         )
-        source_label = history_source_label(workout)
+        source_label = _workout_export_source_label(workout)
         is_watch_row = source_label == "Watch"
         exercises = workout.get("exercises")
         if exercises is not None and not isinstance(exercises, list):
