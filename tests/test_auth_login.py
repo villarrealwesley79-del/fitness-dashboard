@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import logging
+import os
 import sqlite3
+import stat
+import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -9,16 +15,21 @@ from urllib.parse import urlsplit
 from flask import Flask
 
 
-def _make_auth_app(tmp_path, monkeypatch):
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _make_auth_app(tmp_path, monkeypatch, *, secure_cookie="false"):
     import auth
 
     auth_db = tmp_path / "auth.db"
     monkeypatch.setattr(auth, "AUTH_DB", str(auth_db))
     monkeypatch.setenv("SECRET_KEY", "fit185-auth-test-secret")
-    monkeypatch.setenv("SESSION_COOKIE_SECURE", "false")
+    if secure_cookie is None:
+        monkeypatch.delenv("SESSION_COOKIE_SECURE", raising=False)
+    else:
+        monkeypatch.setenv("SESSION_COOKIE_SECURE", secure_cookie)
     monkeypatch.setenv("FITNESS_DASHBOARD_SINGLE_USER", "true")
     monkeypatch.delenv("FITNESS_DASHBOARD_OWNER_USER_ID", raising=False)
-    auth._rate_fail_log.clear()
 
     templates = Path(__file__).resolve().parents[1] / "templates"
     app = Flask(__name__, template_folder=str(templates))
@@ -35,6 +46,49 @@ def _make_auth_app(tmp_path, monkeypatch):
     return app, auth
 
 
+def test_auth_cookie_defaults_remain_secure_without_factory_override(tmp_path, monkeypatch):
+    app, _auth = _make_auth_app(tmp_path, monkeypatch, secure_cookie=None)
+
+    assert app.config["SESSION_COOKIE_SECURE"] is True
+    assert app.config["REMEMBER_COOKIE_SECURE"] is True
+
+
+def test_fallback_secret_is_identical_across_cold_started_processes(tmp_path):
+    secret_file = tmp_path / ".flask-secret"
+    script = "import auth, sys; print(auth._load_or_create_secret(sys.argv[1]))"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(secret_file)],
+            cwd=REPO_ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for _ in range(4)
+    ]
+    results = [process.communicate(timeout=10) for process in processes]
+
+    assert [process.returncode for process in processes] == [0, 0, 0, 0]
+    secrets_read = [stdout.strip() for stdout, _stderr in results]
+    assert len(set(secrets_read)) == 1
+    assert secret_file.read_text(encoding="utf-8") == secrets_read[0]
+    assert stat.S_IMODE(secret_file.stat().st_mode) == 0o600
+
+
+def test_existing_read_only_fallback_secret_remains_usable(tmp_path):
+    import auth
+
+    secret_file = tmp_path / ".flask-secret"
+    secret_file.write_text("stable-read-only-secret", encoding="utf-8")
+    secret_file.chmod(0o400)
+
+    assert auth._load_or_create_secret(str(secret_file)) == "stable-read-only-secret"
+    assert stat.S_IMODE(secret_file.stat().st_mode) == 0o400
+
+
 def test_owner_correct_password_authenticates(tmp_path, monkeypatch):
     _app, auth = _make_auth_app(tmp_path, monkeypatch)
     auth.User.create("Wesley1226", "existing-password", email="owner@example.test")
@@ -49,6 +103,7 @@ def test_owner_correct_password_authenticates(tmp_path, monkeypatch):
 def test_wrong_password_returns_none_and_records_rate_limit_on_login(tmp_path, monkeypatch):
     app, auth = _make_auth_app(tmp_path, monkeypatch)
     auth.User.create("Wesley1226", "existing-password")
+    monkeypatch.setattr(auth, "_RATE_LIMIT_MAX_FAILS", 1)
 
     assert auth.User.authenticate("Wesley1226", "wrong-password") is None
 
@@ -60,8 +115,8 @@ def test_wrong_password_returns_none_and_records_rate_limit_on_login(tmp_path, m
 
     assert response.status_code == 200
     assert b"Invalid username or password." in response.data
-    assert len(auth._rate_fail_log["ip:198.51.100.10"]) == 1
-    assert len(auth._rate_fail_log["user:Wesley1226"]) == 1
+    assert auth._rate_check("ip:198.51.100.10") is False
+    assert auth._rate_check("user:Wesley1226") is False
 
 
 def test_login_success_sets_session_and_reaches_protected_route(tmp_path, monkeypatch):
@@ -216,13 +271,154 @@ def test_username_rate_limit_uses_exact_login_username(tmp_path, monkeypatch):
     assert allowed.status_code == 302
 
 
+def test_login_rate_limit_survives_separate_app_instances(tmp_path, monkeypatch):
+    first_app, auth = _make_auth_app(tmp_path, monkeypatch)
+    auth.User.create("Wesley1226", "existing-password")
+    monkeypatch.setattr(auth, "_RATE_LIMIT_MAX_FAILS", 2)
+
+    for _ in range(2):
+        response = first_app.test_client().post(
+            "/login",
+            data={"username": "Wesley1226", "password": "wrong-password"},
+            environ_base={"REMOTE_ADDR": "198.51.100.40"},
+        )
+        assert response.status_code == 200
+
+    second_app, _auth = _make_auth_app(tmp_path, monkeypatch)
+    blocked = second_app.test_client().post(
+        "/login",
+        data={"username": "Wesley1226", "password": "existing-password"},
+        environ_base={"REMOTE_ADDR": "198.51.100.40"},
+    )
+
+    assert blocked.status_code == 429
+
+
+def test_login_rate_limit_reservation_is_atomic_across_workers(tmp_path, monkeypatch):
+    _app, auth = _make_auth_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(auth, "_RATE_LIMIT_MAX_FAILS", 1)
+    barrier = threading.Barrier(2)
+
+    def reserve():
+        barrier.wait()
+        return auth._rate_reserve_attempt_all(["ip:198.51.100.41"])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        reservations = list(executor.map(lambda _index: reserve(), range(2)))
+
+    assert sum(reservation is not None for reservation in reservations) == 1
+
+
+def test_success_does_not_erase_concurrent_pending_failure(tmp_path, monkeypatch):
+    _app, auth = _make_auth_app(tmp_path, monkeypatch)
+    rate_keys = ["ip:198.51.100.44", "user:Wesley1226"]
+    pending_failure = auth._rate_reserve_attempt_all(rate_keys)
+    successful_attempt = auth._rate_reserve_attempt_all(rate_keys)
+
+    auth._rate_complete_success(successful_attempt, rate_keys)
+    auth._rate_finalize_attempt(pending_failure)
+
+    with sqlite3.connect(auth.AUTH_DB) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT attempt_id, status FROM auth_rate_limit_attempts"
+        ).fetchall()
+    assert rows == [(pending_failure, "failed")]
+
+
+def test_login_rate_limit_database_failure_returns_503(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+
+    def fail_reservation(_rate_keys):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(auth, "_rate_reserve_attempt_all", fail_reservation)
+    response = app.test_client().post(
+        "/login",
+        data={"username": "Wesley1226", "password": "existing-password"},
+        environ_base={"REMOTE_ADDR": "198.51.100.42"},
+    )
+
+    assert response.status_code == 503
+    assert b"Login service temporarily unavailable." in response.data
+
+
+def test_registration_rate_limit_database_failure_returns_503(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+
+    def fail_reservation(_rate_keys):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(auth, "_rate_reserve_attempt_all", fail_reservation)
+    response = app.test_client().post(
+        "/register",
+        data={"username": "Wesley1226", "password": "existing-password"},
+        environ_base={"REMOTE_ADDR": "198.51.100.43"},
+    )
+
+    assert response.status_code == 503
+    assert b"Registration service temporarily unavailable." in response.data
+
+
+def test_registration_cleanup_failure_does_not_report_failure_after_commit(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(tmp_path, monkeypatch)
+
+    def fail_cleanup(_attempt_id, _rate_keys):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(auth, "_rate_complete_success", fail_cleanup)
+    response = app.test_client().post(
+        "/register",
+        data={"username": "Wesley1226", "password": "existing-password"},
+        environ_base={"REMOTE_ADDR": "198.51.100.45"},
+    )
+
+    assert response.status_code == 302
+    assert auth.User.get_by_username("Wesley1226") is not None
+
+
 def test_rate_check_evicts_empty_pruned_keys(tmp_path, monkeypatch):
     _app, auth = _make_auth_app(tmp_path, monkeypatch)
     stale_key = "ip:198.51.100.30"
-    auth._rate_fail_log[stale_key] = [time.time() - auth._RATE_LIMIT_WINDOW_SEC - 1]
+    now = time.time()
+    monkeypatch.setattr(auth.time, "time", lambda: now - auth._RATE_LIMIT_WINDOW_SEC - 1)
+    auth._rate_record_fail(stale_key)
+    monkeypatch.setattr(auth.time, "time", lambda: now)
 
     assert auth._rate_check(stale_key) is True
-    assert stale_key not in auth._rate_fail_log
+    with sqlite3.connect(auth.AUTH_DB) as conn:
+        attempt_count = conn.execute("SELECT COUNT(*) FROM auth_rate_limit_attempts").fetchone()[0]
+    assert attempt_count == 0
+
+
+def test_auth_db_migrates_existing_rate_limit_rows_without_attempt_ids(tmp_path, monkeypatch):
+    import auth
+
+    auth_db = tmp_path / "auth.db"
+    with sqlite3.connect(auth_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE auth_rate_limit_attempts (
+                identity_hash TEXT NOT NULL,
+                attempted_at REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO auth_rate_limit_attempts (identity_hash, attempted_at) VALUES (?, ?)",
+            ("legacy-hash", time.time()),
+        )
+    monkeypatch.setattr(auth, "AUTH_DB", str(auth_db))
+
+    auth.init_auth_db()
+
+    with sqlite3.connect(auth_db) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_rate_limit_attempts)")}
+        migrated = conn.execute(
+            "SELECT attempt_id, identity_hash FROM auth_rate_limit_attempts"
+        ).fetchone()
+    assert "attempt_id" in columns
+    assert migrated[0]
+    assert migrated[1] == "legacy-hash"
 
 
 def test_invalid_owner_id_locks_authenticated_non_owner_and_logs_error(tmp_path, monkeypatch, caplog):
@@ -291,5 +487,6 @@ def test_login_db_unavailable_returns_503_not_invalid_credentials(tmp_path, monk
     assert response.status_code == 503
     assert b"Login service temporarily unavailable." in response.data
     assert b"Invalid username or password." not in response.data
-    assert "ip:198.51.100.11" not in auth._rate_fail_log
-    assert "user:wesley1226" not in auth._rate_fail_log
+    with sqlite3.connect(auth.AUTH_DB) as conn:
+        attempt_count = conn.execute("SELECT COUNT(*) FROM auth_rate_limit_attempts").fetchone()[0]
+    assert attempt_count == 0

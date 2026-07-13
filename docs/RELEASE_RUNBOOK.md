@@ -35,6 +35,18 @@ FITNESS_SMOKE_PASSWORD=<owner-password> \
 bash support/self_test.sh
 ```
 
+Before release, run the dependency-free shell syntax gate:
+
+```bash
+scripts/check-shell-scripts.sh
+```
+
+The gate runs `bash -n` over the launchd installer, Apple Health staleness
+checker, worktree guard and installer, pre-push and post-checkout hooks, and the
+live self-test. It intentionally does not treat ShellCheck's semantic or style
+warnings as release failures because ShellCheck is not a repository dependency
+or a standard macOS tool. No `bash -n` syntax diagnostics are ignored.
+
 6. Open a pull request with the Linear issue, tests, risk, and intentionally
    excluded work.
 
