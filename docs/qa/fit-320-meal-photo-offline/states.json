@@ -1,0 +1,11 @@
+{
+  "viewport": {"width": 390, "height": 844},
+  "states": [
+    {"id": "four-photo-cap", "selector": "#meal-composer-error", "expected_text": "Only 4 photos per meal"},
+    {"id": "oversize-rejection", "selector": "#meal-composer-error", "expected_text": "over 6 MB"},
+    {"id": "photo-removal", "selector": "#meal-composer-retention", "expected_text": "Photos are discarded after extraction."},
+    {"id": "offline-persistence", "selector": "#sync-banner", "expected_text": "1 pending"},
+    {"id": "reconnect-replay", "selector": "#toast-host", "expected_text": "Queued meal synced"},
+    {"id": "discard-blob-deletion", "selector": "#sync-queue-list", "expected_text": "Discard"}
+  ]
+}
