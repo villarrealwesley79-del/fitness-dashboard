@@ -36,6 +36,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 ROOT="$(git rev-parse --show-toplevel)"
+COMMON_DIR="$(git rev-parse --git-common-dir)"
+case "${COMMON_DIR}" in
+    /*) ;;
+    *) COMMON_DIR="${ROOT}/${COMMON_DIR}" ;;
+esac
+COMMON_CONFIG="${COMMON_DIR}/config"
 HOOK_DIR="$(git rev-parse --git-path fitness-worktree-guard-hooks)"
 HOOKS_PATH="$(cd "$(dirname "${HOOK_DIR}")" && pwd -P)/$(basename "${HOOK_DIR}")"
 
@@ -54,6 +60,7 @@ if [ "${DRY_RUN}" = "1" ]; then
         printf '[dry-run] install %s %s\n' "${hook}" "${HOOKS_PATH}/$(basename "${hook}")"
     done
     printf '[dry-run] install %s %s\n' "${ROOT}/scripts/worktree-server-guard.sh" "${HOOKS_PATH}/worktree-server-guard.sh"
+    printf '[dry-run] git config --file %s core.bare false\n' "${COMMON_CONFIG}"
     printf '[dry-run] git config extensions.worktreeConfig true\n'
     printf '[dry-run] git config --worktree core.hooksPath %s\n' "${HOOKS_PATH}"
     exit 0
@@ -65,6 +72,9 @@ for hook in "${ROOT}/.githooks/"*; do
     install -m 0755 "${hook}" "${HOOKS_PATH}/$(basename "${hook}")"
 done
 install -m 0755 "${ROOT}/scripts/worktree-server-guard.sh" "${HOOKS_PATH}/worktree-server-guard.sh"
+# The guard is hook-based; it never needs the shared repository to be bare.
+# Clear stale shared core.bare=true values before they poison linked worktrees.
+git config --file "${COMMON_CONFIG}" core.bare false
 git config extensions.worktreeConfig true
 git config --worktree core.hooksPath "${HOOKS_PATH}"
 printf 'Installed git hooks at %s\n' "${HOOKS_PATH}"

@@ -123,6 +123,31 @@ def test_installer_scopes_hooks_path_to_linked_worktree(tmp_path):
     assert repo_hooks_after.stdout == repo_hooks_before.stdout
 
 
+def test_installer_repairs_shared_bare_config_for_fresh_worktrees(tmp_path):
+    repo = _init_repo(tmp_path)
+    _run(["git", "config", "--worktree", "core.bare", "false"], repo, check=True)
+    _run(
+        ["git", "config", "--file", str(repo / ".git" / "config"), "core.bare", "true"],
+        repo,
+        check=True,
+    )
+
+    _run(["scripts/install-worktree-guard.sh"], repo, check=True)
+    sibling = tmp_path / "fresh-worktree"
+    _run(["git", "worktree", "add", "-b", "fresh-worktree", str(sibling)], repo, check=True)
+
+    root = _run(["git", "rev-parse", "--show-toplevel"], sibling)
+    shared_bare = _run(
+        ["git", "config", "--file", str(repo / ".git" / "config"), "--get", "core.bare"],
+        sibling,
+        check=True,
+    )
+
+    assert root.returncode == 0
+    assert Path(root.stdout.strip()) == sibling
+    assert shared_bare.stdout.strip() == "false"
+
+
 def test_guard_detects_matching_server_process(tmp_path):
     repo = _init_repo(tmp_path)
     proc = _start_stub_server(repo)
