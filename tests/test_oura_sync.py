@@ -91,3 +91,43 @@ def test_oura_sync_redacts_upstream_response_body(monkeypatch, tmp_path):
     }
     assert "oura-secret-token-value" not in response.get_data(as_text=True)
     assert "invalid_token" not in response.get_data(as_text=True)
+
+
+def test_oura_sync_redacts_url_error_reason(monkeypatch, tmp_path):
+    app = _fitness_app(monkeypatch, tmp_path)
+    monkeypatch.setenv("OURA_API_TOKEN", "test-token")
+    oura_sleep_sync = importlib.import_module("oura_sleep_sync")
+
+    def fail_sync(*_args, **_kwargs):
+        raise urllib.error.URLError("provider rejected oura-secret-token-value")
+
+    monkeypatch.setattr(oura_sleep_sync, "sync_sleep_data", fail_sync)
+
+    response = app.test_client().post("/api/oura/sync-sleep", json={"days_back": 7})
+
+    assert response.status_code == 502
+    assert response.get_json()["error"] == {
+        "code": "oura_api_error",
+        "message": "Oura API request failed.",
+    }
+    assert "oura-secret-token-value" not in response.get_data(as_text=True)
+
+
+def test_oura_sync_redacts_unexpected_exception_detail(monkeypatch, tmp_path):
+    app = _fitness_app(monkeypatch, tmp_path)
+    monkeypatch.setenv("OURA_API_TOKEN", "test-token")
+    oura_sleep_sync = importlib.import_module("oura_sleep_sync")
+
+    def fail_sync(*_args, **_kwargs):
+        raise RuntimeError("raw provider payload contained oura-secret-token-value")
+
+    monkeypatch.setattr(oura_sleep_sync, "sync_sleep_data", fail_sync)
+
+    response = app.test_client().post("/api/oura/sync-sleep", json={"days_back": 7})
+
+    assert response.status_code == 500
+    assert response.get_json()["error"] == {
+        "code": "oura_sync_failed",
+        "message": "Oura sync failed.",
+    }
+    assert "oura-secret-token-value" not in response.get_data(as_text=True)
