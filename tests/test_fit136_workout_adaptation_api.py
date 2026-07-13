@@ -269,31 +269,35 @@ def test_workout_adaptation_evaluation_endpoint_processes_due_windows_idempotent
     assert generate_calls[0]["training_recommendation"] == "recovery"
 
 
-def test_workout_adaptation_evaluation_preserves_same_day_canonical_plan(monkeypatch, tmp_path):
+def test_workout_adaptation_evaluation_regenerates_for_changed_fingerprint(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
     monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "new-fingerprint")
     monkeypatch.setattr(module, "_current_workout_plan_for_fingerprint", lambda _fingerprint: None)
-    canonical = {**_recommendation(), "id": "user-customized-plan"}
+    stale_plan = {**_recommendation(), "id": "stale-plan"}
     monkeypatch.setattr(
         module,
         "get_current_workout_plan",
         lambda _user_id, **_kwargs: {
-            "plan": canonical,
+            "plan": stale_plan,
             "fingerprint": "old-fingerprint",
             "updated_at": "2026-05-24T18:30:00",
         },
     )
-    monkeypatch.setattr(
-        module,
-        "generate_next_workout",
-        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("must preserve same-day plan")),
-    )
+    generated_plan = {**_recommendation(), "id": "fresh-plan"}
+    generate_calls = []
+
+    def generate(*_args, **_kwargs):
+        generate_calls.append(True)
+        return generated_plan
+
+    monkeypatch.setattr(module, "generate_next_workout", generate)
 
     response = client.post("/api/workout-adaptation-events/evaluate")
 
     assert response.status_code == 200
-    assert module.LAST_WORKOUT_RECOMMENDATION["id"] == "user-customized-plan"
+    assert generate_calls == [True]
+    assert module.LAST_WORKOUT_RECOMMENDATION["id"] == "fresh-plan"
 
 
 def test_workout_adaptation_evaluation_reports_engine_failure(monkeypatch, tmp_path):

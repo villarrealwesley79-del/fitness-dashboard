@@ -9627,14 +9627,6 @@ def evaluate_workout_adaptation_events():
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
     next_workout = _current_workout_plan_for_fingerprint(fingerprint)
-    stored_plan = get_current_workout_plan(_current_data_user_id())
-    if (
-        not next_workout
-        and stored_plan
-        and str(stored_plan.get("updated_at") or "")[:10] == today_s
-        and not _is_lightweight_current_workout_plan(stored_plan.get("plan"))
-    ):
-        next_workout = stored_plan.get("plan")
     if not next_workout:
         training_recommendation, _open_wearables_modifier = _apply_open_wearables_recommendation_guard(
             _current_workout_training_recommendation(),
