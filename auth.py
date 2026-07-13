@@ -246,6 +246,9 @@ _PASSWORD_HASH_METHOD = "scrypt:32768:8:1"
 _LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _INVALID_OWNER_USER_ID = object()
 _owner_config_error_logged = False
+_FACTORY_PREVIEW_ENV = "FITNESS_DASHBOARD_FACTORY_PREVIEW"
+_FACTORY_PREVIEW_USERNAME = "test"
+_FACTORY_PREVIEW_PASSWORD = "1224"
 
 
 @contextmanager
@@ -437,6 +440,35 @@ class User(UserMixin):
             conn.commit()
 
 
+def _factory_preview_enabled() -> bool:
+    return os.environ.get(_FACTORY_PREVIEW_ENV, "") == "1"
+
+
+def _seed_factory_preview_account() -> None:
+    if not _factory_preview_enabled():
+        return
+
+    hashed = _hash_password(_FACTORY_PREVIEW_PASSWORD)
+    with _get_db() as conn:
+        existing = conn.execute(
+            "SELECT id FROM users WHERE username = ?",
+            (_FACTORY_PREVIEW_USERNAME,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE users SET password = ?, salt = '', is_pro = 1 WHERE id = ?",
+                (hashed, existing["id"]),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO users (username, password, salt, is_pro)
+                VALUES (?, ?, '', 1)
+                """,
+                (_FACTORY_PREVIEW_USERNAME, hashed),
+            )
+
+
 def _single_user_mode() -> bool:
     return os.environ.get("FITNESS_DASHBOARD_SINGLE_USER", "true").lower() != "false"
 
@@ -448,6 +480,14 @@ def _user_count() -> int:
 
 
 def _owner_user_id():
+    if _factory_preview_enabled():
+        with _get_db() as conn:
+            row = conn.execute(
+                "SELECT id FROM users WHERE username = ?",
+                (_FACTORY_PREVIEW_USERNAME,),
+            ).fetchone()
+        return int(row[0]) if row else None
+
     configured = os.environ.get("FITNESS_DASHBOARD_OWNER_USER_ID", "").strip()
     if configured:
         try:
@@ -731,8 +771,14 @@ def init_auth(app):
     app.config["SESSION_COOKIE_SAMESITE"]  = "Lax"          # CSRF mitigation
     # Default to Secure=true so session cookies refuse to ride over HTTP.
     # Local-dev HTTP (e.g. http://127.0.0.1:5050 without Tailscale TLS) can
-    # opt back out by setting SESSION_COOKIE_SECURE=false explicitly.
-    app.config["SESSION_COOKIE_SECURE"]    = os.environ.get("SESSION_COOKIE_SECURE", "true").lower() != "false"
+    # opt back out by setting SESSION_COOKIE_SECURE=false explicitly. Isolated
+    # Tailnet factory previews use one explicit flag for HTTP cookies and their
+    # disposable login fixture.
+    app.config["SESSION_COOKIE_SECURE"]    = (
+        False
+        if _factory_preview_enabled()
+        else os.environ.get("SESSION_COOKIE_SECURE", "true").lower() != "false"
+    )
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=14)
     app.config["REMEMBER_COOKIE_HTTPONLY"] = True
     app.config["REMEMBER_COOKIE_SAMESITE"] = "Lax"
@@ -742,6 +788,7 @@ def init_auth(app):
     login_manager.init_app(app)
     app.register_blueprint(auth_bp)
     init_auth_db()
+    _seed_factory_preview_account()
 
     @app.context_processor
     def inject_csrf_token():

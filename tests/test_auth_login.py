@@ -18,7 +18,13 @@ from flask import Flask
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _make_auth_app(tmp_path, monkeypatch, *, secure_cookie="false"):
+def _make_auth_app(
+    tmp_path,
+    monkeypatch,
+    *,
+    secure_cookie="false",
+    factory_preview=False,
+):
     import auth
 
     auth_db = tmp_path / "auth.db"
@@ -28,6 +34,10 @@ def _make_auth_app(tmp_path, monkeypatch, *, secure_cookie="false"):
         monkeypatch.delenv("SESSION_COOKIE_SECURE", raising=False)
     else:
         monkeypatch.setenv("SESSION_COOKIE_SECURE", secure_cookie)
+    if factory_preview:
+        monkeypatch.setenv("FITNESS_DASHBOARD_FACTORY_PREVIEW", "1")
+    else:
+        monkeypatch.delenv("FITNESS_DASHBOARD_FACTORY_PREVIEW", raising=False)
     monkeypatch.setenv("FITNESS_DASHBOARD_SINGLE_USER", "true")
     monkeypatch.delenv("FITNESS_DASHBOARD_OWNER_USER_ID", raising=False)
 
@@ -51,6 +61,34 @@ def test_auth_cookie_defaults_remain_secure_without_factory_override(tmp_path, m
 
     assert app.config["SESSION_COOKIE_SECURE"] is True
     assert app.config["REMEMBER_COOKIE_SECURE"] is True
+
+
+def test_factory_preview_seeds_fixed_owner_account(tmp_path, monkeypatch):
+    app, auth = _make_auth_app(
+        tmp_path,
+        monkeypatch,
+        secure_cookie=None,
+        factory_preview=True,
+    )
+
+    preview_user = auth.User.authenticate("test", "1224")
+
+    assert preview_user is not None
+    assert preview_user.is_pro is True
+    assert auth._is_owner_user_id(preview_user.id) is True
+    assert app.config["SESSION_COOKIE_SECURE"] is False
+    assert app.config["REMEMBER_COOKIE_SECURE"] is False
+
+
+def test_ordinary_local_boot_never_seeds_factory_preview_account(tmp_path, monkeypatch):
+    _app, auth = _make_auth_app(
+        tmp_path,
+        monkeypatch,
+        secure_cookie="false",
+        factory_preview=False,
+    )
+
+    assert auth.User.get_by_username("test") is None
 
 
 def test_fallback_secret_is_identical_across_cold_started_processes(tmp_path):
