@@ -17275,15 +17275,15 @@ def sleep_import():
 
 @app.route('/api/sleep/analytics')
 def sleep_analytics():
-    # Pull from Oura sleep SQLite first, fall back to SLEEP_DATA JSON
-    rows = []
+    # Merge Oura and manual sleep per date; Oura wins only on overlapping dates.
+    oura_rows = []
     try:
         import sqlite3 as _sq
         with closing(_sq.connect(OURA_DB_FILE)) as _db:
             _db.row_factory = _sq.Row
             _cur = _db.execute("SELECT * FROM oura_sleep WHERE type='long_sleep' ORDER BY day")
             for r in _cur.fetchall():
-                rows.append({
+                oura_rows.append({
                     'date': r['day'],
                     'sleep_start': r['bedtime_start'],
                     'sleep_end': r['bedtime_end'],
@@ -17300,16 +17300,28 @@ def sleep_analytics():
                 })
     except Exception:
         app.logger.warning("Oura sleep analytics SQLite read failed", exc_info=True)
-    # Fall back to manual SLEEP_DATA if no Oura data
-    if not rows:
-        rows = sorted(SLEEP_DATA, key=lambda x: x.get('date'))
+    dedup = {}
+    for manual_row in SLEEP_DATA:
+        row = dict(manual_row)
+        row['source'] = row.get('source') or 'manual'
+        date = row.get('date')
+        try:
+            date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')
+        except (TypeError, ValueError):
+            continue
+        row['date'] = date
+        if date not in dedup or row.get('source') == 'apple_watch':
+            dedup[date] = row
+    for row in oura_rows:
+        date = row.get('date')
+        try:
+            date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')
+        except (TypeError, ValueError):
+            continue
+        row['date'] = date
+        dedup[date] = row
+    rows = sorted(dedup.values(), key=lambda x: x.get('date'))
     if not rows: return jsonify({'history':[],'consistency_score':None,'sleep_perf_correlation':None})
-    # prefer apple watch source if duplicates
-    dedup={}
-    for r in rows:
-        d=r.get('date')
-        if d not in dedup or r.get('source')=='apple_watch': dedup[d]=r
-    rows=sorted(dedup.values(), key=lambda x:x.get('date'))
     import statistics, math
     bed=[]
     for r in rows:
