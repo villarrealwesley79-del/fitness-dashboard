@@ -14804,19 +14804,11 @@ def sync_oura_sleep():
             "latest_days": latest_days,
         })
     except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read().decode("utf-8", errors="replace")[:200]
-        except Exception:
-            detail = ""
-        message = f"Oura API returned HTTP {e.code}"
-        if detail:
-            message = f"{message}: {detail}"
-        return api_error(message, 502, code="oura_api_error")
-    except urllib.error.URLError as e:
-        return api_error(f"Oura API request failed: {e.reason}", 502, code="oura_api_error")
-    except Exception as e:
-        return api_error(f"Oura sync failed: {str(e)}", 500, code="oura_sync_failed")
+        return api_error(f"Oura API returned HTTP {e.code}.", 502, code="oura_api_error")
+    except urllib.error.URLError:
+        return api_error("Oura API request failed.", 502, code="oura_api_error")
+    except Exception:
+        return api_error("Oura sync failed.", 500, code="oura_sync_failed")
 
 
 @app.route('/api/oura/sleep-summary')
