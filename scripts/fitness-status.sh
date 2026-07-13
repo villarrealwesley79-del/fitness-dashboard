@@ -5,35 +5,53 @@ set -euo pipefail
 
 APP_LABEL="com.fitness-dashboard"
 STALE_LABEL="com.fitness-dashboard.staleness"
-APP_PORT="${APP_PORT:-5050}"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_PLIST="${HOME}/Library/LaunchAgents/${APP_LABEL}.plist"
 
-resolve_data_dir() {
-  if [ -n "${DATA_DIR:-}" ]; then
-    printf '%s' "$DATA_DIR"
+plist_environment_value() {
+  local key="$1"
+  if [ ! -f "$APP_PLIST" ]; then
     return
   fi
-  if [ -f "$APP_PLIST" ]; then
-    plist_data_dir="$(python3 - "$APP_PLIST" 2>/dev/null <<'PY' || true
+  python3 - "$APP_PLIST" "$key" 2>/dev/null <<'PY' || true
 import plistlib
 import sys
 
 with open(sys.argv[1], "rb") as plist_file:
     plist = plistlib.load(plist_file)
 
-print(plist.get("EnvironmentVariables", {}).get("DATA_DIR", ""), end="")
+print(plist.get("EnvironmentVariables", {}).get(sys.argv[2], ""), end="")
 PY
-)"
-    if [ -n "$plist_data_dir" ]; then
-      printf '%s' "$plist_data_dir"
-      return
-    fi
+}
+
+resolve_data_dir() {
+  if [ -n "${DATA_DIR:-}" ]; then
+    printf '%s' "$DATA_DIR"
+    return
+  fi
+  plist_data_dir="$(plist_environment_value DATA_DIR)"
+  if [ -n "$plist_data_dir" ]; then
+    printf '%s' "$plist_data_dir"
+    return
   fi
   printf '%s' "$REPO_DIR"
 }
 
+resolve_port() {
+  if [ -n "${PORT:-}" ]; then
+    printf '%s' "$PORT"
+    return
+  fi
+  plist_port="$(plist_environment_value PORT)"
+  if [ -n "$plist_port" ]; then
+    printf '%s' "$plist_port"
+    return
+  fi
+  printf '5050'
+}
+
 DATA_DIR="$(resolve_data_dir)"
+RUNTIME_PORT="$(resolve_port)"
 STALE_LOG="${APPLE_HEALTH_STALENESS_LOG_FILE:-${APPLE_HEALTH_STALENESS_LOG:-/tmp/apple-health-staleness.log}}"
 
 service_state() {
@@ -73,6 +91,8 @@ redact_line() {
       if (lowered ~ "(^|[^[:alnum:]_])" quote "?[[:alnum:]_-]*" secret_key "[[:alnum:]_-]*[[:space:]]*" quote "?[[:space:]]*[:=]" ||
           lowered ~ "(^|[^[:alnum:]_])" quote "?(authorization|proxy-authorization|set-cookie)" quote "?[[:space:]]*[:=]" ||
           lowered ~ "(^|[?&{,[:space:]])" quote "?(code|state)" quote "?[[:space:]]*[:=]" ||
+          lowered ~ "(^|[[:space:]])(bearer|basic)[[:space:]]+[^[:space:]]+" ||
+          lowered ~ "(https?|ftp)%3a%2f%2f" ||
           lowered ~ "://") {
         print "[REDACTED]"
         next
@@ -87,7 +107,7 @@ printf 'staleness_launchd=%s\n' "$(service_state "$STALE_LABEL")"
 
 listener_pid="missing"
 if command -v lsof >/dev/null 2>&1; then
-  detected_pid="$(lsof -tiTCP:"$APP_PORT" -sTCP:LISTEN 2>/dev/null | /usr/bin/head -1 || true)"
+  detected_pid="$(lsof -tiTCP:"$RUNTIME_PORT" -sTCP:LISTEN 2>/dev/null | /usr/bin/head -1 || true)"
   if [ -n "$detected_pid" ]; then
     listener_pid="$detected_pid"
   fi

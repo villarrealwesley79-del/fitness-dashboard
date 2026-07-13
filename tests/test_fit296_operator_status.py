@@ -15,7 +15,7 @@ def _write_command(path, body):
     path.chmod(0o755)
 
 
-def _run_status(tmp_path, *, launchctl_body, lsof_body, log_line, data_dir=True):
+def _run_status(tmp_path, *, launchctl_body, lsof_body, log_line, data_dir=True, port=None):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _write_command(bin_dir / "launchctl", launchctl_body)
@@ -29,7 +29,11 @@ def _run_status(tmp_path, *, launchctl_body, lsof_body, log_line, data_dir=True)
         "APPLE_HEALTH_STALENESS_LOG": str(log_path),
         "COOKIE": "fit296-session-secret",
         "HEALTH_SYNC_TOKEN": "fit296-health-secret",
+        "STATUS_LSOF_ARGS_FILE": str(tmp_path / "lsof-args"),
     })
+    env.pop("PORT", None)
+    if port is not None:
+        env["PORT"] = str(port)
     if data_dir:
         env["DATA_DIR"] = str(tmp_path / "runtime")
     else:
@@ -106,6 +110,14 @@ def test_status_reports_running_services_listener_and_redacts_log(tmp_path):
             'WARN {"Authorization":"Bearer json-authorization-secret"}',
             ("json-authorization-secret",),
         ),
+        (
+            "WARN Bearer standalone-bearer-secret",
+            ("standalone-bearer-secret",),
+        ),
+        (
+            "WARN callback=https%3A%2F%2Fhost%3Faccess_token%3Dencoded-url-secret",
+            ("encoded-url-secret",),
+        ),
     ],
 )
 def test_status_redacts_case_header_and_url_variants(tmp_path, log_line, secret_values):
@@ -141,6 +153,20 @@ def test_status_reports_missing_services_without_failing(tmp_path):
     assert "smoke_auth=ready" in result.stdout
 
 
+def test_status_uses_runtime_port_for_listener_probe(tmp_path):
+    result = _run_status(
+        tmp_path,
+        launchctl_body="exit 1",
+        lsof_body='printf "%s\\n" "$*" > "$STATUS_LSOF_ARGS_FILE"; printf "4321\\n"',
+        log_line="INFO idle",
+        port=6060,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "listener_pid=4321" in result.stdout
+    assert (tmp_path / "lsof-args").read_text(encoding="utf-8").strip() == "-tiTCP:6060 -sTCP:LISTEN"
+
+
 def test_default_staleness_log_matches_watchdog_output_path():
     status_source = SCRIPT.read_text(encoding="utf-8")
     watchdog_source = WATCHDOG.read_text(encoding="utf-8")
@@ -161,6 +187,7 @@ def test_status_reads_data_dir_from_installed_app_plist(tmp_path):
         f"""<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>EnvironmentVariables</key><dict>
 <key>DATA_DIR</key><string>{runtime_dir}</string>
+<key>PORT</key><string>6061</string>
 </dict></dict></plist>
 """,
         encoding="utf-8",
@@ -169,10 +196,12 @@ def test_status_reads_data_dir_from_installed_app_plist(tmp_path):
     result = _run_status(
         tmp_path,
         launchctl_body="exit 1",
-        lsof_body="exit 0",
+        lsof_body='printf "%s\\n" "$*" > "$STATUS_LSOF_ARGS_FILE"; printf "9876\\n"',
         log_line="INFO idle",
         data_dir=False,
     )
 
     assert result.returncode == 0, result.stderr
     assert f"data_dir={runtime_dir}" in result.stdout
+    assert "listener_pid=9876" in result.stdout
+    assert (tmp_path / "lsof-args").read_text(encoding="utf-8").strip() == "-tiTCP:6061 -sTCP:LISTEN"
