@@ -17281,6 +17281,9 @@ def sleep_import():
                 window_minutes=(end_dt-start_dt).total_seconds()/60
                 e['sleep_start']=start_dt.isoformat()
                 e['sleep_end']=end_dt.isoformat()
+            if window_minutes>1440:
+                errors.append({'row':row_number,'field':'sleep_end','code':'out_of_range'})
+                continue
             if supplied['time_in_bed_min'] and e['time_in_bed_min']!=int(window_minutes):
                 errors.append({'row':row_number,'field':'time_in_bed_min','code':'contradictory_minutes'})
                 continue
