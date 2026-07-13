@@ -5750,6 +5750,13 @@ def _meal_intake_public_vision_error(_exc: Exception) -> str:
     return "vision_estimator_failed"
 
 
+def _meal_intake_vision_contention(exc: Exception) -> bool:
+    return (
+        isinstance(exc, vision_estimator.VisionEstimatorError)
+        and str(exc) == "busy: LM Studio vision inference already running"
+    )
+
+
 def _meal_text_fallback_reason(parsed: dict | None) -> str | None:
     if not isinstance(parsed, dict):
         return None
@@ -8207,7 +8214,12 @@ def meal_intake():
                 "confidence": estimate.get("vision_confidence"),
             }
         except Exception as exc:
-            if not isinstance(exc, vision_estimator.VisionEstimatorError):
+            if _meal_intake_vision_contention(exc):
+                app.logger.info(
+                    "vision_busy_contention",
+                    extra={"event": "vision_busy_contention"},
+                )
+            elif not isinstance(exc, vision_estimator.VisionEstimatorError):
                 app.logger.warning("Vision meal estimate failed before fallback", exc_info=True)
             public_vision_error = _meal_intake_public_vision_error(exc)
             if not text_raw:
