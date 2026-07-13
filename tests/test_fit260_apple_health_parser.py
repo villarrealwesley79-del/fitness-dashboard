@@ -172,6 +172,35 @@ def test_merge_workouts_uses_activity_and_bounded_start_and_duration_comparison(
     }
 
 
+@pytest.mark.parametrize("order", [(0, 2, 1), (2, 0, 1), (1, 2, 0)])
+def test_merge_workouts_dedupes_three_way_chains_to_earliest_start(order):
+    workouts = [
+        {
+            "date": "2026-07-09",
+            "activity": "Running",
+            "start": "2026-07-09T11:00:00Z",
+            "duration_min": 30,
+        },
+        {
+            "date": "2026-07-09",
+            "activity": "Running",
+            "start": "2026-07-09T11:04:00Z",
+            "duration_min": 34,
+        },
+        {
+            "date": "2026-07-09",
+            "activity": "Running",
+            "start": "2026-07-09T11:08:00Z",
+            "duration_min": 38,
+        },
+    ]
+
+    merged = parser._merge_workouts([workouts[index] for index in order], [])
+
+    assert len(merged) == 1
+    assert merged[0]["start"] == "2026-07-09T11:00:00Z"
+
+
 @pytest.mark.parametrize(
     ("sync_start", "sync_duration"),
     [

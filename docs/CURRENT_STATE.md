@@ -101,6 +101,10 @@ Apple Health supports two paths:
 - Health Auto Export webhook into `apple_health_sync.db`.
 - Legacy file exports from `~/Documents/Health/healthkit_*.json`.
 
+The single-user host's OS timezone must match the timezone used by Health Auto
+Export. Offset-bearing sync timestamps keep their encoded local date, while
+epoch-based file records and rolling cutoffs use the host's local timezone.
+
 The public webhook rejects missing tokens, and the status endpoint is auth-gated.
 
 Health Auto Export setup URL generation should use environment-driven public URL config:

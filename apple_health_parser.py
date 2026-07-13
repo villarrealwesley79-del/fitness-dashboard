@@ -44,6 +44,8 @@ ACTIVITY_MAP = {
 
 
 def _ms_to_iso(ms: float) -> str:
+    # Deployment invariant: the single-user host timezone must match the
+    # timezone used by Health Auto Export for local-day bucketing.
     try:
         return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
     except (ValueError, TypeError, OSError):
@@ -407,12 +409,27 @@ def _same_workout(left: dict, right: dict) -> bool:
 
 def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
     """Merge file-based and sync-based workouts by start instant or fallback tuple."""
+    remaining = [
+        workout
+        for workout in file_workouts + sync_workouts
+        if not _ignore_workout(workout)
+    ]
     merged = []
-    for w in file_workouts + sync_workouts:
-        if _ignore_workout(w):
-            continue
-        if not any(_same_workout(w, existing) for existing in merged):
-            merged.append(w)
+    while remaining:
+        component = [remaining.pop(0)]
+        changed = True
+        while changed:
+            changed = False
+            for workout in list(remaining):
+                if any(_same_workout(workout, member) for member in component):
+                    component.append(workout)
+                    remaining.remove(workout)
+                    changed = True
+        merged.append(min(
+            component,
+            key=lambda workout: _workout_start_datetime(workout)
+            or datetime.max.replace(tzinfo=timezone.utc),
+        ))
     return sorted(merged, key=lambda x: x.get("date", ""), reverse=True)
 
 
