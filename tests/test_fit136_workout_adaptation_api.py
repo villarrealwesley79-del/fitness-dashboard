@@ -142,6 +142,26 @@ def test_ui_shaped_correction_preserves_omitted_source_metadata(
 ):
     _module, client = _client(monkeypatch, tmp_path)
     client_id = f"ui-correction-{source_state}"
+    portion_description = "1 bowl" if source_state == "accepted" else None
+    accepted_estimate = (
+        {
+            "item_name": "Chicken bowl",
+            "portion_description": portion_description,
+            "meal_type": "dinner",
+            "calories": 500,
+            "protein_g": 35,
+            "carbs_g": 45,
+            "fat_g": 18,
+            "sodium_mg": 700,
+            "fiber_g": 6,
+            "confidence": 0.88,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+            "source": "manual_review_estimate",
+        }
+        if source_state == "accepted"
+        else None
+    )
     original = data_store.add_food_log(
         1,
         {
@@ -151,7 +171,7 @@ def test_ui_shaped_correction_preserves_omitted_source_metadata(
             "meal_id": "meal-1",
             "meal_type": "dinner",
             "item_name": "Chicken bowl",
-            "portion_description": None,
+            "portion_description": portion_description,
             "context_note": "Dinner after training",
             "calories": 500,
             "protein_g": 35,
@@ -162,6 +182,7 @@ def test_ui_shaped_correction_preserves_omitted_source_metadata(
             "confidence": 0.88,
             "source": "manual",
             "correction_state": source_state,
+            "accepted_estimate": accepted_estimate,
         },
     )
     pending = data_store.enqueue_workout_adaptation_pending(
@@ -213,11 +234,27 @@ def test_ui_shaped_correction_preserves_omitted_source_metadata(
     )
     assert stored_log["meal_id"] == "meal-1"
     assert stored_log["meal_type"] == "dinner"
-    assert stored_log["portion_description"] is None
+    assert stored_log["portion_description"] == portion_description
     assert stored_log["context_note"] == "Dinner after training"
     assert stored_log["fiber_g"] == original["fiber_g"]
     assert stored_log["confidence"] == original["confidence"]
     assert stored_event["status"] == "applied"
+
+    if source_state == "accepted":
+        clear_portion_response = client.post(
+            "/api/add-nutrition",
+            json={**ui_payload, "portion_description": None},
+        )
+        assert clear_portion_response.status_code == 200
+        cleared_portion = clear_portion_response.get_json()["food_log"]
+        assert cleared_portion["portion_description"] is None
+        assert cleared_portion["accepted_estimate"]["portion_description"] is None
+        cleared_portion_event = next(
+            item
+            for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+            if item["id"] == event["id"]
+        )
+        assert cleared_portion_event["status"] == "stale"
 
     clear_meal_type_response = client.post(
         "/api/add-nutrition",

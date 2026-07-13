@@ -2385,6 +2385,7 @@ def add_food_log(user_id: int, record: dict) -> dict:
                         value = entry.get(field)
                         nullable_nutrition = {
                             "meal_type",
+                            "portion_description",
                             "carbs_g",
                             "fat_g",
                             "sodium_mg",

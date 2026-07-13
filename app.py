@@ -5674,7 +5674,11 @@ def add_nutrition():
         "meal_id": meal_id,
         "meal_type": meal_type,
         "item_name": item_name,
-        "portion_description": portion_description,
+        "portion_description": (
+            None
+            if "portion_description" in data and data["portion_description"] is None
+            else portion_description
+        ),
         "context_note": context_note,
         "confidence": round(float(confidence), 3) if confidence is not None else None,
         "source": source,
