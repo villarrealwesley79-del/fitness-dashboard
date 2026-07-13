@@ -295,6 +295,33 @@ def test_analytics_advanced_fallback_pins_default_fatigue_threshold(
 
 
 @pytest.mark.parametrize(
+    ("hrv_values", "minimum_samples", "expected"),
+    [
+        ([], None, "stable"),
+        ([60.0, 61.0, 62.0], 4, "unknown"),
+        ([60.0, 60.0, 60.0, 64.0, 64.0, 64.0], 4, "improving"),
+    ],
+)
+def test_get_recent_hrv_trend_preserves_sparse_data_behavior(
+    monkeypatch, hrv_values, minimum_samples, expected
+):
+    module = importlib.import_module("app")
+    calls = []
+
+    def get_rows(db_path, start_date, end_date):
+        calls.append((db_path, start_date, end_date))
+        return [{"hrv": value} for value in hrv_values]
+
+    monkeypatch.setattr(module, "get_oura_daily_range", get_rows)
+
+    assert module.get_recent_hrv_trend(minimum_samples=minimum_samples) == expected
+    assert len(calls) == 1
+    db_path, start_date, end_date = calls[0]
+    assert db_path == module.OURA_DB_FILE
+    assert date.fromisoformat(end_date) - date.fromisoformat(start_date) == timedelta(days=6)
+
+
+@pytest.mark.parametrize(
     ("needed", "expected_deload_recommended"),
     [(True, True), (False, False)],
 )
