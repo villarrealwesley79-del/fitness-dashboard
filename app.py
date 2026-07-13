@@ -4308,31 +4308,43 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     exercise_freq = {}
     for w in workouts:
         exercises = w.get("exercises")
+        if exercises is not None and not isinstance(exercises, list):
+            total_volume_valid = False
+            continue
         if not isinstance(exercises, list):
             continue
         for e in exercises:
             if not isinstance(e, dict):
+                total_volume_valid = False
                 continue
             machine_value = e.get("machine")
             machine = machine_value if isinstance(machine_value, str) and machine_value else "N/A"
             exercise_freq[machine] = exercise_freq.get(machine, 0) + 1
             sets = e.get("sets")
+            if sets is not None and not isinstance(sets, list):
+                total_volume_valid = False
+                continue
             if not isinstance(sets, list):
                 continue
             for s in sets:
                 if not isinstance(s, dict):
+                    total_volume_valid = False
                     continue
                 total_sets += 1
                 weight = s.get("weight_lbs")
                 reps = s.get("reps")
                 if _is_finite_workout_number(weight) and _is_finite_workout_number(reps):
-                        set_volume = weight * reps
-                        if _is_finite_workout_number(set_volume):
-                            candidate_total = total_volume + set_volume
-                            if _is_finite_workout_number(candidate_total):
-                                total_volume = candidate_total
-                            else:
-                                total_volume_valid = False
+                    set_volume = weight * reps
+                    if _is_finite_workout_number(set_volume):
+                        candidate_total = total_volume + set_volume
+                        if _is_finite_workout_number(candidate_total):
+                            total_volume = candidate_total
+                        else:
+                            total_volume_valid = False
+                    else:
+                        total_volume_valid = False
+                else:
+                    total_volume_valid = False
 
     top_exercises = sorted(exercise_freq.items(), key=lambda x: -x[1])[:5]
 
@@ -16814,7 +16826,7 @@ def _markdown_export_cell(value, default="N/A") -> str:
 @app.route('/api/export-md')
 def export_markdown():
     """Export all workouts to markdown format."""
-    workout_rows = WORKOUTS if isinstance(WORKOUTS, list) else []
+    workout_rows = WORKOUTS if isinstance(WORKOUTS, list) else [WORKOUTS]
     workouts = [workout for workout in workout_rows if isinstance(workout, dict)]
     invalid_workout_count = len(workout_rows) - len(workouts)
     lines = ["# Workout History Export", ""]
@@ -16828,7 +16840,7 @@ def export_markdown():
         lines.append("## Summary")
         lines.append(f"- **Date Range:** {summary.get('date_range', 'N/A')}")
         lines.append(f"- **Total Sets:** {summary.get('total_sets', 0)}")
-        summary_volume = summary.get("total_volume")
+        summary_volume = None if invalid_workout_count else summary.get("total_volume")
         lines.append(
             f"- **Total Volume:** {summary_volume:,} lbs"
             if _is_finite_workout_number(summary_volume)
@@ -16856,11 +16868,12 @@ def export_markdown():
             continue
         exercises = exercises or []
         if not exercises:
-            row_name = _markdown_export_cell(
-                workout.get("session_type")
-                or workout.get("activity_type")
-                or source_label
-            )
+            row_name_value = source_label
+            for candidate in (workout.get("session_type"), workout.get("activity_type")):
+                if isinstance(candidate, str) and candidate.strip():
+                    row_name_value = candidate
+                    break
+            row_name = _markdown_export_cell(row_name_value)
             row_note = (
                 "Non-strength/watch-only row"
                 if is_watch_row

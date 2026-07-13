@@ -56,7 +56,12 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
                 "source": "lifted",
                 "exercises": [{"machine": "Chest Press"}],
             },
-            {"date": "2026-07-16", "source": "lifted", "exercises": []},
+            {
+                "date": "2026-07-16",
+                "session_type": {"invalid": "metadata"},
+                "source": "lifted",
+                "exercises": [],
+            },
         ],
     )
 
@@ -73,6 +78,7 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
     assert "| 2026-07-15 | Chest Press | N/A | N/A | N/A | N/A | No set data |" in body
     assert "| 2026-07-16 | Strength - Logged | N/A | N/A | N/A | N/A | No exercise data |" in body
     assert "*Total Sessions: 5*" in body
+    assert "- **Total Volume:** N/A" in body
 
 
 def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
@@ -141,3 +147,26 @@ def test_markdown_export_handles_empty_history(monkeypatch):
     body = response.get_data(as_text=True)
     assert "*Total Sessions: 0*" in body
     assert "## Workout Log" in body
+
+
+def test_markdown_export_preserves_non_list_history(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        {"date": "2026-07-19", "source": "lifted", "exercises": []},
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "*Total Sessions: 1*" in body
+    assert "| 2026-07-19 | Strength - Logged | N/A | N/A | N/A | N/A | No exercise data |" in body
+
+    module = importlib.import_module("app")
+    monkeypatch.setattr(module, "WORKOUTS", 7)
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "*Total Sessions: 1*" in body
+    assert "| N/A | N/A | N/A | N/A | N/A | N/A | Invalid workout data |" in body
