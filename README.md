@@ -184,10 +184,17 @@ for SDK-style sources such as Apple Health, Samsung Health, and Google Health
 Connect. Advanced values such as hub URL, username, secret, and mapped user id
 stay behind diagnostics instead of being the normal setup path.
 
-The Open Wearables sync bridge remains metadata-only. `/api/health/sync` and
-`/api/open-wearables/sync` return source metadata, counts, stored fact counts,
-and stable error codes only; they must not be used as raw health-payload export
-endpoints or as the durable WHOOP source of truth.
+Open Wearables has separate metadata-check and durable-sync contracts:
+
+- `POST /api/open-wearables/check-sync` fetches redacted source metadata and
+  counts without writing wearable facts. `POST /api/health/sync` is the
+  compatibility path for the same metadata-only behavior.
+- `POST /api/open-wearables/sync` normalizes and durably writes recommendation
+  facts, then returns source metadata, counts, and `facts_upserted`. Dashboard
+  sync buttons use this durable route.
+
+Neither route returns raw health payloads. Durable WHOOP OAuth sync remains a
+separate provider-specific flow.
 
 Browser-initiated state-changing requests send `X-Requested-With: XMLHttpRequest`; the server also accepts browser same-origin metadata for cached app-shell rollouts and rejects mismatched browser origins before checking the CSRF header. The token-authenticated Apple Health sync endpoint and Stripe's signed webhook are explicitly exempt because they are called by external systems rather than the dashboard UI.
 

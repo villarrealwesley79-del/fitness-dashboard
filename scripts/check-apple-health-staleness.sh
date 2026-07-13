@@ -8,7 +8,7 @@
 set -u
 
 LOG_DIR="/tmp"
-LOG_FILE="${LOG_DIR}/apple-health-staleness.log"
+LOG_FILE="${APPLE_HEALTH_STALENESS_LOG_FILE:-${LOG_DIR}/apple-health-staleness.log}"
 FIRST_SEEN_FILE="${APPLE_HEALTH_FIRST_SEEN_FILE:-${DATA_DIR:-${HOME}/fitness-dashboard}/.apple-health-first-sync}"
 STALE_AFTER_HOURS="${STALE_AFTER_HOURS:-36}"
 DB_FILE="${APPLE_HEALTH_SYNC_DB:-${DATA_DIR:-${HOME}/fitness-dashboard}/apple_health_sync.db}"
