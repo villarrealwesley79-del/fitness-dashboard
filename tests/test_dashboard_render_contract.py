@@ -292,6 +292,21 @@ def test_stats_insights_empty_state_resets_to_placeholder():
     )
 
 
+def test_stats_insight_styles_cover_every_backend_emitted_type():
+    """FIT-322: every /api/insights type must have an explicit frontend tone."""
+    body = _render_stats_body()
+    section = body.split("// Insights list", 1)[1]
+
+    assert "positive: 'pos'" in section
+    assert "negative: 'neg'" in section
+    assert "warning: 'warn'" in section
+    assert "info: 'info'" in section
+    assert "kind === 'positive' || kind === 'success'" in section
+    assert "kind === 'negative' || kind === 'danger'" in section
+    assert "? '↑'" in section
+    assert "? '▼'" in section
+
+
 def test_dashboard_whoop_source_contract_is_wired_into_reco_card():
     app_js = (ROOT / "static" / "js" / "app.js").read_text()
     html = (ROOT / "templates" / "index.html").read_text()

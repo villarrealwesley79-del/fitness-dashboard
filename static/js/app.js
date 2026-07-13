@@ -5393,9 +5393,22 @@
                 const card = document.createElement('div');
                 card.className = 'in-card';
                 const kind = (ins.type || 'info').toLowerCase();
-                const map = { success: 'pos', warning: 'warn', danger: 'neg', info: 'info' };
+                const map = {
+                    positive: 'pos',
+                    success: 'pos',
+                    warning: 'warn',
+                    negative: 'neg',
+                    danger: 'neg',
+                    info: 'info',
+                };
                 const iconClass = map[kind] || 'info';
-                const iconChar = kind === 'success' ? '↑' : kind === 'warning' ? '!' : kind === 'danger' ? '▲' : 'i';
+                const iconChar = kind === 'positive' || kind === 'success'
+                    ? '↑'
+                    : kind === 'warning'
+                        ? '!'
+                        : kind === 'negative' || kind === 'danger'
+                            ? '▼'
+                            : 'i';
                 card.innerHTML = `
                     <div class="in-icon ${iconClass}">${iconChar}</div>
                     <div>
