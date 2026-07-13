@@ -72,7 +72,13 @@ def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
             {
                 "date": "2026-07-15",
                 "exercises": [None, {"machine": "Partial", "sets": [None]}],
-            }
+            },
+            {"date": "2026-07-16", "exercises": 1},
+            {"date": "2026-07-17", "exercises": [{"machine": "Partial", "sets": 1}]},
+            {
+                "date": "2026-07-18",
+                "exercises": [{"machine": {"invalid": "label"}, "sets": [{"reps": 2, "weight_lbs": 5}]}],
+            },
         ],
     )
 
@@ -82,6 +88,9 @@ def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
     body = response.get_data(as_text=True)
     assert "| 2026-07-15 | N/A | N/A | N/A | N/A | N/A | Invalid exercise data |" in body
     assert "| 2026-07-15 | Partial | 1 | N/A | N/A | N/A | Invalid set data |" in body
+    assert "| 2026-07-16 | N/A | N/A | N/A | N/A | N/A | Invalid exercise collection |" in body
+    assert "| 2026-07-17 | Partial | N/A | N/A | N/A | N/A | Invalid set collection |" in body
+    assert "| 2026-07-18 | N/A | 1 | 2 | 5 | 10 |  |" in body
 
 
 def test_markdown_export_handles_empty_history(monkeypatch):

@@ -4293,33 +4293,30 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
         return {}
 
     total_sessions = len(workouts)
-    total_sets = sum(
-        1
-        for w in workouts
-        for e in w.get("exercises") or []
-        if isinstance(e, dict)
-        for s in e.get("sets") or []
-        if isinstance(s, dict)
-    )
-    total_volume = sum(
-        s.get("weight_lbs") * s.get("reps")
-        for w in workouts
-        for e in w.get("exercises") or []
-        if isinstance(e, dict)
-        for s in e.get("sets") or []
-        if isinstance(s, dict)
-        if isinstance(s.get("weight_lbs"), (int, float))
-        and isinstance(s.get("reps"), (int, float))
-    )
-
-    # Exercise frequency
+    total_sets = 0
+    total_volume = 0
     exercise_freq = {}
     for w in workouts:
-        for e in w.get("exercises") or []:
+        exercises = w.get("exercises")
+        if not isinstance(exercises, list):
+            continue
+        for e in exercises:
             if not isinstance(e, dict):
                 continue
-            machine = e.get("machine") or "N/A"
+            machine_value = e.get("machine")
+            machine = machine_value if isinstance(machine_value, str) and machine_value else "N/A"
             exercise_freq[machine] = exercise_freq.get(machine, 0) + 1
+            sets = e.get("sets")
+            if not isinstance(sets, list):
+                continue
+            for s in sets:
+                if not isinstance(s, dict):
+                    continue
+                total_sets += 1
+                weight = s.get("weight_lbs")
+                reps = s.get("reps")
+                if isinstance(weight, (int, float)) and isinstance(reps, (int, float)):
+                    total_volume += weight * reps
 
     top_exercises = sorted(exercise_freq.items(), key=lambda x: -x[1])[:5]
 
@@ -4327,10 +4324,12 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     session_types = {}
     for w in workouts:
         st = w.get("session_type", "other")
+        if not isinstance(st, str) or not st:
+            st = "other"
         session_types[st] = session_types.get(st, 0) + 1
 
     # Date range
-    dates = [w.get("date") for w in workouts if w.get("date")]
+    dates = [w.get("date") for w in workouts if isinstance(w.get("date"), str) and w.get("date")]
 
     return {
         "total_sessions": total_sessions,
@@ -16811,9 +16810,16 @@ def export_markdown():
     lines.append("| Date | Machine | Set | Reps | Weight | Volume | Notes |")
     lines.append("|------|---------|-----|------|--------|--------|-------|")
 
-    for workout in sorted(workouts, key=lambda x: x.get("date") or ""):
-        workout_date = workout.get("date") or "N/A"
-        exercises = workout.get("exercises") or []
+    for workout in sorted(workouts, key=lambda x: str(x.get("date") or "")):
+        workout_date_value = workout.get("date")
+        workout_date = workout_date_value if isinstance(workout_date_value, str) and workout_date_value else "N/A"
+        exercises = workout.get("exercises")
+        if exercises is not None and not isinstance(exercises, list):
+            lines.append(
+                f"| {workout_date} | N/A | N/A | N/A | N/A | N/A | Invalid exercise collection |"
+            )
+            continue
+        exercises = exercises or []
         if not exercises:
             source = str(workout.get("source") or "").strip()
             row_name = workout.get("session_type") or workout.get("activity_type") or source or "N/A"
@@ -16832,8 +16838,15 @@ def export_markdown():
                     f"| {workout_date} | N/A | N/A | N/A | N/A | N/A | Invalid exercise data |"
                 )
                 continue
-            machine = exercise.get("machine") or "N/A"
-            sets = exercise.get("sets") or []
+            machine_value = exercise.get("machine")
+            machine = machine_value if isinstance(machine_value, str) and machine_value else "N/A"
+            sets = exercise.get("sets")
+            if sets is not None and not isinstance(sets, list):
+                lines.append(
+                    f"| {workout_date} | {machine} | N/A | N/A | N/A | N/A | Invalid set collection |"
+                )
+                continue
+            sets = sets or []
             if not sets:
                 lines.append(
                     f"| {workout_date} | {machine} | N/A | N/A | N/A | N/A | Non-strength/watch-only row |"

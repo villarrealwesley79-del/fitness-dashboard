@@ -133,7 +133,7 @@ Progressive overload: `/api/progressive-overload` returns top-set weight trends 
 
 Weather: Settings calls `/api/weather` to fetch current wttr.in weather for explicit `?location`, then last cached location, then hardcoded `San_Antonio`. Dashboard and smart recommendation use `_cached_wttr` only, so they can include hot/cold context when cache is warm without making a live network call.
 
-Markdown export: `/api/export-md` streams a `text/markdown` attachment named `workout_export.md`. It includes a summary and one table row per workout set. Missing strength values are rendered as `N/A`. An exercise with no set data emits one labeled `Non-strength/watch-only row`. An exercise-less workout preserves its session type or source in the Machine column; Apple Health rows use the same non-strength/watch-only label, while other exercise-less rows use `No exercise data`. Invalid nested exercise or set values are labeled rather than aborting the export.
+Markdown export: `/api/export-md` streams a `text/markdown` attachment named `workout_export.md`. It includes a summary and one table row per workout set. Missing strength values are rendered as `N/A`. An exercise with no set data emits one labeled `Non-strength/watch-only row`. An exercise-less workout preserves its session type or source in the Machine column; Apple Health rows use the same non-strength/watch-only label, while other exercise-less rows use `No exercise data`. Invalid exercise or set collections and invalid nested values are labeled rather than aborting the export; non-string machine labels render as `N/A`.
 
 ## 5. API Endpoints
 
