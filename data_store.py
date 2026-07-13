@@ -2342,6 +2342,11 @@ def add_food_log(user_id: int, record: dict) -> dict:
             and previous.get("correction_state") in {"accepted", "corrected"}
         )
         if previous_is_terminal:
+            for field in ("meal_id", "meal_type", "fiber_g", "confidence"):
+                if field not in record:
+                    entry[field] = previous.get(field)
+            if "context_note" not in record and "notes" not in record:
+                entry["context_note"] = previous.get("context_note")
             previous_original = previous.get("original_estimate")
             if isinstance(previous_original, dict):
                 entry["original_estimate_json"] = _json_dumps_or_none(previous_original)

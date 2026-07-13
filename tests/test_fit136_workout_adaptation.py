@@ -1144,6 +1144,50 @@ def test_identical_corrected_food_log_replay_keeps_adaptation_applied(monkeypatc
     assert stored["status"] == "applied"
 
 
+def test_ui_shaped_correction_preserves_omitted_source_metadata(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    original = _food_log(
+        "source-meal",
+        meal_id="meal-1",
+        context_note="Dinner after training",
+    )
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": original["client_id"],
+            "date": original["date"],
+            "logged_at": original["logged_at"],
+            "source": original["source"],
+            "correction_state": "corrected",
+            "item_name": original["item_name"],
+            "portion_description": original["portion_description"],
+            "calories": original["calories"],
+            "protein_g": original["protein_g"],
+            "carbs_g": original["carbs_g"],
+            "fat_g": original["fat_g"],
+            "sodium_mg": original["sodium_mg"],
+        },
+    )
+
+    stored_log = data_store.get_food_logs(1, limit=1)[0]
+    stored_event = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored_log["meal_id"] == "meal-1"
+    assert stored_log["context_note"] == "Dinner after training"
+    assert stored_log["fiber_g"] == original["fiber_g"]
+    assert stored_log["confidence"] == original["confidence"]
+    assert stored_event["status"] == "applied"
+
+
 def test_corrected_food_log_meal_reassignment_marks_adaptation_stale(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     original = _food_log("source-meal", meal_id="meal-1")
