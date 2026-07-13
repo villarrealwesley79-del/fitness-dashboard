@@ -7104,9 +7104,9 @@
         const latestDays = Array.isArray(payload && payload.latest_days)
             ? payload.latest_days.filter(Boolean)
             : [];
-        const rangeEnd = latestDays[0] || 'no recent day';
+        const rangeEnd = payload && payload.synced_through || 'unknown end';
         const count = Number(payload && payload.latest_records || 0);
-        value.textContent = `Success · ${payload.synced_from || 'unknown start'} → ${rangeEnd} · ${count} recent record${count === 1 ? '' : 's'} · latest ${latestDays.join(', ') || 'none'}`;
+        value.textContent = `Success · ${payload.synced_from || 'unknown start'} → ${rangeEnd} · ${count} latest saved record${count === 1 ? '' : 's'} · saved days ${latestDays.join(', ') || 'none'}`;
     }
 
     async function syncOura() {

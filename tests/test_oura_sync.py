@@ -57,6 +57,7 @@ def test_oura_sync_success_returns_summary(monkeypatch, tmp_path):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["status"] == "success"
+    assert payload["synced_through"] >= payload["synced_from"]
     assert payload["latest_records"] == 2
     assert payload["latest_days"] == ["2026-05-18", "2026-05-17"]
     assert calls["api_token"] == "test-token"

@@ -7,6 +7,11 @@ import pytest
 
 
 APP_JS = Path("static/js/app.js").read_text()
+APP_LOADER_JS = Path("static/js/app-loader.js").read_text()
+APP_SW_JS = Path("static/js/sw.js").read_text()
+APP_HTML = Path("templates/index.html").read_text()
+
+FIT270_ASSET_VERSION = "20260713-fit270-oura-detail"
 
 
 def _sync_detail_helpers() -> str:
@@ -45,14 +50,21 @@ process.stdout.write(JSON.stringify(elements));
 def test_oura_sync_success_renders_status_range_count_and_latest_days():
     elements = _render_in_node(
         "renderOuraSyncResult({status: 'success', synced_from: '2026-07-01', "
-        "latest_records: 2, latest_days: ['2026-07-11', '2026-07-10']});"
+        "synced_through: '2026-07-13', latest_records: 2, "
+        "latest_days: ['2026-07-11', '2026-07-10']});"
     )
 
     assert elements["oura-detail-sync-row"]["hidden"] is False
     assert elements["oura-detail-sync-result"]["textContent"] == (
-        "Success · 2026-07-01 → 2026-07-11 · 2 recent records · "
-        "latest 2026-07-11, 2026-07-10"
+        "Success · 2026-07-01 → 2026-07-13 · 2 latest saved records · "
+        "saved days 2026-07-11, 2026-07-10"
     )
+
+
+def test_fit270_asset_versions_are_coordinated():
+    assert f"app-loader.js?v={FIT270_ASSET_VERSION}" in APP_HTML
+    assert f"app.js?v={FIT270_ASSET_VERSION}" in APP_LOADER_JS
+    assert f"fitness-dashboard-v{FIT270_ASSET_VERSION}" in APP_SW_JS
 
 
 @pytest.mark.parametrize("code", ["missing_oura_token", "oura_api_error"])
