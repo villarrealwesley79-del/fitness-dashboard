@@ -12915,7 +12915,7 @@ def health_sync():
 
     ``/api/health/sync`` is retained for compatibility. New metadata-check
     callers should use ``/api/open-wearables/check-sync``; durable sync callers
-    must use ``/api/open-wearables/sync``.
+    must use ``/api/open-wearables/sync``. This is not an Apple Health webhook.
     """
     try:
         data = fetch_open_wearables_data()
