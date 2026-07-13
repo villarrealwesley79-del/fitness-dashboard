@@ -15,34 +15,50 @@ MIN_ACCEPTS_FOR_FUZZY = MIN_ACCEPTS_FOR_EXACT
 FUZZY_CUTOFF = 0.78
 
 
-def record_accept(user_id: int, phrase: str | None, estimate: dict[str, Any]) -> dict | None:
+def record_accept(
+    user_id: int,
+    phrase: str | None,
+    estimate: dict[str, Any],
+    *,
+    connection=None,
+) -> dict | None:
     """Record that the user accepted this phrase as canonical."""
     normalized = _normalize(phrase)
     canonical = _canonical_estimate(estimate)
     if not normalized or not canonical:
         return None
-    return data_store.upsert_personal_vocab_entry(
-        user_id,
-        normalized_input=normalized,
-        phrase=(phrase or "").strip(),
-        canonical_resolution=canonical,
-        accepted=True,
-    )
+    kwargs = {
+        "normalized_input": normalized,
+        "phrase": (phrase or "").strip(),
+        "canonical_resolution": canonical,
+        "accepted": True,
+    }
+    if connection is not None:
+        kwargs["_conn"] = connection
+    return data_store.upsert_personal_vocab_entry(user_id, **kwargs)
 
 
-def record_correct(user_id: int, phrase: str | None, estimate: dict[str, Any]) -> dict | None:
+def record_correct(
+    user_id: int,
+    phrase: str | None,
+    estimate: dict[str, Any],
+    *,
+    connection=None,
+) -> dict | None:
     """Record a correction and downgrade the learned mapping."""
     normalized = _normalize(phrase)
     canonical = _canonical_estimate(estimate)
     if not normalized or not canonical:
         return None
-    return data_store.upsert_personal_vocab_entry(
-        user_id,
-        normalized_input=normalized,
-        phrase=(phrase or "").strip(),
-        canonical_resolution=canonical,
-        accepted=False,
-    )
+    kwargs = {
+        "normalized_input": normalized,
+        "phrase": (phrase or "").strip(),
+        "canonical_resolution": canonical,
+        "accepted": False,
+    }
+    if connection is not None:
+        kwargs["_conn"] = connection
+    return data_store.upsert_personal_vocab_entry(user_id, **kwargs)
 
 
 def record_negative_feedback(
@@ -50,6 +66,8 @@ def record_negative_feedback(
     phrase: str | None,
     estimate: dict[str, Any] | None,
     feedback_type: str,
+    *,
+    connection=None,
 ) -> dict | None:
     """Record skipped/deleted review feedback without creating a trusted mapping."""
     phrase_text = (phrase or "").strip()
@@ -60,13 +78,15 @@ def record_negative_feedback(
         "item_name": phrase_text[:500],
         "source": "negative_feedback",
     }
-    return data_store.record_personal_vocab_negative_feedback(
-        user_id,
-        normalized_input=normalized,
-        phrase=phrase_text,
-        canonical_resolution=canonical,
-        feedback_type=feedback_type,
-    )
+    kwargs = {
+        "normalized_input": normalized,
+        "phrase": phrase_text,
+        "canonical_resolution": canonical,
+        "feedback_type": feedback_type,
+    }
+    if connection is not None:
+        kwargs["_conn"] = connection
+    return data_store.record_personal_vocab_negative_feedback(user_id, **kwargs)
 
 
 def lookup(phrase: str | None, *, user_id: int = 1) -> dict | None:

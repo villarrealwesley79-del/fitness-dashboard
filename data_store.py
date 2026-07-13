@@ -52,6 +52,22 @@ def _get_db() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+@contextmanager
+def _reuse_or_open_db(conn: sqlite3.Connection | None) -> Iterator[sqlite3.Connection]:
+    if conn is not None:
+        yield conn
+        return
+    with _get_db() as opened:
+        yield opened
+
+
+@contextmanager
+def food_log_transaction() -> Iterator[sqlite3.Connection]:
+    with _get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+
+
 def _row_to_dict(row) -> dict:
     """Convert sqlite3.Row to plain dict, dropping user_id (internal)."""
     d = dict(row)
@@ -943,7 +959,13 @@ def _food_log_row_to_dict(row) -> dict:
     return d
 
 
-def get_food_logs(user_id: int, limit: Optional[int] = None, since: Optional[str] = None) -> list[dict]:
+def get_food_logs(
+    user_id: int,
+    limit: Optional[int] = None,
+    since: Optional[str] = None,
+    *,
+    _conn: sqlite3.Connection | None = None,
+) -> list[dict]:
     """Return accepted food logs for user, sorted by logged_at desc."""
     sql = "SELECT * FROM food_logs WHERE user_id = ?"
     params: list = [user_id]
@@ -953,7 +975,7 @@ def get_food_logs(user_id: int, limit: Optional[int] = None, since: Optional[str
     sql += " ORDER BY logged_at DESC, id DESC"
     if limit:
         sql += f" LIMIT {int(limit)}"
-    with _get_db() as conn:
+    with _reuse_or_open_db(_conn) as conn:
         rows = conn.execute(sql, params).fetchall()
     return [_food_log_row_to_dict(r) for r in rows]
 
@@ -1513,12 +1535,18 @@ def list_personal_vocab_entries(user_id: int) -> list[dict]:
     return entries
 
 
-def get_meal_acceptance_event(user_id: int, meal_id: str) -> Optional[dict]:
+def get_meal_acceptance_event(
+    user_id: int,
+    meal_id: str,
+    *,
+    _conn: sqlite3.Connection | None = None,
+) -> Optional[dict]:
     key = (meal_id or "").strip()
     if not key:
         return None
-    init_data_db()
-    with _get_db() as conn:
+    if _conn is None:
+        init_data_db()
+    with _reuse_or_open_db(_conn) as conn:
         row = conn.execute(
             "SELECT * FROM meal_acceptance_events WHERE user_id = ? AND meal_id = ?",
             (user_id, key),
@@ -1553,14 +1581,16 @@ def save_meal_acceptance_event(
     skipped_count: int,
     deleted_count: int,
     feedback_fingerprint: str | None = None,
+    _conn: sqlite3.Connection | None = None,
 ) -> dict:
     key = (meal_id or "").strip()
     if not key:
         raise ValueError("meal_id is required")
     safe_ids = sorted(str(client_id) for client_id in included_client_ids if client_id)
     now_iso = datetime.now().isoformat(timespec="seconds")
-    init_data_db()
-    with _get_db() as conn:
+    if _conn is None:
+        init_data_db()
+    with _reuse_or_open_db(_conn) as conn:
         row = conn.execute(
             """
             INSERT INTO meal_acceptance_events (
@@ -1589,7 +1619,8 @@ def save_meal_acceptance_event(
                 now_iso,
             ),
         ).fetchone()
-        conn.commit()
+        if _conn is None:
+            conn.commit()
     result = dict(row)
     result["included_client_ids"] = _json_loads_or_none(result.pop("included_client_ids_json", None)) or []
     return result
@@ -1919,6 +1950,7 @@ def record_personal_vocab_negative_feedback(
     phrase: str,
     canonical_resolution: dict,
     feedback_type: str,
+    _conn: sqlite3.Connection | None = None,
 ) -> dict:
     """Record skipped/deleted food review feedback without creating trusted accepts."""
     key = (normalized_input or "").strip()
@@ -1929,9 +1961,10 @@ def record_personal_vocab_negative_feedback(
         raise ValueError("feedback_type must be skipped or deleted")
     skip_delta = 1 if feedback == "skipped" else 0
     deleted_delta = 1 if feedback == "deleted" else 0
-    init_data_db()
+    if _conn is None:
+        init_data_db()
     now_iso = datetime.now().isoformat(timespec="seconds")
-    with _get_db() as conn:
+    with _reuse_or_open_db(_conn) as conn:
         row = conn.execute(
             """
             INSERT INTO personal_vocab (
@@ -1966,7 +1999,8 @@ def record_personal_vocab_negative_feedback(
                 now_iso,
             ),
         ).fetchone()
-        conn.commit()
+        if _conn is None:
+            conn.commit()
     result = dict(row)
     result["canonical_resolution"] = _json_loads_or_none(result.get("canonical_resolution"))
     return result
@@ -1979,15 +2013,17 @@ def upsert_personal_vocab_entry(
     phrase: str,
     canonical_resolution: dict,
     accepted: bool,
+    _conn: sqlite3.Connection | None = None,
 ) -> dict:
     key = (normalized_input or "").strip()
     if not key or not isinstance(canonical_resolution, dict):
         raise ValueError("normalized_input and canonical_resolution are required")
-    init_data_db()
+    if _conn is None:
+        init_data_db()
     now_iso = datetime.now().isoformat(timespec="seconds")
     accept_delta = 1 if accepted else 0
     correct_delta = 0 if accepted else 1
-    with _get_db() as conn:
+    with _reuse_or_open_db(_conn) as conn:
         row = conn.execute(
             """
             INSERT INTO personal_vocab (
@@ -2030,7 +2066,8 @@ def upsert_personal_vocab_entry(
                 now_iso,
             ),
         ).fetchone()
-        conn.commit()
+        if _conn is None:
+            conn.commit()
     result = dict(row)
     result["canonical_resolution"] = _json_loads_or_none(result.get("canonical_resolution"))
     return result
@@ -2122,13 +2159,19 @@ def backfill_food_log_client_id(user_id: int, client_id: str, match: dict) -> bo
     return bool(row)
 
 
-def claim_food_log_vocab_learning(user_id: int, client_id: str) -> bool:
+def claim_food_log_vocab_learning(
+    user_id: int,
+    client_id: str,
+    *,
+    _conn: sqlite3.Connection | None = None,
+) -> bool:
     """Atomically claim vocabulary learning for a persisted food log."""
     if not client_id:
         return False
-    init_data_db()
+    if _conn is None:
+        init_data_db()
     now_iso = datetime.now().isoformat(timespec="seconds")
-    with _get_db() as conn:
+    with _reuse_or_open_db(_conn) as conn:
         row = conn.execute(
             """
             UPDATE food_logs
@@ -2140,7 +2183,8 @@ def claim_food_log_vocab_learning(user_id: int, client_id: str) -> bool:
             """,
             (now_iso, user_id, client_id),
         ).fetchone()
-        conn.commit()
+        if _conn is None:
+            conn.commit()
     return bool(row)
 
 
@@ -2180,7 +2224,12 @@ def delete_food_logs_by_meal_id(user_id: int, meal_id: str) -> int:
         return int(cursor.rowcount or 0)
 
 
-def add_food_log(user_id: int, record: dict) -> dict:
+def add_food_log(
+    user_id: int,
+    record: dict,
+    *,
+    _conn: sqlite3.Connection | None = None,
+) -> dict:
     """Persist one accepted food entry with sanitized estimate/correction metadata."""
     now_iso = datetime.now().isoformat(timespec="seconds")
     logged_at = record.get("logged_at") or record.get("timestamp") or now_iso
@@ -2220,9 +2269,9 @@ def add_food_log(user_id: int, record: dict) -> dict:
     ):
         _project_accepted_estimate_onto_entry(entry, accepted_estimate)
     refresh_metadata = _refresh_event_metadata(record)
-    with _get_db() as conn:
+    with _reuse_or_open_db(_conn) as conn:
         protect_terminal_client_id = record.get("_protect_terminal_client_id") is True
-        if protect_terminal_client_id:
+        if protect_terminal_client_id and _conn is None:
             # Serialize the read/insert decision. Without an immediate write
             # transaction, two first accepts can both observe an empty slot.
             conn.execute("BEGIN IMMEDIATE")
@@ -2237,8 +2286,13 @@ def add_food_log(user_id: int, record: dict) -> dict:
             isinstance(previous, dict)
             and previous.get("correction_state") in {"accepted", "corrected"}
         )
-        if protect_terminal_client_id and previous_is_terminal:
-            conn.commit()
+        previous_is_protected = bool(
+            isinstance(previous, dict)
+            and previous.get("correction_state") != "pending_review"
+        )
+        if protect_terminal_client_id and previous_is_protected:
+            if _conn is None:
+                conn.commit()
             previous["_protected_client_id_conflict"] = True
             return previous
         if previous_is_terminal:
@@ -2353,7 +2407,8 @@ def add_food_log(user_id: int, record: dict) -> dict:
                 refresh_metadata,
                 now_iso,
             )
-        conn.commit()
+        if _conn is None:
+            conn.commit()
     return _food_log_row_to_dict(row) if row else {k: v for k, v in entry.items() if not k.endswith("_json")}
 
 
