@@ -15,7 +15,9 @@ app:
   # interpreter executes app.py from the exact worktree cwd without copying a
   # virtualenv into every linked worktree.
   # Bind only the Mac mini's Tailnet interface, not the physical LAN.
-  boot: HOST=100.90.15.93 PORT={port} /Users/admin/fitness-dashboard/venv/bin/python3 app.py
+  # The preview URL is intentionally HTTP, so only this factory boot disables
+  # Secure cookies; production and ordinary local boots keep the secure default.
+  boot: HOST=100.90.15.93 SESSION_COOKIE_SECURE=false PORT={port} /Users/admin/fitness-dashboard/venv/bin/python3 app.py
   # One verified port serializes owner previews safely. Add only ports verified
   # non-production and free if concurrent previews are wanted.
   preview_ports: [5099]

@@ -167,6 +167,37 @@ def test_health_sync_returns_redacted_open_wearables_metadata(monkeypatch):
         assert fragment not in body
 
 
+def test_open_wearables_check_sync_alias_is_metadata_only(monkeypatch):
+    module = _fitness_app()
+    raw_payload = {
+        "sleep": [],
+        "workouts": [],
+        "activity_summary": [],
+        "fetched_at": "2026-07-12T00:00:00",
+        "errors": {},
+    }
+    monkeypatch.setattr(module, "fetch_open_wearables_data", lambda: raw_payload)
+    monkeypatch.setattr(
+        module,
+        "_store_wearable_facts_from_open_wearables",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("metadata check must not write wearable facts")
+        ),
+    )
+
+    client = module.app.test_client()
+    for path in ("/api/open-wearables/check-sync", "/api/health/sync"):
+        response = client.post(path)
+        assert response.status_code == 200
+        assert response.get_json() == {
+            "status": "success",
+            "source": "open_wearables",
+            "fetched_at": "2026-07-12T00:00:00",
+            "counts": {"sleep": 0, "workouts": 0, "activity_summary": 0},
+            "errors": {},
+        }
+
+
 def test_health_sync_exception_uses_stable_error_response(monkeypatch):
     module = _fitness_app()
     field_b = "access" + "_to" + "ken"
@@ -202,6 +233,14 @@ def test_health_sync_exception_uses_stable_error_response(monkeypatch):
         "user_id",
     ]:
         assert fragment not in body
+
+
+def test_legacy_health_sync_route_is_explicitly_not_apple_health():
+    module = _fitness_app()
+    endpoints = {rule.rule: rule.endpoint for rule in module.app.url_map.iter_rules()}
+
+    assert endpoints["/api/health/sync"] == endpoints["/api/open-wearables/check-sync"]
+    assert "not an Apple Health webhook" in module.health_sync.__doc__
 
 
 def test_open_wearables_fetch_blocks_unallowlisted_remote_before_network(monkeypatch):
