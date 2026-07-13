@@ -8295,6 +8295,8 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                         code="duplicate_client_id",
                     )
                 record["corrected"] = food_log.get("correction_state") == "corrected"
+                record["estimate"] = dict(conflict_baseline)
+                record["text_hint"] = food_log.get("context_note") or None
                 stored_original = food_log.get("original_estimate")
                 if isinstance(stored_original, dict):
                     record["original_for_log"] = dict(stored_original)

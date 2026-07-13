@@ -7577,6 +7577,57 @@ def test_partial_corrected_row_recovery_records_correction_learning(monkeypatch,
     assert stored["original_estimate"] == original
 
 
+def test_partial_protected_row_learning_uses_stored_phrase_and_estimate(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    accepted_calls = []
+    monkeypatch.setattr(
+        module.personal_vocab,
+        "record_accept",
+        lambda *args, **_kwargs: accepted_calls.append(args),
+    )
+    parent_client_id = "photo-parent-partial-canonical-learning"
+    partial_client_id = module._meal_item_client_id(parent_client_id, {"item_id": "a"}, 0)
+    stored_estimate = _accepted_estimate(item_name="Stored bowl", calories=100)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": partial_client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **stored_estimate,
+            "context_note": "stored bowl phrase",
+            "correction_state": "accepted",
+            "accepted_estimate": stored_estimate,
+            "meal_id": "photo-meal-partial-canonical-learning",
+            "meal_item_id": "a",
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": "photo-meal-partial-canonical-learning",
+            "items": [
+                {
+                    "state": "included",
+                    "item_id": "a",
+                    "text": "attacker-controlled phrase",
+                    "estimate": {**stored_estimate, "confidence": 0.01},
+                },
+                {"state": "included", "item_id": "b", "estimate": _accepted_estimate(item_name="B", calories=200)},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    recovered_call = next(call for call in accepted_calls if call[2]["item_name"] == "Stored bowl")
+    assert recovered_call[1] == "stored bowl phrase"
+    assert recovered_call[2]["confidence"] == stored_estimate["confidence"]
+
+
 def test_multi_item_accept_replays_matching_event_when_rows_are_missing(monkeypatch, tmp_path):
     module = _client(monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
