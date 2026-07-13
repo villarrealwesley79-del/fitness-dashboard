@@ -9464,6 +9464,29 @@ def food_logs_by_date(date):
     # client. Matches the FIT-9 retention rule: no image bytes or
     # original prompts.
     def _project(entry: dict) -> dict:
+        original_estimate = entry.get("original_estimate")
+        accepted_estimate = sanitize_accepted_estimate(entry.get("accepted_estimate"))
+        from_image = entry.get("from_image")
+        accepted_from_image = (
+            accepted_estimate.get("from_image")
+            if isinstance(accepted_estimate, dict)
+            else None
+        )
+        original_from_image = (
+            original_estimate.get("from_image")
+            if isinstance(original_estimate, dict)
+            else None
+        )
+        if (
+            accepted_from_image is True
+            or original_from_image is True
+        ):
+            from_image = True
+        elif (
+            from_image is not True
+            and (accepted_from_image is False or original_from_image is False)
+        ):
+            from_image = False
         return {
             "client_id": entry.get("client_id"),
             # FIT-100: include `date` so the correction flow can target
@@ -9482,8 +9505,8 @@ def food_logs_by_date(date):
             "source": entry.get("source"),
             "confidence": entry.get("confidence"),
             "correction_state": entry.get("correction_state"),
-            "accepted_estimate": sanitize_accepted_estimate(entry.get("accepted_estimate")),
-            "from_image": entry.get("from_image"),
+            "accepted_estimate": accepted_estimate,
+            "from_image": from_image,
         }
 
     entries = [_project(e) for e in same_day]
@@ -11313,7 +11336,7 @@ def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
     """Fetch current weather from wttr.in (best-effort).
 
     Returns dict:
-      {available, location, temp_f, humidity_pct, condition, feelslike_f, raw}
+      {available, location, temp_f, humidity_pct, condition, feelslike_f, source}
     """
     now = int(time.time())
     cached = _cached_wttr(location, max_age_s=max_age_s)
@@ -11337,7 +11360,6 @@ def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
             "feelslike_f": feels_f,
             "humidity_pct": humidity,
             "condition": condition,
-            "raw": {"current_condition": cur},
         }
         _WEATHER_CACHE.update({"ts": now, "location": location, "data": data, "error": None})
         return {"available": True, "location": location, **data, "source": "api"}
@@ -12887,8 +12909,14 @@ def add_cors_headers(response):
 
 
 @app.route('/api/health/sync', methods=['POST'])
+@app.route('/api/open-wearables/check-sync', methods=['POST'])
 def health_sync():
-    """Manually pull Open Wearables sleep/workout data."""
+    """Fetch redacted Open Wearables metadata without writing wearable facts.
+
+    ``/api/health/sync`` is retained for compatibility. New metadata-check
+    callers should use ``/api/open-wearables/check-sync``; durable sync callers
+    must use ``/api/open-wearables/sync``. This is not an Apple Health webhook.
+    """
     try:
         data = fetch_open_wearables_data()
         return jsonify(open_wearables_hub.sync_metadata(data))
@@ -13901,7 +13929,7 @@ def _normalize_whoop_record(record_type, record):
     )
     score = record.get("score") if isinstance(record.get("score"), dict) else {}
     score_state = record.get("score_state") or record.get("state") or "SCORED"
-    if isinstance(score, dict) and score.get("user_calibrating") is True:
+    if score.get("user_calibrating") is True or _whoop_truthy(record.get("user_calibrating")):
         score_state = "CALIBRATING"
     values = {
         "upstream_id": str(upstream_id),
@@ -14746,7 +14774,8 @@ def sync_oura_sleep():
         return err
 
     try:
-        start_date = (datetime.now().date() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        sync_date = datetime.now().date()
+        start_date = (sync_date - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
         # Ensure table exists
         create_sleep_table(OURA_DB_FILE)
@@ -14772,23 +14801,16 @@ def sync_oura_sleep():
         return jsonify({
             "status": "success",
             "synced_from": start_date,
+            "synced_through": sync_date.strftime("%Y-%m-%d"),
             "latest_records": len(latest),
             "latest_days": latest_days,
         })
     except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read().decode("utf-8", errors="replace")[:200]
-        except Exception:
-            detail = ""
-        message = f"Oura API returned HTTP {e.code}"
-        if detail:
-            message = f"{message}: {detail}"
-        return api_error(message, 502, code="oura_api_error")
-    except urllib.error.URLError as e:
-        return api_error(f"Oura API request failed: {e.reason}", 502, code="oura_api_error")
-    except Exception as e:
-        return api_error(f"Oura sync failed: {str(e)}", 500, code="oura_sync_failed")
+        return api_error(f"Oura API returned HTTP {e.code}.", 502, code="oura_api_error")
+    except urllib.error.URLError:
+        return api_error("Oura API request failed.", 502, code="oura_api_error")
+    except Exception:
+        return api_error("Oura sync failed.", 500, code="oura_sync_failed")
 
 
 @app.route('/api/oura/sleep-summary')
@@ -15321,11 +15343,19 @@ def _send_web_push(subscription: dict, payload: dict):
         status_code = getattr(response, "status_code", None)
         if status_code in {404, 410}:
             return {"ok": False, "status": "gone", "status_code": status_code, "error": "subscription gone"}
+        app.logger.warning(
+            "Push delivery failed exception_type=%s status_code=%s",
+            type(exc).__name__,
+            status_code,
+        )
         return {
             "ok": False,
             "status": "server_error",
             "status_code": status_code or 500,
-            "error": str(exc),
+            "error": {
+                "code": "push_delivery_failed",
+                "message": "Push service could not deliver the test notification",
+            },
         }
     return {
         "ok": True,
@@ -17330,9 +17360,29 @@ def sleep_analytics():
 
 @app.route('/api/analytics/advanced')
 def analytics_advanced():
+    def finite_number(value):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return False
+        try:
+            return math.isfinite(value)
+        except OverflowError:
+            return False
+
     # volume per muscle current week
     vol=calculate_volume(WORKOUTS, weeks=1)
-    lm=USER_SETTINGS.get('volume_landmarks', {}).get('default', {"mv":6,"mev":9,"mav_min":12,"mav_max":18,"mrv":22})
+    default_lm = DEFAULT_SETTINGS['volume_landmarks']['default']
+    configured_landmarks = USER_SETTINGS.get('volume_landmarks')
+    lm = configured_landmarks.get('default') if isinstance(configured_landmarks, dict) else None
+    required_landmarks = ('mv', 'mev', 'mav_min', 'mav_max', 'mrv')
+    valid_landmark_values = isinstance(lm, dict) and all(
+        finite_number(lm.get(key))
+        for key in required_landmarks
+    )
+    valid_landmark_order = valid_landmark_values and (
+        0 <= lm['mv'] <= lm['mev'] <= lm['mav_min'] <= lm['mav_max'] <= lm['mrv']
+    )
+    if not valid_landmark_order:
+        lm = default_lm
     volume_landmarks=[]
     for m,v in vol.items():
         sets=v.get('sets',0)
@@ -17371,7 +17421,13 @@ def analytics_advanced():
     weeks_since=detect_deload_need(WORKOUTS,SORENESS_DATA).get('weeks_since_deload') or 0
     meso_pen=min(15, float(weeks_since)*2.5)
     fatigue=min(100, round(22+hrv_pen+sleep_pen+vol_pen+sore_pen+ar_pen+meso_pen,1))
-    deload= fatigue >= USER_SETTINGS.get('fatigue_threshold',72)
+    fatigue_threshold = USER_SETTINGS.get('fatigue_threshold')
+    if not (
+        finite_number(fatigue_threshold)
+        and 40 <= fatigue_threshold <= 95
+    ):
+        fatigue_threshold = DEFAULT_SETTINGS['fatigue_threshold']
+    deload= fatigue >= fatigue_threshold
     perf_decline = detect_deload_need(WORKOUTS,SORENESS_DATA).get('needed',False)
     return jsonify({
         'volume_landmarks': volume_landmarks,
