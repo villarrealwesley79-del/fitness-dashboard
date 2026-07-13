@@ -9811,7 +9811,7 @@ def _safe_body_history_entry(raw):
 
 
 def _safe_dated_body_entries():
-    entries = [_safe_body_history_entry(raw) for raw in BODY_DATA]
+    entries = [_safe_body_history_entry(raw) for raw in BODY_DATA if isinstance(raw, dict)]
     return sorted(
         (entry for entry in entries if entry.get("date") is not None),
         key=lambda entry: entry["date"],

@@ -166,6 +166,7 @@ def test_dashboard_ignores_malformed_legacy_rows_for_latest_and_change(client):
     today = module.datetime.now().date()
     module.BODY_DATA.extend(
         [
+            None,
             {"date": "not-a-date", "weight_lbs": 900, "body_fat_pct": float("inf")},
             {"date": (today - module.timedelta(days=40)).isoformat(), "weight_lbs": 190, "body_fat_pct": 21},
             {"date": (today - module.timedelta(days=1)).isoformat(), "weight_lbs": 180, "body_fat_pct": 20},
@@ -187,6 +188,7 @@ def test_vitals_selects_latest_safe_values_and_finite_trend(client):
     recent_date = (module.datetime.now().date() - module.timedelta(days=1)).isoformat()
     module.BODY_DATA.extend(
         [
+            None,
             {"date": "zzzz", "weight_lbs": float("inf"), "body_fat_pct": float("nan")},
             {"date": recent_date, "weight_lbs": 180, "body_fat_pct": 20},
         ]
@@ -205,6 +207,7 @@ def test_latest_weight_skips_malformed_legacy_rows(client):
     recent_date = (module.datetime.now().date() - module.timedelta(days=1)).isoformat()
     module.BODY_DATA.extend(
         [
+            None,
             {"date": "zzzz", "weight_lbs": 900},
             {"date": recent_date, "weight_lbs": 180},
         ]
@@ -219,6 +222,7 @@ def test_body_trend_excludes_non_finite_legacy_weights(client):
     valid_date = (today - module.timedelta(days=1)).isoformat()
     module.BODY_DATA.extend(
         [
+            None,
             {"date": invalid_date, "weight_lbs": float("inf")},
             {"date": valid_date, "weight_lbs": 180},
         ]
