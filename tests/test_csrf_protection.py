@@ -257,8 +257,8 @@ def test_csrf_rollout_bumps_cached_asset_versions():
     index = Path("templates/index.html").read_text()
     service_worker = Path("static/js/sw.js").read_text()
 
-    assert "app-loader.js?v=20260629-fit253-open-wearables-link" in index
-    assert "app.js?v=20260629-fit253-open-wearables-link" in Path("static/js/app-loader.js").read_text()
-    assert "fitness-dashboard-v20260629-fit253-open-wearables-link" in service_worker
+    assert "app-loader.js?v=20260713-fit270-oura-detail" in index
+    assert "app.js?v=20260713-fit270-oura-detail" in Path("static/js/app-loader.js").read_text()
+    assert "fitness-dashboard-v20260713-fit270-oura-detail" in service_worker
     assert "self.skipWaiting()" in service_worker
     assert "self.clients.claim()" in service_worker
