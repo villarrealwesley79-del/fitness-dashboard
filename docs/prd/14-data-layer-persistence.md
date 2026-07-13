@@ -324,7 +324,7 @@ These differ from app JSON settings defaults and should not be treated as equiva
 - AI Coach / Recommendation Engine reads workouts, soreness, settings, recovery, cardio, food logs, adaptation events, Oura, Apple Health, WHOOP, wearable facts, and AI cache.
 - Food logging writes `food_logs`, lookup caches, personal vocabulary, meal review state, refresh events, and adaptation pending windows.
 - Wearable integrations write Oura cache, Apple Health sync DB, WHOOP DB/protected material, Open Wearables config, and public wearable facts.
-- Auth gates route access and owns `auth.db`, single-owner mode, password hashes, sessions, CSRF, and rate limiting.
+- Auth gates route access and owns `auth.db`, single-owner mode, password hashes, sessions, CSRF, and SQLite-backed shared rate limiting.
 - Backup/import crosses JSON stores, food/meal/vocab SQLite rows, and WHOOP daily facts.
 - Push notifications store subscriptions in `fitness_data.db` and derive public URLs from runtime config.
 - Synthetic cleanup script operates on runtime JSON history and should be coordinated with backup/export flows.
