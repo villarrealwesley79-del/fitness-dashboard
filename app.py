@@ -4309,6 +4309,10 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     for w in workouts:
         is_watch_workout = history_source_label(w) in {"Watch", "Strength - Watch"}
         exercises = w.get("exercises")
+        if exercises is None:
+            if not is_watch_workout:
+                total_volume_valid = False
+            continue
         if exercises is not None and not isinstance(exercises, list):
             total_volume_valid = False
             continue
@@ -16843,7 +16847,7 @@ def export_markdown():
     summary = calculate_workout_summary_stats(workouts)
     if summary:
         lines.append("## Summary")
-        lines.append(f"- **Date Range:** {summary.get('date_range', 'N/A')}")
+        lines.append(f"- **Date Range:** {_markdown_export_cell(summary.get('date_range'))}")
         lines.append(f"- **Total Sets:** {summary.get('total_sets', 0)}")
         summary_volume = None if invalid_workout_count else summary.get("total_volume")
         lines.append(
