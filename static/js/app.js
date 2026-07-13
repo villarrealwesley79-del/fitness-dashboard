@@ -6164,7 +6164,7 @@
     const PUSH_STATE_DETAIL = {
         unsupported: 'This browser does not support web push notifications.',
         needs_install: 'Install the app to the Home Screen before enabling push on iOS.',
-        prompt: 'Low-stakes nudges only: stale wearable data and pending food review.',
+        prompt: 'Preview coaching alerts and verify push delivery. This does not schedule reminders.',
         granted_active: 'Subscribed, no scheduled reminders yet. Send a test notification to verify delivery.',
         granted_inactive: 'Permission is granted, but no browser push subscription is active yet.',
         revoked: 'Browser permission was reset. Re-enable to create a fresh subscription, or disable to clean up.',
