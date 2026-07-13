@@ -20,6 +20,10 @@ def client(monkeypatch, tmp_path):
         ("date", "2026-02-30"),
         ("date", "07/11/2026"),
         ("date", ""),
+        ("weight_lbs", float("nan")),
+        ("weight_lbs", float("inf")),
+        ("body_fat_pct", float("nan")),
+        ("body_fat_pct", float("inf")),
         ("neck_in", 7.9),
         ("waist_in", 80.1),
         ("chest_in", "wide"),
@@ -119,3 +123,40 @@ def test_body_recomp_skips_invalid_legacy_weight_in_eta_window(client, monkeypat
 
     assert response.status_code == 200
     assert response.get_json()["summary"]["eta_weeks"] is None
+
+
+def test_body_history_excludes_invalid_dates_from_deltas_and_trend(client):
+    module.BODY_DATA.extend(
+        [
+            {"date": "not-a-date", "weight_lbs": 900},
+            {"date": "2026-07-09", "weight_lbs": 180},
+            {"date": "2026-07-10", "weight_lbs": 180},
+            {"date": "2026-07-11", "weight_lbs": 180},
+        ]
+    )
+
+    response = client.get("/api/body-history")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["trend"] == "stable"
+    assert payload["history"][-2]["weight_change"] is None
+    assert payload["history"][-1]["date"] is None
+    assert payload["history"][-1]["weight_change"] is None
+
+
+def test_body_recomp_excludes_invalid_dates_from_eta_window(client, monkeypatch):
+    monkeypatch.setitem(module.USER_SETTINGS, "target_weight_lbs", 170)
+    module.BODY_DATA.append({"date": "not-a-date", "weight_lbs": 900})
+    module.BODY_DATA.extend(
+        {"date": f"2026-06-{day:02d}", "weight_lbs": 180 - day / 10}
+        for day in range(1, 14)
+    )
+
+    response = client.get("/api/body-recomp")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["history"][0]["date"] is None
+    assert payload["dates"] == [f"2026-06-{day:02d}" for day in range(1, 14)]
+    assert payload["summary"]["eta_weeks"] is None

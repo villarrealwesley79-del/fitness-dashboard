@@ -9776,9 +9776,13 @@ def add_body_measurement():
     weight_lbs, err2 = _coerce_float(data.get("weight_lbs"), "weight_lbs", min_v=50.0, max_v=1000.0)
     if err2:
         return err2
+    if not math.isfinite(weight_lbs):
+        return api_error("weight_lbs must be a finite number", 400, code="invalid_field")
     body_fat_pct, err2 = _coerce_float(data.get("body_fat_pct"), "body_fat_pct", min_v=1.0, max_v=60.0, allow_none=True)
     if err2:
         return err2
+    if body_fat_pct is not None and not math.isfinite(body_fat_pct):
+        return api_error("body_fat_pct must be a finite number", 400, code="invalid_field")
     notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
     if err2:
         return err2
@@ -9817,21 +9821,19 @@ def body_history():
         key=lambda x: x.get("date") or "",
         reverse=True,
     )
+    dated_data = [entry for entry in sorted_data if entry.get("date") is not None]
 
     # Calculate weight changes and trend
-    for i, entry in enumerate(sorted_data):
-        if i < len(sorted_data) - 1:
-            prev_weight = sorted_data[i + 1].get("weight_lbs")
-            curr_weight = entry.get("weight_lbs")
-            if prev_weight and curr_weight:
-                entry["weight_change"] = round(curr_weight - prev_weight, 1)
-            else:
-                entry["weight_change"] = None
-        else:
-            entry["weight_change"] = None
+    for entry in sorted_data:
+        entry["weight_change"] = None
+    for i, entry in enumerate(dated_data[:-1]):
+        prev_weight = dated_data[i + 1].get("weight_lbs")
+        curr_weight = entry.get("weight_lbs")
+        if prev_weight is not None and curr_weight is not None:
+            entry["weight_change"] = round(curr_weight - prev_weight, 1)
 
     # Calculate trend (last 7 entries linear regression)
-    recent_7 = sorted_data[:7]
+    recent_7 = dated_data[:7]
     if len(recent_7) >= 3:
         weights = [e.get("weight_lbs") for e in recent_7 if e.get("weight_lbs")]
         if len(weights) >= 3:
@@ -17164,9 +17166,10 @@ def body_recomp():
     )
     if not hist:
         return jsonify({"history": [], "summary": {}})
-    dates=[h.get('date') for h in hist]
-    weights=[h.get('weight_lbs') for h in hist]
-    bf=[h.get('body_fat_pct') for h in hist]
+    dated_hist = [entry for entry in hist if entry.get('date') is not None]
+    dates=[h.get('date') for h in dated_hist]
+    weights=[h.get('weight_lbs') for h in dated_hist]
+    bf=[h.get('body_fat_pct') for h in dated_hist]
     roll=_rolling_avg(weights,7)
     lean=[]; fat=[]
     for w,b in zip(weights,bf):
@@ -17174,9 +17177,9 @@ def body_recomp():
         else:
             fm = w*(b/100.0); lm=w-fm
             lean.append(round(lm,2)); fat.append(round(fm,2))
-    latest=hist[-1]
+    latest=dated_hist[-1] if dated_hist else None
     tw=USER_SETTINGS.get('target_weight_lbs')
-    curr=latest.get('weight_lbs')
+    curr=latest.get('weight_lbs') if latest else None
     eta_weeks=None
     recent_weights = weights[-14:]
     if tw and curr and len(recent_weights) == 14 and all(weight is not None for weight in recent_weights):
