@@ -42,7 +42,13 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
                     {"machine": "Legacy Import"},
                 ],
             },
-            {"date": "2026-07-13", "exercises": None},
+            {
+                "date": "2026-07-13",
+                "session_type": "Walking",
+                "source": "apple_health",
+                "exercises": None,
+            },
+            {"date": "2026-07-14", "session_type": "strength", "exercises": []},
         ],
     )
 
@@ -54,8 +60,28 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
     assert "| 2026-07-12 | N/A | 2 | N/A | 20 | N/A |  |" in body
     assert "| 2026-07-12 | Apple Watch Import | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
     assert "| 2026-07-12 | Legacy Import | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
-    assert "| 2026-07-13 | N/A | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
-    assert "*Total Sessions: 2*" in body
+    assert "| 2026-07-13 | Walking | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "| 2026-07-14 | strength | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "*Total Sessions: 3*" in body
+
+
+def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {
+                "date": "2026-07-15",
+                "exercises": [None, {"machine": "Partial", "sets": [None]}],
+            }
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| 2026-07-15 | N/A | N/A | N/A | N/A | N/A | Invalid exercise data |" in body
+    assert "| 2026-07-15 | Partial | 1 | N/A | N/A | N/A | Invalid set data |" in body
 
 
 def test_markdown_export_handles_empty_history(monkeypatch):

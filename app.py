@@ -4288,16 +4288,26 @@ def calculate_injury_risk(workouts: list, soreness_data: list) -> dict:
 
 def calculate_workout_summary_stats(workouts: list) -> dict:
     """Calculate comprehensive workout statistics."""
+    workouts = [workout for workout in workouts if isinstance(workout, dict)]
     if not workouts:
         return {}
 
     total_sessions = len(workouts)
-    total_sets = sum(len(e.get("sets") or []) for w in workouts for e in w.get("exercises") or [])
+    total_sets = sum(
+        1
+        for w in workouts
+        for e in w.get("exercises") or []
+        if isinstance(e, dict)
+        for s in e.get("sets") or []
+        if isinstance(s, dict)
+    )
     total_volume = sum(
         s.get("weight_lbs") * s.get("reps")
         for w in workouts
         for e in w.get("exercises") or []
+        if isinstance(e, dict)
         for s in e.get("sets") or []
+        if isinstance(s, dict)
         if isinstance(s.get("weight_lbs"), (int, float))
         and isinstance(s.get("reps"), (int, float))
     )
@@ -4306,6 +4316,8 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     exercise_freq = {}
     for w in workouts:
         for e in w.get("exercises") or []:
+            if not isinstance(e, dict):
+                continue
             machine = e.get("machine") or "N/A"
             exercise_freq[machine] = exercise_freq.get(machine, 0) + 1
 
@@ -16779,13 +16791,14 @@ def import_backup():
 @app.route('/api/export-md')
 def export_markdown():
     """Export all workouts to markdown format."""
+    workouts = [workout for workout in WORKOUTS if isinstance(workout, dict)]
     lines = ["# Workout History Export", ""]
     lines.append(f"*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}*")
-    lines.append(f"*Total Sessions: {len(WORKOUTS)}*")
+    lines.append(f"*Total Sessions: {len(workouts)}*")
     lines.append("")
 
     # Summary stats
-    summary = calculate_workout_summary_stats(WORKOUTS)
+    summary = calculate_workout_summary_stats(workouts)
     if summary:
         lines.append("## Summary")
         lines.append(f"- **Date Range:** {summary.get('date_range', 'N/A')}")
@@ -16798,15 +16811,27 @@ def export_markdown():
     lines.append("| Date | Machine | Set | Reps | Weight | Volume | Notes |")
     lines.append("|------|---------|-----|------|--------|--------|-------|")
 
-    for workout in sorted(WORKOUTS, key=lambda x: x.get("date") or ""):
+    for workout in sorted(workouts, key=lambda x: x.get("date") or ""):
         workout_date = workout.get("date") or "N/A"
         exercises = workout.get("exercises") or []
         if not exercises:
+            source = str(workout.get("source") or "").strip()
+            row_name = workout.get("session_type") or workout.get("activity_type") or source or "N/A"
+            row_note = (
+                "Non-strength/watch-only row"
+                if source.lower() in {"apple_health", "apple_watch"}
+                else "No exercise data"
+            )
             lines.append(
-                f"| {workout_date} | N/A | N/A | N/A | N/A | N/A | Non-strength/watch-only row |"
+                f"| {workout_date} | {row_name} | N/A | N/A | N/A | N/A | {row_note} |"
             )
             continue
         for exercise in exercises:
+            if not isinstance(exercise, dict):
+                lines.append(
+                    f"| {workout_date} | N/A | N/A | N/A | N/A | N/A | Invalid exercise data |"
+                )
+                continue
             machine = exercise.get("machine") or "N/A"
             sets = exercise.get("sets") or []
             if not sets:
@@ -16815,6 +16840,11 @@ def export_markdown():
                 )
                 continue
             for idx, s in enumerate(sets):
+                if not isinstance(s, dict):
+                    lines.append(
+                        f"| {workout_date} | {machine} | {idx + 1} | N/A | N/A | N/A | Invalid set data |"
+                    )
+                    continue
                 reps = s.get("reps")
                 weight = s.get("weight_lbs")
                 volume = weight * reps if isinstance(weight, (int, float)) and isinstance(reps, (int, float)) else "N/A"
