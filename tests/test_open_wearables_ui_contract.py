@@ -95,6 +95,10 @@ def test_app_js_wires_open_wearables_sources_and_history_category():
     check_block = js.split("async function checkOpenWearables()", 1)[1].split("async function syncOpenWearables()", 1)[0]
     assert "populateOpenWearablesSetupFields(body.config)" in check_block
     assert check_block.index("populateOpenWearablesSetupFields(body.config)") < check_block.index("openWearablesIsConnected")
+    sync_block = js.split("async function syncOpenWearables()", 1)[1].split("function openWearablesProviderName", 1)[0]
+    assert "api('/api/open-wearables/sync'" in sync_block
+    assert "/api/health/sync" not in sync_block
+    assert "/api/open-wearables/check-sync" not in sync_block
     assert "hasProviderSetupPath" in js
     assert "&& !hasProviderSetupPath" in js
     assert "canonicalHistoryCategory" in js

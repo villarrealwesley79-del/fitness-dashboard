@@ -202,7 +202,7 @@ Date bucketing uses the ISO timestamp's own timezone offset for HAE timestamps. 
 
 Native iOS helper work should only begin if Apple Health freshness is stale more than three times in a rolling 30-day window under normal phone use, instrumentation shows attempted sync failure/rejection/missing accepted attempts, bridge fixes have been tried or rejected, and the owner approves.
 
-Body mass is mentioned in the native helper SLA, but the current HAE parser does not ingest body mass/weight. That is a real product gap, not a hidden implementation.
+Body mass remains outside the current Apple Health bridge contract. The native helper SLA does not claim body-mass parity; adding it would require a separate end-to-end mapping, persistence, status/UI, and test change.
 
 ## 11. Config & Environment
 
@@ -221,7 +221,7 @@ Body mass is mentioned in the native helper SLA, but the current HAE parser does
 
 Existing tests cover HAE local-date bucketing with timezone offsets and Z suffixes, flat payload date normalization, runtime DB env changes after app import, workouts endpoint activity mapping/filtering, sleep phase duration fallback and partial-row merge behavior, setup URL generation from configured public base URL and explicit webhook URL, token rejection, status auth gate, status field contracts and raw-data non-leakage, CSRF exemption for token-auth webhook, and recommendation bridge effects on ACWR, cardio fatigue, HR intensity, dedupe, strength volume, and smart recommendation reasoning.
 
-Notable gaps: no test for the staleness watchdog script; no parser support/test for body mass; no payload size/row-count cap tests; file-export parsers still have known stale filename/aggregation issues tracked by FIT-260; dashboard parsing hot-path cache work is tracked by FIT-262.
+Notable gaps: no test for the staleness watchdog script; no payload size/row-count cap tests; file-export parsers still have known stale filename/aggregation issues tracked by FIT-260; dashboard parsing hot-path cache work is tracked by FIT-262. Body mass is intentionally outside the current bridge contract rather than an unimplemented parity promise.
 
 ## 13. Gaps & Issue Candidates
 
@@ -276,16 +276,12 @@ Notable gaps: no test for the staleness watchdog script; no parser support/test 
   - Update tests and setup modal copy.
 - **Duplicate-of:** FIT-261
 
-### IC-5: Add body-mass ingestion or remove it from helper SLA scope
+### IC-5: Body-mass scope decision (resolved by FIT-326)
 - **Type:** Data-contract
 - **Priority:** medium
-- **Where:** `docs/APPLE_HEALTH_HELPER_SLA.md:21`, `apple_health_parser.py:631`
-- **Problem:** The helper SLA says a future native helper may read body-mass data already used by the dashboard, but the current HAE parser does not map body mass/weight metrics.
-- **Why it matters:** The documented bridge scope overstates the current Apple Health data contract.
-- **Acceptance criteria:**
-  - Decide whether Apple Health body mass belongs in the HAE bridge.
-  - If yes, add metric mapping, persistence, UI/status evidence, and tests.
-  - If no, update SLA wording to avoid claiming body-mass parity.
+- **Where:** `docs/APPLE_HEALTH_HELPER_SLA.md`, `apple_health_parser.py`
+- **Resolution:** Resolved by FIT-326. Body mass does not belong in the current HAE bridge contract, so the helper SLA no longer claims body-mass parity.
+- **Future work:** Adding body mass requires a separate end-to-end change covering metric mapping, persistence, status/UI evidence, and tests.
 - **Duplicate-of:** none
 
 ### IC-6: Add payload limits and rejection reporting for HAE sync
