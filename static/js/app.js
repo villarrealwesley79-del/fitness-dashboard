@@ -4896,7 +4896,7 @@
             // surfaces distinguish corrected entries from estimated ones.
             correction_state: 'corrected',
             item_name: itemName,
-            portion_description: ($('meal-edit-portion').value || '').trim() || undefined,
+            portion_description: ($('meal-edit-portion').value || '').trim() || null,
             calories: Math.round(calories),
             protein_g: protein,
             carbs_g: carbs,

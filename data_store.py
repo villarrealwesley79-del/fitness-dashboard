@@ -2476,7 +2476,7 @@ def add_food_log(user_id: int, record: dict) -> dict:
         if (
             previous_row is not None
             and row is not None
-            and entry["correction_state"] == "corrected"
+            and entry["correction_state"] in {"accepted", "corrected"}
             and _workout_adaptation_source_changed(
                 _food_log_row_to_dict(previous_row),
                 _food_log_row_to_dict(row),

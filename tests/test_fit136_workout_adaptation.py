@@ -1116,6 +1116,33 @@ def test_correcting_source_food_log_marks_unacknowledged_adaptation_stale(monkey
     assert stored["reason"] == "Source meal changed; this workout update is no longer current."
 
 
+def test_changed_accepted_source_food_log_marks_unacknowledged_adaptation_stale(
+    monkeypatch,
+    tmp_path,
+):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    _food_log(
+        "source-meal",
+        meal_id="meal-1",
+        correction_state="accepted",
+        calories=650,
+    )
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "stale"
+
+
 def test_identical_corrected_food_log_replay_keeps_adaptation_applied(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     original = _food_log("source-meal", meal_id="meal-1")

@@ -215,6 +215,51 @@ process.stdout.write(JSON.stringify(sandbox.module.exports));
     assert json.loads(result.stdout) == 1
 
 
+def test_meal_editor_sends_null_when_portion_is_cleared():
+    js = APP_JS.read_text()
+    save_block = _block(
+        js,
+        "async function saveMealCorrection(entry, modal, saveBtn)",
+        "// ===================== FIT-107: View food log sheet",
+    )
+
+    if not shutil.which("node"):
+        pytest.skip("meal editor payload regression requires node")
+    script = f"""
+const vm = require('node:vm');
+const source = `
+const values = {{
+  'meal-edit-item': 'Chicken bowl',
+  'meal-edit-portion': '',
+  'meal-edit-cal': '500',
+  'meal-edit-pro': '35',
+  'meal-edit-carb': '45',
+  'meal-edit-fat': '18',
+  'meal-edit-sodium': '700',
+}};
+function $(id) {{ return {{ value: values[id] || '', hidden: false, textContent: '' }}; }}
+let sentPayload = null;
+async function api(_path, options) {{ sentPayload = JSON.parse(options.body); }}
+function toast() {{}}
+function renderBodyInterpretationAndNutritionTrend() {{}}
+${{{json.dumps(save_block)}}}
+(async () => {{
+  await saveMealCorrection(
+    {{ client_id: 'meal-1', date: '2026-05-24', logged_at: '2026-05-24T12:00:00' }},
+    {{ hidden: false }},
+    {{ disabled: false }},
+  );
+  module.exports = sentPayload.portion_description;
+}})();
+`;
+const sandbox = {{ module: {{ exports: 'unset' }}, console }};
+vm.runInNewContext(source, sandbox);
+setImmediate(() => process.stdout.write(JSON.stringify(sandbox.module.exports)));
+"""
+    result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True)
+    assert json.loads(result.stdout) is None
+
+
 def test_adaptation_dismiss_failure_does_not_duplicate_card():
     js = APP_JS.read_text()
     notice = _block(
