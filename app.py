@@ -12915,7 +12915,7 @@ def health_sync():
 
     ``/api/health/sync`` is retained for compatibility. New metadata-check
     callers should use ``/api/open-wearables/check-sync``; durable sync callers
-    must use ``/api/open-wearables/sync``.
+    must use ``/api/open-wearables/sync``. This is not an Apple Health webhook.
     """
     try:
         data = fetch_open_wearables_data()
@@ -14806,19 +14806,11 @@ def sync_oura_sleep():
             "latest_days": latest_days,
         })
     except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read().decode("utf-8", errors="replace")[:200]
-        except Exception:
-            detail = ""
-        message = f"Oura API returned HTTP {e.code}"
-        if detail:
-            message = f"{message}: {detail}"
-        return api_error(message, 502, code="oura_api_error")
-    except urllib.error.URLError as e:
-        return api_error(f"Oura API request failed: {e.reason}", 502, code="oura_api_error")
-    except Exception as e:
-        return api_error(f"Oura sync failed: {str(e)}", 500, code="oura_sync_failed")
+        return api_error(f"Oura API returned HTTP {e.code}.", 502, code="oura_api_error")
+    except urllib.error.URLError:
+        return api_error("Oura API request failed.", 502, code="oura_api_error")
+    except Exception:
+        return api_error("Oura sync failed.", 500, code="oura_sync_failed")
 
 
 @app.route('/api/oura/sleep-summary')
@@ -17356,9 +17348,29 @@ def sleep_analytics():
 
 @app.route('/api/analytics/advanced')
 def analytics_advanced():
+    def finite_number(value):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return False
+        try:
+            return math.isfinite(value)
+        except OverflowError:
+            return False
+
     # volume per muscle current week
     vol=calculate_volume(WORKOUTS, weeks=1)
-    lm=USER_SETTINGS.get('volume_landmarks', {}).get('default', {"mv":6,"mev":9,"mav_min":12,"mav_max":18,"mrv":22})
+    default_lm = DEFAULT_SETTINGS['volume_landmarks']['default']
+    configured_landmarks = USER_SETTINGS.get('volume_landmarks')
+    lm = configured_landmarks.get('default') if isinstance(configured_landmarks, dict) else None
+    required_landmarks = ('mv', 'mev', 'mav_min', 'mav_max', 'mrv')
+    valid_landmark_values = isinstance(lm, dict) and all(
+        finite_number(lm.get(key))
+        for key in required_landmarks
+    )
+    valid_landmark_order = valid_landmark_values and (
+        0 <= lm['mv'] <= lm['mev'] <= lm['mav_min'] <= lm['mav_max'] <= lm['mrv']
+    )
+    if not valid_landmark_order:
+        lm = default_lm
     volume_landmarks=[]
     for m,v in vol.items():
         sets=v.get('sets',0)
@@ -17397,7 +17409,13 @@ def analytics_advanced():
     weeks_since=detect_deload_need(WORKOUTS,SORENESS_DATA).get('weeks_since_deload') or 0
     meso_pen=min(15, float(weeks_since)*2.5)
     fatigue=min(100, round(22+hrv_pen+sleep_pen+vol_pen+sore_pen+ar_pen+meso_pen,1))
-    deload= fatigue >= USER_SETTINGS.get('fatigue_threshold',72)
+    fatigue_threshold = USER_SETTINGS.get('fatigue_threshold')
+    if not (
+        finite_number(fatigue_threshold)
+        and 40 <= fatigue_threshold <= 95
+    ):
+        fatigue_threshold = DEFAULT_SETTINGS['fatigue_threshold']
+    deload= fatigue >= fatigue_threshold
     perf_decline = detect_deload_need(WORKOUTS,SORENESS_DATA).get('needed',False)
     return jsonify({
         'volume_landmarks': volume_landmarks,

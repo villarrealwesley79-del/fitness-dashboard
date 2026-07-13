@@ -306,6 +306,9 @@ def save_push_subscription(user_id: int, subscription: dict, metadata: Optional[
     if not isinstance(keys, dict) or not keys.get("p256dh") or not keys.get("auth"):
         raise ValueError("subscription.keys.p256dh and keys.auth are required")
     metadata = metadata or {}
+    permission_state = metadata.get("permission_state")
+    if not isinstance(permission_state, str) or permission_state not in {"granted", "denied", "default"}:
+        permission_state = None
     endpoint_hash = _endpoint_hash(endpoint)
     now = datetime.now().isoformat(timespec="seconds")
     with _get_db() as conn:
@@ -329,7 +332,7 @@ def save_push_subscription(user_id: int, subscription: dict, metadata: Optional[
                 endpoint_hash,
                 endpoint,
                 json.dumps(subscription, sort_keys=True),
-                metadata.get("permission_state"),
+                permission_state,
                 1 if metadata.get("pwa_installed") is True else 0 if metadata.get("pwa_installed") is False else None,
                 metadata.get("user_agent"),
                 now,
