@@ -34,7 +34,7 @@ PY
 }
 
 DATA_DIR="$(resolve_data_dir)"
-STALE_LOG="${APPLE_HEALTH_STALENESS_LOG:-/tmp/apple-health-staleness.log}"
+STALE_LOG="${APPLE_HEALTH_STALENESS_LOG_FILE:-${APPLE_HEALTH_STALENESS_LOG:-/tmp/apple-health-staleness.log}}"
 
 service_state() {
   local label="$1"

@@ -133,9 +133,12 @@ def test_default_staleness_log_matches_watchdog_output_path():
     status_source = SCRIPT.read_text(encoding="utf-8")
     watchdog_source = WATCHDOG.read_text(encoding="utf-8")
 
-    assert "APPLE_HEALTH_STALENESS_LOG:-/tmp/apple-health-staleness.log" in status_source
+    assert (
+        "APPLE_HEALTH_STALENESS_LOG_FILE:-${APPLE_HEALTH_STALENESS_LOG:-/tmp/apple-health-staleness.log}"
+        in status_source
+    )
     assert 'LOG_DIR="/tmp"' in watchdog_source
-    assert 'LOG_FILE="${LOG_DIR}/apple-health-staleness.log"' in watchdog_source
+    assert 'LOG_FILE="${APPLE_HEALTH_STALENESS_LOG_FILE:-${LOG_DIR}/apple-health-staleness.log}"' in watchdog_source
 
 
 def test_status_reads_data_dir_from_installed_app_plist(tmp_path):
