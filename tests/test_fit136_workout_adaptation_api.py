@@ -219,18 +219,33 @@ def test_ui_shaped_correction_preserves_omitted_source_metadata(
     assert stored_log["confidence"] == original["confidence"]
     assert stored_event["status"] == "applied"
 
-    clear_response = client.post(
+    clear_meal_type_response = client.post(
         "/api/add-nutrition",
-        json={**ui_payload, "context_note": None},
+        json={**ui_payload, "meal_type": None},
     )
     cleared_event = next(
         item
         for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
         if item["id"] == event["id"]
     )
-    assert clear_response.status_code == 200
-    assert clear_response.get_json()["food_log"]["context_note"] is None
+    assert clear_meal_type_response.status_code == 200
+    assert not clear_meal_type_response.get_json()["food_log"]["meal_type"]
     assert cleared_event["status"] == "stale"
+
+    reassigned_response = client.post(
+        "/api/add-nutrition",
+        json={**ui_payload, "meal_id": "meal-2"},
+    )
+    assert reassigned_response.status_code == 200
+    assert reassigned_response.get_json()["food_log"]["meal_id"] == "meal-2"
+
+    clear_response = client.post(
+        "/api/add-nutrition",
+        json={**ui_payload, "meal_id": None, "context_note": None},
+    )
+    assert clear_response.status_code == 200
+    assert clear_response.get_json()["food_log"]["meal_id"] is None
+    assert clear_response.get_json()["food_log"]["context_note"] is None
 
 
 def test_pending_manual_nutrition_does_not_schedule_workout_adaptation(monkeypatch, tmp_path):

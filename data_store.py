@@ -2377,7 +2377,14 @@ def add_food_log(user_id: int, record: dict) -> dict:
                         "confidence",
                     ):
                         value = entry.get(field)
-                        nullable_nutrition = {"carbs_g", "fat_g", "sodium_mg", "fiber_g", "confidence"}
+                        nullable_nutrition = {
+                            "meal_type",
+                            "carbs_g",
+                            "fat_g",
+                            "sodium_mg",
+                            "fiber_g",
+                            "confidence",
+                        }
                         if field in nullable_nutrition and field in record and value is None:
                             changed_nutrition = changed_nutrition or merged_current.get(field) is not None
                             merged_current[field] = None

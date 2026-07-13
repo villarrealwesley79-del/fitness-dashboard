@@ -5622,6 +5622,9 @@ def add_nutrition():
     meal_type, err2 = _coerce_str(data.get("meal_type"), "meal_type", required=False, max_len=64)
     if err2:
         return err2
+    meal_id, err2 = _coerce_str(data.get("meal_id"), "meal_id", required=False, max_len=128)
+    if err2:
+        return err2
     context_note, err2 = _coerce_str(data.get("context_note"), "context_note", required=False, max_len=500)
     if err2:
         return err2
@@ -5666,6 +5669,7 @@ def add_nutrition():
         **entry,
         "logged_at": logged_at,
         "source_timestamp": source_timestamp,
+        "meal_id": meal_id,
         "meal_type": meal_type,
         "item_name": item_name,
         "portion_description": portion_description,
@@ -5683,6 +5687,7 @@ def add_nutrition():
         "fiber_g",
         "confidence",
         "notes",
+        "meal_id",
         "meal_type",
         "context_note",
     ):
