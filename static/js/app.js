@@ -391,6 +391,7 @@
     const workoutAdaptationNoticeState = {
         seen: new Set(),
         statuses: new Map(),
+        dismissed: new Set(),
         fetching: false,
     };
 
@@ -498,6 +499,7 @@
             if (dismissed) return;
             dismissed = true;
             dismiss.disabled = true;
+            workoutAdaptationNoticeState.dismissed.add(event.id);
             try {
                 await api(`/api/workout-adaptation-events/${encodeURIComponent(event.id)}/ack`, { method: 'POST' });
                 card.remove();
@@ -508,6 +510,10 @@
                 // button so the user can retry the ack on this same card.
                 dismissed = false;
                 dismiss.disabled = false;
+                workoutAdaptationNoticeState.dismissed.delete(event.id);
+                fetchWorkoutAdaptationNotices().catch((fetchErr) => {
+                    console.warn('workout adaptation refresh failed:', fetchErr);
+                });
                 console.warn('workout adaptation ack failed:', err);
             }
         });
@@ -525,6 +531,7 @@
             const events = (payload && payload.events) || [];
             for (const event of events) {
                 if (!event || !event.id) continue;
+                if (workoutAdaptationNoticeState.dismissed.has(event.id)) continue;
                 const previousStatus = workoutAdaptationNoticeState.statuses.get(event.id);
                 if (workoutAdaptationNoticeState.seen.has(event.id) && previousStatus === event.status) continue;
                 workoutAdaptationNoticeState.seen.add(event.id);

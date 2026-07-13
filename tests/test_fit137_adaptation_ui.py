@@ -91,7 +91,7 @@ const cards = [];
 const host = {{
   querySelectorAll() {{ return cards.filter((card) => !card.removed); }},
 }};
-const workoutAdaptationNoticeState = {{ fetching: false, seen: new Set(), statuses: new Map() }};
+const workoutAdaptationNoticeState = {{ fetching: false, seen: new Set(), statuses: new Map(), dismissed: new Set() }};
 function withActiveWorkoutAdaptationParams(path) {{ return path; }}
 function workoutAdaptationIsRenderable() {{ return true; }}
 function $(id) {{ return id === 'workout-adaptation-host' ? host : null; }}
@@ -120,6 +120,108 @@ sandbox.module.exports().then((result) => process.stdout.write(JSON.stringify(re
 """
     result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True)
     assert json.loads(result.stdout) == {"shown": ["applied", "stale"], "firstRemoved": True}
+
+
+@pytest.mark.parametrize(
+    ("ack_fails", "expected"),
+    [
+        (False, {"appended": 1, "active": 0, "feed_calls": 2, "kicker": None}),
+        (True, {"appended": 2, "active": 1, "feed_calls": 3, "kicker": "Workout update stale"}),
+    ],
+    ids=["ack-succeeds", "ack-fails"],
+)
+def test_acknowledging_adaptation_reconciles_inflight_stale_replacement(ack_fails, expected):
+    js = APP_JS.read_text()
+    state_block = _block(
+        js,
+        "const workoutAdaptationNoticeState = {",
+        "function workoutAdaptationIsRenderable",
+    )
+    notice_block = _block(
+        js,
+        "function showWorkoutAdaptationNotice(event)",
+        "async function fetchWorkoutAdaptationNotices",
+    )
+    fetch_block = _block(
+        js,
+        "async function fetchWorkoutAdaptationNotices()",
+        "function newWorkoutId",
+    )
+
+    if not shutil.which("node"):
+        pytest.skip("adaptation acknowledgement race regression requires node")
+    script = f"""
+const vm = require('node:vm');
+const source = `
+let resolveFeed;
+let resolveAck;
+let rejectAck;
+let feedCalls = 0;
+const staleFeed = new Promise((resolve) => {{ resolveFeed = resolve; }});
+const ackRequest = new Promise((resolve, reject) => {{ resolveAck = resolve; rejectAck = reject; }});
+const appendedCards = [];
+function element() {{
+  return {{
+    children: [],
+    dataset: {{}},
+    disabled: false,
+    removed: false,
+    appendChild(child) {{ this.children.push(child); }},
+    setAttribute() {{}},
+    addEventListener(type, handler) {{ this[type] = handler; }},
+    remove() {{ this.removed = true; }},
+  }};
+}}
+const host = {{
+  hidden: true,
+  get children() {{ return appendedCards.filter((card) => !card.removed); }},
+  appendChild(card) {{ appendedCards.push(card); }},
+  querySelectorAll() {{ return this.children; }},
+}};
+const document = {{ createElement: element }};
+function $(id) {{ return id === 'workout-adaptation-host' ? host : null; }}
+function escapeHtml(value) {{ return value; }}
+function workoutAdaptationIsRenderable() {{ return true; }}
+function workoutAdaptationSignalLabels() {{ return []; }}
+function workoutAdaptationRemainingPlanRows() {{ return ''; }}
+function applyWorkoutAdaptationToActiveWorkout() {{}}
+function withActiveWorkoutAdaptationParams(path) {{ return path; }}
+async function api(path) {{
+  if (path.includes('/ack')) return ackRequest;
+  feedCalls += 1;
+  if (feedCalls === 1) return {{ events: [{{ id: 'event-1', status: 'applied' }}] }};
+  if (feedCalls === 2) return staleFeed;
+  return {{ events: [{{ id: 'event-1', status: 'stale' }}] }};
+}}
+${{{json.dumps(state_block)}}}
+${{{json.dumps(notice_block)}}}
+${{{json.dumps(fetch_block)}}}
+module.exports = async () => {{
+  await fetchWorkoutAdaptationNotices();
+  const secondPoll = fetchWorkoutAdaptationNotices();
+  const dismissButton = host.children[0].children[0].children[1];
+  const dismissal = dismissButton.click();
+  resolveFeed({{ events: [{{ id: 'event-1', status: 'stale' }}] }});
+  await secondPoll;
+  if ({json.dumps(ack_fails)}) rejectAck(new Error('ack failed'));
+  else resolveAck({{ ok: true }});
+  await dismissal;
+  await Promise.resolve();
+  const current = host.children[0];
+  return {{
+    appended: appendedCards.length,
+    active: host.children.length,
+    feed_calls: feedCalls,
+    kicker: current ? current.children[0].children[0].textContent : null,
+  }};
+}};
+`;
+const sandbox = {{ module: {{ exports: {{}} }}, console }};
+vm.runInNewContext(source, sandbox);
+sandbox.module.exports().then((result) => process.stdout.write(JSON.stringify(result)));
+"""
+    result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True)
+    assert json.loads(result.stdout) == expected
 
 
 def test_adaptation_notice_renders_neutral_reason_and_collapsed_details():
@@ -290,6 +392,8 @@ def test_adaptation_dismiss_failure_does_not_duplicate_card():
     # otherwise the next poll re-renders a duplicate card. Guard the fix:
     assert "workoutAdaptationNoticeState.seen.delete" not in notice
     assert "dismiss.disabled = false;" in notice  # button stays retry-able
+    assert "workoutAdaptationNoticeState.dismissed.delete(event.id);" in notice
+    assert "fetchWorkoutAdaptationNotices().catch" in notice
 
 
 def test_adaptation_does_not_surface_audit_log():
