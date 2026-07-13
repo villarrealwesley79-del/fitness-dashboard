@@ -5689,6 +5689,7 @@ def add_nutrition():
         "notes",
         "meal_id",
         "meal_type",
+        "portion_description",
         "context_note",
     ):
         if field not in data:

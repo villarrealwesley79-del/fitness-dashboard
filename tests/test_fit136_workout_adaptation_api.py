@@ -151,7 +151,7 @@ def test_ui_shaped_correction_preserves_omitted_source_metadata(
             "meal_id": "meal-1",
             "meal_type": "dinner",
             "item_name": "Chicken bowl",
-            "portion_description": "1 bowl",
+            "portion_description": None,
             "context_note": "Dinner after training",
             "calories": 500,
             "protein_g": 35,
@@ -196,7 +196,6 @@ def test_ui_shaped_correction_preserves_omitted_source_metadata(
         "source": original["source"],
         "correction_state": "corrected",
         "item_name": original["item_name"],
-        "portion_description": original["portion_description"],
         "calories": original["calories"],
         "protein_g": original["protein_g"],
         "carbs_g": original["carbs_g"],
@@ -214,6 +213,7 @@ def test_ui_shaped_correction_preserves_omitted_source_metadata(
     )
     assert stored_log["meal_id"] == "meal-1"
     assert stored_log["meal_type"] == "dinner"
+    assert stored_log["portion_description"] is None
     assert stored_log["context_note"] == "Dinner after training"
     assert stored_log["fiber_g"] == original["fiber_g"]
     assert stored_log["confidence"] == original["confidence"]

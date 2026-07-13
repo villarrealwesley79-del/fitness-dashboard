@@ -2342,7 +2342,13 @@ def add_food_log(user_id: int, record: dict) -> dict:
             and previous.get("correction_state") in {"accepted", "corrected"}
         )
         if isinstance(previous, dict):
-            for field in ("meal_id", "meal_type", "fiber_g", "confidence"):
+            for field in (
+                "meal_id",
+                "meal_type",
+                "portion_description",
+                "fiber_g",
+                "confidence",
+            ):
                 if field not in record:
                     entry[field] = previous.get(field)
             if "context_note" not in record and "notes" not in record:

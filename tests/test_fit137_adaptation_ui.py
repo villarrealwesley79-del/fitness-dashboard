@@ -179,6 +179,42 @@ process.stdout.write(JSON.stringify(sandbox.module.exports));
     assert json.loads(result.stdout) == 0
 
 
+def test_current_next_day_notice_updates_active_workout():
+    js = APP_JS.read_text()
+    apply_block = _block(
+        js,
+        "function applyWorkoutAdaptationToActiveWorkout(event)",
+        "function showWorkoutAdaptationNotice(event)",
+    )
+
+    if not shutil.which("node"):
+        pytest.skip("next-day adaptation regression requires node")
+    script = f"""
+const vm = require('node:vm');
+const source = `
+const state = {{ activeWorkout: {{ exercises: [] }} }};
+let nextWorkoutCalls = 0;
+function today() {{ return '2026-07-11'; }}
+function getNextWorkout() {{ nextWorkoutCalls += 1; return Promise.resolve(null); }}
+function applyAdjustedRecommendationToActiveWorkout() {{}}
+function renderActiveWorkout() {{}}
+${{{json.dumps(apply_block)}}}
+applyWorkoutAdaptationToActiveWorkout({{
+  date: '2026-07-10',
+  created_at: '2026-07-11T00:03:01',
+  applies_to: 'next_day',
+  active_workout: {{ updated_live: true }},
+}});
+module.exports = nextWorkoutCalls;
+`;
+const sandbox = {{ module: {{ exports: null }}, console }};
+vm.runInNewContext(source, sandbox);
+process.stdout.write(JSON.stringify(sandbox.module.exports));
+"""
+    result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True)
+    assert json.loads(result.stdout) == 1
+
+
 def test_adaptation_dismiss_failure_does_not_duplicate_card():
     js = APP_JS.read_text()
     notice = _block(
