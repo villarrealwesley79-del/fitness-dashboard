@@ -4739,7 +4739,7 @@ def test_meal_intake_vision_contention_logs_distinct_tag(monkeypatch, caplog):
         "uncertainty_notes": [],
     })
     monkeypatch.setattr(module, "add_food_log", lambda _u, r: {"client_id": r["client_id"], **r})
-    caplog.set_level("INFO")
+    caplog.set_level("WARNING")
 
     response = module.app.test_client().post(
         "/api/meal-intake",

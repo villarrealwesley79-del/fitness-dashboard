@@ -8215,7 +8215,7 @@ def meal_intake():
             }
         except Exception as exc:
             if _meal_intake_vision_contention(exc):
-                app.logger.info(
+                app.logger.warning(
                     "vision_busy_contention",
                     extra={"event": "vision_busy_contention"},
                 )
