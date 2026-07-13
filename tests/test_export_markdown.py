@@ -307,9 +307,26 @@ def test_markdown_export_escapes_summary_date_range(monkeypatch):
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    escaped_date = "2026-07-20 bad\\|date"
-    assert f"- **Date Range:** {escaped_date} to {escaped_date}" in body
+    assert "- **Date Range:** N/A" in body
     assert "| N/A | Watch | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+
+
+def test_markdown_export_marks_incomplete_date_range_unknown(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {"date": "2026-07-20", "source": "watch", "exercises": []},
+            {"source": "watch", "exercises": []},
+            None,
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "- **Date Range:** N/A" in body
+    assert "2026-07-20 to 2026-07-20" not in body
 
 
 def test_markdown_export_normalizes_legacy_apple_watch_source(monkeypatch):

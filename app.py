@@ -4313,6 +4313,17 @@ def _nonnegative_workout_number(value):
     return number if number is not None and number >= 0 else None
 
 
+def _workout_export_date(value):
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return value if parsed.strftime("%Y-%m-%d") == value else None
+
+
 def _workout_export_source_label(workout: dict) -> str:
     normalized = dict(workout)
     source = normalized.get("source")
@@ -4420,11 +4431,8 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
         session_types[st] = session_types.get(st, 0) + 1
 
     # Date range
-    dates = [
-        w.get("date").strip()
-        for w in workouts
-        if isinstance(w.get("date"), str) and w.get("date").strip()
-    ]
+    dates = [_workout_export_date(w.get("date")) for w in workouts]
+    date_range_valid = all(date is not None for date in dates)
 
     return {
         "total_sessions": total_sessions,
@@ -4435,7 +4443,11 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
             if total_sets_valid and total_sessions
             else None
         ),
-        "date_range": f"{min(dates)} to {max(dates)}" if dates else "N/A",
+        "date_range": (
+            f"{min(dates)} to {max(dates)}"
+            if dates and date_range_valid
+            else "N/A"
+        ),
         "top_exercises": [{"exercise": e, "count": c} for e, c in top_exercises],
         "session_types": session_types
     }
@@ -16917,7 +16929,8 @@ def export_markdown():
     summary = calculate_workout_summary_stats(workouts)
     if summary or invalid_workout_count:
         lines.append("## Summary")
-        lines.append(f"- **Date Range:** {_markdown_export_cell(summary.get('date_range'))}")
+        summary_date_range = None if invalid_workout_count else summary.get("date_range")
+        lines.append(f"- **Date Range:** {_markdown_export_cell(summary_date_range)}")
         summary_sets = None if invalid_workout_count else summary.get("total_sets")
         lines.append(
             f"- **Total Sets:** {summary_sets}"
