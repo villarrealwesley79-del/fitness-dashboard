@@ -259,7 +259,7 @@ def test_markdown_export_escapes_summary_date_range(monkeypatch):
 def test_markdown_export_normalizes_legacy_apple_watch_source(monkeypatch):
     app = _fitness_app(
         monkeypatch,
-        [{"source": "apple_watch", "session_type": "Walking", "exercises": []}],
+        [{"source": "apple_watch", "activity": "Walking", "exercises": []}],
     )
 
     response = app.test_client().get("/api/export-md")
@@ -269,3 +269,17 @@ def test_markdown_export_normalizes_legacy_apple_watch_source(monkeypatch):
     assert "| N/A | Walking | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
     assert "- **Total Sets:** 0" in body
     assert "- **Total Volume:** 0 lbs" in body
+
+    module = importlib.import_module("app")
+    monkeypatch.setattr(
+        module,
+        "WORKOUTS",
+        [{"source": "apple_watch", "activity": "Strength Training", "exercises": []}],
+    )
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Strength Training | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "- **Total Sets:** N/A" in body
+    assert "- **Total Volume:** N/A" in body

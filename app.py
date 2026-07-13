@@ -16929,7 +16929,11 @@ def export_markdown():
         exercises = exercises or []
         if not exercises:
             row_name_value = source_label
-            for candidate in (workout.get("session_type"), workout.get("activity_type")):
+            for candidate in (
+                workout.get("session_type"),
+                workout.get("activity_type"),
+                workout.get("activity"),
+            ):
                 if isinstance(candidate, str) and candidate.strip():
                     row_name_value = candidate
                     break
