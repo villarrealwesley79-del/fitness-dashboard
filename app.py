@@ -4304,6 +4304,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     total_sessions = len(workouts)
     total_sets = 0
     total_volume = 0
+    total_volume_valid = True
     exercise_freq = {}
     for w in workouts:
         exercises = w.get("exercises")
@@ -4325,9 +4326,13 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
                 weight = s.get("weight_lbs")
                 reps = s.get("reps")
                 if _is_finite_workout_number(weight) and _is_finite_workout_number(reps):
-                    set_volume = weight * reps
-                    if _is_finite_workout_number(set_volume):
-                        total_volume += set_volume
+                        set_volume = weight * reps
+                        if _is_finite_workout_number(set_volume):
+                            candidate_total = total_volume + set_volume
+                            if _is_finite_workout_number(candidate_total):
+                                total_volume = candidate_total
+                            else:
+                                total_volume_valid = False
 
     top_exercises = sorted(exercise_freq.items(), key=lambda x: -x[1])[:5]
 
@@ -4345,7 +4350,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     return {
         "total_sessions": total_sessions,
         "total_sets": total_sets,
-        "total_volume": round(total_volume),
+        "total_volume": round(total_volume) if total_volume_valid else None,
         "avg_sets_per_session": round(total_sets / total_sessions, 1) if total_sessions else 0,
         "date_range": f"{min(dates)} to {max(dates)}" if dates else "N/A",
         "top_exercises": [{"exercise": e, "count": c} for e, c in top_exercises],
@@ -16803,16 +16808,18 @@ def _markdown_export_cell(value, default="N/A") -> str:
         return default
     if isinstance(value, (int, float)) and not _is_finite_workout_number(value):
         return default
-    return str(value).replace("\r", " ").replace("\n", " ").replace("|", "\\|")
+    return str(value).replace("\\", "\\\\").replace("\r", " ").replace("\n", " ").replace("|", "\\|")
 
 
 @app.route('/api/export-md')
 def export_markdown():
     """Export all workouts to markdown format."""
-    workouts = [workout for workout in WORKOUTS if isinstance(workout, dict)]
+    workout_rows = WORKOUTS if isinstance(WORKOUTS, list) else []
+    workouts = [workout for workout in workout_rows if isinstance(workout, dict)]
+    invalid_workout_count = len(workout_rows) - len(workouts)
     lines = ["# Workout History Export", ""]
     lines.append(f"*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}*")
-    lines.append(f"*Total Sessions: {len(workouts)}*")
+    lines.append(f"*Total Sessions: {len(workout_rows)}*")
     lines.append("")
 
     # Summary stats
@@ -16821,7 +16828,12 @@ def export_markdown():
         lines.append("## Summary")
         lines.append(f"- **Date Range:** {summary.get('date_range', 'N/A')}")
         lines.append(f"- **Total Sets:** {summary.get('total_sets', 0)}")
-        lines.append(f"- **Total Volume:** {summary.get('total_volume', 0):,} lbs")
+        summary_volume = summary.get("total_volume")
+        lines.append(
+            f"- **Total Volume:** {summary_volume:,} lbs"
+            if _is_finite_workout_number(summary_volume)
+            else "- **Total Volume:** N/A"
+        )
         lines.append("")
 
     lines.append("## Workout Log")
@@ -16847,7 +16859,7 @@ def export_markdown():
             row_name = _markdown_export_cell(
                 workout.get("session_type")
                 or workout.get("activity_type")
-                or (source_label if is_watch_row else workout.get("source"))
+                or source_label
             )
             row_note = (
                 "Non-strength/watch-only row"
@@ -16904,6 +16916,9 @@ def export_markdown():
                     f"{_markdown_export_cell(reps)} | "
                     f"{_markdown_export_cell(weight)} | {_markdown_export_cell(volume)} | {notes} |"
                 )
+
+    for _ in range(invalid_workout_count):
+        lines.append("| N/A | N/A | N/A | N/A | N/A | N/A | Invalid workout data |")
 
     lines.append("")
     lines.append("---")

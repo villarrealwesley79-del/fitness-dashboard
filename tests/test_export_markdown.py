@@ -56,6 +56,7 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
                 "source": "lifted",
                 "exercises": [{"machine": "Chest Press"}],
             },
+            {"date": "2026-07-16", "source": "lifted", "exercises": []},
         ],
     )
 
@@ -70,13 +71,16 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
     assert "| 2026-07-13 | Walking | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
     assert "| 2026-07-14 | strength | N/A | N/A | N/A | N/A | No exercise data |" in body
     assert "| 2026-07-15 | Chest Press | N/A | N/A | N/A | N/A | No set data |" in body
-    assert "*Total Sessions: 4*" in body
+    assert "| 2026-07-16 | Strength - Logged | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "*Total Sessions: 5*" in body
 
 
 def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
     app = _fitness_app(
         monkeypatch,
         [
+            None,
+            7,
             {
                 "date": "2026-07-15",
                 "exercises": [None, {"machine": "Partial", "sets": [None]}],
@@ -86,7 +90,10 @@ def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
             {
                 "date": "2026-07-18",
                 "exercises": [
-                    {"machine": {"invalid": "label"}, "sets": [{"reps": 2, "weight_lbs": 5}]},
+                    {
+                        "machine": {"invalid": "label"},
+                        "sets": [{"reps": 2, "weight_lbs": 5, "notes": "left\\|right\nnext"}],
+                    },
                     {
                         "machine": "Nonfinite",
                         "sets": [
@@ -97,6 +104,8 @@ def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
                                 "notes": ["invalid"],
                             },
                             {"reps": 1e308, "weight_lbs": 1e308},
+                            {"reps": 1, "weight_lbs": 1e308},
+                            {"reps": 1, "weight_lbs": 1e308},
                         ],
                     },
                 ],
@@ -108,13 +117,19 @@ def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
+    invalid_workout_row = "| N/A | N/A | N/A | N/A | N/A | N/A | Invalid workout data |"
+    assert body.count(invalid_workout_row) == 2
     assert "| 2026-07-15 | N/A | N/A | N/A | N/A | N/A | Invalid exercise data |" in body
     assert "| 2026-07-15 | Partial | 1 | N/A | N/A | N/A | Invalid set data |" in body
     assert "| 2026-07-16 | N/A | N/A | N/A | N/A | N/A | Invalid exercise collection |" in body
     assert "| 2026-07-17 | Partial | N/A | N/A | N/A | N/A | Invalid set collection |" in body
-    assert "| 2026-07-18 | N/A | 1 | 2 | 5 | 10 |  |" in body
+    escaped_note = "left" + "\\" * 3 + "|right next"
+    assert f"| 2026-07-18 | N/A | 1 | 2 | 5 | 10 | {escaped_note} |" in body
     assert "| 2026-07-18 | Nonfinite | N/A | N/A | N/A | N/A | N/A |" in body
     assert "| 2026-07-18 | Nonfinite | 2 | 1e+308 | 1e+308 | N/A |  |" in body
+    assert "| 2026-07-18 | Nonfinite | 3 | 1 | 1e+308 | 1e+308 |  |" in body
+    assert "| 2026-07-18 | Nonfinite | 4 | 1 | 1e+308 | 1e+308 |  |" in body
+    assert "- **Total Volume:** N/A" in body
 
 
 def test_markdown_export_handles_empty_history(monkeypatch):
