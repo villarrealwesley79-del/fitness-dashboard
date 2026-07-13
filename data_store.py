@@ -306,6 +306,9 @@ def save_push_subscription(user_id: int, subscription: dict, metadata: Optional[
     if not isinstance(keys, dict) or not keys.get("p256dh") or not keys.get("auth"):
         raise ValueError("subscription.keys.p256dh and keys.auth are required")
     metadata = metadata or {}
+    permission_state = metadata.get("permission_state")
+    if not isinstance(permission_state, str) or permission_state not in {"granted", "denied", "default"}:
+        permission_state = None
     endpoint_hash = _endpoint_hash(endpoint)
     now = datetime.now().isoformat(timespec="seconds")
     with _get_db() as conn:
@@ -329,7 +332,7 @@ def save_push_subscription(user_id: int, subscription: dict, metadata: Optional[
                 endpoint_hash,
                 endpoint,
                 json.dumps(subscription, sort_keys=True),
-                metadata.get("permission_state"),
+                permission_state,
                 1 if metadata.get("pwa_installed") is True else 0 if metadata.get("pwa_installed") is False else None,
                 metadata.get("user_agent"),
                 now,
@@ -915,6 +918,28 @@ def _food_log_row_to_dict(row) -> dict:
     d = _row_to_dict(row)
     d["original_estimate"] = _json_loads_or_none(d.pop("original_estimate_json", None))
     d["accepted_estimate"] = _json_loads_or_none(d.pop("accepted_estimate_json", None))
+    from_image = d.get("from_image")
+    accepted_from_image = (
+        d["accepted_estimate"].get("from_image")
+        if isinstance(d["accepted_estimate"], dict)
+        else None
+    )
+    original_from_image = (
+        d["original_estimate"].get("from_image")
+        if isinstance(d["original_estimate"], dict)
+        else None
+    )
+    if (
+        accepted_from_image is True
+        or original_from_image is True
+    ):
+        from_image = True
+    elif (
+        from_image is not True
+        and (accepted_from_image is False or original_from_image is False)
+    ):
+        from_image = False
+    d["from_image"] = from_image
     return d
 
 

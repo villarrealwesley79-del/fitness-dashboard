@@ -168,7 +168,15 @@
         await handleUnauthorizedResponse(res);
         if (!res.ok) {
             const text = await res.text().catch(() => '');
-            throw new Error(`${res.status} ${path}: ${text.slice(0, 120)}`);
+            const requestError = new Error(`${res.status} ${path}: ${text.slice(0, 120)}`);
+            try {
+                const parsed = JSON.parse(text);
+                if (parsed && parsed.error) {
+                    requestError.apiErrorCode = parsed.error.code || null;
+                    requestError.apiErrorMessage = parsed.error.message || null;
+                }
+            } catch {}
+            throw requestError;
         }
         const ct = res.headers.get('content-type') || '';
         return ct.includes('application/json') ? res.json() : res.text();
@@ -6167,7 +6175,7 @@
     const PUSH_STATE_DETAIL = {
         unsupported: 'This browser does not support web push notifications.',
         needs_install: 'Install the app to the Home Screen before enabling push on iOS.',
-        prompt: 'Low-stakes nudges only: stale wearable data and pending food review.',
+        prompt: 'Preview coaching alerts and verify push delivery. This does not schedule reminders.',
         granted_active: 'Subscribed, no scheduled reminders yet. Send a test notification to verify delivery.',
         granted_inactive: 'Permission is granted, but no browser push subscription is active yet.',
         revoked: 'Browser permission was reset. Re-enable to create a fresh subscription, or disable to clean up.',
@@ -7070,14 +7078,61 @@
         } catch (e) { console.error(e); toast('Save failed', 'err'); }
     }
 
+    function _ouraSyncErrorDetails(err) {
+        if (err && (err.apiErrorCode || err.apiErrorMessage)) {
+            return {
+                code: String(err.apiErrorCode || 'oura_sync_failed'),
+                message: String(err.apiErrorMessage || 'Oura sync failed'),
+            };
+        }
+        const raw = String((err && err.message) || err || '');
+        const jsonStart = raw.indexOf('{');
+        if (jsonStart >= 0) {
+            try {
+                const parsed = JSON.parse(raw.slice(jsonStart));
+                const serverError = parsed && parsed.error;
+                if (serverError) {
+                    return {
+                        code: String(serverError.code || 'oura_sync_failed'),
+                        message: String(serverError.message || 'Oura sync failed'),
+                    };
+                }
+            } catch {}
+        }
+        return { code: 'oura_sync_failed', message: 'Oura sync failed' };
+    }
+
+    function renderOuraSyncResult(payload, err = null) {
+        const row = $('oura-detail-sync-row');
+        const value = $('oura-detail-sync-result');
+        if (!row || !value) return;
+        row.hidden = false;
+        if (err) {
+            const detail = _ouraSyncErrorDetails(err);
+            value.textContent = `${detail.code} · ${detail.message}`;
+            return;
+        }
+        const latestDays = Array.isArray(payload && payload.latest_days)
+            ? payload.latest_days.filter(Boolean)
+            : [];
+        const rangeEnd = payload && payload.synced_through || 'unknown end';
+        const count = Number(payload && payload.latest_records || 0);
+        value.textContent = `Success · ${payload.synced_from || 'unknown start'} → ${rangeEnd} · ${count} latest saved record${count === 1 ? '' : 's'} · saved days ${latestDays.join(', ') || 'none'}`;
+    }
+
     async function syncOura() {
         toast('Syncing Oura…');
         try {
-            await api('/api/oura/sync-sleep', { method: 'POST' });
+            const result = await api('/api/oura/sync-sleep', { method: 'POST' });
+            renderOuraSyncResult(result);
             invalidateCaches();
             toast('Oura synced');
             loadTab(state.currentTab);
-        } catch (e) { console.error(e); toast(apiErrorMessage(e, 'Oura sync failed'), 'err'); }
+        } catch (e) {
+            console.error(e);
+            renderOuraSyncResult(null, e);
+            toast(apiErrorMessage(e, 'Oura sync failed'), 'err');
+        }
     }
 
     function downloadExport() {

@@ -32,6 +32,23 @@ def test_settings_exposes_test_notification_controls():
     assert "fetch('/api/push/test'" in app_js
 
 
+def test_settings_labels_notifications_as_preview_only():
+    template = (ROOT / "templates" / "index.html").read_text()
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+
+    assert "Test notifications" in template
+    assert "Preview coaching alerts and verify push delivery. This does not schedule reminders." in template
+    assert "Preview coaching alerts and verify push delivery. This does not schedule reminders." in app_js
+    assert "Coaching reminders" not in template
+    assert "Low-stakes nudges only: stale wearable data and pending food review." not in app_js
+
+    # Preview-only copy must not replace or duplicate the existing push controls.
+    assert template.count('id="btn-push-enable"') == 1
+    assert template.count('id="btn-push-test"') == 1
+    assert template.count('id="btn-push-disable"') == 1
+    assert template.count('id="push-alerts-row"') == 1
+
+
 def test_enable_push_surfaces_subscription_setup_failures():
     app_js = (ROOT / "static" / "js" / "app.js").read_text()
     enable_body = app_js.split("async function enablePush()", 1)[1].split("async function disablePush()", 1)[0]
