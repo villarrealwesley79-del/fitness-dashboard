@@ -18,10 +18,12 @@ One stale day is not enough. Missing instrumentation is not enough. Native work 
 
 If the trigger is met, the helper is limited to HealthKit export and delivery:
 
-- Read workout, step, energy, heart-rate, and body-mass data already used by the dashboard.
+- Read workout, step, energy, and heart-rate data already used by the dashboard.
 - Request only the HealthKit permissions required for those data types.
 - Deliver records to the existing token-gated backend contract.
 - Preserve backend ownership of recommendation, history, freshness, and UI behavior.
+
+Body-mass ingestion is not part of the current bridge contract. It remains out of scope for a native helper unless a separate change adds end-to-end mapping, persistence, status/UI evidence, and tests.
 
 Out of scope: a full iOS app rewrite, native food capture, native recommendation UI, App Store productization, or any replacement of the Flask PWA.
 
@@ -39,4 +41,3 @@ Choose the native helper only if those bridge improvements cannot keep Apple Hea
 ## Cost And Test Burden
 
 A native helper adds Swift, HealthKit permissions, background-delivery assumptions, provisioning, device-only testing, privacy strings, and an extra release path. The acceptance bar must include device proof that the helper improves freshness compared with HAE or Shortcuts, not just that HealthKit APIs compile.
-
