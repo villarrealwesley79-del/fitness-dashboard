@@ -201,6 +201,22 @@ def test_merge_workouts_dedupes_three_way_chains_to_earliest_start(order):
     assert merged[0]["start"] == "2026-07-09T11:00:00Z"
 
 
+def test_merge_workouts_missing_start_cannot_bridge_distinct_timed_workouts():
+    workouts = [
+        {"date": "2026-07-09", "activity": "Running", "start": "2026-07-09T08:00:00Z", "duration_min": 30},
+        {"date": "2026-07-09", "activity": "Running", "duration_min": 34},
+        {"date": "2026-07-09", "activity": "Running", "start": "2026-07-09T18:00:00Z", "duration_min": 38},
+    ]
+
+    merged = parser._merge_workouts(workouts, [])
+
+    assert len(merged) == 2
+    assert {workout["start"] for workout in merged} == {
+        "2026-07-09T08:00:00Z",
+        "2026-07-09T18:00:00Z",
+    }
+
+
 @pytest.mark.parametrize(
     ("sync_start", "sync_duration"),
     [

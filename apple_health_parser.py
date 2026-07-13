@@ -409,11 +409,13 @@ def _same_workout(left: dict, right: dict) -> bool:
 
 def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
     """Merge file-based and sync-based workouts by start instant or fallback tuple."""
-    remaining = [
+    candidates = [
         workout
         for workout in file_workouts + sync_workouts
         if not _ignore_workout(workout)
     ]
+    remaining = [workout for workout in candidates if _workout_start_datetime(workout)]
+    without_start = [workout for workout in candidates if not _workout_start_datetime(workout)]
     merged = []
     while remaining:
         component = [remaining.pop(0)]
@@ -430,6 +432,9 @@ def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
             key=lambda workout: _workout_start_datetime(workout)
             or datetime.max.replace(tzinfo=timezone.utc),
         ))
+    for workout in without_start:
+        if not any(_same_workout(workout, existing) for existing in merged):
+            merged.append(workout)
     return sorted(merged, key=lambda x: x.get("date", ""), reverse=True)
 
 
