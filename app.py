@@ -100,7 +100,7 @@ from whoop_store import (
     project_whoop_daily_facts,
 )
 from ai_fact_query import answer_fact_question, build_ai_fact_context, create_pending_suggestion
-from history_normalization import canonical_training_category, normalize_history_item
+from history_normalization import canonical_training_category, history_source_label, normalize_history_item
 from open_wearables_adapter import (
     build_open_wearables_status,
     providers_from_payload,
@@ -4286,6 +4286,15 @@ def calculate_injury_risk(workouts: list, soreness_data: list) -> dict:
     }
 
 
+def _is_finite_workout_number(value) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def calculate_workout_summary_stats(workouts: list) -> dict:
     """Calculate comprehensive workout statistics."""
     workouts = [workout for workout in workouts if isinstance(workout, dict)]
@@ -4315,8 +4324,10 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
                 total_sets += 1
                 weight = s.get("weight_lbs")
                 reps = s.get("reps")
-                if isinstance(weight, (int, float)) and isinstance(reps, (int, float)):
-                    total_volume += weight * reps
+                if _is_finite_workout_number(weight) and _is_finite_workout_number(reps):
+                    set_volume = weight * reps
+                    if _is_finite_workout_number(set_volume):
+                        total_volume += set_volume
 
     top_exercises = sorted(exercise_freq.items(), key=lambda x: -x[1])[:5]
 
@@ -16787,6 +16798,14 @@ def import_backup():
         return jsonify({"status": "error", "message": str(e)}), 400
 
 
+def _markdown_export_cell(value, default="N/A") -> str:
+    if value is None or isinstance(value, (dict, list)):
+        return default
+    if isinstance(value, (int, float)) and not _is_finite_workout_number(value):
+        return default
+    return str(value).replace("\r", " ").replace("\n", " ").replace("|", "\\|")
+
+
 @app.route('/api/export-md')
 def export_markdown():
     """Export all workouts to markdown format."""
@@ -16812,7 +16831,11 @@ def export_markdown():
 
     for workout in sorted(workouts, key=lambda x: str(x.get("date") or "")):
         workout_date_value = workout.get("date")
-        workout_date = workout_date_value if isinstance(workout_date_value, str) and workout_date_value else "N/A"
+        workout_date = _markdown_export_cell(
+            workout_date_value if isinstance(workout_date_value, str) and workout_date_value else None
+        )
+        source_label = history_source_label(workout)
+        is_watch_row = source_label in {"Watch", "Strength - Watch"}
         exercises = workout.get("exercises")
         if exercises is not None and not isinstance(exercises, list):
             lines.append(
@@ -16821,11 +16844,14 @@ def export_markdown():
             continue
         exercises = exercises or []
         if not exercises:
-            source = str(workout.get("source") or "").strip()
-            row_name = workout.get("session_type") or workout.get("activity_type") or source or "N/A"
+            row_name = _markdown_export_cell(
+                workout.get("session_type")
+                or workout.get("activity_type")
+                or (source_label if is_watch_row else workout.get("source"))
+            )
             row_note = (
                 "Non-strength/watch-only row"
-                if source.lower() in {"apple_health", "apple_watch"}
+                if is_watch_row
                 else "No exercise data"
             )
             lines.append(
@@ -16839,7 +16865,9 @@ def export_markdown():
                 )
                 continue
             machine_value = exercise.get("machine")
-            machine = machine_value if isinstance(machine_value, str) and machine_value else "N/A"
+            machine = _markdown_export_cell(
+                machine_value if isinstance(machine_value, str) and machine_value else None
+            )
             sets = exercise.get("sets")
             if sets is not None and not isinstance(sets, list):
                 lines.append(
@@ -16848,8 +16876,9 @@ def export_markdown():
                 continue
             sets = sets or []
             if not sets:
+                row_note = "Non-strength/watch-only row" if is_watch_row else "No set data"
                 lines.append(
-                    f"| {workout_date} | {machine} | N/A | N/A | N/A | N/A | Non-strength/watch-only row |"
+                    f"| {workout_date} | {machine} | N/A | N/A | N/A | N/A | {row_note} |"
                 )
                 continue
             for idx, s in enumerate(sets):
@@ -16860,13 +16889,20 @@ def export_markdown():
                     continue
                 reps = s.get("reps")
                 weight = s.get("weight_lbs")
-                volume = weight * reps if isinstance(weight, (int, float)) and isinstance(reps, (int, float)) else "N/A"
-                notes = s.get("notes", "")
-                set_number = s.get("set_number") or idx + 1
+                volume = "N/A"
+                if _is_finite_workout_number(weight) and _is_finite_workout_number(reps):
+                    set_volume = weight * reps
+                    if _is_finite_workout_number(set_volume):
+                        volume = set_volume
+                notes_value = s.get("notes", "")
+                notes_default = "" if notes_value is None or notes_value == "" else "N/A"
+                notes = _markdown_export_cell(notes_value, notes_default)
+                set_number_value = s.get("set_number")
+                set_number = idx + 1 if set_number_value is None else _markdown_export_cell(set_number_value)
                 lines.append(
                     f"| {workout_date} | {machine} | {set_number} | "
-                    f"{reps if reps is not None else 'N/A'} | "
-                    f"{weight if weight is not None else 'N/A'} | {volume} | {notes} |"
+                    f"{_markdown_export_cell(reps)} | "
+                    f"{_markdown_export_cell(weight)} | {_markdown_export_cell(volume)} | {notes} |"
                 )
 
     lines.append("")

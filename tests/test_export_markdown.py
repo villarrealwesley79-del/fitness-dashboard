@@ -36,6 +36,7 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
         [
             {
                 "date": "2026-07-12",
+                "source": "Apple Health",
                 "exercises": [
                     {"sets": [{"reps": 10}, {"weight_lbs": 20}]},
                     {"machine": "Apple Watch Import", "sets": None},
@@ -45,10 +46,16 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
             {
                 "date": "2026-07-13",
                 "session_type": "Walking",
-                "source": "apple_health",
+                "source": "watch",
                 "exercises": None,
             },
             {"date": "2026-07-14", "session_type": "strength", "exercises": []},
+            {
+                "date": "2026-07-15",
+                "session_type": "strength",
+                "source": "lifted",
+                "exercises": [{"machine": "Chest Press"}],
+            },
         ],
     )
 
@@ -62,7 +69,8 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
     assert "| 2026-07-12 | Legacy Import | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
     assert "| 2026-07-13 | Walking | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
     assert "| 2026-07-14 | strength | N/A | N/A | N/A | N/A | No exercise data |" in body
-    assert "*Total Sessions: 3*" in body
+    assert "| 2026-07-15 | Chest Press | N/A | N/A | N/A | N/A | No set data |" in body
+    assert "*Total Sessions: 4*" in body
 
 
 def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
@@ -77,7 +85,21 @@ def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
             {"date": "2026-07-17", "exercises": [{"machine": "Partial", "sets": 1}]},
             {
                 "date": "2026-07-18",
-                "exercises": [{"machine": {"invalid": "label"}, "sets": [{"reps": 2, "weight_lbs": 5}]}],
+                "exercises": [
+                    {"machine": {"invalid": "label"}, "sets": [{"reps": 2, "weight_lbs": 5}]},
+                    {
+                        "machine": "Nonfinite",
+                        "sets": [
+                            {
+                                "set_number": {"invalid": 1},
+                                "reps": float("nan"),
+                                "weight_lbs": float("inf"),
+                                "notes": ["invalid"],
+                            },
+                            {"reps": 1e308, "weight_lbs": 1e308},
+                        ],
+                    },
+                ],
             },
         ],
     )
@@ -91,6 +113,8 @@ def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
     assert "| 2026-07-16 | N/A | N/A | N/A | N/A | N/A | Invalid exercise collection |" in body
     assert "| 2026-07-17 | Partial | N/A | N/A | N/A | N/A | Invalid set collection |" in body
     assert "| 2026-07-18 | N/A | 1 | 2 | 5 | 10 |  |" in body
+    assert "| 2026-07-18 | Nonfinite | N/A | N/A | N/A | N/A | N/A |" in body
+    assert "| 2026-07-18 | Nonfinite | 2 | 1e+308 | 1e+308 | N/A |  |" in body
 
 
 def test_markdown_export_handles_empty_history(monkeypatch):
