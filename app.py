@@ -14774,7 +14774,8 @@ def sync_oura_sleep():
         return err
 
     try:
-        start_date = (datetime.now().date() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        sync_date = datetime.now().date()
+        start_date = (sync_date - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
         # Ensure table exists
         create_sleep_table(OURA_DB_FILE)
@@ -14800,6 +14801,7 @@ def sync_oura_sleep():
         return jsonify({
             "status": "success",
             "synced_from": start_date,
+            "synced_through": sync_date.strftime("%Y-%m-%d"),
             "latest_records": len(latest),
             "latest_days": latest_days,
         })
