@@ -4329,11 +4329,40 @@ def _workout_export_source_label(workout: dict) -> str:
     source = normalized.get("source")
     if isinstance(source, str) and source.strip().lower().replace("_", " ") == "apple watch":
         normalized["source"] = "watch"
-    for key in ("activity_type", "activity", "session_type"):
-        value = normalized.get(key)
-        if not isinstance(value, str) or not value.strip():
-            normalized.pop(key, None)
+    activity = _workout_export_activity_label(normalized)
+    if activity:
+        normalized["activity_type"] = activity
+    else:
+        normalized.pop("activity_type", None)
     return history_source_label(normalized)
+
+
+def _workout_export_activity_label(workout: dict):
+    for key in (
+        "activity_type",
+        "activity",
+        "type",
+        "workoutActivityType",
+        "name",
+        "session_type",
+    ):
+        value = workout.get(key)
+        if value is None or isinstance(value, (dict, list, bool)):
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        label = _apple_health_activity({"activity_type": value})
+        return label or None
+    return None
+
+
+def _workout_export_category(workout: dict) -> str:
+    source = workout.get("source")
+    category = canonical_training_category(_workout_export_activity_label(workout), source)
+    source_label = str(source or "").strip().lower().replace("_", " ")
+    if category == "unknown" and source_label in {"watch", "apple watch", "apple health"}:
+        return "watch"
+    return category
 
 
 def _workout_export_exercise_name(exercise: dict):
@@ -4357,10 +4386,13 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     total_volume_valid = True
     exercise_freq = {}
     for w in workouts:
-        is_watch_workout = _workout_export_source_label(w) == "Watch"
+        is_non_strength_workout = _workout_export_category(w) not in {
+            "strength_training",
+            "unknown",
+        }
         exercises = w.get("exercises")
         if exercises is None:
-            if not is_watch_workout:
+            if not is_non_strength_workout:
                 total_sets_valid = False
                 total_volume_valid = False
             continue
@@ -4371,7 +4403,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
         if not isinstance(exercises, list):
             continue
         if not exercises:
-            if not is_watch_workout:
+            if not is_non_strength_workout:
                 total_sets_valid = False
                 total_volume_valid = False
             continue
@@ -4384,7 +4416,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
             exercise_freq[machine] = exercise_freq.get(machine, 0) + 1
             sets = e.get("sets")
             if sets is None:
-                if not is_watch_workout:
+                if not is_non_strength_workout:
                     total_sets_valid = False
                     total_volume_valid = False
                 continue
@@ -4395,7 +4427,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
             if not isinstance(sets, list):
                 continue
             if not sets:
-                if not is_watch_workout:
+                if not is_non_strength_workout:
                     total_sets_valid = False
                     total_volume_valid = False
                 continue
@@ -16956,7 +16988,10 @@ def export_markdown():
             workout_date_value if isinstance(workout_date_value, str) and workout_date_value else None
         )
         source_label = _workout_export_source_label(workout)
-        is_watch_row = source_label == "Watch"
+        is_non_strength_row = _workout_export_category(workout) not in {
+            "strength_training",
+            "unknown",
+        }
         exercises = workout.get("exercises")
         if exercises is not None and not isinstance(exercises, list):
             lines.append(
@@ -16965,19 +17000,11 @@ def export_markdown():
             continue
         exercises = exercises or []
         if not exercises:
-            row_name_value = source_label
-            for candidate in (
-                workout.get("activity_type"),
-                workout.get("activity"),
-                workout.get("session_type"),
-            ):
-                if isinstance(candidate, str) and candidate.strip():
-                    row_name_value = candidate
-                    break
+            row_name_value = _workout_export_activity_label(workout) or source_label
             row_name = _markdown_export_cell(row_name_value)
             row_note = (
                 "Non-strength/watch-only row"
-                if is_watch_row
+                if is_non_strength_row
                 else "No exercise data"
             )
             lines.append(
@@ -16999,7 +17026,7 @@ def export_markdown():
                 continue
             sets = sets or []
             if not sets:
-                row_note = "Non-strength/watch-only row" if is_watch_row else "No set data"
+                row_note = "Non-strength/watch-only row" if is_non_strength_row else "No set data"
                 lines.append(
                     f"| {workout_date} | {machine} | N/A | N/A | N/A | N/A | {row_note} |"
                 )

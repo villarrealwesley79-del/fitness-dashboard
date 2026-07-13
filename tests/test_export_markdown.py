@@ -143,6 +143,28 @@ def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
     assert "- **Total Volume:** N/A" in body
 
 
+def test_markdown_export_treats_non_watch_cardio_as_valid_zero_strength_data(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {
+                "date": "2026-07-13",
+                "source": "fitness_dashboard",
+                "session_type": "cardio",
+                "exercises": [],
+            }
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| 2026-07-13 | cardio | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "- **Total Sets:** 0" in body
+    assert "- **Total Volume:** 0 lbs" in body
+
+
 def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
     app = _fitness_app(
         monkeypatch,
@@ -377,3 +399,22 @@ def test_markdown_export_uses_watch_activity_precedence_for_display(monkeypatch)
     body = response.get_data(as_text=True)
     assert "| N/A | Walking | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
     assert "| N/A | strength |" not in body
+
+
+def test_markdown_export_normalizes_legacy_watch_activity_aliases(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {"source": "apple_health", "type": "Walking", "exercises": []},
+            {"source": "apple_health", "workoutActivityType": 6, "exercises": []},
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Walking | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "| N/A | Traditional Strength Training | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "- **Total Sets:** N/A" in body
+    assert "- **Total Volume:** N/A" in body
