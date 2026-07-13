@@ -224,6 +224,23 @@ def test_whoop_api_normalization_marks_calibrating_recovery_display_only(fitness
     assert row["score_state"] == "CALIBRATING"
 
 
+@pytest.mark.parametrize("user_calibrating", ["1", "true", "TRUE"])
+def test_whoop_csv_normalization_marks_truthy_calibrating_rows_display_only(
+    fitness_app, user_calibrating
+):
+    csv_text = "\n".join(
+        [
+            "record_type,local_date,recovery_score,user_calibrating",
+            f"recovery,2026-06-25,75,{user_calibrating}",
+        ]
+    )
+
+    [(record_type, row)] = fitness_app._parse_whoop_csv_rows(csv_text)
+
+    assert record_type == "recovery"
+    assert row["score_state"] == "CALIBRATING"
+
+
 def test_whoop_api_normalization_imports_official_sleep_needed_components(fitness_app):
     row = fitness_app._normalize_whoop_record(
         "sleep",
