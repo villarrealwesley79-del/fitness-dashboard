@@ -160,3 +160,68 @@ def test_body_recomp_excludes_invalid_dates_from_eta_window(client, monkeypatch)
     assert payload["history"][0]["date"] is None
     assert payload["dates"] == [f"2026-06-{day:02d}" for day in range(1, 14)]
     assert payload["summary"]["eta_weeks"] is None
+
+
+def test_dashboard_ignores_malformed_legacy_rows_for_latest_and_change(client):
+    today = module.datetime.now().date()
+    module.BODY_DATA.extend(
+        [
+            {"date": "not-a-date", "weight_lbs": 900, "body_fat_pct": float("inf")},
+            {"date": (today - module.timedelta(days=40)).isoformat(), "weight_lbs": 190, "body_fat_pct": 21},
+            {"date": (today - module.timedelta(days=1)).isoformat(), "weight_lbs": 180, "body_fat_pct": 20},
+        ]
+    )
+
+    response = client.get("/api/dashboard")
+
+    assert response.status_code == 200
+    assert response.get_json()["body_stats"] == {
+        "latest_weight": 180.0,
+        "latest_body_fat": 20.0,
+        "weight_change_30d": -10.0,
+        "trend": "decreasing",
+    }
+
+
+def test_vitals_selects_latest_safe_values_and_finite_trend(client):
+    recent_date = (module.datetime.now().date() - module.timedelta(days=1)).isoformat()
+    module.BODY_DATA.extend(
+        [
+            {"date": "zzzz", "weight_lbs": float("inf"), "body_fat_pct": float("nan")},
+            {"date": recent_date, "weight_lbs": 180, "body_fat_pct": 20},
+        ]
+    )
+
+    response = client.get("/api/vitals")
+
+    assert response.status_code == 200
+    weight = response.get_json()["weight"]
+    assert weight["current_lbs"] == 180.0
+    assert weight["body_fat_pct"] == 20.0
+    assert weight["trend_7d"] == [{"date": recent_date, "weight_lbs": 180.0}]
+
+
+def test_latest_weight_skips_malformed_legacy_rows(client):
+    recent_date = (module.datetime.now().date() - module.timedelta(days=1)).isoformat()
+    module.BODY_DATA.extend(
+        [
+            {"date": "zzzz", "weight_lbs": 900},
+            {"date": recent_date, "weight_lbs": 180},
+        ]
+    )
+
+    assert module._get_latest_weight() == 180.0
+
+
+def test_body_trend_excludes_non_finite_legacy_weights(client):
+    today = module.datetime.now().date()
+    invalid_date = (today - module.timedelta(days=2)).isoformat()
+    valid_date = (today - module.timedelta(days=1)).isoformat()
+    module.BODY_DATA.extend(
+        [
+            {"date": invalid_date, "weight_lbs": float("inf")},
+            {"date": valid_date, "weight_lbs": 180},
+        ]
+    )
+
+    assert module._body_trend(7) == [{"date": valid_date, "weight_lbs": 180.0}]
