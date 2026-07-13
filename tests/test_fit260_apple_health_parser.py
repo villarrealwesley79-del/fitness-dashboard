@@ -230,6 +230,20 @@ def test_merge_workouts_missing_start_matches_discarded_component_member():
     assert merged[0]["start"] == "2026-07-09T11:00:00Z"
 
 
+def test_merge_workouts_preserves_transitive_startless_component_matches():
+    workouts = [
+        {"date": "2026-07-09", "activity": "Running", "start": "2026-07-09T11:00:00Z", "duration_min": 30},
+        {"date": "2026-07-09", "activity": "Running", "start": "2026-07-09T11:04:00Z", "duration_min": 35},
+        {"date": "2026-07-09", "activity": "Running", "duration_min": 40},
+        {"date": "2026-07-09", "activity": "Running", "duration_min": 45},
+    ]
+
+    merged = parser._merge_workouts(workouts, [])
+
+    assert len(merged) == 1
+    assert merged[0]["start"] == "2026-07-09T11:00:00Z"
+
+
 @pytest.mark.parametrize(
     ("sync_start", "sync_duration"),
     [

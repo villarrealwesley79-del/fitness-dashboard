@@ -414,35 +414,45 @@ def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
         for workout in file_workouts + sync_workouts
         if not _ignore_workout(workout)
     ]
-    remaining = [workout for workout in candidates if _workout_start_datetime(workout)]
-    without_start = [workout for workout in candidates if not _workout_start_datetime(workout)]
-    merged = []
-    timed_components = []
-    while remaining:
-        component = [remaining.pop(0)]
-        changed = True
-        while changed:
-            changed = False
-            for workout in list(remaining):
-                if any(_same_workout(workout, member) for member in component):
-                    component.append(workout)
-                    remaining.remove(workout)
-                    changed = True
-        timed_components.append(component)
-        merged.append(min(
+    def components(workouts):
+        remaining = list(workouts)
+        groups = []
+        while remaining:
+            group = [remaining.pop(0)]
+            changed = True
+            while changed:
+                changed = False
+                for workout in list(remaining):
+                    if any(_same_workout(workout, member) for member in group):
+                        group.append(workout)
+                        remaining.remove(workout)
+                        changed = True
+            groups.append(group)
+        return groups
+
+    timed_components = components(
+        workout for workout in candidates if _workout_start_datetime(workout)
+    )
+    startless_components = components(
+        workout for workout in candidates if not _workout_start_datetime(workout)
+    )
+    merged = [
+        min(
             component,
             key=lambda workout: _workout_start_datetime(workout)
             or datetime.max.replace(tzinfo=timezone.utc),
-        ))
-    for workout in without_start:
+        )
+        for component in timed_components
+    ]
+    for component in startless_components:
         if any(
-            _same_workout(workout, member)
-            for component in timed_components
-            for member in component
+            _same_workout(startless, timed)
+            for startless in component
+            for timed_component in timed_components
+            for timed in timed_component
         ):
             continue
-        if not any(_same_workout(workout, existing) for existing in merged):
-            merged.append(workout)
+        merged.append(component[0])
     return sorted(merged, key=lambda x: x.get("date", ""), reverse=True)
 
 
