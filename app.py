@@ -4297,6 +4297,9 @@ def _is_finite_workout_number(value) -> bool:
 
 def _workout_export_source_label(workout: dict) -> str:
     normalized = dict(workout)
+    source = normalized.get("source")
+    if isinstance(source, str) and source.strip().lower().replace("_", " ") == "apple watch":
+        normalized["source"] = "watch"
     for key in ("activity_type", "activity", "session_type"):
         value = normalized.get(key)
         if not isinstance(value, str) or not value.strip():
@@ -4399,7 +4402,11 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
         session_types[st] = session_types.get(st, 0) + 1
 
     # Date range
-    dates = [w.get("date") for w in workouts if isinstance(w.get("date"), str) and w.get("date")]
+    dates = [
+        w.get("date").strip()
+        for w in workouts
+        if isinstance(w.get("date"), str) and w.get("date").strip()
+    ]
 
     return {
         "total_sessions": total_sessions,
