@@ -18,7 +18,9 @@ def test_markdown_export_formats_complete_strength_rows(monkeypatch):
                     {
                         "machine": "Chest Press",
                         "sets": [{"set_number": 1, "reps": 8, "weight_lbs": 100, "notes": "steady"}],
-                    }
+                    },
+                    {"exercise": "Legacy Curl", "sets": [{"reps": 10, "weight_lbs": 20}]},
+                    {"name": "Named Row", "sets": [{"reps": 5, "weight_lbs": 30}]},
                 ],
             }
         ],
@@ -29,7 +31,9 @@ def test_markdown_export_formats_complete_strength_rows(monkeypatch):
     assert response.status_code == 200
     body = response.get_data(as_text=True)
     assert "| 2026-07-12 | Chest Press | 1 | 8 | 100 | 800 | steady |" in body
-    assert "- **Total Sets:** 1" in body
+    assert "| 2026-07-12 | Legacy Curl | 1 | 10 | 20 | 200 |  |" in body
+    assert "| 2026-07-12 | Named Row | 1 | 5 | 30 | 150 |  |" in body
+    assert "- **Total Sets:** 3" in body
 
 
 def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
@@ -174,6 +178,9 @@ def test_markdown_export_preserves_non_list_history(monkeypatch):
     body = response.get_data(as_text=True)
     assert "*Total Sessions: 1*" in body
     assert "| N/A | N/A | N/A | N/A | N/A | N/A | Invalid workout data |" in body
+    assert "## Summary" in body
+    assert "- **Total Sets:** N/A" in body
+    assert "- **Total Volume:** N/A" in body
 
 
 def test_markdown_export_marks_partial_strength_volume_unknown(monkeypatch):

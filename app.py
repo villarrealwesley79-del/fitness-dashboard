@@ -4304,6 +4304,14 @@ def _workout_export_source_label(workout: dict) -> str:
     return history_source_label(normalized)
 
 
+def _workout_export_exercise_name(exercise: dict):
+    for key in ("machine", "exercise", "name"):
+        value = exercise.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
 def calculate_workout_summary_stats(workouts: list) -> dict:
     """Calculate comprehensive workout statistics."""
     workouts = [workout for workout in workouts if isinstance(workout, dict)]
@@ -4340,8 +4348,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
                 total_sets_valid = False
                 total_volume_valid = False
                 continue
-            machine_value = e.get("machine")
-            machine = machine_value if isinstance(machine_value, str) and machine_value else "N/A"
+            machine = _workout_export_exercise_name(e) or "N/A"
             exercise_freq[machine] = exercise_freq.get(machine, 0) + 1
             sets = e.get("sets")
             if sets is None:
@@ -16877,7 +16884,7 @@ def export_markdown():
 
     # Summary stats
     summary = calculate_workout_summary_stats(workouts)
-    if summary:
+    if summary or invalid_workout_count:
         lines.append("## Summary")
         lines.append(f"- **Date Range:** {_markdown_export_cell(summary.get('date_range'))}")
         summary_sets = None if invalid_workout_count else summary.get("total_sets")
@@ -16935,10 +16942,7 @@ def export_markdown():
                     f"| {workout_date} | N/A | N/A | N/A | N/A | N/A | Invalid exercise data |"
                 )
                 continue
-            machine_value = exercise.get("machine")
-            machine = _markdown_export_cell(
-                machine_value if isinstance(machine_value, str) and machine_value else None
-            )
+            machine = _markdown_export_cell(_workout_export_exercise_name(exercise))
             sets = exercise.get("sets")
             if sets is not None and not isinstance(sets, list):
                 lines.append(
