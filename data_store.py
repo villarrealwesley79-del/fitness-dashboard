@@ -1436,7 +1436,7 @@ def _workout_adaptation_source_changed(previous: dict, current: dict) -> bool:
     """Return whether a persisted field used by adaptation logic changed."""
     def comparable_value(row: dict, field: str):
         value = row.get(field)
-        if field == "portion_description" and value == "":
+        if field in {"meal_type", "portion_description"} and value == "":
             return None
         return value
 

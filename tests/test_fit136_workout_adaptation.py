@@ -1222,7 +1222,7 @@ def test_identical_corrected_food_log_replay_keeps_adaptation_applied(monkeypatc
     assert stored["status"] == "applied"
 
 
-def test_legacy_blank_portion_and_explicit_null_are_same_adaptation_source(
+def test_blank_and_null_optional_meal_fields_are_same_adaptation_source(
     monkeypatch,
     tmp_path,
 ):
@@ -1242,7 +1242,7 @@ def test_legacy_blank_portion_and_explicit_null_are_same_adaptation_source(
             "confidence", "source",
         )
     }
-    replay.update(portion_description=None, correction_state="corrected")
+    replay.update(meal_type="", portion_description=None, correction_state="corrected")
     data_store.add_food_log(1, replay)
 
     stored = next(
