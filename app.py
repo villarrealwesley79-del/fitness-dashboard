@@ -4286,13 +4286,26 @@ def calculate_injury_risk(workouts: list, soreness_data: list) -> dict:
     }
 
 
-def _is_finite_workout_number(value) -> bool:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return False
+def _finite_workout_number(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        if not value.strip():
+            return None
+        try:
+            value = float(value)
+        except (ValueError, OverflowError):
+            return None
+    elif not isinstance(value, (int, float)):
+        return None
     try:
-        return math.isfinite(value)
+        return value if math.isfinite(value) else None
     except OverflowError:
-        return False
+        return None
+
+
+def _is_finite_workout_number(value) -> bool:
+    return _finite_workout_number(value) is not None
 
 
 def _workout_export_source_label(workout: dict) -> str:
@@ -4376,9 +4389,9 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
                     total_volume_valid = False
                     continue
                 total_sets += 1
-                weight = s.get("weight_lbs")
-                reps = s.get("reps")
-                if _is_finite_workout_number(weight) and _is_finite_workout_number(reps):
+                weight = _finite_workout_number(s.get("weight_lbs"))
+                reps = _finite_workout_number(s.get("reps"))
+                if weight is not None and reps is not None:
                     set_volume = weight * reps
                     if _is_finite_workout_number(set_volume):
                         candidate_total = total_volume + set_volume
@@ -16875,6 +16888,8 @@ def _markdown_export_cell(value, default="N/A") -> str:
         return default
     if isinstance(value, (int, float)) and not _is_finite_workout_number(value):
         return default
+    if isinstance(value, float):
+        value = f"{value:g}"
     return str(value).replace("\\", "\\\\").replace("\r", " ").replace("\n", " ").replace("|", "\\|")
 
 
@@ -16930,9 +16945,9 @@ def export_markdown():
         if not exercises:
             row_name_value = source_label
             for candidate in (
-                workout.get("session_type"),
                 workout.get("activity_type"),
                 workout.get("activity"),
+                workout.get("session_type"),
             ):
                 if isinstance(candidate, str) and candidate.strip():
                     row_name_value = candidate
@@ -16976,8 +16991,10 @@ def export_markdown():
                 reps = s.get("reps")
                 weight = s.get("weight_lbs")
                 volume = "N/A"
-                if _is_finite_workout_number(weight) and _is_finite_workout_number(reps):
-                    set_volume = weight * reps
+                weight_number = _finite_workout_number(weight)
+                reps_number = _finite_workout_number(reps)
+                if weight_number is not None and reps_number is not None:
+                    set_volume = weight_number * reps_number
                     if _is_finite_workout_number(set_volume):
                         volume = set_volume
                 notes_value = s.get("notes", "")

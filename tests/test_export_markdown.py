@@ -36,6 +36,30 @@ def test_markdown_export_formats_complete_strength_rows(monkeypatch):
     assert "- **Total Sets:** 3" in body
 
 
+def test_markdown_export_calculates_volume_from_numeric_string_sets(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {
+                "date": "2026-07-12",
+                "exercises": [
+                    {
+                        "machine": "Chest Press",
+                        "sets": [{"reps": "8", "weight_lbs": "100"}],
+                    }
+                ],
+            }
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| 2026-07-12 | Chest Press | 1 | 8 | 100 | 800 |  |" in body
+    assert "- **Total Volume:** 800 lbs" in body
+
+
 def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
     app = _fitness_app(
         monkeypatch,
@@ -283,3 +307,24 @@ def test_markdown_export_normalizes_legacy_apple_watch_source(monkeypatch):
     assert "| N/A | Strength Training | N/A | N/A | N/A | N/A | No exercise data |" in body
     assert "- **Total Sets:** N/A" in body
     assert "- **Total Volume:** N/A" in body
+
+
+def test_markdown_export_uses_watch_activity_precedence_for_display(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {
+                "source": "apple_watch",
+                "session_type": "strength",
+                "activity": "Walking",
+                "exercises": [],
+            }
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Walking | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "| N/A | strength |" not in body
