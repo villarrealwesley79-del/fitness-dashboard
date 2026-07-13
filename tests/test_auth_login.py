@@ -18,13 +18,16 @@ from flask import Flask
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _make_auth_app(tmp_path, monkeypatch):
+def _make_auth_app(tmp_path, monkeypatch, *, secure_cookie="false"):
     import auth
 
     auth_db = tmp_path / "auth.db"
     monkeypatch.setattr(auth, "AUTH_DB", str(auth_db))
     monkeypatch.setenv("SECRET_KEY", "fit185-auth-test-secret")
-    monkeypatch.setenv("SESSION_COOKIE_SECURE", "false")
+    if secure_cookie is None:
+        monkeypatch.delenv("SESSION_COOKIE_SECURE", raising=False)
+    else:
+        monkeypatch.setenv("SESSION_COOKIE_SECURE", secure_cookie)
     monkeypatch.setenv("FITNESS_DASHBOARD_SINGLE_USER", "true")
     monkeypatch.delenv("FITNESS_DASHBOARD_OWNER_USER_ID", raising=False)
 
@@ -45,6 +48,13 @@ def _make_auth_app(tmp_path, monkeypatch):
 
     auth.init_auth(app)
     return app, auth
+
+
+def test_auth_cookie_defaults_remain_secure_without_factory_override(tmp_path, monkeypatch):
+    app, _auth = _make_auth_app(tmp_path, monkeypatch, secure_cookie=None)
+
+    assert app.config["SESSION_COOKIE_SECURE"] is True
+    assert app.config["REMEMBER_COOKIE_SECURE"] is True
 
 
 def test_fallback_secret_is_identical_across_cold_started_processes(tmp_path):
