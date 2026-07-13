@@ -4307,6 +4307,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     total_volume_valid = True
     exercise_freq = {}
     for w in workouts:
+        is_watch_workout = history_source_label(w) in {"Watch", "Strength - Watch"}
         exercises = w.get("exercises")
         if exercises is not None and not isinstance(exercises, list):
             total_volume_valid = False
@@ -4321,6 +4322,10 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
             machine = machine_value if isinstance(machine_value, str) and machine_value else "N/A"
             exercise_freq[machine] = exercise_freq.get(machine, 0) + 1
             sets = e.get("sets")
+            if sets is None:
+                if not is_watch_workout:
+                    total_volume_valid = False
+                continue
             if sets is not None and not isinstance(sets, list):
                 total_volume_valid = False
                 continue

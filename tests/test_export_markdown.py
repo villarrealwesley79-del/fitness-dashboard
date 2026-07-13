@@ -170,3 +170,17 @@ def test_markdown_export_preserves_non_list_history(monkeypatch):
     body = response.get_data(as_text=True)
     assert "*Total Sessions: 1*" in body
     assert "| N/A | N/A | N/A | N/A | N/A | N/A | Invalid workout data |" in body
+
+
+def test_markdown_export_marks_partial_strength_volume_unknown(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [{"source": "lifted", "exercises": [{"machine": "Chest Press"}]}],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Chest Press | N/A | N/A | N/A | N/A | No set data |" in body
+    assert "- **Total Volume:** N/A" in body
