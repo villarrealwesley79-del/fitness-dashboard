@@ -12909,8 +12909,14 @@ def add_cors_headers(response):
 
 
 @app.route('/api/health/sync', methods=['POST'])
+@app.route('/api/open-wearables/check-sync', methods=['POST'])
 def health_sync():
-    """Manually pull Open Wearables sleep/workout data."""
+    """Fetch redacted Open Wearables metadata without writing wearable facts.
+
+    ``/api/health/sync`` is retained for compatibility. New metadata-check
+    callers should use ``/api/open-wearables/check-sync``; durable sync callers
+    must use ``/api/open-wearables/sync``.
+    """
     try:
         data = fetch_open_wearables_data()
         return jsonify(open_wearables_hub.sync_metadata(data))
