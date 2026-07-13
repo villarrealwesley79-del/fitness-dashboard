@@ -27,7 +27,9 @@ def test_markdown_export_formats_complete_strength_rows(monkeypatch):
     response = app.test_client().get("/api/export-md")
 
     assert response.status_code == 200
-    assert "| 2026-07-12 | Chest Press | 1 | 8 | 100 | 800 | steady |" in response.get_data(as_text=True)
+    body = response.get_data(as_text=True)
+    assert "| 2026-07-12 | Chest Press | 1 | 8 | 100 | 800 | steady |" in body
+    assert "- **Total Sets:** 1" in body
 
 
 def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
@@ -185,6 +187,7 @@ def test_markdown_export_marks_partial_strength_volume_unknown(monkeypatch):
     assert response.status_code == 200
     body = response.get_data(as_text=True)
     assert "| N/A | Chest Press | N/A | N/A | N/A | N/A | No set data |" in body
+    assert "- **Total Sets:** N/A" in body
     assert "- **Total Volume:** N/A" in body
 
     module = importlib.import_module("app")

@@ -4312,6 +4312,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
 
     total_sessions = len(workouts)
     total_sets = 0
+    total_sets_valid = True
     total_volume = 0
     total_volume_valid = True
     exercise_freq = {}
@@ -4320,19 +4321,23 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
         exercises = w.get("exercises")
         if exercises is None:
             if not is_watch_workout:
+                total_sets_valid = False
                 total_volume_valid = False
             continue
         if exercises is not None and not isinstance(exercises, list):
+            total_sets_valid = False
             total_volume_valid = False
             continue
         if not isinstance(exercises, list):
             continue
         if not exercises:
             if not is_watch_workout:
+                total_sets_valid = False
                 total_volume_valid = False
             continue
         for e in exercises:
             if not isinstance(e, dict):
+                total_sets_valid = False
                 total_volume_valid = False
                 continue
             machine_value = e.get("machine")
@@ -4341,19 +4346,23 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
             sets = e.get("sets")
             if sets is None:
                 if not is_watch_workout:
+                    total_sets_valid = False
                     total_volume_valid = False
                 continue
             if sets is not None and not isinstance(sets, list):
+                total_sets_valid = False
                 total_volume_valid = False
                 continue
             if not isinstance(sets, list):
                 continue
             if not sets:
                 if not is_watch_workout:
+                    total_sets_valid = False
                     total_volume_valid = False
                 continue
             for s in sets:
                 if not isinstance(s, dict):
+                    total_sets_valid = False
                     total_volume_valid = False
                     continue
                 total_sets += 1
@@ -4387,9 +4396,13 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
 
     return {
         "total_sessions": total_sessions,
-        "total_sets": total_sets,
+        "total_sets": total_sets if total_sets_valid else None,
         "total_volume": round(total_volume) if total_volume_valid else None,
-        "avg_sets_per_session": round(total_sets / total_sessions, 1) if total_sessions else 0,
+        "avg_sets_per_session": (
+            round(total_sets / total_sessions, 1)
+            if total_sets_valid and total_sessions
+            else None
+        ),
         "date_range": f"{min(dates)} to {max(dates)}" if dates else "N/A",
         "top_exercises": [{"exercise": e, "count": c} for e, c in top_exercises],
         "session_types": session_types
@@ -16867,7 +16880,12 @@ def export_markdown():
     if summary:
         lines.append("## Summary")
         lines.append(f"- **Date Range:** {_markdown_export_cell(summary.get('date_range'))}")
-        lines.append(f"- **Total Sets:** {summary.get('total_sets', 0)}")
+        summary_sets = None if invalid_workout_count else summary.get("total_sets")
+        lines.append(
+            f"- **Total Sets:** {summary_sets}"
+            if _is_finite_workout_number(summary_sets)
+            else "- **Total Sets:** N/A"
+        )
         summary_volume = None if invalid_workout_count else summary.get("total_volume")
         lines.append(
             f"- **Total Volume:** {summary_volume:,} lbs"
