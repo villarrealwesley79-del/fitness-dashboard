@@ -5676,7 +5676,16 @@ def add_nutrition():
         "client_id": client_id,
         "original_estimate": data.get("original_estimate") or data.get("estimate"),
     }
-    for field in ("carbs_g", "fat_g", "sodium_mg", "fiber_g", "confidence"):
+    for field in (
+        "carbs_g",
+        "fat_g",
+        "sodium_mg",
+        "fiber_g",
+        "confidence",
+        "notes",
+        "meal_type",
+        "context_note",
+    ):
         if field not in data:
             food_log_record.pop(field, None)
     food_log = add_food_log(_current_data_user_id(), food_log_record)

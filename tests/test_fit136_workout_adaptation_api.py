@@ -6,6 +6,7 @@ import json
 from urllib.parse import quote
 
 import data_store
+import pytest
 import workout_adaptation
 
 
@@ -131,6 +132,105 @@ def test_manual_add_nutrition_schedules_workout_adaptation_window(monkeypatch, t
     pending = data_store.list_pending_workout_adaptation_windows(1)
     assert len(pending) == 1
     assert pending[0]["food_log_client_ids"] == ["manual-fit136"]
+
+
+@pytest.mark.parametrize("source_state", ["accepted", "manual"])
+def test_ui_shaped_correction_preserves_omitted_source_metadata(
+    monkeypatch,
+    tmp_path,
+    source_state,
+):
+    _module, client = _client(monkeypatch, tmp_path)
+    client_id = f"ui-correction-{source_state}"
+    original = data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-24",
+            "logged_at": "2026-05-24T12:00:00",
+            "meal_id": "meal-1",
+            "meal_type": "dinner",
+            "item_name": "Chicken bowl",
+            "portion_description": "1 bowl",
+            "context_note": "Dinner after training",
+            "calories": 500,
+            "protein_g": 35,
+            "carbs_g": 45,
+            "fat_g": 18,
+            "sodium_mg": 700,
+            "fiber_g": 6,
+            "confidence": 0.88,
+            "source": "manual",
+            "correction_state": source_state,
+        },
+    )
+    pending = data_store.enqueue_workout_adaptation_pending(
+        1,
+        date="2026-05-24",
+        meal_id="meal-1",
+        food_log_client_ids=[client_id],
+        window_started_at="2026-05-24T12:00:00",
+        window_closes_at="2026-05-24T12:03:00",
+    )
+    event = data_store.save_workout_adaptation_event(
+        1,
+        pending["id"],
+        {
+            "date": "2026-05-24",
+            "status": "applied",
+            "silent": False,
+            "change_type": "reduce_volume",
+            "applies_to": "today",
+            "trigger": {
+                "meal_ids": ["meal-1"],
+                "food_log_client_ids": [client_id],
+            },
+            "created_at": "2026-05-24T12:03:01",
+        },
+    )
+
+    ui_payload = {
+        "client_id": original["client_id"],
+        "date": original["date"],
+        "logged_at": original["logged_at"],
+        "source": original["source"],
+        "correction_state": "corrected",
+        "item_name": original["item_name"],
+        "portion_description": original["portion_description"],
+        "calories": original["calories"],
+        "protein_g": original["protein_g"],
+        "carbs_g": original["carbs_g"],
+        "fat_g": original["fat_g"],
+        "sodium_mg": original["sodium_mg"],
+    }
+    response = client.post("/api/add-nutrition", json=ui_payload)
+
+    assert response.status_code == 200
+    stored_log = response.get_json()["food_log"]
+    stored_event = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored_log["meal_id"] == "meal-1"
+    assert stored_log["meal_type"] == "dinner"
+    assert stored_log["context_note"] == "Dinner after training"
+    assert stored_log["fiber_g"] == original["fiber_g"]
+    assert stored_log["confidence"] == original["confidence"]
+    assert stored_event["status"] == "applied"
+
+    clear_response = client.post(
+        "/api/add-nutrition",
+        json={**ui_payload, "context_note": None},
+    )
+    cleared_event = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert clear_response.status_code == 200
+    assert clear_response.get_json()["food_log"]["context_note"] is None
+    assert cleared_event["status"] == "stale"
 
 
 def test_pending_manual_nutrition_does_not_schedule_workout_adaptation(monkeypatch, tmp_path):
