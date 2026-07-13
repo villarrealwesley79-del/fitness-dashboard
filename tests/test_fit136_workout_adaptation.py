@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta
 
 import data_store
@@ -996,6 +997,28 @@ def _saved_adaptation_event(user_id: int, *, client_id: str, created_at: str, st
     )
 
 
+def test_init_data_db_adds_stale_at_to_existing_workout_event_table(monkeypatch, tmp_path):
+    db_path = tmp_path / "fitness_data.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE workout_adaptation_events (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                acknowledged_at TEXT
+            )
+            """
+        )
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+
+    data_store.init_data_db()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(workout_adaptation_events)")}
+    assert "stale_at" in columns
+
+
 def test_unacknowledged_feed_prioritizes_applied_events_over_newer_silent_rows(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     applied = _saved_adaptation_event(
@@ -1042,6 +1065,58 @@ def test_unacknowledged_feed_prioritizes_stale_transition_over_applied_rows(monk
 
     assert events[0]["id"] == stale["id"]
     assert events[0]["status"] == "stale"
+
+
+def test_unacknowledged_feed_keeps_newly_stale_historical_event_visible(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("old-source", meal_id="old-meal")
+    historical = _saved_adaptation_event(
+        1,
+        client_id="old-source",
+        created_at="2026-05-24T12:00:00",
+    )
+    newer_sources = []
+    for index in range(10):
+        client_id = f"newer-stale-source-{index}"
+        meal_id = f"newer-stale-meal-{index}"
+        newer_sources.append((client_id, meal_id))
+        _food_log(client_id, meal_id=meal_id)
+        _saved_adaptation_event(
+            1,
+            client_id=client_id,
+            created_at=f"2026-05-24T13:{index:02d}:00",
+        )
+
+    class FrozenDateTime:
+        value = datetime(2026, 5, 24, 14, 0, 0)
+
+        @classmethod
+        def now(cls):
+            return cls.value
+
+    monkeypatch.setattr(data_store, "datetime", FrozenDateTime)
+    for index, (client_id, meal_id) in enumerate(newer_sources):
+        FrozenDateTime.value = datetime(2026, 5, 24, 14, index, 0)
+        _food_log(
+            client_id,
+            meal_id=meal_id,
+            correction_state="corrected",
+            calories=650 + index,
+        )
+    FrozenDateTime.value = datetime(2026, 5, 24, 15, 0, 0)
+    _food_log(
+        "old-source",
+        meal_id="old-meal",
+        correction_state="corrected",
+        calories=700,
+    )
+
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=True, limit=10)
+
+    assert events[0]["id"] == historical["id"]
+    assert events[0]["status"] == "stale"
+    assert events[0]["created_at"] == "2026-05-24T12:00:00"
+    assert events[0]["stale_at"] == "2026-05-24T15:00:00"
 
 
 def test_unacknowledged_feed_keeps_applied_event_visible_with_many_stale_rows(monkeypatch, tmp_path):

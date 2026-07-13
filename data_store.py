@@ -529,6 +529,7 @@ def init_data_db():
                 active_workout_json TEXT,
                 reason_metadata_json TEXT,
                 created_at          TEXT    NOT NULL,
+                stale_at            TEXT,
                 acknowledged_at     TEXT
             );
 
@@ -678,6 +679,11 @@ def init_data_db():
         existing_meal_event_cols = {r["name"] for r in conn.execute("PRAGMA table_info(meal_acceptance_events)").fetchall()}
         if "feedback_fingerprint" not in existing_meal_event_cols:
             conn.execute("ALTER TABLE meal_acceptance_events ADD COLUMN feedback_fingerprint TEXT")
+        existing_workout_event_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(workout_adaptation_events)").fetchall()
+        }
+        if "stale_at" not in existing_workout_event_cols:
+            conn.execute("ALTER TABLE workout_adaptation_events ADD COLUMN stale_at TEXT")
         existing_push_cols = {r["name"] for r in conn.execute("PRAGMA table_info(push_subscriptions)").fetchall()}
         push_columns = {
             "permission_state": "TEXT",
@@ -1352,7 +1358,10 @@ def list_workout_adaptation_events(
                 WHEN status IN ('applied', 'stale') AND silent = 0 THEN status
                 ELSE 'silent'
               END
-              ORDER BY created_at DESC
+              ORDER BY CASE
+                WHEN status = 'stale' THEN COALESCE(stale_at, created_at)
+                ELSE created_at
+              END DESC
             ),
             CASE WHEN status = 'stale' THEN 0 ELSE 1 END,
             created_at DESC
@@ -1385,6 +1394,7 @@ def _mark_source_workout_adaptations_stale(
     meal_ids = {value for value in (meal_ids or set()) if value}
     if not client_ids and not meal_ids:
         return 0
+    stale_at = datetime.now().isoformat(timespec="seconds")
     rows = conn.execute(
         """
         SELECT id, trigger_json
@@ -1405,10 +1415,12 @@ def _mark_source_workout_adaptations_stale(
         conn.execute(
             """
             UPDATE workout_adaptation_events
-               SET status = 'stale', silent = 0, reason = ?
+               SET status = 'stale', silent = 0, reason = ?,
+                   stale_at = COALESCE(stale_at, ?)
              WHERE id = ? AND user_id = ? AND acknowledged_at IS NULL
+               AND status = 'applied'
             """,
-            (reason, event_id, user_id),
+            (reason, stale_at, event_id, user_id),
         )
     return len(matching_ids)
 
