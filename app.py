@@ -9466,6 +9466,29 @@ def food_logs_by_date(date):
     # client. Matches the FIT-9 retention rule: no image bytes or
     # original prompts.
     def _project(entry: dict) -> dict:
+        original_estimate = entry.get("original_estimate")
+        accepted_estimate = sanitize_accepted_estimate(entry.get("accepted_estimate"))
+        from_image = entry.get("from_image")
+        accepted_from_image = (
+            accepted_estimate.get("from_image")
+            if isinstance(accepted_estimate, dict)
+            else None
+        )
+        original_from_image = (
+            original_estimate.get("from_image")
+            if isinstance(original_estimate, dict)
+            else None
+        )
+        if (
+            accepted_from_image is True
+            or original_from_image is True
+        ):
+            from_image = True
+        elif (
+            from_image is not True
+            and (accepted_from_image is False or original_from_image is False)
+        ):
+            from_image = False
         return {
             "client_id": entry.get("client_id"),
             # FIT-100: include `date` so the correction flow can target
@@ -9484,8 +9507,8 @@ def food_logs_by_date(date):
             "source": entry.get("source"),
             "confidence": entry.get("confidence"),
             "correction_state": entry.get("correction_state"),
-            "accepted_estimate": sanitize_accepted_estimate(entry.get("accepted_estimate")),
-            "from_image": entry.get("from_image"),
+            "accepted_estimate": accepted_estimate,
+            "from_image": from_image,
         }
 
     entries = [_project(e) for e in same_day]
@@ -11315,7 +11338,7 @@ def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
     """Fetch current weather from wttr.in (best-effort).
 
     Returns dict:
-      {available, location, temp_f, humidity_pct, condition, feelslike_f, raw}
+      {available, location, temp_f, humidity_pct, condition, feelslike_f, source}
     """
     now = int(time.time())
     cached = _cached_wttr(location, max_age_s=max_age_s)
@@ -11339,7 +11362,6 @@ def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
             "feelslike_f": feels_f,
             "humidity_pct": humidity,
             "condition": condition,
-            "raw": {"current_condition": cur},
         }
         _WEATHER_CACHE.update({"ts": now, "location": location, "data": data, "error": None})
         return {"available": True, "location": location, **data, "source": "api"}
@@ -12889,8 +12911,14 @@ def add_cors_headers(response):
 
 
 @app.route('/api/health/sync', methods=['POST'])
+@app.route('/api/open-wearables/check-sync', methods=['POST'])
 def health_sync():
-    """Manually pull Open Wearables sleep/workout data."""
+    """Fetch redacted Open Wearables metadata without writing wearable facts.
+
+    ``/api/health/sync`` is retained for compatibility. New metadata-check
+    callers should use ``/api/open-wearables/check-sync``; durable sync callers
+    must use ``/api/open-wearables/sync``.
+    """
     try:
         data = fetch_open_wearables_data()
         return jsonify(open_wearables_hub.sync_metadata(data))
@@ -13903,7 +13931,7 @@ def _normalize_whoop_record(record_type, record):
     )
     score = record.get("score") if isinstance(record.get("score"), dict) else {}
     score_state = record.get("score_state") or record.get("state") or "SCORED"
-    if isinstance(score, dict) and score.get("user_calibrating") is True:
+    if score.get("user_calibrating") is True or _whoop_truthy(record.get("user_calibrating")):
         score_state = "CALIBRATING"
     values = {
         "upstream_id": str(upstream_id),
@@ -14778,19 +14806,11 @@ def sync_oura_sleep():
             "latest_days": latest_days,
         })
     except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read().decode("utf-8", errors="replace")[:200]
-        except Exception:
-            detail = ""
-        message = f"Oura API returned HTTP {e.code}"
-        if detail:
-            message = f"{message}: {detail}"
-        return api_error(message, 502, code="oura_api_error")
-    except urllib.error.URLError as e:
-        return api_error(f"Oura API request failed: {e.reason}", 502, code="oura_api_error")
-    except Exception as e:
-        return api_error(f"Oura sync failed: {str(e)}", 500, code="oura_sync_failed")
+        return api_error(f"Oura API returned HTTP {e.code}.", 502, code="oura_api_error")
+    except urllib.error.URLError:
+        return api_error("Oura API request failed.", 502, code="oura_api_error")
+    except Exception:
+        return api_error("Oura sync failed.", 500, code="oura_sync_failed")
 
 
 @app.route('/api/oura/sleep-summary')
@@ -15323,11 +15343,19 @@ def _send_web_push(subscription: dict, payload: dict):
         status_code = getattr(response, "status_code", None)
         if status_code in {404, 410}:
             return {"ok": False, "status": "gone", "status_code": status_code, "error": "subscription gone"}
+        app.logger.warning(
+            "Push delivery failed exception_type=%s status_code=%s",
+            type(exc).__name__,
+            status_code,
+        )
         return {
             "ok": False,
             "status": "server_error",
             "status_code": status_code or 500,
-            "error": str(exc),
+            "error": {
+                "code": "push_delivery_failed",
+                "message": "Push service could not deliver the test notification",
+            },
         }
     return {
         "ok": True,
