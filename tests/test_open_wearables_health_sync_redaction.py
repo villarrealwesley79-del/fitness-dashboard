@@ -174,6 +174,14 @@ def test_health_sync_exception_uses_stable_error_response(monkeypatch):
         assert fragment not in body
 
 
+def test_legacy_health_sync_route_is_explicitly_not_apple_health():
+    module = _fitness_app()
+    endpoints = {rule.rule: rule.endpoint for rule in module.app.url_map.iter_rules()}
+
+    assert endpoints["/api/health/sync"] == endpoints["/api/open-wearables/check-sync"]
+    assert "not an Apple Health webhook" in module.health_sync.__doc__
+
+
 def test_open_wearables_fetch_blocks_unallowlisted_remote_before_network(monkeypatch):
     module = _fitness_app()
     monkeypatch.setattr(module, "OPEN_WEARABLES_USERNAME", "user")
