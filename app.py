@@ -4766,6 +4766,22 @@ def _payload_with_recommendation_auth_scope(payload: dict) -> dict:
     return scoped
 
 
+def get_recent_hrv_trend(days=7, minimum_samples=None):
+    """Return the recent Oura HRV trend, or unknown when data is sparse/unavailable."""
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=days - 1)
+        rows = get_oura_daily_range(
+            OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+        )
+        hrv_values = [row.get("hrv") for row in rows if row.get("hrv") is not None]
+        if minimum_samples is not None and len(hrv_values) < minimum_samples:
+            return "unknown"
+        return compute_hrv_trend(hrv_values)
+    except Exception:
+        return "unknown"
+
+
 def _current_workout_training_recommendation():
     """Mirror the dashboard's readiness context for lightweight workout loads."""
     today_s = _today_str()
@@ -4780,14 +4796,7 @@ def _current_workout_training_recommendation():
     max_soreness = max((s.get("soreness_level") or 0) for s in recent_soreness) if recent_soreness else 0
     signal = "TRAIN" if (readiness_val is not None and readiness_val >= 70 and max_soreness < 7) else "RECOVER"
 
-    hrv_trend = "unknown"
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
-    except Exception:
-        pass
+    hrv_trend = get_recent_hrv_trend()
 
     last_completed = summarize_recent_completion(WORKOUTS, hours=24)
     last_hours_ago = last_completed.get("hours_ago") if last_completed else None
@@ -5084,14 +5093,7 @@ def api_dashboard():
     acwr = calculate_acwr(WORKOUTS)
     sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
     recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
-    hrv_trend = "unknown"
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
-    except Exception:
-        pass
+    hrv_trend = get_recent_hrv_trend()
 
     # Body stats
     body_stats = {}
@@ -9464,6 +9466,29 @@ def food_logs_by_date(date):
     # client. Matches the FIT-9 retention rule: no image bytes or
     # original prompts.
     def _project(entry: dict) -> dict:
+        original_estimate = entry.get("original_estimate")
+        accepted_estimate = sanitize_accepted_estimate(entry.get("accepted_estimate"))
+        from_image = entry.get("from_image")
+        accepted_from_image = (
+            accepted_estimate.get("from_image")
+            if isinstance(accepted_estimate, dict)
+            else None
+        )
+        original_from_image = (
+            original_estimate.get("from_image")
+            if isinstance(original_estimate, dict)
+            else None
+        )
+        if (
+            accepted_from_image is True
+            or original_from_image is True
+        ):
+            from_image = True
+        elif (
+            from_image is not True
+            and (accepted_from_image is False or original_from_image is False)
+        ):
+            from_image = False
         return {
             "client_id": entry.get("client_id"),
             # FIT-100: include `date` so the correction flow can target
@@ -9482,8 +9507,8 @@ def food_logs_by_date(date):
             "source": entry.get("source"),
             "confidence": entry.get("confidence"),
             "correction_state": entry.get("correction_state"),
-            "accepted_estimate": sanitize_accepted_estimate(entry.get("accepted_estimate")),
-            "from_image": entry.get("from_image"),
+            "accepted_estimate": accepted_estimate,
+            "from_image": from_image,
         }
 
     entries = [_project(e) for e in same_day]
@@ -11313,7 +11338,7 @@ def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
     """Fetch current weather from wttr.in (best-effort).
 
     Returns dict:
-      {available, location, temp_f, humidity_pct, condition, feelslike_f, raw}
+      {available, location, temp_f, humidity_pct, condition, feelslike_f, source}
     """
     now = int(time.time())
     cached = _cached_wttr(location, max_age_s=max_age_s)
@@ -11337,7 +11362,6 @@ def _fetch_wttr(location: str = "San_Antonio", max_age_s: int = 600):
             "feelslike_f": feels_f,
             "humidity_pct": humidity,
             "condition": condition,
-            "raw": {"current_condition": cur},
         }
         _WEATHER_CACHE.update({"ts": now, "location": location, "data": data, "error": None})
         return {"available": True, "location": location, **data, "source": "api"}
@@ -12887,8 +12911,14 @@ def add_cors_headers(response):
 
 
 @app.route('/api/health/sync', methods=['POST'])
+@app.route('/api/open-wearables/check-sync', methods=['POST'])
 def health_sync():
-    """Manually pull Open Wearables sleep/workout data."""
+    """Fetch redacted Open Wearables metadata without writing wearable facts.
+
+    ``/api/health/sync`` is retained for compatibility. New metadata-check
+    callers should use ``/api/open-wearables/check-sync``; durable sync callers
+    must use ``/api/open-wearables/sync``. This is not an Apple Health webhook.
+    """
     try:
         data = fetch_open_wearables_data()
         return jsonify(open_wearables_hub.sync_metadata(data))
@@ -13901,7 +13931,7 @@ def _normalize_whoop_record(record_type, record):
     )
     score = record.get("score") if isinstance(record.get("score"), dict) else {}
     score_state = record.get("score_state") or record.get("state") or "SCORED"
-    if isinstance(score, dict) and score.get("user_calibrating") is True:
+    if score.get("user_calibrating") is True or _whoop_truthy(record.get("user_calibrating")):
         score_state = "CALIBRATING"
     values = {
         "upstream_id": str(upstream_id),
@@ -14746,7 +14776,8 @@ def sync_oura_sleep():
         return err
 
     try:
-        start_date = (datetime.now().date() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        sync_date = datetime.now().date()
+        start_date = (sync_date - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
         # Ensure table exists
         create_sleep_table(OURA_DB_FILE)
@@ -14772,23 +14803,16 @@ def sync_oura_sleep():
         return jsonify({
             "status": "success",
             "synced_from": start_date,
+            "synced_through": sync_date.strftime("%Y-%m-%d"),
             "latest_records": len(latest),
             "latest_days": latest_days,
         })
     except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read().decode("utf-8", errors="replace")[:200]
-        except Exception:
-            detail = ""
-        message = f"Oura API returned HTTP {e.code}"
-        if detail:
-            message = f"{message}: {detail}"
-        return api_error(message, 502, code="oura_api_error")
-    except urllib.error.URLError as e:
-        return api_error(f"Oura API request failed: {e.reason}", 502, code="oura_api_error")
-    except Exception as e:
-        return api_error(f"Oura sync failed: {str(e)}", 500, code="oura_sync_failed")
+        return api_error(f"Oura API returned HTTP {e.code}.", 502, code="oura_api_error")
+    except urllib.error.URLError:
+        return api_error("Oura API request failed.", 502, code="oura_api_error")
+    except Exception:
+        return api_error("Oura sync failed.", 500, code="oura_sync_failed")
 
 
 @app.route('/api/oura/sleep-summary')
@@ -15321,11 +15345,19 @@ def _send_web_push(subscription: dict, payload: dict):
         status_code = getattr(response, "status_code", None)
         if status_code in {404, 410}:
             return {"ok": False, "status": "gone", "status_code": status_code, "error": "subscription gone"}
+        app.logger.warning(
+            "Push delivery failed exception_type=%s status_code=%s",
+            type(exc).__name__,
+            status_code,
+        )
         return {
             "ok": False,
             "status": "server_error",
             "status_code": status_code or 500,
-            "error": str(exc),
+            "error": {
+                "code": "push_delivery_failed",
+                "message": "Push service could not deliver the test notification",
+            },
         }
     return {
         "ok": True,
@@ -15558,14 +15590,7 @@ def smart_recommendation_api():
         pass
 
     # HRV trend (best-effort)
-    hrv_trend = "unknown"
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
-    except Exception:
-        pass
+    hrv_trend = get_recent_hrv_trend()
 
     recent = filter_recent_soreness(SORENESS_DATA, hours=24)
     avoid_set = {s.get("muscle") for s in recent if (s.get("soreness_level") or 0) >= 6 and s.get("muscle")}
@@ -17245,15 +17270,15 @@ def sleep_import():
 
 @app.route('/api/sleep/analytics')
 def sleep_analytics():
-    # Pull from Oura sleep SQLite first, fall back to SLEEP_DATA JSON
-    rows = []
+    # Merge Oura and manual sleep per date; Oura wins only on overlapping dates.
+    oura_rows = []
     try:
         import sqlite3 as _sq
         with closing(_sq.connect(OURA_DB_FILE)) as _db:
             _db.row_factory = _sq.Row
             _cur = _db.execute("SELECT * FROM oura_sleep WHERE type='long_sleep' ORDER BY day")
             for r in _cur.fetchall():
-                rows.append({
+                oura_rows.append({
                     'date': r['day'],
                     'sleep_start': r['bedtime_start'],
                     'sleep_end': r['bedtime_end'],
@@ -17270,16 +17295,28 @@ def sleep_analytics():
                 })
     except Exception:
         app.logger.warning("Oura sleep analytics SQLite read failed", exc_info=True)
-    # Fall back to manual SLEEP_DATA if no Oura data
-    if not rows:
-        rows = sorted(SLEEP_DATA, key=lambda x: x.get('date'))
+    dedup = {}
+    for manual_row in SLEEP_DATA:
+        row = dict(manual_row)
+        row['source'] = row.get('source') or 'manual'
+        date = row.get('date')
+        try:
+            date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')
+        except (TypeError, ValueError):
+            continue
+        row['date'] = date
+        if date not in dedup or row.get('source') == 'apple_watch':
+            dedup[date] = row
+    for row in oura_rows:
+        date = row.get('date')
+        try:
+            date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')
+        except (TypeError, ValueError):
+            continue
+        row['date'] = date
+        dedup[date] = row
+    rows = sorted(dedup.values(), key=lambda x: x.get('date'))
     if not rows: return jsonify({'history':[],'consistency_score':None,'sleep_perf_correlation':None})
-    # prefer apple watch source if duplicates
-    dedup={}
-    for r in rows:
-        d=r.get('date')
-        if d not in dedup or r.get('source')=='apple_watch': dedup[d]=r
-    rows=sorted(dedup.values(), key=lambda x:x.get('date'))
     import statistics, math
     bed=[]
     for r in rows:
@@ -17318,31 +17355,39 @@ def sleep_analytics():
 
 @app.route('/api/analytics/advanced')
 def analytics_advanced():
+    def finite_number(value):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return False
+        try:
+            return math.isfinite(value)
+        except OverflowError:
+            return False
+
     # volume per muscle current week
     vol=calculate_volume(WORKOUTS, weeks=1)
-    lm=USER_SETTINGS.get('volume_landmarks', {}).get('default', {"mv":6,"mev":9,"mav_min":12,"mav_max":18,"mrv":22})
+    default_lm = DEFAULT_SETTINGS['volume_landmarks']['default']
+    configured_landmarks = USER_SETTINGS.get('volume_landmarks')
+    lm = configured_landmarks.get('default') if isinstance(configured_landmarks, dict) else None
+    required_landmarks = ('mv', 'mev', 'mav_min', 'mav_max', 'mrv')
+    valid_landmark_values = isinstance(lm, dict) and all(
+        finite_number(lm.get(key))
+        for key in required_landmarks
+    )
+    valid_landmark_order = valid_landmark_values and (
+        0 <= lm['mv'] <= lm['mev'] <= lm['mav_min'] <= lm['mav_max'] <= lm['mrv']
+    )
+    if not valid_landmark_order:
+        lm = default_lm
     volume_landmarks=[]
     for m,v in vol.items():
         sets=v.get('sets',0)
         zone='below_mv' if sets<lm['mv'] else 'mv' if sets<lm['mev'] else 'mev_to_mav' if sets<=lm['mav_max'] else 'mrv_risk' if sets>=lm['mrv'] else 'mav_high'
         volume_landmarks.append({'muscle':m,'sets':sets,'landmarks':lm,'zone':zone})
     # fatigue composite
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(
-            OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
-        )
-        hrv_values = [r.get("hrv") for r in rows if r.get("hrv") is not None]
-        if len(hrv_values) < 4:
-            hrv_trend = "unknown"
-        else:
-            hrv_label = compute_hrv_trend(hrv_values)
-            hrv_trend = {"improving": "up", "stable": "stable", "declining": "down"}.get(
-                hrv_label, "unknown"
-            )
-    except Exception:
-        hrv_trend='unknown'
+    hrv_label = get_recent_hrv_trend(minimum_samples=4)
+    hrv_trend = {"improving": "up", "stable": "stable", "declining": "down"}.get(
+        hrv_label, "unknown"
+    )
     hrv_pen={'up':0,'stable':5,'down':12}.get(hrv_trend,6)
     sleep=calculate_sleep_debt(OURA_DB_FILE,7)
     sleep_pen=min(20,max(0,(sleep.get('debt_minutes') or 0)/30))
@@ -17359,7 +17404,13 @@ def analytics_advanced():
     weeks_since=detect_deload_need(WORKOUTS,SORENESS_DATA).get('weeks_since_deload') or 0
     meso_pen=min(15, float(weeks_since)*2.5)
     fatigue=min(100, round(22+hrv_pen+sleep_pen+vol_pen+sore_pen+ar_pen+meso_pen,1))
-    deload= fatigue >= USER_SETTINGS.get('fatigue_threshold',72)
+    fatigue_threshold = USER_SETTINGS.get('fatigue_threshold')
+    if not (
+        finite_number(fatigue_threshold)
+        and 40 <= fatigue_threshold <= 95
+    ):
+        fatigue_threshold = DEFAULT_SETTINGS['fatigue_threshold']
+    deload= fatigue >= fatigue_threshold
     perf_decline = detect_deload_need(WORKOUTS,SORENESS_DATA).get('needed',False)
     return jsonify({
         'volume_landmarks': volume_landmarks,
