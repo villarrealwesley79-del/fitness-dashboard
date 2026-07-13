@@ -4308,6 +4308,11 @@ def _is_finite_workout_number(value) -> bool:
     return _finite_workout_number(value) is not None
 
 
+def _nonnegative_workout_number(value):
+    number = _finite_workout_number(value)
+    return number if number is not None and number >= 0 else None
+
+
 def _workout_export_source_label(workout: dict) -> str:
     normalized = dict(workout)
     source = normalized.get("source")
@@ -4389,8 +4394,8 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
                     total_volume_valid = False
                     continue
                 total_sets += 1
-                weight = _finite_workout_number(s.get("weight_lbs"))
-                reps = _finite_workout_number(s.get("reps"))
+                weight = _nonnegative_workout_number(s.get("weight_lbs"))
+                reps = _nonnegative_workout_number(s.get("reps"))
                 if weight is not None and reps is not None:
                     set_volume = weight * reps
                     if _is_finite_workout_number(set_volume):
@@ -16893,6 +16898,10 @@ def _markdown_export_cell(value, default="N/A") -> str:
     return str(value).replace("\\", "\\\\").replace("\r", " ").replace("\n", " ").replace("|", "\\|")
 
 
+def _markdown_export_number_cell(value) -> str:
+    return _markdown_export_cell(value) if _nonnegative_workout_number(value) is not None else "N/A"
+
+
 @app.route('/api/export-md')
 def export_markdown():
     """Export all workouts to markdown format."""
@@ -16991,8 +17000,8 @@ def export_markdown():
                 reps = s.get("reps")
                 weight = s.get("weight_lbs")
                 volume = "N/A"
-                weight_number = _finite_workout_number(weight)
-                reps_number = _finite_workout_number(reps)
+                weight_number = _nonnegative_workout_number(weight)
+                reps_number = _nonnegative_workout_number(reps)
                 if weight_number is not None and reps_number is not None:
                     set_volume = weight_number * reps_number
                     if _is_finite_workout_number(set_volume):
@@ -17004,8 +17013,8 @@ def export_markdown():
                 set_number = idx + 1 if set_number_value is None else _markdown_export_cell(set_number_value)
                 lines.append(
                     f"| {workout_date} | {machine} | {set_number} | "
-                    f"{_markdown_export_cell(reps)} | "
-                    f"{_markdown_export_cell(weight)} | {_markdown_export_cell(volume)} | {notes} |"
+                    f"{_markdown_export_number_cell(reps)} | "
+                    f"{_markdown_export_number_cell(weight)} | {_markdown_export_cell(volume)} | {notes} |"
                 )
 
     for _ in range(invalid_workout_count):

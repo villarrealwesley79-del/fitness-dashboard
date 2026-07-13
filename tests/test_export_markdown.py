@@ -60,6 +60,38 @@ def test_markdown_export_calculates_volume_from_numeric_string_sets(monkeypatch)
     assert "- **Total Volume:** 800 lbs" in body
 
 
+def test_markdown_export_rejects_malformed_and_negative_strength_numbers(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {
+                "date": "2026-07-12",
+                "exercises": [
+                    {
+                        "machine": "Chest Press",
+                        "sets": [
+                            {"reps": "abc", "weight_lbs": "NaN"},
+                            {"reps": "Infinity", "weight_lbs": "1e309"},
+                            {"reps": -5, "weight_lbs": 100},
+                            {"reps": 5, "weight_lbs": -100},
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert body.count("| 2026-07-12 | Chest Press | 1 | N/A | N/A | N/A |  |") == 1
+    assert body.count("| 2026-07-12 | Chest Press | 2 | N/A | N/A | N/A |  |") == 1
+    assert "| 2026-07-12 | Chest Press | 3 | N/A | 100 | N/A |  |" in body
+    assert "| 2026-07-12 | Chest Press | 4 | 5 | N/A | N/A |  |" in body
+    assert "- **Total Volume:** N/A" in body
+
+
 def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
     app = _fitness_app(
         monkeypatch,
