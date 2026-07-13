@@ -10839,16 +10839,35 @@ def _analysis_number(value, default=0.0):
 
 
 def _workout_analysis_response(target, analysis, recent_compact, progression_subset, oura_snapshot, notes_context, *, status="ok", meta=None, cache_hit=False):
+    workout_payload = {
+        "id": target.get("id"),
+        "date": target.get("date"),
+        "session_type": target.get("session_type") or target.get("focus"),
+        "total_sets": target.get("total_sets"),
+        "total_volume": target.get("total_volume"),
+        "duration_minutes": target.get("duration_minutes"),
+    }
+    context_used = {
+        "recent_session_count": len(recent_compact),
+        "exercise_progression_available": list(progression_subset.keys()),
+        "readiness_available": oura_snapshot is not None,
+        **notes_context,
+    }
+    if target.get("source") == "open_wearables":
+        open_wearables_metrics = {
+            "calories_burned": target.get("calories_burned"),
+            "avg_heart_rate": target.get("avg_heart_rate"),
+            "max_heart_rate": target.get("max_heart_rate"),
+        }
+        workout_payload.update({
+            "source": "open_wearables",
+            **open_wearables_metrics,
+        })
+        context_used["open_wearables_metrics"] = open_wearables_metrics
+
     return {
         "status": status,
-        "workout": {
-            "id": target.get("id"),
-            "date": target.get("date"),
-            "session_type": target.get("session_type") or target.get("focus"),
-            "total_sets": target.get("total_sets"),
-            "total_volume": target.get("total_volume"),
-            "duration_minutes": target.get("duration_minutes"),
-        },
+        "workout": workout_payload,
         "analysis": {
             "summary": analysis.get("summary"),
             "wins": analysis.get("wins") or [],
@@ -10856,12 +10875,7 @@ def _workout_analysis_response(target, analysis, recent_compact, progression_sub
             "comparison": analysis.get("comparison"),
             "next_session_cue": analysis.get("next_session_cue"),
         },
-        "context_used": {
-            "recent_session_count": len(recent_compact),
-            "exercise_progression_available": list(progression_subset.keys()),
-            "readiness_available": oura_snapshot is not None,
-            **notes_context,
-        },
+        "context_used": context_used,
         "meta": meta or {},
         "cache_hit": cache_hit,
     }
@@ -10966,6 +10980,18 @@ def analyze_workout():
     target = None
     if workout_id:
         target = next((w for w in WORKOUTS if w.get("id") == workout_id), None)
+        if target is None and str(workout_id).startswith("open_wearables:"):
+            try:
+                target = next(
+                    (w for w in _load_open_wearables_workouts() if w.get("id") == workout_id),
+                    None,
+                )
+            except ConnectionError:
+                return api_error(
+                    "Open Wearables workouts are temporarily unavailable.",
+                    503,
+                    "open_wearables_workouts_unavailable",
+                )
     elif workout_date:
         matches = [w for w in WORKOUTS if w.get("date") == workout_date]
         if matches:
@@ -11098,6 +11124,13 @@ def analyze_workout():
             "rep_range": goal_params.get("rep_range"),
         },
     }
+    is_open_wearables = target.get("source") == "open_wearables"
+    if is_open_wearables:
+        llm_context["open_wearables_metrics"] = {
+            "calories_burned": target.get("calories_burned"),
+            "avg_heart_rate": target.get("avg_heart_rate"),
+            "max_heart_rate": target.get("max_heart_rate"),
+        }
 
     model_version = getattr(_lm_studio, "LM_STUDIO_MODEL_VERSION", "deterministic-fallback")
     prompt_version = getattr(_lm_studio, "ANALYZE_PROMPT_VERSION", "deterministic-v1")
@@ -11125,28 +11158,40 @@ def analyze_workout():
     # Cache key based on workout content + model version so re-analyzing the
     # same unchanged workout doesn't re-spend tokens.
     import hashlib
+    fingerprint_target = {
+        "date": target.get("date"),
+        "exercises": [
+            {
+                "name": ex.get("machine") or ex.get("exercise"),
+                "sets": [
+                    {
+                        "r": s.get("reps"),
+                        "w": s.get("weight_lbs"),
+                        "rpe": s.get("rpe"),
+                        "notes": s.get("notes") or "",
+                    }
+                    for s in (ex.get("sets") or [])
+                ],
+            }
+            for ex in (target.get("exercises") or [])
+        ],
+        "notes": target.get("notes") or "",
+        "cardio": target.get("cardio"),
+    }
+    if is_open_wearables:
+        fingerprint_target.update({
+            "id": target.get("id"),
+            "source": "open_wearables",
+            "session_type": target.get("session_type"),
+            "activity_type": target.get("activity_type"),
+            "duration_minutes": target.get("duration_minutes"),
+            "calories_burned": target.get("calories_burned"),
+            "avg_heart_rate": target.get("avg_heart_rate"),
+            "max_heart_rate": target.get("max_heart_rate"),
+        })
     fingerprint_src = json.dumps({
         "analysis_prompt_version": prompt_version,
-        "target": {
-            "date": target.get("date"),
-            "exercises": [
-                {
-                    "name": ex.get("machine") or ex.get("exercise"),
-                    "sets": [
-                        {
-                            "r": s.get("reps"),
-                            "w": s.get("weight_lbs"),
-                            "rpe": s.get("rpe"),
-                            "notes": s.get("notes") or "",
-                        }
-                        for s in (ex.get("sets") or [])
-                    ],
-                }
-                for ex in (target.get("exercises") or [])
-            ],
-            "notes": target.get("notes") or "",
-            "cardio": target.get("cardio"),
-        },
+        "target": fingerprint_target,
         "recent_keys": [w.get("date") for w in recent_compact],
         "model": model_version,
     }, default=str, sort_keys=True)
@@ -12572,6 +12617,71 @@ def fetch_open_wearables_data():
     return result
 
 
+def _fetch_open_wearables_workout_data():
+    """Fetch the most recent seven local calendar days of workout events."""
+    missing = _missing_open_wearables_config()
+    if missing:
+        return {
+            "workouts": None,
+            "errors": {"config": f"missing:{','.join(missing)}"},
+        }
+
+    token = _get_ow_token()
+    if not token:
+        return {"workouts": None, "errors": {"auth": "missing_token"}}
+
+    today = datetime.now().date()
+    start_date = (today - timedelta(days=6)).isoformat()
+    exclusive_end_date = (today + timedelta(days=1)).isoformat()
+    base_url = f"{_open_wearables_user_base()}/events/workouts"
+    headers = {"Authorization": f"Bearer {token}"}
+    rows = []
+    cursor = None
+    seen_cursors = set()
+    try:
+        while True:
+            query = {
+                "start_date": start_date,
+                "end_date": exclusive_end_date,
+                "limit": 100,
+            }
+            if cursor:
+                query["cursor"] = cursor
+            page = _ow_request(f"{base_url}?{urllib.parse.urlencode(query)}", headers=headers)
+            if not isinstance(page, dict):
+                raise ValueError("invalid workout page")
+            page_rows = page.get("data")
+            if not isinstance(page_rows, list):
+                raise ValueError("invalid workout page data")
+            rows.extend(page_rows)
+            pagination = page.get("pagination") if isinstance(page.get("pagination"), dict) else {}
+            if not pagination.get("has_more"):
+                break
+            next_cursor = pagination.get("next_cursor")
+            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+                raise ValueError("invalid workout cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+    except Exception as exc:
+        return {"workouts": None, "errors": {"workouts": str(exc)}}
+    return {"workouts": {"data": rows}, "errors": {}}
+
+
+def _load_open_wearables_workouts():
+    """Return safe normalized recent workouts; distinguish absence from failure."""
+    data = _fetch_open_wearables_workout_data()
+    if not isinstance(data, dict):
+        raise ConnectionError("Open Wearables workout response was invalid")
+    errors = data.get("errors") if isinstance(data.get("errors"), dict) else {}
+    workout_payload = data.get("workouts")
+    if workout_payload is None:
+        if "config" in errors:
+            return []
+        raise ConnectionError("Open Wearables workouts are unavailable")
+    rows = open_wearables_hub.extract_workouts(workout_payload)
+    return [normalize_history_item(row, source="open_wearables") for row in rows]
+
+
 def _extract_open_wearables_sleep(payload):
     """Extract most recent sleep metrics from Open Wearables payload."""
     events = _extract_open_wearables_sleep_events(payload)
@@ -13201,6 +13311,19 @@ def open_wearables_status_api():
     ))
 
 
+@app.route('/api/open-wearables/workouts')
+def open_wearables_workouts_api():
+    try:
+        workouts = _load_open_wearables_workouts()
+    except ConnectionError:
+        return api_error(
+            "Open Wearables workouts are temporarily unavailable.",
+            503,
+            "open_wearables_workouts_unavailable",
+        )
+    return jsonify({"workouts": workouts, "total": len(workouts)})
+
+
 @app.route('/api/open-wearables/setup', methods=['GET', 'POST'])
 def open_wearables_setup_api():
     if request.method == 'GET':
@@ -13600,6 +13723,23 @@ def _ai_history_context(limit=80):
             "duration_minutes": row.get("duration_minutes"),
             "source": "apple_health",
         }, source="apple_health"))
+    try:
+        open_wearables_rows = _load_open_wearables_workouts()
+    except Exception:
+        open_wearables_rows = []
+    for row in open_wearables_rows[:limit]:
+        rows.append(normalize_history_item({
+            "id": row.get("id"),
+            "date": row.get("date"),
+            "session_type": row.get("session_type"),
+            "activity_type": row.get("activity_type"),
+            "duration_minutes": row.get("duration_minutes"),
+            "calories_burned": row.get("calories_burned"),
+            "avg_heart_rate": row.get("avg_heart_rate"),
+            "max_heart_rate": row.get("max_heart_rate"),
+            "source": "open_wearables",
+            "provider": "Open Wearables",
+        }, source="open_wearables"))
     rows.sort(key=lambda x: x.get("date") or "", reverse=True)
     return rows[:limit]
 

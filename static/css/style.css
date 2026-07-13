@@ -1298,6 +1298,8 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
 }
 .src-tag.src-lifted { background: rgba(96,165,250,0.15); color: var(--accent-blue); border: 1px solid rgba(96,165,250,0.25); }
 .src-tag.src-watch { background: rgba(168,85,247,0.15); color: var(--accent-purple); border: 1px solid rgba(168,85,247,0.28); }
+.src-tag.src-open-wearables { background: rgba(34,211,238,0.12); color: var(--accent-cyan); border: 1px solid rgba(34,211,238,0.3); }
+.w-volume.open-wearables-volume { color: var(--accent-cyan); }
 
 /* ======================= BODY / COMPOSITION ======================= */
 
@@ -2190,6 +2192,43 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--fg-dimmer);
+}
+.workout-source-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 24px;
+    margin-bottom: 10px;
+    color: var(--fg-dim);
+    font-size: 11px;
+}
+.workout-metrics-list {
+    margin: 0 0 14px;
+    padding: 0 12px;
+    border: 1px solid var(--border-1);
+    border-radius: 10px;
+    background: rgba(15,23,42,0.58);
+}
+.workout-metrics-list div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 11px 0;
+    border-top: 1px solid rgba(51,65,85,0.55);
+}
+.workout-metrics-list div:first-child { border-top: 0; }
+.workout-metrics-list dt {
+    color: var(--fg-dim);
+    font-size: 12px;
+    font-weight: 600;
+}
+.workout-metrics-list dd {
+    margin: 0;
+    color: var(--fg-0);
+    font-size: 14px;
+    font-weight: 800;
+    text-align: right;
 }
 .workout-detail-section { margin-bottom: 14px; }
 .workout-detail-ex {

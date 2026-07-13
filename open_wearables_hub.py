@@ -14,9 +14,10 @@ values and callables so it never has to import back from app.py.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 from typing import Callable
 
 from wearable_fact_store import (
@@ -67,6 +68,184 @@ def sync_count(payload):
         if isinstance(value, list):
             return len(value)
     return None
+
+
+def _workout_rows(payload) -> list[dict]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("data", "events", "records", "items", "workouts"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+def _workout_value(row: dict, *keys):
+    for key in keys:
+        if key in row and row[key] is not None:
+            return row[key]
+    return None
+
+
+def _workout_number(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return int(number) if number.is_integer() else round(number, 2)
+
+
+def _workout_local_date(row: dict, start_time) -> str:
+    explicit_date = _workout_value(row, "date", "day")
+    if explicit_date is not None:
+        return str(explicit_date)[:10]
+
+    raw_start = str(start_time or "")
+    try:
+        parsed = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
+    except ValueError:
+        return raw_start[:10]
+
+    offset = row.get("zone_offset")
+    if isinstance(offset, str) and len(offset) == 6 and offset[0] in "+-" and offset[3] == ":":
+        try:
+            hours = int(offset[1:3])
+            minutes = int(offset[4:6])
+        except ValueError:
+            hours = minutes = -1
+        if 0 <= hours <= 23 and 0 <= minutes <= 59:
+            delta = timedelta(hours=hours, minutes=minutes)
+            if offset[0] == "-":
+                delta = -delta
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            parsed += delta
+    return parsed.date().isoformat()
+
+
+def extract_workouts(payload) -> list[dict]:
+    """Project Open Wearables events into safe per-workout history rows.
+
+    Only the public fields needed by History and AI are copied. Provider raw
+    payloads, samples, user identifiers, and credentials never cross this
+    boundary.
+    """
+    workouts = []
+    for row in _workout_rows(payload):
+        start_time = _workout_value(
+            row,
+            "start_time",
+            "start_datetime",
+            "start",
+            "start_date",
+            "startDate",
+        )
+        date_s = _workout_local_date(row, start_time)
+        if len(date_s) != 10 or date_s[4:5] != "-" or date_s[7:8] != "-":
+            continue
+
+        session_type = str(_workout_value(
+            row,
+            "type",
+            "activity_type",
+            "activity",
+            "sport_type",
+        ) or "workout")
+        activity_type = str(_workout_value(
+            row,
+            "name",
+            "title",
+            "activity_type",
+            "activity",
+            "sport_type",
+            "type",
+        ) or "Workout")
+
+        duration_seconds = _workout_number(_workout_value(row, "duration_seconds", "elapsed_time"))
+        duration_minutes = _workout_number(_workout_value(row, "duration_minutes", "duration_min"))
+        if duration_minutes is None and duration_seconds is not None:
+            duration_minutes = _workout_number(duration_seconds / 60)
+
+        calories = _workout_number(_workout_value(
+            row,
+            "calories_kcal",
+            "calories_burned",
+            "calories",
+            "energy_kcal",
+            "total_energy_kcal",
+            "energy_burned",
+        ))
+        if calories is None:
+            kilojoules = _workout_number(_workout_value(row, "kilojoules", "kilojoule"))
+            if kilojoules is not None:
+                calories = _workout_number(kilojoules * 0.239)
+
+        external_id = _workout_value(row, "id", "external_id", "workout_id", "event_id")
+        if external_id is None:
+            identity = json.dumps(
+                {
+                    "date": date_s,
+                    "start_time": start_time,
+                    "type": session_type,
+                    "duration_minutes": duration_minutes,
+                },
+                sort_keys=True,
+                default=str,
+            )
+            external_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+        external_id = str(external_id)
+
+        source = row.get("source") if isinstance(row.get("source"), dict) else {}
+        provider_source = source.get("provider") or _workout_value(row, "provider", "provider_id")
+        device = source.get("device") or row.get("device")
+        notes = row.get("notes") if isinstance(row.get("notes"), str) else None
+        end_time = _workout_value(
+            row,
+            "end_time",
+            "end_datetime",
+            "end",
+            "end_date",
+            "endDate",
+        )
+
+        workouts.append({
+            "id": f"open_wearables:{external_id}",
+            "external_id": external_id,
+            "source": "open_wearables",
+            "provider": "Open Wearables",
+            "provider_source": str(provider_source) if provider_source else None,
+            "device": str(device) if device else None,
+            "date": date_s,
+            "start_time": str(start_time) if start_time is not None else None,
+            "end_time": str(end_time) if end_time is not None else None,
+            "activity_type": activity_type,
+            "session_type": session_type,
+            "duration_minutes": duration_minutes,
+            "calories_burned": calories,
+            "avg_heart_rate": _workout_number(_workout_value(
+                row,
+                "avg_heart_rate_bpm",
+                "avg_heart_rate",
+                "average_heart_rate",
+                "avg_hr",
+                "heart_rate_avg",
+            )),
+            "max_heart_rate": _workout_number(_workout_value(
+                row,
+                "max_heart_rate_bpm",
+                "max_heart_rate",
+                "max_hr",
+                "heart_rate_max",
+            )),
+            "notes": notes,
+        })
+    return workouts
 
 
 def sync_error_code(key):

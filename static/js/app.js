@@ -1225,6 +1225,18 @@
         } catch { state[key] = []; }
         return state[key];
     }
+    async function getOpenWearablesWorkouts(force = false) {
+        const key = 'open_wearables_workouts';
+        if (!force && state[key]) return state[key];
+        try {
+            const r = await api('/api/open-wearables/workouts', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+            state[key] = r && Array.isArray(r.workouts) ? r.workouts : [];
+        } catch {
+            delete state[key];
+            return [];
+        }
+        return state[key];
+    }
     async function getBody(force = false) {
         if (!force && state.body) return state.body;
         state.body = await api('/api/body-history');
@@ -3741,6 +3753,18 @@
         };
     }
 
+    function normalizeOpenWearablesHistoryRow(w) {
+        const label = w.original_label || w.activity_type || w.session_type || 'Workout';
+        return {
+            ...w,
+            source: 'open_wearables',
+            provider: 'Open Wearables',
+            original_label: label,
+            canonical_category: w.canonical_category || canonicalHistoryCategory(label, 'open_wearables'),
+            source_label: 'Open Wearables',
+        };
+    }
+
     function mergeStrengthHistorySources(lifts, watchRows) {
         const loggedByDate = new Map();
         const mergedLifts = (lifts || []).map((w) => {
@@ -3784,11 +3808,12 @@
         $('history-total-volume').textContent = fmtKilo(0);
         $('history-vol-sub').textContent = `Last ${days} days · lifting only`;
 
-        let hist, aw;
+        let hist, aw, ow;
         try {
-            [hist, aw] = await Promise.all([
+            [hist, aw, ow] = await Promise.all([
                 getHistory(),
                 getAppleHealthWorkouts(Math.max(days, 30)),
+                getOpenWearablesWorkouts(),
             ]);
         } catch (e) {
             console.error('renderHistory: history fetch failed', e);
@@ -3815,7 +3840,10 @@
         const watch = (Array.isArray(aw) ? aw : [])
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
             .map(normalizeWatchHistoryRow);
-        const mergedHistoryRows = mergeStrengthHistorySources(lifts, watch);
+        const openWearables = (Array.isArray(ow) ? ow : [])
+            .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
+            .map(normalizeOpenWearablesHistoryRow);
+        const mergedHistoryRows = mergeStrengthHistorySources(lifts, watch).concat(openWearables);
 
         const workouts = mergedHistoryRows.filter((w) => w.source === 'lifted');
 
@@ -3824,9 +3852,19 @@
         $('history-count').textContent = totalSessions || '0';
         const watchOnlyCount = mergedHistoryRows.filter((w) => w.source === 'watch').length;
         const mergedWatchCount = mergedHistoryRows.filter((w) => Array.isArray(w.merged_sources) && w.merged_sources.includes('watch')).length;
-        $('history-freq-sub').textContent = lifts.length && (watchOnlyCount || mergedWatchCount)
-            ? `Last ${days} days · ${lifts.length} logged + ${watchOnlyCount} Watch-only + ${mergedWatchCount} merged`
-            : `Last ${days} days`;
+        const openWearablesCount = mergedHistoryRows.filter((w) => w.source === 'open_wearables').length;
+        if (openWearablesCount) {
+            const sourceCounts = [];
+            if (lifts.length) sourceCounts.push(`${lifts.length} logged`);
+            if (watchOnlyCount) sourceCounts.push(`${watchOnlyCount} Watch-only`);
+            if (mergedWatchCount) sourceCounts.push(`${mergedWatchCount} merged`);
+            sourceCounts.push(`${openWearablesCount} Open Wearables`);
+            $('history-freq-sub').textContent = `Last ${days} days · ${sourceCounts.join(' + ')}`;
+        } else {
+            $('history-freq-sub').textContent = lifts.length && (watchOnlyCount || mergedWatchCount)
+                ? `Last ${days} days · ${lifts.length} logged + ${watchOnlyCount} Watch-only + ${mergedWatchCount} merged`
+                : `Last ${days} days`;
+        }
         $('history-total-volume').textContent = fmtKilo(totalVol);
         $('history-vol-sub').textContent = `Last ${days} days · lifting only`;
 
@@ -3940,7 +3978,30 @@
             const row = document.createElement('div');
             row.className = 'w-row';
             row.tabIndex = 0;
-            if (w.source === 'watch') {
+            if (w.source === 'open_wearables') {
+                const title = w.activity_type || w.session_type || 'Workout';
+                const meta = [
+                    formatOptionalWorkoutMetric(w.duration_minutes, 'min', { omitMissing: true }),
+                    formatOptionalWorkoutMetric(w.calories_burned, 'kcal', { omitMissing: true }),
+                    formatOptionalWorkoutMetric(w.avg_heart_rate, 'bpm avg', { omitMissing: true }),
+                    formatOptionalWorkoutMetric(w.max_heart_rate, 'bpm max', { omitMissing: true }),
+                ].filter(Boolean).join(' · ');
+                row.innerHTML = `
+                    <div class="w-date">${fmtDate(w.date)}</div>
+                    <div>
+                        <div class="w-summary"><span class="src-tag src-open-wearables">OPEN WEARABLES</span>${escapeHtml(title)}</div>
+                        <div class="w-meta">${escapeHtml(meta) || '—'}</div>
+                    </div>
+                    <div class="w-volume open-wearables-volume">${escapeHtml(formatOptionalWorkoutMetric(w.duration_minutes, 'min', { omitMissing: true }) || '')}</div>
+                `;
+                row.addEventListener('click', () => openWorkoutDetail(w));
+                row.addEventListener('keydown', (ev) => {
+                    if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault();
+                        openWorkoutDetail(w);
+                    }
+                });
+            } else if (w.source === 'watch') {
                 const title = w.activity_type || w.activity || 'Workout';
                 const mins = w.duration_minutes || w.duration_min || 0;
                 const kcal = w.total_energy_kcal || w.energy_kcal || 0;
@@ -4053,6 +4114,14 @@
         return ex && (ex.machine || ex.exercise || ex.name) || 'Exercise';
     }
 
+    function formatOptionalWorkoutMetric(value, unit, { omitMissing = false } = {}) {
+        if (value === null || value === undefined || value === '' || !Number.isFinite(Number(value))) {
+            return omitMissing ? '' : '—';
+        }
+        const rounded = Math.round(Number(value));
+        return unit ? `${rounded} ${unit}` : String(rounded);
+    }
+
     function openWorkoutDetail(item) {
         const modal = $('modal-workout-detail');
         const body = $('workout-detail-body');
@@ -4069,6 +4138,39 @@
             if (deletable) {
                 fresh.addEventListener('click', () => openDeleteConfirm(item));
             }
+        }
+
+        if (item.source === 'open_wearables') {
+            const activity = item.activity_type || item.session_type || 'Workout';
+            title.textContent = `${activity} · ${fmtDate(item.date)}`;
+            body.innerHTML = `
+                <div class="workout-source-line">
+                    <span class="src-tag src-open-wearables">OPEN WEARABLES</span>
+                    ${item.provider_source ? `<span>${escapeHtml(item.provider_source)}</span>` : ''}
+                </div>
+                <dl class="workout-metrics-list">
+                    <div><dt>Duration</dt><dd>${escapeHtml(formatOptionalWorkoutMetric(item.duration_minutes, 'min'))}</dd></div>
+                    <div><dt>Calories burned</dt><dd>${escapeHtml(formatOptionalWorkoutMetric(item.calories_burned, 'kcal'))}</dd></div>
+                    <div><dt>Average heart rate</dt><dd>${escapeHtml(formatOptionalWorkoutMetric(item.avg_heart_rate, 'bpm'))}</dd></div>
+                    <div><dt>Maximum heart rate</dt><dd>${escapeHtml(formatOptionalWorkoutMetric(item.max_heart_rate, 'bpm'))}</dd></div>
+                </dl>
+                ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
+                <div class="workout-detail-actions">
+                    <button type="button" class="btn btn-ghost btn-sm" id="btn-analyze-open-wearables">Analyze workout</button>
+                </div>
+            `;
+            const analyzeBtn = $('btn-analyze-open-wearables');
+            if (analyzeBtn) {
+                analyzeBtn.addEventListener('click', () => {
+                    modal.hidden = true;
+                    openAnalyzeModal(
+                        { workout_id: item.id },
+                        `Analysis · ${fmtDate(item.date)}`,
+                    );
+                });
+            }
+            modal.hidden = false;
+            return;
         }
 
         if (item.source === 'watch') {
@@ -5663,6 +5765,7 @@
             state.openWearablesStatus = null;
             state.wearableSources = null;
             state.dashboard = null;
+            state.open_wearables_workouts = null;
             toast('Open Wearables sync complete.', 'ok');
         } catch (error) {
             state.openWearablesUi.lastError = error && error.message ? error.message : 'Open Wearables sync failed.';
