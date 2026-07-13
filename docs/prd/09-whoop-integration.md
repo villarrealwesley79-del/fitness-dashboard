@@ -209,7 +209,7 @@ Behavior -> Backend enforces byte, encoding, and row limits; parses CSV with hea
 
 Validation -> Max payload 512 KiB; max rows 5000; UTF-8 required; record type must be one of the supported types to import; local date cannot be later than tomorrow; metric bounds are listed in Section 7.
 
-API-sync-only payloads can mark `score.user_calibrating === true` to force `CALIBRATING`. Flat CSV `user_calibrating` columns are ignored; CSV callers must set `score_state=CALIBRATING` directly.
+API sync payloads can mark `score.user_calibrating === true` to force `CALIBRATING`. Flat CSV rows can use a truthy `user_calibrating` value (`1` or case-insensitive `true`), or callers can set `score_state=CALIBRATING` directly.
 
 API -> `POST /api/whoop/import-csv`.
 
