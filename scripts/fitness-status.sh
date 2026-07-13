@@ -73,7 +73,7 @@ redact_line() {
       if (lowered ~ "(^|[^[:alnum:]_])" quote "?[[:alnum:]_-]*" secret_key "[[:alnum:]_-]*[[:space:]]*" quote "?[[:space:]]*[:=]" ||
           lowered ~ "(^|[^[:alnum:]_])" quote "?(authorization|proxy-authorization|set-cookie)" quote "?[[:space:]]*[:=]" ||
           lowered ~ "(^|[?&{,[:space:]])" quote "?(code|state)" quote "?[[:space:]]*[:=]" ||
-          lowered ~ "://[^[:space:]/@]+@") {
+          lowered ~ "://") {
         print "[REDACTED]"
         next
       }

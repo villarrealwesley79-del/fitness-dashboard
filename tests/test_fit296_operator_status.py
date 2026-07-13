@@ -91,6 +91,10 @@ def test_status_reports_running_services_listener_and_redacts_log(tmp_path):
             ("signed-secret",),
         ),
         (
+            "WARN callback=https://maps.googleapis.com/path?key=bare-key-secret",
+            ("bare-key-secret",),
+        ),
+        (
             "WARN Set-Cookie: session=header-secret; Secure",
             ("header-secret",),
         ),
