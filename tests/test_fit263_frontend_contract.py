@@ -10,6 +10,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
+PHOTO_FOOD_PRD = (ROOT / "docs" / "prd" / "05-photo-food-logging-vision.md").read_text(
+    encoding="utf-8"
+)
 
 
 def _function_block(start_marker: str, end_marker: str) -> str:
@@ -75,3 +78,5 @@ def test_ai_health_poll_skips_hidden_documents():
 def test_production_bundle_excludes_fit134_mock_backend():
     assert "mealV2Mock" not in APP_JS
     assert "fit134" not in APP_JS
+    assert "?fit134=mock" not in PHOTO_FOOD_PRD
+    assert "isolated `DATA_DIR`" in PHOTO_FOOD_PRD
