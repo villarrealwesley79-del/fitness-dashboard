@@ -199,13 +199,25 @@ def test_markdown_export_marks_partial_strength_volume_unknown(monkeypatch):
     monkeypatch.setattr(
         module,
         "WORKOUTS",
-        [{"source": "watch", "session_type": "strength", "exercises": None}],
+        [{"source": "watch", "session_type": "strength", "exercises": []}],
     )
     response = app.test_client().get("/api/export-md")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
     assert "| N/A | strength | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "- **Total Volume:** N/A" in body
+
+    monkeypatch.setattr(
+        module,
+        "WORKOUTS",
+        [{"source": "lifted", "exercises": [{"machine": "Chest Press", "sets": []}]}],
+    )
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Chest Press | N/A | N/A | N/A | N/A | No set data |" in body
     assert "- **Total Volume:** N/A" in body
 
 

@@ -4318,6 +4318,10 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
             continue
         if not isinstance(exercises, list):
             continue
+        if not exercises:
+            if not is_watch_workout:
+                total_volume_valid = False
+            continue
         for e in exercises:
             if not isinstance(e, dict):
                 total_volume_valid = False
@@ -4334,6 +4338,10 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
                 total_volume_valid = False
                 continue
             if not isinstance(sets, list):
+                continue
+            if not sets:
+                if not is_watch_workout:
+                    total_volume_valid = False
                 continue
             for s in sets:
                 if not isinstance(s, dict):
