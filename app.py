@@ -17346,9 +17346,29 @@ def sleep_analytics():
 
 @app.route('/api/analytics/advanced')
 def analytics_advanced():
+    def finite_number(value):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return False
+        try:
+            return math.isfinite(value)
+        except OverflowError:
+            return False
+
     # volume per muscle current week
     vol=calculate_volume(WORKOUTS, weeks=1)
-    lm=USER_SETTINGS.get('volume_landmarks', {}).get('default', {"mv":6,"mev":9,"mav_min":12,"mav_max":18,"mrv":22})
+    default_lm = DEFAULT_SETTINGS['volume_landmarks']['default']
+    configured_landmarks = USER_SETTINGS.get('volume_landmarks')
+    lm = configured_landmarks.get('default') if isinstance(configured_landmarks, dict) else None
+    required_landmarks = ('mv', 'mev', 'mav_min', 'mav_max', 'mrv')
+    valid_landmark_values = isinstance(lm, dict) and all(
+        finite_number(lm.get(key))
+        for key in required_landmarks
+    )
+    valid_landmark_order = valid_landmark_values and (
+        0 <= lm['mv'] <= lm['mev'] <= lm['mav_min'] <= lm['mav_max'] <= lm['mrv']
+    )
+    if not valid_landmark_order:
+        lm = default_lm
     volume_landmarks=[]
     for m,v in vol.items():
         sets=v.get('sets',0)
@@ -17387,7 +17407,13 @@ def analytics_advanced():
     weeks_since=detect_deload_need(WORKOUTS,SORENESS_DATA).get('weeks_since_deload') or 0
     meso_pen=min(15, float(weeks_since)*2.5)
     fatigue=min(100, round(22+hrv_pen+sleep_pen+vol_pen+sore_pen+ar_pen+meso_pen,1))
-    deload= fatigue >= USER_SETTINGS.get('fatigue_threshold',72)
+    fatigue_threshold = USER_SETTINGS.get('fatigue_threshold')
+    if not (
+        finite_number(fatigue_threshold)
+        and 40 <= fatigue_threshold <= 95
+    ):
+        fatigue_threshold = DEFAULT_SETTINGS['fatigue_threshold']
+    deload= fatigue >= fatigue_threshold
     perf_decline = detect_deload_need(WORKOUTS,SORENESS_DATA).get('needed',False)
     return jsonify({
         'volume_landmarks': volume_landmarks,
