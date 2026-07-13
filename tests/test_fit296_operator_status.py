@@ -83,6 +83,14 @@ def test_status_reports_running_services_listener_and_redacts_log(tmp_path):
             ("url-secret", "state-secret"),
         ),
         (
+            "WARN callback=https://host/path?jwt=jwt-secret",
+            ("jwt-secret",),
+        ),
+        (
+            "WARN callback=https://host/path?X-Amz-Signature=signed-secret",
+            ("signed-secret",),
+        ),
+        (
             "WARN Set-Cookie: session=header-secret; Secure",
             ("header-secret",),
         ),

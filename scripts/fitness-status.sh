@@ -69,7 +69,7 @@ redact_line() {
     {
       lowered = tolower($0)
       quote = "[\"\047]"
-      secret_key = "(token|secret|password|cookie|session|credential|api[_-]?key)"
+      secret_key = "(token|secret|password|cookie|session|credential|api[_-]?key|jwt|sig|signature)"
       if (lowered ~ "(^|[^[:alnum:]_])" quote "?[[:alnum:]_-]*" secret_key "[[:alnum:]_-]*[[:space:]]*" quote "?[[:space:]]*[:=]" ||
           lowered ~ "(^|[^[:alnum:]_])" quote "?(authorization|proxy-authorization|set-cookie)" quote "?[[:space:]]*[:=]" ||
           lowered ~ "(^|[?&{,[:space:]])" quote "?(code|state)" quote "?[[:space:]]*[:=]" ||
