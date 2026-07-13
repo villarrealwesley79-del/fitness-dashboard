@@ -2,6 +2,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "fitness-status.sh"
@@ -54,12 +56,58 @@ def test_status_reports_running_services_listener_and_redacts_log(tmp_path):
     assert "app_launchd=running" in result.stdout
     assert "staleness_launchd=running" in result.stdout
     assert "listener_pid=4321" in result.stdout
-    assert "token=[REDACTED]" in result.stdout
-    assert "session=[REDACTED]" in result.stdout
+    assert "staleness_last=[REDACTED]" in result.stdout
     assert "abc123" not in result.stdout
     assert "owner-cookie" not in result.stdout
     assert "fit296-session-secret" not in result.stdout + result.stderr
     assert "fit296-health-secret" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("log_line", "secret_values"),
+    [
+        (
+            "WARN TOKEN=upper-secret COOKIE=upper-cookie HEALTH_SYNC_TOKEN=sync-secret",
+            ("upper-secret", "upper-cookie", "sync-secret"),
+        ),
+        (
+            "WARN Authorization: Bearer authorization-secret",
+            ("authorization-secret",),
+        ),
+        (
+            "WARN Authorization=Bearer assignment-authorization-secret",
+            ("assignment-authorization-secret",),
+        ),
+        (
+            "WARN callback=https://host/path?ACCESS_TOKEN=url-secret&STATE=state-secret",
+            ("url-secret", "state-secret"),
+        ),
+        (
+            "WARN Set-Cookie: session=header-secret; Secure",
+            ("header-secret",),
+        ),
+        (
+            'WARN {"access_token":"json-secret"}',
+            ("json-secret",),
+        ),
+        (
+            'WARN {"Authorization":"Bearer json-authorization-secret"}',
+            ("json-authorization-secret",),
+        ),
+    ],
+)
+def test_status_redacts_case_header_and_url_variants(tmp_path, log_line, secret_values):
+    result = _run_status(
+        tmp_path,
+        launchctl_body="exit 1",
+        lsof_body="exit 0",
+        log_line=log_line,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "staleness_last=[REDACTED]" in result.stdout
+    for secret_value in secret_values:
+        assert secret_value not in result.stdout + result.stderr
 
 
 def test_status_reports_missing_services_without_failing(tmp_path):

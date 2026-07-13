@@ -65,9 +65,21 @@ prerequisite_state() {
 }
 
 redact_line() {
-  /usr/bin/sed -E \
-    -e 's/([?&](token|access_token|refresh_token|code|state)=)[^&[:space:]]+/\1[REDACTED]/g' \
-    -e 's/((session|cookie|token|secret)=)[^[:space:]]+/\1[REDACTED]/g'
+  /usr/bin/awk '
+    {
+      lowered = tolower($0)
+      quote = "[\"\047]"
+      secret_key = "(token|secret|password|cookie|session|credential|api[_-]?key)"
+      if (lowered ~ "(^|[^[:alnum:]_])" quote "?[[:alnum:]_-]*" secret_key "[[:alnum:]_-]*[[:space:]]*" quote "?[[:space:]]*[:=]" ||
+          lowered ~ "(^|[^[:alnum:]_])" quote "?(authorization|proxy-authorization|set-cookie)" quote "?[[:space:]]*[:=]" ||
+          lowered ~ "(^|[?&{,[:space:]])" quote "?(code|state)" quote "?[[:space:]]*[:=]" ||
+          lowered ~ "://[^[:space:]/@]+@") {
+        print "[REDACTED]"
+        next
+      }
+      print
+    }
+  '
 }
 
 printf 'app_launchd=%s\n' "$(service_state "$APP_LABEL")"
