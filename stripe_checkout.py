@@ -62,8 +62,32 @@ def create_checkout_session():
 
 
 @stripe_bp.route('/success')
+@login_required
 def success():
-    return render_template('checkout_success.html')
+    is_active = bool(getattr(current_user, 'is_pro', False))
+    session_id = request.args.get('session_id', '').strip()
+
+    if not is_active and session_id:
+        s = get_stripe()
+        if s:
+            try:
+                checkout_session = s.checkout.Session.retrieve(session_id)
+                metadata = _stripe_value(checkout_session, 'metadata') or {}
+                is_active = (
+                    _stripe_value(checkout_session, 'status') == 'complete'
+                    and _stripe_value(checkout_session, 'payment_status') in ('paid', 'no_payment_required')
+                    and str(_stripe_value(metadata, 'user_id') or '') == str(current_user.get_id())
+                )
+            except Exception as e:
+                current_app.logger.warning(f'Could not verify Stripe Checkout session: {e}')
+
+    return render_template('checkout_success.html', is_active=is_active)
+
+
+def _stripe_value(value, key):
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)
 
 
 @stripe_bp.route('/cancel')
