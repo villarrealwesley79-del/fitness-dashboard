@@ -4307,7 +4307,7 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     total_volume_valid = True
     exercise_freq = {}
     for w in workouts:
-        is_watch_workout = history_source_label(w) in {"Watch", "Strength - Watch"}
+        is_watch_workout = history_source_label(w) == "Watch"
         exercises = w.get("exercises")
         if exercises is None:
             if not is_watch_workout:
@@ -16827,6 +16827,8 @@ def import_backup():
 def _markdown_export_cell(value, default="N/A") -> str:
     if value is None or isinstance(value, (dict, list)):
         return default
+    if isinstance(value, str) and not value.strip():
+        return default
     if isinstance(value, (int, float)) and not _is_finite_workout_number(value):
         return default
     return str(value).replace("\\", "\\\\").replace("\r", " ").replace("\n", " ").replace("|", "\\|")
@@ -16868,7 +16870,7 @@ def export_markdown():
             workout_date_value if isinstance(workout_date_value, str) and workout_date_value else None
         )
         source_label = history_source_label(workout)
-        is_watch_row = source_label in {"Watch", "Strength - Watch"}
+        is_watch_row = source_label == "Watch"
         exercises = workout.get("exercises")
         if exercises is not None and not isinstance(exercises, list):
             lines.append(

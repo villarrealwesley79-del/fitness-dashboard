@@ -112,6 +112,7 @@ def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
                             {"reps": 1e308, "weight_lbs": 1e308},
                             {"reps": 1, "weight_lbs": 1e308},
                             {"reps": 1, "weight_lbs": 1e308},
+                            {"set_number": " ", "reps": "", "weight_lbs": " ", "notes": ""},
                         ],
                     },
                 ],
@@ -135,6 +136,7 @@ def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
     assert "| 2026-07-18 | Nonfinite | 2 | 1e+308 | 1e+308 | N/A |  |" in body
     assert "| 2026-07-18 | Nonfinite | 3 | 1 | 1e+308 | 1e+308 |  |" in body
     assert "| 2026-07-18 | Nonfinite | 4 | 1 | 1e+308 | 1e+308 |  |" in body
+    assert "| 2026-07-18 | Nonfinite | N/A | N/A | N/A | N/A |  |" in body
     assert "- **Total Volume:** N/A" in body
 
 
@@ -192,6 +194,18 @@ def test_markdown_export_marks_partial_strength_volume_unknown(monkeypatch):
     assert response.status_code == 200
     body = response.get_data(as_text=True)
     assert "| N/A | Strength - Logged | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "- **Total Volume:** N/A" in body
+
+    monkeypatch.setattr(
+        module,
+        "WORKOUTS",
+        [{"source": "watch", "session_type": "strength", "exercises": None}],
+    )
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | strength | N/A | N/A | N/A | N/A | No exercise data |" in body
     assert "- **Total Volume:** N/A" in body
 
 
