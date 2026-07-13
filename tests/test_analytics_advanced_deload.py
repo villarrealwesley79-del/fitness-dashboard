@@ -260,6 +260,40 @@ def test_analytics_advanced_missing_or_malformed_settings_use_defaults(
     assert payload["deload_recommended"] is False
 
 
+@pytest.mark.parametrize("settings", [{}, {"fatigue_threshold": "invalid"}])
+@pytest.mark.parametrize(
+    ("volume_load", "expected_fatigue", "expected_deload"),
+    [(36000, 71.0, False), (48000, 72.0, True)],
+)
+def test_analytics_advanced_fallback_pins_default_fatigue_threshold(
+    monkeypatch, settings, volume_load, expected_fatigue, expected_deload
+):
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    workouts = [
+        {
+            "exercises": [
+                {"sets": [{"weight_lbs": volume_load // 10, "reps": 10}]}
+            ]
+        }
+    ]
+    _stub_advanced_analytics_inputs(
+        monkeypatch,
+        module,
+        settings=settings,
+        sleep_debt=900,
+        soreness=10,
+    )
+    monkeypatch.setattr(module, "WORKOUTS", workouts)
+
+    response = module.app.test_client().get("/api/analytics/advanced")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["fatigue_score"] == expected_fatigue
+    assert payload["deload_recommended"] is expected_deload
+
+
 @pytest.mark.parametrize(
     ("needed", "expected_deload_recommended"),
     [(True, True), (False, False)],
