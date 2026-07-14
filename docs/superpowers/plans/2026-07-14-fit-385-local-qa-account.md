@@ -339,9 +339,10 @@ Build a minimal Flask app with `auth.init_auth(app)`, log in through `/login`, a
 def test_designated_qa_login_can_open_browser_and_api_routes(qa_app):
     app, auth = qa_app
     client = app.test_client()
+    qa_password = "qa-password"
     response = client.post(
         "/login",
-        data={"username": "agent-qa", "password": "qa-password"},
+        data={"username": "agent-qa", "password": qa_password},
         headers={auth.CSRF_HEADER_NAME: auth.CSRF_HEADER_VALUE},
     )
     assert response.status_code == 302
