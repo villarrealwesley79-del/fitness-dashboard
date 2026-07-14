@@ -672,7 +672,7 @@ def _trusted_no_login_request_host() -> bool:
     if hostname is None:
         return False
 
-    if hostname == "localhost" or hostname.endswith(".ts.net"):
+    if hostname == "localhost":
         return True
     try:
         address = ipaddress.ip_address(hostname)

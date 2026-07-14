@@ -369,11 +369,31 @@ def test_enabled_mode_accepts_tailnet_peer(tmp_path, monkeypatch):
 
     response = app.test_client().get(
         "/api/protected",
-        base_url="http://admins-mac-mini.tail6c6490.ts.net:5050",
+        base_url="http://100.90.15.93:5050",
         environ_overrides={"REMOTE_ADDR": "100.90.15.93"},
     )
 
     assert response.status_code == 200
+
+
+def test_enabled_mode_rejects_magicdns_host_even_for_verified_peer(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        auth,
+        "_tailscale_peer_is_authenticated",
+        lambda address: address == "100.90.15.93",
+    )
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+
+    response = app.test_client().get(
+        "/api/protected",
+        base_url="http://admins-mac-mini.tail6c6490.ts.net:5050",
+        environ_overrides={"REMOTE_ADDR": "100.90.15.93"},
+    )
+
+    assert response.status_code == 401
 
 
 def test_enabled_mode_rejects_unverified_cgnat_peer(tmp_path, monkeypatch):

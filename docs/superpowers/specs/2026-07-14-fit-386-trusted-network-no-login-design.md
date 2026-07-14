@@ -36,7 +36,7 @@ The new environment variable is `FITNESS_DASHBOARD_NO_LOGIN`.
 
 - Only the case-insensitive literal `true` enables the mode.
 - Unset, empty, `false`, malformed, and misspelled values leave the mode disabled.
-- Even with the flag enabled, owner injection requires a trusted localhost/Tailscale request host, no forwarded/proxy headers, and either a loopback peer or a non-loopback peer confirmed as an authorized node with the exact address by local Tailscale WhoIs. Loopback peers cannot claim a `*.ts.net` host, and shared CGNAT range membership is never sufficient by itself.
+- Even with the flag enabled, owner injection requires a localhost, loopback-IP, or Tailscale-IP request host, no forwarded/proxy headers, and either a loopback peer or a non-loopback peer confirmed as an authorized node with the exact address by local Tailscale WhoIs. MagicDNS hosts are rejected because the direct Flask boot does not serve the HTTPS URL that existing base-URL logic assigns to them; shared CGNAT range membership is never sufficient by itself.
 - The default remains the existing login flow.
 - Factory preview and CI configuration remain unchanged and do not set this variable.
 - The change does not alter `HOST`, bind addresses, Tailscale configuration, or public exposure.
@@ -49,7 +49,7 @@ When the mode is disabled, no new request hook performs work. The existing Flask
 
 When the mode is enabled:
 
-1. A request hook registered before `require_login()` validates the request `Host` as localhost, loopback, a Tailscale IPv4 address, or a fully qualified `*.ts.net` MagicDNS name. It independently requires the direct peer to be loopback or to pass local Tailscale WhoIs as an authorized node with that exact address, rejects forwarded/proxy headers and loopback-proxied `*.ts.net` hosts, and rejects browser requests whose `Origin` differs from the actual request origin or whose `Sec-Fetch-Site` proves they are cross-origin. Configured public or forwarded origins are not authorization inputs. The only cross-origin exception is an exact GET `/api/whoop/callback` whose state was stored server-side by the authorization-start flow; that state is atomically removed before owner injection or route work. Other requests receive normal authentication behavior.
+1. A request hook registered before `require_login()` validates the request `Host` as localhost, loopback, or a Tailscale IPv4 address. It independently requires the direct peer to be loopback or to pass local Tailscale WhoIs as an authorized node with that exact address, rejects forwarded/proxy headers and all `*.ts.net` hosts, and rejects browser requests whose `Origin` differs from the actual request origin or whose `Sec-Fetch-Site` proves they are cross-origin. Configured public or forwarded origins are not authorization inputs. The only cross-origin exception is an exact GET `/api/whoop/callback` whose state was stored server-side by the authorization-start flow; that state is atomically removed before owner injection or route work. Other requests receive normal authentication behavior.
 2. The hook resolves the owner using the existing owner-selection rule: `FITNESS_DASHBOARD_OWNER_USER_ID` when valid, otherwise the lowest local user ID.
 3. The hook loads that exact existing `User` row.
 4. The hook installs the owner only in Flask-Login's current request context. It does not call `login_user()`, clear sessions, create an account, or mutate the auth database.

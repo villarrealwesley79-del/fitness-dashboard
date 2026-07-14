@@ -238,11 +238,11 @@ Add two database-failure cases before implementation. Patch `_owner_user_id()` a
 
 Add sibling-path RED coverage for a stored session whose `User.get_by_id()` read fails and for an owner-ID resolver that succeeds once but raises on a redundant second call. The first must redirect through a request-local anonymous identity; the second must return 200 after exactly one validated owner lookup.
 
-Add host-boundary RED coverage before owner injection: `localhost`, loopback IPs, `100.90.15.93`, and `admins-mac-mini.tail6c6490.ts.net` are trusted; `evil.example`, `evil.ts.net.attacker.example`, and a physical-LAN address are not. Untrusted browser/API requests must retain the normal redirect/401 barrier even when the flag is enabled.
+Add host-boundary RED coverage before owner injection: `localhost`, loopback IPs, and `100.90.15.93` are trusted; MagicDNS, `evil.example`, `evil.ts.net.attacker.example`, and a physical-LAN address are not. MagicDNS is rejected because existing callback URL logic forces HTTPS that the direct Flask boot does not serve. Untrusted browser/API requests must retain the normal redirect/401 barrier even when the flag is enabled.
 
 Add cross-origin GET RED coverage using trusted `localhost`: a mismatched `Origin` and `Sec-Fetch-Site: cross-site` must keep the API at 401, while a matching origin and `Sec-Fetch-Site: same-origin` must return 200 as the owner. Reuse `_has_cross_origin_browser_header()` rather than adding a second origin parser.
 
-Add direct-peer RED coverage because `Host` is client-controlled: requests from `192.168.1.50` that claim `localhost` or `*.ts.net` must remain at 401, while a `100.64.0.0/10` peer with a trusted Tailnet host must receive owner access. Read only `REMOTE_ADDR`; do not trust forwarded-address headers without an explicit proxy contract.
+Add direct-peer RED coverage because `Host` is client-controlled: requests from `192.168.1.50` that claim `localhost` or `*.ts.net` must remain at 401, while a WhoIs-verified `100.64.0.0/10` peer using its Tailscale IP host must receive owner access. Read only `REMOTE_ADDR`; do not trust forwarded-address headers without an explicit proxy contract.
 
 Add reverse-proxy RED coverage: a loopback peer claiming `*.ts.net` and a loopback request carrying standard forwarded headers must retain the normal 401 barrier. This mode is direct-connect only and must not operate behind Tailscale Serve/Funnel.
 
