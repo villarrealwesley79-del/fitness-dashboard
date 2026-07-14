@@ -621,15 +621,21 @@ def _trusted_no_login_enabled() -> bool:
     return os.environ.get("FITNESS_DASHBOARD_NO_LOGIN", "").strip().lower() == "true"
 
 
-def _trusted_no_login_request_host() -> bool:
+def _trusted_no_login_request_hostname():
     try:
         hostname = urlsplit(f"//{request.host}").hostname
     except ValueError:
-        return False
+        return None
     if not hostname:
+        return None
+    return hostname.rstrip(".").lower()
+
+
+def _trusted_no_login_request_host() -> bool:
+    hostname = _trusted_no_login_request_hostname()
+    if hostname is None:
         return False
 
-    hostname = hostname.rstrip(".").lower()
     if hostname == "localhost" or hostname.endswith(".ts.net"):
         return True
     try:
@@ -643,13 +649,37 @@ def _trusted_no_login_request_host() -> bool:
 
 
 def _trusted_no_login_request_peer() -> bool:
+    if any(
+        request.headers.get(header)
+        for header in (
+            "Forwarded",
+            "X-Forwarded-For",
+            "X-Forwarded-Host",
+            "X-Forwarded-Proto",
+        )
+    ):
+        return False
     try:
         address = ipaddress.ip_address(request.remote_addr or "")
     except ValueError:
         return False
-    return address.is_loopback or (
-        isinstance(address, ipaddress.IPv4Address)
-        and address in _TAILSCALE_IPV4_NETWORK
+    if address.is_loopback:
+        hostname = _trusted_no_login_request_hostname()
+        if hostname == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(hostname or "").is_loopback
+        except ValueError:
+            return False
+    return isinstance(address, ipaddress.IPv4Address) and address in _TAILSCALE_IPV4_NETWORK
+
+
+def _trusted_no_login_oauth_callback() -> bool:
+    return (
+        request.method == "GET"
+        and request.path == "/api/whoop/callback"
+        and bool(str(request.args.get("state") or "").strip())
+        and bool(str(request.args.get("code") or "").strip())
     )
 
 
@@ -975,7 +1005,10 @@ def init_auth(app):
             not _trusted_no_login_enabled()
             or not _trusted_no_login_request_host()
             or not _trusted_no_login_request_peer()
-            or _has_cross_origin_browser_header()
+            or (
+                _has_cross_origin_browser_header()
+                and not _trusted_no_login_oauth_callback()
+            )
         ):
             return None
         owner = _trusted_no_login_owner()

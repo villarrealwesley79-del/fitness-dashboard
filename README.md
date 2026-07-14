@@ -82,6 +82,12 @@ in `100.64.0.0/10`, and fully qualified `*.ts.net` MagicDNS names. Requests from
 any other peer, using any other `Host`, or marked cross-origin by the browser
 keep the normal login barrier.
 
+This mode supports direct browser-to-app connections only. Requests carrying
+standard forwarded/proxy headers are rejected, and a loopback peer cannot use a
+`*.ts.net` host. Do not expose this mode through Tailscale Funnel or another
+reverse proxy. The state-validated WHOOP/Open Wearables OAuth callback is the
+only cross-site browser redirect allowed to receive the request-scoped owner.
+
 On the Mac mini, install or refresh the local launchd agents with:
 
 ```bash

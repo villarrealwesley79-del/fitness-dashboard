@@ -43,6 +43,8 @@
 | Protected browser/API | Flag exactly `true`; `Host` is attacker-controlled, LAN-only, or a deceptive `.ts.net` suffix, or trusted `Host` is spoofed by an untrusted direct peer | None unless normal session auth succeeds | No owner lookup or injection | Existing redirect/401 behavior; untrusted-host, peer-spoofing, and DNS-rebinding tests |
 | Protected GET API | Flag exactly `true`; trusted `Host`; mismatched `Origin` or `Sec-Fetch-Site: cross-site` | None unless normal session auth succeeds | No owner lookup or injection | Existing API 401 despite wildcard CORS response; cross-origin read tests |
 | Protected GET API | Flag exactly `true`; trusted `Host`; same-origin `Origin` or `Sec-Fetch-Site: same-origin` | Existing owner row | Request-local identity only | 200 as owner; same-origin tests |
+| Protected route | Flag exactly `true`; forwarded/proxy header present, or loopback peer claims `*.ts.net` | None unless normal session auth succeeds | No owner lookup or injection | Existing redirect/401 behavior; reverse-proxy tests |
+| WHOOP/Open Wearables callback | Flag exactly `true`; direct trusted request; cross-site GET with non-empty `state` and `code` | Existing owner row | Existing callback consumes user-bound, single-use OAuth state | Successful callback continues; end-to-end no-login OAuth test |
 | Factory preview/CI | Existing `.agents/factory.yaml` | Existing preview login | No config mutation | Source assertion that no-login flag is absent |
 
 Retry, concurrency, transaction, and rollback dimensions are not applicable: each request performs read-only owner lookup and request-local identity assignment; no persistent state is written.
@@ -240,6 +242,10 @@ Add host-boundary RED coverage before owner injection: `localhost`, loopback IPs
 Add cross-origin GET RED coverage using trusted `localhost`: a mismatched `Origin` and `Sec-Fetch-Site: cross-site` must keep the API at 401, while a matching origin and `Sec-Fetch-Site: same-origin` must return 200 as the owner. Reuse `_has_cross_origin_browser_header()` rather than adding a second origin parser.
 
 Add direct-peer RED coverage because `Host` is client-controlled: requests from `192.168.1.50` that claim `localhost` or `*.ts.net` must remain at 401, while a `100.64.0.0/10` peer with a trusted Tailnet host must receive owner access. Read only `REMOTE_ADDR`; do not trust forwarded-address headers without an explicit proxy contract.
+
+Add reverse-proxy RED coverage: a loopback peer claiming `*.ts.net` and a loopback request carrying standard forwarded headers must retain the normal 401 barrier. This mode is direct-connect only and must not operate behind Tailscale Serve/Funnel.
+
+Add an end-to-end no-login WHOOP callback RED test. Start OAuth as the request-scoped owner, return on the exact callback with `Sec-Fetch-Site: cross-site`, and prove the existing user-bound state is consumed and the connection succeeds. No other cross-origin route is exempt.
 
 - [ ] **Step 6: Run the tests to prove RED**
 

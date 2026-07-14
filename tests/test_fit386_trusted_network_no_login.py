@@ -237,22 +237,25 @@ def test_validated_owner_is_not_looked_up_again_in_login_guard(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize(
-    "base_url",
+    ("base_url", "remote_addr"),
     [
-        "http://localhost:5050",
-        "http://127.0.0.1:5050",
-        "http://[::1]:5050",
-        "http://100.90.15.93:5050",
-        "http://admins-mac-mini.tail6c6490.ts.net:5050",
+        ("http://localhost:5050", "127.0.0.1"),
+        ("http://127.0.0.1:5050", "127.0.0.1"),
+        ("http://[::1]:5050", "::1"),
+        ("http://100.90.15.93:5050", "100.90.15.93"),
     ],
 )
 def test_enabled_mode_accepts_only_localhost_or_tailnet_hosts(
-    tmp_path, monkeypatch, base_url
+    tmp_path, monkeypatch, base_url, remote_addr
 ):
     app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
     auth.User.create("owner", "existing-password")
 
-    response = app.test_client().get("/protected", base_url=base_url)
+    response = app.test_client().get(
+        "/protected",
+        base_url=base_url,
+        environ_overrides={"REMOTE_ADDR": remote_addr},
+    )
 
     assert response.status_code == 200
     assert response.get_json()["username"] == "owner"
@@ -312,6 +315,33 @@ def test_enabled_mode_accepts_tailnet_peer(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
+
+
+def test_enabled_mode_rejects_loopback_proxy_to_tailnet_host(tmp_path, monkeypatch):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+
+    response = app.test_client().get(
+        "/api/protected",
+        base_url="http://admins-mac-mini.tail6c6490.ts.net:5050",
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_enabled_mode_rejects_forwarded_loopback_request(tmp_path, monkeypatch):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+
+    response = app.test_client().get(
+        "/api/protected",
+        base_url="http://localhost:5050",
+        headers={"X-Forwarded-For": "203.0.113.10"},
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert response.status_code == 401
 
 
 @pytest.mark.parametrize(

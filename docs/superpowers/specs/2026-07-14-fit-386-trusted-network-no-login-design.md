@@ -36,7 +36,7 @@ The new environment variable is `FITNESS_DASHBOARD_NO_LOGIN`.
 
 - Only the case-insensitive literal `true` enables the mode.
 - Unset, empty, `false`, malformed, and misspelled values leave the mode disabled.
-- Even with the flag enabled, owner injection requires a trusted localhost/Tailscale request host and a direct peer address that is independently loopback or in Tailscale's `100.64.0.0/10` device range.
+- Even with the flag enabled, owner injection requires a trusted localhost/Tailscale request host, a direct peer address that is independently loopback or in Tailscale's `100.64.0.0/10` device range, and no forwarded/proxy headers. Loopback peers cannot claim a `*.ts.net` host.
 - The default remains the existing login flow.
 - Factory preview and CI configuration remain unchanged and do not set this variable.
 - The change does not alter `HOST`, bind addresses, Tailscale configuration, or public exposure.
@@ -49,7 +49,7 @@ When the mode is disabled, no new request hook performs work. The existing Flask
 
 When the mode is enabled:
 
-1. A request hook registered before `require_login()` validates the request `Host` as localhost, loopback, a Tailscale IPv4 address, or a fully qualified `*.ts.net` MagicDNS name. It independently requires the direct peer address to be loopback or in Tailscale's IPv4 device range, and rejects browser requests whose `Origin` or `Sec-Fetch-Site` proves they are cross-origin. Other requests receive normal authentication behavior.
+1. A request hook registered before `require_login()` validates the request `Host` as localhost, loopback, a Tailscale IPv4 address, or a fully qualified `*.ts.net` MagicDNS name. It independently requires the direct peer address to be loopback or in Tailscale's IPv4 device range, rejects forwarded/proxy headers and loopback-proxied `*.ts.net` hosts, and rejects browser requests whose `Origin` or `Sec-Fetch-Site` proves they are cross-origin. The only cross-origin exception is an exact GET `/api/whoop/callback` carrying both `state` and `code`, whose route performs the existing user-bound, single-use state validation. Other requests receive normal authentication behavior.
 2. The hook resolves the owner using the existing owner-selection rule: `FITNESS_DASHBOARD_OWNER_USER_ID` when valid, otherwise the lowest local user ID.
 3. The hook loads that exact existing `User` row.
 4. The hook installs the owner only in Flask-Login's current request context. It does not call `login_user()`, clear sessions, create an account, or mutate the auth database.
@@ -90,7 +90,7 @@ When owner injection fails, login and registration behave normally so first-run 
 
 Enabling this mode deliberately removes the authentication barrier for every person or device that can reach the running instance. It is acceptable only for a localhost or private Tailnet boot controlled by the owner. It must never be enabled on a public, shared, port-forwarded, or otherwise untrusted network bind.
 
-The request `Host` gate is defense in depth against DNS rebinding, while the independent direct-peer gate prevents an untrusted client from activating owner identity by spoofing `Host: localhost` or a `*.ts.net` name. No forwarded-address header is trusted.
+The request `Host` gate is defense in depth against DNS rebinding, while the independent direct-peer gate prevents an untrusted client from activating owner identity by spoofing `Host: localhost` or a `*.ts.net` name. No forwarded-address header is trusted; the mode is unsupported behind Tailscale Serve/Funnel or any other reverse proxy.
 
 The existing application sends wildcard CORS response headers, so the no-login hook must also refuse owner injection for cross-origin browser reads. Direct navigation, requests without cross-origin browser evidence, and same-origin requests remain eligible.
 
