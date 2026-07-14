@@ -279,6 +279,47 @@ def test_enabled_mode_rejects_untrusted_hosts(tmp_path, monkeypatch, base_url):
     assert api_response.status_code == 401
 
 
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Origin": "https://evil.example"},
+        {"Sec-Fetch-Site": "cross-site"},
+    ],
+)
+def test_enabled_mode_rejects_cross_origin_reads(tmp_path, monkeypatch, headers):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+
+    response = app.test_client().get(
+        "/api/protected",
+        base_url="http://localhost:5050",
+        headers=headers,
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Origin": "http://localhost:5050"},
+        {"Sec-Fetch-Site": "same-origin"},
+    ],
+)
+def test_enabled_mode_accepts_same_origin_reads(tmp_path, monkeypatch, headers):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+
+    response = app.test_client().get(
+        "/api/protected",
+        base_url="http://localhost:5050",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["user_id"] == "1"
+
+
 def test_factory_preview_does_not_enable_no_login():
     config = (Path(__file__).resolve().parents[1] / ".agents" / "factory.yaml").read_text()
 

@@ -193,11 +193,13 @@ CSRF protection is not a per-route decorator; it is a global before-request gate
 
 The request host is enforced before owner injection to reduce DNS-rebinding risk. Accepted hosts are `localhost`, loopback IPs, Tailscale's [`100.64.0.0/10` device range](https://tailscale.com/docs/concepts/tailscale-ip-addresses), and fully qualified [`*.ts.net` MagicDNS names](https://tailscale.com/docs/features/magicdns). Any other `Host` keeps normal authentication behavior even when the flag is set.
 
+Because the application currently sends wildcard CORS response headers, the no-login hook also refuses owner injection when `Origin` or `Sec-Fetch-Site` proves a browser read is cross-origin. Direct navigation and same-origin localhost/Tailnet requests remain eligible; cross-origin API reads retain the normal 401 barrier.
+
 ## 10. Business Rules
 
 - First local user is the owner unless `FITNESS_DASHBOARD_OWNER_USER_ID` selects a valid integer ID.
 - Trusted-network no-login mode uses that exact existing owner identity and data user ID, so workout history and settings remain attached to the owner account; it never selects the FIT-385 QA account.
-- Trusted-network owner injection requires a localhost, loopback, Tailscale device-IP, or fully qualified MagicDNS request host; deceptive or physical-LAN hosts retain the normal login barrier.
+- Trusted-network owner injection requires a localhost, loopback, Tailscale device-IP, or fully qualified MagicDNS request host and no cross-origin browser evidence; deceptive, physical-LAN, and cross-origin requests retain the normal login barrier.
 - If trusted-network owner resolution fails, protected requests keep the normal redirect/401 behavior.
 - If single-user mode is disabled, `_is_owner_user_id()` returns true for any authenticated user.
 - A missing owner row allows access rather than blocking setup.
@@ -223,7 +225,7 @@ The request host is enforced before owner injection to reduce DNS-rebinding risk
 
 Existing focused tests cover successful login/session access, wrong password behavior, rate-limit recording, DB-unavailable 503 behavior, new-user scrypt storage, legacy SHA-256 migration, constant-time legacy compare, CSRF rejection/allowance paths, checkout form CSRF token presence, public auth form tokens, WHOOP mutation CSRF enforcement, and live JS sending the CSRF header.
 
-FIT-386 coverage additionally pins explicit no-login enablement, localhost/Tailscale host enforcement, DNS-rebinding-style host rejection, request-scoped owner identity, configured-owner selection, no authentication session or clean-template cookie, stale non-owner session override while enabled, fail-closed owner lookup, unchanged default redirect/401/403 behavior, and the absence of no-login enablement from factory preview configuration.
+FIT-386 coverage additionally pins explicit no-login enablement, localhost/Tailscale host enforcement, DNS-rebinding-style host rejection, cross-origin read rejection, same-origin access, request-scoped owner identity, configured-owner selection, no authentication session or clean-template cookie, stale non-owner session override while enabled, fail-closed owner lookup, unchanged default redirect/401/403 behavior, and the absence of no-login enablement from factory preview configuration.
 
 Coverage gaps:
 

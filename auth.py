@@ -802,7 +802,11 @@ def init_auth(app):
 
     @app.before_request
     def load_trusted_no_login_owner():
-        if not _trusted_no_login_enabled() or not _trusted_no_login_request_host():
+        if (
+            not _trusted_no_login_enabled()
+            or not _trusted_no_login_request_host()
+            or _has_cross_origin_browser_header()
+        ):
             return None
         owner = _trusted_no_login_owner()
         if owner is _NO_LOGIN_OWNER_DB_ERROR:
