@@ -14,6 +14,17 @@ INDEX_HTML = ROOT / "templates" / "index.html"
 STYLE_CSS = ROOT / "static" / "css" / "style.css"
 
 
+def test_fit233_rollout_invalidates_cached_get_only_clients():
+    version = "20260713-fit233-adaptation-polling"
+    html = INDEX_HTML.read_text()
+    loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
+    service_worker = (ROOT / "static" / "js" / "sw.js").read_text()
+
+    assert f"/static/js/app-loader.js?v={version}" in html
+    assert f"/static/js/app.js?v={version}" in loader
+    assert f"fitness-dashboard-v{version}" in service_worker
+
+
 def _block(source: str, start: str, end: str) -> str:
     start_index = source.index(start)
     end_index = source.index(end, start_index)

@@ -11,7 +11,7 @@ APP_LOADER_JS = Path("static/js/app-loader.js").read_text()
 APP_SW_JS = Path("static/js/sw.js").read_text()
 APP_HTML = Path("templates/index.html").read_text()
 
-FIT270_ASSET_VERSION = "20260713-fit270-oura-detail"
+ASSET_VERSION = "20260713-fit233-adaptation-polling"
 
 
 def _sync_detail_helpers() -> str:
@@ -62,9 +62,9 @@ def test_oura_sync_success_renders_status_range_count_and_latest_days():
 
 
 def test_fit270_asset_versions_are_coordinated():
-    assert f"app-loader.js?v={FIT270_ASSET_VERSION}" in APP_HTML
-    assert f"app.js?v={FIT270_ASSET_VERSION}" in APP_LOADER_JS
-    assert f"fitness-dashboard-v{FIT270_ASSET_VERSION}" in APP_SW_JS
+    assert f"app-loader.js?v={ASSET_VERSION}" in APP_HTML
+    assert f"app.js?v={ASSET_VERSION}" in APP_LOADER_JS
+    assert f"fitness-dashboard-v{ASSET_VERSION}" in APP_SW_JS
 
 
 @pytest.mark.parametrize("code", ["missing_oura_token", "oura_api_error"])
