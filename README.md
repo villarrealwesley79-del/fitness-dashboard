@@ -62,11 +62,21 @@ python app.py
 
 ### Trusted-network no-login mode
 
-For the owner's private localhost or Tailnet boot only, set:
+For localhost-only access, keep the default loopback bind:
 
 ```bash
 FITNESS_DASHBOARD_NO_LOGIN=true python app.py
 ```
+
+For direct access from another device in the owner's Tailnet, bind only to this
+Mac's current Tailscale IPv4 address:
+
+```bash
+HOST="$("/Applications/Tailscale.app/Contents/MacOS/Tailscale" ip -4 | head -n 1)" FITNESS_DASHBOARD_NO_LOGIN=true python app.py
+```
+
+Do not replace that address with `0.0.0.0`; the no-login peer check is designed
+for direct loopback or authenticated Tailscale connections.
 
 This uses the existing owner account and all of its workout history; it does
 not create or select the FIT-385 QA account. Unset the variable and restart to

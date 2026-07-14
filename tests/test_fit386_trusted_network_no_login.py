@@ -484,3 +484,10 @@ def test_factory_preview_does_not_enable_no_login():
     config = (Path(__file__).resolve().parents[1] / ".agents" / "factory.yaml").read_text()
 
     assert "FITNESS_DASHBOARD_NO_LOGIN" not in config
+
+
+def test_readme_documents_direct_tailnet_bind_without_broad_bind():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+
+    assert 'HOST="$("/Applications/Tailscale.app/Contents/MacOS/Tailscale" ip -4' in readme
+    assert "HOST=0.0.0.0" not in readme

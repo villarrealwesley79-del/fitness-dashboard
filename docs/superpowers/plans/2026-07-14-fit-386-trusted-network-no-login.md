@@ -372,6 +372,13 @@ For the owner's private localhost or Tailnet boot only, set:
 FITNESS_DASHBOARD_NO_LOGIN=true python3 app.py
 ```
 
+For another Tailnet device, bind directly to the Mac's current Tailscale IPv4
+address rather than a broad interface:
+
+```bash
+HOST="$("/Applications/Tailscale.app/Contents/MacOS/Tailscale" ip -4 | head -n 1)" FITNESS_DASHBOARD_NO_LOGIN=true python3 app.py
+```
+
 This uses the existing owner account and all of its workout history; it does not create or select the QA account. Unset the variable and restart to restore the login screen.
 
 **Security warning:** This removes the login barrier for everyone who can reach the running app. Never enable it on a public, shared, port-forwarded, or otherwise untrusted network bind.
