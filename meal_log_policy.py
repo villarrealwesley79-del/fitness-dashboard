@@ -1,17 +1,18 @@
 """Meal auto-log confidence policy (FIT-61).
 
 Given a sanitized food estimate (from ``meal_text_parser.parse_meal_text``
-or the FIT-60 image stub), decide whether to auto-log the meal or hold
-it for explicit user review. The policy is enforced by the backend, not
-by UI copy — every consumer of ``/api/meal-intake`` and its accept
-handler shares the same decision logic.
+or the FIT-60 image stub), return the theoretical policy decision: whether
+the estimate qualifies for auto-log or needs explicit user review. Fresh
+text, photo, and barcode routes currently override a ``logged`` result and
+persist every new submission as ``pending_review``. Those routes use this
+module only for confidence bands and reason codes; explicit acceptance is
+the sole path into nutrition totals.
 
 Design rules
 ~~~~~~~~~~~~
 
-* **Auto-log** when the estimate is unambiguous, high-confidence, and
-  macros are within physically plausible bounds. The product should
-  feel instant for obvious meals.
+* **Theoretical auto-log** when the estimate is unambiguous,
+  high-confidence, and macros are within physically plausible bounds.
 * **Pending review** when the estimate is uncertain, ambiguous, or
   contains nonsense macros. The user must explicitly accept these
   before they count toward today's coaching context.
@@ -122,7 +123,7 @@ def _macro_violations(estimate: dict) -> Iterable[str]:
 # ──────────────────────────────────────────────────────────────────
 
 def evaluate_meal_log(estimate: dict) -> dict:
-    """Decide whether ``estimate`` may be auto-logged or must go to review.
+    """Return the theoretical policy decision for ``estimate``.
 
     Parameters
     ----------
@@ -145,8 +146,9 @@ def evaluate_meal_log(estimate: dict) -> dict:
         }``
 
     The function is pure — it never raises and never inspects request
-    state. Callers are responsible for persisting the result and
-    surfacing the reasons to clients.
+    state. A ``logged`` result describes policy eligibility, not current
+    route behavior. Fresh capture routes force ``pending_review`` before
+    persistence and use this result only for response metadata.
     """
     if not isinstance(estimate, dict):
         return {
