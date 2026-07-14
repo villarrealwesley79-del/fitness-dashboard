@@ -10,6 +10,8 @@ Auth & Account is the gatekeeper for the local-first Fitness Dashboard. The app 
 
 The primary user scenario is simple: the owner creates the first account in a local runtime, signs in with a username/password, and then uses a Flask-Login browser-session cookie to access the app. If the app already has a user and single-user mode remains enabled, further registration is blocked. The first user becomes the owner unless `FITNESS_DASHBOARD_OWNER_USER_ID` explicitly selects another local row.
 
+For local testing only, the owner can opt in to one shared agent QA login with `FITNESS_DASHBOARD_LOCAL_QA_ENABLED=true` plus runtime-only username and password settings. This is never a production or public-deployment mode. The QA login remains a separate authentication identity, but its user-scoped reads and writes deliberately resolve to the owner's real dashboard data. It does not change the owner's username, password, owner ID, or login requirement; optional no-login owner boot belongs to FIT-386.
+
 The implementation is local SQLite, not a hosted identity provider. Account data lives in `auth.db` under `DATA_DIR` through `runtime_config.data_path("auth.db")`; when `DATA_DIR` is unset, the store falls back to the repo/app directory. Passwords are stored with Werkzeug scrypt for new users, with legacy SHA-256+salt rows upgraded after successful login.
 
 The auth layer also implements the app's mutation protection model. Browser writes are accepted when they include `X-Requested-With: XMLHttpRequest`, a valid server-rendered form CSRF token, or same-origin browser metadata. Explicit cross-origin browser metadata is rejected before the header check. The Apple Health webhook and Stripe webhook paths are exempt from this CSRF model because they are expected to be called by external systems and have their own authentication/signature contracts.
@@ -126,7 +128,7 @@ Failure → API/JSON callers receive HTTP 403 JSON with code `csrf_required`; HT
 
 Non-obvious behavior:
 
-- Login rate limiting is in-memory per Python process, not persisted across restarts and not shared across gunicorn workers.
+- Login and registration rate limiting stores hashed IP/username identities in `auth.db`, so the active 10-minute window is shared across workers and survives process restarts. Expired rows are pruned on subsequent auth activity, and successful auth clears the matching identities.
 - Login uses `X-Forwarded-For` before `remote_addr`, but there is no trusted-proxy check in the auth module.
 - POST login redirects to `next` without the same open-redirect normalization used by authenticated GET `/login`.
 - The public allowlist includes `/landing`, `/pricing`, `/webhook`, `/success`, and `/cancel`; `stripe_bp` is defined but never registered in this checkout, so `/pricing`, `/webhook`, `/success`, and `/cancel` 404 even though they are public-allowlisted. Reachability details are documented in [13-billing-stripe-landing.md](13-billing-stripe-landing.md).
@@ -135,7 +137,7 @@ Non-obvious behavior:
 
 Auth persistence is `AUTH_DB = data_path("auth.db")`. `runtime_config.DATA_DIR` is `os.environ["DATA_DIR"]` when set, otherwise the app directory. `data_path()` creates the directory before returning the path.
 
-`init_auth_db()` creates and migrates the `users` table. The migration adds `email`, `is_pro`, `stripe_customer`, and `stripe_sub` if missing. It does not remove legacy columns or backfill existing emails. The auth module commits through a context-managed SQLite connection and rolls back on exceptions.
+`init_auth_db()` creates and migrates the `users` table and creates `auth_rate_limit_attempts` with an identity/time index. Rate-limit rows contain SECRET_KEY-keyed HMAC-SHA-256 identity digests and timestamps, not raw IP addresses or usernames. Rotating `SECRET_KEY` makes prior digests unreachable and therefore resets the remaining active lockout window; expired/unreachable rows are pruned on later auth activity. The user migration adds `email`, `is_pro`, `stripe_customer`, and `stripe_sub` if missing. It does not remove legacy columns or backfill existing emails. The auth module commits through a context-managed SQLite connection and rolls back on exceptions.
 
 Password persistence rules:
 
@@ -150,7 +152,7 @@ Session persistence is Flask's signed cookie session. Secret key resolution is:
 2. `.flask-secret` file next to `auth.py`.
 3. Generated 128-character hex secret persisted to `.flask-secret` with mode `0600`.
 
-The app refuses to start with an empty secret or the literal default `dev-key-change-me`.
+Existing fallback files are read under a shared lock, including valid read-only mounts. Empty/missing fallback initialization holds an exclusive cross-process lock through read/generate/write/fsync, so cold-started workers cannot retain different secrets. If a new fallback cannot be persisted, startup fails and requires an explicit `SECRET_KEY`. The app also refuses to start with an empty secret or the literal default `dev-key-change-me`.
 
 ## 7. Enums & Constants
 
@@ -167,6 +169,7 @@ The app refuses to start with an empty secret or the literal default `dev-key-ch
 | `_PASSWORD_HASH_METHOD` | `scrypt:32768:8:1` | Werkzeug hash method for new and upgraded passwords. |
 | `_PUBLIC_PREFIXES` | `/login`, `/register`, `/logout`, `/landing`, `/pricing`, `/manifest.json`, `/sw.js`, `/static/`, `/robots.txt`, `/sitemap.xml`, `/webhook`, `/success`, `/cancel`, `/api/apple-health/sync` | Routes allowed before login. Entries ending in `/` are prefix matches; others are exact. |
 | `FITNESS_DASHBOARD_SINGLE_USER` | Default `"true"`; `"false"` disables owner restriction | Controls single-owner mode. |
+| `FITNESS_DASHBOARD_NO_LOGIN` | Disabled unless the trimmed, case-insensitive value is exactly `"true"` | Enables request-scoped owner access for the owner's trusted-network boot. |
 | `SESSION_COOKIE_SECURE` | Default true unless env equals `"false"` | Controls session and remember-cookie Secure flag. |
 | Session lifetime | 14 days configured but currently inert | `session.permanent` is never set and `login_user()` never passes `remember=True`, so the session cookie is a browser-session cookie and no remember cookie is issued. |
 
@@ -180,15 +183,28 @@ The app's single-user model is also a data isolation assumption: most runtime st
 
 The default policy is private-by-default. Any path not in `_PUBLIC_PREFIXES` requires an authenticated Flask-Login user. In single-user mode, authenticated users are still blocked unless they are the configured owner or the first local user row.
 
+The optional local QA account is the only additional identity accepted by the single-owner route guard. Its designation is stored as one singleton mapping in `auth.db`; a matching username without that mapping remains forbidden. The feature must never be enabled on production, public, or shared-network deployments. QA actions operate on the owner's real data, so the shared QA credential must be treated as owner-data access even though the QA account is not itself the owner.
+
 Session cookies are HTTP-only, `SameSite=Lax`, and Secure by default. Local HTTP development can set `SESSION_COOKIE_SECURE=false`; production should set `SECRET_KEY` through environment or secret manager. `.flask-secret` is a local-dev fallback and is excluded by Docker hygiene tests.
 
 CSRF protection is not a per-route decorator; it is a global before-request gate. It protects public login/register forms and authenticated API mutations. The two exempt paths rely on other authentication: Apple Health by `HEALTH_SYNC_TOKEN`; Stripe by `Stripe-Signature` when `STRIPE_WEBHOOK_SECRET` is configured. If `STRIPE_WEBHOOK_SECRET` is unset, the Stripe webhook path parses unverified JSON instead; see FIT-255 and the billing PRD.
 
 `LOGIN_DISABLED` bypasses the global login/owner guard entirely when truthy. This is a test convention, not a production access mode.
 
+`FITNESS_DASHBOARD_NO_LOGIN=true` is a separate, explicit personal-use mode. Before the existing login guard runs, it loads the configured owner row (or the lowest user ID) into Flask-Login's request context without calling `login_user()` or storing an authentication identity in the session. Owner lookup failures fall back to normal authentication; the app never creates, guesses, or substitutes an account.
+
+**Security warning:** Trusted-network no-login mode removes the login barrier for everyone who can reach the instance. Use it only on the owner's localhost or private Tailnet boot, never on a public, shared, port-forwarded, or otherwise untrusted bind.
+
+Both the request host and direct peer identity are enforced before owner injection. Accepted hosts are `localhost`, loopback IPs, and Tailscale's [`100.64.0.0/10` device addresses](https://tailscale.com/docs/concepts/tailscale-ip-addresses). A non-loopback direct peer must be in that range and the local Tailscale client's [`whois` identity lookup](https://tailscale.com/docs/reference/tailscale-cli#whois) must return an authorized node containing the exact peer address; shared CGNAT space alone is not trusted. The lookup fails closed and successful identity is cached for 30 seconds. This is a direct-connection mode: standard forwarded/proxy headers and `*.ts.net` MagicDNS hosts are rejected, preventing Tailscale Serve/Funnel or another reverse proxy from collapsing an external client into a trusted loopback peer. MagicDNS is not supported because existing base-URL logic forces it to HTTPS while the documented direct Flask boot does not provide TLS.
+
+Because the application currently sends wildcard CORS response headers, the no-login hook also refuses owner injection when `Origin` differs from the actual request origin or `Sec-Fetch-Site` proves a browser read is cross-origin. `FITNESS_DASHBOARD_PUBLIC_BASE_URL` and forwarded-origin settings do not expand this authorization boundary. Direct navigation and same-origin localhost/Tailnet requests remain eligible; cross-origin API reads retain the normal 401 barrier. The exact GET `/api/whoop/callback` route is the only exception when its state was first issued by the local WHOOP or Open Wearables authorization-start flow and retained in the auth database. The ten-minute state is atomically removed before owner injection and before the callback route, mutation lock, or Open Wearables completion call runs. It is server-side OAuth state, not a Flask-Login identity or browser cookie, so direct HTTP Tailnet callbacks do not depend on the default Secure cookie.
+
 ## 10. Business Rules
 
 - First local user is the owner unless `FITNESS_DASHBOARD_OWNER_USER_ID` selects a valid integer ID.
+- Trusted-network no-login mode uses that exact existing owner identity and data user ID, so workout history and settings remain attached to the owner account; it never selects the FIT-385 QA account.
+- Trusted-network owner injection requires a localhost, loopback, or Tailscale device-IP request host, a loopback peer or an exact peer identity confirmed by local Tailscale WhoIs, no proxy headers, and no cross-origin browser evidence except a one-time server-side WHOOP/Open Wearables callback state; MagicDNS, deceptive, unverified-CGNAT, proxied, physical-LAN, configured-public-origin, unknown-state, reused-state, and unrelated cross-origin requests retain the normal login barrier.
+- If trusted-network owner resolution fails, protected requests keep the normal redirect/401 behavior.
 - If single-user mode is disabled, `_is_owner_user_id()` returns true for any authenticated user.
 - A missing owner row allows access rather than blocking setup.
 - Public prefix entries without trailing slash are exact matches; `/api/apple-health/sync/status` remains protected even though `/api/apple-health/sync` is public.
@@ -196,6 +212,9 @@ CSRF protection is not a per-route decorator; it is a global before-request gate
 - Form-token CSRF, same-origin metadata, and `X-Requested-With` are alternative valid mutation proofs unless cross-origin metadata is detected.
 - A successful login clears only the current IP's rate-limit history.
 - Legacy password rows are upgraded only after successful authentication.
+- When local QA is enabled, exactly one environment-designated QA identity is allowed through owner-gated routes while `_is_owner_user_id()` continues to identify only the owner.
+- The designated QA identity resolves to the owner ID at the shared data-user boundary; arbitrary non-owner identities retain their own IDs and remain forbidden in single-user mode.
+- Restarting with local QA disabled removes only the singleton-designated QA account and invalidates its existing session on the next request. Owner and unrelated account rows are preserved.
 
 ## 11. Config & Environment
 
@@ -206,11 +225,27 @@ CSRF protection is not a per-route decorator; it is a global before-request gate
 | `SESSION_COOKIE_SECURE` | `"true"` | Secure cookies enabled. Set `"false"` only for local HTTP. |
 | `FITNESS_DASHBOARD_SINGLE_USER` | `"true"` | Registration closes after first account and owner guard applies. |
 | `FITNESS_DASHBOARD_OWNER_USER_ID` | Empty | Owner is minimum `users.id`. An invalid non-integer value logs an actionable error and locks owner-only routes until corrected. Only unset/empty falls back to minimum `users.id`; an empty users table remains permissive for first-run setup. |
+| `FITNESS_DASHBOARD_NO_LOGIN` | Empty | Only the trimmed, case-insensitive literal `"true"` loads the existing owner into the current request without creating an authentication session. Every other value keeps normal login behavior. |
+| `FITNESS_DASHBOARD_LOCAL_QA_ENABLED` | Empty/disabled | Set exactly `true` only for local testing to provision one shared agent QA account on restart. Unset or `false` removes a previously designated QA account on restart. Never enable in production or on a public/shared deployment. |
+| `FITNESS_DASHBOARD_LOCAL_QA_USERNAME` | Empty | Required when local QA is enabled. Supply the shared agent QA username at runtime; do not commit it as a credential literal. Restart to provision or rotate it. |
+| `FITNESS_DASHBOARD_LOCAL_QA_PASSWORD` | Empty | Required when local QA is enabled and must contain at least 8 characters. Supply it through runtime secret configuration; restart to provision or rotate it. |
 | `FITNESS_DASHBOARD_PUBLIC_BASE_URL` | Empty | Adds a trusted same-origin value for CSRF origin comparison when set. |
+
+Example variable names for a local operator shell, using placeholders rather than credentials:
+
+```text
+FITNESS_DASHBOARD_LOCAL_QA_ENABLED=true
+FITNESS_DASHBOARD_LOCAL_QA_USERNAME=<shared-agent-qa-username>
+FITNESS_DASHBOARD_LOCAL_QA_PASSWORD=<secret-at-least-8-characters>
+```
+
+The owner must already exist before an enabled restart. Repeating an enabled restart reuses the same designated QA row and rotates credentials only when the configured values changed. Restarting after unsetting the flag or setting it to `false` removes that QA row. Neither path changes the owner login or credentials.
 
 ## 12. Test Coverage
 
-Existing focused tests cover successful login/session access, wrong password behavior, rate-limit recording, DB-unavailable 503 behavior, new-user scrypt storage, legacy SHA-256 migration, constant-time legacy compare, CSRF rejection/allowance paths, checkout form CSRF token presence, public auth form tokens, WHOOP mutation CSRF enforcement, and live JS sending the CSRF header.
+Existing focused tests cover successful login/session access, wrong password behavior, rate-limit recording, DB-unavailable 503 behavior, new-user scrypt storage, legacy SHA-256 migration, constant-time legacy compare, CSRF rejection/allowance paths, checkout form CSRF token presence, public auth form tokens, WHOOP mutation CSRF enforcement, and live JS sending the CSRF header. FIT-385 coverage additionally proves disabled defaults, transactional provisioning and cleanup, idempotent restarts, credential rotation, collision and owner-mapping refusal, stale-mapping repair, designated-QA route access, arbitrary-user denial, session invalidation after disable, and QA-to-owner data resolution with a representative food-log read and mutation.
+
+FIT-386 coverage additionally pins explicit no-login enablement, localhost/Tailscale host enforcement, authorized-node WhoIs matching, unverified-CGNAT and spoofed-host rejection, reverse-proxy rejection, strict current-origin enforcement, configured-public-origin rejection, one-time server-side WHOOP callback completion without a browser cookie, unknown/reused OAuth-state rejection before route work, same-origin access, request-scoped owner identity, configured-owner selection, no authentication session or clean-template cookie, stale non-owner session override while enabled, fail-closed owner lookup, unchanged default redirect/401/403 behavior, and the absence of no-login enablement from factory preview configuration.
 
 Coverage gaps:
 
