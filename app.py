@@ -13834,14 +13834,14 @@ def _whoop_day_from_record(record, record_type=None):
     return None
 
 
-def _validate_imported_whoop_local_date(local_date):
+def _validate_imported_whoop_local_date(local_date, *, now=None):
     try:
         parsed = datetime.strptime(str(local_date), "%Y-%m-%d").date()
     except Exception:
         raise ValueError("local_date must be a valid YYYY-MM-DD date.")
-    tomorrow = datetime.now().date() + timedelta(days=1)
+    tomorrow = (now or datetime.now()).date() + timedelta(days=1)
     if parsed > tomorrow:
-        raise ValueError("local_date cannot be in the future.")
+        raise ValueError("local_date cannot be more than one day ahead.")
     return parsed.isoformat()
 
 
