@@ -11080,6 +11080,117 @@ def test_imported_pending_multi_accept_does_not_promote_forged_provenance(monkey
         assert stored["accepted_estimate"].get(field) is None
 
 
+@pytest.mark.parametrize("multi_item", [False, True])
+def test_add_nutrition_pending_rows_cannot_stage_forged_provenance(
+    monkeypatch,
+    tmp_path,
+    multi_item,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = f"client-staged-pending-{multi_item}"
+    item_id = "item-1"
+    client_id = (
+        module._meal_item_client_id(
+            parent_client_id,
+            {"item_id": item_id},
+            0,
+        )
+        if multi_item
+        else parent_client_id
+    )
+    forged = _accepted_estimate(
+        item_name="Client staged photo claim",
+        calories=320,
+        source="vision_forged",
+        from_image=True,
+        external_food_id="forged-provider-id",
+        verified_source_url="https://example.invalid/forged-provider",
+    )
+    staged = module.app.test_client().post(
+        "/api/add-nutrition",
+        json={
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "calories": forged["calories"],
+            "protein_g": forged["protein_g"],
+            "carbs_g": forged["carbs_g"],
+            "fat_g": forged["fat_g"],
+            "sodium_mg": forged["sodium_mg"],
+            "fiber_g": forged["fiber_g"],
+            "item_name": forged["item_name"],
+            "source": forged["source"],
+            "correction_state": "pending_review",
+            "original_estimate": forged,
+        },
+    )
+    assert staged.status_code == 200, staged.get_data(as_text=True)
+    pending = data_store.get_food_log_by_client_id(1, client_id)
+    assert pending["original_estimate"]["_imported_pending_untrusted"] is True
+    assert pending["source"] == "manual"
+    assert pending.get("from_image") is not True
+    assert staged.get_json()["food_log"].get("from_image") is not True
+    for field in ("external_food_id", "verified_source_url"):
+        assert pending.get(field) is None
+        assert pending["original_estimate"].get(field) is None
+        assert staged.get_json()["food_log"].get(field) is None
+
+    if multi_item:
+        accepted = module.app.test_client().post(
+            f"/api/meal-intake/{parent_client_id}/accept",
+            json={
+                "meal_id": parent_client_id,
+                "items": [
+                    {"state": "included", "item_id": item_id, "estimate": forged},
+                ],
+            },
+        )
+        stored = accepted.get_json()["food_logs"][0]
+    else:
+        accepted = module.app.test_client().post(
+            f"/api/meal-intake/{client_id}/accept",
+            json={"estimate": forged},
+        )
+        stored = accepted.get_json()["food_log"]
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    assert stored["source"] == "manual_review_estimate"
+    assert stored.get("from_image") is not True
+    assert accepted.get_json()["photo_retention"]["image_received"] is False
+    for field in ("external_food_id", "verified_source_url"):
+        assert stored.get(field) is None
+        assert stored["accepted_estimate"].get(field) is None
+
+
+def test_add_nutrition_pending_without_source_stays_manual(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client_id = "manual-pending-without-source"
+
+    staged = module.app.test_client().post(
+        "/api/add-nutrition",
+        json={
+            "client_id": client_id,
+            "date": "2026-07-14",
+            "calories": 320,
+            "protein_g": 35,
+            "correction_state": "pending_review",
+            "item_name": "Manual pending meal",
+        },
+    )
+
+    assert staged.status_code == 200, staged.get_data(as_text=True)
+    stored = data_store.get_food_log_by_client_id(1, client_id)
+    assert stored["source"] == "manual"
+    assert stored["original_estimate"]["source"] == "manual_review_estimate"
+    assert stored.get("from_image") is not True
+    pending = module.app.test_client().get("/api/meal-intake/pending")
+    assert pending.status_code == 200, pending.get_data(as_text=True)
+    estimate = pending.get_json()["pending"][0]["estimate"]
+    assert estimate["source"] == "manual_review_estimate"
+    assert estimate.get("from_image") is not True
+
+
 def test_trusted_photo_snapshot_preserves_meal_image_when_photo_item_is_skipped(
     monkeypatch,
     tmp_path,

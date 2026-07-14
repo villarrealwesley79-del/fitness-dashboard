@@ -5671,6 +5671,31 @@ def add_nutrition():
     if client_id:
         entry["client_id"] = client_id
 
+    pending_client_baseline_untrusted = correction_state == "pending_review"
+    food_log_source = "manual" if pending_client_baseline_untrusted else source
+    original_estimate = data.get("original_estimate") or data.get("estimate")
+    if pending_client_baseline_untrusted:
+        if isinstance(original_estimate, dict):
+            original_estimate = dict(original_estimate)
+        else:
+            original_estimate = {
+                "item_name": item_name,
+                "portion_description": portion_description,
+                "meal_type": meal_type,
+                "calories": calories,
+                "protein_g": protein_g,
+                "carbs_g": carbs_g,
+                "fat_g": fat_g,
+                "sodium_mg": sodium_mg,
+                "fiber_g": fiber_g,
+                "confidence": confidence,
+                "source": food_log_source,
+            }
+        original_estimate = _manualize_untrusted_imported_estimate(
+            original_estimate
+        )
+        original_estimate["_imported_pending_untrusted"] = True
+
     food_log_record = {
         **entry,
         "logged_at": logged_at,
@@ -5680,10 +5705,10 @@ def add_nutrition():
         "portion_description": portion_description,
         "context_note": context_note,
         "confidence": round(float(confidence), 3) if confidence is not None else None,
-        "source": source,
+        "source": food_log_source,
         "correction_state": correction_state,
         "client_id": client_id,
-        "original_estimate": data.get("original_estimate") or data.get("estimate"),
+        "original_estimate": original_estimate,
     }
     for field in ("carbs_g", "fat_g", "sodium_mg", "fiber_g", "confidence"):
         if field not in data:
@@ -6466,6 +6491,11 @@ def _delete_legacy_nutrition_by_client_id(client_id: str) -> bool:
 
 def _meal_pending_review_payload(entry: dict) -> dict:
     estimate = dict(entry.get("original_estimate") or {})
+    imported_pending_untrusted = bool(
+        estimate.get("_imported_pending_untrusted") is True
+    )
+    if imported_pending_untrusted:
+        estimate = _manualize_untrusted_imported_estimate(estimate) or {}
     if not estimate:
         estimate = {
             "item_name": entry.get("item_name"),
@@ -6481,7 +6511,10 @@ def _meal_pending_review_payload(entry: dict) -> dict:
             "source": entry.get("source"),
             "uncertainty_notes": [],
         }
-    if _source_indicates_image(entry.get("source")):
+    if (
+        not imported_pending_untrusted
+        and _source_indicates_image(entry.get("source"))
+    ):
         estimate["from_image"] = True
     try:
         decision = evaluate_meal_log(estimate)
@@ -6499,7 +6532,6 @@ def _meal_pending_review_payload(entry: dict) -> dict:
         "logged_at": entry.get("logged_at"),
         "policy": policy,
     }
-    imported_pending_untrusted = isinstance(estimate, dict) and estimate.get("_imported_pending_untrusted") is True
     if (
         (_is_canes_box_combo(estimate) or _is_canes_box_combo_text(entry.get("context_note")))
         and (imported_pending_untrusted or not _is_source_backed_nutrition(estimate))
