@@ -248,6 +248,9 @@ _LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _TAILSCALE_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 _INVALID_OWNER_USER_ID = object()
 _NO_LOGIN_OWNER_DB_ERROR = object()
+_LOCAL_QA_ENABLED = "FITNESS_DASHBOARD_LOCAL_QA_ENABLED"
+_LOCAL_QA_USERNAME = "FITNESS_DASHBOARD_LOCAL_QA_USERNAME"
+_LOCAL_QA_PASSWORD = "FITNESS_DASHBOARD_LOCAL_QA_PASSWORD"
 _owner_config_error_logged = False
 _no_login_owner_error_logged = False
 
@@ -264,6 +267,161 @@ def _get_db():
         raise
     finally:
         conn.close()
+
+
+def _local_qa_enabled() -> bool:
+    return os.environ.get(_LOCAL_QA_ENABLED, "").strip().lower() == "true"
+
+
+def _table_exists(conn, table_name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone() is not None
+
+
+def _owner_user_id_from_conn(conn):
+    configured = os.environ.get("FITNESS_DASHBOARD_OWNER_USER_ID", "").strip()
+    if configured:
+        try:
+            return int(configured)
+        except ValueError:
+            return _INVALID_OWNER_USER_ID
+    row = conn.execute("SELECT MIN(id) FROM users").fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def _required_existing_owner_id(conn) -> int:
+    owner_id = _owner_user_id_from_conn(conn)
+    if owner_id is _INVALID_OWNER_USER_ID:
+        raise RuntimeError("Local QA account requires a valid owner user ID")
+    if owner_id is None or conn.execute(
+        "SELECT 1 FROM users WHERE id = ?", (owner_id,)
+    ).fetchone() is None:
+        raise RuntimeError("Local QA account requires an existing owner")
+    return owner_id
+
+
+def _local_qa_user_id_from_conn(conn):
+    if not _table_exists(conn, "local_qa_account"):
+        return None
+    row = conn.execute(
+        "SELECT user_id FROM local_qa_account WHERE singleton = 1"
+    ).fetchone()
+    return int(row["user_id"]) if row else None
+
+
+def _local_qa_user_id():
+    if not _local_qa_enabled():
+        return None
+    with _get_db() as conn:
+        return _local_qa_user_id_from_conn(conn)
+
+
+def _is_local_qa_user_id(user_id) -> bool:
+    if not _local_qa_enabled():
+        return False
+    try:
+        candidate_id = int(user_id)
+    except (TypeError, ValueError):
+        return False
+    with _get_db() as conn:
+        qa_id = _local_qa_user_id_from_conn(conn)
+        if qa_id != candidate_id:
+            return False
+        try:
+            owner_id = _required_existing_owner_id(conn)
+        except RuntimeError:
+            return False
+        return qa_id != owner_id
+
+
+def data_user_id_for(user_id) -> int:
+    candidate_id = int(user_id)
+    if not _local_qa_enabled():
+        return candidate_id
+    with _get_db() as conn:
+        qa_id = _local_qa_user_id_from_conn(conn)
+        if candidate_id != qa_id:
+            return candidate_id
+        owner_id = _required_existing_owner_id(conn)
+        if qa_id == owner_id:
+            raise RuntimeError("Local QA mapping cannot resolve to the owner account itself")
+        return owner_id
+
+
+def _remove_local_qa_account(conn) -> None:
+    if not _table_exists(conn, "local_qa_account"):
+        return
+    qa_id = _local_qa_user_id_from_conn(conn)
+    if qa_id is not None:
+        owner_id = _required_existing_owner_id(conn)
+        if qa_id == owner_id:
+            raise RuntimeError("Local QA mapping points to the owner; cleanup refused")
+        conn.execute("DELETE FROM local_qa_account WHERE singleton = 1")
+        conn.execute("DELETE FROM users WHERE id = ?", (qa_id,))
+    conn.execute("DROP TABLE local_qa_account")
+
+
+def _reconcile_local_qa_account(conn) -> None:
+    if not _local_qa_enabled():
+        _remove_local_qa_account(conn)
+        return
+
+    username = os.environ.get(_LOCAL_QA_USERNAME, "").strip()
+    password = os.environ.get(_LOCAL_QA_PASSWORD, "")
+    if not username or not password:
+        raise RuntimeError("Local QA account requires username and password settings")
+    if len(password) < 8:
+        raise RuntimeError("Local QA account password must be at least 8 characters")
+    owner_id = _required_existing_owner_id(conn)
+    mapped = None
+    if _table_exists(conn, "local_qa_account"):
+        mapped = conn.execute(
+            "SELECT user_id FROM local_qa_account WHERE singleton = 1"
+        ).fetchone()
+    if mapped is not None and int(mapped["user_id"]) == owner_id:
+        raise RuntimeError("Local QA mapping points to the owner account")
+    collision = conn.execute(
+        "SELECT id FROM users WHERE username = ?",
+        (username,),
+    ).fetchone()
+    if collision is not None and (
+        mapped is None or int(collision["id"]) != int(mapped["user_id"])
+    ):
+        raise RuntimeError("Local QA account username collides with an existing account")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS local_qa_account (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            user_id INTEGER NOT NULL UNIQUE
+        )
+        """
+    )
+    if mapped is not None:
+        qa = conn.execute(
+            "SELECT username, password FROM users WHERE id = ?",
+            (mapped["user_id"],),
+        ).fetchone()
+        if qa is not None:
+            password_hash = qa["password"]
+            if not check_password_hash(password_hash, password):
+                password_hash = _hash_password(password)
+            if qa["username"] != username or password_hash != qa["password"]:
+                conn.execute(
+                    "UPDATE users SET username = ?, password = ?, salt = '' WHERE id = ?",
+                    (username, password_hash, mapped["user_id"]),
+                )
+            return
+        conn.execute("DELETE FROM local_qa_account WHERE singleton = 1")
+    cursor = conn.execute(
+        "INSERT INTO users (username, password, salt) VALUES (?, ?, ?)",
+        (username, _hash_password(password), ""),
+    )
+    conn.execute(
+        "INSERT INTO local_qa_account (singleton, user_id) VALUES (1, ?)",
+        (cursor.lastrowid,),
+    )
 
 
 def init_auth_db():
@@ -326,6 +484,9 @@ def init_auth_db():
         ]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        _reconcile_local_qa_account(conn)
         conn.commit()
 
 
@@ -452,15 +613,8 @@ def _user_count() -> int:
 
 
 def _owner_user_id():
-    configured = os.environ.get("FITNESS_DASHBOARD_OWNER_USER_ID", "").strip()
-    if configured:
-        try:
-            return int(configured)
-        except ValueError:
-            return _INVALID_OWNER_USER_ID
     with _get_db() as conn:
-        row = conn.execute("SELECT MIN(id) FROM users").fetchone()
-    return int(row[0]) if row and row[0] is not None else None
+        return _owner_user_id_from_conn(conn)
 
 
 def _trusted_no_login_enabled() -> bool:
@@ -536,6 +690,10 @@ def _is_owner_user_id(user_id) -> bool:
         return int(user_id) == owner_id
     except (TypeError, ValueError):
         return False
+
+
+def _has_owner_route_access(user_id) -> bool:
+    return _is_owner_user_id(user_id) or _is_local_qa_user_id(user_id)
 
 
 @login_manager.user_loader
@@ -850,7 +1008,7 @@ def init_auth(app):
                 from flask import jsonify
                 return jsonify({"error": "Unauthorized", "login": "/login"}), 401
             return redirect(url_for("auth.login", next=request.path))
-        if not getattr(g, "_trusted_no_login_owner", False) and not _is_owner_user_id(
+        if not getattr(g, "_trusted_no_login_owner", False) and not _has_owner_route_access(
             current_user.get_id()
         ):
             if request.path.startswith("/api/") or request.headers.get("Accept", "").startswith("application/json"):
