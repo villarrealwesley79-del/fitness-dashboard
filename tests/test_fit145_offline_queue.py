@@ -111,7 +111,8 @@ def test_auth_failures_stay_visible_retryable_and_do_not_post_on_scope_mismatch(
     assert "syncStatus = 'auth_required';" in block
     assert "status: 'pending'" in block
     assert "Could not verify the current sign-in before syncing this meal." in block
-    assert "MEAL_QUEUE_RETRYABLE_STATUSES.has(e.last_status || 'pending')" in block
+    assert "MEAL_QUEUE_RETRYABLE_STATUSES.has(status)" in block
+    assert "mealQueueCanAutomaticallyRetry(entry, refreshedScope)" in block
     assert "await updateMealQueueEntry(clientId, {" in block
     assert "last_status: authStatus" in block
     assert "return { ok: false, status: authStatus };" in block
@@ -202,6 +203,58 @@ def test_sync_ui_includes_meal_retry_discard_and_privacy_copy():
     assert "Meal · ${escapeHtml(titleText)}" in APP_JS
     assert "sync-row-meal" in APP_CSS
     assert "sync-status-eviction_failed" in APP_CSS
+
+
+def test_meal_sync_rows_explain_retry_condition_for_all_visible_failure_states():
+    block = _app_js_block(
+        "function mealQueueNextRetryCondition(status)",
+        "async function syncSingleMealQueueEntry(clientId)",
+    )
+    modal_block = _app_js_block(
+        "async function renderSyncQueueModal()",
+        "async function completeWorkout()",
+    )
+
+    expected_conditions = {
+        "pending": "When this device reconnects, when the app opens online, or when you tap Retry.",
+        "auth_required": "After the signed-in account matches the account that saved this meal.",
+        "rejected": "Manual retry only after correcting the meal.",
+        "conflicted": "Manual retry after the server conflict is resolved.",
+        "eviction_failed": "No sync retry. Discard removes the accepted meal’s local copy.",
+    }
+    for status, condition in expected_conditions.items():
+        assert f"{status}: '{condition}'" in block
+
+    assert "Last attempt" in modal_block
+    assert "Next retry" in modal_block
+    assert "Attempt count" in modal_block
+    assert "mealQueueNextRetryCondition(status)" in modal_block
+
+
+def test_auth_required_meals_wait_for_refreshed_matching_scope_before_retry():
+    flush_block = _app_js_block(
+        "async function flushMealSyncQueue()",
+        "function renderSyncBanner()",
+    )
+    sync_block = _app_js_block(
+        "async function syncSingleMealQueueEntry(clientId)",
+        "async function flushMealSyncQueue()",
+    )
+
+    assert "const scopeResult = await refreshMealQueueAuthScope();" in flush_block
+    assert ".filter((entry) => mealQueueCanAutomaticallyRetry(entry, refreshedScope))" in flush_block
+    assert "status !== 'auth_required'" in APP_JS
+    assert "queuedScope === refreshedScope" in APP_JS
+
+    auth_gate_idx = sync_block.find("const authGate = await mealQueueAuthGate(entry);")
+    attempted_at_idx = sync_block.find("const attemptedAt = new Date().toISOString();")
+    attempts_idx = sync_block.find("const attempts = (entry.attempts || 0) + 1;")
+    assert auth_gate_idx < attempted_at_idx < attempts_idx
+    auth_failure_block = sync_block[
+        sync_block.find("if (!authGate.ok)") : sync_block.find("const attemptedAt")
+    ]
+    assert "last_attempt_at" not in auth_failure_block
+    assert "attempts," not in auth_failure_block
 
 
 def test_privacy_doc_documents_temporary_indexeddb_carveout():
