@@ -8999,6 +8999,18 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
             and meal_id != item["client_id"]
         ):
             stored_item = _food_log_by_client_id(user_id, meal_id)
+        if (
+            isinstance(stored_item, dict)
+            and stored_item.get("correction_state")
+            == CORRECTION_STATE_PENDING_REVIEW
+            and stored_item.get("meal_id")
+            and stored_item.get("meal_id") != meal_id
+        ):
+            return api_error(
+                "client_id already belongs to a different pending meal",
+                409,
+                code="duplicate_client_id",
+            )
         if not trusted_snapshot:
             if (
                 isinstance(stored_item, dict)

@@ -8531,6 +8531,56 @@ def test_cross_meal_full_discard_rejects_pending_route_alias(monkeypatch, tmp_pa
     assert data_store.get_meal_review_snapshot(1, route_meal_id) is not None
 
 
+def test_cross_meal_accept_rejects_pending_child_owned_by_another_meal(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "shared-pending-child-parent"
+    original_meal_id = "pending-child-original-meal"
+    requested_meal_id = "pending-child-requested-meal"
+    item_id = "item-1"
+    estimate = _accepted_estimate(item_name="Original pending child", calories=300)
+    client_id = module._meal_item_client_id(
+        parent_client_id,
+        {"item_id": item_id},
+        0,
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "meal_id": original_meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": requested_meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "duplicate_client_id"
+    stored = data_store.get_food_log_by_client_id(1, client_id)
+    assert stored["meal_id"] == original_meal_id
+    assert stored["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, requested_meal_id) is None
+
+
 @pytest.mark.parametrize("terminal_replay", [True, False])
 def test_cross_meal_terminal_paths_reject_pending_route_alias(
     monkeypatch,
