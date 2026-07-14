@@ -8,9 +8,13 @@ import fcntl
 import sqlite3
 import hmac
 import hashlib
+import ipaddress
+import json
 import logging
 import re
 import secrets
+import shutil
+import subprocess
 import time
 from contextlib import contextmanager
 from urllib.parse import urlsplit
@@ -244,11 +248,17 @@ _CSRF_EXEMPT_PATHS = {
 }
 _PASSWORD_HASH_METHOD = "scrypt:32768:8:1"
 _LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
+_TAILSCALE_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 _INVALID_OWNER_USER_ID = object()
+_NO_LOGIN_OWNER_DB_ERROR = object()
 _LOCAL_QA_ENABLED = "FITNESS_DASHBOARD_LOCAL_QA_ENABLED"
 _LOCAL_QA_USERNAME = "FITNESS_DASHBOARD_LOCAL_QA_USERNAME"
 _LOCAL_QA_PASSWORD = "FITNESS_DASHBOARD_LOCAL_QA_PASSWORD"
+_TRUSTED_NO_LOGIN_OAUTH_STATE_TTL_SECONDS = 600
+_TAILSCALE_MACOS_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+_tailscale_verified_peer_cache = {}
 _owner_config_error_logged = False
+_no_login_owner_error_logged = False
 
 
 @contextmanager
@@ -448,6 +458,14 @@ def init_auth_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trusted_no_login_oauth_states (
+                state      TEXT PRIMARY KEY,
+                expires_at REAL NOT NULL
+            )
+            """
+        )
         rate_limit_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(auth_rate_limit_attempts)")
         }
@@ -611,6 +629,184 @@ def _user_count() -> int:
 def _owner_user_id():
     with _get_db() as conn:
         return _owner_user_id_from_conn(conn)
+
+
+def _trusted_no_login_enabled() -> bool:
+    return os.environ.get("FITNESS_DASHBOARD_NO_LOGIN", "").strip().lower() == "true"
+
+
+def remember_trusted_no_login_oauth_state(state) -> None:
+    state = str(state or "").strip()
+    if not _trusted_no_login_enabled() or not state:
+        return
+    now = time.time()
+    try:
+        with _get_db() as conn:
+            conn.execute(
+                "DELETE FROM trusted_no_login_oauth_states WHERE expires_at < ?",
+                (now,),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO trusted_no_login_oauth_states (state, expires_at) "
+                "VALUES (?, ?)",
+                (state, now + _TRUSTED_NO_LOGIN_OAUTH_STATE_TTL_SECONDS),
+            )
+    except sqlite3.Error:
+        logging.getLogger(__name__).exception(
+            "Could not retain trusted no-login OAuth state; cross-site callback will remain locked"
+        )
+
+
+def _trusted_no_login_request_hostname():
+    try:
+        hostname = urlsplit(f"//{request.host}").hostname
+    except ValueError:
+        return None
+    if not hostname:
+        return None
+    return hostname.rstrip(".").lower()
+
+
+def _trusted_no_login_request_host() -> bool:
+    hostname = _trusted_no_login_request_hostname()
+    if hostname is None:
+        return False
+
+    if hostname == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return address.is_loopback or (
+        isinstance(address, ipaddress.IPv4Address)
+        and address in _TAILSCALE_IPV4_NETWORK
+    )
+
+
+def _tailscale_cli_path():
+    installed = shutil.which("tailscale")
+    if installed:
+        return installed
+    if os.access(_TAILSCALE_MACOS_CLI, os.X_OK):
+        return _TAILSCALE_MACOS_CLI
+    return None
+
+
+def _tailscale_peer_is_authenticated(address: str) -> bool:
+    now = time.monotonic()
+    if _tailscale_verified_peer_cache.get(address, 0) > now:
+        return True
+    cli = _tailscale_cli_path()
+    if cli is None:
+        return False
+    try:
+        completed = subprocess.run(
+            [cli, "whois", "--json", address],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+        payload = json.loads(completed.stdout) if completed.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return False
+    node = payload.get("Node") if isinstance(payload, dict) else None
+    if not isinstance(node, dict) or node.get("MachineAuthorized") is not True:
+        return False
+    for value in node.get("Addresses") or ():
+        try:
+            if ipaddress.ip_interface(value).ip == ipaddress.ip_address(address):
+                _tailscale_verified_peer_cache[address] = now + 30
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _trusted_no_login_request_peer() -> bool:
+    if any(
+        request.headers.get(header)
+        for header in (
+            "Forwarded",
+            "X-Forwarded-For",
+            "X-Forwarded-Host",
+            "X-Forwarded-Proto",
+        )
+    ):
+        return False
+    try:
+        address = ipaddress.ip_address(request.remote_addr or "")
+    except ValueError:
+        return False
+    if address.is_loopback:
+        hostname = _trusted_no_login_request_hostname()
+        if hostname == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(hostname or "").is_loopback
+        except ValueError:
+            return False
+    return (
+        isinstance(address, ipaddress.IPv4Address)
+        and address in _TAILSCALE_IPV4_NETWORK
+        and _tailscale_peer_is_authenticated(str(address))
+    )
+
+
+def _consume_trusted_no_login_oauth_callback_state() -> bool:
+    if request.method != "GET" or request.path != "/api/whoop/callback":
+        return False
+    state = str(request.args.get("state") or "").strip()
+    code = str(request.args.get("code") or "").strip()
+    if not state or not code:
+        return False
+    now = time.time()
+    try:
+        with _get_db() as conn:
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM trusted_no_login_oauth_states WHERE expires_at < ?",
+                (now,),
+            )
+            consumed = conn.execute(
+                "DELETE FROM trusted_no_login_oauth_states "
+                "WHERE state = ? AND expires_at >= ?",
+                (state, now),
+            )
+            return consumed.rowcount == 1
+    except sqlite3.Error:
+        return False
+
+
+def _trusted_no_login_owner():
+    global _no_login_owner_error_logged
+
+    try:
+        owner_id = _owner_user_id()
+        owner = None
+        if owner_id is not _INVALID_OWNER_USER_ID and owner_id is not None:
+            owner = User.get_by_id(owner_id)
+    except sqlite3.Error:
+        if not _no_login_owner_error_logged:
+            logging.getLogger(__name__).exception(
+                "FITNESS_DASHBOARD_NO_LOGIN=true but the owner account could not be read; "
+                "normal authentication remains enabled"
+            )
+            _no_login_owner_error_logged = True
+        return _NO_LOGIN_OWNER_DB_ERROR
+    if owner is not None:
+        return owner
+
+    if not _no_login_owner_error_logged:
+        logging.getLogger(__name__).error(
+            "FITNESS_DASHBOARD_NO_LOGIN=true but no valid owner account could be loaded; "
+            "normal authentication remains enabled"
+        )
+        _no_login_owner_error_logged = True
+    return None
 
 
 def _is_owner_user_id(user_id) -> bool:
@@ -824,6 +1020,19 @@ def _has_cross_origin_browser_header() -> bool:
     return request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site"
 
 
+def _has_cross_origin_no_login_header() -> bool:
+    origin = request.headers.get("Origin", "").strip()
+    if origin:
+        try:
+            candidate = _origin_parts(origin)
+            current = _origin_parts(request.host_url)
+        except ValueError:
+            return True
+        if not candidate or candidate != current:
+            return True
+    return request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site"
+
+
 def _has_same_origin_browser_header() -> bool:
     if request.headers.get("Sec-Fetch-Site", "").strip().lower() == "same-origin":
         return True
@@ -862,7 +1071,7 @@ def _csrf_failure_response():
 def init_auth(app):
     """Wire login_manager and auth blueprint into the Flask app."""
     from datetime import timedelta
-    from flask import request, redirect, url_for
+    from flask import g, request, redirect, url_for
     from flask_login import current_user
 
     # SECRET_KEY resolution order:
@@ -901,8 +1110,30 @@ def init_auth(app):
     app.register_blueprint(auth_bp)
     init_auth_db()
 
+    @app.before_request
+    def load_trusted_no_login_owner():
+        cross_origin = _has_cross_origin_no_login_header()
+        if (
+            not _trusted_no_login_enabled()
+            or not _trusted_no_login_request_host()
+            or not _trusted_no_login_request_peer()
+            or (cross_origin and not _consume_trusted_no_login_oauth_callback_state())
+        ):
+            return None
+        owner = _trusted_no_login_owner()
+        if owner is _NO_LOGIN_OWNER_DB_ERROR:
+            login_manager._update_request_context_with_user()
+            return None
+        if owner is None:
+            return None
+        login_manager._update_request_context_with_user(owner)
+        g._trusted_no_login_owner = True
+        return None
+
     @app.context_processor
     def inject_csrf_token():
+        if getattr(g, "_trusted_no_login_owner", False):
+            return {CSRF_FORM_FIELD: ""}
         return {CSRF_FORM_FIELD: _form_csrf_token()}
 
     @app.before_request
@@ -931,7 +1162,9 @@ def init_auth(app):
                 from flask import jsonify
                 return jsonify({"error": "Unauthorized", "login": "/login"}), 401
             return redirect(url_for("auth.login", next=request.path))
-        if not _has_owner_route_access(current_user.get_id()):
+        if not getattr(g, "_trusted_no_login_owner", False) and not _has_owner_route_access(
+            current_user.get_id()
+        ):
             if request.path.startswith("/api/") or request.headers.get("Accept", "").startswith("application/json"):
                 from flask import jsonify
                 return jsonify({"error": "Forbidden"}), 403
