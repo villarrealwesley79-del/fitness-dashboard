@@ -49,7 +49,7 @@ When the mode is disabled, no new request hook performs work. The existing Flask
 
 When the mode is enabled:
 
-1. A request hook registered before `require_login()` validates the request `Host` as localhost, loopback, a Tailscale IPv4 address, or a fully qualified `*.ts.net` MagicDNS name. It independently requires the direct peer address to be loopback or in Tailscale's IPv4 device range, rejects forwarded/proxy headers and loopback-proxied `*.ts.net` hosts, and rejects browser requests whose `Origin` or `Sec-Fetch-Site` proves they are cross-origin. The only cross-origin exception is an exact GET `/api/whoop/callback` carrying both `state` and `code`, whose route performs the existing user-bound, single-use state validation. Other requests receive normal authentication behavior.
+1. A request hook registered before `require_login()` validates the request `Host` as localhost, loopback, a Tailscale IPv4 address, or a fully qualified `*.ts.net` MagicDNS name. It independently requires the direct peer address to be loopback or in Tailscale's IPv4 device range, rejects forwarded/proxy headers and loopback-proxied `*.ts.net` hosts, and rejects browser requests whose `Origin` differs from the actual request origin or whose `Sec-Fetch-Site` proves they are cross-origin. Configured public or forwarded origins are not authorization inputs. The only cross-origin exception is an exact GET `/api/whoop/callback` whose state was issued into the same browser's signed session by the authorization-start flow; that state is removed before owner injection or route work. Other requests receive normal authentication behavior.
 2. The hook resolves the owner using the existing owner-selection rule: `FITNESS_DASHBOARD_OWNER_USER_ID` when valid, otherwise the lowest local user ID.
 3. The hook loads that exact existing `User` row.
 4. The hook installs the owner only in Flask-Login's current request context. It does not call `login_user()`, clear sessions, create an account, or mutate the auth database.
@@ -92,7 +92,7 @@ Enabling this mode deliberately removes the authentication barrier for every per
 
 The request `Host` gate is defense in depth against DNS rebinding, while the independent direct-peer gate prevents an untrusted client from activating owner identity by spoofing `Host: localhost` or a `*.ts.net` name. No forwarded-address header is trusted; the mode is unsupported behind Tailscale Serve/Funnel or any other reverse proxy.
 
-The existing application sends wildcard CORS response headers, so the no-login hook must also refuse owner injection for cross-origin browser reads. Direct navigation, requests without cross-origin browser evidence, and same-origin requests remain eligible.
+The existing application sends wildcard CORS response headers, so the no-login hook must also refuse owner injection for cross-origin browser reads using the actual request origin only. Direct navigation, requests without cross-origin browser evidence, and same-origin requests remain eligible. The state-bound OAuth callback exception uses a one-time signed-session state and never treats merely nonempty callback parameters as authorization.
 
 Documentation will place this warning next to the exact environment variable and restart instructions. No secret values, real credentials, or owner data are added to source control.
 

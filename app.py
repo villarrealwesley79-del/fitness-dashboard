@@ -178,7 +178,13 @@ from meal_log_policy import (
 app = Flask(__name__)
 
 # ── Auth (must be after app creation) ──────────────────────────
-from auth import CSRF_HEADER_NAME, CSRF_HEADER_VALUE, data_user_id_for, init_auth
+from auth import (
+    CSRF_HEADER_NAME,
+    CSRF_HEADER_VALUE,
+    data_user_id_for,
+    init_auth,
+    remember_trusted_no_login_oauth_state,
+)
 init_auth(app)
 
 # ── Health route registration (Apple Health + HealthKit ingest) ──
@@ -12490,6 +12496,8 @@ def _open_wearables_authorization_url(provider):
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None, "provider_authorization_failed"
+    state = (urllib.parse.parse_qs(parsed.query).get("state") or [""])[0]
+    remember_trusted_no_login_oauth_state(state)
     return url, None
 
 
@@ -14343,6 +14351,7 @@ def whoop_connect_start():
         user_binding=_whoop_user_binding(),
         ttl_minutes=10,
     )
+    remember_trusted_no_login_oauth_state(state)
     return _whoop_no_store(jsonify(
         {
             "status": "success",

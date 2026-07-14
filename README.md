@@ -87,6 +87,8 @@ standard forwarded/proxy headers are rejected, and a loopback peer cannot use a
 `*.ts.net` host. Do not expose this mode through Tailscale Funnel or another
 reverse proxy. The state-validated WHOOP/Open Wearables OAuth callback is the
 only cross-site browser redirect allowed to receive the request-scoped owner.
+Its state must first be issued into that browser's signed session and is removed
+before the callback route runs; this is OAuth state, not a login session.
 
 On the Mac mini, install or refresh the local launchd agents with:
 

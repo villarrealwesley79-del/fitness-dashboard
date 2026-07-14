@@ -251,6 +251,7 @@ _NO_LOGIN_OWNER_DB_ERROR = object()
 _LOCAL_QA_ENABLED = "FITNESS_DASHBOARD_LOCAL_QA_ENABLED"
 _LOCAL_QA_USERNAME = "FITNESS_DASHBOARD_LOCAL_QA_USERNAME"
 _LOCAL_QA_PASSWORD = "FITNESS_DASHBOARD_LOCAL_QA_PASSWORD"
+_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY = "_trusted_no_login_oauth_states"
 _owner_config_error_logged = False
 _no_login_owner_error_logged = False
 
@@ -621,6 +622,18 @@ def _trusted_no_login_enabled() -> bool:
     return os.environ.get("FITNESS_DASHBOARD_NO_LOGIN", "").strip().lower() == "true"
 
 
+def remember_trusted_no_login_oauth_state(state) -> None:
+    state = str(state or "").strip()
+    if not _trusted_no_login_enabled() or not state:
+        return
+    states = session.get(_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY)
+    if not isinstance(states, list):
+        states = []
+    states = [item for item in states if isinstance(item, str) and item != state]
+    states.append(state)
+    session[_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY] = states[-4:]
+
+
 def _trusted_no_login_request_hostname():
     try:
         hostname = urlsplit(f"//{request.host}").hostname
@@ -674,13 +687,20 @@ def _trusted_no_login_request_peer() -> bool:
     return isinstance(address, ipaddress.IPv4Address) and address in _TAILSCALE_IPV4_NETWORK
 
 
-def _trusted_no_login_oauth_callback() -> bool:
-    return (
-        request.method == "GET"
-        and request.path == "/api/whoop/callback"
-        and bool(str(request.args.get("state") or "").strip())
-        and bool(str(request.args.get("code") or "").strip())
-    )
+def _consume_trusted_no_login_oauth_callback_state() -> bool:
+    if request.method != "GET" or request.path != "/api/whoop/callback":
+        return False
+    state = str(request.args.get("state") or "").strip()
+    code = str(request.args.get("code") or "").strip()
+    states = session.get(_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY)
+    if not state or not code or not isinstance(states, list) or state not in states:
+        return False
+    remaining = [item for item in states if item != state]
+    if remaining:
+        session[_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY] = remaining
+    else:
+        session.pop(_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY, None)
+    return True
 
 
 def _trusted_no_login_owner():
@@ -922,6 +942,19 @@ def _has_cross_origin_browser_header() -> bool:
     return request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site"
 
 
+def _has_cross_origin_no_login_header() -> bool:
+    origin = request.headers.get("Origin", "").strip()
+    if origin:
+        try:
+            candidate = _origin_parts(origin)
+            current = _origin_parts(request.host_url)
+        except ValueError:
+            return True
+        if not candidate or candidate != current:
+            return True
+    return request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site"
+
+
 def _has_same_origin_browser_header() -> bool:
     if request.headers.get("Sec-Fetch-Site", "").strip().lower() == "same-origin":
         return True
@@ -1001,14 +1034,12 @@ def init_auth(app):
 
     @app.before_request
     def load_trusted_no_login_owner():
+        cross_origin = _has_cross_origin_no_login_header()
         if (
             not _trusted_no_login_enabled()
             or not _trusted_no_login_request_host()
             or not _trusted_no_login_request_peer()
-            or (
-                _has_cross_origin_browser_header()
-                and not _trusted_no_login_oauth_callback()
-            )
+            or (cross_origin and not _consume_trusted_no_login_oauth_callback_state())
         ):
             return None
         owner = _trusted_no_login_owner()

@@ -364,6 +364,23 @@ def test_enabled_mode_rejects_cross_origin_reads(tmp_path, monkeypatch, headers)
     assert response.status_code == 401
 
 
+def test_enabled_mode_does_not_trust_configured_public_origin(tmp_path, monkeypatch):
+    monkeypatch.setenv("FITNESS_DASHBOARD_PUBLIC_BASE_URL", "https://public.example")
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+
+    response = app.test_client().get(
+        "/api/protected",
+        base_url="http://localhost:5050",
+        headers={
+            "Origin": "https://public.example",
+            "Sec-Fetch-Site": "same-site",
+        },
+    )
+
+    assert response.status_code == 401
+
+
 @pytest.mark.parametrize(
     "headers",
     [

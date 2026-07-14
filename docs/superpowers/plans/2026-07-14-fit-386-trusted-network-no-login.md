@@ -41,10 +41,11 @@
 | Protected route | Flag exactly `true`; owner lookup succeeds once | Existing owner row and validated request marker | No second owner DB lookup in the login guard | 200 as owner even if a redundant second lookup would fail; focused single-lookup test |
 | Protected route | Flag exactly `true`; `Host` is localhost, loopback, Tailscale `100.64.0.0/10`, or `*.ts.net`; direct peer is loopback or Tailscale `100.64.0.0/10` | Existing owner row | Request-local identity only | 200 as owner; trusted-host and trusted-peer tests |
 | Protected browser/API | Flag exactly `true`; `Host` is attacker-controlled, LAN-only, or a deceptive `.ts.net` suffix, or trusted `Host` is spoofed by an untrusted direct peer | None unless normal session auth succeeds | No owner lookup or injection | Existing redirect/401 behavior; untrusted-host, peer-spoofing, and DNS-rebinding tests |
-| Protected GET API | Flag exactly `true`; trusted `Host`; mismatched `Origin` or `Sec-Fetch-Site: cross-site` | None unless normal session auth succeeds | No owner lookup or injection | Existing API 401 despite wildcard CORS response; cross-origin read tests |
+| Protected GET API | Flag exactly `true`; trusted `Host`; `Origin` differs from the actual request origin, configured public origin matches, or `Sec-Fetch-Site: cross-site` | None unless normal session auth succeeds | No owner lookup or injection | Existing API 401 despite wildcard CORS response; strict-origin tests |
 | Protected GET API | Flag exactly `true`; trusted `Host`; same-origin `Origin` or `Sec-Fetch-Site: same-origin` | Existing owner row | Request-local identity only | 200 as owner; same-origin tests |
 | Protected route | Flag exactly `true`; forwarded/proxy header present, or loopback peer claims `*.ts.net` | None unless normal session auth succeeds | No owner lookup or injection | Existing redirect/401 behavior; reverse-proxy tests |
-| WHOOP/Open Wearables callback | Flag exactly `true`; direct trusted request; cross-site GET with non-empty `state` and `code` | Existing owner row | Existing callback consumes user-bound, single-use OAuth state | Successful callback continues; end-to-end no-login OAuth test |
+| WHOOP/Open Wearables callback | Flag exactly `true`; direct trusted request; cross-site GET whose state was issued into the same browser's signed session | Existing owner row | OAuth state removed before injection; no login identity stored | Successful callback continues once; end-to-end no-login OAuth test |
+| WHOOP/Open Wearables callback | Flag exactly `true`; cross-site GET with unknown or reused state | None | No owner lookup, mutation lock, or downstream callback call | Existing API 401; pre-route rejection tests |
 | Factory preview/CI | Existing `.agents/factory.yaml` | Existing preview login | No config mutation | Source assertion that no-login flag is absent |
 
 Retry, concurrency, transaction, and rollback dimensions are not applicable: each request performs read-only owner lookup and request-local identity assignment; no persistent state is written.
@@ -246,6 +247,10 @@ Add direct-peer RED coverage because `Host` is client-controlled: requests from 
 Add reverse-proxy RED coverage: a loopback peer claiming `*.ts.net` and a loopback request carrying standard forwarded headers must retain the normal 401 barrier. This mode is direct-connect only and must not operate behind Tailscale Serve/Funnel.
 
 Add an end-to-end no-login WHOOP callback RED test. Start OAuth as the request-scoped owner, return on the exact callback with `Sec-Fetch-Site: cross-site`, and prove the existing user-bound state is consumed and the connection succeeds. No other cross-origin route is exempt.
+
+Replace the syntactic callback exception with a one-time browser-session state gate. Both local WHOOP and Open Wearables authorization-start paths remember the provider state in the signed Flask session only when no-login mode is enabled. The callback hook must remove a matching state before owner injection; unknown and reused state must return 401 before mutation-lock or downstream callback work. This OAuth state is not a Flask-Login identity.
+
+Use a dedicated no-login origin comparison against `request.host_url`. Do not inherit `FITNESS_DASHBOARD_PUBLIC_BASE_URL` or forwarded-origin allowances from the broader CSRF helper.
 
 - [ ] **Step 6: Run the tests to prove RED**
 
