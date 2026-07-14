@@ -141,10 +141,12 @@ from data_store import (
     acknowledge_workout_adaptation_event,
     delete_current_workout_plan,
     get_current_workout_plan,
+    get_workout_adaptation_revision,
     get_push_subscription_for_delivery,
     list_push_subscriptions,
     list_food_log_refresh_events,
     list_pending_workout_adaptation_windows,
+    list_unpublished_applied_workout_adaptation_events,
     list_workout_adaptation_events,
     revoke_push_subscription,
     save_push_subscription,
@@ -4640,7 +4642,8 @@ def _persist_current_workout_plan(
     fingerprint: str,
     *,
     customized: bool = False,
-) -> dict:
+    publish_adaptation_event_ids: list[str] | None = None,
+) -> dict | None:
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT, LAST_WORKOUT_RECOMMENDATION_OWNER
     with CURRENT_WORKOUT_PLAN_LOCK:
         stored_customization_marker = recommendation.get("_user_customized") is True
@@ -4660,6 +4663,17 @@ def _persist_current_workout_plan(
             or stored_customization_marker
             or (same_current_plan and LAST_WORKOUT_RECOMMENDATION_OWNER.get("customized"))
         )
+        persisted_recommendation = dict(recommendation)
+        if customized:
+            persisted_recommendation["_user_customized"] = True
+        persisted = save_current_workout_plan(
+            current_user_id,
+            fingerprint,
+            persisted_recommendation,
+            publish_adaptation_event_ids=publish_adaptation_event_ids,
+        )
+        if persisted is None:
+            return None
         LAST_WORKOUT_RECOMMENDATION = recommendation
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
         LAST_WORKOUT_RECOMMENDATION_OWNER = {
@@ -4668,11 +4682,25 @@ def _persist_current_workout_plan(
             "plan_id": id(recommendation),
             "customized": customized,
         }
-        persisted_recommendation = dict(recommendation)
-        if customized:
-            persisted_recommendation["_user_customized"] = True
-        save_current_workout_plan(current_user_id, fingerprint, persisted_recommendation)
     return recommendation
+
+
+def _publish_unpublished_workout_adaptations(user_id: int, fingerprint: str) -> list[str]:
+    while True:
+        unpublished = list_unpublished_applied_workout_adaptation_events(user_id)
+        if not unpublished:
+            return []
+        latest_plan = unpublished[-1].get("_adapted_plan")
+        if not isinstance(latest_plan, dict):
+            raise RuntimeError("unpublished workout adaptation is missing its adapted plan")
+        event_ids = [str(event["id"]) for event in unpublished if event.get("id")]
+        persisted = _persist_current_workout_plan(
+            latest_plan,
+            fingerprint,
+            publish_adaptation_event_ids=event_ids,
+        )
+        if persisted is not None:
+            return event_ids
 
 
 def _same_day_preserved_workout_plan(today_s: str) -> dict | None:
@@ -9628,19 +9656,30 @@ def workout_adaptation_events():
     except (TypeError, ValueError):
         return api_error("limit must be an integer from 1 to 50", 400, code="invalid_field")
 
+    user_id = _current_data_user_id()
     events = list_workout_adaptation_events(
-        _current_data_user_id(),
+        user_id,
         unacknowledged=unacknowledged,
         since=since,
         limit=limit,
     )
     projected = [workout_adaptation.project_event(event) for event in events]
-    return jsonify({"events": projected, "count": len(projected)})
+    return jsonify({
+        "events": projected,
+        "count": len(projected),
+        "applied_plan_revision": get_workout_adaptation_revision(user_id),
+    })
 
 
 @app.route('/api/workout-adaptation-events/evaluate', methods=["POST"])
 def evaluate_workout_adaptation_events():
+    with CURRENT_WORKOUT_PLAN_LOCK:
+        return _evaluate_workout_adaptation_events_locked()
+
+
+def _evaluate_workout_adaptation_events_locked():
     """Explicitly evaluate due FIT-136 windows before polling the event feed."""
+    user_id = _current_data_user_id()
     active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
     completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
     active_open_requested = active_open_raw in {"1", "true", "yes"}
@@ -9650,8 +9689,16 @@ def evaluate_workout_adaptation_events():
     adaptation_food_entries = _food_log_entries_for_context()
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
+    try:
+        _publish_unpublished_workout_adaptations(user_id, fingerprint)
+    except Exception:
+        return api_error(
+            "workout adaptation publication failed",
+            500,
+            code="publication_failed",
+        )
     current_plan = _current_workout_plan_for_fingerprint(fingerprint)
-    stored_plan = get_current_workout_plan(_current_data_user_id())
+    stored_plan = get_current_workout_plan(user_id)
     stored_plan_written_today = bool(
         stored_plan and str(stored_plan.get("updated_at") or "")[:10] == today_s
     )
@@ -9683,7 +9730,6 @@ def evaluate_workout_adaptation_events():
             training_recommendation=training_recommendation,
             consume_cardio_rotation=False,
         )
-        _persist_current_workout_plan(next_workout, fingerprint)
     nutrition_context = _nutrition_context_for_date(
         today_s,
         hard_training_planned=_workout_looks_hard(next_workout),
@@ -9707,8 +9753,31 @@ def evaluate_workout_adaptation_events():
                 500,
                 code="evaluation_failed",
             )
-        _persist_current_workout_plan(next_workout, fingerprint)
-    pending_windows = list_pending_workout_adaptation_windows(_current_data_user_id())
+        if any(
+            event.get("_claim_created", True) and event.get("status") == "applied"
+            for event in events
+        ):
+            winning_applied_event_ids = [
+                str(event["id"])
+                for event in events
+                if event.get("_claim_created", True)
+                and event.get("status") == "applied"
+                and event.get("id")
+            ]
+            _persist_current_workout_plan(
+                next_workout,
+                fingerprint,
+                publish_adaptation_event_ids=winning_applied_event_ids,
+            )
+    try:
+        _publish_unpublished_workout_adaptations(user_id, fingerprint)
+    except Exception:
+        return api_error(
+            "workout adaptation publication failed",
+            500,
+            code="publication_failed",
+        )
+    pending_windows = list_pending_workout_adaptation_windows(user_id)
     next_evaluation_at = min(
         (
             str(window.get("window_closes_at") or "").strip()
@@ -9724,11 +9793,25 @@ def evaluate_workout_adaptation_events():
             (next_evaluation_time - workout_adaptation._clock_now()).total_seconds() * 1000
         )
         retry_after_ms = remaining_ms if remaining_ms > 0 else 60_000
+    unacknowledged_events = list_workout_adaptation_events(
+        user_id,
+        unacknowledged=True,
+        limit=50,
+    )
+    applied_event_revision = ",".join(
+        sorted(
+            str(event["id"])
+            for event in unacknowledged_events
+            if event.get("status") == "applied" and event.get("id")
+        )
+    )
     return jsonify(
         {
             "status": "success",
             "evaluated_count": len(events),
             "retry_after_ms": retry_after_ms,
+            "applied_event_revision": applied_event_revision or None,
+            "applied_plan_revision": get_workout_adaptation_revision(user_id),
         }
     )
 

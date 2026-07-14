@@ -967,8 +967,106 @@ def test_pending_window_claim_prevents_duplicate_events(monkeypatch, tmp_path):
 
     assert first is not None
     assert second is not None
+    assert first["_claim_created"] is True
+    assert second["_claim_created"] is False
     assert first["id"] == second["id"]
     assert len(events) == 1
+
+
+def test_applied_event_is_published_atomically_with_persisted_plan(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    pending = data_store.enqueue_workout_adaptation_pending(
+        1,
+        date="2026-05-24",
+        meal_id="meal-publish",
+        food_log_client_ids=["publish-1"],
+        window_started_at="2026-05-24T12:00:00",
+        window_closes_at="2026-05-24T12:03:00",
+    )
+    saved = data_store.save_workout_adaptation_event(
+        1,
+        pending["id"],
+        {
+            "date": "2026-05-24",
+            "status": "applied",
+            "silent": False,
+            "change_type": "reduce_volume",
+            "applies_to": "today",
+            "created_at": "2026-05-24T12:03:01",
+        },
+    )
+
+    assert data_store.list_workout_adaptation_events(1) == []
+
+    published_plan = data_store.save_current_workout_plan(
+        1,
+        "fingerprint",
+        {"id": "adapted-plan"},
+        publish_adaptation_event_ids=[saved["id"]],
+    )
+
+    assert data_store.get_current_workout_plan(1)["plan"]["id"] == "adapted-plan"
+    assert published_plan["adaptation_revision"] == 1
+    assert data_store.get_workout_adaptation_revision(1) == 1
+    assert [event["id"] for event in data_store.list_workout_adaptation_events(1)] == [
+        saved["id"]
+    ]
+
+    stale_publish = data_store.save_current_workout_plan(
+        1,
+        "stale-fingerprint",
+        {"id": "stale-plan"},
+        publish_adaptation_event_ids=[saved["id"]],
+    )
+
+    assert stale_publish is None
+    assert data_store.get_current_workout_plan(1)["plan"]["id"] == "adapted-plan"
+    data_store.delete_current_workout_plan(1)
+    assert data_store.get_workout_adaptation_revision(1) == 1
+
+
+def test_losing_pending_claim_does_not_adopt_independently_patched_plan(monkeypatch):
+    pending = {"id": "pending-race", "date": "2026-05-24"}
+    base_plan = {"id": "base-plan", "exercises": []}
+    applied_event = {"id": "winner-event", "status": "applied"}
+    monkeypatch.setattr(
+        workout_adaptation,
+        "list_due_workout_adaptation_pending",
+        lambda *_args, **_kwargs: [pending],
+    )
+    monkeypatch.setattr(workout_adaptation, "_pending_applies_to_plan", lambda *_args: True)
+    monkeypatch.setattr(workout_adaptation, "_trigger_logs", lambda *_args: [{}])
+    monkeypatch.setattr(workout_adaptation, "_day_logs", lambda *_args: [{}])
+    monkeypatch.setattr(workout_adaptation, "_should_defer_for_next_day", lambda *_args: False)
+    monkeypatch.setattr(
+        workout_adaptation,
+        "_evaluate_pending_window",
+        lambda *_args, **_kwargs: (applied_event, {"id": "loser-patched-plan"}),
+    )
+    candidate_events = []
+
+    def lose_claim(_user_id, _pending_id, event):
+        candidate_events.append(event)
+        return {**applied_event, "_claim_created": False}
+
+    monkeypatch.setattr(workout_adaptation, "save_workout_adaptation_event", lose_claim)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        base_plan,
+        food_log_entries=[],
+        nutrition_context={},
+        settings={},
+        plan_date="2026-05-24",
+        clock=datetime(2026, 5, 24, 12, 3, 0),
+    )
+
+    assert patched == base_plan
+    assert events == [{**applied_event, "_claim_created": False}]
+    assert candidate_events[0]["_adapted_plan"]["_fit136_base_recommendation"] == base_plan
+    assert candidate_events[0]["_adapted_plan"]["_fit136_last_adapted_plan"] == {
+        "id": "loser-patched-plan"
+    }
 
 
 def test_processed_food_log_client_id_cannot_schedule_duplicate_window(monkeypatch, tmp_path):

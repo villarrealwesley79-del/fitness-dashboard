@@ -392,6 +392,10 @@
         seen: new Set(),
         fetching: false,
         retryTimer: null,
+        retryDeadlineMs: null,
+        refreshPending: false,
+        appliedPlanRevision: null,
+        pendingAppliedPlanRevision: null,
     };
     const WORKOUT_ADAPTATION_FAILURE_RETRY_MS = 60_000;
     const WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS = 1_000;
@@ -524,13 +528,22 @@
                 clearTimeout(workoutAdaptationNoticeState.retryTimer);
                 workoutAdaptationNoticeState.retryTimer = null;
             }
+            workoutAdaptationNoticeState.retryDeadlineMs = null;
             return;
         }
-        if (workoutAdaptationNoticeState.retryTimer) return;
         const delayMs = Number(retryAfterMs);
         if (!Number.isFinite(delayMs) || delayMs < 0) return;
+        const deadlineMs = Date.now() + delayMs;
+        if (workoutAdaptationNoticeState.retryTimer) {
+            if (workoutAdaptationNoticeState.retryDeadlineMs <= deadlineMs) return;
+            clearTimeout(workoutAdaptationNoticeState.retryTimer);
+            workoutAdaptationNoticeState.retryTimer = null;
+        }
         const retry = async () => {
             if (workoutAdaptationNoticeState.fetching) {
+                workoutAdaptationNoticeState.retryDeadlineMs = (
+                    Date.now() + WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS
+                );
                 workoutAdaptationNoticeState.retryTimer = setTimeout(
                     retry,
                     WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS,
@@ -538,13 +551,36 @@
                 return;
             }
             workoutAdaptationNoticeState.retryTimer = null;
+            workoutAdaptationNoticeState.retryDeadlineMs = null;
             try {
                 await fetchWorkoutAdaptationNotices();
             } catch (err) {
                 console.warn('workout adaptation retry failed:', err);
             }
         };
+        workoutAdaptationNoticeState.retryDeadlineMs = deadlineMs;
         workoutAdaptationNoticeState.retryTimer = setTimeout(retry, delayMs);
+    }
+
+    async function refreshWorkoutAdaptationVisiblePlan() {
+        try {
+            await getDashboard(true);
+            paintDashboardFromState();
+            await getNextWorkout(true);
+            await renderNextWorkout();
+            if (workoutAdaptationNoticeState.pendingAppliedPlanRevision != null) {
+                workoutAdaptationNoticeState.appliedPlanRevision = (
+                    workoutAdaptationNoticeState.pendingAppliedPlanRevision
+                );
+                workoutAdaptationNoticeState.pendingAppliedPlanRevision = null;
+            }
+            workoutAdaptationNoticeState.refreshPending = false;
+            return true;
+        } catch (err) {
+            console.warn('adapted workout refresh failed:', err);
+            scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+            return false;
+        }
     }
 
     async function fetchWorkoutAdaptationNotices() {
@@ -559,22 +595,44 @@
                 });
             } catch (err) {
                 console.warn('workout adaptation evaluation failed:', err);
+                workoutAdaptationNoticeState.refreshPending = true;
                 scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
             }
             if (evaluation) {
                 scheduleWorkoutAdaptationEvaluationRetry(evaluation.retry_after_ms);
-            }
-            if (Number(evaluation && evaluation.evaluated_count) > 0) {
-                try {
-                    await getDashboard(true);
-                    paintDashboardFromState();
-                    await renderNextWorkout();
-                } catch (err) {
-                    console.warn('adapted workout refresh failed:', err);
+                const appliedPlanRevision = evaluation.applied_plan_revision;
+                if (
+                    appliedPlanRevision != null
+                    && appliedPlanRevision !== workoutAdaptationNoticeState.appliedPlanRevision
+                ) {
+                    workoutAdaptationNoticeState.pendingAppliedPlanRevision = appliedPlanRevision;
+                    workoutAdaptationNoticeState.refreshPending = true;
                 }
             }
-            const payload = await api('/api/workout-adaptation-events?unacknowledged=true&limit=10');
+            if (Number(evaluation && evaluation.evaluated_count) > 0) {
+                workoutAdaptationNoticeState.refreshPending = true;
+            }
+            if (workoutAdaptationNoticeState.refreshPending) {
+                if (!await refreshWorkoutAdaptationVisiblePlan()) return;
+            }
+            let payload = null;
+            try {
+                payload = await api('/api/workout-adaptation-events?unacknowledged=true&limit=10');
+            } catch (err) {
+                console.warn('workout adaptation feed failed:', err);
+                scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+                return;
+            }
             const events = (payload && payload.events) || [];
+            const feedPlanRevision = payload && payload.applied_plan_revision;
+            if (
+                feedPlanRevision != null
+                && feedPlanRevision !== workoutAdaptationNoticeState.appliedPlanRevision
+            ) {
+                workoutAdaptationNoticeState.pendingAppliedPlanRevision = feedPlanRevision;
+                workoutAdaptationNoticeState.refreshPending = true;
+                if (!await refreshWorkoutAdaptationVisiblePlan()) return;
+            }
             for (const event of events) {
                 if (!event || !event.id) continue;
                 if (workoutAdaptationNoticeState.seen.has(event.id)) continue;

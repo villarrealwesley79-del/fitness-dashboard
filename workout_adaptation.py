@@ -225,10 +225,17 @@ def apply_due_adaptations(
             completed_sets_by_exercise=completed_sets_by_exercise or {},
             evaluated_at=now,
         )
+        if event.get("status") == "applied":
+            recovery_plan = copy.deepcopy(event_patched)
+            recovery_plan["_fit136_base_recommendation"] = copy.deepcopy(
+                base_recommendation
+            )
+            recovery_plan["_fit136_last_adapted_plan"] = copy.deepcopy(event_patched)
+            event["_adapted_plan"] = recovery_plan
         saved = save_workout_adaptation_event(user_id, pending["id"], event)
         if saved:
             events.append(saved)
-            if event.get("status") == "applied":
+            if saved.get("_claim_created") and saved.get("status") == "applied":
                 patched = event_patched
     return patched, events
 

@@ -528,7 +528,9 @@ def init_data_db():
                 after_plan_json     TEXT,
                 active_workout_json TEXT,
                 reason_metadata_json TEXT,
+                adapted_plan_json   TEXT,
                 created_at          TEXT    NOT NULL,
+                published_at        TEXT,
                 acknowledged_at     TEXT
             );
 
@@ -536,7 +538,13 @@ def init_data_db():
                 user_id       INTEGER PRIMARY KEY,
                 fingerprint   TEXT    NOT NULL,
                 plan_json     TEXT    NOT NULL,
+                adaptation_revision INTEGER NOT NULL DEFAULT 0,
                 updated_at    TEXT    NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS workout_adaptation_revisions (
+                user_id       INTEGER PRIMARY KEY,
+                revision      INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS branded_lookup_cache (
@@ -678,6 +686,32 @@ def init_data_db():
         existing_meal_event_cols = {r["name"] for r in conn.execute("PRAGMA table_info(meal_acceptance_events)").fetchall()}
         if "feedback_fingerprint" not in existing_meal_event_cols:
             conn.execute("ALTER TABLE meal_acceptance_events ADD COLUMN feedback_fingerprint TEXT")
+        existing_adaptation_event_cols = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(workout_adaptation_events)").fetchall()
+        }
+        if "published_at" not in existing_adaptation_event_cols:
+            conn.execute("ALTER TABLE workout_adaptation_events ADD COLUMN published_at TEXT")
+            conn.execute(
+                """
+                UPDATE workout_adaptation_events
+                   SET published_at = created_at
+                 WHERE status = 'applied'
+                """
+            )
+        if "adapted_plan_json" not in existing_adaptation_event_cols:
+            conn.execute(
+                "ALTER TABLE workout_adaptation_events ADD COLUMN adapted_plan_json TEXT"
+            )
+        existing_current_plan_cols = {
+            r["name"]
+            for r in conn.execute("PRAGMA table_info(current_workout_plans)").fetchall()
+        }
+        if "adaptation_revision" not in existing_current_plan_cols:
+            conn.execute(
+                "ALTER TABLE current_workout_plans "
+                "ADD COLUMN adaptation_revision INTEGER NOT NULL DEFAULT 0"
+            )
         existing_push_cols = {r["name"] for r in conn.execute("PRAGMA table_info(push_subscriptions)").fetchall()}
         push_columns = {
             "permission_state": "TEXT",
@@ -758,7 +792,13 @@ def init_data_db():
         conn.commit()
 
 
-def save_current_workout_plan(user_id: int, fingerprint: str, plan: dict) -> dict:
+def save_current_workout_plan(
+    user_id: int,
+    fingerprint: str,
+    plan: dict,
+    *,
+    publish_adaptation_event_ids: list[str] | None = None,
+) -> dict | None:
     """Persist the current generated workout plan for one user.
 
     KNOWN LIMITATION (FIT-256 finding 3): this is a blind
@@ -779,6 +819,7 @@ def save_current_workout_plan(user_id: int, fingerprint: str, plan: dict) -> dic
         raise ValueError("fingerprint is required")
     now = datetime.now().isoformat(timespec="seconds")
     plan_json = json.dumps(plan, sort_keys=True, default=str)
+    event_ids = list(dict.fromkeys(publish_adaptation_event_ids or []))
     with _get_db() as conn:
         conn.execute(
             """
@@ -791,8 +832,42 @@ def save_current_workout_plan(user_id: int, fingerprint: str, plan: dict) -> dic
             """,
             (user_id, fingerprint, plan_json, now),
         )
+        if event_ids:
+            placeholders = ", ".join(["?"] * len(event_ids))
+            published = conn.execute(
+                f"""
+                UPDATE workout_adaptation_events
+                   SET published_at = ?
+                 WHERE user_id = ?
+                   AND status = 'applied'
+                   AND published_at IS NULL
+                   AND id IN ({placeholders})
+                """,
+                [now, user_id, *event_ids],
+            )
+            if published.rowcount != len(event_ids):
+                conn.rollback()
+                return None
+            conn.execute(
+                """
+                INSERT INTO workout_adaptation_revisions (user_id, revision)
+                VALUES (?, 1)
+                ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1
+                """,
+                (user_id,),
+            )
+        revision_row = conn.execute(
+            "SELECT revision FROM workout_adaptation_revisions WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
         conn.commit()
-    return {"user_id": user_id, "fingerprint": fingerprint, "plan": json.loads(plan_json), "updated_at": now}
+    return {
+        "user_id": user_id,
+        "fingerprint": fingerprint,
+        "plan": json.loads(plan_json),
+        "adaptation_revision": int(revision_row["revision"] or 0) if revision_row else 0,
+        "updated_at": now,
+    }
 
 
 def get_current_workout_plan(user_id: int, fingerprint: str | None = None) -> Optional[dict]:
@@ -810,8 +885,20 @@ def get_current_workout_plan(user_id: int, fingerprint: str | None = None) -> Op
         "user_id": row["user_id"],
         "fingerprint": row["fingerprint"],
         "plan": _json_loads_or_none(row["plan_json"]) or {},
+        "adaptation_revision": get_workout_adaptation_revision(user_id),
         "updated_at": row["updated_at"],
     }
+
+
+def get_workout_adaptation_revision(user_id: int) -> int:
+    """Return the durable plan-publication revision independent of plan invalidation."""
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT revision FROM workout_adaptation_revisions WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return int(row["revision"] or 0) if row else 0
 
 
 def delete_current_workout_plan(user_id: int) -> bool:
@@ -1111,6 +1198,7 @@ def _workout_adaptation_event_payload(row: sqlite3.Row | dict) -> dict:
         ("after_plan_json", "after_remaining_plan"),
         ("active_workout_json", "active_workout"),
         ("reason_metadata_json", "reason_metadata"),
+        ("adapted_plan_json", "_adapted_plan"),
     ):
         payload[key] = _json_loads_or_none(payload.pop(column, None))
     return payload
@@ -1266,6 +1354,7 @@ def save_workout_adaptation_event(user_id: int, pending_id: str, event: dict) ->
         "after_plan_json": _json_dumps_or_none(event.get("after_remaining_plan")),
         "active_workout_json": _json_dumps_or_none(event.get("active_workout")),
         "reason_metadata_json": _json_dumps_or_none(event.get("reason_metadata")),
+        "adapted_plan_json": _json_dumps_or_none(event.get("_adapted_plan")),
         "created_at": created_at,
     }
     cols = list(payload.keys())
@@ -1297,7 +1386,10 @@ def save_workout_adaptation_event(user_id: int, pending_id: str, event: dict) ->
                     "SELECT * FROM workout_adaptation_events WHERE id = ?",
                     (processed_event_id,),
                 ).fetchone()
-                return _workout_adaptation_event_payload(existing) if existing else None
+                result = _workout_adaptation_event_payload(existing) if existing else None
+                if result is not None:
+                    result["_claim_created"] = False
+                return result
             return None
         conn.execute(
             f"INSERT INTO workout_adaptation_events ({', '.join(cols)}) "
@@ -1320,7 +1412,10 @@ def save_workout_adaptation_event(user_id: int, pending_id: str, event: dict) ->
             "SELECT * FROM workout_adaptation_events WHERE id = ?",
             (event_id,),
         ).fetchone()
-    return _workout_adaptation_event_payload(row)
+    result = _workout_adaptation_event_payload(row)
+    if result is not None:
+        result["_claim_created"] = True
+    return result
 
 
 def list_workout_adaptation_events(
@@ -1337,6 +1432,7 @@ def list_workout_adaptation_events(
     params: list = [user_id]
     if unacknowledged:
         clauses.append("acknowledged_at IS NULL")
+    clauses.append("(status <> 'applied' OR published_at IS NOT NULL)")
     if since:
         clauses.append("created_at >= ?")
         params.append(since)
@@ -1351,6 +1447,24 @@ def list_workout_adaptation_events(
              LIMIT ?
             """,
             [*params, safe_limit],
+        ).fetchall()
+    return [_workout_adaptation_event_payload(row) for row in rows]
+
+
+def list_unpublished_applied_workout_adaptation_events(user_id: int) -> list[dict]:
+    """Return recoverable applied claims whose workout plan is not published."""
+    init_data_db()
+    with _get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+              FROM workout_adaptation_events
+             WHERE user_id = ?
+               AND status = 'applied'
+               AND published_at IS NULL
+             ORDER BY rowid ASC
+            """,
+            (user_id,),
         ).fetchall()
     return [_workout_adaptation_event_payload(row) for row in rows]
 
@@ -2441,6 +2555,7 @@ def delete_user_data(user_id: int) -> None:
         "meal_acceptance_events",
         "meal_review_snapshots",
         "current_workout_plans",
+        "workout_adaptation_revisions",
         "recovery_data",
         "user_settings",
     ]
