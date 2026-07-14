@@ -391,7 +391,10 @@
     const workoutAdaptationNoticeState = {
         seen: new Set(),
         fetching: false,
+        retryTimer: null,
     };
+    const WORKOUT_ADAPTATION_FAILURE_RETRY_MS = 60_000;
+    const WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS = 1_000;
 
     function workoutAdaptationIsRenderable(event) {
         // Applied-change gate. Silent (no-change / low-confidence) events and
@@ -515,6 +518,35 @@
         applyWorkoutAdaptationToActiveWorkout(event);
     }
 
+    function scheduleWorkoutAdaptationEvaluationRetry(retryAfterMs) {
+        if (retryAfterMs == null) {
+            if (workoutAdaptationNoticeState.retryTimer) {
+                clearTimeout(workoutAdaptationNoticeState.retryTimer);
+                workoutAdaptationNoticeState.retryTimer = null;
+            }
+            return;
+        }
+        if (workoutAdaptationNoticeState.retryTimer) return;
+        const delayMs = Number(retryAfterMs);
+        if (!Number.isFinite(delayMs) || delayMs < 0) return;
+        const retry = async () => {
+            if (workoutAdaptationNoticeState.fetching) {
+                workoutAdaptationNoticeState.retryTimer = setTimeout(
+                    retry,
+                    WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS,
+                );
+                return;
+            }
+            workoutAdaptationNoticeState.retryTimer = null;
+            try {
+                await fetchWorkoutAdaptationNotices();
+            } catch (err) {
+                console.warn('workout adaptation retry failed:', err);
+            }
+        };
+        workoutAdaptationNoticeState.retryTimer = setTimeout(retry, delayMs);
+    }
+
     async function fetchWorkoutAdaptationNotices() {
         if (workoutAdaptationNoticeState.fetching) return;
         workoutAdaptationNoticeState.fetching = true;
@@ -527,6 +559,10 @@
                 });
             } catch (err) {
                 console.warn('workout adaptation evaluation failed:', err);
+                scheduleWorkoutAdaptationEvaluationRetry(WORKOUT_ADAPTATION_FAILURE_RETRY_MS);
+            }
+            if (evaluation) {
+                scheduleWorkoutAdaptationEvaluationRetry(evaluation.retry_after_ms);
             }
             if (Number(evaluation && evaluation.evaluated_count) > 0) {
                 try {

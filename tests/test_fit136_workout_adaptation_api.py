@@ -285,6 +285,36 @@ def test_workout_adaptation_evaluation_endpoint_processes_due_windows_idempotent
     assert generate_calls[0]["training_recommendation"] == "recovery"
 
 
+def test_workout_adaptation_evaluation_reports_next_pending_window(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(
+        workout_adaptation,
+        "_clock_now",
+        lambda *_args, **_kwargs: datetime(2099, 5, 24, 12, 0, 0),
+    )
+    monkeypatch.setattr(
+        module,
+        "_current_workout_plan_for_fingerprint",
+        lambda _fingerprint: _recommendation(),
+    )
+    window_closes_at = "2099-05-24T12:03:00"
+    data_store.enqueue_workout_adaptation_pending(
+        1,
+        date="2026-05-24",
+        meal_id="meal-future-window",
+        food_log_client_ids=["fit233-future-window"],
+        window_started_at="2099-05-24T12:00:00",
+        window_closes_at=window_closes_at,
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert response.get_json()["evaluated_count"] == 0
+    assert response.get_json()["retry_after_ms"] == 180_000
+
+
 def test_workout_adaptation_evaluation_regenerates_for_changed_fingerprint(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")

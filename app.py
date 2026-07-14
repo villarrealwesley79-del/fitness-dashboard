@@ -144,6 +144,7 @@ from data_store import (
     get_push_subscription_for_delivery,
     list_push_subscriptions,
     list_food_log_refresh_events,
+    list_pending_workout_adaptation_windows,
     list_workout_adaptation_events,
     revoke_push_subscription,
     save_push_subscription,
@@ -9707,7 +9708,29 @@ def evaluate_workout_adaptation_events():
                 code="evaluation_failed",
             )
         _persist_current_workout_plan(next_workout, fingerprint)
-    return jsonify({"status": "success", "evaluated_count": len(events)})
+    pending_windows = list_pending_workout_adaptation_windows(_current_data_user_id())
+    next_evaluation_at = min(
+        (
+            str(window.get("window_closes_at") or "").strip()
+            for window in pending_windows
+            if str(window.get("window_closes_at") or "").strip()
+        ),
+        default=None,
+    )
+    retry_after_ms = None
+    next_evaluation_time = workout_adaptation._parse_iso(next_evaluation_at)
+    if next_evaluation_time is not None:
+        remaining_ms = math.ceil(
+            (next_evaluation_time - workout_adaptation._clock_now()).total_seconds() * 1000
+        )
+        retry_after_ms = remaining_ms if remaining_ms > 0 else 60_000
+    return jsonify(
+        {
+            "status": "success",
+            "evaluated_count": len(events),
+            "retry_after_ms": retry_after_ms,
+        }
+    )
 
 
 @app.route('/api/workout-adaptation-events/<event_id>/ack', methods=["POST"])

@@ -86,6 +86,97 @@ def test_applied_evaluation_refreshes_visible_workout_state():
     assert "await renderNextWorkout();" in fetch_block
 
 
+def test_future_adaptation_window_retries_after_clock_advance():
+    if not shutil.which("node"):
+        pytest.skip("FIT-233 clock-advance regression requires node")
+
+    js = APP_JS.read_text()
+    assert "function scheduleWorkoutAdaptationEvaluationRetry" in js
+    retry_and_fetch_source = _block(
+        js,
+        "function scheduleWorkoutAdaptationEvaluationRetry",
+        "function newWorkoutId",
+    )
+    source_json = json.dumps(retry_and_fetch_source)
+    node_script = f"""
+const vm = require('node:vm');
+const source = {source_json};
+const sandbox = {{ module: {{ exports: {{}} }}, URLSearchParams, URL, console }};
+const runtimeSource = `
+const DASHBOARD_FETCH_TIMEOUT_MS = 30000;
+const WORKOUT_ADAPTATION_FAILURE_RETRY_MS = 60000;
+const WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS = 1000;
+const timers = [];
+const calls = [];
+let failEvaluation = false;
+const workoutAdaptationNoticeState = {{ fetching: false, seen: new Set(), retryTimer: null }};
+function setTimeout(callback, delay) {{
+  timers.push({{ callback, delay }});
+  return timers.length;
+}}
+function clearTimeout() {{}}
+function withActiveWorkoutAdaptationParams(path) {{ return path; }}
+function workoutAdaptationIsRenderable() {{ return false; }}
+function showWorkoutAdaptationNotice() {{}}
+async function getDashboard() {{}}
+function paintDashboardFromState() {{}}
+async function renderNextWorkout() {{}}
+async function api(path, opts = {{}}) {{
+  calls.push({{ path, method: opts.method || null }});
+  if (String(path).startsWith('/api/workout-adaptation-events/evaluate')) {{
+    if (failEvaluation) throw new Error('temporary evaluation failure');
+    return {{ evaluated_count: 0, retry_after_ms: 10000 }};
+  }}
+  return {{ events: [] }};
+}}
+async function run() {{
+  await fetchWorkoutAdaptationNotices();
+  await fetchWorkoutAdaptationNotices();
+  const timerCountBeforeAdvance = timers.length;
+  const scheduledDelay = timers[0] && timers[0].delay;
+  workoutAdaptationNoticeState.fetching = true;
+  await timers[0].callback();
+  const inFlightRetryDelay = timers[1] && timers[1].delay;
+  workoutAdaptationNoticeState.fetching = false;
+  await timers[1].callback();
+  failEvaluation = true;
+  await timers[2].callback();
+  return {{
+    timerCountBeforeAdvance,
+    scheduledDelay,
+    inFlightRetryDelay,
+    failureRetryDelay: timers[3] && timers[3].delay,
+    evaluationCalls: calls.filter((call) => call.path.startsWith('/api/workout-adaptation-events/evaluate')).length,
+    feedCalls: calls.filter((call) => call.path.startsWith('/api/workout-adaptation-events?')).length,
+  }};
+}}
+module.exports = {{ run }};
+` + source;
+vm.runInNewContext(runtimeSource, sandbox);
+sandbox.module.exports.run().then((outputs) => {{
+  process.stdout.write(JSON.stringify(outputs));
+}}).catch((error) => {{
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+}});
+"""
+    result = subprocess.run(
+        ["node", "-e", node_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    outputs = json.loads(result.stdout)
+
+    assert outputs["timerCountBeforeAdvance"] == 1
+    assert outputs["scheduledDelay"] == 10_000
+    assert outputs["inFlightRetryDelay"] == 1_000
+    assert outputs["failureRetryDelay"] == 60_000
+    assert outputs["evaluationCalls"] == 4
+    assert outputs["feedCalls"] == 4
+
+
 def test_adaptation_notice_renders_neutral_reason_and_collapsed_details():
     js = APP_JS.read_text()
     notice = _block(
@@ -220,7 +311,7 @@ def _run_fit257_runtime_fixtures_in_node() -> dict:
     )
     fetch_source = _block(
         js,
-        "async function fetchWorkoutAdaptationNotices()",
+        "function scheduleWorkoutAdaptationEvaluationRetry",
         "function newWorkoutId",
     )
     next_workout_source = _block(
@@ -246,6 +337,8 @@ const mergeSource = {merge_source_json};
 const sandbox = {{ module: {{ exports: {{}} }}, URLSearchParams, URL, console }};
 const runtimeSource = `
 const DASHBOARD_FETCH_TIMEOUT_MS = 30000;
+const WORKOUT_ADAPTATION_FAILURE_RETRY_MS = 60000;
+const WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS = 1000;
 const calls = [];
 let rendered = false;
 let mergeCall = null;
@@ -265,7 +358,9 @@ const state = {{
   }},
   nextWorkout: null,
 }};
-const workoutAdaptationNoticeState = {{ fetching: false, seen: new Set() }};
+const workoutAdaptationNoticeState = {{ fetching: false, seen: new Set(), retryTimer: null }};
+function setTimeout() {{ return 1; }}
+function clearTimeout() {{}}
 function workoutAdaptationIsRenderable() {{ return false; }}
 function showWorkoutAdaptationNotice() {{}}
 async function api(path, opts = {{}}) {{
