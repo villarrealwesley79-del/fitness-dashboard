@@ -4660,8 +4660,7 @@ def _persist_current_workout_plan(
             LAST_WORKOUT_RECOMMENDATION_OWNER
             and LAST_WORKOUT_RECOMMENDATION_OWNER.get("user_id") == current_user_id
             and LAST_WORKOUT_RECOMMENDATION
-            and recommendation.get("id")
-            and recommendation.get("id") == LAST_WORKOUT_RECOMMENDATION.get("id")
+            and recommendation == LAST_WORKOUT_RECOMMENDATION
         )
         customized = bool(
             customized
