@@ -60,6 +60,22 @@ Run the Flask app:
 python app.py
 ```
 
+### Trusted-network no-login mode
+
+For the owner's private localhost or Tailnet boot only, set:
+
+```bash
+FITNESS_DASHBOARD_NO_LOGIN=true python app.py
+```
+
+This uses the existing owner account and all of its workout history; it does
+not create or select the FIT-385 QA account. Unset the variable and restart to
+restore the login screen.
+
+**Security warning:** This removes the login barrier for everyone who can reach
+the running app. Never enable it on a public, shared, port-forwarded, or
+otherwise untrusted network bind.
+
 On the Mac mini, install or refresh the local launchd agents with:
 
 ```bash
@@ -96,6 +112,7 @@ Optional integrations use environment variables such as:
 OURA_API_TOKEN=
 HEALTH_SYNC_TOKEN=
 FITNESS_DASHBOARD_PUBLIC_BASE_URL=
+FITNESS_DASHBOARD_NO_LOGIN=
 APPLE_HEALTH_WEBHOOK_URL=
 WHOOP_CLIENT_ID_FILE=
 WHOOP_SCOPES=
