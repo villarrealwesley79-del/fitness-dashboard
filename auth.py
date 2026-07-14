@@ -4,14 +4,18 @@ SQLite-backed, no SQLAlchemy. Minimal proof-of-concept for SaaS productization.
 """
 
 import os
+import fcntl
 import sqlite3
 import hmac
 import hashlib
+import ipaddress
+import json
 import logging
 import re
 import secrets
+import shutil
+import subprocess
 import time
-from collections import defaultdict
 from contextlib import contextmanager
 from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request, redirect, url_for, render_template, flash, session
@@ -19,33 +23,70 @@ from flask_login import LoginManager, UserMixin, login_user, logout_user, login_
 from runtime_config import data_path
 from werkzeug.security import check_password_hash, generate_password_hash
 
-# ── Rate limiting (in-memory, per-client/user) ────────────
-# Tracks failed auth attempts: {identity: [(timestamp, ...), ...]}
+# ── Rate limiting (SQLite-backed, shared across workers) ──
 _RATE_LIMIT_WINDOW_SEC = 600   # 10 minutes
 _RATE_LIMIT_MAX_FAILS  = 10    # max failures before lockout
-_rate_fail_log: dict = defaultdict(list)
+_rate_limit_hmac_key: bytes | None = None
+
+
+def _load_or_create_secret(secret_file: str) -> str:
+    """Read or initialize the fallback secret under a cross-process file lock."""
+    try:
+        fd = os.open(secret_file, os.O_RDONLY)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise RuntimeError("Could not read the fallback SECRET_KEY") from exc
+    else:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            secret = handle.read().strip()
+            if secret:
+                return secret
+
+    try:
+        fd = os.open(secret_file, os.O_RDWR | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "r+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            secret = handle.read().strip()
+            if not secret:
+                secret = secrets.token_hex(64)
+                handle.seek(0)
+                handle.truncate()
+                handle.write(secret)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(secret_file, 0o600)
+            return secret
+    except OSError as exc:
+        raise RuntimeError(
+            "Could not persist the fallback SECRET_KEY; set SECRET_KEY explicitly"
+        ) from exc
+
+
+def _rate_identity_hash(identity: str) -> str:
+    if _rate_limit_hmac_key is None:
+        raise RuntimeError("Rate-limit key is unavailable before auth initialization")
+    return hmac.new(
+        _rate_limit_hmac_key,
+        identity.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _rate_check(identity: str) -> bool:
     """Return True if the identity is allowed to attempt auth; False if locked out."""
-    now = time.time()
-    window_start = now - _RATE_LIMIT_WINDOW_SEC
-    attempts = [t for t in _rate_fail_log.get(identity, []) if t > window_start]
-    if attempts:
-        _rate_fail_log[identity] = attempts
-    else:
-        _rate_fail_log.pop(identity, None)
-    return len(attempts) < _RATE_LIMIT_MAX_FAILS
+    return _rate_check_all([identity])
 
 
 def _rate_record_fail(identity: str) -> None:
     """Record one failed auth attempt for the identity."""
-    _rate_fail_log[identity].append(time.time())
+    _rate_record_fail_all([identity])
 
 
 def _rate_reset(identity: str) -> None:
     """Clear rate-limit history for an identity on successful auth."""
-    _rate_fail_log.pop(identity, None)
+    _rate_reset_all([identity])
 
 
 def _rate_client_ip() -> str:
@@ -62,17 +103,128 @@ def _rate_keys(ip: str, username: str) -> list[str]:
 
 
 def _rate_check_all(identities: list[str]) -> bool:
-    return all(_rate_check(identity) for identity in identities)
+    identity_hashes = [_rate_identity_hash(identity) for identity in identities]
+    if not identity_hashes:
+        return True
+    placeholders = ", ".join("?" for _ in identity_hashes)
+    with _get_db() as conn:
+        conn.execute(
+            "DELETE FROM auth_rate_limit_attempts WHERE attempted_at <= ?",
+            (time.time() - _RATE_LIMIT_WINDOW_SEC,),
+        )
+        rows = conn.execute(
+            f"""
+            SELECT identity_hash, COUNT(*) AS attempt_count
+            FROM auth_rate_limit_attempts
+            WHERE identity_hash IN ({placeholders})
+            GROUP BY identity_hash
+            """,
+            identity_hashes,
+        ).fetchall()
+    counts = {row["identity_hash"]: row["attempt_count"] for row in rows}
+    return all(counts.get(identity_hash, 0) < _RATE_LIMIT_MAX_FAILS for identity_hash in identity_hashes)
+
+
+def _rate_reserve_attempt_all(identities: list[str]) -> str | None:
+    """Atomically reserve an auth attempt, or return None when any identity is locked."""
+    identity_hashes = [_rate_identity_hash(identity) for identity in identities]
+    attempt_id = secrets.token_hex(16)
+    now = time.time()
+    placeholders = ", ".join("?" for _ in identity_hashes)
+    with _get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM auth_rate_limit_attempts WHERE attempted_at <= ?",
+            (now - _RATE_LIMIT_WINDOW_SEC,),
+        )
+        rows = conn.execute(
+            f"""
+            SELECT identity_hash, COUNT(*) AS attempt_count
+            FROM auth_rate_limit_attempts
+            WHERE identity_hash IN ({placeholders})
+            GROUP BY identity_hash
+            """,
+            identity_hashes,
+        ).fetchall()
+        counts = {row["identity_hash"]: row["attempt_count"] for row in rows}
+        if any(counts.get(identity_hash, 0) >= _RATE_LIMIT_MAX_FAILS for identity_hash in identity_hashes):
+            return None
+        conn.executemany(
+            """
+            INSERT INTO auth_rate_limit_attempts (attempt_id, identity_hash, attempted_at, status)
+            VALUES (?, ?, ?, 'pending')
+            """,
+            [(attempt_id, identity_hash, now) for identity_hash in identity_hashes],
+        )
+    return attempt_id
+
+
+def _rate_release_attempt(attempt_id: str | None) -> None:
+    if not attempt_id:
+        return
+    with _get_db() as conn:
+        conn.execute(
+            "DELETE FROM auth_rate_limit_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        )
+
+
+def _rate_finalize_attempt(attempt_id: str) -> None:
+    with _get_db() as conn:
+        conn.execute(
+            "UPDATE auth_rate_limit_attempts SET status = 'failed' WHERE attempt_id = ?",
+            (attempt_id,),
+        )
+
+
+def _rate_complete_success(attempt_id: str, identities: list[str]) -> None:
+    identity_hashes = [_rate_identity_hash(identity) for identity in identities]
+    placeholders = ", ".join("?" for _ in identity_hashes)
+    with _get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM auth_rate_limit_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        )
+        conn.execute(
+            f"""
+            DELETE FROM auth_rate_limit_attempts
+            WHERE status = 'failed' AND identity_hash IN ({placeholders})
+            """,
+            identity_hashes,
+        )
 
 
 def _rate_record_fail_all(identities: list[str]) -> None:
-    for identity in identities:
-        _rate_record_fail(identity)
+    now = time.time()
+    attempt_id = secrets.token_hex(16)
+    with _get_db() as conn:
+        conn.execute(
+            "DELETE FROM auth_rate_limit_attempts WHERE attempted_at <= ?",
+            (now - _RATE_LIMIT_WINDOW_SEC,),
+        )
+        conn.executemany(
+            """
+            INSERT INTO auth_rate_limit_attempts (attempt_id, identity_hash, attempted_at, status)
+            VALUES (?, ?, ?, 'failed')
+            """,
+            [(attempt_id, _rate_identity_hash(identity), now) for identity in identities],
+        )
 
 
 def _rate_reset_all(identities: list[str]) -> None:
-    for identity in identities:
-        _rate_reset(identity)
+    identity_hashes = [_rate_identity_hash(identity) for identity in identities]
+    if not identity_hashes:
+        return
+    placeholders = ", ".join("?" for _ in identity_hashes)
+    with _get_db() as conn:
+        conn.execute(
+            f"""
+            DELETE FROM auth_rate_limit_attempts
+            WHERE status = 'failed' AND identity_hash IN ({placeholders})
+            """,
+            identity_hashes,
+        )
 
 # ── DB setup ──────────────────────────────────────────────
 AUTH_DB = data_path("auth.db")
@@ -96,8 +248,17 @@ _CSRF_EXEMPT_PATHS = {
 }
 _PASSWORD_HASH_METHOD = "scrypt:32768:8:1"
 _LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
+_TAILSCALE_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 _INVALID_OWNER_USER_ID = object()
+_NO_LOGIN_OWNER_DB_ERROR = object()
+_LOCAL_QA_ENABLED = "FITNESS_DASHBOARD_LOCAL_QA_ENABLED"
+_LOCAL_QA_USERNAME = "FITNESS_DASHBOARD_LOCAL_QA_USERNAME"
+_LOCAL_QA_PASSWORD = "FITNESS_DASHBOARD_LOCAL_QA_PASSWORD"
+_TRUSTED_NO_LOGIN_OAUTH_STATE_TTL_SECONDS = 600
+_TAILSCALE_MACOS_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+_tailscale_verified_peer_cache = {}
 _owner_config_error_logged = False
+_no_login_owner_error_logged = False
 
 
 @contextmanager
@@ -112,6 +273,161 @@ def _get_db():
         raise
     finally:
         conn.close()
+
+
+def _local_qa_enabled() -> bool:
+    return os.environ.get(_LOCAL_QA_ENABLED, "").strip().lower() == "true"
+
+
+def _table_exists(conn, table_name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone() is not None
+
+
+def _owner_user_id_from_conn(conn):
+    configured = os.environ.get("FITNESS_DASHBOARD_OWNER_USER_ID", "").strip()
+    if configured:
+        try:
+            return int(configured)
+        except ValueError:
+            return _INVALID_OWNER_USER_ID
+    row = conn.execute("SELECT MIN(id) FROM users").fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def _required_existing_owner_id(conn) -> int:
+    owner_id = _owner_user_id_from_conn(conn)
+    if owner_id is _INVALID_OWNER_USER_ID:
+        raise RuntimeError("Local QA account requires a valid owner user ID")
+    if owner_id is None or conn.execute(
+        "SELECT 1 FROM users WHERE id = ?", (owner_id,)
+    ).fetchone() is None:
+        raise RuntimeError("Local QA account requires an existing owner")
+    return owner_id
+
+
+def _local_qa_user_id_from_conn(conn):
+    if not _table_exists(conn, "local_qa_account"):
+        return None
+    row = conn.execute(
+        "SELECT user_id FROM local_qa_account WHERE singleton = 1"
+    ).fetchone()
+    return int(row["user_id"]) if row else None
+
+
+def _local_qa_user_id():
+    if not _local_qa_enabled():
+        return None
+    with _get_db() as conn:
+        return _local_qa_user_id_from_conn(conn)
+
+
+def _is_local_qa_user_id(user_id) -> bool:
+    if not _local_qa_enabled():
+        return False
+    try:
+        candidate_id = int(user_id)
+    except (TypeError, ValueError):
+        return False
+    with _get_db() as conn:
+        qa_id = _local_qa_user_id_from_conn(conn)
+        if qa_id != candidate_id:
+            return False
+        try:
+            owner_id = _required_existing_owner_id(conn)
+        except RuntimeError:
+            return False
+        return qa_id != owner_id
+
+
+def data_user_id_for(user_id) -> int:
+    candidate_id = int(user_id)
+    if not _local_qa_enabled():
+        return candidate_id
+    with _get_db() as conn:
+        qa_id = _local_qa_user_id_from_conn(conn)
+        if candidate_id != qa_id:
+            return candidate_id
+        owner_id = _required_existing_owner_id(conn)
+        if qa_id == owner_id:
+            raise RuntimeError("Local QA mapping cannot resolve to the owner account itself")
+        return owner_id
+
+
+def _remove_local_qa_account(conn) -> None:
+    if not _table_exists(conn, "local_qa_account"):
+        return
+    qa_id = _local_qa_user_id_from_conn(conn)
+    if qa_id is not None:
+        owner_id = _required_existing_owner_id(conn)
+        if qa_id == owner_id:
+            raise RuntimeError("Local QA mapping points to the owner; cleanup refused")
+        conn.execute("DELETE FROM local_qa_account WHERE singleton = 1")
+        conn.execute("DELETE FROM users WHERE id = ?", (qa_id,))
+    conn.execute("DROP TABLE local_qa_account")
+
+
+def _reconcile_local_qa_account(conn) -> None:
+    if not _local_qa_enabled():
+        _remove_local_qa_account(conn)
+        return
+
+    username = os.environ.get(_LOCAL_QA_USERNAME, "").strip()
+    password = os.environ.get(_LOCAL_QA_PASSWORD, "")
+    if not username or not password:
+        raise RuntimeError("Local QA account requires username and password settings")
+    if len(password) < 8:
+        raise RuntimeError("Local QA account password must be at least 8 characters")
+    owner_id = _required_existing_owner_id(conn)
+    mapped = None
+    if _table_exists(conn, "local_qa_account"):
+        mapped = conn.execute(
+            "SELECT user_id FROM local_qa_account WHERE singleton = 1"
+        ).fetchone()
+    if mapped is not None and int(mapped["user_id"]) == owner_id:
+        raise RuntimeError("Local QA mapping points to the owner account")
+    collision = conn.execute(
+        "SELECT id FROM users WHERE username = ?",
+        (username,),
+    ).fetchone()
+    if collision is not None and (
+        mapped is None or int(collision["id"]) != int(mapped["user_id"])
+    ):
+        raise RuntimeError("Local QA account username collides with an existing account")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS local_qa_account (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            user_id INTEGER NOT NULL UNIQUE
+        )
+        """
+    )
+    if mapped is not None:
+        qa = conn.execute(
+            "SELECT username, password FROM users WHERE id = ?",
+            (mapped["user_id"],),
+        ).fetchone()
+        if qa is not None:
+            password_hash = qa["password"]
+            if not check_password_hash(password_hash, password):
+                password_hash = _hash_password(password)
+            if qa["username"] != username or password_hash != qa["password"]:
+                conn.execute(
+                    "UPDATE users SET username = ?, password = ?, salt = '' WHERE id = ?",
+                    (username, password_hash, mapped["user_id"]),
+                )
+            return
+        conn.execute("DELETE FROM local_qa_account WHERE singleton = 1")
+    cursor = conn.execute(
+        "INSERT INTO users (username, password, salt) VALUES (?, ?, ?)",
+        (username, _hash_password(password), ""),
+    )
+    conn.execute(
+        "INSERT INTO local_qa_account (singleton, user_id) VALUES (1, ?)",
+        (cursor.lastrowid,),
+    )
 
 
 def init_auth_db():
@@ -132,6 +448,46 @@ def init_auth_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_rate_limit_attempts (
+                attempt_id   TEXT NOT NULL,
+                identity_hash TEXT NOT NULL,
+                attempted_at  REAL NOT NULL,
+                status        TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trusted_no_login_oauth_states (
+                state      TEXT PRIMARY KEY,
+                expires_at REAL NOT NULL
+            )
+            """
+        )
+        rate_limit_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(auth_rate_limit_attempts)")
+        }
+        if "attempt_id" not in rate_limit_columns:
+            conn.execute("ALTER TABLE auth_rate_limit_attempts ADD COLUMN attempt_id TEXT")
+            conn.execute(
+                """
+                UPDATE auth_rate_limit_attempts
+                SET attempt_id = lower(hex(randomblob(16)))
+                WHERE attempt_id IS NULL
+                """
+            )
+        if "status" not in rate_limit_columns:
+            conn.execute(
+                "ALTER TABLE auth_rate_limit_attempts ADD COLUMN status TEXT NOT NULL DEFAULT 'failed'"
+            )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS auth_rate_limit_attempts_identity_time_idx
+            ON auth_rate_limit_attempts (identity_hash, attempted_at)
+            """
+        )
         # Migrate existing DBs that are missing the new columns
         existing = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
         for col, definition in [
@@ -142,6 +498,9 @@ def init_auth_db():
         ]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        _reconcile_local_qa_account(conn)
         conn.commit()
 
 
@@ -268,15 +627,186 @@ def _user_count() -> int:
 
 
 def _owner_user_id():
-    configured = os.environ.get("FITNESS_DASHBOARD_OWNER_USER_ID", "").strip()
-    if configured:
-        try:
-            return int(configured)
-        except ValueError:
-            return _INVALID_OWNER_USER_ID
     with _get_db() as conn:
-        row = conn.execute("SELECT MIN(id) FROM users").fetchone()
-    return int(row[0]) if row and row[0] is not None else None
+        return _owner_user_id_from_conn(conn)
+
+
+def _trusted_no_login_enabled() -> bool:
+    return os.environ.get("FITNESS_DASHBOARD_NO_LOGIN", "").strip().lower() == "true"
+
+
+def remember_trusted_no_login_oauth_state(state) -> None:
+    state = str(state or "").strip()
+    if not _trusted_no_login_enabled() or not state:
+        return
+    now = time.time()
+    try:
+        with _get_db() as conn:
+            conn.execute(
+                "DELETE FROM trusted_no_login_oauth_states WHERE expires_at < ?",
+                (now,),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO trusted_no_login_oauth_states (state, expires_at) "
+                "VALUES (?, ?)",
+                (state, now + _TRUSTED_NO_LOGIN_OAUTH_STATE_TTL_SECONDS),
+            )
+    except sqlite3.Error:
+        logging.getLogger(__name__).exception(
+            "Could not retain trusted no-login OAuth state; cross-site callback will remain locked"
+        )
+
+
+def _trusted_no_login_request_hostname():
+    try:
+        hostname = urlsplit(f"//{request.host}").hostname
+    except ValueError:
+        return None
+    if not hostname:
+        return None
+    return hostname.rstrip(".").lower()
+
+
+def _trusted_no_login_request_host() -> bool:
+    hostname = _trusted_no_login_request_hostname()
+    if hostname is None:
+        return False
+
+    if hostname == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return address.is_loopback or (
+        isinstance(address, ipaddress.IPv4Address)
+        and address in _TAILSCALE_IPV4_NETWORK
+    )
+
+
+def _tailscale_cli_path():
+    installed = shutil.which("tailscale")
+    if installed:
+        return installed
+    if os.access(_TAILSCALE_MACOS_CLI, os.X_OK):
+        return _TAILSCALE_MACOS_CLI
+    return None
+
+
+def _tailscale_peer_is_authenticated(address: str) -> bool:
+    now = time.monotonic()
+    if _tailscale_verified_peer_cache.get(address, 0) > now:
+        return True
+    cli = _tailscale_cli_path()
+    if cli is None:
+        return False
+    try:
+        completed = subprocess.run(
+            [cli, "whois", "--json", address],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+        payload = json.loads(completed.stdout) if completed.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return False
+    node = payload.get("Node") if isinstance(payload, dict) else None
+    if not isinstance(node, dict) or node.get("MachineAuthorized") is not True:
+        return False
+    for value in node.get("Addresses") or ():
+        try:
+            if ipaddress.ip_interface(value).ip == ipaddress.ip_address(address):
+                _tailscale_verified_peer_cache[address] = now + 30
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _trusted_no_login_request_peer() -> bool:
+    if any(
+        request.headers.get(header)
+        for header in (
+            "Forwarded",
+            "X-Forwarded-For",
+            "X-Forwarded-Host",
+            "X-Forwarded-Proto",
+        )
+    ):
+        return False
+    try:
+        address = ipaddress.ip_address(request.remote_addr or "")
+    except ValueError:
+        return False
+    if address.is_loopback:
+        hostname = _trusted_no_login_request_hostname()
+        if hostname == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(hostname or "").is_loopback
+        except ValueError:
+            return False
+    return (
+        isinstance(address, ipaddress.IPv4Address)
+        and address in _TAILSCALE_IPV4_NETWORK
+        and _tailscale_peer_is_authenticated(str(address))
+    )
+
+
+def _consume_trusted_no_login_oauth_callback_state() -> bool:
+    if request.method != "GET" or request.path != "/api/whoop/callback":
+        return False
+    state = str(request.args.get("state") or "").strip()
+    code = str(request.args.get("code") or "").strip()
+    if not state or not code:
+        return False
+    now = time.time()
+    try:
+        with _get_db() as conn:
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM trusted_no_login_oauth_states WHERE expires_at < ?",
+                (now,),
+            )
+            consumed = conn.execute(
+                "DELETE FROM trusted_no_login_oauth_states "
+                "WHERE state = ? AND expires_at >= ?",
+                (state, now),
+            )
+            return consumed.rowcount == 1
+    except sqlite3.Error:
+        return False
+
+
+def _trusted_no_login_owner():
+    global _no_login_owner_error_logged
+
+    try:
+        owner_id = _owner_user_id()
+        owner = None
+        if owner_id is not _INVALID_OWNER_USER_ID and owner_id is not None:
+            owner = User.get_by_id(owner_id)
+    except sqlite3.Error:
+        if not _no_login_owner_error_logged:
+            logging.getLogger(__name__).exception(
+                "FITNESS_DASHBOARD_NO_LOGIN=true but the owner account could not be read; "
+                "normal authentication remains enabled"
+            )
+            _no_login_owner_error_logged = True
+        return _NO_LOGIN_OWNER_DB_ERROR
+    if owner is not None:
+        return owner
+
+    if not _no_login_owner_error_logged:
+        logging.getLogger(__name__).error(
+            "FITNESS_DASHBOARD_NO_LOGIN=true but no valid owner account could be loaded; "
+            "normal authentication remains enabled"
+        )
+        _no_login_owner_error_logged = True
+    return None
 
 
 def _is_owner_user_id(user_id) -> bool:
@@ -299,6 +829,10 @@ def _is_owner_user_id(user_id) -> bool:
         return int(user_id) == owner_id
     except (TypeError, ValueError):
         return False
+
+
+def _has_owner_route_access(user_id) -> bool:
+    return _is_owner_user_id(user_id) or _is_local_qa_user_id(user_id)
 
 
 @login_manager.user_loader
@@ -328,20 +862,26 @@ def login():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         rate_keys = _rate_keys(ip, username)
-        if not _rate_check_all(rate_keys):
-            flash("Too many failed attempts. Please wait 10 minutes before trying again.")
-            return render_template("login.html"), 429
+        attempt_id = None
         try:
+            attempt_id = _rate_reserve_attempt_all(rate_keys)
+            if not attempt_id:
+                flash("Too many failed attempts. Please wait 10 minutes before trying again.")
+                return render_template("login.html"), 429
             user = User.authenticate(username, password)
+            if user:
+                _rate_complete_success(attempt_id, rate_keys)
+                login_user(user)
+                return redirect(_safe_next(request.args.get("next")))
+            _rate_finalize_attempt(attempt_id)
         except sqlite3.Error:
             current_app.logger.exception("Auth database error during login")
+            try:
+                _rate_release_attempt(attempt_id)
+            except sqlite3.Error:
+                current_app.logger.exception("Could not release failed login rate-limit reservation")
             flash("Login service temporarily unavailable. Please try again shortly.")
             return render_template("login.html"), 503
-        if user:
-            _rate_reset_all(rate_keys)
-            login_user(user)
-            return redirect(_safe_next(request.args.get("next")))
-        _rate_record_fail_all(rate_keys)
         flash("Invalid username or password.")
     return render_template("login.html")
 
@@ -358,22 +898,43 @@ def register():
         password = request.form.get("password", "")
         email = request.form.get("email", "").strip() or None
         rate_keys = _rate_keys(ip, username)
-        if not _rate_check_all(rate_keys):
-            flash("Too many attempts. Please wait 10 minutes before trying again.")
-            return render_template("login.html", register=True), 429
-        if not username or not password:
-            flash("Username and password are required.")
-        elif len(password) < 8:
-            flash("Password must be at least 8 characters.")
-        elif User.get_by_username(username):
-            _rate_record_fail_all(rate_keys)
-            flash("Username already taken.")
-        else:
-            User.create(username, password, email=email)
-            _rate_reset_all(rate_keys)
-            user = User.authenticate(username, password)
-            login_user(user)
-            return redirect(url_for("index"))
+        attempt_id = None
+        try:
+            attempt_id = _rate_reserve_attempt_all(rate_keys)
+            if not attempt_id:
+                flash("Too many attempts. Please wait 10 minutes before trying again.")
+                return render_template("login.html", register=True), 429
+            if not username or not password:
+                _rate_release_attempt(attempt_id)
+                flash("Username and password are required.")
+            elif len(password) < 8:
+                _rate_release_attempt(attempt_id)
+                flash("Password must be at least 8 characters.")
+            elif User.get_by_username(username):
+                _rate_finalize_attempt(attempt_id)
+                flash("Username already taken.")
+            else:
+                User.create(username, password, email=email)
+                user = User.authenticate(username, password)
+                try:
+                    _rate_complete_success(attempt_id, rate_keys)
+                except sqlite3.Error:
+                    # Account creation has already committed. Preserve the
+                    # successful registration response rather than claiming
+                    # failure after creating a single-owner account.
+                    current_app.logger.exception(
+                        "Could not clear registration rate-limit state after account creation"
+                    )
+                login_user(user)
+                return redirect(url_for("index"))
+        except sqlite3.Error:
+            current_app.logger.exception("Auth database error during registration")
+            try:
+                _rate_release_attempt(attempt_id)
+            except sqlite3.Error:
+                current_app.logger.exception("Could not release failed registration rate-limit reservation")
+            flash("Registration service temporarily unavailable. Please try again shortly.")
+            return render_template("login.html", register=True), 503
     return render_template("login.html", register=True)
 
 
@@ -459,6 +1020,19 @@ def _has_cross_origin_browser_header() -> bool:
     return request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site"
 
 
+def _has_cross_origin_no_login_header() -> bool:
+    origin = request.headers.get("Origin", "").strip()
+    if origin:
+        try:
+            candidate = _origin_parts(origin)
+            current = _origin_parts(request.host_url)
+        except ValueError:
+            return True
+        if not candidate or candidate != current:
+            return True
+    return request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site"
+
+
 def _has_same_origin_browser_header() -> bool:
     if request.headers.get("Sec-Fetch-Site", "").strip().lower() == "same-origin":
         return True
@@ -497,7 +1071,7 @@ def _csrf_failure_response():
 def init_auth(app):
     """Wire login_manager and auth blueprint into the Flask app."""
     from datetime import timedelta
-    from flask import request, redirect, url_for
+    from flask import g, request, redirect, url_for
     from flask_login import current_user
 
     # SECRET_KEY resolution order:
@@ -509,27 +1083,15 @@ def init_auth(app):
     _secret = os.environ.get("SECRET_KEY", "").strip()
     if not _secret:
         _secret_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".flask-secret")
-        try:
-            if os.path.exists(_secret_file):
-                with open(_secret_file) as _fh:
-                    _secret = _fh.read().strip()
-        except Exception:
-            _secret = ""
-        if not _secret:
-            _secret = secrets.token_hex(64)
-            try:
-                with open(_secret_file, "w") as _fh:
-                    _fh.write(_secret)
-                os.chmod(_secret_file, 0o600)
-                print(f"INFO: generated new Flask SECRET_KEY and persisted to {_secret_file}")
-            except Exception as _exc:
-                print(f"WARN: could not persist SECRET_KEY to {_secret_file}: {_exc}")
+        _secret = _load_or_create_secret(_secret_file)
     if not _secret or _secret == "dev-key-change-me":
         raise RuntimeError(
             "Refusing to start with default/empty SECRET_KEY. "
             "Set SECRET_KEY env var or allow .flask-secret generation in the project dir."
         )
     app.secret_key = _secret
+    global _rate_limit_hmac_key
+    _rate_limit_hmac_key = _secret.encode("utf-8")
 
     # ── Session hardening ────────────────────────────────
     app.config["SESSION_COOKIE_HTTPONLY"]  = True           # JS can't read the cookie
@@ -548,8 +1110,30 @@ def init_auth(app):
     app.register_blueprint(auth_bp)
     init_auth_db()
 
+    @app.before_request
+    def load_trusted_no_login_owner():
+        cross_origin = _has_cross_origin_no_login_header()
+        if (
+            not _trusted_no_login_enabled()
+            or not _trusted_no_login_request_host()
+            or not _trusted_no_login_request_peer()
+            or (cross_origin and not _consume_trusted_no_login_oauth_callback_state())
+        ):
+            return None
+        owner = _trusted_no_login_owner()
+        if owner is _NO_LOGIN_OWNER_DB_ERROR:
+            login_manager._update_request_context_with_user()
+            return None
+        if owner is None:
+            return None
+        login_manager._update_request_context_with_user(owner)
+        g._trusted_no_login_owner = True
+        return None
+
     @app.context_processor
     def inject_csrf_token():
+        if getattr(g, "_trusted_no_login_owner", False):
+            return {CSRF_FORM_FIELD: ""}
         return {CSRF_FORM_FIELD: _form_csrf_token()}
 
     @app.before_request
@@ -578,7 +1162,9 @@ def init_auth(app):
                 from flask import jsonify
                 return jsonify({"error": "Unauthorized", "login": "/login"}), 401
             return redirect(url_for("auth.login", next=request.path))
-        if not _is_owner_user_id(current_user.get_id()):
+        if not getattr(g, "_trusted_no_login_owner", False) and not _has_owner_route_access(
+            current_user.get_id()
+        ):
             if request.path.startswith("/api/") or request.headers.get("Accept", "").startswith("application/json"):
                 from flask import jsonify
                 return jsonify({"error": "Forbidden"}), 403
