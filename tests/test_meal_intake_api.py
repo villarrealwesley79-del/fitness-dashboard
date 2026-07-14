@@ -11173,10 +11173,15 @@ def test_imported_pending_multi_accept_does_not_promote_forged_provenance(monkey
 
 
 @pytest.mark.parametrize("multi_item", [False, True])
+@pytest.mark.parametrize(
+    "pending_state",
+    ["pending_review", "pending", "needs_review", "review", "PENDING_REVIEW"],
+)
 def test_add_nutrition_pending_rows_cannot_stage_forged_provenance(
     monkeypatch,
     tmp_path,
     multi_item,
+    pending_state,
 ):
     module = _client(monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
@@ -11212,12 +11217,13 @@ def test_add_nutrition_pending_rows_cannot_stage_forged_provenance(
             "fiber_g": forged["fiber_g"],
             "item_name": forged["item_name"],
             "source": forged["source"],
-            "correction_state": "pending_review",
+            "correction_state": pending_state,
             "original_estimate": forged,
         },
     )
     assert staged.status_code == 200, staged.get_data(as_text=True)
     pending = data_store.get_food_log_by_client_id(1, client_id)
+    assert pending["correction_state"] == "pending_review"
     assert pending["original_estimate"]["_imported_pending_untrusted"] is True
     assert pending["source"] == "manual"
     assert pending.get("from_image") is not True
@@ -11252,6 +11258,27 @@ def test_add_nutrition_pending_rows_cannot_stage_forged_provenance(
     for field in ("external_food_id", "verified_source_url"):
         assert stored.get(field) is None
         assert stored["accepted_estimate"].get(field) is None
+
+
+def test_add_nutrition_rejects_unknown_correction_state(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client_id = "unknown-correction-state"
+
+    response = module.app.test_client().post(
+        "/api/add-nutrition",
+        json={
+            "client_id": client_id,
+            "date": "2026-07-14",
+            "calories": 320,
+            "protein_g": 35,
+            "correction_state": "trust_me",
+        },
+    )
+
+    assert response.status_code == 400, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "invalid_field"
+    assert data_store.get_food_log_by_client_id(1, client_id) is None
 
 
 def test_add_nutrition_pending_without_source_stays_manual(monkeypatch, tmp_path):

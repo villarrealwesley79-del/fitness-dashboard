@@ -5646,6 +5646,23 @@ def add_nutrition():
     correction_state, err2 = _coerce_str(data.get("correction_state"), "correction_state", required=False, max_len=64)
     if err2:
         return err2
+    if correction_state:
+        normalized_correction_state = correction_state.strip().lower()
+        if normalized_correction_state in {
+            "pending",
+            "pending_review",
+            "needs_review",
+            "review",
+        }:
+            correction_state = "pending_review"
+        elif normalized_correction_state in {"accepted", "corrected", "manual"}:
+            correction_state = normalized_correction_state
+        else:
+            return api_error(
+                "invalid correction_state",
+                400,
+                code="invalid_field",
+            )
     client_id, err2 = _coerce_str(data.get("client_id"), "client_id", required=False, max_len=128)
     if err2:
         return err2
