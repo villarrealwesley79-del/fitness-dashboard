@@ -37,7 +37,8 @@
 | Protected route, stale non-owner cookie | Flag exactly `true`; valid owner row | Existing owner row overrides request only | Existing cookie is not rewritten or cleared | 200 as owner while enabled; returns to 403 after disabling flag |
 | Protected route | Flag exactly `true`; invalid configured owner ID | None | One actionable log; no account creation | Existing redirect/401 path; failure test |
 | Protected route | Flag exactly `true`; no owner or nonexistent owner row | None | One actionable log; no guessing or fallback account | Existing redirect/401 path; failure tests |
-| Any route | Flag exactly `true`; auth DB lookup raises `sqlite3.Error` | None | One actionable exception log; no account or session mutation | Existing public/redirect/401 behavior instead of 500; focused owner-ID and owner-row failure tests |
+| Any route | Flag exactly `true`; auth DB lookup raises `sqlite3.Error`, with or without a stored session | Request-local anonymous user | One actionable exception log; no account or session mutation | Existing public/redirect/401 behavior instead of any repeated DB read or 500; clean-client and stored-session failure tests |
+| Protected route | Flag exactly `true`; owner lookup succeeds once | Existing owner row and validated request marker | No second owner DB lookup in the login guard | 200 as owner even if a redundant second lookup would fail; focused single-lookup test |
 | Factory preview/CI | Existing `.agents/factory.yaml` | Existing preview login | No config mutation | Source assertion that no-login flag is absent |
 
 Retry, concurrency, transaction, and rollback dimensions are not applicable: each request performs read-only owner lookup and request-local identity assignment; no persistent state is written.
@@ -227,6 +228,8 @@ def test_factory_preview_does_not_enable_no_login():
 ```
 
 Add two database-failure cases before implementation. Patch `_owner_user_id()` and `User.get_by_id()` separately to raise `sqlite3.OperationalError`, then assert a protected request redirects to login instead of returning 500 and logs that normal authentication remains enabled.
+
+Add sibling-path RED coverage for a stored session whose `User.get_by_id()` read fails and for an owner-ID resolver that succeeds once but raises on a redundant second call. The first must redirect through a request-local anonymous identity; the second must return 200 after exactly one validated owner lookup.
 
 - [ ] **Step 6: Run the tests to prove RED**
 

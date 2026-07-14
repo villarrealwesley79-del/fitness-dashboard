@@ -245,6 +245,7 @@ _CSRF_EXEMPT_PATHS = {
 _PASSWORD_HASH_METHOD = "scrypt:32768:8:1"
 _LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _INVALID_OWNER_USER_ID = object()
+_NO_LOGIN_OWNER_DB_ERROR = object()
 _owner_config_error_logged = False
 _no_login_owner_error_logged = False
 
@@ -479,7 +480,7 @@ def _trusted_no_login_owner():
                 "normal authentication remains enabled"
             )
             _no_login_owner_error_logged = True
-        return None
+        return _NO_LOGIN_OWNER_DB_ERROR
     if owner is not None:
         return owner
 
@@ -781,6 +782,9 @@ def init_auth(app):
         if not _trusted_no_login_enabled():
             return None
         owner = _trusted_no_login_owner()
+        if owner is _NO_LOGIN_OWNER_DB_ERROR:
+            login_manager._update_request_context_with_user()
+            return None
         if owner is None:
             return None
         login_manager._update_request_context_with_user(owner)
@@ -819,7 +823,9 @@ def init_auth(app):
                 from flask import jsonify
                 return jsonify({"error": "Unauthorized", "login": "/login"}), 401
             return redirect(url_for("auth.login", next=request.path))
-        if not _is_owner_user_id(current_user.get_id()):
+        if not getattr(g, "_trusted_no_login_owner", False) and not _is_owner_user_id(
+            current_user.get_id()
+        ):
             if request.path.startswith("/api/") or request.headers.get("Accept", "").startswith("application/json"):
                 from flask import jsonify
                 return jsonify({"error": "Forbidden"}), 403

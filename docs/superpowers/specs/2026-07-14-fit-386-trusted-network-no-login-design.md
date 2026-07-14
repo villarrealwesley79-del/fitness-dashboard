@@ -52,7 +52,7 @@ When the mode is enabled:
 2. The hook loads that exact existing `User` row.
 3. The hook installs the owner only in Flask-Login's current request context. It does not call `login_user()`, clear sessions, create an account, or mutate the auth database.
 4. `current_user` therefore exposes the owner's real ID, username, email, and Pro state for the remainder of the request.
-5. The existing `require_login()` guard sees an authenticated owner and continues normally. It is not bypassed or weakened.
+5. The existing `require_login()` guard sees an authenticated owner and uses the request marker from the already validated owner lookup instead of querying the owner row a second time. The disabled/default guard path is unchanged.
 6. Application helpers such as `_current_data_user_id()` receive the owner's real ID, so all existing owner history and settings remain attached to the same account.
 
 An existing browser session does not choose the effective identity while no-login mode is enabled; the request-scoped owner wins. Turning the environment flag off restores the normal session identity on the next process boot.
@@ -73,6 +73,7 @@ No-login mode fails closed into normal authentication:
 - If no owner row exists, no owner is injected.
 - If the selected owner row cannot be loaded, no owner is injected.
 - If either owner-ID lookup or owner-row lookup raises `sqlite3.Error`, no owner is injected.
+- A database-error request is fixed to Flask-Login's anonymous user for that request so an existing session or remember cookie cannot trigger the same failed read again.
 - The existing guard then redirects or returns 401 exactly as it does today.
 
 The application logs one actionable error for an enabled mode that cannot resolve a valid owner. It does not guess another account, auto-create an account, fall back to the FIT-385 QA account, or expose an anonymous request as an owner.

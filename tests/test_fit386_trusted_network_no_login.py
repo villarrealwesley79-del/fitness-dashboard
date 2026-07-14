@@ -189,6 +189,53 @@ def test_enabled_mode_falls_back_when_owner_row_lookup_hits_database_error(
     assert "normal authentication remains enabled" in caplog.text
 
 
+def test_database_error_does_not_reload_stored_session_user(tmp_path, monkeypatch, caplog):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+    owner = auth.User.get_by_username("owner")
+    client = app.test_client()
+    with client.session_transaction() as stored_session:
+        stored_session["_user_id"] = str(owner.id)
+        stored_session["_fresh"] = True
+
+    lookup_calls = 0
+
+    def fail_owner_row_lookup(_user_id):
+        nonlocal lookup_calls
+        lookup_calls += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(auth.User, "get_by_id", fail_owner_row_lookup)
+    with caplog.at_level(logging.ERROR, logger=auth.__name__):
+        response = client.get("/protected")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/login?next=/protected")
+    assert lookup_calls == 1
+
+
+def test_validated_owner_is_not_looked_up_again_in_login_guard(tmp_path, monkeypatch):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+    owner = auth.User.get_by_username("owner")
+    lookup_calls = 0
+
+    def owner_id_once():
+        nonlocal lookup_calls
+        lookup_calls += 1
+        if lookup_calls > 1:
+            raise sqlite3.OperationalError("database is locked")
+        return owner.id
+
+    monkeypatch.setattr(auth, "_owner_user_id", owner_id_once)
+
+    response = app.test_client().get("/protected")
+
+    assert response.status_code == 200
+    assert response.get_json()["user_id"] == str(owner.id)
+    assert lookup_calls == 1
+
+
 def test_factory_preview_does_not_enable_no_login():
     config = (Path(__file__).resolve().parents[1] / ".agents" / "factory.yaml").read_text()
 
