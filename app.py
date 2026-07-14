@@ -140,6 +140,7 @@ from data_store import (
     acknowledge_food_log_refresh_event,
     acknowledge_workout_adaptation_event,
     delete_current_workout_plan,
+    expire_unpublished_workout_adaptation_events,
     get_current_workout_plan,
     get_workout_adaptation_revision,
     get_push_subscription_for_delivery,
@@ -2168,6 +2169,8 @@ def _apply_due_workout_adaptations_for_plan(
     active_workout_open: bool = False,
     completed_sets_by_exercise: dict[str, int] | None = None,
     raise_on_error: bool = False,
+    recovery_fingerprint: str | None = None,
+    recovery_source_plan_version: int | None = None,
 ) -> tuple[dict, list[dict]]:
     """Evaluate closed FIT-136 windows against a generated remaining plan."""
     current_visible_plan = _fit136_visible_workout_plan(next_workout or {})
@@ -2187,6 +2190,8 @@ def _apply_due_workout_adaptations_for_plan(
             plan_date=date_s,
             active_workout_open=active_workout_open,
             completed_sets_by_exercise=completed_sets_by_exercise or {},
+            plan_fingerprint=recovery_fingerprint,
+            source_plan_version=recovery_source_plan_version,
         )
         if not events:
             return next_workout, []
@@ -4685,11 +4690,33 @@ def _persist_current_workout_plan(
     return recommendation
 
 
-def _publish_unpublished_workout_adaptations(user_id: int, fingerprint: str) -> list[str]:
+def _publish_unpublished_workout_adaptations(
+    user_id: int,
+    fingerprint: str,
+    today_s: str,
+) -> list[str]:
     while True:
         unpublished = list_unpublished_applied_workout_adaptation_events(user_id)
         if not unpublished:
             return []
+        current_plan = get_current_workout_plan(user_id)
+        current_plan_version = (
+            int(current_plan.get("plan_version") or 0) if current_plan else None
+        )
+        obsolete_ids = [
+            str(event["id"])
+            for event in unpublished
+            if event.get("id")
+            and (
+                str(event.get("target_plan_date") or "") != today_s
+                or event.get("plan_fingerprint") != fingerprint
+                or event.get("source_plan_version") is None
+                or event.get("source_plan_version") != current_plan_version
+            )
+        ]
+        if obsolete_ids:
+            expire_unpublished_workout_adaptation_events(user_id, obsolete_ids)
+            continue
         latest_plan = unpublished[-1].get("_adapted_plan")
         if not isinstance(latest_plan, dict):
             raise RuntimeError("unpublished workout adaptation is missing its adapted plan")
@@ -9644,6 +9671,11 @@ def ack_food_log_refresh_event(event_id: str):
 
 @app.route('/api/workout-adaptation-events')
 def workout_adaptation_events():
+    with CURRENT_WORKOUT_PLAN_LOCK:
+        return _workout_adaptation_events_locked()
+
+
+def _workout_adaptation_events_locked():
     """Pollable FIT-137 event feed for nutrition-based workout adaptations."""
     unacknowledged_raw = str(request.args.get("unacknowledged", "true")).strip().lower()
     unacknowledged = unacknowledged_raw not in {"0", "false", "no", "all"}
@@ -9690,7 +9722,7 @@ def _evaluate_workout_adaptation_events_locked():
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
     try:
-        _publish_unpublished_workout_adaptations(user_id, fingerprint)
+        _publish_unpublished_workout_adaptations(user_id, fingerprint, today_s)
     except Exception:
         return api_error(
             "workout adaptation publication failed",
@@ -9736,6 +9768,13 @@ def _evaluate_workout_adaptation_events_locked():
         food_log_entries=food_log_entries,
     )
     events = []
+    source_plan_row = get_current_workout_plan(user_id)
+    source_plan_version = None
+    if (
+        source_plan_row
+        and (source_plan_row.get("plan") or {}) == (next_workout or {})
+    ):
+        source_plan_version = int(source_plan_row.get("plan_version") or 0)
     if not active_open_requested or completed_sets_by_exercise:
         try:
             next_workout, events = _apply_due_workout_adaptations_for_plan(
@@ -9746,6 +9785,8 @@ def _evaluate_workout_adaptation_events_locked():
                 active_workout_open=active_workout_open,
                 completed_sets_by_exercise=completed_sets_by_exercise,
                 raise_on_error=True,
+                recovery_fingerprint=fingerprint,
+                recovery_source_plan_version=source_plan_version,
             )
         except Exception:
             return api_error(
@@ -9770,7 +9811,7 @@ def _evaluate_workout_adaptation_events_locked():
                 publish_adaptation_event_ids=winning_applied_event_ids,
             )
     try:
-        _publish_unpublished_workout_adaptations(user_id, fingerprint)
+        _publish_unpublished_workout_adaptations(user_id, fingerprint, today_s)
     except Exception:
         return api_error(
             "workout adaptation publication failed",

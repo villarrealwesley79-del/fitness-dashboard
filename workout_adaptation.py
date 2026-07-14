@@ -194,6 +194,8 @@ def apply_due_adaptations(
     active_workout_open: bool = False,
     completed_sets_by_exercise: dict[str, int] | None = None,
     clock: Callable[[], datetime] | datetime | None = None,
+    plan_fingerprint: str | None = None,
+    source_plan_version: int | None = None,
 ) -> tuple[dict, list[dict]]:
     """Evaluate closed coalescing windows and return a patched recommendation."""
     now = _clock_now(clock)
@@ -232,6 +234,9 @@ def apply_due_adaptations(
             )
             recovery_plan["_fit136_last_adapted_plan"] = copy.deepcopy(event_patched)
             event["_adapted_plan"] = recovery_plan
+            event["_plan_fingerprint"] = plan_fingerprint
+            event["_target_plan_date"] = plan_date
+            event["_source_plan_version"] = source_plan_version
         saved = save_workout_adaptation_event(user_id, pending["id"], event)
         if saved:
             events.append(saved)

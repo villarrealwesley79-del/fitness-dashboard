@@ -1008,6 +1008,9 @@ def test_applied_event_is_published_atomically_with_persisted_plan(monkeypatch, 
     assert data_store.get_current_workout_plan(1)["plan"]["id"] == "adapted-plan"
     assert published_plan["adaptation_revision"] == 1
     assert data_store.get_workout_adaptation_revision(1) == 1
+    original_plan_version = data_store.get_current_workout_plan(1)["plan_version"]
+    data_store.save_current_workout_plan(1, "fingerprint", {"id": "adapted-plan"})
+    assert data_store.get_current_workout_plan(1)["plan_version"] == original_plan_version
     assert [event["id"] for event in data_store.list_workout_adaptation_events(1)] == [
         saved["id"]
     ]
@@ -1067,6 +1070,7 @@ def test_losing_pending_claim_does_not_adopt_independently_patched_plan(monkeypa
     assert candidate_events[0]["_adapted_plan"]["_fit136_last_adapted_plan"] == {
         "id": "loser-patched-plan"
     }
+    assert candidate_events[0]["_target_plan_date"] == "2026-05-24"
 
 
 def test_processed_food_log_client_id_cannot_schedule_duplicate_window(monkeypatch, tmp_path):

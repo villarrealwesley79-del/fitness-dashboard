@@ -476,7 +476,11 @@ def test_workout_adaptation_recovers_unpublished_applied_plan(monkeypatch, tmp_p
     unpublished = [
         {
             "id": "stranded-event",
+            "date": "2026-05-24",
             "status": "applied",
+            "plan_fingerprint": "recovery-fingerprint",
+            "target_plan_date": "2026-05-24",
+            "source_plan_version": 7,
             "_adapted_plan": recovered_plan,
         }
     ]
@@ -492,6 +496,21 @@ def test_workout_adaptation_recovers_unpublished_applied_plan(monkeypatch, tmp_p
         unpublished.clear()
 
     monkeypatch.setattr(module, "_persist_current_workout_plan", persist)
+    monkeypatch.setattr(
+        module,
+        "get_current_workout_plan",
+        lambda _user_id, **_kwargs: {
+            "plan": recovered_plan,
+            "plan_version": 7,
+            "updated_at": "2026-05-24T12:00:00",
+        },
+    )
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(
+        module,
+        "_workout_recommendation_fingerprint",
+        lambda: "recovery-fingerprint",
+    )
     monkeypatch.setattr(
         module,
         "_current_workout_plan_for_fingerprint",
