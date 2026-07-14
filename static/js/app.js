@@ -393,6 +393,7 @@
         statuses: new Map(),
         dismissed: new Set(),
         fetching: false,
+        refillRequested: false,
     };
 
     function workoutAdaptationIsRenderable(event) {
@@ -504,6 +505,10 @@
                 await api(`/api/workout-adaptation-events/${encodeURIComponent(event.id)}/ack`, { method: 'POST' });
                 card.remove();
                 if (!host.children.length) host.hidden = true;
+                workoutAdaptationNoticeState.refillRequested = true;
+                fetchWorkoutAdaptationNotices().catch((fetchErr) => {
+                    console.warn('workout adaptation refresh failed:', fetchErr);
+                });
             } catch (err) {
                 // Keep the existing card and leave the event in `seen` so a
                 // later poll does NOT append a duplicate; just re-enable the
@@ -526,6 +531,7 @@
     async function fetchWorkoutAdaptationNotices() {
         if (workoutAdaptationNoticeState.fetching) return;
         workoutAdaptationNoticeState.fetching = true;
+        workoutAdaptationNoticeState.refillRequested = false;
         try {
             const payload = await api(withActiveWorkoutAdaptationParams('/api/workout-adaptation-events?unacknowledged=true&limit=10'));
             const events = (payload && payload.events) || [];
@@ -551,6 +557,11 @@
             }
         } finally {
             workoutAdaptationNoticeState.fetching = false;
+            if (workoutAdaptationNoticeState.refillRequested) {
+                fetchWorkoutAdaptationNotices().catch((fetchErr) => {
+                    console.warn('workout adaptation refresh failed:', fetchErr);
+                });
+            }
         }
     }
 

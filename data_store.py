@@ -2491,20 +2491,26 @@ def add_food_log(user_id: int, record: dict) -> dict:
                 refresh_metadata,
                 now_iso,
             )
+        persisted = _food_log_row_to_dict(row) if row is not None else None
+        source_became_pending = bool(
+            previous is not None
+            and persisted is not None
+            and previous.get("correction_state") != "pending_review"
+            and persisted.get("correction_state") == "pending_review"
+        )
         if (
-            previous_row is not None
-            and row is not None
-            and entry["correction_state"] != "pending_review"
-            and _workout_adaptation_source_changed(
-                _food_log_row_to_dict(previous_row),
-                _food_log_row_to_dict(row),
+            previous is not None
+            and persisted is not None
+            and (
+                source_became_pending
+                or _workout_adaptation_source_changed(previous, persisted)
             )
         ):
             _mark_source_workout_adaptations_stale(
                 conn,
                 user_id,
-                client_ids={entry["client_id"]} if entry.get("client_id") else set(),
-                meal_ids={entry["meal_id"]} if entry.get("meal_id") else set(),
+                client_ids={persisted["client_id"]} if persisted.get("client_id") else set(),
+                meal_ids={persisted["meal_id"]} if persisted.get("meal_id") else set(),
                 reason="Source meal changed; this workout update is no longer current.",
             )
         conn.commit()

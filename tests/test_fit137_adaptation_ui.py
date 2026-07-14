@@ -125,7 +125,7 @@ sandbox.module.exports().then((result) => process.stdout.write(JSON.stringify(re
 @pytest.mark.parametrize(
     ("ack_fails", "expected"),
     [
-        (False, {"appended": 1, "active": 0, "feed_calls": 2, "kicker": None}),
+        (False, {"appended": 1, "active": 0, "feed_calls": 3, "kicker": None}),
         (True, {"appended": 2, "active": 1, "feed_calls": 3, "kicker": "Workout update stale"}),
     ],
     ids=["ack-succeeds", "ack-fails"],
@@ -222,6 +222,99 @@ sandbox.module.exports().then((result) => process.stdout.write(JSON.stringify(re
 """
     result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True)
     assert json.loads(result.stdout) == expected
+
+
+def test_successful_adaptation_ack_refills_bounded_feed_during_inflight_poll():
+    js = APP_JS.read_text()
+    state_block = _block(
+        js,
+        "const workoutAdaptationNoticeState = {",
+        "function workoutAdaptationIsRenderable",
+    )
+    notice_block = _block(
+        js,
+        "function showWorkoutAdaptationNotice(event)",
+        "async function fetchWorkoutAdaptationNotices",
+    )
+    fetch_block = _block(
+        js,
+        "async function fetchWorkoutAdaptationNotices()",
+        "function newWorkoutId",
+    )
+
+    if not shutil.which("node"):
+        pytest.skip("adaptation acknowledgement refill regression requires node")
+    script = f"""
+const vm = require('node:vm');
+const source = `
+let resolveFeed;
+let feedCalls = 0;
+const staleFeed = new Promise((resolve) => {{ resolveFeed = resolve; }});
+const appendedCards = [];
+function element() {{
+  return {{
+    children: [],
+    dataset: {{}},
+    disabled: false,
+    removed: false,
+    appendChild(child) {{ this.children.push(child); }},
+    setAttribute() {{}},
+    addEventListener(type, handler) {{ this[type] = handler; }},
+    remove() {{ this.removed = true; }},
+  }};
+}}
+const host = {{
+  hidden: true,
+  get children() {{ return appendedCards.filter((card) => !card.removed); }},
+  appendChild(card) {{ appendedCards.push(card); }},
+  querySelectorAll() {{ return this.children; }},
+}};
+const document = {{ createElement: element }};
+function $(id) {{ return id === 'workout-adaptation-host' ? host : null; }}
+function escapeHtml(value) {{ return value; }}
+function workoutAdaptationIsRenderable() {{ return true; }}
+function workoutAdaptationSignalLabels() {{ return []; }}
+function workoutAdaptationRemainingPlanRows() {{ return ''; }}
+function applyWorkoutAdaptationToActiveWorkout() {{}}
+function withActiveWorkoutAdaptationParams(path) {{ return path; }}
+async function api(path) {{
+  if (path.includes('/ack')) return {{ ok: true }};
+  feedCalls += 1;
+  if (feedCalls === 1) return {{ events: [{{ id: 'event-1', status: 'applied' }}] }};
+  if (feedCalls === 2) return staleFeed;
+  return {{ events: [{{ id: 'event-2', status: 'applied' }}] }};
+}}
+${{{json.dumps(state_block)}}}
+${{{json.dumps(notice_block)}}}
+${{{json.dumps(fetch_block)}}}
+module.exports = async () => {{
+  await fetchWorkoutAdaptationNotices();
+  const inFlightPoll = fetchWorkoutAdaptationNotices();
+  const dismissButton = host.children[0].children[0].children[1];
+  await dismissButton.click();
+  resolveFeed({{ events: [{{ id: 'event-1', status: 'applied' }}] }});
+  await inFlightPoll;
+  await new Promise(setImmediate);
+  const current = host.children[0];
+  return {{
+    appended: appendedCards.length,
+    active: host.children.length,
+    feed_calls: feedCalls,
+    current_id: current ? current.dataset.workoutAdaptationId : null,
+  }};
+}};
+`;
+const sandbox = {{ module: {{ exports: {{}} }}, console, setImmediate }};
+vm.runInNewContext(source, sandbox);
+sandbox.module.exports().then((result) => process.stdout.write(JSON.stringify(result)));
+"""
+    result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True)
+    assert json.loads(result.stdout) == {
+        "appended": 2,
+        "active": 1,
+        "feed_calls": 3,
+        "current_id": "event-2",
+    }
 
 
 def test_adaptation_notice_renders_neutral_reason_and_collapsed_details():

@@ -1269,6 +1269,30 @@ def test_rejected_pending_source_update_keeps_adaptation_applied(monkeypatch, tm
     assert stored["status"] == "applied"
 
 
+def test_manual_source_transition_to_pending_marks_adaptation_stale(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1", correction_state="manual")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    persisted = _food_log(
+        "source-meal",
+        meal_id="meal-1",
+        correction_state="pending_review",
+    )
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert persisted["correction_state"] == "pending_review"
+    assert stored["status"] == "stale"
+
+
 def test_identical_corrected_food_log_replay_keeps_adaptation_applied(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     original = _food_log("source-meal", meal_id="meal-1")
