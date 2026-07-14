@@ -76,6 +76,10 @@ restore the login screen.
 the running app. Never enable it on a public, shared, port-forwarded, or
 otherwise untrusted network bind.
 
+Owner injection is limited to `localhost`, loopback IPs, Tailscale device IPs
+in `100.64.0.0/10`, and fully qualified `*.ts.net` MagicDNS names. Requests
+using any other `Host` keep the normal login barrier.
+
 On the Mac mini, install or refresh the local launchd agents with:
 
 ```bash

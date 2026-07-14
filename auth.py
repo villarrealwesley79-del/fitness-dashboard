@@ -8,6 +8,7 @@ import fcntl
 import sqlite3
 import hmac
 import hashlib
+import ipaddress
 import logging
 import re
 import secrets
@@ -244,6 +245,7 @@ _CSRF_EXEMPT_PATHS = {
 }
 _PASSWORD_HASH_METHOD = "scrypt:32768:8:1"
 _LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
+_TAILSCALE_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 _INVALID_OWNER_USER_ID = object()
 _NO_LOGIN_OWNER_DB_ERROR = object()
 _owner_config_error_logged = False
@@ -463,6 +465,27 @@ def _owner_user_id():
 
 def _trusted_no_login_enabled() -> bool:
     return os.environ.get("FITNESS_DASHBOARD_NO_LOGIN", "").strip().lower() == "true"
+
+
+def _trusted_no_login_request_host() -> bool:
+    try:
+        hostname = urlsplit(f"//{request.host}").hostname
+    except ValueError:
+        return False
+    if not hostname:
+        return False
+
+    hostname = hostname.rstrip(".").lower()
+    if hostname == "localhost" or hostname.endswith(".ts.net"):
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return address.is_loopback or (
+        isinstance(address, ipaddress.IPv4Address)
+        and address in _TAILSCALE_IPV4_NETWORK
+    )
 
 
 def _trusted_no_login_owner():
@@ -779,7 +802,7 @@ def init_auth(app):
 
     @app.before_request
     def load_trusted_no_login_owner():
-        if not _trusted_no_login_enabled():
+        if not _trusted_no_login_enabled() or not _trusted_no_login_request_host():
             return None
         owner = _trusted_no_login_owner()
         if owner is _NO_LOGIN_OWNER_DB_ERROR:

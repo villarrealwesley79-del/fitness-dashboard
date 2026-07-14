@@ -36,6 +36,7 @@ The new environment variable is `FITNESS_DASHBOARD_NO_LOGIN`.
 
 - Only the case-insensitive literal `true` enables the mode.
 - Unset, empty, `false`, malformed, and misspelled values leave the mode disabled.
+- Even with the flag enabled, owner injection is limited to `localhost`, loopback IPs, Tailscale's `100.64.0.0/10` device range, and fully qualified `*.ts.net` MagicDNS names.
 - The default remains the existing login flow.
 - Factory preview and CI configuration remain unchanged and do not set this variable.
 - The change does not alter `HOST`, bind addresses, Tailscale configuration, or public exposure.
@@ -48,12 +49,13 @@ When the mode is disabled, no new request hook performs work. The existing Flask
 
 When the mode is enabled:
 
-1. A request hook registered before `require_login()` resolves the owner using the existing owner-selection rule: `FITNESS_DASHBOARD_OWNER_USER_ID` when valid, otherwise the lowest local user ID.
-2. The hook loads that exact existing `User` row.
-3. The hook installs the owner only in Flask-Login's current request context. It does not call `login_user()`, clear sessions, create an account, or mutate the auth database.
-4. `current_user` therefore exposes the owner's real ID, username, email, and Pro state for the remainder of the request.
-5. The existing `require_login()` guard sees an authenticated owner and uses the request marker from the already validated owner lookup instead of querying the owner row a second time. The disabled/default guard path is unchanged.
-6. Application helpers such as `_current_data_user_id()` receive the owner's real ID, so all existing owner history and settings remain attached to the same account.
+1. A request hook registered before `require_login()` validates the request `Host` as localhost, loopback, a Tailscale IPv4 address, or a fully qualified `*.ts.net` MagicDNS name. Other hosts receive normal authentication behavior.
+2. The hook resolves the owner using the existing owner-selection rule: `FITNESS_DASHBOARD_OWNER_USER_ID` when valid, otherwise the lowest local user ID.
+3. The hook loads that exact existing `User` row.
+4. The hook installs the owner only in Flask-Login's current request context. It does not call `login_user()`, clear sessions, create an account, or mutate the auth database.
+5. `current_user` therefore exposes the owner's real ID, username, email, and Pro state for the remainder of the request.
+6. The existing `require_login()` guard sees an authenticated owner and uses the request marker from the already validated owner lookup instead of querying the owner row a second time. The disabled/default guard path is unchanged.
+7. Application helpers such as `_current_data_user_id()` receive the owner's real ID, so all existing owner history and settings remain attached to the same account.
 
 An existing browser session does not choose the effective identity while no-login mode is enabled; the request-scoped owner wins. Turning the environment flag off restores the normal session identity on the next process boot.
 
@@ -87,6 +89,8 @@ When owner injection fails, login and registration behave normally so first-run 
 ## Security Boundary
 
 Enabling this mode deliberately removes the authentication barrier for every person or device that can reach the running instance. It is acceptable only for a localhost or private Tailnet boot controlled by the owner. It must never be enabled on a public, shared, port-forwarded, or otherwise untrusted network bind.
+
+The request `Host` gate is defense in depth against DNS rebinding: an attacker-controlled hostname cannot activate request-scoped owner identity merely because it resolves to the local or Tailnet address.
 
 Documentation will place this warning next to the exact environment variable and restart instructions. No secret values, real credentials, or owner data are added to source control.
 

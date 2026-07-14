@@ -236,6 +236,49 @@ def test_validated_owner_is_not_looked_up_again_in_login_guard(tmp_path, monkeyp
     assert lookup_calls == 1
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:5050",
+        "http://127.0.0.1:5050",
+        "http://[::1]:5050",
+        "http://100.90.15.93:5050",
+        "http://admins-mac-mini.tail6c6490.ts.net:5050",
+    ],
+)
+def test_enabled_mode_accepts_only_localhost_or_tailnet_hosts(
+    tmp_path, monkeypatch, base_url
+):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+
+    response = app.test_client().get("/protected", base_url=base_url)
+
+    assert response.status_code == 200
+    assert response.get_json()["username"] == "owner"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://evil.example:5050",
+        "http://evil.ts.net.attacker.example:5050",
+        "http://192.168.1.20:5050",
+    ],
+)
+def test_enabled_mode_rejects_untrusted_hosts(tmp_path, monkeypatch, base_url):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+    client = app.test_client()
+
+    browser_response = client.get("/protected", base_url=base_url)
+    api_response = client.get("/api/protected", base_url=base_url)
+
+    assert browser_response.status_code == 302
+    assert browser_response.headers["Location"].endswith("/login?next=/protected")
+    assert api_response.status_code == 401
+
+
 def test_factory_preview_does_not_enable_no_login():
     config = (Path(__file__).resolve().parents[1] / ".agents" / "factory.yaml").read_text()
 
