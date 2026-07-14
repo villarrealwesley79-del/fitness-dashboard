@@ -9,9 +9,12 @@ import sqlite3
 import hmac
 import hashlib
 import ipaddress
+import json
 import logging
 import re
 import secrets
+import shutil
+import subprocess
 import time
 from contextlib import contextmanager
 from urllib.parse import urlsplit
@@ -251,7 +254,9 @@ _NO_LOGIN_OWNER_DB_ERROR = object()
 _LOCAL_QA_ENABLED = "FITNESS_DASHBOARD_LOCAL_QA_ENABLED"
 _LOCAL_QA_USERNAME = "FITNESS_DASHBOARD_LOCAL_QA_USERNAME"
 _LOCAL_QA_PASSWORD = "FITNESS_DASHBOARD_LOCAL_QA_PASSWORD"
-_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY = "_trusted_no_login_oauth_states"
+_TRUSTED_NO_LOGIN_OAUTH_STATE_TTL_SECONDS = 600
+_TAILSCALE_MACOS_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+_tailscale_verified_peer_cache = {}
 _owner_config_error_logged = False
 _no_login_owner_error_logged = False
 
@@ -453,6 +458,14 @@ def init_auth_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trusted_no_login_oauth_states (
+                state      TEXT PRIMARY KEY,
+                expires_at REAL NOT NULL
+            )
+            """
+        )
         rate_limit_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(auth_rate_limit_attempts)")
         }
@@ -626,12 +639,22 @@ def remember_trusted_no_login_oauth_state(state) -> None:
     state = str(state or "").strip()
     if not _trusted_no_login_enabled() or not state:
         return
-    states = session.get(_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY)
-    if not isinstance(states, list):
-        states = []
-    states = [item for item in states if isinstance(item, str) and item != state]
-    states.append(state)
-    session[_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY] = states[-4:]
+    now = time.time()
+    try:
+        with _get_db() as conn:
+            conn.execute(
+                "DELETE FROM trusted_no_login_oauth_states WHERE expires_at < ?",
+                (now,),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO trusted_no_login_oauth_states (state, expires_at) "
+                "VALUES (?, ?)",
+                (state, now + _TRUSTED_NO_LOGIN_OAUTH_STATE_TTL_SECONDS),
+            )
+    except sqlite3.Error:
+        logging.getLogger(__name__).exception(
+            "Could not retain trusted no-login OAuth state; cross-site callback will remain locked"
+        )
 
 
 def _trusted_no_login_request_hostname():
@@ -661,6 +684,47 @@ def _trusted_no_login_request_host() -> bool:
     )
 
 
+def _tailscale_cli_path():
+    installed = shutil.which("tailscale")
+    if installed:
+        return installed
+    if os.access(_TAILSCALE_MACOS_CLI, os.X_OK):
+        return _TAILSCALE_MACOS_CLI
+    return None
+
+
+def _tailscale_peer_is_authenticated(address: str) -> bool:
+    now = time.monotonic()
+    if _tailscale_verified_peer_cache.get(address, 0) > now:
+        return True
+    cli = _tailscale_cli_path()
+    if cli is None:
+        return False
+    try:
+        completed = subprocess.run(
+            [cli, "whois", "--json", address],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+        payload = json.loads(completed.stdout) if completed.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return False
+    node = payload.get("Node") if isinstance(payload, dict) else None
+    if not isinstance(node, dict) or node.get("MachineAuthorized") is not True:
+        return False
+    for value in node.get("Addresses") or ():
+        try:
+            if ipaddress.ip_interface(value).ip == ipaddress.ip_address(address):
+                _tailscale_verified_peer_cache[address] = now + 30
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _trusted_no_login_request_peer() -> bool:
     if any(
         request.headers.get(header)
@@ -684,7 +748,11 @@ def _trusted_no_login_request_peer() -> bool:
             return ipaddress.ip_address(hostname or "").is_loopback
         except ValueError:
             return False
-    return isinstance(address, ipaddress.IPv4Address) and address in _TAILSCALE_IPV4_NETWORK
+    return (
+        isinstance(address, ipaddress.IPv4Address)
+        and address in _TAILSCALE_IPV4_NETWORK
+        and _tailscale_peer_is_authenticated(str(address))
+    )
 
 
 def _consume_trusted_no_login_oauth_callback_state() -> bool:
@@ -692,15 +760,25 @@ def _consume_trusted_no_login_oauth_callback_state() -> bool:
         return False
     state = str(request.args.get("state") or "").strip()
     code = str(request.args.get("code") or "").strip()
-    states = session.get(_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY)
-    if not state or not code or not isinstance(states, list) or state not in states:
+    if not state or not code:
         return False
-    remaining = [item for item in states if item != state]
-    if remaining:
-        session[_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY] = remaining
-    else:
-        session.pop(_TRUSTED_NO_LOGIN_OAUTH_STATES_SESSION_KEY, None)
-    return True
+    now = time.time()
+    try:
+        with _get_db() as conn:
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM trusted_no_login_oauth_states WHERE expires_at < ?",
+                (now,),
+            )
+            consumed = conn.execute(
+                "DELETE FROM trusted_no_login_oauth_states "
+                "WHERE state = ? AND expires_at >= ?",
+                (state, now),
+            )
+            return consumed.rowcount == 1
+    except sqlite3.Error:
+        return False
 
 
 def _trusted_no_login_owner():

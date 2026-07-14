@@ -39,12 +39,12 @@
 | Protected route | Flag exactly `true`; no owner or nonexistent owner row | None | One actionable log; no guessing or fallback account | Existing redirect/401 path; failure tests |
 | Any route | Flag exactly `true`; auth DB lookup raises `sqlite3.Error`, with or without a stored session | Request-local anonymous user | One actionable exception log; no account or session mutation | Existing public/redirect/401 behavior instead of any repeated DB read or 500; clean-client and stored-session failure tests |
 | Protected route | Flag exactly `true`; owner lookup succeeds once | Existing owner row and validated request marker | No second owner DB lookup in the login guard | 200 as owner even if a redundant second lookup would fail; focused single-lookup test |
-| Protected route | Flag exactly `true`; `Host` is localhost, loopback, Tailscale `100.64.0.0/10`, or `*.ts.net`; direct peer is loopback or Tailscale `100.64.0.0/10` | Existing owner row | Request-local identity only | 200 as owner; trusted-host and trusted-peer tests |
-| Protected browser/API | Flag exactly `true`; `Host` is attacker-controlled, LAN-only, or a deceptive `.ts.net` suffix, or trusted `Host` is spoofed by an untrusted direct peer | None unless normal session auth succeeds | No owner lookup or injection | Existing redirect/401 behavior; untrusted-host, peer-spoofing, and DNS-rebinding tests |
+| Protected route | Flag exactly `true`; trusted host; peer is loopback or local Tailscale WhoIs returns an authorized node containing the exact peer address | Existing owner row | Request-local identity only | 200 as owner; trusted-host and verified-peer tests |
+| Protected browser/API | Flag exactly `true`; attacker/deceptive host, untrusted peer, or CGNAT peer not verified by Tailscale WhoIs | None unless normal session auth succeeds | No owner lookup or injection | Existing redirect/401 behavior; untrusted-host, peer-spoofing, unverified-CGNAT, and DNS-rebinding tests |
 | Protected GET API | Flag exactly `true`; trusted `Host`; `Origin` differs from the actual request origin, configured public origin matches, or `Sec-Fetch-Site: cross-site` | None unless normal session auth succeeds | No owner lookup or injection | Existing API 401 despite wildcard CORS response; strict-origin tests |
 | Protected GET API | Flag exactly `true`; trusted `Host`; same-origin `Origin` or `Sec-Fetch-Site: same-origin` | Existing owner row | Request-local identity only | 200 as owner; same-origin tests |
 | Protected route | Flag exactly `true`; forwarded/proxy header present, or loopback peer claims `*.ts.net` | None unless normal session auth succeeds | No owner lookup or injection | Existing redirect/401 behavior; reverse-proxy tests |
-| WHOOP/Open Wearables callback | Flag exactly `true`; direct trusted request; cross-site GET whose state was issued into the same browser's signed session | Existing owner row | OAuth state removed before injection; no login identity stored | Successful callback continues once; end-to-end no-login OAuth test |
+| WHOOP/Open Wearables callback | Flag exactly `true`; direct trusted request; cross-site GET whose state exists unexpired in the auth database | Existing owner row | Server-side OAuth state atomically removed before injection; no login identity or browser cookie stored | Successful HTTP callback continues once; end-to-end no-login OAuth test |
 | WHOOP/Open Wearables callback | Flag exactly `true`; cross-site GET with unknown or reused state | None | No owner lookup, mutation lock, or downstream callback call | Existing API 401; pre-route rejection tests |
 | Factory preview/CI | Existing `.agents/factory.yaml` | Existing preview login | No config mutation | Source assertion that no-login flag is absent |
 
@@ -248,9 +248,11 @@ Add reverse-proxy RED coverage: a loopback peer claiming `*.ts.net` and a loopba
 
 Add an end-to-end no-login WHOOP callback RED test. Start OAuth as the request-scoped owner, return on the exact callback with `Sec-Fetch-Site: cross-site`, and prove the existing user-bound state is consumed and the connection succeeds. No other cross-origin route is exempt.
 
-Replace the syntactic callback exception with a one-time browser-session state gate. Both local WHOOP and Open Wearables authorization-start paths remember the provider state in the signed Flask session only when no-login mode is enabled. The callback hook must remove a matching state before owner injection; unknown and reused state must return 401 before mutation-lock or downstream callback work. This OAuth state is not a Flask-Login identity.
+Replace the syntactic callback exception with a one-time server-side state gate. Both local WHOOP and Open Wearables authorization-start paths remember the provider state for ten minutes in the auth database only when no-login mode is enabled. The callback hook must atomically remove a matching state before owner injection; unknown and reused state must return 401 before mutation-lock or downstream callback work. This avoids both a Flask-Login identity and dependence on a Secure browser cookie for direct HTTP Tailnet use.
 
 Use a dedicated no-login origin comparison against `request.host_url`. Do not inherit `FITNESS_DASHBOARD_PUBLIC_BASE_URL` or forwarded-origin allowances from the broader CSRF helper.
+
+Replace CGNAT-range trust with identity verification. A non-loopback peer must first be in `100.64.0.0/10`, then `tailscale whois --json` must return an authorized node containing that exact address. Fail closed when the CLI, daemon, output, authorization, or address match is unavailable; cache positive verification for 30 seconds.
 
 - [ ] **Step 6: Run the tests to prove RED**
 

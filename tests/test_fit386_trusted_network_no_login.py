@@ -1,12 +1,59 @@
 import logging
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from flask import Flask, jsonify, render_template_string, session
 from flask_login import current_user
 
 import auth
+
+
+def test_tailscale_peer_authentication_requires_matching_authorized_node(monkeypatch):
+    auth._tailscale_verified_peer_cache.clear()
+    monkeypatch.setattr(auth, "_tailscale_cli_path", lambda: "/test/tailscale")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"Node":{"MachineAuthorized":true,'
+                '"Addresses":["100.90.15.93/32"]}}'
+            ),
+        )
+
+    monkeypatch.setattr(auth.subprocess, "run", fake_run)
+
+    assert auth._tailscale_peer_is_authenticated("100.90.15.93") is True
+    assert calls[0][0] == [
+        "/test/tailscale",
+        "whois",
+        "--json",
+        "100.90.15.93",
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"Node":{"MachineAuthorized":false,"Addresses":["100.90.15.93/32"]}}',
+        '{"Node":{"MachineAuthorized":true,"Addresses":["100.64.0.50/32"]}}',
+        "not-json",
+    ],
+)
+def test_tailscale_peer_authentication_fails_closed(monkeypatch, payload):
+    auth._tailscale_verified_peer_cache.clear()
+    monkeypatch.setattr(auth, "_tailscale_cli_path", lambda: "/test/tailscale")
+    monkeypatch.setattr(
+        auth.subprocess,
+        "run",
+        lambda command, **kwargs: SimpleNamespace(returncode=0, stdout=payload),
+    )
+
+    assert auth._tailscale_peer_is_authenticated("100.90.15.93") is False
 
 
 def _make_auth_app(tmp_path, monkeypatch, *, no_login=None):
@@ -248,6 +295,12 @@ def test_validated_owner_is_not_looked_up_again_in_login_guard(tmp_path, monkeyp
 def test_enabled_mode_accepts_only_localhost_or_tailnet_hosts(
     tmp_path, monkeypatch, base_url, remote_addr
 ):
+    monkeypatch.setattr(
+        auth,
+        "_tailscale_peer_is_authenticated",
+        lambda address: address == "100.90.15.93",
+        raising=False,
+    )
     app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
     auth.User.create("owner", "existing-password")
 
@@ -305,6 +358,12 @@ def test_enabled_mode_rejects_spoofed_trusted_host_from_untrusted_peer(
 
 
 def test_enabled_mode_accepts_tailnet_peer(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "_tailscale_peer_is_authenticated",
+        lambda address: address == "100.90.15.93",
+        raising=False,
+    )
     app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
     auth.User.create("owner", "existing-password")
 
@@ -315,6 +374,25 @@ def test_enabled_mode_accepts_tailnet_peer(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
+
+
+def test_enabled_mode_rejects_unverified_cgnat_peer(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "_tailscale_peer_is_authenticated",
+        lambda address: False,
+        raising=False,
+    )
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+
+    response = app.test_client().get(
+        "/api/protected",
+        base_url="http://100.90.15.93:5050",
+        environ_overrides={"REMOTE_ADDR": "100.90.15.93"},
+    )
+
+    assert response.status_code == 401
 
 
 def test_enabled_mode_rejects_loopback_proxy_to_tailnet_host(tmp_path, monkeypatch):

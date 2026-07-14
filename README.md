@@ -78,17 +78,21 @@ otherwise untrusted network bind.
 
 Owner injection requires both a trusted request host and a loopback or Tailscale
 peer address. Accepted hosts are `localhost`, loopback IPs, Tailscale device IPs
-in `100.64.0.0/10`, and fully qualified `*.ts.net` MagicDNS names. Requests from
-any other peer, using any other `Host`, or marked cross-origin by the browser
-keep the normal login barrier.
+in `100.64.0.0/10`, and fully qualified `*.ts.net` MagicDNS names. A non-loopback
+peer must also be confirmed by the local Tailscale client with `tailscale whois`;
+the shared CGNAT range alone is not trusted. Requests from any other peer, using
+any other `Host`, or marked cross-origin by the browser keep the normal login
+barrier. If the Tailscale client or identity lookup is unavailable, login stays on.
 
 This mode supports direct browser-to-app connections only. Requests carrying
 standard forwarded/proxy headers are rejected, and a loopback peer cannot use a
 `*.ts.net` host. Do not expose this mode through Tailscale Funnel or another
 reverse proxy. The state-validated WHOOP/Open Wearables OAuth callback is the
 only cross-site browser redirect allowed to receive the request-scoped owner.
-Its state must first be issued into that browser's signed session and is removed
-before the callback route runs; this is OAuth state, not a login session.
+Its state must first be issued by the local authorization-start flow and is
+removed before the callback route runs. The one-time state is retained in
+the local auth database, not in a login session or Secure browser cookie, so a
+direct HTTP Tailnet callback still works.
 
 On the Mac mini, install or refresh the local launchd agents with:
 

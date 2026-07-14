@@ -121,6 +121,7 @@ def test_no_login_mode_allows_state_validated_cross_site_callback(
     state = urllib.parse.parse_qs(
         urllib.parse.urlparse(start.get_json()["authorization_url"]).query
     )["state"][0]
+    assert "Set-Cookie" not in start.headers
     callback = client.get(
         f"/api/whoop/callback?state={state}&code=server-code",
         headers={"Sec-Fetch-Site": "cross-site"},
