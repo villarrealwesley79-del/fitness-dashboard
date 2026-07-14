@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import importlib
+import inspect
 import json
 from urllib.parse import quote
 
@@ -210,6 +211,21 @@ def test_workout_adaptation_events_endpoint_is_read_only(monkeypatch, tmp_path):
     assert generate_calls == []
 
 
+def test_dashboard_reads_leave_adaptation_evaluation_to_post_handler():
+    module = importlib.import_module("app")
+
+    for handler in (
+        module.api_dashboard,
+        module.api_next_workout,
+        module.smart_recommendation_api,
+    ):
+        assert "_apply_due_workout_adaptations_for_plan" not in inspect.getsource(handler)
+
+    assert "_apply_due_workout_adaptations_for_plan" in inspect.getsource(
+        module.evaluate_workout_adaptation_events
+    )
+
+
 def test_workout_adaptation_evaluation_endpoint_processes_due_windows_idempotently(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
@@ -300,6 +316,39 @@ def test_workout_adaptation_evaluation_regenerates_for_changed_fingerprint(monke
     assert module.LAST_WORKOUT_RECOMMENDATION["id"] == "fresh-plan"
 
 
+def test_workout_adaptation_evaluation_preserves_customized_plan_across_fingerprint_drift(
+    monkeypatch, tmp_path
+):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "new-fingerprint")
+    monkeypatch.setattr(module, "_current_workout_plan_for_fingerprint", lambda _fingerprint: None)
+    customized_plan = {
+        **_recommendation(),
+        "id": "customized-plan",
+        "_user_customized": True,
+    }
+    monkeypatch.setattr(
+        module,
+        "get_current_workout_plan",
+        lambda _user_id, **_kwargs: {
+            "plan": customized_plan,
+            "fingerprint": "old-fingerprint",
+            "updated_at": "2026-05-24T18:30:00",
+        },
+    )
+
+    def fail_generate(*_args, **_kwargs):
+        raise AssertionError("explicit user customization must survive fingerprint drift")
+
+    monkeypatch.setattr(module, "generate_next_workout", fail_generate)
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert module.LAST_WORKOUT_RECOMMENDATION["id"] == "customized-plan"
+
+
 def test_workout_adaptation_evaluation_reports_engine_failure(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
@@ -316,7 +365,7 @@ def test_workout_adaptation_evaluation_reports_engine_failure(monkeypatch, tmp_p
     assert response.get_json()["error"]["code"] == "evaluation_failed"
 
 
-def test_next_workout_route_replays_due_adaptation_even_with_cached_plan(monkeypatch, tmp_path):
+def test_next_workout_route_leaves_due_adaptation_for_explicit_evaluator(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
     monkeypatch.setattr(module, "USER_SETTINGS", {"available_time_minutes": 35, "daily_calorie_target": 2200, "daily_protein_target_g": 150})
@@ -357,9 +406,15 @@ def test_next_workout_route_replays_due_adaptation_even_with_cached_plan(monkeyp
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["workout_adaptation_events"][0]["status"] == "applied"
-    assert payload["next_workout"]["estimated_minutes"] <= 35
+    assert payload["workout_adaptation_events"] == []
+    assert data_store.list_pending_workout_adaptation_windows(1)
     assert "_fit136_lightweight_no_ow" not in payload["next_workout"]
+
+    evaluated = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert evaluated.status_code == 200
+    assert evaluated.get_json()["evaluated_count"] == 1
+    assert data_store.list_pending_workout_adaptation_windows(1) == []
 
 
 def test_active_workout_evaluation_without_completed_sets_defers_pending_window(monkeypatch, tmp_path):
@@ -430,6 +485,7 @@ def test_repeated_adaptation_windows_use_cached_base_plan_not_prior_patch(monkey
         },
     )
     workout_adaptation.enqueue_accepted_food_logs(1, [first], clock=datetime(2026, 5, 24, 18, 0, 0))
+    assert client.post("/api/workout-adaptation-events/evaluate").status_code == 200
     first_response = client.get("/api/next-workout?active_workout_open=false")
     first_sets = first_response.get_json()["next_workout"]["exercises"][0]["target_sets"]
 
@@ -451,6 +507,7 @@ def test_repeated_adaptation_windows_use_cached_base_plan_not_prior_patch(monkey
         },
     )
     workout_adaptation.enqueue_accepted_food_logs(1, [second], clock=datetime(2026, 5, 24, 19, 0, 0))
+    assert client.post("/api/workout-adaptation-events/evaluate").status_code == 200
     second_response = client.get("/api/next-workout?active_workout_open=false")
     second_sets = second_response.get_json()["next_workout"]["exercises"][0]["target_sets"]
 
@@ -490,6 +547,7 @@ def test_repeated_adaptation_preserves_user_edited_cached_plan(monkeypatch, tmp_
         },
     )
     workout_adaptation.enqueue_accepted_food_logs(1, [first], clock=datetime(2026, 5, 24, 18, 0, 0))
+    assert client.post("/api/workout-adaptation-events/evaluate").status_code == 200
     first_response = client.get("/api/next-workout?active_workout_open=false")
     assert first_response.status_code == 200
 
@@ -516,6 +574,7 @@ def test_repeated_adaptation_preserves_user_edited_cached_plan(monkeypatch, tmp_
         },
     )
     workout_adaptation.enqueue_accepted_food_logs(1, [second], clock=datetime(2026, 5, 24, 19, 0, 0))
+    assert client.post("/api/workout-adaptation-events/evaluate").status_code == 200
     second_response = client.get("/api/next-workout?active_workout_open=false")
 
     assert second_response.status_code == 200

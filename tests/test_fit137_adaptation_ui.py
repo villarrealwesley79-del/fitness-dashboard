@@ -72,6 +72,20 @@ def test_adaptation_fetch_swallows_silent_and_nextday_events():
     assert "showWorkoutAdaptationNotice(event)" in fetch_block
 
 
+def test_applied_evaluation_refreshes_visible_workout_state():
+    js = APP_JS.read_text()
+    fetch_block = _block(
+        js,
+        "async function fetchWorkoutAdaptationNotices()",
+        "function newWorkoutId",
+    )
+
+    assert "Number(evaluation && evaluation.evaluated_count) > 0" in fetch_block
+    assert "await getDashboard(true);" in fetch_block
+    assert "paintDashboardFromState();" in fetch_block
+    assert "await renderNextWorkout();" in fetch_block
+
+
 def test_adaptation_notice_renders_neutral_reason_and_collapsed_details():
     js = APP_JS.read_text()
     notice = _block(

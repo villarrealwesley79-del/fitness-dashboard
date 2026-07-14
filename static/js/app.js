@@ -519,13 +519,23 @@
         if (workoutAdaptationNoticeState.fetching) return;
         workoutAdaptationNoticeState.fetching = true;
         try {
+            let evaluation = null;
             try {
-                await api(withActiveWorkoutAdaptationParams('/api/workout-adaptation-events/evaluate'), {
+                evaluation = await api(withActiveWorkoutAdaptationParams('/api/workout-adaptation-events/evaluate'), {
                     method: 'POST',
                     timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS,
                 });
             } catch (err) {
                 console.warn('workout adaptation evaluation failed:', err);
+            }
+            if (Number(evaluation && evaluation.evaluated_count) > 0) {
+                try {
+                    await getDashboard(true);
+                    paintDashboardFromState();
+                    await renderNextWorkout();
+                } catch (err) {
+                    console.warn('adapted workout refresh failed:', err);
+                }
             }
             const payload = await api('/api/workout-adaptation-events?unacknowledged=true&limit=10');
             const events = (payload && payload.events) || [];

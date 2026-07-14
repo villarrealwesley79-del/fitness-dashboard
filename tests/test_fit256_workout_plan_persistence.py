@@ -108,6 +108,127 @@ def test_swap_uses_persisted_plan_after_worker_globals_are_empty(monkeypatch, tm
     exercise = swapped.get_json()["recommendation"]["exercises"][0]
     assert exercise["exercise"] == "Incline Press"
 
+    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fp-after-gym-refresh")
+    gym = client.get("/gym-now")
+
+    assert gym.status_code == 200
+    assert b"Incline Press" in gym.data
+    assert data_store.get_current_workout_plan(1)["plan"]["_user_customized"] is True
+
+
+def test_adjust_marks_persisted_plan_as_user_customized(monkeypatch, tmp_path):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    module.USER_SETTINGS["equipment_preference"] = "machines_and_cables"
+    monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: _recommendation(module))
+    monkeypatch.setattr(module, "_lm_studio", None)
+
+    assert client.get("/api/next-workout").status_code == 200
+    adjusted = client.post("/api/workout/adjust", json={"constraint": "pectoral fly"})
+
+    assert adjusted.status_code == 200
+    assert adjusted.get_json()["status"] == "ok"
+    assert data_store.get_current_workout_plan(1)["plan"]["_user_customized"] is True
+
+
+def test_adjust_does_not_mark_cached_refusal_as_user_customized(monkeypatch, tmp_path):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: _recommendation(module))
+
+    class FakeAdapter:
+        LM_STUDIO_MODEL_VERSION = "test-model"
+
+        def active_candidate(self):
+            return None
+
+        def model_version_for(self, _candidate):
+            return self.LM_STUDIO_MODEL_VERSION
+
+        def fallback_model_versions(self):
+            return []
+
+    cached = {
+        "status": "ok",
+        "result_kind": "refused",
+        "recommendation": _recommendation(module),
+        "summary": "No safe change.",
+        "applied_notes": [],
+        "constraint": "keep it unchanged",
+        "meta": {"model_version": "test-model"},
+        "cache_hit": False,
+    }
+    monkeypatch.setattr(module, "_lm_studio", FakeAdapter())
+    monkeypatch.setattr(module, "_ai_cache_key", lambda *_args, **_kwargs: "cached-refusal")
+    monkeypatch.setattr(module, "_ai_cache_get", lambda _key: dict(cached))
+    monkeypatch.setattr(module, "_ai_metric_log", lambda *_args, **_kwargs: None)
+
+    assert client.get("/api/next-workout").status_code == 200
+    adjusted = client.post("/api/workout/adjust", json={"constraint": "keep it unchanged"})
+
+    assert adjusted.status_code == 200
+    assert adjusted.get_json()["result_kind"] == "refused"
+    assert "_user_customized" not in data_store.get_current_workout_plan(1)["plan"]
+
+
+def test_equivalent_plan_copy_preserves_existing_customization(monkeypatch, tmp_path):
+    module, _client_instance, _state = _client(monkeypatch, tmp_path)
+    fingerprint = module._workout_recommendation_fingerprint()
+    customized_plan = _recommendation(module)
+    module._persist_current_workout_plan(customized_plan, fingerprint, customized=True)
+
+    module._persist_current_workout_plan(copy.deepcopy(customized_plan), fingerprint)
+
+    assert data_store.get_current_workout_plan(1)["plan"]["_user_customized"] is True
+
+
+def test_fingerprint_rekey_preserves_existing_customization(monkeypatch, tmp_path):
+    module, _client_instance, _state = _client(monkeypatch, tmp_path)
+    customized_plan = _recommendation(module)
+    module._persist_current_workout_plan(
+        customized_plan,
+        "fp-before-refresh",
+        customized=True,
+    )
+
+    rekeyed = module._current_workout_plan_for_fingerprint(
+        "fp-after-refresh",
+        allow_stale_unsaved=True,
+    )
+
+    assert rekeyed["id"] == customized_plan["id"]
+    stored = data_store.get_current_workout_plan(1)
+    assert stored["fingerprint"] == "fp-after-refresh"
+    assert stored["plan"]["_user_customized"] is True
+
+
+def test_worker_rehydration_restores_customization_without_exposing_marker(monkeypatch, tmp_path):
+    module, _client_instance, _state = _client(monkeypatch, tmp_path)
+    fingerprint = module._workout_recommendation_fingerprint()
+    module._persist_current_workout_plan(
+        _recommendation(module),
+        fingerprint,
+        customized=True,
+    )
+    module.LAST_WORKOUT_RECOMMENDATION = None
+    module.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
+    module.LAST_WORKOUT_RECOMMENDATION_OWNER = None
+    persisted_writes = []
+    original_save = module.save_current_workout_plan
+
+    def record_save(*args, **kwargs):
+        persisted_writes.append(True)
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(module, "save_current_workout_plan", record_save)
+
+    rehydrated = module._current_workout_plan_for_fingerprint(fingerprint)
+
+    assert "_user_customized" not in rehydrated
+    assert module.LAST_WORKOUT_RECOMMENDATION_OWNER["customized"] is True
+    assert persisted_writes == []
+    module._persist_current_workout_plan(copy.deepcopy(rehydrated), fingerprint)
+    assert persisted_writes == [True]
+    assert data_store.get_current_workout_plan(1)["plan"]["_user_customized"] is True
+
 
 def test_swap_rejects_stale_global_plan_from_another_user(monkeypatch, tmp_path):
     module, client, state = _client(monkeypatch, tmp_path)

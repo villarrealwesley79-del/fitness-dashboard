@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 
+import data_store
+
 
 def _warning_codes(context):
     return {warning["code"] for warning in context["warnings"]}
@@ -11,6 +13,7 @@ def test_dashboard_and_smart_recommendation_share_hard_workout_food_warning(monk
     monkeypatch.setenv("SECRET_KEY", "fit48-contract-secret")
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    data_store.init_data_db()
     today = module._today_str()
     hard_workout = {
         "estimated_minutes": 45,
@@ -31,6 +34,7 @@ def test_dashboard_and_smart_recommendation_share_hard_workout_food_warning(monk
     ]
 
     monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: hard_workout)
+    monkeypatch.setattr(module, "_same_day_preserved_workout_plan", lambda _today: None)
     monkeypatch.setattr(module, "get_food_logs", lambda *_args, **_kwargs: food_logs)
     monkeypatch.setattr(module, "NUTRITION_DATA", [])
     monkeypatch.setattr(module, "USER_SETTINGS", {"daily_calorie_target": 2200, "daily_protein_target_g": 148})

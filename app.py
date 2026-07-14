@@ -4627,18 +4627,60 @@ def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
     return scoped
 
 
-def _persist_current_workout_plan(recommendation: dict, fingerprint: str) -> dict:
+def _persist_current_workout_plan(
+    recommendation: dict,
+    fingerprint: str,
+    *,
+    customized: bool = False,
+) -> dict:
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT, LAST_WORKOUT_RECOMMENDATION_OWNER
     with CURRENT_WORKOUT_PLAN_LOCK:
+        stored_customization_marker = recommendation.get("_user_customized") is True
+        if stored_customization_marker:
+            recommendation = dict(recommendation)
+            recommendation.pop("_user_customized", None)
+        current_user_id = _current_data_user_id()
+        same_current_plan = bool(
+            LAST_WORKOUT_RECOMMENDATION_OWNER
+            and LAST_WORKOUT_RECOMMENDATION_OWNER.get("user_id") == current_user_id
+            and LAST_WORKOUT_RECOMMENDATION
+            and recommendation.get("id")
+            and recommendation.get("id") == LAST_WORKOUT_RECOMMENDATION.get("id")
+        )
+        customized = bool(
+            customized
+            or stored_customization_marker
+            or (same_current_plan and LAST_WORKOUT_RECOMMENDATION_OWNER.get("customized"))
+        )
         LAST_WORKOUT_RECOMMENDATION = recommendation
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
         LAST_WORKOUT_RECOMMENDATION_OWNER = {
-            "user_id": _current_data_user_id(),
+            "user_id": current_user_id,
             "fingerprint": fingerprint,
             "plan_id": id(recommendation),
+            "customized": customized,
         }
-        save_current_workout_plan(_current_data_user_id(), fingerprint, recommendation)
+        persisted_recommendation = dict(recommendation)
+        if customized:
+            persisted_recommendation["_user_customized"] = True
+        save_current_workout_plan(current_user_id, fingerprint, persisted_recommendation)
     return recommendation
+
+
+def _same_day_preserved_workout_plan(today_s: str) -> dict | None:
+    stored = get_current_workout_plan(_current_data_user_id())
+    if not stored or str(stored.get("updated_at") or "")[:10] != today_s:
+        return None
+    plan = stored.get("plan")
+    preserved = isinstance(plan, dict) and (
+        plan.get("_user_customized") is True
+        or isinstance(plan.get("_fit136_last_adapted_plan"), dict)
+    )
+    if not preserved or _is_lightweight_current_workout_plan(plan):
+        return None
+    plan = dict(plan)
+    plan.pop("_user_customized", None)
+    return plan
 
 
 def _wearable_adjusted_for_display(base_plan, guarded_recommendation, whoop_context) -> dict:
@@ -4738,14 +4780,20 @@ def _current_workout_plan_for_fingerprint(fingerprint: str, *, allow_stale_unsav
                 return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
         row = get_current_workout_plan(_current_data_user_id(), fingerprint=fingerprint)
         if row and row.get("plan") and not _is_lightweight_current_workout_plan(row.get("plan")):
-            LAST_WORKOUT_RECOMMENDATION = row["plan"]
+            plan = row["plan"]
+            customized = plan.get("_user_customized") is True
+            if customized:
+                plan = dict(plan)
+                plan.pop("_user_customized", None)
+            LAST_WORKOUT_RECOMMENDATION = plan
             LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
             LAST_WORKOUT_RECOMMENDATION_OWNER = {
                 "user_id": _current_data_user_id(),
                 "fingerprint": fingerprint,
-                "plan_id": id(LAST_WORKOUT_RECOMMENDATION),
+                "plan_id": id(plan),
+                "customized": customized,
             }
-            return LAST_WORKOUT_RECOMMENDATION
+            return plan
         if (
             allow_stale_unsaved
             and LAST_WORKOUT_RECOMMENDATION
@@ -4907,7 +4955,10 @@ def api_next_workout():
     """Return only the active workout prescription for gym execution."""
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    current_plan = _current_workout_plan_for_fingerprint(fingerprint)
+    today_s = _today_str()
+    current_plan = _same_day_preserved_workout_plan(today_s)
+    if not current_plan:
+        current_plan = _current_workout_plan_for_fingerprint(fingerprint)
     training_recommendation = _current_workout_training_recommendation()
     open_wearables_facts = _open_wearables_recommendation_facts()
     guarded_training_recommendation, open_wearables_modifier = _apply_open_wearables_recommendation_guard(
@@ -4922,29 +4973,7 @@ def api_next_workout():
             consume_cardio_rotation=False,
         )
         _persist_current_workout_plan(current_plan, fingerprint)
-    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
-    active_open_requested = active_open_raw in {"1", "true", "yes"}
-    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
-    can_evaluate_active = not active_open_requested or bool(completed_sets_by_exercise)
-    today_s = _today_str()
-    food_log_entries = _food_log_entries_for_context(since=today_s)
-    adaptation_food_entries = _food_log_entries_for_context()
-    nutrition_context = _nutrition_context_for_date(
-        today_s,
-        hard_training_planned=_workout_looks_hard(current_plan or {}),
-        food_log_entries=food_log_entries,
-    )
     workout_adaptation_events = []
-    if can_evaluate_active:
-        current_plan, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-            current_plan or {},
-            date_s=today_s,
-            food_log_entries=adaptation_food_entries,
-            nutrition_context=nutrition_context,
-            active_workout_open=active_open_requested,
-            completed_sets_by_exercise=completed_sets_by_exercise,
-        )
-        _persist_current_workout_plan(current_plan, fingerprint)
     today_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context(today_oura.get("readiness_score"))
@@ -4980,7 +5009,9 @@ def gym_now():
     """Emergency no-app-shell workout view for stale mobile/PWA caches."""
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    workout = _current_workout_plan_for_fingerprint(fingerprint)
+    workout = _same_day_preserved_workout_plan(_today_str())
+    if not workout:
+        workout = _current_workout_plan_for_fingerprint(fingerprint)
     if not workout:
         workout = generate_next_workout(
             WORKOUTS,
@@ -5190,7 +5221,10 @@ def api_dashboard():
         reason_bits.append(open_wearables_modifier["detail"])
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    next_workout = _current_workout_plan_for_fingerprint(fingerprint)
+    next_workout = _same_day_preserved_workout_plan(today_s)
+    using_stored_customization = next_workout is not None
+    if not next_workout:
+        next_workout = _current_workout_plan_for_fingerprint(fingerprint)
     if not next_workout or next_workout.get("_fit136_lightweight_no_ow"):
         next_workout = generate_next_workout(
             WORKOUTS,
@@ -5199,31 +5233,12 @@ def api_dashboard():
             consume_cardio_rotation=False,
         )
     food_log_entries = _food_log_entries_for_context(since=today_s)
-    adaptation_food_entries = _food_log_entries_for_context()
     nutrition_context = _nutrition_context_for_date(
         today_s,
         hard_training_planned=_workout_looks_hard(next_workout),
         food_log_entries=food_log_entries,
     )
     workout_adaptation_events = []
-    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
-    active_open_requested = active_open_raw in {"1", "true", "yes"}
-    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
-    if not active_open_requested or completed_sets_by_exercise:
-        next_workout, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-            next_workout,
-            date_s=today_s,
-            food_log_entries=adaptation_food_entries,
-            nutrition_context=nutrition_context,
-            active_workout_open=active_open_requested,
-            completed_sets_by_exercise=completed_sets_by_exercise,
-        )
-        if workout_adaptation_events:
-            nutrition_context = _nutrition_context_for_date(
-                today_s,
-                hard_training_planned=_workout_looks_hard(next_workout),
-                food_log_entries=food_log_entries,
-            )
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context(readiness_val)
     # Persist the base/programmed plan (post-adaptation, pre-wearable-modifier)
@@ -5235,7 +5250,8 @@ def api_dashboard():
     # transform on the way out only. Persisting the base first is safe: the base
     # is the correct canonical value regardless, and the fail-open display
     # transform below degrades to the base plan rather than 500-ing.
-    _persist_current_workout_plan(next_workout, fingerprint)
+    if not using_stored_customization:
+        _persist_current_workout_plan(next_workout, fingerprint)
     whoop_adjusted = _wearable_adjusted_for_display(
         next_workout, guarded_dashboard_recommendation, whoop_context
     )
@@ -9626,7 +9642,28 @@ def evaluate_workout_adaptation_events():
     adaptation_food_entries = _food_log_entries_for_context()
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
-    next_workout = _current_workout_plan_for_fingerprint(fingerprint)
+    current_plan = _current_workout_plan_for_fingerprint(fingerprint)
+    stored_plan = get_current_workout_plan(_current_data_user_id())
+    stored_plan_written_today = bool(
+        stored_plan and str(stored_plan.get("updated_at") or "")[:10] == today_s
+    )
+    stored_workout = stored_plan.get("plan") if stored_plan_written_today else None
+    if stored_workout and _is_lightweight_current_workout_plan(stored_workout):
+        stored_workout = None
+    stored_workout_was_customized = bool(
+        stored_workout and stored_workout.get("_user_customized") is True
+    )
+    stored_workout_was_adapted = bool(
+        stored_workout
+        and isinstance(stored_workout.get("_fit136_last_adapted_plan"), dict)
+    )
+    if stored_workout and not (
+        stored_workout_was_customized
+        or stored_workout_was_adapted
+        or active_workout_open
+    ):
+        stored_workout = None
+    next_workout = stored_workout or current_plan
     if not next_workout:
         training_recommendation, _open_wearables_modifier = _apply_open_wearables_recommendation_guard(
             _current_workout_training_recommendation(),
@@ -10198,7 +10235,7 @@ def swap_workout_exercise():
 
     exercises[exercise_index] = updated_ex
     recommendation["exercises"] = exercises
-    _persist_current_workout_plan(recommendation, fingerprint)
+    _persist_current_workout_plan(recommendation, fingerprint, customized=True)
 
     # Persist the base plan (above), but return the wearable-adjusted view so an
     # active deload/caution clamps every exercise -- including the untouched ones
@@ -10681,7 +10718,11 @@ def adjust_workout():
                 equipment_pref,
                 "adapter_missing",
             )
-            _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            _persist_current_workout_plan(
+                payload["recommendation"],
+                fingerprint,
+                customized=payload.get("result_kind") == "changed",
+            )
             _ai_metric_log("ok", reason="deterministic_fallback: adapter_missing", constraint_len=len(constraint))
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
@@ -10720,7 +10761,11 @@ def adjust_workout():
             # so a follow-up Adjust or Swap operates on the patched plan, not the
             # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
             if cached.get("recommendation"):
-                _persist_current_workout_plan(cached["recommendation"], fingerprint)
+                _persist_current_workout_plan(
+                    cached["recommendation"],
+                    fingerprint,
+                    customized=cached.get("result_kind") == "changed",
+                )
             return jsonify(_payload_with_recommendation_display_scope(cached))
 
     if route_candidate is None:
@@ -10736,7 +10781,11 @@ def adjust_workout():
                 equipment_pref,
                 "preflight_unavailable",
             )
-            _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            _persist_current_workout_plan(
+                payload["recommendation"],
+                fingerprint,
+                customized=payload.get("result_kind") == "changed",
+            )
             _ai_metric_log("ok", reason="deterministic_fallback: preflight_unavailable", constraint_len=len(constraint), model_version=route_model_version)
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log(
@@ -10781,7 +10830,11 @@ def adjust_workout():
                 equipment_pref,
                 reason_code,
             )
-            _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            _persist_current_workout_plan(
+                payload["recommendation"],
+                fingerprint,
+                customized=payload.get("result_kind") == "changed",
+            )
             _ai_metric_log(
                 "ok",
                 constraint_len=len(constraint),
@@ -10875,7 +10928,11 @@ def adjust_workout():
     # baked into the cache or the durable row -- FIT-256 finding 2); apply the
     # wearable display transform only on the outgoing response.
     _ai_cache_put(cache_write_key, payload)
-    _persist_current_workout_plan(patched, fingerprint)
+    _persist_current_workout_plan(
+        patched,
+        fingerprint,
+        customized=result_kind == "changed",
+    )
     _ai_metric_log(
         "ok",
         latency_ms=raw_meta.get("elapsed_ms", 0),
@@ -15797,75 +15854,18 @@ def smart_recommendation_api():
     )
     freshness = _compute_data_freshness()
     food_log_entries = _food_log_entries_for_context(since=today)
-    adaptation_food_entries = _food_log_entries_for_context()
     nutrition_context = _nutrition_context_for_date(
         today,
         hard_training_planned=_workout_looks_hard(next_workout),
         food_log_entries=food_log_entries,
     )
     workout_adaptation_events = []
-    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
-    active_open_requested = active_open_raw in {"1", "true", "yes"}
-    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
     fingerprint = _workout_recommendation_fingerprint()
     current_plan = _current_workout_plan_for_fingerprint(fingerprint)
-    stored_plan = get_current_workout_plan(_current_data_user_id())
-    # A stored plan whose fingerprint doesn't match today's fingerprint is
-    # only safe to treat as canonical if it was actually written *today*.
-    # A same-day mismatch is process-local cache churn (worker divergence,
-    # a weather-cache refresh, etc.) that a genuine same-day swap should
-    # survive -- but a stored plan left over from a *prior* day (e.g. a
-    # calendar-day rollover, since the fingerprint includes `day`) is
-    # stale and must not be resurrected and re-persisted under today's
-    # fingerprint (FIT-256 finding 1): doing so would serve yesterday's
-    # plan forever, since it would then satisfy every future fingerprint
-    # lookup for today. On a cross-day mismatch we fall back to
-    # `current_plan` (fingerprint-scoped) / regeneration instead.
-    stored_plan_written_today = bool(
-        stored_plan and str(stored_plan.get("updated_at") or "")[:10] == today
-    )
-    canonical_plan = (
-        (stored_plan.get("plan") if stored_plan_written_today else None) or current_plan
-    )
-    if not active_open_requested or completed_sets_by_exercise:
-        if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
-            canonical_nutrition_context = _nutrition_context_for_date(
-                today,
-                hard_training_planned=_workout_looks_hard(canonical_plan),
-                food_log_entries=food_log_entries,
-            )
-            adapted_plan, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-                canonical_plan,
-                date_s=today,
-                food_log_entries=adaptation_food_entries,
-                nutrition_context=canonical_nutrition_context,
-                active_workout_open=active_open_requested,
-                completed_sets_by_exercise=completed_sets_by_exercise,
-            )
-            if workout_adaptation_events:
-                next_workout = _persist_current_workout_plan(adapted_plan, fingerprint)
-                nutrition_context = _nutrition_context_for_date(
-                    today,
-                    hard_training_planned=_workout_looks_hard(next_workout),
-                    food_log_entries=food_log_entries,
-                )
-        else:
-            next_workout, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
-                next_workout,
-                date_s=today,
-                food_log_entries=adaptation_food_entries,
-                nutrition_context=nutrition_context,
-                active_workout_open=active_open_requested,
-                completed_sets_by_exercise=completed_sets_by_exercise,
-            )
-            if workout_adaptation_events:
-                _persist_current_workout_plan(next_workout, fingerprint)
-        if workout_adaptation_events:
-            nutrition_context = _nutrition_context_for_date(
-                today,
-                hard_training_planned=_workout_looks_hard(next_workout),
-                food_log_entries=food_log_entries,
-            )
+    canonical_plan = _same_day_preserved_workout_plan(today) or current_plan
+    if canonical_plan and not _is_lightweight_current_workout_plan(canonical_plan):
+        next_workout = dict(canonical_plan)
+        next_workout.pop("_user_customized", None)
     whoop_adjusted = apply_wearable_modifiers(
         recommendation,
         next_workout,

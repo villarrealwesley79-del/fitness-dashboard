@@ -120,14 +120,17 @@ def test_smart_recommendation_does_not_resurrect_stale_plan_across_day_rollover(
 
     monkeypatch.setattr(module, "_apply_due_workout_adaptations_for_plan", apply_due_adaptation)
 
+    evaluated = client.post("/api/workout-adaptation-events/evaluate")
     smart = client.get("/api/recommendation/smart")
 
+    assert evaluated.status_code == 200
+    assert evaluated.get_json()["evaluated_count"] == 1
     assert smart.status_code == 200
     smart_payload = smart.get_json()
     # The resurrected/stale "Incline Press" plan must NOT be served.
     assert smart_payload["next_workout"]["exercises"][0]["exercise"] != "Incline Press"
     assert smart_payload["next_workout"]["id"] == "day2-fresh-plan"
-    assert smart_payload["workout_adaptation_events"][0]["status"] == "applied"
+    assert smart_payload["workout_adaptation_events"] == []
 
     # A subsequent /api/next-workout call must serve the freshly regenerated
     # plan (matching today's fingerprint), not the resurrected stale one.
