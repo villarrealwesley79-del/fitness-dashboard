@@ -642,6 +642,17 @@ def _trusted_no_login_request_host() -> bool:
     )
 
 
+def _trusted_no_login_request_peer() -> bool:
+    try:
+        address = ipaddress.ip_address(request.remote_addr or "")
+    except ValueError:
+        return False
+    return address.is_loopback or (
+        isinstance(address, ipaddress.IPv4Address)
+        and address in _TAILSCALE_IPV4_NETWORK
+    )
+
+
 def _trusted_no_login_owner():
     global _no_login_owner_error_logged
 
@@ -963,6 +974,7 @@ def init_auth(app):
         if (
             not _trusted_no_login_enabled()
             or not _trusted_no_login_request_host()
+            or not _trusted_no_login_request_peer()
             or _has_cross_origin_browser_header()
         ):
             return None

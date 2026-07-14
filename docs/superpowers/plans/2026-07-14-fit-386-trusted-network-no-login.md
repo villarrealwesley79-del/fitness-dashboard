@@ -39,8 +39,8 @@
 | Protected route | Flag exactly `true`; no owner or nonexistent owner row | None | One actionable log; no guessing or fallback account | Existing redirect/401 path; failure tests |
 | Any route | Flag exactly `true`; auth DB lookup raises `sqlite3.Error`, with or without a stored session | Request-local anonymous user | One actionable exception log; no account or session mutation | Existing public/redirect/401 behavior instead of any repeated DB read or 500; clean-client and stored-session failure tests |
 | Protected route | Flag exactly `true`; owner lookup succeeds once | Existing owner row and validated request marker | No second owner DB lookup in the login guard | 200 as owner even if a redundant second lookup would fail; focused single-lookup test |
-| Protected route | Flag exactly `true`; `Host` is localhost, loopback, Tailscale `100.64.0.0/10`, or `*.ts.net` | Existing owner row | Request-local identity only | 200 as owner; trusted-host parameterized tests |
-| Protected browser/API | Flag exactly `true`; `Host` is attacker-controlled, LAN-only, or a deceptive `.ts.net` suffix | None unless normal session auth succeeds | No owner lookup or injection | Existing redirect/401 behavior; untrusted-host and DNS-rebinding tests |
+| Protected route | Flag exactly `true`; `Host` is localhost, loopback, Tailscale `100.64.0.0/10`, or `*.ts.net`; direct peer is loopback or Tailscale `100.64.0.0/10` | Existing owner row | Request-local identity only | 200 as owner; trusted-host and trusted-peer tests |
+| Protected browser/API | Flag exactly `true`; `Host` is attacker-controlled, LAN-only, or a deceptive `.ts.net` suffix, or trusted `Host` is spoofed by an untrusted direct peer | None unless normal session auth succeeds | No owner lookup or injection | Existing redirect/401 behavior; untrusted-host, peer-spoofing, and DNS-rebinding tests |
 | Protected GET API | Flag exactly `true`; trusted `Host`; mismatched `Origin` or `Sec-Fetch-Site: cross-site` | None unless normal session auth succeeds | No owner lookup or injection | Existing API 401 despite wildcard CORS response; cross-origin read tests |
 | Protected GET API | Flag exactly `true`; trusted `Host`; same-origin `Origin` or `Sec-Fetch-Site: same-origin` | Existing owner row | Request-local identity only | 200 as owner; same-origin tests |
 | Factory preview/CI | Existing `.agents/factory.yaml` | Existing preview login | No config mutation | Source assertion that no-login flag is absent |
@@ -238,6 +238,8 @@ Add sibling-path RED coverage for a stored session whose `User.get_by_id()` read
 Add host-boundary RED coverage before owner injection: `localhost`, loopback IPs, `100.90.15.93`, and `admins-mac-mini.tail6c6490.ts.net` are trusted; `evil.example`, `evil.ts.net.attacker.example`, and a physical-LAN address are not. Untrusted browser/API requests must retain the normal redirect/401 barrier even when the flag is enabled.
 
 Add cross-origin GET RED coverage using trusted `localhost`: a mismatched `Origin` and `Sec-Fetch-Site: cross-site` must keep the API at 401, while a matching origin and `Sec-Fetch-Site: same-origin` must return 200 as the owner. Reuse `_has_cross_origin_browser_header()` rather than adding a second origin parser.
+
+Add direct-peer RED coverage because `Host` is client-controlled: requests from `192.168.1.50` that claim `localhost` or `*.ts.net` must remain at 401, while a `100.64.0.0/10` peer with a trusted Tailnet host must receive owner access. Read only `REMOTE_ADDR`; do not trust forwarded-address headers without an explicit proxy contract.
 
 - [ ] **Step 6: Run the tests to prove RED**
 

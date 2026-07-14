@@ -280,6 +280,41 @@ def test_enabled_mode_rejects_untrusted_hosts(tmp_path, monkeypatch, base_url):
 
 
 @pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:5050",
+        "http://admins-mac-mini.tail6c6490.ts.net:5050",
+    ],
+)
+def test_enabled_mode_rejects_spoofed_trusted_host_from_untrusted_peer(
+    tmp_path, monkeypatch, base_url
+):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+
+    response = app.test_client().get(
+        "/api/protected",
+        base_url=base_url,
+        environ_overrides={"REMOTE_ADDR": "192.168.1.50"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_enabled_mode_accepts_tailnet_peer(tmp_path, monkeypatch):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+
+    response = app.test_client().get(
+        "/api/protected",
+        base_url="http://admins-mac-mini.tail6c6490.ts.net:5050",
+        environ_overrides={"REMOTE_ADDR": "100.90.15.93"},
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
     "headers",
     [
         {"Origin": "https://evil.example"},
