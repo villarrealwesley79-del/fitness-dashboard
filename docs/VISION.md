@@ -1,7 +1,7 @@
 # Fitness Dashboard Vision
 
 Status: Draft for owner review  
-Last updated: 2026-05-18
+Last updated: 2026-07-14
 
 ## Product Direction
 
@@ -97,7 +97,7 @@ The owner can open the app before training or eating, trust the recommended plan
 
 ## Assumptions
 
-- The app is primarily for one owner, not a public multi-tenant product.
+- The app is for one owner. It has no billing, paid entitlement, public marketing, or multi-tenant product surface.
 - Mobile use is the primary workflow, especially during workouts.
 - The PWA is the primary product surface.
 - Health Auto Export or Shortcuts webhook sync is the Apple Health bridge.
@@ -110,6 +110,5 @@ The owner can open the app before training or eating, trust the recommended plan
 ## Unknowns For Owner Review
 
 - Should the app auto-adjust only calories/macros from food, or also adjust workout recommendations when the day is under-fueled, over target, or low protein?
-- Should the app support multiple users later, or stay single-owner indefinitely?
 - Should coaching optimize primarily for fat loss, lean gain, strength, consistency, or a rotating phase-based goal?
 - What level of automation is acceptable for plan changes: suggest-only, one-tap apply, or auto-apply within rails?
