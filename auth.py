@@ -312,29 +312,9 @@ def init_auth_db():
         if "email" not in existing:
             conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
             existing.add("email")
-        account_columns = {"id", "username", "password", "salt", "email", "created"}
-        if existing != account_columns:
-            conn.execute("ALTER TABLE users RENAME TO users_legacy")
-            conn.execute(
-                """
-                CREATE TABLE users (
-                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username  TEXT    NOT NULL UNIQUE,
-                    password  TEXT    NOT NULL,
-                    salt      TEXT    NOT NULL,
-                    email     TEXT,
-                    created   TEXT    DEFAULT (datetime('now'))
-                )
-                """
-            )
-            conn.execute(
-                """
-                INSERT INTO users (id, username, password, salt, email, created)
-                SELECT id, username, password, salt, email, created
-                FROM users_legacy
-                """
-            )
-            conn.execute("DROP TABLE users_legacy")
+        retired_columns = {"is_pro", "stripe_customer", "stripe_sub"}
+        for column in sorted(existing & retired_columns):
+            conn.execute(f'ALTER TABLE users DROP COLUMN "{column}"')
         conn.commit()
 
 

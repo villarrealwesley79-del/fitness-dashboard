@@ -100,6 +100,7 @@ def test_existing_users_lose_only_billing_columns_and_owner_login_survives(
                 is_pro INTEGER NOT NULL DEFAULT 0,
                 stripe_customer TEXT,
                 stripe_sub TEXT,
+                profile_note TEXT,
                 created TEXT DEFAULT (datetime('now'))
             )
             """
@@ -108,12 +109,12 @@ def test_existing_users_lose_only_billing_columns_and_owner_login_survives(
             """
             INSERT INTO users (
                 id, username, password, salt, email,
-                is_pro, stripe_customer, stripe_sub, created
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                is_pro, stripe_customer, stripe_sub, profile_note, created
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                (7, "owner", owner_password, "", "owner@example.test", 1, "cus_owner", "sub_owner", "2026-01-01"),
-                (11, "qa", qa_password, "", "qa@example.test", 0, None, None, "2026-02-02"),
+                (7, "owner", owner_password, "", "owner@example.test", 1, "cus_owner", "sub_owner", "keep-owner", "2026-01-01"),
+                (11, "qa", qa_password, "", "qa@example.test", 0, None, None, "keep-qa", "2026-02-02"),
             ],
         )
 
@@ -135,6 +136,7 @@ def test_existing_users_lose_only_billing_columns_and_owner_login_survives(
             "password": owner_password,
             "salt": "",
             "email": "owner@example.test",
+            "profile_note": "keep-owner",
             "created": "2026-01-01",
         },
         {
@@ -143,6 +145,7 @@ def test_existing_users_lose_only_billing_columns_and_owner_login_survives(
             "password": qa_password,
             "salt": "",
             "email": "qa@example.test",
+            "profile_note": "keep-qa",
             "created": "2026-02-02",
         },
     ]
