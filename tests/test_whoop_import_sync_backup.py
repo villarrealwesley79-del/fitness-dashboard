@@ -3,9 +3,11 @@ from __future__ import annotations
 import importlib
 import fcntl
 import io
+import json
 
 import pytest
 
+import data_store
 import whoop_client
 import whoop_store
 
@@ -20,6 +22,61 @@ def fitness_app(monkeypatch, tmp_path):
     module.WHOOP_SYNC_LOCK_FILE = str(tmp_path / "whoop-sync.lock")
     module.init_whoop_db(module.WHOOP_DB_FILE)
     return module
+
+
+def test_backup_import_failure_records_resumable_mutation_journal(
+    fitness_app, monkeypatch, tmp_path
+):
+    original_workouts = list(fitness_app.WORKOUTS)
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    fitness_app.WORKOUTS_FILE = str(tmp_path / "data_workouts.json")
+    fitness_app.BACKUP_IMPORT_JOURNAL_FILE = str(tmp_path / "data_backup_import_journal.json")
+    original_add_food_log = fitness_app.add_food_log
+    calls = []
+    def fail_second_food_log(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 2:
+            raise RuntimeError("injected food failure")
+        return original_add_food_log(*args, **kwargs)
+    monkeypatch.setattr(
+        fitness_app,
+        "add_food_log",
+        fail_second_food_log,
+    )
+    payload = {
+        "data": {
+            "workouts": [{"date": "2026-07-01", "exercises": []}],
+            "food_logs": [
+                {"client_id": "fit294-food-1", "date": "2026-07-01"},
+                {"client_id": "fit294-food-2", "date": "2026-07-01"},
+            ],
+        }
+    }
+
+    try:
+        failed = fitness_app.app.test_client().post("/api/import-backup", json=payload)
+
+        assert failed.status_code == 400
+        body = failed.get_json()
+        assert body["mutated_stores"] == ["workouts", "food_logs"]
+        assert body["resume"] == "resubmit_same_backup"
+        journal = json.loads((tmp_path / "data_backup_import_journal.json").read_text())
+        assert journal["status"] == "failed"
+        assert journal["mutated_stores"] == ["workouts", "food_logs"]
+
+        monkeypatch.setattr(fitness_app, "add_food_log", original_add_food_log)
+        resumed = fitness_app.app.test_client().post("/api/import-backup", json=payload)
+        assert resumed.status_code == 200
+        assert json.loads((tmp_path / "data_backup_import_journal.json").read_text())["status"] == "complete"
+        restored_ids = [
+            row.get("client_id")
+            for row in data_store.get_food_logs(1)
+            if str(row.get("client_id") or "").startswith("fit294-food-")
+        ]
+        assert sorted(restored_ids) == ["fit294-food-1", "fit294-food-2"]
+    finally:
+        fitness_app.WORKOUTS[:] = original_workouts
 
 
 def test_whoop_csv_import_projects_facts_and_lists_history(fitness_app):

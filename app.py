@@ -222,6 +222,7 @@ BASELINES_FILE = data_path("data_baselines.json")
 BODY_FILE = data_path("data_body.json")
 SLEEP_FILE = data_path("data_sleep.json")
 NUTRITION_FILE = data_path("data_nutrition.json")
+BACKUP_IMPORT_JOURNAL_FILE = data_path("data_backup_import_journal.json")
 OURA_DB_FILE = data_path("oura_daily.sqlite3")
 WHOOP_DB_FILE = data_path("whoop.sqlite3")
 WEARABLE_FACTS_DB_FILE = data_path("wearable_facts.sqlite3")
@@ -16668,6 +16669,19 @@ def _validated_whoop_backup_records(facts):
     return records
 
 
+def _write_backup_import_journal(journal, *, store=None, status=None, error=None):
+    if store:
+        if store in journal["mutated_stores"]:
+            return
+        journal["mutated_stores"].append(store)
+    if status:
+        journal["status"] = status
+    if error is not None:
+        journal["error"] = str(error)
+    journal["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    save_json(BACKUP_IMPORT_JOURNAL_FILE, journal)
+
+
 @app.route('/api/import-backup', methods=['POST'])
 def import_backup():
     """Import data from a backup JSON file."""
@@ -16691,71 +16705,94 @@ def import_backup():
             if whoop_restore_guard is None:
                 return api_error("WHOOP sync is already running.", 409, code="whoop_sync_in_progress")
 
+        import_journal = {
+            "version": 1,
+            "status": "in_progress",
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "mutated_stores": [],
+            "resume": "resubmit_same_backup",
+        }
+        _write_backup_import_journal(import_journal)
+
         # Restore each JSON-backed data type under one lock so readers never see
         # a clear/extend half-state between the in-memory update and disk write.
         with JSON_DATA_LOCK:
             if "workouts" in data:
                 _json_restore_sequence(WORKOUTS, data["workouts"])
                 save_json(WORKOUTS_FILE, WORKOUTS)
+                _write_backup_import_journal(import_journal, store="workouts")
 
             if "soreness" in data:
                 _json_restore_sequence(SORENESS_DATA, data["soreness"])
                 save_json(SORENESS_FILE, SORENESS_DATA)
+                _write_backup_import_journal(import_journal, store="soreness")
 
             if "cardio" in data:
                 _json_restore_sequence(CARDIO_DATA, data["cardio"])
                 save_json(CARDIO_FILE, CARDIO_DATA)
+                _write_backup_import_journal(import_journal, store="cardio")
 
             if "recovery" in data:
                 _json_restore_sequence(RECOVERY_DATA, data["recovery"])
                 save_json(RECOVERY_FILE, RECOVERY_DATA)
+                _write_backup_import_journal(import_journal, store="recovery")
 
             if "settings" in data:
                 _json_restore_sequence(USER_SETTINGS, _settings_with_defaults(data["settings"]))
                 save_json(SETTINGS_FILE, USER_SETTINGS)
+                _write_backup_import_journal(import_journal, store="settings")
 
             if "baselines" in data:
                 _json_restore_sequence(BASELINES_DATA, data["baselines"])
                 save_json(BASELINES_FILE, BASELINES_DATA)
+                _write_backup_import_journal(import_journal, store="baselines")
 
             if "body" in data:
                 _json_restore_sequence(BODY_DATA, data["body"])
                 save_json(BODY_FILE, BODY_DATA)
+                _write_backup_import_journal(import_journal, store="body")
 
             if "sleep" in data:
                 _json_restore_sequence(SLEEP_DATA, data["sleep"])
                 save_json(SLEEP_FILE, SLEEP_DATA)
+                _write_backup_import_journal(import_journal, store="sleep")
 
             if "nutrition" in data:
                 _json_restore_sequence(NUTRITION_DATA, data["nutrition"])
                 save_json(NUTRITION_FILE, NUTRITION_DATA)
+                _write_backup_import_journal(import_journal, store="nutrition")
 
         if "food_logs" in data:
             user_id = _current_data_user_id()
             for food_log in data["food_logs"]:
                 if isinstance(food_log, dict):
                     add_food_log(user_id, _food_log_import_record(food_log))
+                    _write_backup_import_journal(import_journal, store="food_logs")
 
         if "personal_vocab" in data:
             user_id = _current_data_user_id()
             for vocab_entry in data["personal_vocab"]:
                 if isinstance(vocab_entry, dict):
                     import_personal_vocab_entry(user_id, vocab_entry)
+                    _write_backup_import_journal(import_journal, store="personal_vocab")
 
         if "meal_acceptance_events" in data:
             user_id = _current_data_user_id()
             for meal_event in data["meal_acceptance_events"]:
                 if isinstance(meal_event, dict):
                     import_meal_acceptance_event(user_id, meal_event)
+                    _write_backup_import_journal(import_journal, store="meal_acceptance_events")
 
         if "meal_review_snapshots" in data:
             user_id = _current_data_user_id()
             for meal_snapshot in data["meal_review_snapshots"]:
                 if isinstance(meal_snapshot, dict):
                     import_meal_review_snapshot(user_id, meal_snapshot)
+                    _write_backup_import_journal(import_journal, store="meal_review_snapshots")
 
         if "whoop_daily_facts" in data:
             clear_whoop_data(WHOOP_DB_FILE)
+            _write_backup_import_journal(import_journal, store="whoop_daily_facts")
             if whoop_backup_records:
                 run_id = record_whoop_sync_run(WHOOP_DB_FILE, reason="backup_import")
                 upsert_whoop_records(WHOOP_DB_FILE, "recovery", whoop_backup_records, sync_run_id=run_id)
@@ -16765,6 +16802,8 @@ def import_backup():
         if whoop_restore_guard is not None:
             whoop_restore_guard.release()
             whoop_restore_guard = None
+
+        _write_backup_import_journal(import_journal, status="complete")
 
         return jsonify({
             "status": "success",
@@ -16790,7 +16829,17 @@ def import_backup():
         whoop_restore_guard = locals().get("whoop_restore_guard")
         if whoop_restore_guard is not None:
             whoop_restore_guard.release()
-        return jsonify({"status": "error", "message": str(e)}), 400
+        import_journal = locals().get("import_journal")
+        mutated_stores = []
+        if import_journal is not None:
+            mutated_stores = list(import_journal["mutated_stores"])
+            _write_backup_import_journal(import_journal, status="failed", error=e)
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "mutated_stores": mutated_stores,
+            "resume": "resubmit_same_backup" if import_journal is not None else None,
+        }), 400
 
 
 @app.route('/api/export-md')
