@@ -8523,6 +8523,10 @@
         return conditions[status] || 'Manual retry only.';
     }
 
+    function mealQueueCanManuallyRetry(status) {
+        return status !== 'eviction_failed';
+    }
+
     function mealQueueCanAutomaticallyRetry(entry, refreshedScope) {
         const status = entry.last_status || 'pending';
         if (!MEAL_QUEUE_RETRYABLE_STATUSES.has(status)) return false;
@@ -8734,6 +8738,7 @@
             const lastAttempt = entry.last_attempt_at ? fmtDateTime(entry.last_attempt_at) : 'not tried yet';
             const nextRetry = mealQueueNextRetryCondition(status);
             const attemptCount = entry.attempts || 0;
+            const canRetry = mealQueueCanManuallyRetry(status);
             const reasonHtml = entry.reject_reason ? `<div class="sync-row-reason">${escapeHtml(entry.reject_reason)}</div>` : '';
             const inFlight = _mealSyncInFlightClientIds.has(entry.client_id);
             if (inFlight) row.classList.add('sync-row-in-flight');
@@ -8749,7 +8754,7 @@
                 ${reasonHtml}
                 <div class="sync-row-actions">
                     <button class="btn btn-ghost btn-sm" data-meal-sync-discard="${escapeHtml(entry.client_id)}" type="button"${syncDisabled}>Discard</button>
-                    <button class="btn btn-primary btn-sm" data-meal-sync-retry="${escapeHtml(entry.client_id)}" type="button"${syncDisabled}>${inFlight ? 'Syncing...' : 'Retry'}</button>
+                    ${canRetry ? `<button class="btn btn-primary btn-sm" data-meal-sync-retry="${escapeHtml(entry.client_id)}" type="button"${syncDisabled}>${inFlight ? 'Syncing...' : 'Retry'}</button>` : ''}
                 </div>
             `;
             host.appendChild(row);

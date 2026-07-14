@@ -6,7 +6,12 @@ existing source-contract pattern used by nearby meal review UI tests.
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +42,32 @@ def _app_js_block(start_marker: str, end_marker: str) -> str:
     end = APP_JS.find(end_marker, start)
     assert start != -1 and end != -1, f"block markers not found: {start_marker}"
     return APP_JS[start:end]
+
+
+def _meal_queue_manual_retry_policy(statuses: list[str]) -> list[bool]:
+    if not shutil.which("node"):
+        pytest.skip("FIT-328 retry policy contract requires Node.js")
+
+    marker = "function mealQueueCanManuallyRetry(status)"
+    assert marker in APP_JS, "mealQueueCanManuallyRetry not found"
+    helper = marker + APP_JS.split(marker, 1)[1].split(
+        "\n    function mealQueueCanAutomaticallyRetry", 1
+    )[0]
+    script = f"""
+const vm = require('node:vm');
+const sandbox = {{}};
+vm.createContext(sandbox);
+vm.runInContext({json.dumps(helper)}, sandbox);
+const statuses = {json.dumps(statuses)};
+process.stdout.write(JSON.stringify(statuses.map((status) => sandbox.mealQueueCanManuallyRetry(status))));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
 
 
 def test_meal_queue_uses_versioned_indexeddb_schema():
@@ -229,6 +260,15 @@ def test_meal_sync_rows_explain_retry_condition_for_all_visible_failure_states()
     assert "Next retry" in modal_block
     assert "Attempt count" in modal_block
     assert "mealQueueNextRetryCondition(status)" in modal_block
+    assert _meal_queue_manual_retry_policy([
+        "pending",
+        "auth_required",
+        "rejected",
+        "conflicted",
+        "eviction_failed",
+    ]) == [True, True, True, True, False]
+    assert "const canRetry = mealQueueCanManuallyRetry(status);" in modal_block
+    assert "${canRetry ? `" in modal_block
 
 
 def test_auth_required_meals_wait_for_refreshed_matching_scope_before_retry():
