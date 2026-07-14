@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 import data_store
+import pytest
 
 
 def _client(monkeypatch):
@@ -5023,7 +5024,7 @@ def test_meal_intake_accept_sanitizes_original_estimate_before_persist(monkeypat
 
     assert res.status_code == 200, res.get_data(as_text=True)
     assert persisted["original_estimate"]["calories"] == 300
-    assert persisted["original_estimate"]["from_image"] is True
+    assert "from_image" not in persisted["original_estimate"]
     assert "image_bytes" not in persisted["original_estimate"]
 
 
@@ -5072,13 +5073,10 @@ def test_meal_intake_accept_filters_preserved_metadata_before_persist(monkeypatc
     assert res.status_code == 200, res.get_data(as_text=True)
     original = persisted["original_estimate"]
     assert "vision_description" not in original
-    assert original["vision_provider"] == "claude"
-    assert original["vision_confidence"] == 0.62
-    assert original["off_attribution"] == {
-        "name": "Open Food Facts",
-        "url": "https://world.openfoodfacts.org/",
-    }
-    assert original["verified_source_url"] == "https://world.openfoodfacts.org/"
+    assert "vision_provider" not in original
+    assert "vision_confidence" not in original
+    assert "off_attribution" not in original
+    assert "verified_source_url" not in original
 
 
 def test_meal_intake_undo_calls_delete_helper(monkeypatch):
@@ -5354,6 +5352,253 @@ def test_legacy_corrected_duplicate_uses_current_row_and_stored_image_provenance
     assert response.get_json()["photo_retention"]["image_received"] is True
 
 
+def test_legacy_duplicate_rejects_request_asserted_image_provenance(monkeypatch):
+    module = _client(monkeypatch)
+    current = _accepted_estimate(calories=500, source="manual_review_estimate")
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "legacy-text-duplicate",
+            "date": "2026-05-18",
+            "logged_at": "2026-05-18T12:00:00",
+            **current,
+            "correction_state": "corrected",
+            "original_estimate": current,
+        },
+    )
+    asserted_image = dict(current, from_image=True)
+
+    response = module.app.test_client().post(
+        "/api/meal-intake/legacy-text-duplicate/accept",
+        json={"estimate": asserted_image},
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["photo_retention"]["image_received"] is False
+
+
+def test_fresh_legacy_accept_does_not_infer_image_from_client_source(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    estimate = _accepted_estimate(
+        source="vision_forged",
+        from_image=True,
+        external_food_id="forged-fresh-legacy",
+        verified_source_url="https://example.test/forged-fresh-legacy",
+    )
+
+    response = module.app.test_client().post(
+        "/api/meal-intake/fresh-legacy-forged-source/accept",
+        json={"estimate": estimate},
+    )
+    retry = module.app.test_client().post(
+        "/api/meal-intake/fresh-legacy-forged-source/accept",
+        json={"estimate": estimate},
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert retry.status_code == 200, retry.get_data(as_text=True)
+    assert response.get_json()["photo_retention"]["image_received"] is False
+    assert retry.get_json()["photo_retention"]["image_received"] is False
+    accepted = response.get_json()["food_log"]["accepted_estimate"]
+    assert accepted["source"] == "manual_review_estimate"
+    assert "from_image" not in accepted
+    assert "external_food_id" not in accepted
+    assert "verified_source_url" not in accepted
+
+
+def test_legacy_pending_accept_uses_stored_provenance_and_capture_fields(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client_id = "legacy-pending-stored-provenance"
+    estimate = _accepted_estimate(
+        item_name="Stored text meal",
+        calories=420,
+        source="ai_text_estimate",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            "source_timestamp": "2026-05-22T11:59:00",
+            "context_note": "canonical stored phrase",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+    asserted = dict(
+        estimate,
+        from_image=True,
+        source="vision_forged",
+        vision_provider="forged-provider",
+        external_food_id="forged-id",
+        verified_source_url="https://example.test/forged",
+        personal_vocab_phrase="forged legacy phrase",
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={
+            "estimate": asserted,
+            "text": "poisoned request phrase",
+            "local_timestamp": "2026-06-01T20:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    body = response.get_json()
+    assert body["photo_retention"]["image_received"] is False
+    row = data_store.get_food_log_by_client_id(1, client_id)
+    assert row["source"] == "ai_text_estimate"
+    assert row["from_image"] is not True
+    assert row["date"] == "2026-05-22"
+    assert row["logged_at"] == "2026-05-22T12:00:00"
+    assert row["source_timestamp"] == "2026-05-22T11:59:00"
+    assert row["context_note"] == "canonical stored phrase"
+    assert "vision_provider" not in row["accepted_estimate"]
+    assert "external_food_id" not in row["accepted_estimate"]
+    assert "verified_source_url" not in row["accepted_estimate"]
+    assert "personal_vocab_phrase" not in row["accepted_estimate"]
+
+
+def test_legacy_pending_meal_type_edit_preserves_stored_nutrition_provenance(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client_id = "legacy-pending-meal-type"
+    estimate = _accepted_estimate(
+        item_name="Verified meal",
+        calories=420,
+        meal_type="breakfast",
+        source="nutritionix",
+        external_food_id="verified-legacy-meal",
+        verified_source_url="https://example.test/verified-legacy-meal",
+        ambiguous=True,
+        uncertainty_notes=["Stored provider ambiguity"],
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={
+            "estimate": dict(
+                estimate,
+                meal_type="lunch",
+                confidence=1.0,
+                ambiguous=False,
+                uncertainty_notes=["Forged certainty"],
+            ),
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    accepted = data_store.get_food_log_by_client_id(1, client_id)["accepted_estimate"]
+    assert accepted["meal_type"] == "lunch"
+    assert accepted["source"] == "nutritionix"
+    assert accepted["confidence"] == estimate["confidence"]
+    assert accepted["ambiguous"] is True
+    assert accepted["uncertainty_notes"] == ["Stored provider ambiguity"]
+    assert accepted["external_food_id"] == "verified-legacy-meal"
+    assert accepted["verified_source_url"] == "https://example.test/verified-legacy-meal"
+
+
+def test_legacy_pending_accept_rejects_concurrent_refresh(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client_id = "legacy-pending-race"
+    original_estimate = _accepted_estimate(item_name="Original", calories=300)
+    refreshed_estimate = _accepted_estimate(item_name="Refreshed", calories=450)
+    base_record = {
+        "client_id": client_id,
+        "date": "2026-05-22",
+        "logged_at": "2026-05-22T12:00:00",
+        "correction_state": "pending_review",
+    }
+    data_store.add_food_log(
+        1,
+        {**base_record, **original_estimate, "original_estimate": original_estimate},
+    )
+    original_lookup = module._food_log_by_client_id
+    refreshed = False
+
+    def refresh_after_preflight(user_id, requested_client_id):
+        nonlocal refreshed
+        row = original_lookup(user_id, requested_client_id)
+        if requested_client_id == client_id and not refreshed:
+            refreshed = True
+            data_store.add_food_log(
+                1,
+                {**base_record, **refreshed_estimate, "original_estimate": refreshed_estimate},
+            )
+        return row
+
+    monkeypatch.setattr(module, "_food_log_by_client_id", refresh_after_preflight)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": original_estimate},
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    stored = data_store.get_food_log_by_client_id(1, client_id)
+    assert stored["item_name"] == "Refreshed"
+    assert stored["correction_state"] == "pending_review"
+
+
+def test_legacy_accept_rejects_pending_row_created_after_empty_preflight(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client_id = "legacy-new-pending-race"
+    submitted_estimate = _accepted_estimate(item_name="Submitted", calories=300)
+    pending_estimate = _accepted_estimate(item_name="New pending", calories=450)
+    original_lookup = module._food_log_by_client_id
+    created = False
+
+    def create_pending_after_empty_preflight(user_id, requested_client_id):
+        nonlocal created
+        row = original_lookup(user_id, requested_client_id)
+        if requested_client_id == client_id and row is None and not created:
+            created = True
+            data_store.add_food_log(
+                1,
+                {
+                    "client_id": client_id,
+                    "date": "2026-05-22",
+                    "logged_at": "2026-05-22T12:00:00",
+                    **pending_estimate,
+                    "correction_state": "pending_review",
+                    "original_estimate": pending_estimate,
+                },
+            )
+        return row
+
+    monkeypatch.setattr(module, "_food_log_by_client_id", create_pending_after_empty_preflight)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": submitted_estimate},
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    stored = data_store.get_food_log_by_client_id(1, client_id)
+    assert stored["item_name"] == "New pending"
+    assert stored["correction_state"] == "pending_review"
+
+
 def test_race_conflict_legacy_row_uses_current_values_and_stored_image_provenance(monkeypatch):
     module = _client(monkeypatch)
     original = _accepted_estimate(calories=400, source="ai_text_estimate")
@@ -5507,7 +5752,7 @@ def test_meal_intake_accept_uses_vision_description_for_image_only_vocab(monkeyp
     )
 
     assert res.status_code == 200, res.get_data(as_text=True)
-    assert vocab_calls[0][1] == "Bill Miller BBQ cart with Bacon & Egg Taco and two Breakfast Sandwiches"
+    assert vocab_calls[0][1] == "Bill Miller BBQ order: 1 Bacon & Egg Taco; 2 Breakfast Sandwich"
 
 
 def test_meal_intake_client_correction_flag_does_not_train_as_correction(monkeypatch):
@@ -5545,7 +5790,7 @@ def test_meal_intake_client_correction_flag_does_not_train_as_correction(monkeyp
     )
 
     assert res.status_code == 200, res.get_data(as_text=True)
-    assert vocab_calls[0][1] == "Bill Miller BBQ cart with Bacon & Egg Taco and two Breakfast Sandwiches"
+    assert vocab_calls[0][1] == "Bill Miller"
 
 
 def test_meal_intake_accept_requires_calories(monkeypatch):
@@ -6052,11 +6297,7 @@ def test_meal_intake_text_passes_local_timestamp_through_to_parser(monkeypatch):
 
 
 def test_meal_intake_accept_persists_parser_source_when_present(monkeypatch):
-    """Regression for Codex audit round 1, finding 3: when a pending-review
-    estimate originated from the FIT-59 parser (text path), the accept
-    handler must persist the parser-assigned ``source`` from the estimate
-    rather than defaulting to a generic manual-review source.
-    """
+    """A fresh accept cannot assert parser provenance without stored state."""
     module = _client(monkeypatch)
     captured = {}
 
@@ -6086,9 +6327,7 @@ def test_meal_intake_accept_persists_parser_source_when_present(monkeypatch):
         },
     )
     assert res.status_code == 200
-    assert captured["source"] == "ai_text_estimate", (
-        "accept handler must honor parser-assigned source, not default to stub"
-    )
+    assert captured["source"] == "manual_review_estimate"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -6877,6 +7116,134 @@ def test_concurrent_identical_multi_replay_records_negative_feedback_once(monkey
     assert feedback["skip_count"] == 1
 
 
+def test_concurrent_identical_pending_multi_accepts_return_canonical_success(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Lock
+
+    parent_client_id = "concurrent-pending-parent"
+    meal_id = "concurrent-pending-meal"
+    item_id = "item-1"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    estimate = _accepted_estimate(item_name="Pending meal", calories=500)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+            "meal_id": meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+    barrier = Barrier(2)
+    call_lock = Lock()
+    initial_reads = 0
+    original_existing_rows = module._meal_existing_rows
+
+    def synchronized_initial_rows(*args, **kwargs):
+        nonlocal initial_reads
+        rows = original_existing_rows(*args, **kwargs)
+        with call_lock:
+            should_wait = initial_reads < 2
+            initial_reads += 1
+        if should_wait:
+            barrier.wait()
+        return rows
+
+    monkeypatch.setattr(module, "_meal_existing_rows", synchronized_initial_rows)
+    payload = {
+        "meal_id": meal_id,
+        "items": [
+            {"state": "included", "item_id": item_id, "estimate": estimate},
+        ],
+    }
+
+    def accept():
+        with module.app.test_client() as client:
+            return client.post(f"/api/meal-intake/{parent_client_id}/accept", json=payload)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _index: accept(), range(2)))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert all(response.get_json()["status"] == "logged" for response in responses)
+
+
+def test_concurrent_identical_snapshot_accepts_return_canonical_success(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+
+    meal_id = "concurrent-snapshot-meal"
+    item_id = "item-1"
+    estimate = _accepted_estimate(item_name="Snapshot meal", calories=500)
+    module._review_save_snapshot(
+        1,
+        meal_id,
+        {
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "items": [
+                module._review_item_from_estimate(
+                    estimate,
+                    item_id=item_id,
+                    item_order=1,
+                    status="included",
+                    text="Snapshot meal",
+                ),
+            ],
+        },
+        2,
+        {},
+    )
+    second_snapshot_captured = Event()
+    first_request_finished = Event()
+    call_lock = Lock()
+    initial_reads = 0
+    original_get_snapshot = module.get_meal_review_snapshot
+
+    def synchronized_route_snapshot(*args, **kwargs):
+        nonlocal initial_reads
+        snapshot = original_get_snapshot(*args, **kwargs)
+        with call_lock:
+            read_index = initial_reads
+            initial_reads += 1
+        if read_index == 0:
+            second_snapshot_captured.wait()
+        elif read_index == 1:
+            second_snapshot_captured.set()
+            first_request_finished.wait()
+        return snapshot
+
+    monkeypatch.setattr(module, "get_meal_review_snapshot", synchronized_route_snapshot)
+    payload = {
+        "meal_id": meal_id,
+        "items": [
+            {"state": "included", "item_id": item_id, "estimate": estimate},
+        ],
+    }
+
+    def accept():
+        with module.app.test_client() as client:
+            response = client.post(f"/api/meal-intake/{meal_id}/accept", json=payload)
+        first_request_finished.set()
+        return response
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _index: accept(), range(2)))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert all(response.get_json()["status"] == "logged" for response in responses)
+
+
 def test_concurrent_identical_discarded_meal_records_negative_feedback_once(monkeypatch, tmp_path):
     module = _client(monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
@@ -7300,6 +7667,1277 @@ def test_snapshot_path_blocked_item_still_409(monkeypatch, tmp_path):
     assert body["error"]["message"] == "review has blocked items"
 
 
+def test_review_snapshot_refresh_writes_pending_row_and_snapshot_in_one_transaction(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    connections = {}
+    estimate = _accepted_estimate(item_name="Atomic refresh", calories=300)
+    payload = {
+        "status": "pending_review",
+        "meal_id": "atomic-refresh",
+        "items": [
+            {
+                "item_id": "item-1",
+                "status": "included",
+                "estimate": estimate,
+                "original_estimate": estimate,
+            },
+        ],
+    }
+
+    def fake_sync(*_args, connection=None, **_kwargs):
+        connections["row"] = connection
+        return {"client_id": "atomic-refresh"}
+
+    def fake_save(*_args, _conn=None, **kwargs):
+        connections["snapshot"] = _conn
+        return {"payload": kwargs["payload"]}
+
+    monkeypatch.setattr(module, "_review_sync_pending_row", fake_sync)
+    monkeypatch.setattr(module, "save_meal_review_snapshot", fake_save)
+
+    module._review_save_snapshot(1, "atomic-refresh", payload, 2, {})
+
+    assert connections["row"] is not None
+    assert connections["snapshot"] is connections["row"]
+
+
+def test_review_snapshot_refresh_does_not_recreate_pending_row_after_terminal_event(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "terminal-before-refresh-save"
+    estimate = _accepted_estimate(item_name="Already accepted", calories=300)
+    payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "items": [
+            {
+                "item_id": "item-1",
+                "status": "included",
+                "estimate": estimate,
+                "original_estimate": estimate,
+            },
+        ],
+    }
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=payload,
+        next_item_seq=2,
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-07-13",
+            "logged_at": "2026-07-13T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="discarded",
+        included_client_ids=[],
+        skipped_count=1,
+        deleted_count=0,
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "stale-discarded-child",
+            "meal_id": meal_id,
+            "meal_item_id": "item-1",
+            "item_index": 0,
+            "item_state": "included",
+            "date": "2026-07-13",
+            "logged_at": "2026-07-13T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+
+    saved = module._review_save_snapshot(1, meal_id, payload, 2, {}, sync_pending=True)
+
+    assert data_store.get_food_log_by_client_id(1, meal_id) is None
+    assert data_store.get_food_log_by_client_id(1, "stale-discarded-child") is None
+    assert data_store.get_meal_review_snapshot(1, meal_id) is None
+    assert saved is module._REVIEW_TERMINAL_SAVE_CONFLICT
+    with module.app.test_request_context():
+        response = module._review_saved_payload_response(
+            saved,
+            user_id=1,
+            meal_id=meal_id,
+            payload=payload,
+        )
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "discarded"
+
+
+def test_review_snapshot_save_does_not_reopen_logged_event_with_missing_rows(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "logged-event-missing-rows"
+    estimate = _accepted_estimate(item_name="Missing accepted child", calories=300)
+    payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "items": [
+            {
+                "item_id": "item-1",
+                "status": "included",
+                "estimate": estimate,
+                "original_estimate": estimate,
+            },
+        ],
+    }
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="logged",
+        included_client_ids=["missing-accepted-child"],
+        skipped_count=0,
+        deleted_count=0,
+    )
+
+    saved = module._review_save_snapshot(
+        1,
+        meal_id,
+        payload,
+        2,
+        {},
+        sync_pending=True,
+    )
+
+    assert saved is module._REVIEW_TERMINAL_SAVE_CONFLICT
+    assert data_store.get_food_log_by_client_id(1, meal_id) is None
+    assert data_store.get_meal_review_snapshot(1, meal_id) is None
+
+
+def test_review_snapshot_save_preserves_recoverable_partial_child_rows(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "partial-review-save"
+    accepted = _accepted_estimate(item_name="Accepted child", calories=300)
+    pending = _accepted_estimate(item_name="Pending child", calories=200)
+    for index, (client_id, estimate, state) in enumerate(
+        (
+            ("partial-review-accepted", accepted, "accepted"),
+            ("partial-review-pending", pending, "pending_review"),
+        )
+    ):
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "meal_id": meal_id,
+                "meal_item_id": f"item-{index + 1}",
+                "item_index": index,
+                "item_state": "included",
+                "date": "2026-07-13",
+                "logged_at": "2026-07-13T12:00:00",
+                **estimate,
+                "correction_state": state,
+                "original_estimate": estimate,
+                "accepted_estimate": estimate if state == "accepted" else None,
+            },
+        )
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="logged",
+        included_client_ids=["partial-review-accepted", "partial-review-pending"],
+        skipped_count=0,
+        deleted_count=0,
+    )
+    payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "items": [
+            {
+                "item_id": "item-2",
+                "status": "included",
+                "estimate": pending,
+                "original_estimate": pending,
+            },
+        ],
+    }
+
+    saved = module._review_save_snapshot(
+        1,
+        meal_id,
+        payload,
+        3,
+        {},
+        sync_pending=True,
+    )
+
+    assert saved is not module._REVIEW_TERMINAL_SAVE_CONFLICT
+    assert saved["status"] == "pending_review"
+    assert data_store.get_meal_review_snapshot(1, meal_id) is not None
+    assert data_store.get_food_log_by_client_id(1, "partial-review-pending") is not None
+
+
+def test_review_snapshot_save_preserves_missing_child_without_event(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "partial-review-missing-child"
+    accepted = _accepted_estimate(item_name="Accepted child", calories=300)
+    missing = _accepted_estimate(item_name="Missing child", calories=200)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": "partial-missing-accepted",
+            "meal_id": meal_id,
+            "meal_item_id": "item-1",
+            "item_index": 0,
+            "item_state": "included",
+            "date": "2026-07-13",
+            "logged_at": "2026-07-13T12:00:00",
+            **accepted,
+            "correction_state": "accepted",
+            "original_estimate": accepted,
+            "accepted_estimate": accepted,
+        },
+    )
+    payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "items": [
+            {
+                "item_id": "item-1",
+                "status": "included",
+                "estimate": accepted,
+                "original_estimate": accepted,
+            },
+            {
+                "item_id": "item-2",
+                "status": "included",
+                "estimate": missing,
+                "original_estimate": missing,
+            },
+        ],
+    }
+
+    saved = module._review_save_snapshot(
+        1,
+        meal_id,
+        payload,
+        3,
+        {},
+        sync_pending=True,
+    )
+
+    assert saved is not module._REVIEW_TERMINAL_SAVE_CONFLICT
+    assert data_store.get_meal_review_snapshot(1, meal_id) is not None
+
+
+def test_review_terminal_conflict_ignores_imported_payload_image_claim(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "terminal-imported-image-conflict"
+    estimate = _accepted_estimate(
+        item_name="Canonical manual meal",
+        calories=300,
+        source="manual_review_estimate",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-07-13",
+            "logged_at": "2026-07-13T12:00:00",
+            **estimate,
+            "correction_state": "accepted",
+            "original_estimate": estimate,
+            "accepted_estimate": estimate,
+        },
+    )
+    payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "has_image": True,
+        "_imported_snapshot_untrusted": True,
+    }
+
+    with module.app.test_request_context():
+        response = module._review_saved_payload_response(
+            module._REVIEW_TERMINAL_SAVE_CONFLICT,
+            user_id=1,
+            meal_id=meal_id,
+            payload=payload,
+        )
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "logged"
+    assert response.get_json()["photo_retention"]["image_received"] is False
+
+
+def test_review_terminal_conflict_preserves_canonical_row_image_provenance(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "terminal-canonical-image-conflict"
+    estimate = _accepted_estimate(
+        item_name="Canonical photo meal",
+        calories=300,
+        source="nutritionix",
+        from_image=True,
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-07-13",
+            "logged_at": "2026-07-13T12:00:00",
+            **estimate,
+            "correction_state": "accepted",
+            "original_estimate": estimate,
+            "accepted_estimate": estimate,
+        },
+    )
+
+    with module.app.test_request_context():
+        response = module._review_saved_payload_response(
+            module._REVIEW_TERMINAL_SAVE_CONFLICT,
+            user_id=1,
+            meal_id=meal_id,
+            payload={"status": "pending_review", "meal_id": meal_id},
+        )
+
+    assert response.status_code == 200
+    assert response.get_json()["photo_retention"]["image_received"] is True
+
+
+def test_exact_terminal_replay_revalidates_rows_inside_transaction(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "terminal-revalidate-parent"
+    meal_id = "terminal-revalidate-meal"
+    estimate = _accepted_estimate(item_name="Vanishing terminal row", calories=300)
+    item_client_id = module._meal_item_client_id(
+        parent_client_id,
+        {"item_id": "item-1"},
+        0,
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": item_client_id,
+            "meal_id": meal_id,
+            "meal_item_id": "item-1",
+            "item_index": 0,
+            "item_state": "included",
+            "date": "2026-07-13",
+            "logged_at": "2026-07-13T12:00:00",
+            **estimate,
+            "correction_state": "accepted",
+            "original_estimate": estimate,
+            "accepted_estimate": estimate,
+        },
+    )
+    original_get_rows = module.data_store_module.get_food_logs_by_meal_id
+
+    def rows_disappear_under_lock(user_id, requested_meal_id, *, _conn=None):
+        if _conn is not None and requested_meal_id == meal_id:
+            return []
+        return original_get_rows(user_id, requested_meal_id, _conn=_conn)
+
+    monkeypatch.setattr(
+        module.data_store_module,
+        "get_food_logs_by_meal_id",
+        rows_disappear_under_lock,
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": "item-1", "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+
+
+def test_pending_multi_recovery_allows_skipping_one_pending_item(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-skip-parent"
+    meal_id = "pending-skip-meal"
+    keep_estimate = _accepted_estimate(item_name="Keep pending item", calories=300)
+    skip_estimate = _accepted_estimate(
+        item_name="Skip pending item",
+        calories=200,
+        source="nutritionix",
+        from_image=True,
+    )
+    keep_id = module._meal_item_client_id(parent_client_id, {"item_id": "keep"}, 0)
+    skip_id = module._meal_item_client_id(parent_client_id, {"item_id": "skip"}, 1)
+    for client_id, item_id, index, estimate in (
+        (keep_id, "keep", 0, keep_estimate),
+        (skip_id, "skip", 1, skip_estimate),
+    ):
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "meal_id": meal_id,
+                "meal_item_id": item_id,
+                "item_index": index,
+                "item_state": "included",
+                "date": "2026-07-13",
+                "logged_at": "2026-07-13T12:00:00",
+                **estimate,
+                "correction_state": "pending_review",
+                "original_estimate": estimate,
+            },
+        )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": "keep", "estimate": keep_estimate},
+                {
+                    "state": "skipped",
+                    "item_id": "skip",
+                    "text": "Skip pending item",
+                    "estimate": skip_estimate,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert [row["client_id"] for row in data_store.get_food_logs_by_meal_id(1, meal_id)] == [keep_id]
+    assert data_store.get_meal_acceptance_event(1, meal_id)["included_client_ids"] == [keep_id]
+    assert data_store.get_meal_acceptance_event(1, meal_id)["has_image"] is True
+    assert response.get_json()["photo_retention"]["image_received"] is True
+
+
+def test_pending_multi_recovery_full_discard_removes_child_rows(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-child-discard-parent"
+    meal_id = "pending-child-discard-meal"
+    items = []
+    for index, item_id in enumerate(("skip", "delete")):
+        estimate = _accepted_estimate(
+            item_name=f"Pending {item_id}",
+            calories=200 + index * 100,
+        )
+        client_id = module._meal_item_client_id(
+            parent_client_id,
+            {"item_id": item_id},
+            index,
+        )
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "meal_id": meal_id,
+                "meal_item_id": item_id,
+                "item_index": index,
+                "item_state": "included",
+                "date": "2026-07-13",
+                "logged_at": "2026-07-13T12:00:00",
+                **estimate,
+                "correction_state": "pending_review",
+                "original_estimate": estimate,
+            },
+        )
+        items.append(
+            {
+                "state": "skipped" if index == 0 else "deleted",
+                "item_id": item_id,
+                "text": estimate["item_name"],
+                "estimate": estimate,
+            }
+        )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={"meal_id": meal_id, "items": items},
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["status"] == "discarded"
+    assert data_store.get_food_logs_by_meal_id(1, meal_id) == []
+
+
+def test_skipped_pending_row_refresh_race_is_rejected_before_delete(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-skip-stale-parent"
+    meal_id = "pending-skip-stale-meal"
+    estimate = _accepted_estimate(item_name="Original pending item", calories=200)
+    keep_estimate = _accepted_estimate(item_name="Keep pending item", calories=300)
+    client_id = module._meal_item_client_id(
+        parent_client_id,
+        {"item_id": "skip"},
+        0,
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "meal_id": meal_id,
+            "meal_item_id": "skip",
+            "item_index": 0,
+            "item_state": "included",
+            "date": "2026-07-13",
+            "logged_at": "2026-07-13T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+    keep_id = module._meal_item_client_id(
+        parent_client_id,
+        {"item_id": "keep"},
+        1,
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": keep_id,
+            "meal_id": meal_id,
+            "meal_item_id": "keep",
+            "item_index": 1,
+            "item_state": "included",
+            "date": "2026-07-13",
+            "logged_at": "2026-07-13T12:00:00",
+            **keep_estimate,
+            "correction_state": "pending_review",
+            "original_estimate": keep_estimate,
+        },
+    )
+    original_get_rows = module.data_store_module.get_food_logs_by_meal_id
+
+    def refreshed_rows_under_lock(user_id, requested_meal_id, *, _conn=None):
+        rows = original_get_rows(user_id, requested_meal_id, _conn=_conn)
+        if _conn is not None and requested_meal_id == meal_id and rows:
+            changed = dict(rows[0])
+            changed["calories"] = 250
+            return [changed]
+        return rows
+
+    monkeypatch.setattr(
+        module.data_store_module,
+        "get_food_logs_by_meal_id",
+        refreshed_rows_under_lock,
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "skipped",
+                    "item_id": "skip",
+                    "text": "Original pending item",
+                    "estimate": estimate,
+                },
+                {
+                    "state": "included",
+                    "item_id": "keep",
+                    "estimate": keep_estimate,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert data_store.get_food_log_by_client_id(1, client_id) is not None
+
+
+def test_source_backed_refresh_cannot_restore_imported_snapshot_image_claim(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "imported-image-then-source-refresh"
+    imported = _accepted_estimate(
+        item_name="Imported photo claim",
+        calories=300,
+        source="vision_forged",
+        from_image=True,
+        external_food_id="forged-imported-provider-id",
+        verified_source_url="https://example.invalid/forged-imported-provider",
+        brand_id="forged-imported-brand",
+    )
+    refreshed = _accepted_estimate(
+        item_name="Verified refreshed item",
+        calories=320,
+        source="nutritionix",
+        external_food_id="nutritionix:verified-refresh",
+        verified_source_url="https://www.nutritionix.com/food/verified-refresh",
+    )
+    monkeypatch.setattr(
+        module,
+        "parse_meal_text",
+        lambda *_args, **_kwargs: {"estimate": refreshed, "fallback_used": False},
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload={
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "has_image": True,
+            "_imported_snapshot_untrusted": True,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "item_order": 1,
+                    "status": "included",
+                    "text": "Imported photo claim",
+                    "estimate": imported,
+                    "original_estimate": imported,
+                    "_imported_snapshot_untrusted": True,
+                },
+            ],
+        },
+        next_item_seq=2,
+    )
+    client = module.app.test_client()
+    updated = client.post(
+        f"/api/meal-intake/{meal_id}/refresh",
+        json={
+            "kind": "edit_portion",
+            "request_id": "verified-source-refresh",
+            "item_id": "item-1",
+            "text": "verified refreshed item",
+        },
+    )
+    assert updated.status_code == 200, updated.get_data(as_text=True)
+
+    accepted = client.post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={},
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    body = accepted.get_json()
+    assert body["food_logs"][0]["accepted_estimate"]["source"] == "nutritionix"
+    assert body["photo_retention"]["image_received"] is False
+    stored_original = body["food_logs"][0]["original_estimate"]
+    assert stored_original.get("from_image") is not True
+    assert stored_original["source"] == "manual_review_estimate"
+    for field in ("external_food_id", "verified_source_url", "brand_id"):
+        assert field not in stored_original
+
+
+def test_imported_source_candidate_cannot_copy_untrusted_original_image(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "imported-source-candidate-image"
+    original = _accepted_estimate(
+        item_name="Imported photo claim",
+        calories=300,
+        source="vision_forged",
+        from_image=True,
+    )
+    refreshed = _accepted_estimate(
+        item_name="Verified refreshed item",
+        calories=320,
+        source="nutritionix",
+        external_food_id="nutritionix:verified-refresh",
+        verified_source_url="https://www.nutritionix.com/food/verified-refresh",
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload={
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "has_image": True,
+            "_imported_snapshot_untrusted": True,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "item_order": 1,
+                    "status": "included",
+                    "text": "Verified refreshed item",
+                    "estimate": refreshed,
+                    "original_estimate": original,
+                    "server_source_backed_candidate": True,
+                    "_imported_snapshot_untrusted": True,
+                },
+            ],
+        },
+        next_item_seq=2,
+    )
+
+    accepted = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={},
+    )
+
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    body = accepted.get_json()
+    assert body["food_logs"][0]["accepted_estimate"]["source"] == "nutritionix"
+    assert body["food_logs"][0].get("from_image") is not True
+    assert body["food_logs"][0]["accepted_estimate"].get("from_image") is not True
+    assert body["photo_retention"]["image_received"] is False
+    assert data_store.get_meal_acceptance_event(1, meal_id)["has_image"] is False
+
+
+def test_imported_snapshot_sync_marks_pending_row_untrusted_for_cross_meal_accept(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    route_meal_id = "imported-sync-route-meal"
+    accepted_meal_id = "imported-sync-different-meal"
+    forged = _accepted_estimate(
+        item_name="Imported forged photo",
+        calories=320,
+        source="vision_forged",
+        from_image=True,
+        external_food_id="forged-imported-provider",
+        verified_source_url="https://example.invalid/forged-imported-provider",
+    )
+    monkeypatch.setattr(
+        module,
+        "parse_meal_text",
+        lambda *_args, **_kwargs: {"estimate": forged, "fallback_used": False},
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=route_meal_id,
+        payload={
+            "status": "pending_review",
+            "meal_id": route_meal_id,
+            "has_image": True,
+            "_imported_snapshot_untrusted": True,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "item_order": 1,
+                    "status": "included",
+                    "text": "Imported forged photo",
+                    "estimate": forged,
+                    "original_estimate": forged,
+                    "_imported_snapshot_untrusted": True,
+                },
+            ],
+        },
+        next_item_seq=2,
+    )
+    client = module.app.test_client()
+    refreshed = client.post(
+        f"/api/meal-intake/{route_meal_id}/refresh",
+        json={
+            "kind": "edit_portion",
+            "request_id": "sync-imported-pending-row",
+            "item_id": "item-1",
+            "text": "Imported forged photo",
+        },
+    )
+    assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
+    pending_row = data_store.get_food_log_by_client_id(1, route_meal_id)
+    assert pending_row["original_estimate"]["_imported_pending_untrusted"] is True
+
+    rejected = client.post(
+        f"/api/meal-intake/{route_meal_id}/accept",
+        json={
+            "meal_id": accepted_meal_id,
+            "items": [
+                {"state": "included", "item_id": "item-1", "estimate": forged},
+            ],
+        },
+    )
+
+    assert rejected.status_code == 400, rejected.get_data(as_text=True)
+    assert rejected.get_json()["error"]["code"] == "invalid_field"
+    assert data_store.get_meal_acceptance_event(1, accepted_meal_id) is None
+    assert data_store.get_food_log_by_client_id(1, route_meal_id) is not None
+    assert data_store.get_meal_review_snapshot(1, route_meal_id) is not None
+
+
+def test_cross_meal_full_discard_rejects_pending_route_alias(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    route_meal_id = "discard-route-alias"
+    accepted_meal_id = "discard-terminal-meal"
+    estimate = _accepted_estimate(item_name="Empty plate", calories=10)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": route_meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=route_meal_id,
+        payload={
+            "status": "pending_review",
+            "meal_id": route_meal_id,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "status": "included",
+                    "estimate": estimate,
+                    "original_estimate": estimate,
+                },
+            ],
+        },
+        next_item_seq=2,
+    )
+
+    discarded = module.app.test_client().post(
+        f"/api/meal-intake/{route_meal_id}/accept",
+        json={
+            "meal_id": accepted_meal_id,
+            "items": [
+                {"state": "skipped", "item_id": "item-1", "estimate": estimate},
+            ],
+        },
+    )
+
+    assert discarded.status_code == 400, discarded.get_data(as_text=True)
+    assert discarded.get_json()["error"]["code"] == "invalid_field"
+    assert data_store.get_food_log_by_client_id(1, route_meal_id) is not None
+    assert data_store.get_meal_review_snapshot(1, route_meal_id) is not None
+
+
+@pytest.mark.parametrize("terminal_replay", [True, False])
+def test_cross_meal_terminal_paths_reject_pending_route_alias(
+    monkeypatch,
+    tmp_path,
+    terminal_replay,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    from contextlib import contextmanager
+
+    route_meal_id = f"route-alias-race-{terminal_replay}"
+    accepted_meal_id = f"target-alias-race-{terminal_replay}"
+    item_id = "item-1"
+    child_id = module._meal_item_client_id(route_meal_id, {"item_id": item_id}, 0)
+    original = _accepted_estimate(item_name="Original route review", calories=300)
+    refreshed = _accepted_estimate(item_name="Refreshed route review", calories=450)
+
+    def snapshot_payload(estimate):
+        return {
+            "status": "pending_review",
+            "meal_id": route_meal_id,
+            "items": [
+                {
+                    "item_id": item_id,
+                    "status": "included",
+                    "estimate": estimate,
+                    "original_estimate": estimate,
+                },
+            ],
+        }
+
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": route_meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **original,
+            "correction_state": "pending_review",
+            "original_estimate": original,
+        },
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=route_meal_id,
+        payload=snapshot_payload(original),
+        next_item_seq=2,
+    )
+    if terminal_replay:
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": child_id,
+                "meal_id": accepted_meal_id,
+                "meal_item_id": item_id,
+                "item_index": 0,
+                "item_state": "included",
+                "date": "2026-05-22",
+                "logged_at": "2026-05-22T12:00:00",
+                **original,
+                "correction_state": "accepted",
+                "original_estimate": original,
+                "accepted_estimate": original,
+            },
+        )
+        data_store.save_meal_acceptance_event(
+            1,
+            meal_id=accepted_meal_id,
+            status="logged",
+            included_client_ids=[child_id],
+            skipped_count=0,
+            deleted_count=0,
+        )
+    original_transaction = module.food_log_transaction
+    changed = False
+
+    @contextmanager
+    def refresh_route_before_lock():
+        nonlocal changed
+        if not changed:
+            changed = True
+            data_store.add_food_log(
+                1,
+                {
+                    "client_id": route_meal_id,
+                    "date": "2026-05-22",
+                    "logged_at": "2026-05-22T12:01:00",
+                    **refreshed,
+                    "correction_state": "pending_review",
+                    "original_estimate": refreshed,
+                },
+            )
+            data_store.save_meal_review_snapshot(
+                1,
+                meal_id=route_meal_id,
+                payload=snapshot_payload(refreshed),
+                next_item_seq=2,
+            )
+        with original_transaction() as connection:
+            yield connection
+
+    monkeypatch.setattr(module, "food_log_transaction", refresh_route_before_lock)
+    item = {
+        "state": "included" if terminal_replay else "skipped",
+        "item_id": item_id,
+        "estimate": original,
+    }
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{route_meal_id}/accept",
+        json={"meal_id": accepted_meal_id, "items": [item]},
+    )
+
+    assert response.status_code == 400, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "invalid_field"
+    stored = data_store.get_food_log_by_client_id(1, route_meal_id)
+    assert stored["item_name"] == "Original route review"
+    snapshot = data_store.get_meal_review_snapshot(1, route_meal_id)
+    assert snapshot["payload"]["items"][0]["estimate"]["calories"] == 300
+
+
+def test_logged_child_event_does_not_downgrade_unrelated_direct_terminal_row(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "logged-child-with-direct-row"
+    child_id = "logged-child-row"
+    child_estimate = _accepted_estimate(item_name="Meal child", calories=300)
+    direct_estimate = _accepted_estimate(item_name="Independent direct log", calories=500)
+    payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "items": [
+            {
+                "item_id": "child",
+                "status": "included",
+                "estimate": child_estimate,
+                "original_estimate": child_estimate,
+            },
+        ],
+    }
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=payload,
+        next_item_seq=2,
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": child_id,
+            "meal_id": meal_id,
+            "meal_item_id": "child",
+            "item_index": 0,
+            "item_state": "included",
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **child_estimate,
+            "correction_state": "accepted",
+            "original_estimate": child_estimate,
+            "accepted_estimate": child_estimate,
+        },
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T11:00:00",
+            **direct_estimate,
+            "correction_state": "accepted",
+            "original_estimate": direct_estimate,
+            "accepted_estimate": direct_estimate,
+        },
+    )
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="logged",
+        included_client_ids=[child_id],
+        skipped_count=0,
+        deleted_count=0,
+    )
+
+    saved = module._review_save_snapshot(1, meal_id, payload, 2, {})
+
+    assert saved is module._REVIEW_TERMINAL_SAVE_CONFLICT
+    direct = data_store.get_food_log_by_client_id(1, meal_id)
+    assert direct["correction_state"] == "accepted"
+    assert direct["item_name"] == "Independent direct log"
+    assert data_store.get_meal_review_snapshot(1, meal_id) is None
+    with module.app.test_request_context():
+        replay = module._review_saved_payload_response(
+            saved,
+            user_id=1,
+            meal_id=meal_id,
+            payload=payload,
+        )
+    replay_body = replay.get_json()
+    assert replay_body["status"] == "logged"
+    assert replay_body["meal_id"] == meal_id
+    assert [row["client_id"] for row in replay_body["food_logs"]] == [child_id]
+    assert "food_log" not in replay_body
+
+
+def test_complete_eventless_child_rows_repair_event_before_terminal_replay(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "complete-eventless-terminal-rows"
+    rows = []
+    items = []
+    for index, calories in enumerate((200, 300), start=1):
+        item_id = f"item-{index}"
+        client_id = f"eventless-child-{index}"
+        estimate = _accepted_estimate(item_name=f"Child {index}", calories=calories)
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "meal_id": meal_id,
+                "meal_item_id": item_id,
+                "item_index": index - 1,
+                "item_state": "included",
+                "date": "2026-05-22",
+                "logged_at": "2026-05-22T12:00:00",
+                **estimate,
+                "correction_state": "accepted",
+                "original_estimate": estimate,
+                "accepted_estimate": estimate,
+            },
+        )
+        rows.append(client_id)
+        items.append(
+            {
+                "item_id": item_id,
+                "status": "included",
+                "estimate": estimate,
+                "original_estimate": estimate,
+            }
+        )
+    payload = {"status": "pending_review", "meal_id": meal_id, "items": items}
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=payload,
+        next_item_seq=3,
+    )
+    aggregate = _accepted_estimate(item_name="Pending aggregate", calories=500)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **aggregate,
+            "correction_state": "pending_review",
+            "original_estimate": aggregate,
+        },
+    )
+
+    saved = module._review_save_snapshot(1, meal_id, payload, 3, {})
+
+    assert saved is module._REVIEW_TERMINAL_SAVE_CONFLICT
+    event = data_store.get_meal_acceptance_event(1, meal_id)
+    assert event["status"] == "logged"
+    assert set(event["included_client_ids"]) == set(rows)
+    assert data_store.get_food_log_by_client_id(1, meal_id) is None
+    with module.app.test_request_context():
+        replay = module._review_saved_payload_response(
+            saved,
+            user_id=1,
+            meal_id=meal_id,
+            payload=payload,
+        )
+    assert replay.status_code == 200
+    assert [row["client_id"] for row in replay.get_json()["food_logs"]] == rows
+
+
+def test_direct_terminal_row_with_own_logged_event_is_canonical(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "direct-terminal-own-event"
+    estimate = _accepted_estimate(item_name="Direct terminal meal", calories=400)
+    payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "items": [
+            {
+                "item_id": "item-1",
+                "status": "included",
+                "estimate": estimate,
+                "original_estimate": estimate,
+            },
+        ],
+    }
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=payload,
+        next_item_seq=2,
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "accepted",
+            "original_estimate": estimate,
+            "accepted_estimate": estimate,
+        },
+    )
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="logged",
+        included_client_ids=[meal_id],
+        skipped_count=0,
+        deleted_count=0,
+    )
+
+    saved = module._review_save_snapshot(1, meal_id, payload, 2, {})
+
+    assert saved is module._REVIEW_TERMINAL_SAVE_CONFLICT
+    direct = data_store.get_food_log_by_client_id(1, meal_id)
+    assert direct["correction_state"] == "accepted"
+    assert data_store.get_meal_review_snapshot(1, meal_id) is None
+
+
+def test_protected_fresh_accept_conflict_does_not_enqueue_existing_row(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "protected-fresh-conflict-parent"
+    meal_id = "protected-fresh-conflict-meal"
+    estimate = _accepted_estimate(item_name="Concurrent winner", calories=300)
+    item_client_id = module._meal_item_client_id(
+        parent_client_id,
+        {"item_id": "item-1"},
+        0,
+    )
+    canonical_row = {
+        **estimate,
+        "client_id": item_client_id,
+        "meal_id": meal_id,
+        "meal_item_id": "item-1",
+        "item_index": 0,
+        "item_state": "included",
+        "correction_state": "accepted",
+        "accepted_estimate": estimate,
+        "original_estimate": estimate,
+        "_protected_client_id_conflict": True,
+    }
+    monkeypatch.setattr(
+        module,
+        "_meal_intake_persist",
+        lambda *_args, **_kwargs: dict(canonical_row),
+    )
+    original_get_event = module.data_store_module.get_meal_acceptance_event
+
+    def transaction_only_event(user_id, requested_meal_id, *, _conn=None):
+        if _conn is not None and requested_meal_id == meal_id:
+            return {
+                "meal_id": meal_id,
+                "status": "logged",
+                "included_client_ids": [item_client_id],
+                "skipped_count": 0,
+                "deleted_count": 0,
+                "feedback_fingerprint": None,
+                "has_image": False,
+            }
+        return original_get_event(user_id, requested_meal_id, _conn=_conn)
+
+    monkeypatch.setattr(
+        module.data_store_module,
+        "get_meal_acceptance_event",
+        transaction_only_event,
+    )
+    monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: False)
+    enqueued = []
+    monkeypatch.setattr(
+        module,
+        "_enqueue_workout_adaptation_after_accept",
+        lambda user_id, rows: enqueued.append((user_id, rows)),
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": "item-1", "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert enqueued == []
+
+
 def test_multi_item_accept_retry_is_noop_and_changed_item_set_conflicts(monkeypatch, tmp_path):
     module = _client(monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
@@ -7349,6 +8987,67 @@ def test_multi_item_accept_retry_is_noop_and_changed_item_set_conflicts(monkeypa
     entry = data_store.get_personal_vocab_entry(1, "plate")
     assert entry["skip_count"] == 1
     assert data_store.get_personal_vocab_entry(1, "bowl") is None
+
+
+def test_multi_item_retry_rejects_request_asserted_image_provenance(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    payload = {
+        "meal_id": "text-meal-idem",
+        "items": [
+            {
+                "state": "included",
+                "item_id": "a",
+                "estimate": _accepted_estimate(item_name="A", calories=100),
+            },
+        ],
+    }
+    first = client.post("/api/meal-intake/text-parent-idem/accept", json=payload)
+    asserted_image = {
+        "meal_id": payload["meal_id"],
+        "items": [
+            {
+                "state": "included",
+                "item_id": "a",
+                "estimate": _accepted_estimate(item_name="A", calories=100, from_image=True),
+            },
+        ],
+    }
+
+    retry = client.post("/api/meal-intake/text-parent-idem/accept", json=asserted_image)
+
+    assert first.status_code == 200, first.get_data(as_text=True)
+    assert retry.status_code == 200, retry.get_data(as_text=True)
+    assert retry.get_json()["photo_retention"]["image_received"] is False
+
+
+def test_multi_item_accept_queries_only_target_meal_inside_transaction(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    original_get_food_logs = data_store.get_food_logs
+
+    def reject_locked_full_history_scan(*args, **kwargs):
+        if kwargs.get("_conn") is not None:
+            raise AssertionError("transactional accept scanned the user's full food-log history")
+        return original_get_food_logs(*args, **kwargs)
+
+    monkeypatch.setattr(data_store, "get_food_logs", reject_locked_full_history_scan)
+
+    response = module.app.test_client().post(
+        "/api/meal-intake/targeted-query-parent/accept",
+        json={
+            "meal_id": "targeted-query-meal",
+            "items": [
+                {
+                    "state": "included",
+                    "item_id": "a",
+                    "estimate": _accepted_estimate(item_name="A", calories=100),
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200, response.get_data(as_text=True)
 
 
 def test_multi_item_accept_retry_with_existing_rows_does_not_require_estimates(monkeypatch, tmp_path):
@@ -7767,6 +9466,2314 @@ def test_multi_item_accept_replay_repairs_missing_event_when_rows_exist(monkeypa
     assert set(event["included_client_ids"]) == {item_a_client_id, item_b_client_id}
     assert event["skipped_count"] == 1
     assert data_store.get_personal_vocab_entry(1, "plate")["skip_count"] == 1
+
+
+def test_partial_event_recovery_preserves_canonical_image_and_enqueues_only_new_row(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "partial-event-photo-parent"
+    meal_id = "partial-event-photo-meal"
+    item_a_client_id = module._meal_item_client_id(parent_client_id, {"item_id": "a"}, 0)
+    item_b_client_id = module._meal_item_client_id(parent_client_id, {"item_id": "b"}, 1)
+    estimate_a = _accepted_estimate(
+        item_name="Photo A",
+        calories=100,
+        source="vision_estimate",
+        from_image=True,
+    )
+    estimate_b = _accepted_estimate(item_name="Text B", calories=200)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": item_a_client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate_a,
+            "correction_state": "accepted",
+            "original_estimate": estimate_a,
+            "accepted_estimate": estimate_a,
+            "meal_id": meal_id,
+            "meal_item_id": "a",
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="logged",
+        included_client_ids=[item_a_client_id, item_b_client_id],
+        skipped_count=0,
+        deleted_count=0,
+        has_image=False,
+    )
+    enqueued = []
+    monkeypatch.setattr(
+        module,
+        "_enqueue_workout_adaptation_after_accept",
+        lambda user_id, rows: enqueued.append((user_id, rows)),
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": "a", "estimate": estimate_a},
+                {"state": "included", "item_id": "b", "estimate": estimate_b},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["photo_retention"]["image_received"] is True
+    assert data_store.get_meal_acceptance_event(1, meal_id)["has_image"] is True
+    assert len(enqueued) == 1
+    assert [row["client_id"] for row in enqueued[0][1]] == [item_b_client_id]
+
+
+def test_terminal_replays_preserve_unknown_feedback_fingerprints(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    parent_client_id = "unknown-feedback-parent"
+    logged_meal_id = "unknown-feedback-logged"
+    item_id = "meal"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    estimate = _accepted_estimate(item_name="Logged meal", calories=500)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "accepted",
+            "accepted_estimate": estimate,
+            "meal_id": logged_meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=logged_meal_id,
+        status="logged",
+        included_client_ids=[client_id],
+        skipped_count=1,
+        deleted_count=0,
+        feedback_fingerprint=None,
+    )
+
+    logged_response = client.post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": logged_meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+                {
+                    "state": "skipped",
+                    "item_id": "tampered-skip",
+                    "text": "tampered replay",
+                    "estimate": _accepted_estimate(item_name="Tampered", calories=10),
+                },
+            ],
+        },
+    )
+
+    discarded_meal_id = "unknown-feedback-discarded"
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=discarded_meal_id,
+        status="discarded",
+        included_client_ids=[],
+        skipped_count=1,
+        deleted_count=0,
+        feedback_fingerprint=None,
+    )
+    discarded_response = client.post(
+        f"/api/meal-intake/{discarded_meal_id}/accept",
+        json={
+            "meal_id": discarded_meal_id,
+            "items": [
+                {
+                    "state": "skipped",
+                    "item_id": "tampered-discard",
+                    "text": "tampered discard replay",
+                    "estimate": _accepted_estimate(item_name="Tampered", calories=10),
+                },
+            ],
+        },
+    )
+
+    assert logged_response.status_code == 200, logged_response.get_data(as_text=True)
+    assert discarded_response.status_code == 200, discarded_response.get_data(as_text=True)
+    assert data_store.get_meal_acceptance_event(1, logged_meal_id)["feedback_fingerprint"] is None
+    assert data_store.get_meal_acceptance_event(1, discarded_meal_id)["feedback_fingerprint"] is None
+
+
+def test_multi_item_exact_set_pending_replay_finalizes_rows(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-parent-exact-replay"
+    meal_id = "pending-meal-exact-replay"
+    estimates = [
+        _accepted_estimate(item_name="A", calories=100),
+        _accepted_estimate(item_name="B", calories=200),
+    ]
+    for index, estimate in enumerate(estimates):
+        item_id = chr(ord("a") + index)
+        client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, index)
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "date": "2026-05-22",
+                "logged_at": "2026-05-22T12:00:00",
+                **estimate,
+                "correction_state": "pending_review",
+                "original_estimate": estimate,
+                "meal_id": meal_id,
+                "meal_item_id": item_id,
+                "item_index": index,
+                "item_state": "included",
+            },
+        )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": "a", "estimate": estimates[0]},
+                {"state": "included", "item_id": "b", "estimate": estimates[1]},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    rows = [row for row in data_store.get_food_logs(1) if row["meal_id"] == meal_id]
+    assert len(rows) == 2
+    assert {row["correction_state"] for row in rows} <= {"accepted", "corrected"}
+    assert data_store.get_meal_acceptance_event(1, meal_id)["status"] == "logged"
+
+
+def test_multi_item_pending_replay_rechecks_stored_placeholder_policy(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-placeholder-parent"
+    meal_id = "pending-placeholder-meal"
+    item_id = "barcode"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    placeholder = _accepted_estimate(
+        item_name="Unknown barcode",
+        calories=0,
+        protein_g=0,
+        carbs_g=0,
+        fat_g=0,
+        source="barcode_pending_source",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **placeholder,
+            "correction_state": "pending_review",
+            "original_estimate": placeholder,
+            "meal_id": meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": placeholder},
+            ],
+        },
+    )
+
+    assert response.status_code == 422, response.get_data(as_text=True)
+    stored = data_store.get_food_logs_by_meal_id(1, meal_id)
+    assert stored[0]["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+
+
+def test_snapshotless_pending_replay_accepts_unchanged_low_confidence_row(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-low-confidence-parent"
+    meal_id = "pending-low-confidence-meal"
+    item_id = "uncertain"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    estimate = _accepted_estimate(item_name="Uncertain meal", calories=300)
+    estimate.update(
+        confidence=0.4,
+        ambiguous=True,
+        uncertainty_notes=["Portion needs confirmation."],
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+            "meal_id": meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    stored = data_store.get_food_log_by_client_id(1, client_id)
+    assert stored["correction_state"] == "accepted"
+
+
+def test_snapshotless_pending_ai_only_combo_uses_stored_baseline(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-stored-combo-parent"
+    meal_id = "pending-stored-combo-meal"
+    item_id = "combo"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    stored = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=840,
+        source="ai_text_estimate",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **stored,
+            "context_note": None,
+            "correction_state": "pending_review",
+            "original_estimate": stored,
+            "meal_id": meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+    renamed = dict(stored, item_name="Chicken dinner", source="manual_review_estimate")
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": renamed},
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert data_store.get_food_log_by_client_id(1, client_id)["correction_state"] == "pending_review"
+
+
+def test_snapshotless_pending_source_backed_combo_accepts_stored_baseline(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-source-combo-parent"
+    meal_id = "pending-source-combo-meal"
+    item_id = "combo"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    stored = _accepted_estimate(
+        item_name="Canes Box Combo",
+        calories=920,
+        source="nutritionix",
+        external_food_id="stored-source-combo",
+        verified_source_url="https://example.test/stored-source-combo",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **stored,
+            "correction_state": "pending_review",
+            "original_estimate": stored,
+            "meal_id": meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": stored},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["food_logs"][0]["source"] == "nutritionix"
+
+
+def test_multi_pending_meal_type_edit_preserves_stored_nutrition_provenance(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-meal-type-parent"
+    meal_id = "pending-meal-type-meal"
+    item_id = "verified"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    estimate = _accepted_estimate(
+        item_name="Verified meal",
+        calories=420,
+        meal_type="breakfast",
+        source="nutritionix",
+        external_food_id="verified-multi-meal",
+        verified_source_url="https://example.test/verified-multi-meal",
+        ambiguous=True,
+        uncertainty_notes=["Stored provider ambiguity"],
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+            "meal_id": meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "included",
+                    "item_id": item_id,
+                    "estimate": dict(
+                        estimate,
+                        meal_type="lunch",
+                        confidence=1.0,
+                        ambiguous=False,
+                        uncertainty_notes=["Forged certainty"],
+                    ),
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    accepted = data_store.get_food_log_by_client_id(1, client_id)["accepted_estimate"]
+    assert accepted["meal_type"] == "lunch"
+    assert accepted["source"] == "nutritionix"
+    assert accepted["confidence"] == estimate["confidence"]
+    assert accepted["ambiguous"] is True
+    assert accepted["uncertainty_notes"] == ["Stored provider ambiguity"]
+    assert accepted["external_food_id"] == "verified-multi-meal"
+    assert accepted["verified_source_url"] == "https://example.test/verified-multi-meal"
+
+
+def test_multi_item_pending_replay_preserves_stored_text_provenance(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-text-parent"
+    meal_id = "pending-text-meal"
+    item_id = "text"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    estimate = _accepted_estimate(item_name="Text meal", calories=300)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            "source_timestamp": "2026-05-22T11:59:00",
+            "context_note": "canonical stored phrase",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+            "meal_id": meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+    asserted_image = dict(
+        estimate,
+        source="vision_forged",
+        from_image=True,
+        external_food_id="forged-provider-id",
+        verified_source_url="https://example.test/forged",
+        personal_vocab_phrase="forged multi phrase",
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "included",
+                    "item_id": item_id,
+                    "text": "poisoned replay phrase",
+                    "estimate": asserted_image,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["photo_retention"]["image_received"] is False
+    stored = data_store.get_food_logs_by_meal_id(1, meal_id)
+    assert stored[0]["from_image"] is not True
+    assert stored[0]["source"] == "manual_review_estimate"
+    assert stored[0]["date"] == "2026-05-22"
+    assert stored[0]["logged_at"] == "2026-05-22T12:00:00"
+    assert stored[0]["source_timestamp"] == "2026-05-22T11:59:00"
+    assert stored[0]["context_note"] == "canonical stored phrase"
+    assert "external_food_id" not in stored[0]["accepted_estimate"]
+    assert "verified_source_url" not in stored[0]["accepted_estimate"]
+    assert "personal_vocab_phrase" not in stored[0]["accepted_estimate"]
+
+
+def test_multi_item_pending_replay_rejects_concurrent_pending_refresh(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-race-parent"
+    meal_id = "pending-race-meal"
+    item_id = "race"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    original_estimate = _accepted_estimate(item_name="Original", calories=100)
+    refreshed_estimate = _accepted_estimate(item_name="Refreshed", calories=200)
+    base_record = {
+        "client_id": client_id,
+        "date": "2026-05-22",
+        "logged_at": "2026-05-22T12:00:00",
+        "correction_state": "pending_review",
+        "meal_id": meal_id,
+        "meal_item_id": item_id,
+        "item_index": 0,
+        "item_state": "included",
+    }
+    data_store.add_food_log(
+        1,
+        {**base_record, **original_estimate, "original_estimate": original_estimate},
+    )
+    original_meal_rows = module._meal_existing_rows
+
+    def refresh_after_preflight(user_id, requested_meal_id):
+        rows = original_meal_rows(user_id, requested_meal_id)
+        data_store.add_food_log(
+            1,
+            {**base_record, **refreshed_estimate, "original_estimate": refreshed_estimate},
+        )
+        return rows
+
+    monkeypatch.setattr(module, "_meal_existing_rows", refresh_after_preflight)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": original_estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    stored = data_store.get_food_logs_by_meal_id(1, meal_id)
+    assert stored[0]["item_name"] == "Refreshed"
+    assert stored[0]["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+
+
+def test_multi_item_snapshot_time_fields_override_independently(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "pending-snapshot-time-meal"
+    item_id = "time"
+    estimate = _accepted_estimate(item_name="Timed meal", calories=300)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            "source_timestamp": "2026-05-22T11:59:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload={
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "local_date": "2026-05-23",
+            "items": [
+                {
+                    "item_id": item_id,
+                    "status": "included",
+                    "text": "canonical snapshot phrase",
+                    "estimate": estimate,
+                    "original_estimate": estimate,
+                },
+            ],
+        },
+        next_item_seq=2,
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "local_timestamp": "2030-01-01T23:59:00",
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    stored = data_store.get_food_logs_by_meal_id(1, meal_id)
+    assert stored[0]["date"] == "2026-05-23"
+    assert stored[0]["logged_at"] == "2026-05-22T12:00:00"
+    assert stored[0]["source_timestamp"] == "2026-05-22T11:59:00"
+    assert stored[0]["context_note"] == "canonical snapshot phrase"
+
+
+def test_multi_item_snapshot_replay_rejects_concurrent_snapshot_refresh(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "pending-snapshot-race-meal"
+    item_id = "race"
+    estimate = _accepted_estimate(item_name="Original snapshot meal", calories=300)
+    refreshed_estimate = _accepted_estimate(item_name="Refreshed snapshot meal", calories=450)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+
+    def snapshot_payload(item_estimate):
+        return {
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "item_id": item_id,
+                    "status": "included",
+                    "text": item_estimate["item_name"],
+                    "estimate": item_estimate,
+                    "original_estimate": item_estimate,
+                },
+            ],
+        }
+
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=snapshot_payload(estimate),
+        next_item_seq=2,
+    )
+    original_accept_multi = module._meal_intake_accept_multi
+
+    def refresh_snapshot_before_transaction(parent_client_id, data):
+        data_store.save_meal_review_snapshot(
+            1,
+            meal_id=meal_id,
+            payload=snapshot_payload(refreshed_estimate),
+            next_item_seq=2,
+        )
+        return original_accept_multi(parent_client_id, data)
+
+    monkeypatch.setattr(module, "_meal_intake_accept_multi", refresh_snapshot_before_transaction)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    stored = data_store.get_food_log_by_client_id(1, meal_id)
+    assert stored["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+    snapshot = data_store.get_meal_review_snapshot(1, meal_id)
+    assert snapshot["payload"]["items"][0]["estimate"]["calories"] == 450
+
+
+def test_successful_snapshot_accept_cleans_up_inside_accept_transaction(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "atomic-snapshot-cleanup"
+    item_id = "item"
+    estimate = _accepted_estimate(item_name="Atomic cleanup meal", calories=300)
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload={
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "item_id": item_id,
+                    "status": "included",
+                    "text": estimate["item_name"],
+                    "estimate": estimate,
+                    "original_estimate": estimate,
+                },
+            ],
+        },
+        next_item_seq=2,
+    )
+    original_delete = data_store.delete_meal_review_snapshot
+    cleanup_transactions = []
+
+    def tracked_delete(user_id, requested_meal_id, *, _conn=None):
+        cleanup_transactions.append(bool(_conn is not None and _conn.in_transaction))
+        return original_delete(user_id, requested_meal_id, _conn=_conn)
+
+    monkeypatch.setattr(data_store, "delete_meal_review_snapshot", tracked_delete)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert cleanup_transactions == [True]
+    assert data_store.get_meal_review_snapshot(1, meal_id) is None
+
+
+def test_terminal_idempotent_accept_cleans_trusted_snapshot_in_transaction(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "terminal-snapshot-parent"
+    meal_id = "terminal-snapshot-meal"
+    item_id = "item"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    estimate = _accepted_estimate(item_name="Already accepted", calories=300)
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload={
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "item_id": item_id,
+                    "status": "included",
+                    "text": estimate["item_name"],
+                    "estimate": estimate,
+                    "original_estimate": estimate,
+                },
+            ],
+        },
+        next_item_seq=2,
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "accepted",
+            "original_estimate": estimate,
+            "accepted_estimate": estimate,
+            "meal_id": meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert data_store.get_meal_review_snapshot(1, meal_id) is None
+
+
+def test_multi_item_accept_rejects_snapshot_created_after_empty_preflight(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "new-snapshot-race-meal"
+    item_id = "race"
+    estimate = _accepted_estimate(item_name="Submitted meal", calories=300)
+    original_accept_multi = module._meal_intake_accept_multi
+
+    def create_snapshot_before_transaction(parent_client_id, data):
+        data_store.save_meal_review_snapshot(
+            1,
+            meal_id=meal_id,
+            payload={
+                "status": "pending_review",
+                "meal_id": meal_id,
+                "items": [
+                    {
+                        "item_id": item_id,
+                        "status": "included",
+                        "text": "Fresh server review",
+                        "estimate": estimate,
+                        "original_estimate": estimate,
+                    },
+                ],
+            },
+            next_item_seq=2,
+        )
+        return original_accept_multi(parent_client_id, data)
+
+    monkeypatch.setattr(module, "_meal_intake_accept_multi", create_snapshot_before_transaction)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+    assert data_store.get_meal_review_snapshot(1, meal_id) is not None
+
+
+def test_multi_item_accept_rejects_pending_parent_created_after_empty_preflight(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    from contextlib import contextmanager
+
+    parent_client_id = "new-pending-parent-race"
+    meal_id = "new-pending-meal-race"
+    item_id = "race"
+    estimate = _accepted_estimate(item_name="Submitted meal", calories=300)
+    original_transaction = module.food_log_transaction
+    created = False
+
+    @contextmanager
+    def create_pending_parent_before_lock():
+        nonlocal created
+        if not created:
+            created = True
+            data_store.add_food_log(
+                1,
+                {
+                    "client_id": meal_id,
+                    "date": "2026-05-22",
+                    "logged_at": "2026-05-22T12:00:00",
+                    **estimate,
+                    "correction_state": "pending_review",
+                    "original_estimate": estimate,
+                },
+            )
+        with original_transaction() as connection:
+            yield connection
+
+    monkeypatch.setattr(module, "food_log_transaction", create_pending_parent_before_lock)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+    assert data_store.get_food_log_by_client_id(1, meal_id)["correction_state"] == "pending_review"
+
+
+def test_logged_retry_replays_when_pending_alias_is_removed_by_overlapping_accept(
+    monkeypatch,
+    tmp_path,
+):
+    from contextlib import contextmanager
+
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "overlap-logged-parent"
+    meal_id = "overlap-logged-meal"
+    item_id = "item-1"
+    estimate = _accepted_estimate(item_name="Overlapping accepted item", calories=300)
+    client_id = module._meal_item_client_id(
+        parent_client_id,
+        {"item_id": item_id},
+        0,
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+    original_transaction = module.food_log_transaction
+    committed = False
+
+    @contextmanager
+    def commit_overlapping_accept_before_lock():
+        nonlocal committed
+        if not committed:
+            committed = True
+            data_store.delete_food_log_by_client_id(1, meal_id)
+            data_store.add_food_log(
+                1,
+                {
+                    "client_id": client_id,
+                    "meal_id": meal_id,
+                    "meal_item_id": item_id,
+                    "item_index": 0,
+                    "item_state": "included",
+                    "date": "2026-05-22",
+                    "logged_at": "2026-05-22T12:00:00",
+                    **estimate,
+                    "correction_state": "accepted",
+                    "original_estimate": estimate,
+                    "accepted_estimate": estimate,
+                },
+            )
+            data_store.save_meal_acceptance_event(
+                1,
+                meal_id=meal_id,
+                status="logged",
+                included_client_ids=[client_id],
+                skipped_count=0,
+                deleted_count=0,
+            )
+        with original_transaction() as connection:
+            yield connection
+
+    monkeypatch.setattr(
+        module,
+        "food_log_transaction",
+        commit_overlapping_accept_before_lock,
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert [row["client_id"] for row in response.get_json()["food_logs"]] == [client_id]
+
+
+def test_discard_retry_replays_when_pending_alias_is_removed_by_overlapping_accept(
+    monkeypatch,
+    tmp_path,
+):
+    from contextlib import contextmanager
+
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "overlap-discard-parent"
+    meal_id = "overlap-discard-meal"
+    item_id = "item-1"
+    estimate = _accepted_estimate(item_name="Overlapping skipped item", calories=300)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+    original_transaction = module.food_log_transaction
+    committed = False
+
+    @contextmanager
+    def commit_overlapping_discard_before_lock():
+        nonlocal committed
+        if not committed:
+            committed = True
+            data_store.delete_food_log_by_client_id(1, meal_id)
+            data_store.save_meal_acceptance_event(
+                1,
+                meal_id=meal_id,
+                status="discarded",
+                included_client_ids=[],
+                skipped_count=1,
+                deleted_count=0,
+            )
+        with original_transaction() as connection:
+            yield connection
+
+    monkeypatch.setattr(
+        module,
+        "food_log_transaction",
+        commit_overlapping_discard_before_lock,
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "skipped",
+                    "item_id": item_id,
+                    "text": "Overlapping skipped item",
+                    "estimate": estimate,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["status"] == "discarded"
+
+
+def test_legacy_snapshot_replay_rejects_concurrent_snapshot_refresh(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "legacy-snapshot-race-meal"
+    estimate = _accepted_estimate(item_name="Legacy original", calories=300)
+    refreshed_estimate = _accepted_estimate(item_name="Legacy refreshed", calories=450)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+
+    def snapshot_payload(item_estimate):
+        return {
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "status": "included",
+                    "text": item_estimate["item_name"],
+                    "estimate": item_estimate,
+                    "original_estimate": item_estimate,
+                },
+            ],
+        }
+
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=snapshot_payload(estimate),
+        next_item_seq=2,
+    )
+    original_accept_multi = module._meal_intake_accept_multi
+
+    def refresh_snapshot_before_transaction(parent_client_id, data):
+        data_store.save_meal_review_snapshot(
+            1,
+            meal_id=meal_id,
+            payload=snapshot_payload(refreshed_estimate),
+            next_item_seq=2,
+        )
+        return original_accept_multi(parent_client_id, data)
+
+    monkeypatch.setattr(module, "_meal_intake_accept_multi", refresh_snapshot_before_transaction)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={},
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    snapshot = data_store.get_meal_review_snapshot(1, meal_id)
+    assert snapshot["payload"]["items"][0]["estimate"]["calories"] == 450
+
+
+def test_multi_item_snapshot_discard_rejects_concurrent_snapshot_refresh(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "pending-snapshot-discard-race"
+    item_id = "discard"
+    estimate = _accepted_estimate(item_name="Original discard", calories=300)
+    refreshed_estimate = _accepted_estimate(item_name="Refreshed discard", calories=450)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+        },
+    )
+
+    def snapshot_payload(item_estimate):
+        return {
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "item_id": item_id,
+                    "status": "included",
+                    "text": item_estimate["item_name"],
+                    "estimate": item_estimate,
+                    "original_estimate": item_estimate,
+                },
+            ],
+        }
+
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=snapshot_payload(estimate),
+        next_item_seq=2,
+    )
+    original_accept_multi = module._meal_intake_accept_multi
+
+    def refresh_snapshot_before_transaction(parent_client_id, data):
+        data_store.save_meal_review_snapshot(
+            1,
+            meal_id=meal_id,
+            payload=snapshot_payload(refreshed_estimate),
+            next_item_seq=2,
+        )
+        return original_accept_multi(parent_client_id, data)
+
+    monkeypatch.setattr(module, "_meal_intake_accept_multi", refresh_snapshot_before_transaction)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "skipped",
+                    "item_id": item_id,
+                    "text": "Original discard",
+                    "estimate": estimate,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+    snapshot = data_store.get_meal_review_snapshot(1, meal_id)
+    assert snapshot["payload"]["items"][0]["estimate"]["calories"] == 450
+
+
+def test_discarded_event_replay_rejects_concurrent_snapshot_refresh(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "discarded-event-snapshot-race"
+    item_id = "discard"
+    estimate = _accepted_estimate(item_name="Original discard", calories=300)
+
+    def snapshot_payload(item_estimate):
+        return {
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "item_id": item_id,
+                    "status": "included",
+                    "text": item_estimate["item_name"],
+                    "estimate": item_estimate,
+                    "original_estimate": item_estimate,
+                },
+            ],
+        }
+
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=snapshot_payload(estimate),
+        next_item_seq=2,
+    )
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="discarded",
+        included_client_ids=[],
+        skipped_count=1,
+        deleted_count=0,
+        feedback_fingerprint=module._meal_negative_feedback_fingerprint([
+            {
+                "state": "skipped",
+                "index": 0,
+                "meal_item_id": item_id,
+                "raw": {"text": "Original discard"},
+            },
+        ]),
+    )
+    monkeypatch.setattr(module, "_meal_review_snapshot_changed", lambda *_args: True)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "skipped",
+                    "item_id": item_id,
+                    "text": "Original discard",
+                    "estimate": estimate,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    snapshot = data_store.get_meal_review_snapshot(1, meal_id)
+    assert snapshot["payload"]["items"][0]["estimate"]["calories"] == 300
+
+
+def test_discard_rejects_pending_parent_created_after_empty_preflight(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "discard-new-pending-parent-race"
+    estimate = _accepted_estimate(item_name="New pending parent", calories=300)
+    original_lookup = module._food_log_by_client_id
+    created = False
+    lookup_count = 0
+
+    def create_pending_after_empty_preflight(user_id, requested_client_id):
+        nonlocal created, lookup_count
+        row = original_lookup(user_id, requested_client_id)
+        if requested_client_id == meal_id:
+            lookup_count += 1
+        if requested_client_id == meal_id and lookup_count == 3 and row is None and not created:
+            created = True
+            data_store.add_food_log(
+                1,
+                {
+                    "client_id": meal_id,
+                    "date": "2026-05-22",
+                    "logged_at": "2026-05-22T12:00:00",
+                    **estimate,
+                    "correction_state": "pending_review",
+                    "original_estimate": estimate,
+                },
+            )
+        return row
+
+    monkeypatch.setattr(module, "_food_log_by_client_id", create_pending_after_empty_preflight)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "skipped",
+                    "item_id": "discard",
+                    "text": "Not this meal",
+                    "estimate": estimate,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    stored = data_store.get_food_log_by_client_id(1, meal_id)
+    assert stored["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+
+
+def test_trusted_multi_item_snapshot_preserves_per_item_image_provenance(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "mixed-photo-text-snapshot"
+    photo_estimate = _accepted_estimate(
+        item_name="Photo item",
+        calories=300,
+        source="vision_estimate",
+        from_image=True,
+    )
+    text_estimate = _accepted_estimate(item_name="Text item", calories=200)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **photo_estimate,
+            "correction_state": "pending_review",
+            "original_estimate": photo_estimate,
+        },
+    )
+    items = [
+        {
+            "item_id": "photo",
+            "status": "included",
+            "text": "Photo item",
+            "estimate": photo_estimate,
+            "original_estimate": photo_estimate,
+        },
+        {
+            "item_id": "text",
+            "status": "included",
+            "text": "Text item",
+            "estimate": text_estimate,
+            "original_estimate": text_estimate,
+        },
+    ]
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload={"status": "pending_review", "meal_id": meal_id, "items": items},
+        next_item_seq=3,
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": "photo", "estimate": photo_estimate},
+                {"state": "included", "item_id": "text", "estimate": text_estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    by_item_id = {row["meal_item_id"]: row for row in response.get_json()["food_logs"]}
+    assert by_item_id["photo"]["from_image"] is True
+    assert by_item_id["text"]["from_image"] is not True
+
+
+def test_imported_untrusted_snapshot_cannot_assert_image_provenance(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "imported-untrusted-image"
+    item_id = "forged-photo"
+    estimate = _accepted_estimate(
+        item_name="Imported item",
+        calories=300,
+        source="vision_forged",
+        from_image=True,
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload={
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "has_image": True,
+            "_imported_snapshot_untrusted": True,
+            "items": [
+                {
+                    "item_id": item_id,
+                    "status": "included",
+                    "text": "Imported item",
+                    "estimate": estimate,
+                    "original_estimate": estimate,
+                    "_imported_snapshot_untrusted": True,
+                },
+            ],
+        },
+        next_item_seq=2,
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["photo_retention"]["image_received"] is False
+    assert data_store.get_meal_acceptance_event(1, meal_id)["has_image"] is False
+
+    stored = response.get_json()["food_logs"][0]
+    assert stored["original_estimate"].get("from_image") is not True
+
+    retry = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert retry.status_code == 200, retry.get_data(as_text=True)
+    assert retry.get_json()["photo_retention"]["image_received"] is False
+    assert data_store.get_meal_acceptance_event(1, meal_id)["has_image"] is False
+
+
+def test_snapshotless_imported_parent_cannot_assert_image_on_discard(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "snapshotless-imported-parent-discard"
+    imported = _accepted_estimate(
+        item_name="Imported photo claim",
+        calories=320,
+        source="vision_forged",
+        from_image=True,
+    )
+    imported["_imported_pending_untrusted"] = True
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **imported,
+            "correction_state": "pending_review",
+            "original_estimate": imported,
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "skipped",
+                    "item_id": "item-1",
+                    "estimate": imported,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["status"] == "discarded"
+    assert response.get_json()["photo_retention"]["image_received"] is False
+    assert data_store.get_meal_acceptance_event(1, meal_id)["has_image"] is False
+
+
+def test_imported_pending_single_accept_does_not_promote_forged_provenance(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client_id = "imported-pending-single-provenance"
+    imported = _accepted_estimate(
+        item_name="Imported pending item",
+        calories=320,
+        source="nutritionix",
+        external_food_id="forged-provider-id",
+        verified_source_url="https://example.invalid/forged",
+        brand_id="forged-brand",
+        from_image=True,
+    )
+    imported["_imported_pending_untrusted"] = True
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-07-13",
+            "logged_at": "2026-07-13T12:00:00",
+            "context_note": "Imported pending item",
+            **imported,
+            "correction_state": "pending_review",
+            "original_estimate": imported,
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": imported},
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    stored = response.get_json()["food_log"]
+    assert stored["source"] == "manual_review_estimate"
+    assert stored.get("from_image") is not True
+    assert stored["original_estimate"].get("from_image") is not True
+    assert response.get_json()["photo_retention"]["image_received"] is False
+    for field in ("external_food_id", "verified_source_url", "brand_id"):
+        assert stored.get(field) is None
+        assert stored["accepted_estimate"].get(field) is None
+
+
+def test_imported_pending_multi_accept_does_not_promote_forged_provenance(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "imported-pending-multi-provenance"
+    item_client_id = module._meal_item_client_id(meal_id, {"item_id": "item-1"}, 0)
+    imported = _accepted_estimate(
+        item_name="Imported pending item",
+        calories=320,
+        source="nutritionix",
+        external_food_id="forged-provider-id",
+        verified_source_url="https://example.invalid/forged",
+        brand_id="forged-brand",
+        from_image=True,
+    )
+    imported["_imported_pending_untrusted"] = True
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": item_client_id,
+            "meal_id": meal_id,
+            "date": "2026-07-13",
+            "logged_at": "2026-07-13T12:00:00",
+            "context_note": "Imported pending item",
+            **imported,
+            "correction_state": "pending_review",
+            "original_estimate": imported,
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": "item-1", "estimate": imported},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    stored = response.get_json()["food_logs"][0]
+    assert stored["source"] == "manual_review_estimate"
+    assert stored.get("from_image") is not True
+    assert stored["original_estimate"].get("from_image") is not True
+    assert response.get_json()["photo_retention"]["image_received"] is False
+    assert data_store.get_meal_acceptance_event(1, meal_id)["has_image"] is False
+    for field in ("external_food_id", "verified_source_url", "brand_id"):
+        assert stored.get(field) is None
+        assert stored["accepted_estimate"].get(field) is None
+
+
+def test_trusted_photo_snapshot_preserves_meal_image_when_photo_item_is_skipped(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "mixed-photo-text-skip-photo"
+    photo_estimate = _accepted_estimate(
+        item_name="Photo item",
+        calories=300,
+        source="vision_estimate",
+        from_image=True,
+    )
+    text_estimate = _accepted_estimate(item_name="Text item", calories=200)
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload={
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "has_image": True,
+            "items": [
+                {
+                    "item_id": "photo",
+                    "status": "included",
+                    "text": "Photo item",
+                    "estimate": photo_estimate,
+                    "original_estimate": photo_estimate,
+                },
+                {
+                    "item_id": "text",
+                    "status": "included",
+                    "text": "Text item",
+                    "estimate": text_estimate,
+                    "original_estimate": text_estimate,
+                },
+            ],
+        },
+        next_item_seq=3,
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "skipped", "item_id": "photo", "estimate": photo_estimate},
+                {"state": "included", "item_id": "text", "estimate": text_estimate},
+            ],
+        },
+    )
+    retry = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "skipped", "item_id": "photo", "estimate": photo_estimate},
+                {"state": "included", "item_id": "text", "estimate": text_estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert retry.status_code == 200, retry.get_data(as_text=True)
+    assert response.get_json()["photo_retention"]["image_received"] is True
+    assert retry.get_json()["photo_retention"]["image_received"] is True
+    assert data_store.get_meal_acceptance_event(1, meal_id)["has_image"] is True
+
+
+def test_rows_missing_recovery_preserves_existing_event_image_provenance(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "rows-missing-photo-parent"
+    meal_id = "rows-missing-photo-meal"
+    item_id = "text"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    estimate = _accepted_estimate(item_name="Recovered text item", calories=200)
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="logged",
+        included_client_ids=[client_id],
+        skipped_count=0,
+        deleted_count=0,
+        has_image=True,
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["photo_retention"]["image_received"] is True
+    assert data_store.get_meal_acceptance_event(1, meal_id)["has_image"] is True
+
+
+def test_discarded_multi_item_retry_rejects_request_asserted_image_provenance(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    payload = {
+        "meal_id": "discarded-text-retry",
+        "items": [
+            {
+                "state": "skipped",
+                "item_id": "plate",
+                "text": "Empty plate",
+                "estimate": _accepted_estimate(item_name="Empty plate", calories=0),
+            },
+        ],
+    }
+    first = client.post("/api/meal-intake/discarded-text-parent/accept", json=payload)
+    retry_payload = {
+        **payload,
+        "items": [
+            {
+                **payload["items"][0],
+                "estimate": dict(payload["items"][0]["estimate"], from_image=True),
+            },
+        ],
+    }
+
+    retry = client.post("/api/meal-intake/discarded-text-parent/accept", json=retry_payload)
+
+    assert first.status_code == 200, first.get_data(as_text=True)
+    assert retry.status_code == 200, retry.get_data(as_text=True)
+    assert retry.get_json()["photo_retention"]["image_received"] is False
+
+
+def test_discarded_photo_retry_preserves_stored_image_provenance(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client = module.app.test_client()
+    meal_id = "discarded-photo-retry"
+    estimate = _accepted_estimate(
+        item_name="Photo item",
+        calories=300,
+        source="vision_estimate",
+        from_image=True,
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload={
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "has_image": True,
+            "items": [
+                {
+                    "item_id": "photo",
+                    "status": "included",
+                    "text": "Photo item",
+                    "estimate": estimate,
+                    "original_estimate": estimate,
+                },
+            ],
+        },
+        next_item_seq=2,
+    )
+    payload = {
+        "meal_id": meal_id,
+        "items": [
+            {
+                "state": "skipped",
+                "item_id": "photo",
+                "text": "Photo item",
+                "estimate": estimate,
+            },
+        ],
+    }
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="discarded",
+        included_client_ids=[],
+        skipped_count=1,
+        deleted_count=0,
+        has_image=False,
+    )
+
+    first = client.post(f"/api/meal-intake/{meal_id}/accept", json=payload)
+    retry = client.post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            **payload,
+            "items": [{**payload["items"][0], "estimate": dict(estimate, from_image=False)}],
+        },
+    )
+    terminal_retry = client.post(f"/api/meal-intake/{meal_id}/accept", json={})
+
+    assert first.status_code == 200, first.get_data(as_text=True)
+    assert retry.status_code == 200, retry.get_data(as_text=True)
+    assert terminal_retry.status_code == 200, terminal_retry.get_data(as_text=True)
+    assert first.get_json()["photo_retention"]["image_received"] is True
+    assert retry.get_json()["photo_retention"]["image_received"] is True
+    assert terminal_retry.get_json()["photo_retention"]["image_received"] is True
+
+
+def test_fresh_multi_accept_does_not_infer_image_from_client_source(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    estimate = _accepted_estimate(
+        source="vision_forged",
+        from_image=True,
+        external_food_id="forged-fresh-multi",
+        verified_source_url="https://example.test/forged-fresh-multi",
+    )
+
+    response = module.app.test_client().post(
+        "/api/meal-intake/fresh-multi-forged-source/accept",
+        json={
+            "meal_id": "fresh-multi-forged-source",
+            "items": [
+                {"state": "included", "item_id": "item", "estimate": estimate},
+            ],
+        },
+    )
+    retry = module.app.test_client().post(
+        "/api/meal-intake/fresh-multi-forged-source/accept",
+        json={
+            "meal_id": "fresh-multi-forged-source",
+            "items": [
+                {"state": "included", "item_id": "item", "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert retry.status_code == 200, retry.get_data(as_text=True)
+    assert response.get_json()["photo_retention"]["image_received"] is False
+    assert retry.get_json()["photo_retention"]["image_received"] is False
+    accepted = response.get_json()["food_logs"][0]["accepted_estimate"]
+    assert accepted["source"] == "manual_review_estimate"
+    assert "from_image" not in accepted
+    assert "external_food_id" not in accepted
+    assert "verified_source_url" not in accepted
+
+
+def test_pending_row_repair_enqueues_workout_adaptation_with_existing_event(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-repair-parent"
+    meal_id = "pending-repair-meal"
+    item_id = "repair"
+    client_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    estimate = _accepted_estimate(item_name="Repair meal", calories=300)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+            "meal_id": meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="logged",
+        included_client_ids=[client_id],
+        skipped_count=0,
+        deleted_count=0,
+    )
+    enqueued = []
+    monkeypatch.setattr(
+        module,
+        "_enqueue_workout_adaptation_after_accept",
+        lambda user_id, rows: enqueued.append((user_id, rows)),
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert len(enqueued) == 1
+    assert enqueued[0][0] == 1
+    assert enqueued[0][1][0]["correction_state"] in {"accepted", "corrected"}
+
+
+def test_partial_pending_accept_rejects_omitted_pending_child(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "partial-pending-omission-parent"
+    meal_id = "partial-pending-omission-meal"
+    included_id = module._meal_item_client_id(
+        parent_client_id,
+        {"item_id": "included"},
+        0,
+    )
+    omitted_id = module._meal_item_client_id(
+        parent_client_id,
+        {"item_id": "omitted"},
+        1,
+    )
+    included_estimate = _accepted_estimate(item_name="Included item", calories=200)
+    omitted_estimate = _accepted_estimate(item_name="Omitted item", calories=300)
+    for client_id, item_id, item_index, estimate in (
+        (included_id, "included", 0, included_estimate),
+        (omitted_id, "omitted", 1, omitted_estimate),
+    ):
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "date": "2026-05-22",
+                "logged_at": "2026-05-22T12:00:00",
+                **estimate,
+                "correction_state": "pending_review",
+                "original_estimate": estimate,
+                "meal_id": meal_id,
+                "meal_item_id": item_id,
+                "item_index": item_index,
+                "item_state": "included",
+            },
+        )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "included",
+                    "item_id": "included",
+                    "estimate": included_estimate,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+    stored = data_store.get_food_logs_by_meal_id(1, meal_id)
+    assert {row["client_id"] for row in stored} == {included_id, omitted_id}
+    assert {row["correction_state"] for row in stored} == {"pending_review"}
+
+
+def test_partial_pending_skip_learns_from_stored_child(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "partial-pending-feedback-parent"
+    meal_id = "partial-pending-feedback-meal"
+    included_id = module._meal_item_client_id(parent_client_id, {"item_id": "food"}, 0)
+    skipped_id = module._meal_item_client_id(parent_client_id, {"item_id": "plate"}, 1)
+    included_estimate = _accepted_estimate(item_name="Lunch", calories=300)
+    skipped_estimate = _accepted_estimate(item_name="Canonical plate", calories=10)
+    for client_id, item_id, index, estimate, context_note in (
+        (included_id, "food", 0, included_estimate, "canonical lunch"),
+        (skipped_id, "plate", 1, skipped_estimate, "canonical plate"),
+    ):
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "date": "2026-05-22",
+                "logged_at": "2026-05-22T12:00:00",
+                "context_note": context_note,
+                **estimate,
+                "correction_state": "pending_review",
+                "original_estimate": estimate,
+                "meal_id": meal_id,
+                "meal_item_id": item_id,
+                "item_index": index,
+                "item_state": "included",
+            },
+        )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": "food", "estimate": included_estimate},
+                {
+                    "state": "skipped",
+                    "item_id": "plate",
+                    "text": "forged plate phrase",
+                    "estimate": _accepted_estimate(item_name="Forged plate", calories=999),
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert data_store.get_personal_vocab_entry(1, "canonical plate")["skip_count"] == 1
+    assert data_store.get_personal_vocab_entry(1, "forged plate phrase") is None
+
+
+def test_pending_full_discard_learns_from_stored_child(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-discard-feedback-parent"
+    meal_id = "pending-discard-feedback-meal"
+    child_id = module._meal_item_client_id(parent_client_id, {"item_id": "plate"}, 0)
+    stored_estimate = _accepted_estimate(item_name="Canonical empty plate", calories=10)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": child_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            "context_note": "canonical empty plate",
+            **stored_estimate,
+            "correction_state": "pending_review",
+            "original_estimate": stored_estimate,
+            "meal_id": meal_id,
+            "meal_item_id": "plate",
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "deleted",
+                    "item_id": "plate",
+                    "text": "forged discard phrase",
+                    "estimate": _accepted_estimate(item_name="Forged discard", calories=999),
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert data_store.get_personal_vocab_entry(1, "canonical empty plate")["deleted_count"] == 1
+    assert data_store.get_personal_vocab_entry(1, "forged discard phrase") is None
+
+
+def test_child_pending_accept_rejects_concurrent_parent_alias_refresh(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    from contextlib import contextmanager
+
+    parent_client_id = "child-parent-alias-race-parent"
+    meal_id = "child-parent-alias-race-meal"
+    item_id = "food"
+    child_id = module._meal_item_client_id(parent_client_id, {"item_id": item_id}, 0)
+    child_estimate = _accepted_estimate(item_name="Child meal", calories=300)
+    parent_estimate = _accepted_estimate(item_name="Parent original", calories=300)
+    refreshed_parent = _accepted_estimate(item_name="Parent refreshed", calories=450)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": child_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **child_estimate,
+            "correction_state": "pending_review",
+            "original_estimate": child_estimate,
+            "meal_id": meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **parent_estimate,
+            "correction_state": "pending_review",
+            "original_estimate": parent_estimate,
+        },
+    )
+    original_transaction = module.food_log_transaction
+    refreshed = False
+
+    @contextmanager
+    def refresh_parent_before_lock():
+        nonlocal refreshed
+        if not refreshed:
+            refreshed = True
+            data_store.add_food_log(
+                1,
+                {
+                    "client_id": meal_id,
+                    "date": "2026-05-22",
+                    "logged_at": "2026-05-22T12:01:00",
+                    **refreshed_parent,
+                    "correction_state": "pending_review",
+                    "original_estimate": refreshed_parent,
+                },
+            )
+        with original_transaction() as connection:
+            yield connection
+
+    monkeypatch.setattr(module, "food_log_transaction", refresh_parent_before_lock)
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": child_estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    stored_parent = data_store.get_food_log_by_client_id(1, meal_id)
+    assert stored_parent["item_name"] == "Parent refreshed"
+    assert stored_parent["correction_state"] == "pending_review"
+    assert data_store.get_food_log_by_client_id(1, child_id)["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+
+
+def test_partial_recovery_accepts_unchanged_pending_parent_alias(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "partial-parent-alias-parent"
+    meal_id = "partial-parent-alias-meal"
+    terminal_id = module._meal_item_client_id(parent_client_id, {"item_id": "done"}, 0)
+    new_id = module._meal_item_client_id(parent_client_id, {"item_id": "missing"}, 1)
+    terminal_estimate = _accepted_estimate(
+        item_name="Already accepted",
+        calories=200,
+        source="manual_review_estimate",
+    )
+    new_estimate = _accepted_estimate(
+        item_name="Recovered item",
+        calories=300,
+        source="manual_review_estimate",
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": terminal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **terminal_estimate,
+            "correction_state": "accepted",
+            "original_estimate": terminal_estimate,
+            "accepted_estimate": terminal_estimate,
+            "meal_id": meal_id,
+            "meal_item_id": "done",
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **new_estimate,
+            "correction_state": "pending_review",
+            "original_estimate": new_estimate,
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": "done", "estimate": terminal_estimate},
+                {"state": "included", "item_id": "missing", "estimate": new_estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert {row["client_id"] for row in response.get_json()["food_logs"]} == {
+        terminal_id,
+        new_id,
+    }
+    assert data_store.get_food_log_by_client_id(1, meal_id) is None
+    assert data_store.get_meal_acceptance_event(1, meal_id)["status"] == "logged"
+
+
+def test_imported_snapshot_and_pending_child_cannot_restore_image_provenance(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "imported-snapshot-pending-image"
+    item_id = "item-1"
+    child_id = module._meal_item_client_id(meal_id, {"item_id": item_id}, 0)
+    forged = _accepted_estimate(
+        item_name="Imported photo claim",
+        calories=320,
+        source="vision_forged",
+        from_image=True,
+    )
+    forged["_imported_pending_untrusted"] = True
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": child_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **forged,
+            "correction_state": "pending_review",
+            "original_estimate": forged,
+            "meal_id": meal_id,
+            "meal_item_id": item_id,
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload={
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "has_image": True,
+            "_imported_snapshot_untrusted": True,
+            "items": [
+                {
+                    "item_id": item_id,
+                    "status": "included",
+                    "text": "Imported photo claim",
+                    "estimate": forged,
+                    "original_estimate": forged,
+                    "_imported_snapshot_untrusted": True,
+                },
+            ],
+        },
+        next_item_seq=2,
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {"state": "included", "item_id": item_id, "estimate": forged},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    stored = response.get_json()["food_logs"][0]
+    assert stored.get("from_image") is not True
+    assert stored["accepted_estimate"].get("from_image") is not True
+    assert stored["accepted_estimate"]["source"] == "manual_review_estimate"
+    assert response.get_json()["photo_retention"]["image_received"] is False
+    assert data_store.get_meal_acceptance_event(1, meal_id)["has_image"] is False
+
+
+@pytest.mark.parametrize("existing_event", [True, False])
+def test_partial_pending_repair_enqueues_only_newly_finalized_rows(
+    monkeypatch,
+    tmp_path,
+    existing_event,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "partial-pending-repair-parent"
+    meal_id = "partial-pending-repair-meal"
+    terminal_id = module._meal_item_client_id(parent_client_id, {"item_id": "terminal"}, 0)
+    pending_id = module._meal_item_client_id(parent_client_id, {"item_id": "pending"}, 1)
+    new_id = module._meal_item_client_id(parent_client_id, {"item_id": "new"}, 2)
+    terminal_estimate = _accepted_estimate(item_name="Already accepted", calories=200)
+    pending_estimate = _accepted_estimate(item_name="Needs repair", calories=300)
+    new_estimate = _accepted_estimate(item_name="New item", calories=100)
+    for client_id, item_id, index, estimate, state in (
+        (terminal_id, "terminal", 0, terminal_estimate, "accepted"),
+        (pending_id, "pending", 1, pending_estimate, "pending_review"),
+    ):
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "date": "2026-05-22",
+                "logged_at": "2026-05-22T12:00:00",
+                **estimate,
+                "correction_state": state,
+                "original_estimate": estimate,
+                "accepted_estimate": estimate if state == "accepted" else None,
+                "meal_id": meal_id,
+                "meal_item_id": item_id,
+                "item_index": index,
+                "item_state": "included",
+            },
+        )
+    if existing_event:
+        data_store.save_meal_acceptance_event(
+            1,
+            meal_id=meal_id,
+            status="logged",
+            included_client_ids=[terminal_id, pending_id, new_id],
+            skipped_count=0,
+            deleted_count=0,
+        )
+    enqueued = []
+    monkeypatch.setattr(
+        module,
+        "_enqueue_workout_adaptation_after_accept",
+        lambda user_id, rows: enqueued.append((user_id, rows)),
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "included",
+                    "item_id": "terminal",
+                    "estimate": dict(terminal_estimate, from_image=True),
+                },
+                {"state": "included", "item_id": "pending", "estimate": pending_estimate},
+                {"state": "included", "item_id": "new", "estimate": new_estimate},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert len(enqueued) == 1
+    assert enqueued[0][0] == 1
+    assert [row["client_id"] for row in enqueued[0][1]] == [pending_id, new_id]
+    assert response.get_json()["photo_retention"]["image_received"] is False
+    assert data_store.get_meal_acceptance_event(1, meal_id)["has_image"] is False
 
 
 def test_concurrent_rows_only_recovery_records_feedback_once(monkeypatch, tmp_path):
@@ -9614,7 +13621,7 @@ def test_imported_canes_snapshot_allows_new_material_correction_but_blocks_uncha
     assert accepted.status_code == 200, accepted.get_data(as_text=True)
     row = accepted.get_json()["food_logs"][0]
     assert row["correction_state"] == "corrected"
-    assert row["original_estimate"]["source"] == "ai_text_estimate"
+    assert row["original_estimate"]["source"] == "manual_review_estimate"
     assert row["accepted_estimate"]["source"] == "manual_review_estimate"
 
 

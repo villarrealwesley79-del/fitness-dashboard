@@ -598,6 +598,7 @@ def init_data_db():
                 status                   TEXT    NOT NULL,
                 included_client_ids_json TEXT    NOT NULL,
                 feedback_fingerprint     TEXT,
+                has_image                INTEGER NOT NULL DEFAULT 0,
                 skipped_count            INTEGER NOT NULL DEFAULT 0,
                 deleted_count            INTEGER NOT NULL DEFAULT 0,
                 created_at               TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -694,6 +695,8 @@ def init_data_db():
         existing_meal_event_cols = {r["name"] for r in conn.execute("PRAGMA table_info(meal_acceptance_events)").fetchall()}
         if "feedback_fingerprint" not in existing_meal_event_cols:
             conn.execute("ALTER TABLE meal_acceptance_events ADD COLUMN feedback_fingerprint TEXT")
+        if "has_image" not in existing_meal_event_cols:
+            conn.execute("ALTER TABLE meal_acceptance_events ADD COLUMN has_image INTEGER NOT NULL DEFAULT 0")
         existing_push_cols = {r["name"] for r in conn.execute("PRAGMA table_info(push_subscriptions)").fetchall()}
         push_columns = {
             "permission_state": "TEXT",
@@ -978,6 +981,44 @@ def get_food_logs(
     with _reuse_or_open_db(_conn) as conn:
         rows = conn.execute(sql, params).fetchall()
     return [_food_log_row_to_dict(r) for r in rows]
+
+
+def get_food_logs_by_meal_id(
+    user_id: int,
+    meal_id: str,
+    *,
+    _conn: sqlite3.Connection | None = None,
+) -> list[dict]:
+    """Return one user's food logs for a specific meal."""
+    key = (meal_id or "").strip()
+    if not key:
+        return []
+    with _reuse_or_open_db(_conn) as conn:
+        rows = conn.execute(
+            "SELECT * FROM food_logs "
+            "WHERE user_id = ? AND meal_id = ? "
+            "ORDER BY item_index ASC, logged_at DESC, id DESC",
+            (user_id, key),
+        ).fetchall()
+    return [_food_log_row_to_dict(row) for row in rows]
+
+
+def get_food_log_by_client_id(
+    user_id: int,
+    client_id: str,
+    *,
+    _conn: sqlite3.Connection | None = None,
+) -> dict | None:
+    """Return one user-scoped food log by its idempotency key."""
+    key = (client_id or "").strip()
+    if not key:
+        return None
+    with _reuse_or_open_db(_conn) as conn:
+        row = conn.execute(
+            "SELECT * FROM food_logs WHERE user_id = ? AND client_id = ? LIMIT 1",
+            (user_id, key),
+        ).fetchone()
+    return _food_log_row_to_dict(row) if row is not None else None
 
 
 def _numeric_delta_reaches_threshold(before: object, after: object, threshold: float) -> bool:
@@ -1555,6 +1596,7 @@ def get_meal_acceptance_event(
         return None
     result = dict(row)
     result["included_client_ids"] = _json_loads_or_none(result.pop("included_client_ids_json", None)) or []
+    result["has_image"] = bool(result.get("has_image"))
     return result
 
 
@@ -1581,6 +1623,8 @@ def save_meal_acceptance_event(
     skipped_count: int,
     deleted_count: int,
     feedback_fingerprint: str | None = None,
+    has_image: bool = False,
+    preserve_existing_has_image: bool = False,
     _conn: sqlite3.Connection | None = None,
 ) -> dict:
     key = (meal_id or "").strip()
@@ -1595,13 +1639,17 @@ def save_meal_acceptance_event(
             """
             INSERT INTO meal_acceptance_events (
                 user_id, meal_id, status, included_client_ids_json,
-                feedback_fingerprint, skipped_count, deleted_count, created_at, updated_at
+                feedback_fingerprint, has_image, skipped_count, deleted_count, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, meal_id) DO UPDATE SET
                 status = excluded.status,
                 included_client_ids_json = excluded.included_client_ids_json,
                 feedback_fingerprint = excluded.feedback_fingerprint,
+                has_image = CASE
+                    WHEN ? THEN MAX(meal_acceptance_events.has_image, excluded.has_image)
+                    ELSE excluded.has_image
+                END,
                 skipped_count = excluded.skipped_count,
                 deleted_count = excluded.deleted_count,
                 updated_at = excluded.updated_at
@@ -1613,16 +1661,19 @@ def save_meal_acceptance_event(
                 status,
                 _json_dumps_or_none(safe_ids) or "[]",
                 (feedback_fingerprint or None),
+                int(bool(has_image)),
                 max(0, int(skipped_count or 0)),
                 max(0, int(deleted_count or 0)),
                 now_iso,
                 now_iso,
+                int(bool(preserve_existing_has_image)),
             ),
         ).fetchone()
         if _conn is None:
             conn.commit()
     result = dict(row)
     result["included_client_ids"] = _json_loads_or_none(result.pop("included_client_ids_json", None)) or []
+    result["has_image"] = bool(result.get("has_image"))
     return result
 
 
@@ -1637,6 +1688,7 @@ def list_meal_acceptance_events(user_id: int) -> list[dict]:
     for row in rows:
         event = dict(row)
         event["included_client_ids"] = _json_loads_or_none(event.pop("included_client_ids_json", None)) or []
+        event["has_image"] = bool(event.get("has_image"))
         events.append(event)
     return events
 
@@ -1655,15 +1707,23 @@ def import_meal_acceptance_event(user_id: int, event: dict) -> dict | None:
         skipped_count=event.get("skipped_count") or 0,
         deleted_count=event.get("deleted_count") or 0,
         feedback_fingerprint=event.get("feedback_fingerprint"),
+        has_image=False,
+        preserve_existing_has_image=True,
     )
 
 
-def get_meal_review_snapshot(user_id: int, meal_id: str) -> Optional[dict]:
+def get_meal_review_snapshot(
+    user_id: int,
+    meal_id: str,
+    *,
+    _conn: sqlite3.Connection | None = None,
+) -> Optional[dict]:
     key = (meal_id or "").strip()
     if not key:
         return None
-    init_data_db()
-    with _get_db() as conn:
+    if _conn is None:
+        init_data_db()
+    with _reuse_or_open_db(_conn) as conn:
         row = conn.execute(
             "SELECT * FROM meal_review_snapshots WHERE user_id = ? AND meal_id = ?",
             (user_id, key),
@@ -1683,6 +1743,7 @@ def save_meal_review_snapshot(
     payload: dict,
     next_item_seq: int,
     applied_refreshes: dict | None = None,
+    _conn: sqlite3.Connection | None = None,
 ) -> dict:
     key = (meal_id or "").strip()
     if not key:
@@ -1690,26 +1751,74 @@ def save_meal_review_snapshot(
     if not isinstance(payload, dict):
         raise ValueError("payload must be a dict")
     now_iso = datetime.now().isoformat(timespec="seconds")
-    init_data_db()
-    with _get_db() as conn:
+    if _conn is None:
+        init_data_db()
+    with _reuse_or_open_db(_conn) as conn:
         if payload.get("status") == "pending_review":
-            terminal_food_log = conn.execute(
+            meal_food_logs = conn.execute(
                 """
-                SELECT 1 FROM food_logs
-                WHERE user_id = ? AND (meal_id = ? OR client_id = ?)
-                  AND correction_state IN ('accepted', 'corrected')
+                SELECT client_id, correction_state FROM food_logs
+                WHERE user_id = ? AND meal_id = ?
+                """,
+                (user_id, key),
+            ).fetchall()
+            direct_food_log = conn.execute(
+                """
+                SELECT client_id, correction_state FROM food_logs
+                WHERE user_id = ? AND client_id = ?
                 LIMIT 1
                 """,
-                (user_id, key, key),
+                (user_id, key),
             ).fetchone()
-            terminal_event = conn.execute(
+            direct_state = direct_food_log["correction_state"] if direct_food_log else None
+            terminal_food_log = bool(
+                (
+                    meal_food_logs
+                    and direct_state != "pending_review"
+                    and all(row["correction_state"] != "pending_review" for row in meal_food_logs)
+                )
+                or (
+                    not meal_food_logs
+                    and direct_state in {"accepted", "corrected"}
+                )
+            )
+            event_row = conn.execute(
                 """
-                SELECT 1 FROM meal_acceptance_events
+                SELECT status, included_client_ids_json FROM meal_acceptance_events
                 WHERE user_id = ? AND meal_id = ?
                 LIMIT 1
                 """,
                 (user_id, key),
             ).fetchone()
+            terminal_event = False
+            if event_row and not any(
+                row["correction_state"] == "pending_review"
+                for row in meal_food_logs
+            ):
+                event_client_ids = set(
+                    _json_loads_or_none(event_row["included_client_ids_json"]) or []
+                )
+                canonical_rows = {
+                    row["client_id"]: row
+                    for row in meal_food_logs
+                    if row["correction_state"] != "pending_review"
+                }
+                if direct_food_log and direct_state != "pending_review":
+                    canonical_rows[direct_food_log["client_id"]] = direct_food_log
+                if event_row["status"] == "discarded":
+                    terminal_event = not event_client_ids and not meal_food_logs
+                elif event_row["status"] == "logged" and event_client_ids:
+                    terminal_event = bool(
+                        not canonical_rows
+                        or (
+                            event_client_ids == set(canonical_rows)
+                            and all(
+                                canonical_rows[client_id]["correction_state"]
+                                in {"accepted", "corrected"}
+                                for client_id in event_client_ids
+                            )
+                        )
+                    )
             if terminal_food_log or terminal_event:
                 row = conn.execute(
                     """
@@ -1757,24 +1866,32 @@ def save_meal_review_snapshot(
                     now_iso,
                 ),
             ).fetchone()
-        conn.commit()
+        if _conn is None:
+            conn.commit()
     result = dict(row)
     result["payload"] = _json_loads_or_none(result.pop("payload_json", None)) or {}
     result["applied_refreshes"] = _json_loads_or_none(result.pop("applied_refreshes_json", None)) or {}
     return result
 
 
-def delete_meal_review_snapshot(user_id: int, meal_id: str) -> bool:
+def delete_meal_review_snapshot(
+    user_id: int,
+    meal_id: str,
+    *,
+    _conn: sqlite3.Connection | None = None,
+) -> bool:
     key = (meal_id or "").strip()
     if not key:
         return False
-    init_data_db()
-    with _get_db() as conn:
+    if _conn is None:
+        init_data_db()
+    with _reuse_or_open_db(_conn) as conn:
         cursor = conn.execute(
             "DELETE FROM meal_review_snapshots WHERE user_id = ? AND meal_id = ?",
             (user_id, key),
         )
-        conn.commit()
+        if _conn is None:
+            conn.commit()
         return cursor.rowcount > 0
 
 
@@ -2188,11 +2305,16 @@ def claim_food_log_vocab_learning(
     return bool(row)
 
 
-def delete_food_log_by_client_id(user_id: int, client_id: str) -> bool:
+def delete_food_log_by_client_id(
+    user_id: int,
+    client_id: str,
+    *,
+    _conn: sqlite3.Connection | None = None,
+) -> bool:
     """Delete a single food log by user-scoped client_id. Returns True if removed."""
     if not client_id:
         return False
-    with _get_db() as conn:
+    with _reuse_or_open_db(_conn) as conn:
         conn.execute(
             "DELETE FROM food_log_refresh_events WHERE user_id = ? AND client_id = ?",
             (user_id, client_id),
@@ -2201,7 +2323,8 @@ def delete_food_log_by_client_id(user_id: int, client_id: str) -> bool:
             "DELETE FROM food_logs WHERE user_id = ? AND client_id = ?",
             (user_id, client_id),
         )
-        conn.commit()
+        if _conn is None:
+            conn.commit()
         return cursor.rowcount > 0
 
 
