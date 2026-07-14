@@ -42,6 +42,26 @@ def _record_dates(db_path):
     return rows
 
 
+def test_health_data_available_closes_connection_when_query_fails(monkeypatch):
+    parser = importlib.import_module("apple_health_parser")
+
+    class FailingConnection:
+        closed = False
+
+        def execute(self, *_args, **_kwargs):
+            raise sqlite3.OperationalError("missing table")
+
+        def close(self):
+            self.closed = True
+
+    connection = FailingConnection()
+    monkeypatch.setattr(parser.glob, "glob", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(parser.sqlite3, "connect", lambda *_args, **_kwargs: connection)
+
+    assert parser.health_data_available() is False
+    assert connection.closed is True
+
+
 def test_hae_normalizer_uses_timestamp_offset_local_date(monkeypatch):
     module = _app_module(monkeypatch)
     parser = importlib.import_module("apple_health_parser")

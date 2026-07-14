@@ -11,13 +11,19 @@ linear:
     blocked: factory-blocked
     repository: factory-repo-villarrealwesley79-del-fitness-dashboard-05027bd8
 app:
-  boot: PORT={port} venv/bin/python3 app.py
+  # Factory worktrees share the canonical repository virtualenv. The absolute
+  # interpreter executes app.py from the exact worktree cwd without copying a
+  # virtualenv into every linked worktree.
+  # Bind only the Mac mini's Tailnet interface, not the physical LAN.
+  # The preview URL is intentionally HTTP, so only this factory boot disables
+  # Secure cookies; production and ordinary local boots keep the secure default.
+  boot: HOST=100.90.15.93 SESSION_COOKIE_SECURE=false PORT={port} /Users/admin/fitness-dashboard/venv/bin/python3 app.py
   # One verified port serializes owner previews safely. Add only ports verified
   # non-production and free if concurrent previews are wanted.
   preview_ports: [5099]
   preview_url: http://admins-mac-mini.tail6c6490.ts.net:{port}
 checks:
-  - python -m pytest -q
+  - /Users/admin/fitness-dashboard/venv/bin/python3 -m pytest -q
 notify:
   slack_channel: "#factory"
   blocked_channel: "C0BGN2D9RV4"

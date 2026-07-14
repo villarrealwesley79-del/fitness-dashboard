@@ -60,6 +60,51 @@ Run the Flask app:
 python app.py
 ```
 
+### Trusted-network no-login mode
+
+For localhost-only access, keep the default loopback bind:
+
+```bash
+FITNESS_DASHBOARD_NO_LOGIN=true python app.py
+```
+
+For direct access from another device in the owner's Tailnet, bind only to this
+Mac's current Tailscale IPv4 address:
+
+```bash
+HOST="$("/Applications/Tailscale.app/Contents/MacOS/Tailscale" ip -4 | head -n 1)" FITNESS_DASHBOARD_NO_LOGIN=true python app.py
+```
+
+Do not replace that address with `0.0.0.0`; the no-login peer check is designed
+for direct loopback or authenticated Tailscale connections.
+
+This uses the existing owner account and all of its workout history; it does
+not create or select the FIT-385 QA account. Unset the variable and restart to
+restore the login screen.
+
+**Security warning:** This removes the login barrier for everyone who can reach
+the running app. Never enable it on a public, shared, port-forwarded, or
+otherwise untrusted network bind.
+
+Owner injection requires both a trusted request host and a loopback or Tailscale
+peer address. Accepted hosts are `localhost`, loopback IPs, Tailscale device IPs
+in `100.64.0.0/10`. A non-loopback peer must also be confirmed by the local
+Tailscale client with `tailscale whois`;
+the shared CGNAT range alone is not trusted. Requests from any other peer, using
+any other `Host`, or marked cross-origin by the browser keep the normal login
+barrier. If the Tailscale client or identity lookup is unavailable, login stays on.
+
+This mode supports direct browser-to-app connections only. Requests carrying
+standard forwarded/proxy headers and `*.ts.net` MagicDNS hosts are rejected.
+MagicDNS is excluded because this app canonicalizes it to HTTPS while the direct
+Flask boot does not provide TLS. Do not expose this mode through Tailscale
+Funnel or another reverse proxy. The state-validated WHOOP/Open Wearables OAuth callback is the
+only cross-site browser redirect allowed to receive the request-scoped owner.
+Its state must first be issued by the local authorization-start flow and is
+removed before the callback route runs. The one-time state is retained in
+the local auth database, not in a login session or Secure browser cookie, so a
+direct HTTP Tailnet callback still works.
+
 On the Mac mini, install or refresh the local launchd agents with:
 
 ```bash
@@ -96,6 +141,7 @@ Optional integrations use environment variables such as:
 OURA_API_TOKEN=
 HEALTH_SYNC_TOKEN=
 FITNESS_DASHBOARD_PUBLIC_BASE_URL=
+FITNESS_DASHBOARD_NO_LOGIN=
 APPLE_HEALTH_WEBHOOK_URL=
 WHOOP_CLIENT_ID_FILE=
 WHOOP_SCOPES=
@@ -175,10 +221,17 @@ for SDK-style sources such as Apple Health, Samsung Health, and Google Health
 Connect. Advanced values such as hub URL, username, secret, and mapped user id
 stay behind diagnostics instead of being the normal setup path.
 
-The Open Wearables sync bridge remains metadata-only. `/api/health/sync` and
-`/api/open-wearables/sync` return source metadata, counts, stored fact counts,
-and stable error codes only; they must not be used as raw health-payload export
-endpoints or as the durable WHOOP source of truth.
+Open Wearables has separate metadata-check and durable-sync contracts:
+
+- `POST /api/open-wearables/check-sync` fetches redacted source metadata and
+  counts without writing wearable facts. `POST /api/health/sync` is the
+  compatibility path for the same metadata-only behavior.
+- `POST /api/open-wearables/sync` normalizes and durably writes recommendation
+  facts, then returns source metadata, counts, and `facts_upserted`. Dashboard
+  sync buttons use this durable route.
+
+Neither route returns raw health payloads. Durable WHOOP OAuth sync remains a
+separate provider-specific flow.
 
 Browser-initiated state-changing requests send `X-Requested-With: XMLHttpRequest`; the server also accepts browser same-origin metadata for cached app-shell rollouts and rejects mismatched browser origins before checking the CSRF header. The token-authenticated Apple Health sync endpoint and Stripe's signed webhook are explicitly exempt because they are called by external systems rather than the dashboard UI.
 
