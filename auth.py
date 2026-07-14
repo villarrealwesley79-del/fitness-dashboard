@@ -246,6 +246,7 @@ _PASSWORD_HASH_METHOD = "scrypt:32768:8:1"
 _LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 _INVALID_OWNER_USER_ID = object()
 _owner_config_error_logged = False
+_no_login_owner_error_logged = False
 
 
 @contextmanager
@@ -457,6 +458,29 @@ def _owner_user_id():
     with _get_db() as conn:
         row = conn.execute("SELECT MIN(id) FROM users").fetchone()
     return int(row[0]) if row and row[0] is not None else None
+
+
+def _trusted_no_login_enabled() -> bool:
+    return os.environ.get("FITNESS_DASHBOARD_NO_LOGIN", "").strip().lower() == "true"
+
+
+def _trusted_no_login_owner():
+    global _no_login_owner_error_logged
+
+    owner_id = _owner_user_id()
+    owner = None
+    if owner_id is not _INVALID_OWNER_USER_ID and owner_id is not None:
+        owner = User.get_by_id(owner_id)
+    if owner is not None:
+        return owner
+
+    if not _no_login_owner_error_logged:
+        logging.getLogger(__name__).error(
+            "FITNESS_DASHBOARD_NO_LOGIN=true but no valid owner account could be loaded; "
+            "normal authentication remains enabled"
+        )
+        _no_login_owner_error_logged = True
+    return None
 
 
 def _is_owner_user_id(user_id) -> bool:
@@ -704,7 +728,7 @@ def _csrf_failure_response():
 def init_auth(app):
     """Wire login_manager and auth blueprint into the Flask app."""
     from datetime import timedelta
-    from flask import request, redirect, url_for
+    from flask import g, request, redirect, url_for
     from flask_login import current_user
 
     # SECRET_KEY resolution order:
@@ -743,8 +767,21 @@ def init_auth(app):
     app.register_blueprint(auth_bp)
     init_auth_db()
 
+    @app.before_request
+    def load_trusted_no_login_owner():
+        if not _trusted_no_login_enabled():
+            return None
+        owner = _trusted_no_login_owner()
+        if owner is None:
+            return None
+        login_manager._update_request_context_with_user(owner)
+        g._trusted_no_login_owner = True
+        return None
+
     @app.context_processor
     def inject_csrf_token():
+        if getattr(g, "_trusted_no_login_owner", False):
+            return {CSRF_FORM_FIELD: ""}
         return {CSRF_FORM_FIELD: _form_csrf_token()}
 
     @app.before_request
