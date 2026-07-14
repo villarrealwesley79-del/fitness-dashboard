@@ -5627,6 +5627,98 @@ def test_race_conflict_legacy_row_uses_current_values_and_stored_image_provenanc
     assert response.get_json()["photo_retention"]["image_received"] is True
 
 
+def test_direct_protected_conflict_rolls_back_pending_child_cleanup(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client_id = "direct-manual-conflict"
+    child_id = "direct-manual-conflict-pending-child"
+    existing = _accepted_estimate(item_name="Existing manual row", calories=100)
+    submitted = _accepted_estimate(item_name="Changed accept", calories=300)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **existing,
+            "correction_state": "manual",
+        },
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": child_id,
+            "meal_id": client_id,
+            "meal_item_id": "item-1",
+            "item_index": 0,
+            "item_state": "included",
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **submitted,
+            "correction_state": "pending_review",
+            "original_estimate": submitted,
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": submitted},
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "duplicate_client_id"
+    pending_child = data_store.get_food_log_by_client_id(1, child_id)
+    assert pending_child["correction_state"] == "pending_review"
+    assert pending_child["meal_id"] == client_id
+
+
+def test_identical_direct_retry_repairs_accept_side_effects(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    client_id = "direct-retry-side-effects"
+    estimate = _accepted_estimate(item_name="Retry side effects", calories=300)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "accepted",
+            "original_estimate": estimate,
+            "accepted_estimate": estimate,
+        },
+    )
+    learned = []
+    enqueued = []
+    monkeypatch.setattr(
+        module.personal_vocab,
+        "record_accept",
+        lambda user_id, phrase, accepted: learned.append(
+            (user_id, phrase, accepted)
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_enqueue_workout_adaptation_after_accept",
+        lambda user_id, rows: enqueued.append((user_id, rows)),
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": estimate},
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert len(learned) == 1
+    assert learned[0][0] == 1
+    assert learned[0][2]["calories"] == 300
+    assert enqueued == [(1, [response.get_json()["food_log"]])]
+
+
 def test_protected_food_log_accept_is_atomic_across_connections(monkeypatch):
     module = _client(monkeypatch)
     from concurrent.futures import ThreadPoolExecutor

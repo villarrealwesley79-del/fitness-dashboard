@@ -10292,6 +10292,33 @@ def meal_intake_undo(client_id: str):
     return jsonify({"status": "ok" if removed else "not_found", "removed": removed})
 
 
+def _reconcile_direct_meal_accept_side_effects(
+    user_id: int,
+    client_id: str,
+    food_log: dict,
+    estimate: dict,
+    *,
+    corrected: bool,
+    text_hint: str | None,
+    original_for_log: dict | None,
+) -> None:
+    if (
+        not _review_placeholder_nutrition_not_resolved({
+            "estimate": estimate,
+            "original_estimate": original_for_log,
+        })
+        and not _review_estimate_lacks_trainable_nutrition(estimate)
+        and claim_food_log_vocab_learning(user_id, client_id)
+    ):
+        if corrected:
+            vocab_phrase = text_hint or _meal_vocab_learning_phrase(None, estimate)
+            personal_vocab.record_correct(user_id, vocab_phrase, estimate)
+        else:
+            vocab_phrase = _meal_vocab_learning_phrase(text_hint or None, estimate)
+            personal_vocab.record_accept(user_id, vocab_phrase, estimate)
+    _enqueue_workout_adaptation_after_accept(user_id, [food_log])
+
+
 @app.route("/api/meal-intake/<client_id>/accept", methods=["POST"])
 def meal_intake_accept(client_id: str):
     """Accept a pending-review estimate and persist it as a food_log row."""
@@ -10664,6 +10691,19 @@ def meal_intake_accept(client_id: str):
                 409,
                 code="duplicate_client_id",
             )
+        _reconcile_direct_meal_accept_side_effects(
+            user_id,
+            client_id,
+            existing,
+            existing_estimate,
+            corrected=existing.get("correction_state") == "corrected",
+            text_hint=existing.get("context_note") or None,
+            original_for_log=(
+                existing.get("original_estimate")
+                if isinstance(existing.get("original_estimate"), dict)
+                else None
+            ),
+        )
         return jsonify({
             "status": "logged",
             "food_log": existing,
@@ -10798,6 +10838,7 @@ def meal_intake_accept(client_id: str):
             existing.get("source_timestamp") if stored_pending_preflight is not None else None
         ),
     }
+    protected_client_id_conflict = False
     with food_log_transaction() as accept_conn:
         if _meal_review_snapshot_changed(
             user_id,
@@ -10862,24 +10903,30 @@ def meal_intake_accept(client_id: str):
             connection=accept_conn,
             **persist_kwargs,
         )
+        protected_client_id_conflict = food_log.pop(
+            "_protected_client_id_conflict",
+            False,
+        )
+        if protected_client_id_conflict:
+            accepted_current = food_log.get("accepted_estimate")
+            conflict_baseline = (
+                accepted_current
+                if isinstance(accepted_current, dict)
+                else _stored_food_log_current_estimate(food_log)
+            )
+            if _review_estimate_differs(estimate, conflict_baseline):
+                accept_conn.rollback()
+                return api_error(
+                    "client_id already belongs to a different accepted meal",
+                    409,
+                    code="duplicate_client_id",
+                )
         _review_cleanup_terminal_snapshot_in_transaction(
             user_id,
             client_id,
             accept_conn,
         )
-    if food_log.pop("_protected_client_id_conflict", False):
-        accepted_current = food_log.get("accepted_estimate")
-        conflict_baseline = (
-            accepted_current
-            if isinstance(accepted_current, dict)
-            else _stored_food_log_current_estimate(food_log)
-        )
-        if _review_estimate_differs(estimate, conflict_baseline):
-            return api_error(
-                "client_id already belongs to a different accepted meal",
-                409,
-                code="duplicate_client_id",
-            )
+    if protected_client_id_conflict:
         return jsonify({
             "status": "logged",
             "food_log": food_log,
@@ -10887,21 +10934,15 @@ def meal_intake_accept(client_id: str):
                 _food_log_has_image_provenance(food_log)
             ),
         })
-    if (
-        not _review_placeholder_nutrition_not_resolved({
-            "estimate": estimate,
-            "original_estimate": original_for_log,
-        })
-        and not _review_estimate_lacks_trainable_nutrition(estimate)
-        and claim_food_log_vocab_learning(user_id, client_id)
-    ):
-        if corrected:
-            vocab_phrase = text_hint or _meal_vocab_learning_phrase(None, estimate)
-            personal_vocab.record_correct(user_id, vocab_phrase, estimate)
-        else:
-            vocab_phrase = _meal_vocab_learning_phrase(text_hint or None, estimate)
-            personal_vocab.record_accept(user_id, vocab_phrase, estimate)
-    _enqueue_workout_adaptation_after_accept(user_id, [food_log])
+    _reconcile_direct_meal_accept_side_effects(
+        user_id,
+        client_id,
+        food_log,
+        estimate,
+        corrected=corrected,
+        text_hint=text_hint or None,
+        original_for_log=original_for_log,
+    )
     return jsonify({
         "status": "logged",
         "food_log": food_log,
