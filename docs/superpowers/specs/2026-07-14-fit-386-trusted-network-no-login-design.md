@@ -72,6 +72,7 @@ No-login mode fails closed into normal authentication:
 - If the configured owner ID is not an integer, no owner is injected.
 - If no owner row exists, no owner is injected.
 - If the selected owner row cannot be loaded, no owner is injected.
+- If either owner-ID lookup or owner-row lookup raises `sqlite3.Error`, no owner is injected.
 - The existing guard then redirects or returns 401 exactly as it does today.
 
 The application logs one actionable error for an enabled mode that cannot resolve a valid owner. It does not guess another account, auto-create an account, fall back to the FIT-385 QA account, or expose an anonymous request as an owner.

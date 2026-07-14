@@ -37,6 +37,7 @@
 | Protected route, stale non-owner cookie | Flag exactly `true`; valid owner row | Existing owner row overrides request only | Existing cookie is not rewritten or cleared | 200 as owner while enabled; returns to 403 after disabling flag |
 | Protected route | Flag exactly `true`; invalid configured owner ID | None | One actionable log; no account creation | Existing redirect/401 path; failure test |
 | Protected route | Flag exactly `true`; no owner or nonexistent owner row | None | One actionable log; no guessing or fallback account | Existing redirect/401 path; failure tests |
+| Any route | Flag exactly `true`; auth DB lookup raises `sqlite3.Error` | None | One actionable exception log; no account or session mutation | Existing public/redirect/401 behavior instead of 500; focused owner-ID and owner-row failure tests |
 | Factory preview/CI | Existing `.agents/factory.yaml` | Existing preview login | No config mutation | Source assertion that no-login flag is absent |
 
 Retry, concurrency, transaction, and rollback dimensions are not applicable: each request performs read-only owner lookup and request-local identity assignment; no persistent state is written.
@@ -224,6 +225,8 @@ def test_factory_preview_does_not_enable_no_login():
     config = (Path(__file__).resolve().parents[1] / ".agents" / "factory.yaml").read_text()
     assert "FITNESS_DASHBOARD_NO_LOGIN" not in config
 ```
+
+Add two database-failure cases before implementation. Patch `_owner_user_id()` and `User.get_by_id()` separately to raise `sqlite3.OperationalError`, then assert a protected request redirects to login instead of returning 500 and logs that normal authentication remains enabled.
 
 - [ ] **Step 6: Run the tests to prove RED**
 

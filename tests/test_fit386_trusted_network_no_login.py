@@ -1,3 +1,5 @@
+import logging
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -21,7 +23,7 @@ def _make_auth_app(tmp_path, monkeypatch, *, no_login=None):
 
     templates = Path(__file__).resolve().parents[1] / "templates"
     app = Flask(__name__, template_folder=str(templates))
-    app.config.update(TESTING=True)
+    app.config.update(TESTING=True, PROPAGATE_EXCEPTIONS=False)
 
     @app.get("/protected")
     def protected():
@@ -150,6 +152,41 @@ def test_enabled_mode_falls_back_to_login_without_valid_owner(
 
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/login?next=/protected")
+
+
+def test_enabled_mode_falls_back_when_owner_id_lookup_hits_database_error(
+    tmp_path, monkeypatch, caplog
+):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+
+    def fail_owner_id_lookup():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(auth, "_owner_user_id", fail_owner_id_lookup)
+    with caplog.at_level(logging.ERROR, logger=auth.__name__):
+        response = app.test_client().get("/protected")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/login?next=/protected")
+    assert "normal authentication remains enabled" in caplog.text
+
+
+def test_enabled_mode_falls_back_when_owner_row_lookup_hits_database_error(
+    tmp_path, monkeypatch, caplog
+):
+    app = _make_auth_app(tmp_path, monkeypatch, no_login="true")
+    auth.User.create("owner", "existing-password")
+
+    def fail_owner_row_lookup(_user_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(auth.User, "get_by_id", fail_owner_row_lookup)
+    with caplog.at_level(logging.ERROR, logger=auth.__name__):
+        response = app.test_client().get("/protected")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/login?next=/protected")
+    assert "normal authentication remains enabled" in caplog.text
 
 
 def test_factory_preview_does_not_enable_no_login():

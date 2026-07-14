@@ -467,10 +467,19 @@ def _trusted_no_login_enabled() -> bool:
 def _trusted_no_login_owner():
     global _no_login_owner_error_logged
 
-    owner_id = _owner_user_id()
-    owner = None
-    if owner_id is not _INVALID_OWNER_USER_ID and owner_id is not None:
-        owner = User.get_by_id(owner_id)
+    try:
+        owner_id = _owner_user_id()
+        owner = None
+        if owner_id is not _INVALID_OWNER_USER_ID and owner_id is not None:
+            owner = User.get_by_id(owner_id)
+    except sqlite3.Error:
+        if not _no_login_owner_error_logged:
+            logging.getLogger(__name__).exception(
+                "FITNESS_DASHBOARD_NO_LOGIN=true but the owner account could not be read; "
+                "normal authentication remains enabled"
+            )
+            _no_login_owner_error_logged = True
+        return None
     if owner is not None:
         return owner
 
