@@ -185,7 +185,13 @@ from meal_log_policy import (
 app = Flask(__name__)
 
 # ── Auth (must be after app creation) ──────────────────────────
-from auth import CSRF_HEADER_NAME, CSRF_HEADER_VALUE, init_auth
+from auth import (
+    CSRF_HEADER_NAME,
+    CSRF_HEADER_VALUE,
+    data_user_id_for,
+    init_auth,
+    remember_trusted_no_login_oauth_state,
+)
 init_auth(app)
 
 # ── Health route registration (Apple Health + HealthKit ingest) ──
@@ -1802,10 +1808,11 @@ def _browser_local_date_from_iso(local_iso):
 def _current_data_user_id():
     try:
         from flask_login import current_user
-        if current_user and current_user.is_authenticated:
-            return int(current_user.get_id())
-    except Exception:
-        pass
+        authenticated = bool(current_user and current_user.is_authenticated)
+    except RuntimeError:
+        authenticated = False
+    if authenticated:
+        return data_user_id_for(current_user.get_id())
     return 1
 
 
@@ -14210,6 +14217,8 @@ def _open_wearables_authorization_url(provider):
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None, "provider_authorization_failed"
+    state = (urllib.parse.parse_qs(parsed.query).get("state") or [""])[0]
+    remember_trusted_no_login_oauth_state(state)
     return url, None
 
 
@@ -16063,6 +16072,7 @@ def whoop_connect_start():
         user_binding=_whoop_user_binding(),
         ttl_minutes=10,
     )
+    remember_trusted_no_login_oauth_state(state)
     return _whoop_no_store(jsonify(
         {
             "status": "success",
