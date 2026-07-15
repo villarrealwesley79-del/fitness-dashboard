@@ -407,6 +407,23 @@ def _same_workout(left: dict, right: dict) -> bool:
     )
 
 
+def _workout_representative_key(workout: dict) -> tuple:
+    """Prefer earliest, richer, then canonically ordered duplicate payloads."""
+    populated_fields = sum(value not in (None, "", [], {}) for value in workout.values())
+    canonical_payload = json.dumps(
+        workout,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return (
+        _workout_start_datetime(workout)
+        or datetime.max.replace(tzinfo=timezone.utc),
+        -populated_fields,
+        canonical_payload,
+    )
+
+
 def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
     """Merge file-based and sync-based workouts by start instant or fallback tuple."""
     candidates = [
@@ -437,11 +454,7 @@ def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
         workout for workout in candidates if not _workout_start_datetime(workout)
     )
     merged = [
-        min(
-            component,
-            key=lambda workout: _workout_start_datetime(workout)
-            or datetime.max.replace(tzinfo=timezone.utc),
-        )
+        min(component, key=_workout_representative_key)
         for component in timed_components
     ]
     for component in startless_components:
@@ -452,7 +465,7 @@ def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
             for timed in timed_component
         ):
             continue
-        merged.append(component[0])
+        merged.append(min(component, key=_workout_representative_key))
     return sorted(merged, key=lambda x: x.get("date", ""), reverse=True)
 
 

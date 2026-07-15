@@ -201,6 +201,52 @@ def test_merge_workouts_dedupes_three_way_chains_to_earliest_start(order):
     assert merged[0]["start"] == "2026-07-09T11:00:00Z"
 
 
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_merge_workouts_uses_stable_tiebreaker_for_equal_timed_records(order):
+    workouts = [
+        {
+            "date": "2026-07-09",
+            "activity": "Running",
+            "start": "2026-07-09T11:00:00Z",
+            "duration_min": 30,
+            "source_record_id": "a",
+        },
+        {
+            "date": "2026-07-09",
+            "activity": "Running",
+            "start": "2026-07-09T11:00:00Z",
+            "duration_min": 30,
+            "source_record_id": "b",
+        },
+    ]
+
+    merged = parser._merge_workouts([workouts[index] for index in order], [])
+
+    assert merged == [workouts[0]]
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_merge_workouts_uses_stable_tiebreaker_for_startless_records(order):
+    workouts = [
+        {
+            "date": "2026-07-09",
+            "activity": "Running",
+            "duration_min": 30,
+            "source_record_id": "a",
+        },
+        {
+            "date": "2026-07-09",
+            "activity": "Running",
+            "duration_min": 30,
+            "source_record_id": "b",
+        },
+    ]
+
+    merged = parser._merge_workouts([workouts[index] for index in order], [])
+
+    assert merged == [workouts[0]]
+
+
 def test_merge_workouts_missing_start_cannot_bridge_distinct_timed_workouts():
     workouts = [
         {"date": "2026-07-09", "activity": "Running", "start": "2026-07-09T08:00:00Z", "duration_min": 30},
