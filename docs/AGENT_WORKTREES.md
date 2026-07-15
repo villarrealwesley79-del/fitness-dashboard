@@ -48,3 +48,22 @@ server yourself, or create another worktree:
 ```bash
 git worktree add ../fitness-dashboard.fit-123 -b villarrealwesley79/fit-123-name origin/main
 ```
+
+## Isolated Factory Previews
+
+The factory boot command sets `FITNESS_DASHBOARD_FACTORY_PREVIEW=1` only for an
+isolated, Tailnet-only preview. That flag disables Secure cookies for the HTTP
+preview URL and seeds the preview database with this disposable owner-equivalent
+account:
+
+- Username: `test`
+- Password: `1224`
+
+Use this account for factory browser checks and owner acceptance. Each preview
+boot creates a new temporary `DATA_DIR`; the application rejects the preview
+flag unless that directory matches the managed preview contract and the process
+binds to the configured Tailnet host. A pre-existing account is never reset or
+promoted: only an account carrying the factory seed's database provenance may
+be reused by the same preview process. Never set the factory-preview flag for
+production or an ordinary local boot; `SESSION_COOKIE_SECURE=false` alone does
+not seed the account.

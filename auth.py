@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request, redirect, url_for, render_template, flash, session
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
@@ -258,6 +259,11 @@ _TRUSTED_NO_LOGIN_OAUTH_STATE_TTL_SECONDS = 600
 _TAILSCALE_MACOS_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 _tailscale_verified_peer_cache = {}
 _owner_config_error_logged = False
+_FACTORY_PREVIEW_ENV = "FITNESS_DASHBOARD_FACTORY_PREVIEW"
+_FACTORY_PREVIEW_USERNAME = "test"
+_FACTORY_PREVIEW_PASSWORD = "1224"
+_FACTORY_PREVIEW_HOST = "100.90.15.93"
+_FACTORY_PREVIEW_DIR_PREFIX = "fitness-dashboard-factory-preview"
 _no_login_owner_error_logged = False
 
 
@@ -616,6 +622,81 @@ class User(UserMixin):
             conn.commit()
 
 
+def _factory_preview_enabled() -> bool:
+    return os.environ.get(_FACTORY_PREVIEW_ENV, "") == "1"
+
+
+def _validate_factory_preview_storage() -> None:
+    configured = os.environ.get("DATA_DIR", "").strip()
+    port = os.environ.get("PORT", "").strip()
+    host = os.environ.get("HOST", "").strip()
+    if not configured or not port.isdigit():
+        raise RuntimeError("Factory preview requires an isolated preview DATA_DIR")
+
+    data_dir = Path(configured)
+    expected_prefix = f"{_FACTORY_PREVIEW_DIR_PREFIX}-{port}-"
+    auth_db = Path(AUTH_DB)
+    if (
+        not data_dir.is_absolute()
+        or data_dir.is_symlink()
+        or not data_dir.name.startswith(expected_prefix)
+        or auth_db.name != "auth.db"
+        or auth_db.parent.resolve() != data_dir.resolve()
+    ):
+        raise RuntimeError("Factory preview requires an isolated preview DATA_DIR")
+    if host != _FACTORY_PREVIEW_HOST:
+        raise RuntimeError("Factory preview must bind to the configured Tailnet host")
+
+
+def _seed_factory_preview_account() -> None:
+    if not _factory_preview_enabled():
+        return
+
+    hashed = _hash_password(_FACTORY_PREVIEW_PASSWORD)
+    with _get_db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS factory_preview_seed (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                user_id   INTEGER NOT NULL UNIQUE,
+                username  TEXT NOT NULL UNIQUE
+            )
+            """
+        )
+        marker = conn.execute(
+            "SELECT user_id, username FROM factory_preview_seed WHERE singleton = 1"
+        ).fetchone()
+        existing = conn.execute(
+            "SELECT id FROM users WHERE username = ?",
+            (_FACTORY_PREVIEW_USERNAME,),
+        ).fetchone()
+        if marker:
+            if (
+                marker["username"] != _FACTORY_PREVIEW_USERNAME
+                or existing is None
+                or int(marker["user_id"]) != int(existing["id"])
+            ):
+                raise RuntimeError("Factory preview account provenance is invalid")
+            return
+        if existing is not None or conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            raise RuntimeError("Factory preview refused to overwrite an existing account")
+
+        cursor = conn.execute(
+            """
+            INSERT INTO users (username, password, salt, is_pro)
+            VALUES (?, ?, '', 1)
+            """,
+            (_FACTORY_PREVIEW_USERNAME, hashed),
+        )
+        conn.execute(
+            """
+            INSERT INTO factory_preview_seed (singleton, user_id, username)
+            VALUES (1, ?, ?)
+            """,
+            (cursor.lastrowid, _FACTORY_PREVIEW_USERNAME),
+        )
+
+
 def _single_user_mode() -> bool:
     return os.environ.get("FITNESS_DASHBOARD_SINGLE_USER", "true").lower() != "false"
 
@@ -627,6 +708,13 @@ def _user_count() -> int:
 
 
 def _owner_user_id():
+    if _factory_preview_enabled():
+        with _get_db() as conn:
+            row = conn.execute(
+                "SELECT id FROM users WHERE username = ?",
+                (_FACTORY_PREVIEW_USERNAME,),
+            ).fetchone()
+        return int(row[0]) if row else None
     with _get_db() as conn:
         return _owner_user_id_from_conn(conn)
 
@@ -1098,8 +1186,14 @@ def init_auth(app):
     app.config["SESSION_COOKIE_SAMESITE"]  = "Lax"          # CSRF mitigation
     # Default to Secure=true so session cookies refuse to ride over HTTP.
     # Local-dev HTTP (e.g. http://127.0.0.1:5050 without Tailscale TLS) can
-    # opt back out by setting SESSION_COOKIE_SECURE=false explicitly.
-    app.config["SESSION_COOKIE_SECURE"]    = os.environ.get("SESSION_COOKIE_SECURE", "true").lower() != "false"
+    # opt back out by setting SESSION_COOKIE_SECURE=false explicitly. Isolated
+    # Tailnet factory previews use one explicit flag for HTTP cookies and their
+    # disposable login fixture.
+    app.config["SESSION_COOKIE_SECURE"]    = (
+        False
+        if _factory_preview_enabled()
+        else os.environ.get("SESSION_COOKIE_SECURE", "true").lower() != "false"
+    )
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=14)
     app.config["REMEMBER_COOKIE_HTTPONLY"] = True
     app.config["REMEMBER_COOKIE_SAMESITE"] = "Lax"
@@ -1108,7 +1202,10 @@ def init_auth(app):
 
     login_manager.init_app(app)
     app.register_blueprint(auth_bp)
+    if _factory_preview_enabled():
+        _validate_factory_preview_storage()
     init_auth_db()
+    _seed_factory_preview_account()
 
     @app.before_request
     def load_trusted_no_login_owner():

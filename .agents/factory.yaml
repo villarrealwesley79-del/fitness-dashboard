@@ -15,9 +15,10 @@ app:
   # interpreter executes app.py from the exact worktree cwd without copying a
   # virtualenv into every linked worktree.
   # Bind only the Mac mini's Tailnet interface, not the physical LAN.
-  # The preview URL is intentionally HTTP, so only this factory boot disables
-  # Secure cookies; production and ordinary local boots keep the secure default.
-  boot: HOST=100.90.15.93 SESSION_COOKIE_SECURE=false PORT={port} /Users/admin/fitness-dashboard/venv/bin/python3 app.py
+  # The preview URL is intentionally HTTP. This factory-only flag disables
+  # Secure cookies and seeds the documented disposable preview login;
+  # production and ordinary local boots keep the secure, unseeded default.
+  boot: DATA_DIR=$(/usr/bin/mktemp -d /tmp/fitness-dashboard-factory-preview-{port}-XXXXXX) HOST=100.90.15.93 FITNESS_DASHBOARD_FACTORY_PREVIEW=1 PORT={port} /Users/admin/fitness-dashboard/venv/bin/python3 app.py
   # One verified port serializes owner previews safely. Add only ports verified
   # non-production and free if concurrent previews are wanted.
   preview_ports: [5099]
