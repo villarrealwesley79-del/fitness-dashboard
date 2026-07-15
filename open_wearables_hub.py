@@ -413,6 +413,7 @@ def workout_marker(data, *, sleep_extractor: Callable[[object], dict | None]) ->
             "recent": sleep.get("recent") if sleep else None,
         },
         "sleep_summary": payload_marker(data.get("sleep_summary")),
+        "recovery_summary": payload_marker(data.get("recovery_summary")),
         "workouts": payload_marker(data.get("workouts")),
         "activity_summary": payload_marker(data.get("activity_summary")),
     }

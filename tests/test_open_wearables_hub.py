@@ -66,6 +66,25 @@ def test_workout_marker_changes_for_sleep_summary_updates_and_retractions():
     assert changed != retracted
 
 
+def test_workout_marker_changes_for_recovery_sleep_updates():
+    base = {
+        "sleep": None,
+        "sleep_summary": None,
+        "workouts": None,
+        "activity_summary": None,
+    }
+    first = hub.workout_marker(
+        {**base, "recovery_summary": {"sleep_duration_seconds": 21_600}},
+        sleep_extractor=_sleep_extractor_returning(None),
+    )
+    changed = hub.workout_marker(
+        {**base, "recovery_summary": {"sleep_duration_seconds": 28_800}},
+        sleep_extractor=_sleep_extractor_returning(None),
+    )
+
+    assert first != changed
+
+
 def test_sync_metadata_maps_counts_and_errors():
     metadata = hub.sync_metadata({
         "fetched_at": "2026-06-29T10:00:00",
