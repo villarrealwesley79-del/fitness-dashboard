@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import sqlite3
 
 
@@ -68,10 +69,22 @@ def _scan_forbidden(value: object, path: str = "") -> list[str]:
     return hits
 
 
+def _contains_non_finite_number(value: object) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_contains_non_finite_number(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_contains_non_finite_number(child) for child in value)
+    return False
+
+
 def validate_public_fact_payload(payload: dict) -> None:
     hits = _scan_forbidden(payload)
     if hits:
         raise ValueError("wearable fact payload contains forbidden raw or secret fields")
+    if _contains_non_finite_number(payload):
+        raise ValueError("wearable fact payload contains non-finite numbers")
 
 
 def init_wearable_fact_db(db_path: str) -> None:
@@ -229,6 +242,7 @@ def upsert_daily_facts(
     facts: list[WearableDailyFact | dict],
     profile_key: str | int | None = None,
     replace_source_ids: set[str] | None = None,
+    replace_provider_metric_observation_windows: set[tuple[str, str, str, str]] | None = None,
 ) -> int:
     init_wearable_fact_db(db_path)
     now = datetime.now().isoformat()
@@ -241,6 +255,22 @@ def upsert_daily_facts(
         payload["source_id"] = str(payload.get("source_id") or "")
         rows.append(payload)
     with sqlite3.connect(db_path) as conn:
+        for provider_id, metric_prefix, start_at, end_at in replace_provider_metric_observation_windows or set():
+            conn.execute(
+                "DELETE FROM wearable_daily_facts "
+                "WHERE profile_key = ? AND provider_id = ? "
+                "AND substr(metric, 1, length(?)) = ? "
+                "AND julianday(observed_at) >= julianday(?) "
+                "AND julianday(observed_at) < julianday(?)",
+                (
+                    scoped_profile,
+                    provider_id,
+                    metric_prefix,
+                    metric_prefix,
+                    start_at,
+                    end_at,
+                ),
+            )
         for source_id in replace_source_ids or set():
             providers = {row["provider_id"] for row in rows if row.get("source_id") == source_id}
             for provider_id in providers:

@@ -12557,6 +12557,7 @@ def fetch_open_wearables_data():
             "activity_summary": None,
             "recovery_summary": None,
             "body_summary": None,
+            "_workout_snapshot_complete": False,
             "fetched_at": datetime.now().astimezone().isoformat(),
             "errors": {"config": f"missing:{','.join(missing)}"},
         }
@@ -12582,6 +12583,11 @@ def fetch_open_wearables_data():
         "activity_summary": None,
         "recovery_summary": None,
         "body_summary": None,
+        "_workout_snapshot_complete": False,
+        "_workout_query": {
+            "start_at": f"{start_date}T00:00:00Z",
+            "end_at": f"{end_date}T00:00:00Z",
+        },
         "fetched_at": datetime.now().astimezone().isoformat(),
         "errors": {},
     }
@@ -12599,28 +12605,49 @@ def fetch_open_wearables_data():
             if first_payload is None:
                 first_payload = payload
             if not isinstance(payload, dict):
-                return payload
-            rows = payload.get("data") or payload.get("events") or payload.get("items") or []
-            if isinstance(rows, list):
-                combined.extend(rows)
-            pagination = payload.get("pagination") if isinstance(payload.get("pagination"), dict) else {}
-            cursor = pagination.get("next_cursor")
-            if not pagination.get("has_more") or not cursor:
+                raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+            row_key = next((key for key in ("data", "events", "items") if key in payload), None)
+            if row_key is None or not isinstance(payload.get(row_key), list):
+                raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+            combined.extend(payload[row_key])
+            raw_pagination = payload.get("pagination")
+            if raw_pagination is None:
+                pagination_complete = False
+                terminal_page = True
+                cursor = None
+            elif not isinstance(raw_pagination, dict):
+                raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+            else:
+                has_more = raw_pagination.get("has_more")
+                cursor = raw_pagination.get("next_cursor")
+                if has_more is True and (cursor is None or not str(cursor).strip()):
+                    raise RuntimeError(f"open_wearables_{domain}_pagination_cursor_missing")
+                if has_more not in {True, False}:
+                    raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+                pagination_complete = has_more is False
+                terminal_page = not has_more
+            if terminal_page:
                 result_payload = dict(first_payload)
                 for row_key in ("events", "items"):
                     result_payload.pop(row_key, None)
                 result_payload["data"] = combined
+                result_payload["_pagination_complete"] = pagination_complete
                 return result_payload
             current_url = f"{url}&cursor={urllib.parse.quote(str(cursor), safe='')}"
         raise RuntimeError(f"open_wearables_{domain}_pagination_limit")
 
     for key, url in endpoints.items():
         try:
-            result[key] = (
+            payload = (
                 _ow_request(url, headers=headers)
                 if key == "body_summary"
                 else fetch_paginated_pages(url, key)
             )
+            if isinstance(payload, dict):
+                pagination_complete = payload.pop("_pagination_complete", False)
+                if key == "workouts":
+                    result["_workout_snapshot_complete"] = pagination_complete is True
+            result[key] = payload
         except Exception as e:
             result["errors"][key] = str(e)
             result[key] = None
@@ -12709,6 +12736,8 @@ def _extract_open_wearables_sleep_events(payload):
             duration = float(duration) if duration is not None else None
         except Exception:
             duration = None
+        if duration is not None and not math.isfinite(duration):
+            duration = None
         if duration is not None and (duration_is_seconds or duration > 1000):
             duration = duration / 60.0
 
@@ -12722,6 +12751,8 @@ def _extract_open_wearables_sleep_events(payload):
                 try:
                     val = float(val) if val is not None else None
                 except Exception:
+                    val = None
+                if val is not None and not math.isfinite(val):
                     val = None
                 if val is not None and val > 1000:
                     val = val / 60.0
@@ -12738,11 +12769,15 @@ def _extract_open_wearables_sleep_events(payload):
             avg_hr = float(avg_hr) if avg_hr is not None else None
         except Exception:
             avg_hr = None
+        if avg_hr is not None and not math.isfinite(avg_hr):
+            avg_hr = None
 
         efficiency = ev.get("efficiency_percent")
         try:
             efficiency = float(efficiency) if efficiency is not None else None
         except Exception:
+            efficiency = None
+        if efficiency is not None and not math.isfinite(efficiency):
             efficiency = None
 
         parsed.append({
@@ -12797,7 +12832,11 @@ def _extract_open_wearables_activity_summaries(payload):
             active_calories = item.get("active_calories")
         if active_calories is None:
             active_calories = item.get("calories_active")
-        active_minutes = item.get("active_minutes") or item.get("active_min") or item.get("active_duration_min")
+        active_minutes = item.get("active_minutes")
+        if active_minutes is None:
+            active_minutes = item.get("active_min")
+        if active_minutes is None:
+            active_minutes = item.get("active_duration_min")
         distance = item.get("distance_meters")
         if distance is None:
             distance = item.get("distance")

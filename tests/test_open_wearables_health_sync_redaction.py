@@ -47,16 +47,36 @@ def test_open_wearables_sleep_extractor_does_not_replace_main_sleep_with_latest_
     assert sleep["is_nap"] is False
 
 
+def test_open_wearables_sleep_extractor_drops_non_finite_metrics():
+    module = _fitness_app()
+
+    sleep = module._extract_open_wearables_sleep({"events": [{
+        "end_time": "2026-06-28T07:00:00Z",
+        "sleep_duration_seconds": float("nan"),
+        "avg_hr": float("inf"),
+        "stages": {"deep_minutes": float("nan"), "rem_minutes": float("inf")},
+        "efficiency_percent": float("-inf"),
+    }]})
+
+    assert sleep["duration_min"] is None
+    assert sleep["avg_hr"] is None
+    assert sleep["stages_min"] == {"deep": None, "rem": None, "light": None, "awake": None}
+    assert sleep["efficiency_percent"] is None
+
+
 def test_open_wearables_activity_extractor_preserves_zero_values():
     module = _fitness_app()
 
     [summary] = module._extract_open_wearables_activity_summaries({"data": [{
         "date": "2026-06-28",
         "active_calories_kcal": 0,
+        "active_minutes": 0,
+        "active_min": 22,
         "distance_meters": 0,
     }]})
 
     assert summary["active_calories"] == 0
+    assert summary["active_minutes"] == 0
     assert summary["distance"] == 0
 
 
@@ -1334,6 +1354,11 @@ def test_open_wearables_fetch_includes_today_and_paginates_workouts(monkeypatch)
     payload = module.fetch_open_wearables_data()
 
     assert [row["id"] for row in payload["workouts"]["data"]] == ["workout-1", "workout-2"]
+    assert payload["_workout_snapshot_complete"] is True
+    assert payload["_workout_query"] == {
+        "start_at": f"{(datetime.now().date() - timedelta(days=6)).isoformat()}T00:00:00Z",
+        "end_at": f"{(datetime.now().date() + timedelta(days=1)).isoformat()}T00:00:00Z",
+    }
     recovery_url = next(url for url in requested if "/summaries/recovery" in url)
     assert f"end_date={(datetime.now().date() + timedelta(days=1)).isoformat()}" in recovery_url
     assert any("cursor=page%202" in url for url in requested)
@@ -1356,6 +1381,51 @@ def test_open_wearables_fetch_fails_closed_at_workout_pagination_cap(monkeypatch
 
     assert payload["workouts"] is None
     assert payload["errors"]["workouts"] == "open_wearables_workouts_pagination_limit"
+
+
+def test_open_wearables_fetch_fails_closed_when_workout_cursor_is_missing(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        if "/events/workouts" in url:
+            return {"data": [{"id": "workout-1"}], "pagination": {"has_more": True}}
+        return {"data": [], "pagination": {"has_more": False}}
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    assert payload["workouts"] is None
+    assert payload["_workout_snapshot_complete"] is False
+    assert payload["errors"]["workouts"] == "open_wearables_workouts_pagination_cursor_missing"
+
+
+def test_open_wearables_fetch_fails_closed_when_later_workout_page_is_malformed(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        if "/events/workouts" not in url:
+            return {"data": [], "pagination": {"has_more": False}}
+        if "cursor=" in url:
+            return [{"id": "workout-2"}]
+        return {
+            "data": [{"id": "workout-1"}],
+            "pagination": {"has_more": True, "next_cursor": "next"},
+        }
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    assert payload["workouts"] is None
+    assert payload["_workout_snapshot_complete"] is False
+    assert payload["errors"]["workouts"] == "open_wearables_workouts_pagination_payload_invalid"
 
 
 def test_open_wearables_fetch_paginates_activity_summaries(monkeypatch):

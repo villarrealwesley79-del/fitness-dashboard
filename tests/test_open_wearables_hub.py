@@ -303,6 +303,372 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
         assert hub._workout_category(workout_type) == "cardio"
 
 
+def test_store_wearable_facts_drops_non_finite_health_values(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+
+    count = hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T10:00:00",
+            "activity_summary": {"data": [{"date": today}]},
+            "sleep": {"events": [{}]},
+            "recovery_summary": {"data": [
+                {"date": today, "recovery_score": float("nan"), "source": {"provider": "oura"}},
+                {"date": today, "recovery_score": 80, "source": {"provider": "whoop"}},
+            ]},
+            "body_summary": {"slow_changing": {"weight_kg": float("inf")}},
+            "workouts": {"events": [{
+                "id": "workout-nan",
+                "start": f"{today}T08:00:00Z",
+                "zone_offset": "+00:00",
+                "duration_min": float("nan"),
+            }]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [{
+            "date": date.today(),
+            "steps": None,
+            "resting": None,
+            "active_minutes": float("nan"),
+            "active_calories": None,
+            "distance": None,
+            "raw": {"source": {"provider": "oura"}},
+        }],
+        sleep_extractor=lambda _payload: {
+            "duration_min": float("nan"),
+            "avg_hr": None,
+            "event_time": f"{today}T07:00:00Z",
+            "recent": True,
+            "raw": {"source": {"provider": "oura"}},
+        },
+        row_replacement_sources=lambda row: [row["source"]["provider"]] if row.get("source") else [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts, list_wearable_sources
+
+    assert count == 1
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert {(fact["metric"], fact["source_provider"]) for fact in facts} == {
+        ("recovery_score", "whoop")
+    }
+    [source] = list_wearable_sources(db_file, profile_key="profile-42")
+    assert source["capabilities"]["replacement_sources"] == ["whoop"]
+
+
+def test_store_wearable_facts_rejects_malformed_temporal_keys_and_provenance(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+
+    count = hub.store_wearable_facts(
+        {
+            "fetched_at": "2026-06-29T10:00:00Z",
+            "sleep": {"events": [{}]},
+            "recovery_summary": {"data": [{"date": "not-a-date", "recovery_score": 80}]},
+            "body_summary": {"latest": {
+                "body_temperature_celsius": 36.7,
+                "body_temperature_measured_at": "not-a-timestamp",
+            }},
+            "workouts": {"events": [{
+                "id": "workout-bad-time",
+                "start": "also-not-a-timestamp",
+                "zone_offset": "+00:00",
+                "duration_min": 30,
+            }]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: {
+            "duration_min": 420,
+            "avg_hr": None,
+            "event_time": "bad-sleep-time",
+            "recent": True,
+            "raw": {},
+        },
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    assert count == 0
+    assert list_recommendation_facts(db_file, limit=100, profile_key="profile-42") == []
+
+
+def test_store_wearable_facts_drops_invalid_observation_provenance(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T10:00:00Z",
+            "sleep": {"events": [{}]},
+            "recovery_summary": {"data": [{
+                "date": today,
+                "timestamp": "not-a-timestamp",
+                "recovery_score": 80,
+            }]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: {
+            "duration_min": 420,
+            "avg_hr": None,
+            "event_time": f"{today}T07:00:00Z",
+            "observed_at": "also-not-a-timestamp",
+            "recent": True,
+            "raw": {},
+        },
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert {fact["metric"] for fact in facts} == {"sleep_duration", "recovery_score"}
+    assert {fact["observed_at"] for fact in facts} == {None}
+
+
+def test_successful_empty_workout_snapshot_removes_deleted_workout_facts_only(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    historical_day = (date.today() - timedelta(days=10)).isoformat()
+    query_start = (date.today() - timedelta(days=6)).isoformat()
+    query_end = (date.today() + timedelta(days=1)).isoformat()
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        historical_day,
+        "open_wearables",
+        "Open Wearables",
+        "workout_duration",
+        45,
+        "min",
+        source_id="historical-workout",
+        observed_at=f"{historical_day}T08:00:00Z",
+        freshness="stale",
+    ), WearableDailyFact(
+        (date.today() - timedelta(days=7)).isoformat(),
+        "open_wearables",
+        "Open Wearables",
+        "workout_duration",
+        30,
+        "min",
+        source_id="negative-offset-window-workout",
+        observed_at=f"{query_start}T01:00:00Z",
+        freshness="stale",
+    )], profile_key="profile-42")
+    common = {
+        "fetched_at": f"{today}T10:00:00Z",
+        "_workout_snapshot_complete": True,
+        "_workout_query": {
+            "start_at": f"{query_start}T00:00:00Z",
+            "end_at": f"{query_end}T00:00:00Z",
+        },
+        "recovery_summary": {"data": [{"date": today, "recovery_score": 80}]},
+    }
+    hub.store_wearable_facts(
+        {
+            **common,
+            "workouts": {"events": [{
+                "id": workout_id,
+                "start": f"{today}T08:00:00Z",
+                "zone_offset": "+00:00",
+                "duration_min": 30,
+            } for workout_id in ("workout-1", "workout-2")]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    hub.store_wearable_facts(
+        {**common, "workouts": {"events": []}},
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert {fact["metric"] for fact in facts} == {"recovery_score", "workout_duration"}
+    assert {
+        fact["source_id"] for fact in facts if fact["metric"] == "workout_duration"
+    } == {"historical-workout"}
+
+
+def test_failed_workout_snapshot_preserves_prior_workout_facts(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T10:00:00Z",
+            "workouts": {"events": [{
+                "id": "workout-1",
+                "start": f"{today}T08:00:00Z",
+                "zone_offset": "+00:00",
+                "duration_min": 30,
+            }]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T11:00:00Z",
+            "workouts": None,
+            "errors": {"workouts": "upstream unavailable"},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert {(fact["metric"], fact["source_id"]) for fact in facts} == {
+        ("workout_duration", "workout-1")
+    }
+
+
+def test_uncertified_empty_workout_snapshot_preserves_prior_workout_facts(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        today,
+        "open_wearables",
+        "Open Wearables",
+        "workout_duration",
+        30,
+        "min",
+        source_id="workout-1",
+        observed_at=f"{today}T08:00:00Z",
+        freshness="fresh",
+        used_for_recommendation=True,
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T11:00:00Z",
+            "_workout_query": {
+                "start_at": f"{(date.today() - timedelta(days=6)).isoformat()}T00:00:00Z",
+                "end_at": f"{(date.today() + timedelta(days=1)).isoformat()}T00:00:00Z",
+            },
+            "workouts": {"events": []},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert {(fact["metric"], fact["source_id"]) for fact in facts} == {
+        ("workout_duration", "workout-1")
+    }
+
+
+def test_malformed_workout_snapshot_preserves_prior_workout_facts(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        today,
+        "open_wearables",
+        "Open Wearables",
+        "workout_duration",
+        30,
+        "min",
+        source_id="workout-1",
+        freshness="fresh",
+        used_for_recommendation=True,
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T11:00:00Z",
+            "_workout_snapshot_complete": True,
+            "_workout_query": {
+                "start_at": f"{(date.today() - timedelta(days=6)).isoformat()}T00:00:00Z",
+                "end_at": f"{(date.today() + timedelta(days=1)).isoformat()}T00:00:00Z",
+            },
+            "workouts": {"events": [{
+                "id": "bad-workout",
+                "start": "not-a-timestamp",
+                "duration_min": 30,
+            }]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert {(fact["metric"], fact["source_id"]) for fact in facts} == {
+        ("workout_duration", "workout-1")
+    }
+
+
+def test_workout_snapshot_without_source_id_preserves_prior_workout_facts(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        today,
+        "open_wearables",
+        "Open Wearables",
+        "workout_duration",
+        30,
+        "min",
+        source_id="workout-1",
+        observed_at=f"{today}T08:00:00Z",
+        freshness="fresh",
+        used_for_recommendation=True,
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T11:00:00Z",
+            "_workout_snapshot_complete": True,
+            "_workout_query": {
+                "start_at": f"{(date.today() - timedelta(days=6)).isoformat()}T00:00:00Z",
+                "end_at": f"{(date.today() + timedelta(days=1)).isoformat()}T00:00:00Z",
+            },
+            "workouts": {"events": [{
+                "start": f"{today}T09:00:00Z",
+                "duration_min": 45,
+            }]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert {(fact["metric"], fact["source_id"], fact["value"]) for fact in facts} == {
+        ("workout_duration", "workout-1", 30)
+    }
+
+
 def test_future_observation_is_not_recommendation_eligible(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     fetched_at = datetime.now().astimezone()
