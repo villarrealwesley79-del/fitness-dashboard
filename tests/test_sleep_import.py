@@ -71,6 +71,156 @@ def test_sleep_import_returns_structured_error_for_huge_numeric_integer(sleep_ap
     ]
 
 
+def test_sleep_import_accepts_valid_and_midnight_crossing_windows(sleep_api):
+    module, client, _sleep_file, _baseline = sleep_api
+
+    response = _post(
+        client,
+        {
+            "entries": [
+                _row(date="2026-07-02", sleep_start="23:30", sleep_end="07:00"),
+                _row(
+                    date="2026-07-03",
+                    sleep_start="2026-07-02T23:30:00",
+                    sleep_end="2026-07-03T07:00:00",
+                ),
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert [entry["sleep_start"] for entry in module.SLEEP_DATA[-2:]] == [
+        "2026-07-01T23:30:00",
+        "2026-07-02T23:30:00",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "details"),
+    [
+        (
+            {"sleep_start": "not-a-time", "sleep_end": "07:00"},
+            [{"row": 1, "field": "sleep_start", "code": "invalid_timestamp"}],
+        ),
+        (
+            {"sleep_start": "23:30", "sleep_end": None},
+            [{"row": 1, "field": "sleep_end", "code": "missing_timestamp"}],
+        ),
+        (
+            {"date": "2026-02-30", "sleep_start": "23:30", "sleep_end": "07:00"},
+            [{"row": 1, "field": "date", "code": "invalid_date"}],
+        ),
+        (
+            {
+                "sleep_start": "2026-07-03T07:00:00",
+                "sleep_end": "2026-07-02T23:30:00",
+            },
+            [{"row": 1, "field": "sleep_end", "code": "contradictory_timestamp"}],
+        ),
+        (
+            {
+                "date": "2026-07-02",
+                "sleep_start": "2026-06-01T23:30:00",
+                "sleep_end": "2026-06-02T07:00:00",
+            },
+            [{"row": 1, "field": "date", "code": "contradictory_timestamp"}],
+        ),
+        (
+            {
+                "sleep_start": "2026-07-01T23:00:00",
+                "sleep_end": "2026-07-03T07:00:00",
+                "time_in_bed_min": "",
+            },
+            [{"row": 1, "field": "sleep_end", "code": "out_of_range"}],
+        ),
+        (
+            {"sleep_start": "23:30", "sleep_end": "07:00", "time_in_bed_min": 449},
+            [{"row": 1, "field": "time_in_bed_min", "code": "contradictory_minutes"}],
+        ),
+        (
+            {
+                "sleep_start": "23:30",
+                "sleep_end": "07:00",
+                "sleep_duration_min": 420,
+                "time_in_bed_min": "",
+                "awake_min": 60,
+            },
+            [{"row": 1, "field": "awake_min", "code": "contradictory_minutes"}],
+        ),
+    ],
+)
+def test_sleep_import_rejects_invalid_timestamp_rows_atomically(
+    sleep_api, overrides, details
+):
+    module, client, sleep_file, baseline = sleep_api
+    disk_before = sleep_file.read_text(encoding="utf-8")
+
+    response = _post(client, {"entries": [_row(**overrides)]})
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"] == details
+    assert module.SLEEP_DATA == baseline
+    assert sleep_file.read_text(encoding="utf-8") == disk_before
+
+
+def test_sleep_import_accepts_exactly_1440_minutes(sleep_api):
+    _module, client, _sleep_file, _baseline = sleep_api
+
+    response = _post(
+        client,
+        {"entries": [_row(sleep_duration_min=1440, time_in_bed_min=1440)]},
+    )
+
+    assert response.status_code == 200
+
+
+def test_sleep_import_accepts_minimum_date_same_day_datetime(sleep_api):
+    module, client, _sleep_file, _baseline = sleep_api
+
+    response = _post(
+        client,
+        {
+            "entries": [
+                _row(
+                    date="0001-01-01",
+                    sleep_start="0001-01-01T00:00:00",
+                    sleep_end="0001-01-01T01:00:00",
+                    sleep_duration_min=60,
+                    time_in_bed_min=60,
+                )
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert any(entry["date"] == "0001-01-01" for entry in module.SLEEP_DATA)
+
+
+def test_sleep_import_rejects_minimum_date_time_only_underflow_atomically(sleep_api):
+    module, client, sleep_file, baseline = sleep_api
+    disk_before = sleep_file.read_text(encoding="utf-8")
+
+    response = _post(
+        client,
+        {
+            "entries": [
+                _row(
+                    date="0001-01-01",
+                    sleep_start="23:30",
+                    sleep_end="07:00",
+                )
+            ]
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"] == [
+        {"row": 1, "field": "date", "code": "contradictory_timestamp"}
+    ]
+    assert module.SLEEP_DATA == baseline
+    assert sleep_file.read_text(encoding="utf-8") == disk_before
+
+
 @pytest.mark.parametrize(
     ("overrides", "details"),
     [
