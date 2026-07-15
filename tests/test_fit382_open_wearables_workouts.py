@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -105,8 +107,16 @@ def test_extract_workouts_uses_zone_offset_for_local_history_date():
     assert "zone_offset" not in row
 
 
-def test_workout_fetch_uses_tomorrow_as_exclusive_end_bound(fitness_app, monkeypatch):
+def test_workout_fetch_uses_utc_bounds_for_seven_local_calendar_days(fitness_app, monkeypatch):
     captured = {}
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = cls(2026, 7, 13, 12, 0)
+            return value.replace(tzinfo=tz) if tz else value
+
+    monkeypatch.setenv("TZ", "America/Chicago")
+    monkeypatch.setattr(fitness_app, "datetime", FrozenDateTime)
     monkeypatch.setattr(fitness_app, "_missing_open_wearables_config", lambda: [])
     monkeypatch.setattr(fitness_app, "_get_ow_token", lambda: "test-token")
     monkeypatch.setattr(fitness_app, "_open_wearables_user_base", lambda: "http://ow.test/user")
@@ -118,10 +128,49 @@ def test_workout_fetch_uses_tomorrow_as_exclusive_end_bound(fitness_app, monkeyp
 
     result = fitness_app._fetch_open_wearables_workout_data()
 
-    today = fitness_app.datetime.now().date()
-    assert f"start_date={(today - timedelta(days=6)).isoformat()}" in captured["url"]
-    assert f"end_date={(today + timedelta(days=1)).isoformat()}" in captured["url"]
+    query = parse_qs(urlsplit(captured["url"]).query)
+    assert query["start_date"] == ["2026-07-07T05:00:00Z"]
+    assert query["end_date"] == ["2026-07-14T05:00:00Z"]
+    assert datetime.fromisoformat("2026-07-14T01:30:00+00:00") < datetime.fromisoformat(
+        query["end_date"][0].replace("Z", "+00:00")
+    )
     assert result["errors"] == {}
+
+
+def test_workout_fetch_falls_back_when_tz_key_is_malformed(fitness_app, monkeypatch):
+    captured = {}
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = cls(2026, 11, 2, 12, 0)
+            return value.replace(tzinfo=tz) if tz else value
+
+    monkeypatch.setenv("TZ", "../invalid")
+    monkeypatch.setattr(fitness_app, "datetime", FrozenDateTime)
+    monkeypatch.setattr(
+        fitness_app,
+        "_system_local_timezone",
+        lambda: ZoneInfo("America/Chicago"),
+        raising=False,
+    )
+    monkeypatch.setattr(fitness_app, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(fitness_app, "_get_ow_token", lambda: "test-token")
+    monkeypatch.setattr(fitness_app, "_open_wearables_user_base", lambda: "http://ow.test/user")
+    def capture_request(url, **_kwargs):
+        captured["url"] = url
+        return {"data": [], "pagination": {"has_more": False, "next_cursor": None}}
+
+    monkeypatch.setattr(
+        fitness_app,
+        "_ow_request", capture_request,
+    )
+
+    result = fitness_app._fetch_open_wearables_workout_data()
+
+    query = parse_qs(urlsplit(captured["url"]).query)
+    assert query["start_date"] == ["2026-10-27T05:00:00Z"]
+    assert query["end_date"] == ["2026-11-03T06:00:00Z"]
+    assert result == {"workouts": {"data": []}, "errors": {}}
 
 
 def test_workout_fetch_follows_open_wearables_cursor_pagination(fitness_app, monkeypatch):

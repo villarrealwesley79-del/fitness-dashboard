@@ -34,6 +34,7 @@ import threading
 import fcntl
 import shutil
 from subprocess import SubprocessError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
     from pywebpush import WebPushException, webpush
@@ -12653,6 +12654,15 @@ def fetch_open_wearables_data():
     return result
 
 
+def _system_local_timezone():
+    """Return system-local transition rules when an IANA TZ key is unavailable."""
+    try:
+        with open("/etc/localtime", "rb") as timezone_file:
+            return ZoneInfo.from_file(timezone_file)
+    except (OSError, ValueError):
+        return datetime.now().astimezone().tzinfo
+
+
 def _fetch_open_wearables_workout_data():
     """Fetch the most recent seven local calendar days of workout events."""
     missing = _missing_open_wearables_config()
@@ -12666,9 +12676,24 @@ def _fetch_open_wearables_workout_data():
     if not token:
         return {"workouts": None, "errors": {"auth": "missing_token"}}
 
-    today = datetime.now().date()
-    start_date = (today - timedelta(days=6)).isoformat()
-    exclusive_end_date = (today + timedelta(days=1)).isoformat()
+    timezone_name = os.environ.get("TZ", "").strip()
+    try:
+        local_timezone = ZoneInfo(timezone_name) if timezone_name else _system_local_timezone()
+    except (ZoneInfoNotFoundError, ValueError):
+        local_timezone = _system_local_timezone()
+    today = datetime.now(local_timezone).date()
+    start_local = datetime.combine(
+        today - timedelta(days=6),
+        datetime.min.time(),
+        tzinfo=local_timezone,
+    )
+    exclusive_end_local = datetime.combine(
+        today + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=local_timezone,
+    )
+    start_date = start_local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    exclusive_end_date = exclusive_end_local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     base_url = f"{_open_wearables_user_base()}/events/workouts"
     headers = {"Authorization": f"Bearer {token}"}
     rows = []
