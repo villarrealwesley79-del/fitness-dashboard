@@ -178,7 +178,13 @@ from meal_log_policy import (
 app = Flask(__name__)
 
 # ── Auth (must be after app creation) ──────────────────────────
-from auth import CSRF_HEADER_NAME, CSRF_HEADER_VALUE, init_auth
+from auth import (
+    CSRF_HEADER_NAME,
+    CSRF_HEADER_VALUE,
+    data_user_id_for,
+    init_auth,
+    remember_trusted_no_login_oauth_state,
+)
 init_auth(app)
 
 # ── Health route registration (Apple Health + HealthKit ingest) ──
@@ -1795,10 +1801,11 @@ def _browser_local_date_from_iso(local_iso):
 def _current_data_user_id():
     try:
         from flask_login import current_user
-        if current_user and current_user.is_authenticated:
-            return int(current_user.get_id())
-    except Exception:
-        pass
+        authenticated = bool(current_user and current_user.is_authenticated)
+    except RuntimeError:
+        authenticated = False
+    if authenticated:
+        return data_user_id_for(current_user.get_id())
     return 1
 
 
@@ -4766,6 +4773,22 @@ def _payload_with_recommendation_auth_scope(payload: dict) -> dict:
     return scoped
 
 
+def get_recent_hrv_trend(days=7, minimum_samples=None):
+    """Return the recent Oura HRV trend, or unknown when data is sparse/unavailable."""
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=days - 1)
+        rows = get_oura_daily_range(
+            OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+        )
+        hrv_values = [row.get("hrv") for row in rows if row.get("hrv") is not None]
+        if minimum_samples is not None and len(hrv_values) < minimum_samples:
+            return "unknown"
+        return compute_hrv_trend(hrv_values)
+    except Exception:
+        return "unknown"
+
+
 def _current_workout_training_recommendation():
     """Mirror the dashboard's readiness context for lightweight workout loads."""
     today_s = _today_str()
@@ -4780,14 +4803,7 @@ def _current_workout_training_recommendation():
     max_soreness = max((s.get("soreness_level") or 0) for s in recent_soreness) if recent_soreness else 0
     signal = "TRAIN" if (readiness_val is not None and readiness_val >= 70 and max_soreness < 7) else "RECOVER"
 
-    hrv_trend = "unknown"
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
-    except Exception:
-        pass
+    hrv_trend = get_recent_hrv_trend()
 
     last_completed = summarize_recent_completion(WORKOUTS, hours=24)
     last_hours_ago = last_completed.get("hours_ago") if last_completed else None
@@ -5084,14 +5100,7 @@ def api_dashboard():
     acwr = calculate_acwr(WORKOUTS)
     sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
     recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
-    hrv_trend = "unknown"
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
-    except Exception:
-        pass
+    hrv_trend = get_recent_hrv_trend()
 
     # Body stats
     body_stats = {}
@@ -5748,6 +5757,13 @@ def _food_photo_retention_payload(has_image: bool = False) -> dict:
 
 def _meal_intake_public_vision_error(_exc: Exception) -> str:
     return "vision_estimator_failed"
+
+
+def _meal_intake_vision_contention(exc: Exception) -> bool:
+    return (
+        isinstance(exc, vision_estimator.VisionEstimatorError)
+        and str(exc) == "busy: LM Studio vision inference already running"
+    )
 
 
 def _meal_text_fallback_reason(parsed: dict | None) -> str | None:
@@ -8207,7 +8223,12 @@ def meal_intake():
                 "confidence": estimate.get("vision_confidence"),
             }
         except Exception as exc:
-            if not isinstance(exc, vision_estimator.VisionEstimatorError):
+            if _meal_intake_vision_contention(exc):
+                app.logger.warning(
+                    "vision_busy_contention",
+                    extra={"event": "vision_busy_contention"},
+                )
+            elif not isinstance(exc, vision_estimator.VisionEstimatorError):
                 app.logger.warning("Vision meal estimate failed before fallback", exc_info=True)
             public_vision_error = _meal_intake_public_vision_error(exc)
             if not text_raw:
@@ -12475,6 +12496,8 @@ def _open_wearables_authorization_url(provider):
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None, "provider_authorization_failed"
+    state = (urllib.parse.parse_qs(parsed.query).get("state") or [""])[0]
+    remember_trusted_no_login_oauth_state(state)
     return url, None
 
 
@@ -13862,14 +13885,14 @@ def _whoop_day_from_record(record, record_type=None):
     return None
 
 
-def _validate_imported_whoop_local_date(local_date):
+def _validate_imported_whoop_local_date(local_date, *, now=None):
     try:
         parsed = datetime.strptime(str(local_date), "%Y-%m-%d").date()
     except Exception:
         raise ValueError("local_date must be a valid YYYY-MM-DD date.")
-    tomorrow = datetime.now().date() + timedelta(days=1)
+    tomorrow = (now or datetime.now()).date() + timedelta(days=1)
     if parsed > tomorrow:
-        raise ValueError("local_date cannot be in the future.")
+        raise ValueError("local_date cannot be more than one day ahead.")
     return parsed.isoformat()
 
 
@@ -14328,6 +14351,7 @@ def whoop_connect_start():
         user_binding=_whoop_user_binding(),
         ttl_minutes=10,
     )
+    remember_trusted_no_login_oauth_state(state)
     return _whoop_no_store(jsonify(
         {
             "status": "success",
@@ -15588,14 +15612,7 @@ def smart_recommendation_api():
         pass
 
     # HRV trend (best-effort)
-    hrv_trend = "unknown"
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        hrv_trend = compute_hrv_trend([r.get("hrv") for r in rows if r.get("hrv") is not None])
-    except Exception:
-        pass
+    hrv_trend = get_recent_hrv_trend()
 
     recent = filter_recent_soreness(SORENESS_DATA, hours=24)
     avoid_set = {s.get("muscle") for s in recent if (s.get("soreness_level") or 0) >= 6 and s.get("muscle")}
@@ -17483,22 +17500,10 @@ def analytics_advanced():
         zone='below_mv' if sets<lm['mv'] else 'mv' if sets<lm['mev'] else 'mev_to_mav' if sets<=lm['mav_max'] else 'mrv_risk' if sets>=lm['mrv'] else 'mav_high'
         volume_landmarks.append({'muscle':m,'sets':sets,'landmarks':lm,'zone':zone})
     # fatigue composite
-    try:
-        end = datetime.now().date()
-        start = end - timedelta(days=6)
-        rows = get_oura_daily_range(
-            OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
-        )
-        hrv_values = [r.get("hrv") for r in rows if r.get("hrv") is not None]
-        if len(hrv_values) < 4:
-            hrv_trend = "unknown"
-        else:
-            hrv_label = compute_hrv_trend(hrv_values)
-            hrv_trend = {"improving": "up", "stable": "stable", "declining": "down"}.get(
-                hrv_label, "unknown"
-            )
-    except Exception:
-        hrv_trend='unknown'
+    hrv_label = get_recent_hrv_trend(minimum_samples=4)
+    hrv_trend = {"improving": "up", "stable": "stable", "declining": "down"}.get(
+        hrv_label, "unknown"
+    )
     hrv_pen={'up':0,'stable':5,'down':12}.get(hrv_trend,6)
     sleep=calculate_sleep_debt(OURA_DB_FILE,7)
     sleep_pen=min(20,max(0,(sleep.get('debt_minutes') or 0)/30))

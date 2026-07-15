@@ -289,6 +289,9 @@ Wearable fact store:
 | Public prefixes | `/login`, `/register`, `/logout`, `/landing`, `/pricing`, `/manifest.json`, `/sw.js`, `/static/`, `/robots.txt`, `/sitemap.xml`, `/webhook`, `/success`, `/cancel`, `/api/apple-health/sync` | Paths exempt from login guard. | `auth.py:342` |
 | `FITNESS_DASHBOARD_SINGLE_USER` | Defaults true; when true, only owner user id can access protected routes. | `auth.py:228` |
 | `FITNESS_DASHBOARD_OWNER_USER_ID` | Optional explicit owner id. | `auth.py:238` |
+| `FITNESS_DASHBOARD_LOCAL_QA_ENABLED` | Exact `true` opts into one shared agent QA login for local testing only; unset/false removes the designated QA account on restart. Never production. | `auth.py` |
+| `FITNESS_DASHBOARD_LOCAL_QA_USERNAME` | Runtime-only shared QA username required while local QA is enabled. | `auth.py` |
+| `FITNESS_DASHBOARD_LOCAL_QA_PASSWORD` | Runtime-only shared QA password required while local QA is enabled; minimum 8 characters. | `auth.py` |
 | Session cookie config | `HttpOnly`, `SameSite=Lax`, secure by default unless `SESSION_COOKIE_SECURE=false` | Browser session hardening. | `auth.py:487` |
 
 ## Push, PWA, Offline Queue
