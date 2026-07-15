@@ -567,6 +567,84 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
     assert hub._workout_category("core_training") == "strength_training"
     assert hub._workout_category("Indoor Cycling") == "cardio"
     assert hub._workout_category("Trail Running") == "cardio"
+
+
+def test_canonical_workout_distance_is_stored_as_training_volume(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    hub.store_wearable_facts(
+        {
+            "fetched_at": "2026-07-14T12:00:00Z",
+            "workouts": {"events": [{
+                "id": "run-1",
+                "type": "running",
+                "start": "2026-07-14T10:00:00Z",
+                "end": "2026-07-14T11:00:00Z",
+                "duration_seconds": 3600,
+                "distance_meters": 10000,
+                "provider": "oura",
+            }]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    fact = next(
+        fact for fact in list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+        if fact["metric"] == "workout_distance"
+    )
+    assert fact["value"] == 10000
+    assert fact["unit"] == "m"
+    assert fact["metric_domain"] == "training_history"
+    assert fact["source_id"] == "run-1"
+
+
+def test_negative_workout_distance_preserves_prior_training_volume(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        today, "open_wearables", "Open Wearables", "workout_distance", 5000, "m",
+        source_id="prior-run", observed_at=f"{today}T08:00:00Z",
+        freshness="fresh", used_for_recommendation=True,
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T12:00:00Z",
+            "_workout_snapshot_complete": True,
+            "_workout_query": {
+                "start_at": f"{(date.today() - timedelta(days=6)).isoformat()}T00:00:00Z",
+                "end_at": f"{(date.today() + timedelta(days=1)).isoformat()}T00:00:00Z",
+            },
+            "workouts": {"events": [{
+                "id": "invalid-run",
+                "type": "running",
+                "start": f"{today}T10:00:00Z",
+                "end": f"{today}T11:00:00Z",
+                "duration_seconds": 3600,
+                "distance_meters": -100,
+                "provider": "oura",
+            }]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    distances = [
+        (fact["source_id"], fact["value"])
+        for fact in list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+        if fact["metric"] == "workout_distance"
+    ]
+    assert distances == [("prior-run", 5000)]
     assert hub._workout_category("Mountain Biking") == "cardio"
     assert hub._workout_category("Rowing Machine") == "cardio"
     assert hub._workout_category("Stair Climbing") == "cardio"

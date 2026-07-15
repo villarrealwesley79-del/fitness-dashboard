@@ -739,6 +739,7 @@ def store_wearable_facts(
         }
         workout_metrics = {
             "workout_duration": ((_first_value(row, "duration_min", "duration_minutes")), "min"),
+            "workout_distance": ((_first_value(row, "distance_meters", "distance")), "m"),
             "workout_active_calories": ((_first_value(row, "calories_kcal", "active_calories", "calories")), "kcal"),
             "workout_load": ((_first_value(row, "load", "strain", "training_load")), "score"),
             "workout_avg_heart_rate": ((_first_value(row, "avg_heart_rate_bpm", "avg_hr", "average_heart_rate")), "bpm"),
@@ -776,6 +777,9 @@ def store_wearable_facts(
                 value = None
                 workout_snapshot_replacement_safe = False
             if metric == "workout_duration" and value is not None and value <= 0:
+                value = None
+                workout_snapshot_replacement_safe = False
+            if metric == "workout_distance" and value is not None and value < 0:
                 value = None
                 workout_snapshot_replacement_safe = False
             if value is not None and math.isfinite(value):
