@@ -428,6 +428,18 @@ def test_adaptation_notice_renders_neutral_reason_and_collapsed_details():
     assert "if (event.status === 'applied') applyWorkoutAdaptationToActiveWorkout(event);" in notice
 
 
+def test_stale_adaptation_notice_omits_invalidated_remaining_plan():
+    js = APP_JS.read_text()
+    notice = _block(
+        js,
+        "function showWorkoutAdaptationNotice(event)",
+        "async function fetchWorkoutAdaptationNotices",
+    )
+
+    assert "event.status === 'stale' ? ''" in notice
+    assert "event.after_remaining_plan" in notice
+
+
 def test_historical_notice_does_not_reapply_adaptation_to_active_workout():
     js = APP_JS.read_text()
     apply_block = _block(

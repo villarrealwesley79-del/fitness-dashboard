@@ -454,7 +454,10 @@
         const chips = labels.length
             ? `<div class="workout-adaptation-chips">${labels.map((l) => `<span class="workout-adaptation-chip">${escapeHtml(l)}</span>`).join('')}</div>`
             : '';
-        const planRows = workoutAdaptationRemainingPlanRows(event.after_remaining_plan);
+        const planDetails = event.status === 'stale' ? '' : `
+            <div class="workout-adaptation-plan-kicker">Updated remaining plan</div>
+            <div class="workout-adaptation-plan">${workoutAdaptationRemainingPlanRows(event.after_remaining_plan)}</div>
+        `;
 
         const card = document.createElement('div');
         card.className = 'card workout-adaptation-card';
@@ -487,8 +490,7 @@
         details.innerHTML = `
             <summary class="workout-adaptation-summary">View details</summary>
             ${chips}
-            <div class="workout-adaptation-plan-kicker">Updated remaining plan</div>
-            <div class="workout-adaptation-plan">${planRows}</div>
+            ${planDetails}
         `;
 
         card.appendChild(head);
