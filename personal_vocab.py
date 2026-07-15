@@ -119,6 +119,13 @@ def _canonical_estimate(estimate: dict[str, Any]) -> dict | None:
     ):
         if estimate.get(key) is not None:
             canonical[key] = estimate[key]
+    underlying_sources = estimate.get("underlying_sources")
+    if (
+        isinstance(underlying_sources, list)
+        and underlying_sources
+        and all(isinstance(value, str) and value.strip() for value in underlying_sources)
+    ):
+        canonical["underlying_sources"] = [value.strip().lower() for value in underlying_sources]
     return canonical
 
 

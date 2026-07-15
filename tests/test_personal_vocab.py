@@ -72,6 +72,24 @@ def test_personal_vocab_does_not_replay_retired_nutritionix_resolution(tmp_path,
     assert personal_vocab.lookup("historical usual", user_id=1) is None
 
 
+def test_personal_vocab_preserves_but_does_not_replay_mixed_retired_provenance(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    historical = _estimate(
+        source="mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+    for _ in range(3):
+        personal_vocab.record_accept(1, "historical mixed usual", historical)
+
+    entry = data_store.get_personal_vocab_entry(1, "historical mixed usual")
+    assert entry["canonical_resolution"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert personal_vocab.lookup("historical mixed usual", user_id=1) is None
+
+
 def test_personal_vocab_untrusted_exact_match_blocks_fuzzy_substitution(tmp_path, monkeypatch):
     import data_store
 
