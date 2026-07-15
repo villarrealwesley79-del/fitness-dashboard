@@ -39,7 +39,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 COMMON_DIR="$(git rev-parse --git-common-dir)"
 case "${COMMON_DIR}" in
     /*) ;;
-    *) COMMON_DIR="${ROOT}/${COMMON_DIR}" ;;
+    *) COMMON_DIR="$(cd "$(dirname "${COMMON_DIR}")" && pwd -P)/$(basename "${COMMON_DIR}")" ;;
 esac
 COMMON_CONFIG="${COMMON_DIR}/config"
 HOOK_DIR="$(git rev-parse --git-path fitness-worktree-guard-hooks)"

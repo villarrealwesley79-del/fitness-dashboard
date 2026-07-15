@@ -50,8 +50,9 @@ git worktree add ../fitness-dashboard.fit-123 -b villarrealwesley79/fit-123-name
 ```
 
 The guard is implemented entirely with hooks; the shared repository must remain
-`core.bare=false`. Older guard setup left `core.bare=true` in the common Git
-config while only the server checkout overrode it per worktree, causing fresh
-linked worktrees to inherit the bare setting. Re-running
+`core.bare=false`. This repository was observed with `core.bare=true` in the
+common Git config while only the server checkout overrode it per worktree. The
+origin of that stale common-config value is unknown; the installer itself does
+not need a bare repository to preserve the guard. Re-running
 `scripts/install-worktree-guard.sh` repairs the common setting before installing
 the per-worktree hook path, so new worktrees need no manual configuration.
