@@ -905,12 +905,33 @@ def store_wearable_facts(
         if workout_observed_at is None:
             workout_snapshot_replacement_safe = False
             continue
-        workout_end_at = _temporal_text(_first_value(row, "end", "end_time"))
-        workout_end_observed_at = (
-            _workout_utc_value(workout_end_at, zone_offset)
-            if workout_end_at is not None
-            else None
-        )
+        raw_workout_end_at = _first_value(row, "end", "end_time")
+        workout_end_at = _temporal_text(raw_workout_end_at)
+        if raw_workout_end_at is not None:
+            workout_end_observed_at = (
+                _workout_utc_value(workout_end_at, zone_offset)
+                if workout_end_at is not None
+                else None
+            )
+        else:
+            duration_minutes_for_end = _number(row, "duration_min", "duration_minutes")
+            duration_seconds_for_end = (
+                duration_minutes_for_end * 60.0
+                if duration_minutes_for_end is not None
+                else _number(row, "duration_seconds")
+            )
+            workout_end_observed_at = None
+            if (
+                duration_seconds_for_end is not None
+                and math.isfinite(duration_seconds_for_end)
+                and duration_seconds_for_end > 0
+            ):
+                try:
+                    workout_end_observed_at = workout_observed_at + timedelta(
+                        seconds=duration_seconds_for_end
+                    )
+                except OverflowError:
+                    workout_end_observed_at = None
         if workout_window_start is None or workout_window_end is None:
             workout_snapshot_replacement_safe = False
         elif (
@@ -932,7 +953,7 @@ def store_wearable_facts(
         before_count = len(facts)
         canonical_type = _first_value(row, "type", "activity_type", "workout_type", "sport")
         workout_provider = _source_provider(row)
-        if canonical_type is None or not str(canonical_type).strip() or workout_end_at is None or workout_provider is None:
+        if canonical_type is None or not str(canonical_type).strip() or workout_provider is None:
             workout_snapshot_replacement_safe = False
         original_label = _first_value(row, "name", "activity_type", "workout_type", "sport", "type")
         provenance = {

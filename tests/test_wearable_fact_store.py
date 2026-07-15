@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -167,6 +167,17 @@ def test_distinct_metric_limit_orders_by_one_real_representative_row(tmp_path):
     facts = list_recommendation_facts(str(db), latest_per_metric=True, limit=1)
 
     assert {fact["metric"] for fact in facts} == {"metric_b"}
+
+
+def test_future_date_only_fact_is_not_recommendation_usable(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    future_date = (datetime.now().date() + timedelta(days=1)).isoformat()
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        future_date, "oura", "Oura", "sleep_duration", 420, "min",
+        freshness="fresh", used_for_recommendation=True,
+    )])
+
+    assert list_recommendation_facts(str(db), usable_only=True) == []
 
 
 def test_timestamped_sleep_fact_defaults_to_summary_record_kind(tmp_path):

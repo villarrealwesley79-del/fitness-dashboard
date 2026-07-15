@@ -696,6 +696,7 @@ def list_recommendation_facts(
     init_wearable_fact_db(db_path)
     scoped_profile = _normalize_profile_key(profile_key)
     usable_cutoff = (datetime.now().date() - timedelta(days=1)).isoformat()
+    usable_date_ceiling = datetime.now().date().isoformat()
     where_clause = """
         profile_key = ?
         AND (? IS NULL OR provider_id = ?)
@@ -706,7 +707,8 @@ def list_recommendation_facts(
             freshness IN ('fresh', 'aging')
             AND ((observed_at IS NOT NULL AND datetime(observed_at) >= datetime(?))
                  OR (observed_at IS NULL AND date >= ?))
-            AND (observed_at IS NULL OR datetime(observed_at) <= datetime(?))
+            AND ((observed_at IS NOT NULL AND datetime(observed_at) <= datetime(?))
+                 OR (observed_at IS NULL AND date <= ?))
         ))
     """
     metric_filter = tuple(sorted({str(metric) for metric in metric_names or set() if str(metric)}))
@@ -760,6 +762,7 @@ def list_recommendation_facts(
                 1 if usable_only else 0,
                 (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat(), usable_cutoff,
                 (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                usable_date_ceiling,
                 *metric_filter,
                 int(limit),
             ),

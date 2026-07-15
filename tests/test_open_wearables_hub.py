@@ -1555,6 +1555,48 @@ def test_store_wearable_facts_derives_duration_for_minimal_valid_workout(tmp_pat
     assert fact["metric_domain"] == "training_history"
 
 
+@pytest.mark.parametrize(("duration_key", "duration_value"), [
+    ("duration_seconds", 3600),
+    ("duration_min", 60),
+])
+def test_duration_only_workout_is_ingested_inside_authoritative_window(
+    tmp_path, duration_key, duration_value,
+):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    workout = {
+        "id": "duration-only",
+        "type": "running",
+        "start_time": f"{today}T08:00:00Z",
+        "source": {"provider": "apple_health"},
+        duration_key: duration_value,
+    }
+
+    count = hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T12:00:00Z",
+            "_workout_snapshot_complete": True,
+            "_workout_query": {
+                "start_at": f"{today}T00:00:00Z",
+                "end_at": f"{(date.today() + timedelta(days=1)).isoformat()}T00:00:00Z",
+            },
+            "workouts": {"data": [workout]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    [fact] = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert count == 1
+    assert fact["metric"] == "workout_duration"
+    assert fact["value"] == 60
+
+
 def test_provider_display_names_use_canonical_labels():
     assert hub._provider_display_name("oura") == "Oura"
     assert hub._provider_display_name("whoop") == "WHOOP"
@@ -2111,6 +2153,46 @@ def test_non_positive_workout_duration_preserves_prior_workout_facts(tmp_path, d
                 "end": f"{today}T10:00:00Z",
                 "provider": "oura",
                 **duration,
+            }]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert {(fact["metric"], fact["source_id"], fact["value"]) for fact in facts} == {
+        ("workout_duration", "workout-1", 30)
+    }
+
+
+def test_out_of_range_duration_only_workout_preserves_prior_facts(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        today, "open_wearables", "Open Wearables", "workout_duration", 30, "min",
+        source_id="workout-1", observed_at=f"{today}T08:00:00Z",
+        freshness="fresh", used_for_recommendation=True,
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T11:00:00Z",
+            "_workout_snapshot_complete": True,
+            "_workout_query": {
+                "start_at": f"{today}T00:00:00Z",
+                "end_at": f"{(date.today() + timedelta(days=1)).isoformat()}T00:00:00Z",
+            },
+            "workouts": {"events": [{
+                "id": "out-of-range-duration",
+                "type": "running",
+                "start": f"{today}T09:00:00Z",
+                "duration_seconds": 1e20,
+                "provider": "oura",
             }]},
         },
         db_file=db_file,
