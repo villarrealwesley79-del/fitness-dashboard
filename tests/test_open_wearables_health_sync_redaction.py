@@ -1,6 +1,7 @@
 import importlib
 import json
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 
 def _fitness_app():
@@ -1355,13 +1356,84 @@ def test_open_wearables_fetch_includes_today_and_paginates_workouts(monkeypatch)
 
     assert [row["id"] for row in payload["workouts"]["data"]] == ["workout-1", "workout-2"]
     assert payload["_workout_snapshot_complete"] is True
+    expected_start, expected_end = module._open_wearables_window_bounds()
     assert payload["_workout_query"] == {
-        "start_at": f"{(datetime.now().date() - timedelta(days=6)).isoformat()}T00:00:00Z",
-        "end_at": f"{(datetime.now().date() + timedelta(days=1)).isoformat()}T00:00:00Z",
+        "start_at": expected_start,
+        "end_at": expected_end,
     }
     recovery_url = next(url for url in requested if "/summaries/recovery" in url)
-    assert f"end_date={(datetime.now().date() + timedelta(days=1)).isoformat()}" in recovery_url
+    recovery_query = module.urllib.parse.parse_qs(module.urllib.parse.urlparse(recovery_url).query)
+    activity_url = next(url for url in requested if "/summaries/activity" in url)
+    activity_query = module.urllib.parse.parse_qs(module.urllib.parse.urlparse(activity_url).query)
+    expected_start_date = module.datetime.fromisoformat(expected_start).date().isoformat()
+    expected_end_date = module.datetime.fromisoformat(expected_end).date().isoformat()
+    assert recovery_query["start_date"] == [expected_start_date]
+    assert recovery_query["end_date"] == [expected_end_date]
+    assert activity_query["start_date"] == [expected_start_date]
+    assert activity_query["end_date"] == [expected_end_date]
     assert any("cursor=page%202" in url for url in requested)
+
+
+def test_open_wearables_fetch_uses_exact_timezone_aware_snapshot_bounds(monkeypatch):
+    module = _fitness_app()
+    requested = []
+    monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
+    monkeypatch.setattr(module, "_get_ow_token", lambda: "safe-token")
+    monkeypatch.setattr(module, "_open_wearables_user_base", lambda: "http://localhost:8000/api/v1/users/user-1")
+
+    def fake_request(url, **_kwargs):
+        requested.append(url)
+        return {"data": [], "pagination": {"has_more": False}}
+
+    monkeypatch.setattr(module, "_ow_request", fake_request)
+
+    payload = module.fetch_open_wearables_data()
+
+    workout_url = next(url for url in requested if "/events/workouts" in url)
+    query = module.urllib.parse.parse_qs(module.urllib.parse.urlparse(workout_url).query)
+    assert query["start_date"] == [payload["_workout_query"]["start_at"]]
+    assert query["end_date"] == [payload["_workout_query"]["end_at"]]
+    start_at = module.datetime.fromisoformat(query["start_date"][0])
+    end_at = module.datetime.fromisoformat(query["end_date"][0])
+    expected_start, expected_end = module._open_wearables_window_bounds()
+    assert start_at.tzinfo is not None and end_at.tzinfo is not None
+    assert start_at.time().isoformat() == "00:00:00"
+    assert end_at.time().isoformat() == "00:00:00"
+    assert start_at.isoformat() == expected_start
+    assert end_at.isoformat() == expected_end
+
+
+def test_open_wearables_window_bounds_recalculate_dst_offsets():
+    module = _fitness_app()
+    chicago = ZoneInfo("America/Chicago")
+
+    start_at, end_at = module._open_wearables_window_bounds(
+        now=module.datetime(2026, 3, 9, 12, 0, tzinfo=chicago),
+        local_zone=chicago,
+    )
+
+    assert start_at == "2026-03-03T00:00:00-06:00"
+    assert end_at == "2026-03-10T00:00:00-05:00"
+
+
+def test_open_wearables_window_bounds_recalculate_dst_without_discovered_iana_zone(monkeypatch):
+    module = _fitness_app()
+    chicago = ZoneInfo("America/Chicago")
+    monkeypatch.setattr(module, "_system_local_zone", lambda: None)
+
+    start_at, end_at = module._open_wearables_window_bounds(
+        now=module.datetime(2026, 3, 9, 12, 0, tzinfo=chicago),
+    )
+
+    assert start_at == "2026-03-03T00:00:00-06:00"
+    assert end_at == "2026-03-10T00:00:00-05:00"
+
+
+def test_open_wearables_local_zone_accepts_posix_absolute_tz(monkeypatch):
+    module = _fitness_app()
+    monkeypatch.setenv("TZ", ":/etc/localtime")
+
+    assert module._system_local_zone() is not None
 
 
 def test_open_wearables_fetch_fails_closed_at_workout_pagination_cap(monkeypatch):

@@ -107,7 +107,61 @@ def _source_provider(row: dict) -> str | None:
     source = row.get("source")
     value = source.get("provider") if isinstance(source, dict) else None
     value = value or row.get("provider") or row.get("provider_id")
-    return str(value) if value is not None else None
+    if value is None:
+        return None
+    source_name = str(value).lower()
+    if "healthkit" in source_name:
+        return "apple"
+    for provider_id in (
+        "apple", "samsung", "google", "garmin", "polar", "suunto",
+        "whoop", "strava", "oura", "fitbit", "ultrahuman",
+    ):
+        if provider_id in source_name:
+            return provider_id
+    return None
+
+
+def _provider_display_name(provider_id: str | None) -> str:
+    if not provider_id or provider_id == "open_wearables":
+        return "Open Wearables"
+    canonical_labels = {
+        "oura": "Oura",
+        "whoop": "WHOOP",
+        "apple": "Apple Health",
+        "samsung": "Samsung Health",
+        "google": "Google Health Connect",
+        "garmin": "Garmin",
+        "polar": "Polar",
+        "suunto": "Suunto",
+        "strava": "Strava",
+        "fitbit": "Fitbit",
+        "ultrahuman": "Ultrahuman",
+    }
+    if str(provider_id).lower() in canonical_labels:
+        return canonical_labels[str(provider_id).lower()]
+    return str(provider_id).replace("_", " ").strip().title()
+
+
+def _fact_metric_domain(fact: WearableDailyFact) -> str:
+    metric = fact.metric
+    if metric == "workout_load":
+        return "load"
+    if metric.startswith("workout_"):
+        return "training_history"
+    if metric.startswith("sleep_"):
+        return "sleep"
+    if metric in {"weight", "body_fat_percent", "muscle_mass", "body_mass_index", "body_temperature"}:
+        return "body"
+    if metric == "skin_temperature":
+        return "body"
+    if metric in {
+        "recovery_score", "heart_rate_variability", "resting_heart_rate", "blood_oxygen",
+        "respiratory_rate", "skin_temperature", "temperature_deviation",
+        "resting_heart_rate_average", "heart_rate_variability_sdnn_average",
+        "heart_rate_variability_rmssd_average",
+    }:
+        return "recovery"
+    return "activity"
 
 
 def _workout_category(label: object) -> str | None:
@@ -345,6 +399,7 @@ def store_wearable_facts(
             "source_id": str(_first_value(activity_raw, "id", "summary_id") or "") or None,
             "source_provider": _source_provider(activity_raw),
             "observed_at": None,
+            "source_record_kind": "summary",
         }
         added_activity_fact = False
         steps = _finite_fact_value(latest.get("steps"))
@@ -380,6 +435,8 @@ def store_wearable_facts(
             "source_id": str(_first_value(sleep_raw, "id", "event_id") or "") or None,
             "source_provider": _source_provider(sleep_raw),
             "observed_at": observed_at,
+            "source_record_kind": "event",
+            "metric_domain": "sleep",
         }
         sleep_observed_at = sleep_provenance["observed_at"]
         added_sleep_fact = False
@@ -426,9 +483,10 @@ def store_wearable_facts(
             provider = _source_provider(row)
             observed_at = _temporal_text(_first_value(row, "recorded_at", "timestamp"))
             recovery_provenance = {
-                "source_id": str(_first_value(row, "id", "summary_id") or provider or "") or None,
+                "source_id": str(_first_value(row, "id", "summary_id") or "") or None,
                 "source_provider": provider,
                 "observed_at": observed_at,
+                "source_record_kind": "summary",
             }
             before_count = len(facts)
             for metric, (aliases, unit) in mappings.items():
@@ -436,7 +494,9 @@ def store_wearable_facts(
                 if value is not None:
                     facts.append(WearableDailyFact(
                         date_s, "open_wearables", "Open Wearables", metric, value, unit,
-                        confidence="medium", freshness=_fact_freshness(date_s, fetched_at), **recovery_provenance,
+                        confidence="medium", freshness=_fact_freshness(date_s, fetched_at),
+                        metric_domain=("recovery" if metric == "skin_temperature" else None),
+                        **recovery_provenance,
                     ))
             if payload_key == "recovery_summary":
                 sleep_seconds = _number(row, "sleep_duration_seconds")
@@ -451,7 +511,9 @@ def store_wearable_facts(
 
     for body in _payload_rows(data.get("body_summary")):
         date_s = _row_date(body.get("averaged") if isinstance(body.get("averaged"), dict) else body, fetched_at)
-        provider = _source_provider(body)
+        # The body summary is composite: its top-level source can describe only
+        # one constituent measurement, not every averaged/latest field.
+        provider = None
         body_groups = (
             (body.get("slow_changing") if isinstance(body.get("slow_changing"), dict) else body, True, {
                 "weight": (("weight_kg", "weight"), "kg"),
@@ -478,6 +540,8 @@ def store_wearable_facts(
                         confidence=("low" if undated else "medium"),
                         freshness=("unknown" if undated else _fact_freshness(date_s, fetched_at)),
                         source_id=("undated-latest" if undated else None), source_provider=provider,
+                        source_record_kind="summary",
+                        metric_domain=("body" if undated else "recovery"),
                     ))
                     trusted_body_fact_added = trusted_body_fact_added or not undated
         if date_s and trusted_body_fact_added and _fact_freshness(date_s, fetched_at) in {"fresh", "aging"}:
@@ -491,9 +555,9 @@ def store_wearable_facts(
             if value is not None:
                 raw_measured_at = latest.get(measured_at_key)
                 measured_at = _temporal_text(raw_measured_at)
-                if raw_measured_at is not None and measured_at is None:
+                if raw_measured_at is None or measured_at is None:
                     continue
-                measured = _temporal_value(measured_at or date_s)
+                measured = _temporal_value(measured_at)
                 if measured is None:
                     continue
                 measured_date = measured.date().isoformat()
@@ -501,6 +565,8 @@ def store_wearable_facts(
                     measured_date, "open_wearables", "Open Wearables", metric, value, "c",
                     confidence="medium", freshness=_fact_freshness(measured_at or measured_date, fetched_at),
                     source_provider=provider, observed_at=measured_at,
+                    source_record_kind="summary",
+                    metric_domain="body",
                 ))
                 mark_replacement_sources(body, measured_date)
 
@@ -519,13 +585,18 @@ def store_wearable_facts(
             continue
         before_count = len(facts)
         canonical_type = _first_value(row, "type", "activity_type", "workout_type", "sport")
+        workout_end_at = _temporal_text(_first_value(row, "end", "end_time"))
+        workout_provider = _source_provider(row)
+        if canonical_type is None or not str(canonical_type).strip() or workout_end_at is None or workout_provider is None:
+            workout_snapshot_replacement_safe = False
         original_label = _first_value(row, "name", "activity_type", "workout_type", "sport", "type")
         provenance = {
             "category": _workout_category(canonical_type),
             "source_id": str(workout_source_id).strip(),
-            "source_provider": _source_provider(row),
+            "source_provider": workout_provider,
             "original_label": str(original_label) if original_label is not None else None,
             "observed_at": observed_at,
+            "source_record_kind": "event",
         }
         workout_metrics = {
             "workout_duration": ((_first_value(row, "duration_min", "duration_minutes")), "min"),
@@ -539,6 +610,19 @@ def store_wearable_facts(
             duration_seconds = _number(row, "duration_seconds")
             if raw_duration_seconds is not None and duration_seconds is None:
                 workout_snapshot_replacement_safe = False
+            if raw_duration_seconds is None and workout_end_at is not None:
+                try:
+                    duration_seconds = (
+                        _temporal_value(workout_end_at) - _temporal_value(observed_at)
+                    ).total_seconds()
+                except (TypeError, ValueError):
+                    duration_seconds = None
+                    workout_snapshot_replacement_safe = False
+                if duration_seconds is not None and (
+                    not math.isfinite(duration_seconds) or duration_seconds <= 0
+                ):
+                    duration_seconds = None
+                    workout_snapshot_replacement_safe = False
             workout_metrics["workout_duration"] = (
                 duration_seconds / 60.0 if duration_seconds is not None else None,
                 "min",
@@ -559,10 +643,25 @@ def store_wearable_facts(
                 ))
         if len(facts) > before_count:
             mark_replacement_sources(row, date_s)
+        else:
+            workout_snapshot_replacement_safe = False
 
     facts = [
         fact for fact in facts
         if not isinstance(fact.value, float) or math.isfinite(fact.value)
+    ]
+    facts = [
+        replace(
+            fact,
+            provider_id=fact.source_provider or "open_wearables",
+            source_label=_provider_display_name(fact.source_provider),
+            source_system="open_wearables",
+            source_record_kind=fact.source_record_kind or "summary",
+            metric_domain=fact.metric_domain or _fact_metric_domain(fact),
+            capability_state="available",
+            source_last_synced_at=fetched_at,
+        )
+        for fact in facts
     ]
     if facts or workout_snapshot_replacement_safe:
         facts = [
@@ -594,7 +693,7 @@ def store_wearable_facts(
         db_file,
         limit=100,
         profile_key=profile_key,
-        provider_id="open_wearables",
+        source_system="open_wearables",
         usable_only=True,
     )
     if errors and not facts:
@@ -633,7 +732,7 @@ def recommendation_facts(db_file: str, profile_key: str, limit: int = 20) -> lis
         db_file,
         limit=limit,
         profile_key=profile_key,
-        provider_id="open_wearables",
+        source_system="open_wearables",
         usable_only=True,
         latest_per_metric=True,
     )

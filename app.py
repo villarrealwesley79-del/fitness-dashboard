@@ -6,6 +6,7 @@ Evidence-based resistance training optimization for iOS/Android.
 
 from flask import Flask, has_request_context, render_template, jsonify, request, Response, redirect
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from contextlib import closing
@@ -12547,6 +12548,46 @@ def _open_wearables_complete_oauth_callback(provider, code, state):
         return False
 
 
+def _system_local_zone():
+    zone_name = str(os.environ.get("TZ") or "").lstrip(":")
+    zoneinfo_marker = "/zoneinfo/"
+    if zone_name and os.path.isabs(zone_name):
+        resolved_zone_path = os.path.realpath(zone_name)
+        zone_name = (
+            resolved_zone_path.split(zoneinfo_marker, 1)[1]
+            if zoneinfo_marker in resolved_zone_path
+            else ""
+        )
+    if not zone_name:
+        localtime_path = os.path.realpath("/etc/localtime")
+        if zoneinfo_marker in localtime_path:
+            zone_name = localtime_path.split(zoneinfo_marker, 1)[1]
+    if zone_name:
+        try:
+            return ZoneInfo(zone_name)
+        except (ValueError, ZoneInfoNotFoundError):
+            pass
+    return None
+
+
+def _open_wearables_window_bounds(*, now=None, local_zone=None):
+    zone = local_zone or _system_local_zone()
+    if zone is None and now is not None and isinstance(now.tzinfo, ZoneInfo):
+        zone = now.tzinfo
+    local_now = (now or datetime.now(zone)).astimezone(zone)
+    start_day = local_now.date() - timedelta(days=6)
+    end_day = local_now.date() + timedelta(days=1)
+    if zone is None:
+        # Naive astimezone() asks the operating system for each target instant,
+        # preserving DST rules even when /etc/localtime is a copied tzfile.
+        window_start = datetime(start_day.year, start_day.month, start_day.day).astimezone()
+        window_end = datetime(end_day.year, end_day.month, end_day.day).astimezone()
+    else:
+        window_start = datetime(start_day.year, start_day.month, start_day.day, tzinfo=zone)
+        window_end = datetime(end_day.year, end_day.month, end_day.day, tzinfo=zone)
+    return window_start.isoformat(), window_end.isoformat()
+
+
 def fetch_open_wearables_data():
     """Fetch coaching-safe wearable domains from the Open Wearables bridge (best-effort)."""
     missing = _missing_open_wearables_config()
@@ -12565,15 +12606,21 @@ def fetch_open_wearables_data():
     token = _get_ow_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-    today = datetime.now().date()
-    start_date = (today - timedelta(days=6)).strftime("%Y-%m-%d")
-    end_date = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+    start_at, end_at = _open_wearables_window_bounds()
+    event_range_query = urllib.parse.urlencode(
+        {"start_date": start_at, "end_date": end_at, "limit": 100}
+    )
+    summary_range_query = urllib.parse.urlencode({
+        "start_date": datetime.fromisoformat(start_at).date().isoformat(),
+        "end_date": datetime.fromisoformat(end_at).date().isoformat(),
+        "limit": 100,
+    })
 
     endpoints = {
-        "sleep": f"{_open_wearables_user_base()}/events/sleep?start_date={start_date}&end_date={end_date}&limit=100",
-        "workouts": f"{_open_wearables_user_base()}/events/workouts?start_date={start_date}&end_date={end_date}&limit=100",
-        "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?start_date={start_date}&end_date={end_date}&limit=100",
-        "recovery_summary": f"{_open_wearables_user_base()}/summaries/recovery?start_date={start_date}&end_date={end_date}&limit=100",
+        "sleep": f"{_open_wearables_user_base()}/events/sleep?{event_range_query}",
+        "workouts": f"{_open_wearables_user_base()}/events/workouts?{event_range_query}",
+        "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?{summary_range_query}",
+        "recovery_summary": f"{_open_wearables_user_base()}/summaries/recovery?{summary_range_query}",
         "body_summary": f"{_open_wearables_user_base()}/summaries/body",
     }
 
@@ -12585,8 +12632,8 @@ def fetch_open_wearables_data():
         "body_summary": None,
         "_workout_snapshot_complete": False,
         "_workout_query": {
-            "start_at": f"{start_date}T00:00:00Z",
-            "end_at": f"{end_date}T00:00:00Z",
+            "start_at": start_at,
+            "end_at": end_at,
         },
         "fetched_at": datetime.now().astimezone().isoformat(),
         "errors": {},
