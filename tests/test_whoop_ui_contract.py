@@ -52,6 +52,12 @@ def test_whoop_release_assets_bust_cached_fit238_runtime():
     assert "fitness-dashboard-v20260713-fit270-oura-detail" in service_worker
 
 
+def test_whoop_import_explains_timezone_date_tolerance():
+    html = INDEX_HTML.read_text()
+
+    assert "Dates up to one day ahead may be accepted for timezone differences; farther-ahead dates are rejected." in html
+
+
 def test_whoop_secret_patterns_are_excluded_from_docker_context():
     dockerignore = (ROOT / ".dockerignore").read_text()
 
