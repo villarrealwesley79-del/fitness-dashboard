@@ -133,11 +133,11 @@ def _trusted(entry: dict, *, minimum_accepts: int) -> bool:
     return (
         int(entry.get("accept_count") or 0) >= minimum_accepts
         and int(entry.get("correct_count") or 0) == 0
-        and not _uses_retired_nutrition_source(entry)
+        and not _has_retired_or_incomplete_nutrition_provenance(entry)
     )
 
 
-def _uses_retired_nutrition_source(entry: dict) -> bool:
+def _has_retired_or_incomplete_nutrition_provenance(entry: dict) -> bool:
     canonical = entry.get("canonical_resolution")
     if not isinstance(canonical, dict):
         return False
@@ -152,6 +152,12 @@ def _uses_retired_nutrition_source(entry: dict) -> bool:
         for part in value.split("+")
         if part.strip()
     }
+    if "mixed_lookup" in provenance and not (
+        isinstance(underlying_sources, list)
+        and underlying_sources
+        and all(isinstance(value, str) and value.strip() for value in underlying_sources)
+    ):
+        return True
     return bool(provenance & RETIRED_NUTRITION_SOURCES)
 
 

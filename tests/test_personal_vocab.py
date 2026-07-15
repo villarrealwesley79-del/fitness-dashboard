@@ -90,6 +90,43 @@ def test_personal_vocab_preserves_but_does_not_replay_mixed_retired_provenance(t
     assert personal_vocab.lookup("historical mixed usual", user_id=1) is None
 
 
+def test_personal_vocab_does_not_replay_legacy_mixed_resolution_without_components(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    canonical = _estimate(source="mixed_lookup", underlying_source="mixed_lookup")
+    for _ in range(3):
+        data_store.upsert_personal_vocab_entry(
+            1,
+            normalized_input="legacy mixed usual",
+            phrase="legacy mixed usual",
+            canonical_resolution=canonical,
+            accepted=True,
+        )
+
+    assert data_store.get_personal_vocab_entry(1, "legacy mixed usual") is not None
+    assert personal_vocab.lookup("legacy mixed usual", user_id=1) is None
+
+
+def test_personal_vocab_replays_mixed_active_provider_resolution(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    active = _estimate(
+        source="mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["open_food_facts", "usda_fdc"],
+    )
+    for _ in range(3):
+        personal_vocab.record_accept(1, "active mixed usual", active)
+
+    result = personal_vocab.lookup("active mixed usual", user_id=1)
+    assert result["source"] == "personal_vocab"
+    assert result["underlying_sources"] == ["open_food_facts", "usda_fdc"]
+
+
 def test_personal_vocab_untrusted_exact_match_blocks_fuzzy_substitution(tmp_path, monkeypatch):
     import data_store
 
