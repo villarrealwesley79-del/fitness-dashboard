@@ -12966,9 +12966,10 @@ def _trend_change(trend: list):
 
 
 def _sleep_metrics_from_events(events: list):
-    if not events:
+    main_sleep_events = [event for event in events or [] if event.get("is_nap") is not True]
+    if not main_sleep_events:
         return None, None
-    events_sorted = sorted(events, key=lambda e: e.get("event_time") or datetime.min)
+    events_sorted = sorted(main_sleep_events, key=lambda e: e.get("event_time") or datetime.min)
     most_recent = events_sorted[-1]
 
     stages = most_recent.get("stages_min") or {}

@@ -19,6 +19,7 @@ from dataclasses import replace
 import hashlib
 import json
 import math
+import re
 from typing import Callable
 
 from wearable_fact_store import (
@@ -223,6 +224,13 @@ def _temporal_value(value: object) -> datetime | None:
         return None
 
 
+def _utc_temporal_value(value: object) -> datetime | None:
+    parsed = _temporal_value(value)
+    if parsed is None or parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
 def _temporal_text(value: object) -> str | None:
     return str(value) if _temporal_value(value) is not None else None
 
@@ -314,6 +322,15 @@ def _workout_category(label: object) -> str | None:
     return "other"
 
 
+def _workout_zone(zone_offset: object) -> timezone | None:
+    offset_text = str(zone_offset or "").strip()
+    if not re.fullmatch(r"[+-](?:0\d|1\d|2[0-3]):[0-5]\d", offset_text):
+        return None
+    sign = -1 if offset_text.startswith("-") else 1
+    hours_text, minutes_text = offset_text[1:].split(":", 1)
+    return timezone(sign * timedelta(hours=int(hours_text), minutes=int(minutes_text)))
+
+
 def _workout_local_date(observed_at: str, zone_offset: object) -> str | None:
     try:
         observed = _temporal_value(observed_at)
@@ -321,13 +338,28 @@ def _workout_local_date(observed_at: str, zone_offset: object) -> str | None:
             return None
         offset_text = str(zone_offset or "").strip()
         if offset_text:
-            sign = -1 if offset_text.startswith("-") else 1
-            hours_text, minutes_text = offset_text.lstrip("+-").split(":", 1)
-            target_zone = timezone(sign * timedelta(hours=int(hours_text), minutes=int(minutes_text)))
+            target_zone = _workout_zone(offset_text)
+            if target_zone is None:
+                return None
             if observed.tzinfo is None:
                 observed = observed.replace(tzinfo=target_zone)
             observed = observed.astimezone(target_zone)
         return observed.date().isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _workout_utc_value(observed_at: str, zone_offset: object) -> datetime | None:
+    try:
+        observed = _temporal_value(observed_at)
+        if observed is None:
+            return None
+        if observed.tzinfo is None:
+            target_zone = _workout_zone(zone_offset)
+            if target_zone is None:
+                return None
+            observed = observed.replace(tzinfo=target_zone)
+        return observed.astimezone(timezone.utc)
     except (TypeError, ValueError):
         return None
 
@@ -510,13 +542,17 @@ def store_wearable_facts(
     workout_query = data.get("_workout_query") if isinstance(data.get("_workout_query"), dict) else {}
     workout_query_start = _temporal_text(workout_query.get("start_at"))
     workout_query_end = _temporal_text(workout_query.get("end_at"))
+    workout_window_start = _utc_temporal_value(workout_query_start)
+    workout_window_end = _utc_temporal_value(workout_query_end)
     workout_snapshot_replacement_safe = (
         "workouts" not in errors
         and data.get("_workout_snapshot_complete") is True
         and workout_rows is not None
         and workout_query_start is not None
         and workout_query_end is not None
-        and _temporal_value(workout_query_start) < _temporal_value(workout_query_end)
+        and workout_window_start is not None
+        and workout_window_end is not None
+        and workout_window_start < workout_window_end
     )
     body_payload = data.get("body_summary")
     body_snapshot_valid = _valid_body_snapshot(body_payload)
@@ -849,13 +885,40 @@ def store_wearable_facts(
         if observed_at is None:
             workout_snapshot_replacement_safe = False
             continue
-        date_s = _workout_local_date(observed_at, row.get("zone_offset"))
+        zone_offset = row.get("zone_offset")
+        if str(zone_offset or "").strip() and _workout_zone(zone_offset) is None:
+            workout_snapshot_replacement_safe = False
+            continue
+        workout_observed_at = _workout_utc_value(observed_at, zone_offset)
+        if workout_observed_at is None:
+            workout_snapshot_replacement_safe = False
+            continue
+        workout_end_at = _temporal_text(_first_value(row, "end", "end_time"))
+        workout_end_observed_at = (
+            _workout_utc_value(workout_end_at, zone_offset)
+            if workout_end_at is not None
+            else None
+        )
+        if workout_window_start is None or workout_window_end is None:
+            workout_snapshot_replacement_safe = False
+        elif (
+            not workout_window_start <= workout_observed_at < workout_window_end
+            or workout_end_observed_at is None
+            or not workout_observed_at < workout_end_observed_at < workout_window_end
+        ):
+            workout_snapshot_replacement_safe = False
+            continue
+        stored_observed_at = (
+            workout_observed_at.isoformat().replace("+00:00", "Z")
+            if workout_observed_at is not None
+            else observed_at
+        )
+        date_s = _workout_local_date(observed_at, zone_offset)
         if date_s is None:
             workout_snapshot_replacement_safe = False
             continue
         before_count = len(facts)
         canonical_type = _first_value(row, "type", "activity_type", "workout_type", "sport")
-        workout_end_at = _temporal_text(_first_value(row, "end", "end_time"))
         workout_provider = _source_provider(row)
         if canonical_type is None or not str(canonical_type).strip() or workout_end_at is None or workout_provider is None:
             workout_snapshot_replacement_safe = False
@@ -865,7 +928,7 @@ def store_wearable_facts(
             "source_id": str(workout_source_id).strip(),
             "source_provider": workout_provider,
             "original_label": str(original_label) if original_label is not None else None,
-            "observed_at": observed_at,
+            "observed_at": stored_observed_at,
             "source_record_kind": "event",
         }
         workout_metrics = {
@@ -882,13 +945,13 @@ def store_wearable_facts(
             if raw_duration_seconds is not None and duration_seconds is None:
                 workout_snapshot_replacement_safe = False
             if raw_duration_seconds is None and workout_end_at is not None:
-                try:
-                    duration_seconds = (
-                        _temporal_value(workout_end_at) - _temporal_value(observed_at)
-                    ).total_seconds()
-                except (TypeError, ValueError):
+                if workout_end_observed_at is None:
                     duration_seconds = None
                     workout_snapshot_replacement_safe = False
+                else:
+                    duration_seconds = (
+                        workout_end_observed_at - workout_observed_at
+                    ).total_seconds()
                 if duration_seconds is not None and (
                     not math.isfinite(duration_seconds) or duration_seconds <= 0
                 ):
@@ -916,7 +979,7 @@ def store_wearable_facts(
             if value is not None and math.isfinite(value):
                 facts.append(WearableDailyFact(
                     date_s, "open_wearables", "Open Wearables", metric, value, unit,
-                    confidence="medium", freshness=_fact_freshness(observed_at, fetched_at), **provenance,
+                    confidence="medium", freshness=_fact_freshness(stored_observed_at, fetched_at), **provenance,
                 ))
         if len(facts) > before_count:
             for source_key in row_replacement_sources(row):

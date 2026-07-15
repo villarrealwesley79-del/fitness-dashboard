@@ -48,6 +48,26 @@ def test_open_wearables_sleep_extractor_does_not_replace_main_sleep_with_latest_
     assert sleep["is_nap"] is False
 
 
+def test_open_wearables_vitals_sleep_metrics_exclude_naps():
+    module = _fitness_app()
+
+    last_night, avg_hours = module._sleep_metrics_from_events([
+        {
+            "event_time": datetime(2026, 6, 28, 7, tzinfo=timezone.utc),
+            "duration_min": 420,
+            "is_nap": False,
+        },
+        {
+            "event_time": datetime(2026, 6, 28, 15, tzinfo=timezone.utc),
+            "duration_min": 30,
+            "is_nap": True,
+        },
+    ])
+
+    assert last_night["duration_hours"] == 7.0
+    assert avg_hours == 7.0
+
+
 def test_open_wearables_sleep_extractor_drops_non_finite_metrics():
     module = _fitness_app()
 

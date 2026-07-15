@@ -449,20 +449,161 @@ def test_legacy_composite_body_fact_stays_under_open_wearables_identity(tmp_path
     assert fact["source_provider"] is None
 
 
-def test_version_one_fresh_open_wearables_fact_becomes_recommendation_eligible(tmp_path):
+@pytest.mark.parametrize("legacy_eligible", [False, True])
+def test_version_two_unattributed_open_wearables_fact_stays_recommendation_ineligible(
+    tmp_path, legacy_eligible,
+):
     db = tmp_path / "facts.sqlite3"
     today = datetime.now().date().isoformat()
     upsert_daily_facts(str(db), [WearableDailyFact(
         today, "open_wearables", "Open Wearables", "sleep_duration", 420, "min",
+        freshness="fresh", used_for_recommendation=legacy_eligible,
+    )])
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA user_version = 2")
+
+    facts = list_recommendation_facts(str(db), usable_only=True)
+
+    assert facts == []
+
+
+def test_version_two_composite_body_fact_loses_legacy_recommendation_eligibility(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    today = datetime.now().date().isoformat()
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        today, "open_wearables", "Open Wearables", "weight", 82.4, "kg",
+        source_provider="oura", source_system="open_wearables", freshness="fresh",
+        used_for_recommendation=True,
+    )])
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA user_version = 2")
+
+    facts = list_recommendation_facts(str(db), usable_only=True)
+
+    assert facts == []
+
+
+def test_version_two_naive_workout_timestamp_is_quarantined(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    today = datetime.now().date().isoformat()
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        today, "apple", "Apple Health", "workout_duration", 60, "min",
+        source_id="legacy-workout", source_provider="apple",
+        source_system="open_wearables", observed_at=f"{today}T00:30:00",
+        freshness="fresh", used_for_recommendation=True,
+    )])
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA user_version = 2")
+
+    assert list_recommendation_facts(str(db), usable_only=True) == []
+    upsert_daily_facts(
+        str(db),
+        [],
+        replace_provider_metric_observation_windows={(
+            "open_wearables",
+            "workout_",
+            f"{today}T00:00:00Z",
+            f"{today}T01:00:00Z",
+        )},
+    )
+    [fact] = list_recommendation_facts(str(db))
+    assert fact["capability_state"] == "legacy_timestamp_unknown"
+    assert fact["used_for_recommendation"] is False
+
+
+def test_version_two_missing_workout_timestamp_is_quarantined(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    today = datetime.now().date().isoformat()
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        today, "apple", "Apple Health", "workout_duration", 60, "min",
+        source_id="legacy-workout", source_provider="apple",
+        source_system="open_wearables", observed_at=None,
+        freshness="fresh", used_for_recommendation=True,
+    )])
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA user_version = 2")
+
+    assert list_recommendation_facts(str(db), usable_only=True) == []
+    [fact] = list_recommendation_facts(str(db))
+    assert fact["capability_state"] == "legacy_timestamp_unknown"
+    assert fact["used_for_recommendation"] is False
+
+
+def test_version_two_attributed_fact_preserves_explicit_recommendation_exclusion(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    today = datetime.now().date().isoformat()
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        today, "oura", "Oura", "sleep_duration", 420, "min",
+        source_provider="oura", source_system="open_wearables",
+        freshness="fresh", used_for_recommendation=False,
+    )])
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA user_version = 2")
+
+    assert list_recommendation_facts(str(db), usable_only=True) == []
+    [fact] = list_recommendation_facts(str(db))
+    assert fact["used_for_recommendation"] is False
+
+
+def test_version_one_attributed_fact_keeps_legacy_recommendation_eligibility(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    today = datetime.now().date().isoformat()
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        today, "oura", "Oura", "sleep_duration", 420, "min",
+        source_provider="oura", source_system="open_wearables",
         freshness="fresh", used_for_recommendation=False,
     )])
     with sqlite3.connect(db) as conn:
         conn.execute("PRAGMA user_version = 1")
 
-    facts = list_recommendation_facts(str(db), usable_only=True)
+    [fact] = list_recommendation_facts(str(db), usable_only=True)
 
-    assert [fact["metric"] for fact in facts] == ["sleep_duration"]
-    assert facts[0]["used_for_recommendation"] is True
+    assert fact["provider_id"] == "oura"
+    assert fact["used_for_recommendation"] is True
+
+
+def test_provider_fact_suppresses_unattributed_legacy_recommendation_alternative(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    today = datetime.now().date().isoformat()
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        today, "open_wearables", "Open Wearables", "sleep_duration", 120, "min",
+        source_system="open_wearables", freshness="fresh", used_for_recommendation=False,
+    )])
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA user_version = 2")
+
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        today, "oura", "Oura", "sleep_duration", 420, "min",
+        source_system="open_wearables", source_provider="oura", freshness="fresh",
+        used_for_recommendation=True,
+    )])
+
+    facts = list_recommendation_facts(str(db), usable_only=True, limit=100)
+
+    assert [(fact["provider_id"], fact["value"]) for fact in facts] == [("oura", 420)]
+
+
+def test_current_unattributed_fact_remains_a_recommendation_alternative(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    today = datetime.now().date().isoformat()
+    upsert_daily_facts(str(db), [
+        WearableDailyFact(
+            today, "open_wearables", "Open Wearables", "sleep_duration", 300, "min",
+            source_system="open_wearables", freshness="fresh", used_for_recommendation=True,
+        ),
+        WearableDailyFact(
+            today, "oura", "Oura", "sleep_duration", 480, "min",
+            source_system="open_wearables", source_provider="oura", freshness="fresh",
+            used_for_recommendation=True,
+        ),
+    ])
+
+    facts = list_recommendation_facts(str(db), usable_only=True, limit=100)
+
+    assert {(fact["provider_id"], fact["value"]) for fact in facts} == {
+        ("open_wearables", 300),
+        ("oura", 480),
+    }
 
 
 def test_new_body_skin_temperature_respects_explicit_body_domain(tmp_path):

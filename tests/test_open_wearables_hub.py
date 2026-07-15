@@ -992,6 +992,255 @@ def test_out_of_window_sleep_summary_preserves_authoritative_window(tmp_path):
     assert by_date[today.isoformat()]["value"] == 390
 
 
+def test_out_of_window_workout_preserves_authoritative_window(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today()
+    start_at = f"{today.isoformat()}T00:00:00Z"
+    end_at = f"{(today + timedelta(days=1)).isoformat()}T00:00:00Z"
+    for workout_id, workout_start, duration in (
+        ("in-window", f"{today.isoformat()}T10:00:00Z", 3600),
+        ("out-of-window", end_at, 1800),
+    ):
+        hub.store_wearable_facts(
+            {
+                "fetched_at": f"{today.isoformat()}T12:00:00Z",
+                "_workout_snapshot_complete": True,
+                "_workout_query": {"start_at": start_at, "end_at": end_at},
+                "workouts": {"data": [{
+                    "id": workout_id,
+                    "type": "running",
+                    "start": workout_start,
+                    "end": (
+                        f"{today.isoformat()}T11:00:00Z"
+                        if workout_id == "in-window"
+                        else f"{(today + timedelta(days=1)).isoformat()}T00:30:00Z"
+                    ),
+                    "duration_seconds": duration,
+                    "provider": "apple_health",
+                }]},
+            },
+            db_file=db_file,
+            profile_key="profile-42",
+            activity_extractor=lambda _payload: [],
+            sleep_extractor=lambda _payload: None,
+            row_replacement_sources=lambda row: ["apple_health"] if row else [],
+        )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert any(
+        fact["source_id"] == "in-window" and fact["metric"] == "workout_duration"
+        for fact in facts
+    )
+    assert not any(fact["source_id"] == "out-of-window" for fact in facts)
+
+
+@pytest.mark.parametrize("invalid_offset", ["05:00", "+00:60"])
+def test_malformed_workout_zone_offset_preserves_authoritative_window(
+    tmp_path, invalid_offset,
+):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today()
+    query = {
+        "start_at": f"{today.isoformat()}T00:00:00Z",
+        "end_at": f"{(today + timedelta(days=1)).isoformat()}T00:00:00Z",
+    }
+    for rows in (
+        [{
+            "id": "trusted",
+            "type": "running",
+            "start": f"{today.isoformat()}T01:00:00Z",
+            "end": f"{today.isoformat()}T02:00:00Z",
+            "duration_seconds": 3600,
+            "provider": "apple_health",
+        }],
+        [{
+            "id": "malformed-offset",
+            "type": "running",
+            "start": f"{today.isoformat()}T10:00:00",
+            "end": f"{today.isoformat()}T11:00:00",
+            "zone_offset": invalid_offset,
+            "duration_seconds": 3600,
+            "provider": "apple_health",
+        }],
+    ):
+        hub.store_wearable_facts(
+            {
+                "fetched_at": f"{today.isoformat()}T12:00:00Z",
+                "_workout_snapshot_complete": True,
+                "_workout_query": query,
+                "workouts": {"data": rows},
+            },
+            db_file=db_file,
+            profile_key="profile-42",
+            activity_extractor=lambda _payload: [],
+            sleep_extractor=lambda _payload: None,
+            row_replacement_sources=lambda row: ["apple_health"] if row else [],
+        )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert any(fact["source_id"] == "trusted" for fact in facts)
+    assert not any(fact["source_id"] == "malformed-offset" for fact in facts)
+
+
+def test_workout_crossing_query_end_preserves_authoritative_window(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today()
+    query_end = f"{(today + timedelta(days=1)).isoformat()}T00:00:00Z"
+    query = {
+        "start_at": f"{today.isoformat()}T00:00:00Z",
+        "end_at": query_end,
+    }
+    for rows in (
+        [{
+            "id": "trusted",
+            "type": "running",
+            "start": f"{today.isoformat()}T01:00:00Z",
+            "end": f"{today.isoformat()}T02:00:00Z",
+            "duration_seconds": 3600,
+            "provider": "apple_health",
+        }],
+        [{
+            "id": "crossing",
+            "type": "running",
+            "start": f"{today.isoformat()}T23:30:00Z",
+            "end": query_end,
+            "duration_seconds": 1800,
+            "provider": "apple_health",
+        }],
+    ):
+        hub.store_wearable_facts(
+            {
+                "fetched_at": f"{today.isoformat()}T12:00:00Z",
+                "_workout_snapshot_complete": True,
+                "_workout_query": query,
+                "workouts": {"data": rows},
+            },
+            db_file=db_file,
+            profile_key="profile-42",
+            activity_extractor=lambda _payload: [],
+            sleep_extractor=lambda _payload: None,
+            row_replacement_sources=lambda row: ["apple_health"] if row else [],
+        )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert any(fact["source_id"] == "trusted" for fact in facts)
+    assert not any(fact["source_id"] == "crossing" for fact in facts)
+
+
+def test_timezone_naive_workout_without_offset_preserves_authoritative_window(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today()
+    query = {
+        "start_at": f"{today.isoformat()}T00:00:00Z",
+        "end_at": f"{(today + timedelta(days=1)).isoformat()}T00:00:00Z",
+    }
+    for workout_id, start, end in (
+        ("trusted", f"{today.isoformat()}T10:00:00Z", f"{today.isoformat()}T11:00:00Z"),
+        ("naive", f"{today.isoformat()}T12:00:00", f"{today.isoformat()}T12:30:00"),
+    ):
+        hub.store_wearable_facts(
+            {
+                "fetched_at": f"{today.isoformat()}T13:00:00Z",
+                "_workout_snapshot_complete": True,
+                "_workout_query": query,
+                "workouts": {"data": [{
+                    "id": workout_id,
+                    "type": "running",
+                    "start": start,
+                    "end": end,
+                    "duration_seconds": 3600 if workout_id == "trusted" else 1800,
+                    "provider": "apple_health",
+                }]},
+            },
+            db_file=db_file,
+            profile_key="profile-42",
+            activity_extractor=lambda _payload: [],
+            sleep_extractor=lambda _payload: None,
+            row_replacement_sources=lambda row: ["apple_health"] if row else [],
+        )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert any(fact["source_id"] == "trusted" for fact in facts)
+
+
+def test_timezone_naive_workout_with_offset_retracts_in_normalized_window(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today()
+    query = {
+        "start_at": f"{today.isoformat()}T00:00:00-05:00",
+        "end_at": f"{(today + timedelta(days=1)).isoformat()}T00:00:00-05:00",
+    }
+    for rows in (
+        [{
+            "id": "offset-workout",
+            "type": "running",
+            "start": f"{today.isoformat()}T00:30:00",
+            "end": f"{today.isoformat()}T01:30:00",
+            "zone_offset": "-05:00",
+            "duration_seconds": 3600,
+            "provider": "apple_health",
+        }],
+        [],
+    ):
+        hub.store_wearable_facts(
+            {
+                "fetched_at": f"{today.isoformat()}T12:00:00Z",
+                "_workout_snapshot_complete": True,
+                "_workout_query": query,
+                "workouts": {"data": rows},
+            },
+            db_file=db_file,
+            profile_key="profile-42",
+            activity_extractor=lambda _payload: [],
+            sleep_extractor=lambda _payload: None,
+            row_replacement_sources=lambda row: ["apple_health"] if row else [],
+        )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    assert list_recommendation_facts(db_file, limit=100, profile_key="profile-42") == []
+
+
+def test_timezone_naive_workout_query_bounds_preserve_prior_facts(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        today, "apple", "Apple Health", "workout_duration", 60, "min",
+        source_id="trusted", observed_at=f"{today}T01:00:00Z",
+        source_system="open_wearables", freshness="fresh", used_for_recommendation=True,
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T12:00:00Z",
+            "_workout_snapshot_complete": True,
+            "_workout_query": {
+                "start_at": f"{today}T00:00:00",
+                "end_at": f"{(date.today() + timedelta(days=1)).isoformat()}T00:00:00",
+            },
+            "workouts": {"data": []},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert any(fact["source_id"] == "trusted" for fact in facts)
+
+
 def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     data = {

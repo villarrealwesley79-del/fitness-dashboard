@@ -27,7 +27,7 @@ FORBIDDEN_FIELD_NAMES = {
     "user_id",
 }
 
-WEARABLE_FACT_SCHEMA_VERSION = 2
+WEARABLE_FACT_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -121,6 +121,8 @@ def init_wearable_fact_db(db_path: str) -> None:
         current_version = conn.execute("PRAGMA user_version").fetchone()[0]
         if current_version < WEARABLE_FACT_SCHEMA_VERSION:
             _backfill_fact_contract(conn)
+            if current_version < 2:
+                _migrate_v2_recommendation_eligibility(conn)
             _migrate_open_wearables_provider_identity(conn)
             conn.execute(f"PRAGMA user_version = {WEARABLE_FACT_SCHEMA_VERSION}")
 
@@ -289,18 +291,23 @@ def _backfill_fact_contract(conn: sqlite3.Connection) -> None:
         "THEN 'recovery' ELSE 'activity' END), "
         "capability_state = COALESCE(NULLIF(capability_state, ''), 'available'), "
         "source_last_synced_at = COALESCE(source_last_synced_at, updated_at), "
-        "imported_at = COALESCE(imported_at, updated_at), "
-        "used_for_recommendation = CASE "
-        "WHEN COALESCE(NULLIF(source_system, ''), provider_id) = 'open_wearables' "
-        "AND freshness IN ('fresh', 'aging') THEN 1 "
-        "ELSE used_for_recommendation END "
+        "imported_at = COALESCE(imported_at, updated_at) "
         "WHERE source_system IS NULL OR source_system = '' "
         "OR source_record_kind IS NULL OR source_record_kind = '' "
         "OR metric_domain IS NULL OR metric_domain = '' "
         "OR capability_state IS NULL OR capability_state = '' "
-        "OR source_last_synced_at IS NULL OR imported_at IS NULL "
-        "OR (COALESCE(NULLIF(source_system, ''), provider_id) = 'open_wearables' "
-        "AND freshness IN ('fresh', 'aging') AND used_for_recommendation = 0)"
+        "OR source_last_synced_at IS NULL OR imported_at IS NULL"
+    )
+
+
+def _migrate_v2_recommendation_eligibility(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        UPDATE wearable_daily_facts
+        SET used_for_recommendation = 1
+        WHERE source_system = 'open_wearables'
+          AND freshness IN ('fresh', 'aging')
+        """
     )
 
 
@@ -408,6 +415,33 @@ def _migrate_open_wearables_provider_identity(conn: sqlite3.Connection) -> None:
         "WHERE source_system = 'open_wearables' AND provider_id = 'open_wearables' "
         "AND source_provider IS NOT NULL AND source_provider != '' "
     )
+    conn.execute(
+        """
+        UPDATE wearable_daily_facts
+        SET used_for_recommendation = 0
+        WHERE source_system = 'open_wearables'
+          AND provider_id = 'open_wearables'
+          AND COALESCE(source_provider, '') = ''
+        """
+    )
+    conn.execute(
+        """
+        UPDATE wearable_daily_facts
+        SET capability_state = 'legacy_timestamp_unknown',
+            used_for_recommendation = 0
+        WHERE source_system = 'open_wearables'
+          AND metric LIKE 'workout_%'
+          AND (
+              observed_at IS NULL
+              OR TRIM(observed_at) = ''
+              OR (
+                  UPPER(TRIM(observed_at)) NOT LIKE '%Z'
+                  AND INSTR(SUBSTR(observed_at, 12), '+') = 0
+                  AND INSTR(SUBSTR(observed_at, 12), '-') = 0
+              )
+          )
+        """
+    )
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -495,6 +529,7 @@ def upsert_daily_facts(
                 "DELETE FROM wearable_daily_facts "
                 "WHERE profile_key = ? AND source_system = ? "
                 "AND substr(metric, 1, length(?)) = ? "
+                "AND COALESCE(capability_state, '') != 'legacy_timestamp_unknown' "
                 "AND julianday(observed_at) >= julianday(?) "
                 "AND julianday(observed_at) < julianday(?)",
                 (
