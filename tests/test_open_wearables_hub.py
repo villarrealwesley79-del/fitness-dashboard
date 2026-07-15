@@ -308,12 +308,77 @@ def test_auth_failure_preserves_last_known_body_snapshot(tmp_path):
     assert list_recommendation_facts(db_file, profile_key="profile-42")[0]["value"] == 82.4
 
 
+def test_complete_body_snapshot_with_unmapped_measurement_retires_mapped_facts(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        date.today().isoformat(), "open_wearables", "Open Wearables", "weight", 82.4, "kg",
+        source_id="undated-latest", source_system="open_wearables",
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "body_summary": {
+                "source": {"provider": "unknown"},
+                "slow_changing": {"height_cm": 180},
+                "averaged": {
+                    "period_days": 7,
+                    "period_start": "2026-07-07T00:00:00Z",
+                    "period_end": "2026-07-14T00:00:00Z",
+                },
+                "latest": {},
+            },
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    assert list_recommendation_facts(db_file, profile_key="profile-42") == []
+
+
 @pytest.mark.parametrize("body_summary", [
     {},
     [],
     {"averaged": {}},
     {"latest": {}},
+    {"slow_changing": {}},
+    {"slow_changing": {}, "averaged": {}, "latest": {}},
     {"slow_changing": {"weight_kg": "invalid"}},
+    {
+        "source": {"provider": "unknown"},
+        "slow_changing": {"height_cm": "invalid"},
+        "averaged": {
+            "period_days": 7,
+            "period_start": "2026-07-07T00:00:00Z",
+            "period_end": "2026-07-14T00:00:00Z",
+        },
+        "latest": {},
+    },
+    {
+        "source": {"provider": "unknown"},
+        "slow_changing": {"weight_kg": 99, "height_cm": "invalid"},
+        "averaged": {
+            "period_days": 7,
+            "period_start": "2026-07-07T00:00:00Z",
+            "period_end": "2026-07-14T00:00:00Z",
+        },
+        "latest": {},
+    },
+    {
+        "source": {"provider": "unknown"},
+        "slow_changing": {"raw": {"height_cm": 180}},
+        "averaged": {
+            "period_days": 7,
+            "period_start": "2026-07-07T00:00:00Z",
+            "period_end": "2026-07-14T00:00:00Z",
+        },
+        "latest": {},
+    },
 ])
 def test_malformed_body_snapshot_preserves_last_known_body_snapshot(tmp_path, body_summary):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
@@ -423,7 +488,12 @@ def test_store_wearable_facts_maps_sleep_recovery_activity_body_and_workouts(tmp
         "body_summary": {
             "source": {"provider": "oura"},
             "slow_changing": {"weight_kg": 82.4, "body_fat_percent": 17.2},
-            "averaged": {"period_end": "2026-06-28T23:59:00Z", "resting_heart_rate_bpm": 53},
+            "averaged": {
+                "period_days": 7,
+                "period_start": "2026-06-21T23:59:00Z",
+                "period_end": "2026-06-28T23:59:00Z",
+                "resting_heart_rate_bpm": 53,
+            },
             "latest": {
                 "body_temperature_celsius": 36.7,
                 "body_temperature_measured_at": "2026-06-27T22:00:00Z",
@@ -580,12 +650,19 @@ def test_body_summary_averages_use_recovery_domain(tmp_path):
     hub.store_wearable_facts(
         {
             "fetched_at": "2026-07-14T12:00:00Z",
-            "body_summary": {"averaged": {
-                "period_end": "2026-07-14T11:00:00Z",
-                "resting_heart_rate_bpm": 52,
-                "avg_hrv_sdnn_ms": 48,
-                "avg_hrv_rmssd_ms": 44,
-            }},
+            "body_summary": {
+                "source": {"provider": "unknown"},
+                "slow_changing": {},
+                "averaged": {
+                    "period_days": 7,
+                    "period_start": "2026-07-07T11:00:00Z",
+                    "period_end": "2026-07-14T11:00:00Z",
+                    "resting_heart_rate_bpm": 52,
+                    "avg_hrv_sdnn_ms": 48,
+                    "avg_hrv_rmssd_ms": 44,
+                },
+                "latest": {},
+            },
         },
         db_file=db_file,
         profile_key="profile-42",
@@ -600,6 +677,39 @@ def test_body_summary_averages_use_recovery_domain(tmp_path):
     assert {fact["metric_domain"] for fact in facts} == {"recovery"}
 
 
+def test_body_summary_averages_preserve_observation_instant_across_utc_midnight(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": "2026-07-14T20:00:00-05:00",
+            "body_summary": {
+                "source": {"provider": "unknown"},
+                "slow_changing": {},
+                "averaged": {
+                    "period_days": 7,
+                    "period_start": "2026-07-08T00:30:00Z",
+                    "period_end": "2026-07-15T00:30:00Z",
+                    "resting_heart_rate_bpm": 52,
+                },
+                "latest": {},
+            },
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    [fact] = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert fact["observed_at"] == "2026-07-15T00:30:00Z"
+    assert fact["freshness"] == "fresh"
+    assert fact["used_for_recommendation"] is True
+
+
 def test_composite_body_summary_does_not_promote_top_level_provider(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     hub.store_wearable_facts(
@@ -607,10 +717,12 @@ def test_composite_body_summary_does_not_promote_top_level_provider(tmp_path):
             "fetched_at": "2026-07-14T12:00:00Z",
             "body_summary": {
                 "source": {"provider": "oura"},
-                "slow_changing": {"weight_kg": 82.4},
-                "averaged": {
-                    "period_end": "2026-07-14T11:00:00Z",
-                    "resting_heart_rate_bpm": 52,
+                    "slow_changing": {"weight_kg": 82.4},
+                    "averaged": {
+                        "period_days": 7,
+                        "period_start": "2026-07-07T11:00:00Z",
+                        "period_end": "2026-07-14T11:00:00Z",
+                        "resting_heart_rate_bpm": 52,
                 },
                 "latest": {
                     "skin_temperature_celsius": 34.2,
@@ -699,10 +811,19 @@ def test_store_wearable_facts_keeps_temperature_deviation_distinct_from_measurem
                     temperature_field: -0.3,
                     "source": {"provider": "oura"},
                 }]},
-                "body_summary": {"latest": {
-                    "skin_temperature_celsius": 34.2,
-                    "skin_temperature_measured_at": f"{today}T09:00:00Z",
-                }},
+                "body_summary": {
+                    "source": {"provider": "unknown"},
+                    "slow_changing": {},
+                    "averaged": {
+                        "period_days": 7,
+                        "period_start": f"{(date.today() - timedelta(days=7)).isoformat()}T10:00:00Z",
+                        "period_end": f"{today}T10:00:00Z",
+                    },
+                    "latest": {
+                        "skin_temperature_celsius": 34.2,
+                        "skin_temperature_measured_at": f"{today}T09:00:00Z",
+                    },
+                },
             },
             db_file=db_file,
             profile_key="profile-42",
@@ -724,10 +845,19 @@ def test_body_measurement_freshness_uses_exact_observation_timestamp(tmp_path):
     hub.store_wearable_facts(
         {
             "fetched_at": "2026-07-01T00:10:00-05:00",
-            "body_summary": {"latest": {
-                "skin_temperature_celsius": 34.2,
-                "skin_temperature_measured_at": "2026-06-29T23:50:00-05:00",
-            }},
+            "body_summary": {
+                "source": {"provider": "unknown"},
+                "slow_changing": {},
+                "averaged": {
+                    "period_days": 7,
+                    "period_start": "2026-06-24T00:10:00-05:00",
+                    "period_end": "2026-07-01T00:10:00-05:00",
+                },
+                "latest": {
+                    "skin_temperature_celsius": 34.2,
+                    "skin_temperature_measured_at": "2026-06-29T23:50:00-05:00",
+                },
+            },
         },
         db_file=db_file,
         profile_key="profile-42",
@@ -1013,6 +1143,52 @@ def test_malformed_workout_snapshot_preserves_prior_workout_facts(tmp_path):
     }
 
 
+@pytest.mark.parametrize("duration", [
+    {"duration_seconds": -1800},
+    {"duration_min": -30},
+    {"duration_minutes": 0},
+])
+def test_non_positive_workout_duration_preserves_prior_workout_facts(tmp_path, duration):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        today, "open_wearables", "Open Wearables", "workout_duration", 30, "min",
+        source_id="workout-1", observed_at=f"{today}T08:00:00Z",
+        freshness="fresh", used_for_recommendation=True,
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": f"{today}T11:00:00Z",
+            "_workout_snapshot_complete": True,
+            "_workout_query": {
+                "start_at": f"{(date.today() - timedelta(days=6)).isoformat()}T00:00:00Z",
+                "end_at": f"{(date.today() + timedelta(days=1)).isoformat()}T00:00:00Z",
+            },
+            "workouts": {"events": [{
+                "id": "invalid-duration",
+                "type": "running",
+                "start": f"{today}T09:00:00Z",
+                "end": f"{today}T10:00:00Z",
+                "provider": "oura",
+                **duration,
+            }]},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert {(fact["metric"], fact["source_id"], fact["value"]) for fact in facts} == {
+        ("workout_duration", "workout-1", 30)
+    }
+
+
 def test_mixed_timezone_workout_duration_preserves_prior_snapshot_facts(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     today = date.today().isoformat()
@@ -1210,7 +1386,16 @@ def test_undated_body_latest_replaces_prior_projection(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
     for fetched_at in ("2026-06-28T10:00:00", "2026-06-29T10:00:00"):
         hub.store_wearable_facts(
-            {"fetched_at": fetched_at, "body_summary": {"slow_changing": {"weight_kg": 82.4}}},
+            {"fetched_at": fetched_at, "body_summary": {
+                "source": {"provider": "unknown"},
+                "slow_changing": {"weight_kg": 82.4},
+                "averaged": {
+                    "period_days": 7,
+                    "period_start": "2026-06-22T00:00:00Z",
+                    "period_end": "2026-06-29T00:00:00Z",
+                },
+                "latest": {},
+            }},
             db_file=db_file,
             profile_key="profile-42",
             activity_extractor=lambda _payload: [],

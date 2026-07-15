@@ -64,54 +64,128 @@ def _valid_body_snapshot(payload: object) -> bool:
         return True
     if not isinstance(payload, dict):
         return False
-    slow = payload.get("slow_changing")
-    if "slow_changing" not in payload or not isinstance(slow, dict):
+    if set(payload) != {"source", "slow_changing", "averaged", "latest"}:
+        return False
+    source = payload["source"]
+    if (
+        not isinstance(source, dict)
+        or set(source) - {"provider", "device"}
+        or not isinstance(source.get("provider"), str)
+        or not source["provider"].strip()
+        or (source.get("device") is not None and not isinstance(source.get("device"), str))
+    ):
         return False
 
+    def valid_number(value: object, *, integer: bool = False) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, bool):
+            return False
+        if integer:
+            return isinstance(value, int)
+        return isinstance(value, (int, float)) and math.isfinite(float(value))
+
+    slow = payload["slow_changing"]
     slow_fields = {
-        "weight_kg", "weight", "body_fat_percent", "body_fat",
-        "muscle_mass_kg", "muscle_mass", "bmi", "body_mass_index",
+        "weight_kg", "height_cm", "body_fat_percent", "muscle_mass_kg", "bmi", "age",
     }
+    if (
+        not isinstance(slow, dict)
+        or set(slow) - slow_fields
+        or any(
+            not valid_number(value, integer=(key == "age"))
+            for key, value in slow.items()
+        )
+    ):
+        return False
+
+    averaged = payload["averaged"]
     averaged_fields = {
-        "resting_heart_rate_bpm", "avg_hrv_sdnn_ms", "avg_hrv_rmssd_ms",
+        "period_days", "resting_heart_rate_bpm", "avg_hrv_sdnn_ms",
+        "avg_hrv_rmssd_ms", "period_start", "period_end",
     }
-    latest_measurements = (
+    if not isinstance(averaged, dict) or set(averaged) - averaged_fields:
+        return False
+    if not valid_number(averaged.get("resting_heart_rate_bpm"), integer=True):
+        return False
+    if not valid_number(averaged.get("avg_hrv_sdnn_ms")):
+        return False
+    if not valid_number(averaged.get("avg_hrv_rmssd_ms")):
+        return False
+    period_days = averaged.get("period_days")
+    period_start = _temporal_value(averaged.get("period_start"))
+    period_end = _temporal_value(averaged.get("period_end"))
+    if period_start is not None and period_start.tzinfo is None:
+        period_start = period_start.astimezone()
+    if period_end is not None and period_end.tzinfo is None:
+        period_end = period_end.astimezone()
+    if (
+        isinstance(period_days, bool)
+        or not isinstance(period_days, int)
+        or not 1 <= period_days <= 7
+        or period_start is None
+        or period_end is None
+        or period_start >= period_end
+    ):
+        return False
+
+    latest = payload["latest"]
+    latest_fields = {
+        "body_temperature_celsius", "body_temperature_measured_at",
+        "skin_temperature_celsius", "skin_temperature_measured_at",
+        "blood_pressure", "blood_pressure_measured_at",
+    }
+    if not isinstance(latest, dict) or set(latest) - latest_fields:
+        return False
+    for value_key, measured_at_key in (
         ("body_temperature_celsius", "body_temperature_measured_at"),
         ("skin_temperature_celsius", "skin_temperature_measured_at"),
-    )
+    ):
+        value = latest.get(value_key)
+        measured_at = latest.get(measured_at_key)
+        if not valid_number(value):
+            return False
+        if (value is None) != (measured_at is None):
+            return False
+        if measured_at is not None and _temporal_text(measured_at) is None:
+            return False
 
-    def numeric_fields_are_valid(values: dict, field_names: set[str]) -> bool:
-        return all(
-            values.get(field) is None or _number(values, field) is not None
-            for field in field_names
-            if field in values
-        )
-
-    if not numeric_fields_are_valid(slow, slow_fields):
+    blood_pressure = latest.get("blood_pressure")
+    blood_pressure_measured_at = latest.get("blood_pressure_measured_at")
+    if blood_pressure is not None:
+        blood_pressure_fields = {
+            "avg_systolic_mmhg", "avg_diastolic_mmhg", "max_systolic_mmhg",
+            "max_diastolic_mmhg", "min_systolic_mmhg", "min_diastolic_mmhg",
+            "reading_count",
+        }
+        if (
+            not isinstance(blood_pressure, dict)
+            or set(blood_pressure) - blood_pressure_fields
+            or not isinstance(blood_pressure.get("avg_systolic_mmhg"), int)
+            or isinstance(blood_pressure.get("avg_systolic_mmhg"), bool)
+            or not isinstance(blood_pressure.get("avg_diastolic_mmhg"), int)
+            or isinstance(blood_pressure.get("avg_diastolic_mmhg"), bool)
+            or any(not valid_number(value, integer=True) for value in blood_pressure.values())
+        ):
+            return False
+    if (blood_pressure is None) != (blood_pressure_measured_at is None):
+        return False
+    if blood_pressure_measured_at is not None and _temporal_text(blood_pressure_measured_at) is None:
         return False
 
-    averaged = payload.get("averaged")
-    if "averaged" in payload:
-        if averaged is not None and not isinstance(averaged, dict):
-            return False
-        if isinstance(averaged, dict):
-            if not numeric_fields_are_valid(averaged, averaged_fields):
-                return False
-            if averaged_fields & averaged.keys() and _row_date(averaged) is None:
-                return False
-
-    latest = payload.get("latest")
-    if "latest" in payload:
-        if latest is not None and not isinstance(latest, dict):
-            return False
-        if isinstance(latest, dict):
-            for value_key, measured_at_key in latest_measurements:
-                if value_key not in latest or latest.get(value_key) is None:
-                    continue
-                if _number(latest, value_key) is None:
-                    return False
-                if _temporal_text(latest.get(measured_at_key)) is None:
-                    return False
+    measurement_present = (
+        any(value is not None for value in slow.values())
+        or any(
+            averaged.get(key) is not None
+            for key in ("resting_heart_rate_bpm", "avg_hrv_sdnn_ms", "avg_hrv_rmssd_ms")
+        )
+        or any(
+            latest.get(key) is not None
+            for key in ("body_temperature_celsius", "skin_temperature_celsius", "blood_pressure")
+        )
+    )
+    if not measurement_present:
+        return False
     return True
 
 
@@ -437,12 +511,14 @@ def store_wearable_facts(
         and _temporal_value(workout_query_start) < _temporal_value(workout_query_end)
     )
     body_payload = data.get("body_summary")
+    body_snapshot_valid = _valid_body_snapshot(body_payload)
     body_snapshot_replacement_safe = (
         "body_summary" in data
         and "body_summary" not in errors
         and not ({"auth", "config"} & errors.keys())
-        and _valid_body_snapshot(body_payload)
+        and body_snapshot_valid
     )
+    body_rows = _payload_rows(body_payload) if body_payload is not None and body_snapshot_valid else []
     replacement_source_dates = {}
 
     def mark_replacement_sources(raw_row, date_s):
@@ -572,8 +648,9 @@ def store_wearable_facts(
             if len(facts) > before_count:
                 mark_replacement_sources(row, date_s)
 
-    for body in _payload_rows(data.get("body_summary")):
-        date_s = _row_date(body.get("averaged") if isinstance(body.get("averaged"), dict) else body)
+    for body in body_rows:
+        averaged = body.get("averaged") if isinstance(body.get("averaged"), dict) else {}
+        date_s = _row_date(averaged if averaged else body)
         # The body summary is composite: its top-level source can describe only
         # one constituent measurement, not every averaged/latest field.
         provider = None
@@ -584,13 +661,16 @@ def store_wearable_facts(
                 "muscle_mass": (("muscle_mass_kg", "muscle_mass"), "kg"),
                 "body_mass_index": (("bmi", "body_mass_index"), "kg/m2"),
             }),
-            (body.get("averaged") if isinstance(body.get("averaged"), dict) else {}, False, {
+            (averaged, False, {
                 "resting_heart_rate_average": (("resting_heart_rate_bpm",), "bpm"),
                 "heart_rate_variability_sdnn_average": (("avg_hrv_sdnn_ms",), "ms"),
                 "heart_rate_variability_rmssd_average": (("avg_hrv_rmssd_ms",), "ms"),
             }),
         )
         for values, undated, mappings in body_groups:
+            observed_at = None if undated else _temporal_text(_first_value(
+                values, "period_end", "end", "end_time", "timestamp", "date",
+            ))
             for metric, (aliases, unit) in mappings.items():
                 value = _number(values, *aliases)
                 if value is not None:
@@ -600,8 +680,9 @@ def store_wearable_facts(
                     facts.append(WearableDailyFact(
                         fact_date, "open_wearables", "Open Wearables", metric, value, unit,
                         confidence=("low" if undated else "medium"),
-                        freshness=("unknown" if undated else _fact_freshness(date_s, fetched_at)),
+                        freshness=("unknown" if undated else _fact_freshness(observed_at or date_s, fetched_at)),
                         source_id=("undated-latest" if undated else None), source_provider=provider,
+                        observed_at=observed_at,
                         source_record_kind="summary",
                         metric_domain=("body" if undated else "recovery"),
                     ))
@@ -692,6 +773,9 @@ def store_wearable_facts(
                 value = None
                 workout_snapshot_replacement_safe = False
             if value is not None and not math.isfinite(value):
+                value = None
+                workout_snapshot_replacement_safe = False
+            if metric == "workout_duration" and value is not None and value <= 0:
                 value = None
                 workout_snapshot_replacement_safe = False
             if value is not None and math.isfinite(value):
