@@ -17311,7 +17311,12 @@ def sleep_import():
                 if window_minutes>1440:
                     errors.append({'row':row_number,'field':'sleep_end','code':'out_of_range'})
                     continue
-                if end_value.date()!=record_date or start_value.date() not in {record_date,record_date-timedelta(days=1)}:
+                start_date=start_value.date()
+                start_matches_record_date=(
+                    start_date==record_date
+                    or (start_date<record_date and (record_date-start_date).days==1)
+                )
+                if end_value.date()!=record_date or not start_matches_record_date:
                     errors.append({'row':row_number,'field':'date','code':'contradictory_timestamp'})
                     continue
             else:
@@ -17323,7 +17328,11 @@ def sleep_import():
                 start_dt=datetime.combine(anchor_date,start_value)
                 end_dt=datetime.combine(anchor_date,end_value)
                 if end_dt<=start_dt:
-                    start_dt-=timedelta(days=1)
+                    try:
+                        start_dt-=timedelta(days=1)
+                    except OverflowError:
+                        errors.append({'row':row_number,'field':'date','code':'contradictory_timestamp'})
+                        continue
                 window_minutes=(end_dt-start_dt).total_seconds()/60
                 e['sleep_start']=start_dt.isoformat()
                 e['sleep_end']=end_dt.isoformat()

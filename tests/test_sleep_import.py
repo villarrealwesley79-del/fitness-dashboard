@@ -174,6 +174,53 @@ def test_sleep_import_accepts_exactly_1440_minutes(sleep_api):
     assert response.status_code == 200
 
 
+def test_sleep_import_accepts_minimum_date_same_day_datetime(sleep_api):
+    module, client, _sleep_file, _baseline = sleep_api
+
+    response = _post(
+        client,
+        {
+            "entries": [
+                _row(
+                    date="0001-01-01",
+                    sleep_start="0001-01-01T00:00:00",
+                    sleep_end="0001-01-01T01:00:00",
+                    sleep_duration_min=60,
+                    time_in_bed_min=60,
+                )
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert any(entry["date"] == "0001-01-01" for entry in module.SLEEP_DATA)
+
+
+def test_sleep_import_rejects_minimum_date_time_only_underflow_atomically(sleep_api):
+    module, client, sleep_file, baseline = sleep_api
+    disk_before = sleep_file.read_text(encoding="utf-8")
+
+    response = _post(
+        client,
+        {
+            "entries": [
+                _row(
+                    date="0001-01-01",
+                    sleep_start="23:30",
+                    sleep_end="07:00",
+                )
+            ]
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"] == [
+        {"row": 1, "field": "date", "code": "contradictory_timestamp"}
+    ]
+    assert module.SLEEP_DATA == baseline
+    assert sleep_file.read_text(encoding="utf-8") == disk_before
+
+
 @pytest.mark.parametrize(
     ("overrides", "details"),
     [
