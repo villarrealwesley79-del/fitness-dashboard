@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime
 
 import pytest
 
@@ -446,6 +447,22 @@ def test_legacy_composite_body_fact_stays_under_open_wearables_identity(tmp_path
     assert fact["provider_id"] == "open_wearables"
     assert fact["provider_display_name"] == "Open Wearables"
     assert fact["source_provider"] is None
+
+
+def test_version_one_fresh_open_wearables_fact_becomes_recommendation_eligible(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    today = datetime.now().date().isoformat()
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        today, "open_wearables", "Open Wearables", "sleep_duration", 420, "min",
+        freshness="fresh", used_for_recommendation=False,
+    )])
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA user_version = 1")
+
+    facts = list_recommendation_facts(str(db), usable_only=True)
+
+    assert [fact["metric"] for fact in facts] == ["sleep_duration"]
+    assert facts[0]["used_for_recommendation"] is True
 
 
 def test_new_body_skin_temperature_respects_explicit_body_domain(tmp_path):

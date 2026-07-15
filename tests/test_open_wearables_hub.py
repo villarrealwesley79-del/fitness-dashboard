@@ -1,5 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 import open_wearables_hub as hub
 from wearable_fact_store import WearableDailyFact, upsert_daily_facts
 
@@ -232,6 +234,87 @@ def test_composite_body_summary_does_not_mark_direct_provider_replacement(tmp_pa
     [source] = list_wearable_sources(db_file, profile_key="profile-42")
     assert source["capabilities"]["replacement_sources"] == []
     assert source["capabilities"]["replacement_source_dates"] == {}
+
+
+def test_authoritative_empty_body_snapshot_clears_undated_latest_facts(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        date.today().isoformat(), "open_wearables", "Open Wearables", "weight", 82.4, "kg",
+        source_id="undated-latest", source_system="open_wearables",
+    ), WearableDailyFact(
+        date.today().isoformat(), "manual", "Manual", "weight", 81.9, "kg",
+        source_id="undated-latest", source_system="manual",
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {"fetched_at": datetime.now(timezone.utc).isoformat(), "body_summary": None},
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    facts = list_recommendation_facts(db_file, profile_key="profile-42")
+    assert [(fact["source_system"], fact["value"]) for fact in facts] == [("manual", 81.9)]
+
+
+def test_auth_failure_preserves_last_known_body_snapshot(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        date.today().isoformat(), "open_wearables", "Open Wearables", "weight", 82.4, "kg",
+        source_id="undated-latest", source_system="open_wearables",
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "body_summary": None,
+            "errors": {"auth": "open_wearables_auth_error"},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    assert list_recommendation_facts(db_file, profile_key="profile-42")[0]["value"] == 82.4
+
+
+@pytest.mark.parametrize("body_summary", [
+    {},
+    [],
+    {"averaged": {}},
+    {"latest": {}},
+    {"slow_changing": {"weight_kg": "invalid"}},
+])
+def test_malformed_body_snapshot_preserves_last_known_body_snapshot(tmp_path, body_summary):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    upsert_daily_facts(db_file, [WearableDailyFact(
+        date.today().isoformat(), "open_wearables", "Open Wearables", "weight", 82.4, "kg",
+        source_id="undated-latest", source_system="open_wearables",
+    )], profile_key="profile-42")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "body_summary": body_summary,
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    assert list_recommendation_facts(db_file, profile_key="profile-42")[0]["value"] == 82.4
 
 
 def test_apply_recommendation_guard_downgrades_once_when_modifier_applies():

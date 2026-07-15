@@ -59,6 +59,62 @@ def _authoritative_collection_rows(payload: object) -> list[dict] | None:
     return collections[0]
 
 
+def _valid_body_snapshot(payload: object) -> bool:
+    if payload is None:
+        return True
+    if not isinstance(payload, dict):
+        return False
+    slow = payload.get("slow_changing")
+    if "slow_changing" not in payload or not isinstance(slow, dict):
+        return False
+
+    slow_fields = {
+        "weight_kg", "weight", "body_fat_percent", "body_fat",
+        "muscle_mass_kg", "muscle_mass", "bmi", "body_mass_index",
+    }
+    averaged_fields = {
+        "resting_heart_rate_bpm", "avg_hrv_sdnn_ms", "avg_hrv_rmssd_ms",
+    }
+    latest_measurements = (
+        ("body_temperature_celsius", "body_temperature_measured_at"),
+        ("skin_temperature_celsius", "skin_temperature_measured_at"),
+    )
+
+    def numeric_fields_are_valid(values: dict, field_names: set[str]) -> bool:
+        return all(
+            values.get(field) is None or _number(values, field) is not None
+            for field in field_names
+            if field in values
+        )
+
+    if not numeric_fields_are_valid(slow, slow_fields):
+        return False
+
+    averaged = payload.get("averaged")
+    if "averaged" in payload:
+        if averaged is not None and not isinstance(averaged, dict):
+            return False
+        if isinstance(averaged, dict):
+            if not numeric_fields_are_valid(averaged, averaged_fields):
+                return False
+            if averaged_fields & averaged.keys() and _row_date(averaged) is None:
+                return False
+
+    latest = payload.get("latest")
+    if "latest" in payload:
+        if latest is not None and not isinstance(latest, dict):
+            return False
+        if isinstance(latest, dict):
+            for value_key, measured_at_key in latest_measurements:
+                if value_key not in latest or latest.get(value_key) is None:
+                    continue
+                if _number(latest, value_key) is None:
+                    return False
+                if _temporal_text(latest.get(measured_at_key)) is None:
+                    return False
+    return True
+
+
 def _first_value(row: dict, *keys):
     for key in keys:
         value = row.get(key)
@@ -380,6 +436,13 @@ def store_wearable_facts(
         and workout_query_end is not None
         and _temporal_value(workout_query_start) < _temporal_value(workout_query_end)
     )
+    body_payload = data.get("body_summary")
+    body_snapshot_replacement_safe = (
+        "body_summary" in data
+        and "body_summary" not in errors
+        and not ({"auth", "config"} & errors.keys())
+        and _valid_body_snapshot(body_payload)
+    )
     replacement_source_dates = {}
 
     def mark_replacement_sources(raw_row, date_s):
@@ -658,21 +721,20 @@ def store_wearable_facts(
         )
         for fact in facts
     ]
-    if facts or workout_snapshot_replacement_safe:
+    if facts or workout_snapshot_replacement_safe or body_snapshot_replacement_safe:
         facts = [
             replace(fact, used_for_recommendation=fact.freshness in {"fresh", "aging"})
             for fact in facts
         ]
-        replace_source_ids = (
-            {"undated-latest"}
-            if any(fact.source_id == "undated-latest" for fact in facts)
-            else None
-        )
         upsert_daily_facts(
             db_file,
             facts,
             profile_key=profile_key,
-            replace_source_ids=replace_source_ids,
+            replace_source_scopes=(
+                {("open_wearables", "undated-latest")}
+                if body_snapshot_replacement_safe
+                else None
+            ),
             replace_provider_metric_observation_windows=(
                 {(
                     "open_wearables",

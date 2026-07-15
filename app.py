@@ -13214,6 +13214,10 @@ def _open_wearables_replacement_source_dates(now=None):
     except Exception:
         return {}
     now_dt = now or datetime.now()
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.astimezone()
+    local_now_date = now_dt.date()
+    now_dt = now_dt.astimezone(timezone.utc)
     for source in stored_sources:
         if source.get("provider_id") != "open_wearables":
             continue
@@ -13222,6 +13226,9 @@ def _open_wearables_replacement_source_dates(now=None):
         sync_dt = _parse_iso_date_or_datetime(source.get("last_sync_attempt"))
         if not sync_dt:
             return {}
+        if sync_dt.tzinfo is None:
+            sync_dt = sync_dt.astimezone()
+        sync_dt = sync_dt.astimezone(timezone.utc)
         age_days = (now_dt - sync_dt).total_seconds() / 86400.0
         if age_days < 0 or age_days > 2:
             return {}
@@ -13238,7 +13245,7 @@ def _open_wearables_replacement_source_dates(now=None):
             data_dt = _parse_iso_date_or_datetime(str(date_value or ""))
             if not data_dt:
                 continue
-            data_age_days = (now_dt.date() - data_dt.date()).days
+            data_age_days = (local_now_date - data_dt.date()).days
             if 0 <= data_age_days <= 2:
                 replacement_source_dates[source_key] = data_dt.date().isoformat()
         return replacement_source_dates

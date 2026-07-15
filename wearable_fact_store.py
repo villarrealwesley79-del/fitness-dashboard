@@ -27,7 +27,7 @@ FORBIDDEN_FIELD_NAMES = {
     "user_id",
 }
 
-WEARABLE_FACT_SCHEMA_VERSION = 1
+WEARABLE_FACT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -289,12 +289,18 @@ def _backfill_fact_contract(conn: sqlite3.Connection) -> None:
         "THEN 'recovery' ELSE 'activity' END), "
         "capability_state = COALESCE(NULLIF(capability_state, ''), 'available'), "
         "source_last_synced_at = COALESCE(source_last_synced_at, updated_at), "
-        "imported_at = COALESCE(imported_at, updated_at) "
+        "imported_at = COALESCE(imported_at, updated_at), "
+        "used_for_recommendation = CASE "
+        "WHEN COALESCE(NULLIF(source_system, ''), provider_id) = 'open_wearables' "
+        "AND freshness IN ('fresh', 'aging') THEN 1 "
+        "ELSE used_for_recommendation END "
         "WHERE source_system IS NULL OR source_system = '' "
         "OR source_record_kind IS NULL OR source_record_kind = '' "
         "OR metric_domain IS NULL OR metric_domain = '' "
         "OR capability_state IS NULL OR capability_state = '' "
-        "OR source_last_synced_at IS NULL OR imported_at IS NULL"
+        "OR source_last_synced_at IS NULL OR imported_at IS NULL "
+        "OR (COALESCE(NULLIF(source_system, ''), provider_id) = 'open_wearables' "
+        "AND freshness IN ('fresh', 'aging') AND used_for_recommendation = 0)"
     )
 
 
@@ -442,6 +448,7 @@ def upsert_daily_facts(
     facts: list[WearableDailyFact | dict],
     profile_key: str | int | None = None,
     replace_source_ids: set[str] | None = None,
+    replace_source_scopes: set[tuple[str, str]] | None = None,
     replace_provider_metric_observation_windows: set[tuple[str, str, str, str]] | None = None,
 ) -> int:
     init_wearable_fact_db(db_path)
@@ -468,6 +475,12 @@ def upsert_daily_facts(
         payload["imported_at"] = payload.get("imported_at") or payload.get("updated_at") or now
         rows.append(payload)
     with sqlite3.connect(db_path) as conn:
+        for source_system, source_id in replace_source_scopes or set():
+            conn.execute(
+                "DELETE FROM wearable_daily_facts "
+                "WHERE profile_key = ? AND source_system = ? AND source_id = ?",
+                (scoped_profile, source_system, source_id),
+            )
         for source_system, metric_prefix, start_at, end_at in replace_provider_metric_observation_windows or set():
             conn.execute(
                 "DELETE FROM wearable_daily_facts "

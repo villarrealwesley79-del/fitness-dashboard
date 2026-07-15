@@ -425,6 +425,28 @@ def test_open_wearables_replacement_sources_expire_when_sync_is_stale(monkeypatc
     assert sources == []
 
 
+def test_open_wearables_replacement_sources_accept_offset_aware_sync_timestamp(monkeypatch, tmp_path):
+    module = _fitness_app()
+    facts_db = tmp_path / "wearable_facts.sqlite3"
+    monkeypatch.setattr(module, "WEARABLE_FACTS_DB_FILE", str(facts_db))
+    module.upsert_wearable_source(str(facts_db), {
+        "provider_id": "open_wearables",
+        "label": "Open Wearables",
+        "status": "fresh",
+        "last_data_point": "2026-06-29",
+        "last_sync_attempt": "2026-07-01T19:00:00-05:00",
+        "capabilities": {
+            "replacement_source_dates": {"oura": "2026-06-29"},
+        },
+    }, profile_key=module._open_wearables_profile_key())
+
+    replacement_dates = module._open_wearables_replacement_source_dates(
+        now=module.datetime(2026, 7, 1, 20, 0, tzinfo=timezone(timedelta(hours=-5))),
+    )
+
+    assert replacement_dates == {"oura": "2026-06-29"}
+
+
 def test_open_wearables_store_records_replacement_dates_from_fact_provenance(monkeypatch, tmp_path):
     module = _fitness_app()
     facts_db = tmp_path / "wearable_facts.sqlite3"
