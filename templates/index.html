@@ -637,7 +637,11 @@
                 <div class="card-head"><div class="card-label">LOG MEASUREMENT</div></div>
                 <form id="form-body" class="form-grid" onsubmit="return false;">
                     <div class="form-row-2">
-                        <div class="form-field"><label>Weight (lbs)</label><input type="number" id="body-log-weight" step="0.1" placeholder="185.5"></div>
+                        <div class="form-field">
+                            <label for="body-log-weight">Weight (lbs) <span class="field-hint">required</span></label>
+                            <input type="number" id="body-log-weight" step="0.1" placeholder="185.5" required aria-describedby="body-log-error">
+                            <span id="body-log-error" class="field-hint" role="alert" hidden>Enter weight to save a body measurement.</span>
+                        </div>
                         <div class="form-field"><label>Body Fat %</label><input type="number" id="body-log-bf" step="0.1" placeholder="18.5"></div>
                     </div>
                     <button id="btn-log-body" class="btn btn-primary btn-block" type="button">Save Measurement</button>
