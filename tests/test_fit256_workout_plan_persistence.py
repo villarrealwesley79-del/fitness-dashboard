@@ -89,6 +89,31 @@ def _client(monkeypatch, tmp_path):
     return module, module.app.test_client(), state
 
 
+def test_persist_current_workout_plan_uses_authoritative_saved_plan(monkeypatch, tmp_path):
+    module, _flask_client, _state = _client(monkeypatch, tmp_path)
+    submitted_plan = _recommendation(module)
+    authoritative_plan = _new_recommendation(module)
+    save_calls = []
+
+    def save_plan(user_id, fingerprint, recommendation):
+        save_calls.append((user_id, fingerprint, recommendation))
+        return {"plan": authoritative_plan}
+
+    monkeypatch.setattr(module, "save_current_workout_plan", save_plan)
+
+    persisted_plan = module._persist_current_workout_plan(submitted_plan, "fp-user-1")
+
+    assert save_calls == [(1, "fp-user-1", submitted_plan)]
+    assert persisted_plan is authoritative_plan
+    assert module.LAST_WORKOUT_RECOMMENDATION is authoritative_plan
+    assert module.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT == "fp-user-1"
+    assert module.LAST_WORKOUT_RECOMMENDATION_OWNER == {
+        "user_id": 1,
+        "fingerprint": "fp-user-1",
+        "plan_id": id(authoritative_plan),
+    }
+
+
 def test_swap_uses_persisted_plan_after_worker_globals_are_empty(monkeypatch, tmp_path):
     module, client, _state = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: _recommendation(module))
@@ -350,7 +375,7 @@ def test_current_plan_cache_read_waits_for_owner_metadata(monkeypatch, tmp_path)
         return user_id
 
     monkeypatch.setattr(module, "_current_data_user_id", current_user_id)
-    monkeypatch.setattr(module, "save_current_workout_plan", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(module, "save_current_workout_plan", lambda *_args, **_kwargs: {"plan": plan})
 
     def writer():
         thread_state.user_id = 1

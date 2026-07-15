@@ -4645,15 +4645,17 @@ def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
 def _persist_current_workout_plan(recommendation: dict, fingerprint: str) -> dict:
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT, LAST_WORKOUT_RECOMMENDATION_OWNER
     with CURRENT_WORKOUT_PLAN_LOCK:
-        LAST_WORKOUT_RECOMMENDATION = recommendation
+        user_id = _current_data_user_id()
+        persisted = save_current_workout_plan(user_id, fingerprint, recommendation)
+        authoritative_plan = persisted["plan"]
+        LAST_WORKOUT_RECOMMENDATION = authoritative_plan
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
         LAST_WORKOUT_RECOMMENDATION_OWNER = {
-            "user_id": _current_data_user_id(),
+            "user_id": user_id,
             "fingerprint": fingerprint,
-            "plan_id": id(recommendation),
+            "plan_id": id(authoritative_plan),
         }
-        save_current_workout_plan(_current_data_user_id(), fingerprint, recommendation)
-    return recommendation
+    return authoritative_plan
 
 
 def _wearable_adjusted_for_display(base_plan, guarded_recommendation, whoop_context) -> dict:
