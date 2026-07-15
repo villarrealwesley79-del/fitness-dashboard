@@ -56,6 +56,22 @@ def test_personal_vocab_exact_match_waits_for_accept_threshold(tmp_path, monkeyp
     assert personal_vocab.lookup("chip ckn bur", user_id=1) is None
 
 
+def test_personal_vocab_does_not_replay_retired_nutritionix_resolution(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    historical = _estimate(
+        source="nutritionix",
+        underlying_source="nutritionix",
+    )
+    for _ in range(3):
+        personal_vocab.record_accept(1, "historical usual", historical)
+
+    assert data_store.get_personal_vocab_entry(1, "historical usual") is not None
+    assert personal_vocab.lookup("historical usual", user_id=1) is None
+
+
 def test_personal_vocab_untrusted_exact_match_blocks_fuzzy_substitution(tmp_path, monkeypatch):
     import data_store
 
