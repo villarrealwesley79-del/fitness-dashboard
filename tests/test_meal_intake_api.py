@@ -15095,6 +15095,93 @@ def test_concurrent_multi_winner_replay_repairs_adaptation_after_transaction(
     assert set(pending[0]["food_log_client_ids"]) == set(client_ids)
 
 
+def test_protected_manual_conflict_preserves_pending_meal_children(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "protected-manual-parent"
+    child_client_id = "protected-manual-child"
+    estimate = _accepted_estimate(item_name="Manual parent", calories=430)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": parent_client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **estimate,
+            "correction_state": "manual",
+        },
+    )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": child_client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:01:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+            "meal_id": parent_client_id,
+            "meal_item_id": "child",
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={"estimate": estimate},
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_canonical_meal"
+    child = data_store.get_food_log_by_client_id(1, child_client_id)
+    assert child["correction_state"] == "pending_review"
+    assert child["meal_id"] == parent_client_id
+
+
+def test_eventless_partial_recovery_enqueues_only_new_canonical_row(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "eventless-partial-parent"
+    meal_id = "eventless-partial-meal"
+    estimates = [
+        _accepted_estimate(item_name="Existing canonical", calories=431),
+        _accepted_estimate(item_name="New canonical", calories=432),
+    ]
+    payload, client_ids = _terminal_multi_payload(
+        module,
+        parent_client_id,
+        meal_id,
+        estimates,
+    )
+    payload["local_date"] = "2026-05-22"
+    payload["local_iso"] = "2026-05-22T12:02:00-05:00"
+    existing = _seed_terminal_food_row(
+        client_ids[0],
+        meal_id,
+        "a",
+        0,
+        estimates[0],
+    )
+    module.workout_adaptation.enqueue_accepted_food_logs(1, [existing])
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json=payload,
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    pending = data_store.list_pending_workout_adaptation_windows(1)
+    assert len(pending) == 1
+    assert set(pending[0]["food_log_client_ids"]) == set(client_ids)
+
+
 @pytest.mark.parametrize(
     ("correction_state", "recorder_name", "expected_counts"),
     [

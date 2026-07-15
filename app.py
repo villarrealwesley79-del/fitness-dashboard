@@ -9657,11 +9657,7 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
         )
 
     rows = sorted(rows, key=lambda row: row.get("item_index") if row.get("item_index") is not None else 10_000)
-    adaptation_rows = (
-        newly_finalized_rows
-        if repairing_pending_rows or replaying_existing_event
-        else rows
-    )
+    adaptation_rows = newly_finalized_rows
     if adaptation_rows:
         _enqueue_workout_adaptation_after_accept(user_id, adaptation_rows)
     return _meal_multi_response(
@@ -11123,6 +11119,16 @@ def meal_intake_accept(client_id: str):
                         "client_id already belongs to a different accepted meal",
                         409,
                         code="duplicate_client_id",
+                    )
+                if food_log.get("correction_state") not in {
+                    CORRECTION_STATE_ACCEPTED,
+                    "corrected",
+                }:
+                    accept_conn.rollback()
+                    return api_error(
+                        "canonical accepted meal changed before reconciliation",
+                        409,
+                        code="stale_canonical_meal",
                     )
             _review_cleanup_terminal_snapshot_in_transaction(
                 user_id,
