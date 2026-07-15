@@ -12,7 +12,9 @@ def test_factory_checks_and_preview_use_canonical_python_runtime():
     config = FACTORY_CONFIG.read_text(encoding="utf-8")
 
     assert (
-        f"boot: HOST={TAILNET_HOST} FITNESS_DASHBOARD_FACTORY_PREVIEW=1 "
+        "boot: DATA_DIR=$(/usr/bin/mktemp -d "
+        "/tmp/fitness-dashboard-factory-preview-{port}-XXXXXX) "
+        f"HOST={TAILNET_HOST} FITNESS_DASHBOARD_FACTORY_PREVIEW=1 "
         f"PORT={{port}} {CANONICAL_PYTHON} app.py"
     ) in config
     assert "SESSION_COOKIE_SECURE=false" not in config

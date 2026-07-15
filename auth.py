@@ -13,6 +13,7 @@ import re
 import secrets
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request, redirect, url_for, render_template, flash, session
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
@@ -249,6 +250,8 @@ _owner_config_error_logged = False
 _FACTORY_PREVIEW_ENV = "FITNESS_DASHBOARD_FACTORY_PREVIEW"
 _FACTORY_PREVIEW_USERNAME = "test"
 _FACTORY_PREVIEW_PASSWORD = "1224"
+_FACTORY_PREVIEW_HOST = "100.90.15.93"
+_FACTORY_PREVIEW_DIR_PREFIX = "fitness-dashboard-factory-preview"
 
 
 @contextmanager
@@ -444,29 +447,75 @@ def _factory_preview_enabled() -> bool:
     return os.environ.get(_FACTORY_PREVIEW_ENV, "") == "1"
 
 
+def _validate_factory_preview_storage() -> None:
+    configured = os.environ.get("DATA_DIR", "").strip()
+    port = os.environ.get("PORT", "").strip()
+    host = os.environ.get("HOST", "").strip()
+    if not configured or not port.isdigit():
+        raise RuntimeError("Factory preview requires an isolated preview DATA_DIR")
+
+    data_dir = Path(configured)
+    expected_prefix = f"{_FACTORY_PREVIEW_DIR_PREFIX}-{port}-"
+    auth_db = Path(AUTH_DB)
+    if (
+        not data_dir.is_absolute()
+        or data_dir.is_symlink()
+        or not data_dir.name.startswith(expected_prefix)
+        or auth_db.name != "auth.db"
+        or auth_db.parent.resolve() != data_dir.resolve()
+    ):
+        raise RuntimeError("Factory preview requires an isolated preview DATA_DIR")
+    if host != _FACTORY_PREVIEW_HOST:
+        raise RuntimeError("Factory preview must bind to the configured Tailnet host")
+
+
 def _seed_factory_preview_account() -> None:
     if not _factory_preview_enabled():
         return
 
     hashed = _hash_password(_FACTORY_PREVIEW_PASSWORD)
     with _get_db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS factory_preview_seed (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                user_id   INTEGER NOT NULL UNIQUE,
+                username  TEXT NOT NULL UNIQUE
+            )
+            """
+        )
+        marker = conn.execute(
+            "SELECT user_id, username FROM factory_preview_seed WHERE singleton = 1"
+        ).fetchone()
         existing = conn.execute(
             "SELECT id FROM users WHERE username = ?",
             (_FACTORY_PREVIEW_USERNAME,),
         ).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE users SET password = ?, salt = '', is_pro = 1 WHERE id = ?",
-                (hashed, existing["id"]),
-            )
-        else:
-            conn.execute(
-                """
-                INSERT INTO users (username, password, salt, is_pro)
-                VALUES (?, ?, '', 1)
-                """,
-                (_FACTORY_PREVIEW_USERNAME, hashed),
-            )
+        if marker:
+            if (
+                marker["username"] != _FACTORY_PREVIEW_USERNAME
+                or existing is None
+                or int(marker["user_id"]) != int(existing["id"])
+            ):
+                raise RuntimeError("Factory preview account provenance is invalid")
+            return
+        if existing is not None or conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            raise RuntimeError("Factory preview refused to overwrite an existing account")
+
+        cursor = conn.execute(
+            """
+            INSERT INTO users (username, password, salt, is_pro)
+            VALUES (?, ?, '', 1)
+            """,
+            (_FACTORY_PREVIEW_USERNAME, hashed),
+        )
+        conn.execute(
+            """
+            INSERT INTO factory_preview_seed (singleton, user_id, username)
+            VALUES (1, ?, ?)
+            """,
+            (cursor.lastrowid, _FACTORY_PREVIEW_USERNAME),
+        )
 
 
 def _single_user_mode() -> bool:
@@ -787,6 +836,8 @@ def init_auth(app):
 
     login_manager.init_app(app)
     app.register_blueprint(auth_bp)
+    if _factory_preview_enabled():
+        _validate_factory_preview_storage()
     init_auth_db()
     _seed_factory_preview_account()
 

@@ -24,11 +24,15 @@ def _make_auth_app(
     *,
     secure_cookie="false",
     factory_preview=False,
+    data_dir=None,
 ):
     import auth
 
-    auth_db = tmp_path / "auth.db"
+    data_dir = Path(data_dir or tmp_path)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    auth_db = data_dir / "auth.db"
     monkeypatch.setattr(auth, "AUTH_DB", str(auth_db))
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
     monkeypatch.setenv("SECRET_KEY", "fit185-auth-test-secret")
     if secure_cookie is None:
         monkeypatch.delenv("SESSION_COOKIE_SECURE", raising=False)
@@ -36,8 +40,12 @@ def _make_auth_app(
         monkeypatch.setenv("SESSION_COOKIE_SECURE", secure_cookie)
     if factory_preview:
         monkeypatch.setenv("FITNESS_DASHBOARD_FACTORY_PREVIEW", "1")
+        monkeypatch.setenv("HOST", "100.90.15.93")
+        monkeypatch.setenv("PORT", "5099")
     else:
         monkeypatch.delenv("FITNESS_DASHBOARD_FACTORY_PREVIEW", raising=False)
+        monkeypatch.delenv("HOST", raising=False)
+        monkeypatch.delenv("PORT", raising=False)
     monkeypatch.setenv("FITNESS_DASHBOARD_SINGLE_USER", "true")
     monkeypatch.delenv("FITNESS_DASHBOARD_OWNER_USER_ID", raising=False)
 
@@ -68,11 +76,13 @@ def test_auth_cookie_defaults_remain_secure_without_factory_override(tmp_path, m
 
 
 def test_factory_preview_seeds_fixed_owner_account(tmp_path, monkeypatch):
+    preview_dir = tmp_path / "fitness-dashboard-factory-preview-5099-ABC123"
     app, auth = _make_auth_app(
         tmp_path,
         monkeypatch,
         secure_cookie=None,
         factory_preview=True,
+        data_dir=preview_dir,
     )
 
     preview_user = auth.User.authenticate("test", "1224")
@@ -84,6 +94,64 @@ def test_factory_preview_seeds_fixed_owner_account(tmp_path, monkeypatch):
     assert app.config["REMEMBER_COOKIE_SECURE"] is False
 
 
+def test_factory_preview_rejects_non_preview_storage(tmp_path, monkeypatch):
+    import pytest
+
+    with pytest.raises(RuntimeError, match="isolated preview DATA_DIR"):
+        _make_auth_app(
+            tmp_path,
+            monkeypatch,
+            secure_cookie=None,
+            factory_preview=True,
+        )
+
+
+def test_factory_preview_rejects_existing_unrelated_test_account(tmp_path, monkeypatch):
+    import pytest
+
+    preview_dir = tmp_path / "fitness-dashboard-factory-preview-5099-ABC123"
+    _ordinary_app, auth = _make_auth_app(
+        tmp_path,
+        monkeypatch,
+        factory_preview=False,
+        data_dir=preview_dir,
+    )
+    auth.User.create("test", "unrelated-password")
+
+    with pytest.raises(RuntimeError, match="existing account"):
+        _make_auth_app(
+            tmp_path,
+            monkeypatch,
+            secure_cookie=None,
+            factory_preview=True,
+            data_dir=preview_dir,
+        )
+
+    assert auth.User.authenticate("test", "unrelated-password") is not None
+    assert auth.User.authenticate("test", "1224") is None
+
+
+def test_factory_preview_seed_is_idempotent_only_with_provenance(tmp_path, monkeypatch):
+    preview_dir = tmp_path / "fitness-dashboard-factory-preview-5099-ABC123"
+    _first_app, auth = _make_auth_app(
+        tmp_path,
+        monkeypatch,
+        secure_cookie=None,
+        factory_preview=True,
+        data_dir=preview_dir,
+    )
+
+    _second_app, auth = _make_auth_app(
+        tmp_path,
+        monkeypatch,
+        secure_cookie=None,
+        factory_preview=True,
+        data_dir=preview_dir,
+    )
+
+    assert auth.User.authenticate("test", "1224") is not None
+
+
 def test_ordinary_local_boot_never_seeds_factory_preview_account(tmp_path, monkeypatch):
     _app, auth = _make_auth_app(
         tmp_path,
@@ -93,6 +161,30 @@ def test_ordinary_local_boot_never_seeds_factory_preview_account(tmp_path, monke
     )
 
     assert auth.User.get_by_username("test") is None
+
+
+def test_ordinary_boot_after_preview_uses_separate_unseeded_storage(tmp_path, monkeypatch):
+    preview_dir = tmp_path / "fitness-dashboard-factory-preview-5099-ABC123"
+    _preview_app, auth = _make_auth_app(
+        tmp_path,
+        monkeypatch,
+        secure_cookie=None,
+        factory_preview=True,
+        data_dir=preview_dir,
+    )
+    assert auth.User.authenticate("test", "1224") is not None
+
+    ordinary_dir = tmp_path / "ordinary-local-data"
+    ordinary_app, auth = _make_auth_app(
+        tmp_path,
+        monkeypatch,
+        secure_cookie=None,
+        factory_preview=False,
+        data_dir=ordinary_dir,
+    )
+
+    assert auth.User.get_by_username("test") is None
+    assert ordinary_app.config["SESSION_COOKIE_SECURE"] is True
 
 
 def test_fallback_secret_is_identical_across_cold_started_processes(tmp_path):
