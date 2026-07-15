@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import fcntl
 import io
+from datetime import datetime
 
 import pytest
 
@@ -355,6 +356,20 @@ def test_whoop_csv_import_rejects_future_dates(fitness_app):
 
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "invalid_whoop_csv_metric"
+
+
+def test_whoop_csv_date_tolerance_accepts_today_and_tomorrow(fitness_app):
+    boundary = datetime(2026, 7, 12, 23, 59, 59)
+
+    assert fitness_app._validate_imported_whoop_local_date("2026-07-12", now=boundary) == "2026-07-12"
+    assert fitness_app._validate_imported_whoop_local_date("2026-07-13", now=boundary) == "2026-07-13"
+
+
+def test_whoop_csv_date_tolerance_rejects_dates_after_tomorrow(fitness_app):
+    boundary = datetime(2026, 7, 12, 23, 59, 59)
+
+    with pytest.raises(ValueError, match="more than one day ahead"):
+        fitness_app._validate_imported_whoop_local_date("2026-07-14", now=boundary)
 
 
 def test_whoop_sync_window_uses_utc_aware_datetimes(fitness_app):
