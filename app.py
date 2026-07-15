@@ -8961,6 +8961,60 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                     409,
                     code="stale_pending_review",
                 )
+            snapshot_discard_items = [
+                item
+                for item in trusted_snapshot_payload.get("items") or []
+                if isinstance(item, dict)
+            ]
+            snapshot_discard_item_ids = [
+                str(item.get("item_id") or "")
+                for item in snapshot_discard_items
+            ]
+            submitted_discard_item_id_list = [
+                str(item["meal_item_id"] or "") for item in prepared
+            ]
+            submitted_discard_item_ids = set(
+                submitted_discard_item_id_list
+            )
+            if trusted_snapshot and (
+                len(snapshot_discard_items)
+                != len(trusted_snapshot_payload.get("items") or [])
+                or any(not item_id for item_id in snapshot_discard_item_ids)
+                or len(set(snapshot_discard_item_ids))
+                != len(snapshot_discard_item_ids)
+                or len(submitted_discard_item_ids)
+                != len(submitted_discard_item_id_list)
+                or set(snapshot_discard_item_ids)
+                != submitted_discard_item_ids
+            ):
+                batch_conn.rollback()
+                return api_error(
+                    "pending review changed before acceptance",
+                    409,
+                    code="stale_pending_review",
+                )
+            pending_discard_item_ids = [
+                str(row.get("meal_item_id") or "")
+                for row in transaction_pending_children.values()
+            ]
+            if (
+                transaction_pending_children
+                and (
+                    any(not item_id for item_id in pending_discard_item_ids)
+                    or len(set(pending_discard_item_ids))
+                    != len(pending_discard_item_ids)
+                    or len(submitted_discard_item_ids)
+                    != len(submitted_discard_item_id_list)
+                    or set(pending_discard_item_ids)
+                    != submitted_discard_item_ids
+                )
+            ):
+                batch_conn.rollback()
+                return api_error(
+                    "pending review changed before acceptance",
+                    409,
+                    code="stale_pending_review",
+                )
             if any(
                 row.get("correction_state") != CORRECTION_STATE_PENDING_REVIEW
                 for row in transaction_discard_rows

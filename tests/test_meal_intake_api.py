@@ -8279,6 +8279,171 @@ def test_pending_multi_recovery_full_discard_removes_child_rows(monkeypatch, tmp
     assert data_store.get_food_logs_by_meal_id(1, meal_id) == []
 
 
+def test_pending_multi_recovery_full_discard_allows_reordered_items(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-reordered-discard-parent"
+    meal_id = "pending-reordered-discard-meal"
+    items = []
+    for index, item_id in enumerate(("skip", "delete")):
+        estimate = _accepted_estimate(
+            item_name=f"Pending {item_id}",
+            calories=200 + index * 100,
+        )
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": module._meal_item_client_id(
+                    parent_client_id,
+                    {"item_id": item_id},
+                    index,
+                ),
+                "meal_id": meal_id,
+                "meal_item_id": item_id,
+                "item_index": index,
+                "item_state": "included",
+                "date": "2026-07-13",
+                "logged_at": "2026-07-13T12:00:00",
+                **estimate,
+                "correction_state": "pending_review",
+                "original_estimate": estimate,
+            },
+        )
+        items.append(
+            {
+                "state": "skipped" if index == 0 else "deleted",
+                "item_id": item_id,
+                "text": estimate["item_name"],
+                "estimate": estimate,
+            }
+        )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={"meal_id": meal_id, "items": list(reversed(items))},
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["status"] == "discarded"
+    assert data_store.get_food_logs_by_meal_id(1, meal_id) == []
+
+
+def test_pending_multi_recovery_partial_discard_preserves_omitted_children(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-partial-discard-parent"
+    meal_id = "pending-partial-discard-meal"
+    pending_rows = []
+    for index, item_id in enumerate(("skip", "keep")):
+        estimate = _accepted_estimate(
+            item_name=f"Pending {item_id}",
+            calories=200 + index * 100,
+        )
+        client_id = module._meal_item_client_id(
+            parent_client_id,
+            {"item_id": item_id},
+            index,
+        )
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": client_id,
+                "meal_id": meal_id,
+                "meal_item_id": item_id,
+                "item_index": index,
+                "item_state": "included",
+                "date": "2026-07-13",
+                "logged_at": "2026-07-13T12:00:00",
+                **estimate,
+                "correction_state": "pending_review",
+                "original_estimate": estimate,
+            },
+        )
+        pending_rows.append((client_id, estimate))
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "skipped",
+                    "item_id": "skip",
+                    "text": pending_rows[0][1]["item_name"],
+                    "estimate": pending_rows[0][1],
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    assert {
+        row["client_id"] for row in data_store.get_food_logs_by_meal_id(1, meal_id)
+    } == {client_id for client_id, _ in pending_rows}
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+
+
+def test_snapshot_multi_partial_discard_preserves_omitted_items(monkeypatch, tmp_path):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "snapshot-partial-discard-meal"
+    estimates = [
+        _accepted_estimate(item_name="Snapshot skip", calories=200),
+        _accepted_estimate(item_name="Snapshot keep", calories=300),
+    ]
+    module._review_save_snapshot(
+        1,
+        meal_id,
+        {
+            "status": "pending_review",
+            "meal_id": meal_id,
+            "items": [
+                module._review_item_from_estimate(
+                    estimate,
+                    item_id=item_id,
+                    item_order=index + 1,
+                    status="included",
+                    text=estimate["item_name"],
+                )
+                for index, (item_id, estimate) in enumerate(
+                    zip(("skip", "keep"), estimates)
+                )
+            ],
+        },
+        3,
+        {},
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    "state": "skipped",
+                    "item_id": "skip",
+                    "text": estimates[0]["item_name"],
+                    "estimate": estimates[0],
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    assert data_store.get_meal_review_snapshot(1, meal_id) is not None
+    pending = data_store.get_food_log_by_client_id(1, meal_id)
+    assert pending["correction_state"] == "pending_review"
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+
+
 def test_skipped_pending_row_refresh_race_is_rejected_before_delete(monkeypatch, tmp_path):
     module = _client(monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
