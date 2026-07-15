@@ -4962,7 +4962,7 @@ def api_next_workout():
             training_recommendation=guarded_training_recommendation,
             consume_cardio_rotation=False,
         )
-        _persist_current_workout_plan(current_plan, fingerprint)
+        current_plan = _persist_current_workout_plan(current_plan, fingerprint)
     active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
     active_open_requested = active_open_raw in {"1", "true", "yes"}
     completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
@@ -4985,7 +4985,7 @@ def api_next_workout():
             active_workout_open=active_open_requested,
             completed_sets_by_exercise=completed_sets_by_exercise,
         )
-        _persist_current_workout_plan(current_plan, fingerprint)
+        current_plan = _persist_current_workout_plan(current_plan, fingerprint)
     today_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context(today_oura.get("readiness_score"))
@@ -5276,7 +5276,7 @@ def api_dashboard():
     # transform on the way out only. Persisting the base first is safe: the base
     # is the correct canonical value regardless, and the fail-open display
     # transform below degrades to the base plan rather than 500-ing.
-    _persist_current_workout_plan(next_workout, fingerprint)
+    next_workout = _persist_current_workout_plan(next_workout, fingerprint)
     whoop_adjusted = _wearable_adjusted_for_display(
         next_workout, guarded_dashboard_recommendation, whoop_context
     )
@@ -9681,7 +9681,7 @@ def workout_adaptation_events():
             training_recommendation=_current_workout_training_recommendation(),
             consume_cardio_rotation=False,
         )
-        _persist_current_workout_plan(next_workout, fingerprint)
+        next_workout = _persist_current_workout_plan(next_workout, fingerprint)
     nutrition_context = _nutrition_context_for_date(
         today_s,
         hard_training_planned=_workout_looks_hard(next_workout),
@@ -9696,7 +9696,7 @@ def workout_adaptation_events():
             active_workout_open=active_workout_open,
             completed_sets_by_exercise=completed_sets_by_exercise,
         )
-        _persist_current_workout_plan(next_workout, fingerprint)
+        next_workout = _persist_current_workout_plan(next_workout, fingerprint)
 
     events = list_workout_adaptation_events(
         _current_data_user_id(),
@@ -10240,7 +10240,7 @@ def swap_workout_exercise():
 
     exercises[exercise_index] = updated_ex
     recommendation["exercises"] = exercises
-    _persist_current_workout_plan(recommendation, fingerprint)
+    recommendation = _persist_current_workout_plan(recommendation, fingerprint)
 
     # Persist the base plan (above), but return the wearable-adjusted view so an
     # active deload/caution clamps every exercise -- including the untouched ones
@@ -10699,7 +10699,7 @@ def adjust_workout():
     recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
     if not recommendation:
         recommendation = generate_next_workout(WORKOUTS, SORENESS_DATA)
-        _persist_current_workout_plan(recommendation, fingerprint)
+        recommendation = _persist_current_workout_plan(recommendation, fingerprint)
 
     goal = recommendation.get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
     goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
@@ -10723,7 +10723,7 @@ def adjust_workout():
                 equipment_pref,
                 "adapter_missing",
             )
-            _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
             _ai_metric_log("ok", reason="deterministic_fallback: adapter_missing", constraint_len=len(constraint))
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
@@ -10762,7 +10762,7 @@ def adjust_workout():
             # so a follow-up Adjust or Swap operates on the patched plan, not the
             # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
             if cached.get("recommendation"):
-                _persist_current_workout_plan(cached["recommendation"], fingerprint)
+                cached["recommendation"] = _persist_current_workout_plan(cached["recommendation"], fingerprint)
             return jsonify(_payload_with_recommendation_display_scope(cached))
 
     if route_candidate is None:
@@ -10778,7 +10778,7 @@ def adjust_workout():
                 equipment_pref,
                 "preflight_unavailable",
             )
-            _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
             _ai_metric_log("ok", reason="deterministic_fallback: preflight_unavailable", constraint_len=len(constraint), model_version=route_model_version)
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log(
@@ -10823,7 +10823,7 @@ def adjust_workout():
                 equipment_pref,
                 reason_code,
             )
-            _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
             _ai_metric_log(
                 "ok",
                 constraint_len=len(constraint),
@@ -10916,8 +10916,9 @@ def adjust_workout():
     # Cache and persist the BASE patched plan (display transform must not be
     # baked into the cache or the durable row -- FIT-256 finding 2); apply the
     # wearable display transform only on the outgoing response.
+    patched = _persist_current_workout_plan(patched, fingerprint)
+    payload["recommendation"] = patched
     _ai_cache_put(cache_write_key, payload)
-    _persist_current_workout_plan(patched, fingerprint)
     _ai_metric_log(
         "ok",
         latency_ms=raw_meta.get("elapsed_ms", 0),
@@ -15904,7 +15905,7 @@ def smart_recommendation_api():
                 completed_sets_by_exercise=completed_sets_by_exercise,
             )
             if workout_adaptation_events:
-                _persist_current_workout_plan(next_workout, fingerprint)
+                next_workout = _persist_current_workout_plan(next_workout, fingerprint)
         if workout_adaptation_events:
             nutrition_context = _nutrition_context_for_date(
                 today,

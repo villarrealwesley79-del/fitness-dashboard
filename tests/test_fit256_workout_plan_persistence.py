@@ -114,6 +114,31 @@ def test_persist_current_workout_plan_uses_authoritative_saved_plan(monkeypatch,
     }
 
 
+def test_next_workout_returns_authoritative_persisted_plan(monkeypatch, tmp_path):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    submitted_plan = _recommendation(module)
+    authoritative_plan = _new_recommendation(module)
+    persist_calls = []
+
+    monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: submitted_plan)
+
+    def persist_plan(recommendation, fingerprint):
+        persist_calls.append((recommendation, fingerprint))
+        return authoritative_plan
+
+    monkeypatch.setattr(module, "_persist_current_workout_plan", persist_plan)
+
+    response = client.get("/api/next-workout")
+
+    assert response.status_code == 200
+    assert response.get_json()["next_workout"]["id"] == "fit-256-new-plan"
+    assert response.get_json()["next_workout"]["exercises"][0]["exercise"] == "Incline Press"
+    assert persist_calls == [
+        (submitted_plan, "fp-user-1"),
+        (authoritative_plan, "fp-user-1"),
+    ]
+
+
 def test_swap_uses_persisted_plan_after_worker_globals_are_empty(monkeypatch, tmp_path):
     module, client, _state = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: _recommendation(module))
