@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-Auth & Account is the gatekeeper for the local-first Fitness Dashboard. The app is designed for one owner user by default, with session login protecting the dashboard, settings, wearable status, food logs, workout actions, backup/import, and nearly every API route. Public access is intentionally narrow: sign-in, first account creation, static assets, checkout-adjacent pages, the Stripe webhook contract, and the token-authenticated Apple Health webhook.
+Auth & Account is the gatekeeper for the local-first Fitness Dashboard. The app is designed for one owner user by default, with session login protecting the dashboard, settings, wearable status, food logs, workout actions, backup/import, and nearly every API route. Public access is intentionally narrow: sign-in, first account creation, static assets, and the token-authenticated Apple Health webhook.
 
 The primary user scenario is simple: the owner creates the first account in a local runtime, signs in with a username/password, and then uses a Flask-Login browser-session cookie to access the app. If the app already has a user and single-user mode remains enabled, further registration is blocked. The first user becomes the owner unless `FITNESS_DASHBOARD_OWNER_USER_ID` explicitly selects another local row.
 
@@ -14,14 +14,14 @@ For local testing only, the owner can opt in to one shared agent QA login with `
 
 The implementation is local SQLite, not a hosted identity provider. Account data lives in `auth.db` under `DATA_DIR` through `runtime_config.data_path("auth.db")`; when `DATA_DIR` is unset, the store falls back to the repo/app directory. Passwords are stored with Werkzeug scrypt for new users, with legacy SHA-256+salt rows upgraded after successful login.
 
-The auth layer also implements the app's mutation protection model. Browser writes are accepted when they include `X-Requested-With: XMLHttpRequest`, a valid server-rendered form CSRF token, or same-origin browser metadata. Explicit cross-origin browser metadata is rejected before the header check. The Apple Health webhook and Stripe webhook paths are exempt from this CSRF model because they are expected to be called by external systems and have their own authentication/signature contracts.
+The auth layer also implements the app's mutation protection model. Browser writes are accepted when they include `X-Requested-With: XMLHttpRequest`, a valid server-rendered form CSRF token, or same-origin browser metadata. Explicit cross-origin browser metadata is rejected before the header check. The Apple Health webhook path is exempt from this CSRF model because it is called by an external system and has its own token-authentication contract.
 
 ## 2. User-Facing Surfaces
 
 | Surface | File | Audience | Behavior |
 | --- | --- | --- | --- |
 | Sign-in page | `templates/login.html` | Returning owner | Centered dark card with username, password, flash errors, CSRF hidden input, and link to Register. |
-| Registration page | `templates/login.html` with `register=True` | First local account setup | Same card layout plus optional email field labelled as needed for billing. Blocks once a user exists in single-owner mode. |
+| Registration page | `templates/login.html` with `register=True` | First local account setup | Same card layout plus an optional email field. Blocks once a user exists in single-owner mode. |
 | Logout | `/logout` | Signed-in owner | Requires login, clears the Flask-Login session, redirects to `/login`. |
 | Dashboard auth scope | `/api/auth/scope` | Browser queue/client ownership checks | Returns a stable string `user:<id>` based on the current authenticated data user. |
 | Global auth guard | `auth.init_auth(app)` before-request hook | Every route | Redirects unauthenticated browser navigation to `/login?next=<path>`; returns JSON 401 for API/JSON callers. |
@@ -46,7 +46,7 @@ The login/register template is server-rendered and does not contain JavaScript. 
 | --- | --- | --- | --- | --- | --- |
 | `csrf_token` | hidden string | Yes | Generated in session | Same as login | CSRF protection for account creation. |
 | `username` | text | Yes | Empty string | Trimmed; must be non-empty; must not already exist | New local account name. |
-| `email` | email input | No | `None` | Browser type hint only; server trims and stores non-empty value | Optional billing/customer email for Stripe checkout. |
+| `email` | email input | No | `None` | Browser type hint only; server trims and stores non-empty value | Optional local account metadata. |
 | `password` | password | Yes | Empty string | Must be at least 8 characters | New local account password. |
 
 ### `users` SQLite Table
@@ -57,10 +57,7 @@ The login/register template is server-rendered and does not contain JavaScript. 
 | `username` | text unique | Yes | None | Unique DB constraint; application checks duplicates on register | Human login name. |
 | `password` | text | Yes | None | Werkzeug hash for new rows; legacy 64-char SHA-256 accepted only during migration | Stored password verifier. |
 | `salt` | text | Yes | Empty string for new rows | Legacy SHA-256 rows use salt; scrypt rows keep `""` | Legacy compatibility field. |
-| `email` | text | No | `NULL` | No server format validation | Billing email passed to Stripe checkout when present. |
-| `is_pro` | integer boolean | Yes | `0` | Updated by Stripe helper only | Local subscription entitlement flag; no app feature gates found in current code. |
-| `stripe_customer` | text | No | `NULL` | Stored from checkout webhook | Stripe customer ID linkage. |
-| `stripe_sub` | text | No | `NULL` | Stored from checkout webhook; used for revocation lookup | Stripe subscription ID linkage. |
+| `email` | text | No | `NULL` | No server format validation | Optional local account metadata. |
 | `created` | text datetime | No | `datetime('now')` | SQLite generated | Account creation timestamp. |
 
 ## 4. Interactions & Flows
@@ -131,13 +128,12 @@ Non-obvious behavior:
 - Login and registration rate limiting stores hashed IP/username identities in `auth.db`, so the active 10-minute window is shared across workers and survives process restarts. Expired rows are pruned on subsequent auth activity, and successful auth clears the matching identities.
 - Login uses `X-Forwarded-For` before `remote_addr`, but there is no trusted-proxy check in the auth module.
 - POST login redirects to `next` without the same open-redirect normalization used by authenticated GET `/login`.
-- The public allowlist includes `/landing`, `/pricing`, `/webhook`, `/success`, and `/cancel`; `stripe_bp` is defined but never registered in this checkout, so `/pricing`, `/webhook`, `/success`, and `/cancel` 404 even though they are public-allowlisted. Reachability details are documented in [13-billing-stripe-landing.md](13-billing-stripe-landing.md).
 
 ## 6. Data Model & Persistence
 
 Auth persistence is `AUTH_DB = data_path("auth.db")`. `runtime_config.DATA_DIR` is `os.environ["DATA_DIR"]` when set, otherwise the app directory. `data_path()` creates the directory before returning the path.
 
-`init_auth_db()` creates and migrates the `users` table and creates `auth_rate_limit_attempts` with an identity/time index. Rate-limit rows contain SECRET_KEY-keyed HMAC-SHA-256 identity digests and timestamps, not raw IP addresses or usernames. Rotating `SECRET_KEY` makes prior digests unreachable and therefore resets the remaining active lockout window; expired/unreachable rows are pruned on later auth activity. The user migration adds `email`, `is_pro`, `stripe_customer`, and `stripe_sub` if missing. It does not remove legacy columns or backfill existing emails. The auth module commits through a context-managed SQLite connection and rolls back on exceptions.
+`init_auth_db()` creates and migrates the `users` table and creates `auth_rate_limit_attempts` with an identity/time index. Rate-limit rows contain SECRET_KEY-keyed HMAC-SHA-256 identity digests and timestamps, not raw IP addresses or usernames. Rotating `SECRET_KEY` makes prior digests unreachable and therefore resets the remaining active lockout window; expired/unreachable rows are pruned on later auth activity. The user migration adds `email` when missing and removes the retired billing columns while preserving account ids and credentials. The auth module commits through a context-managed SQLite connection and rolls back on exceptions.
 
 Password persistence rules:
 
@@ -165,9 +161,9 @@ Existing fallback files are read under a shared lock, including valid read-only 
 | `CSRF_FORM_FIELD` | `csrf_token` | Hidden form field for server-rendered POSTs. |
 | `CSRF_SESSION_KEY` | `_auth_csrf_token` | Flask session key storing the generated form token. |
 | `_CSRF_MUTATING_METHODS` | `POST`, `PUT`, `PATCH`, `DELETE` | Methods requiring CSRF/origin approval. |
-| `_CSRF_EXEMPT_PATHS` | `/api/apple-health/sync`, `/webhook` | External integration paths exempt from CSRF. |
+| `_CSRF_EXEMPT_PATHS` | `/api/apple-health/sync` | External token-authenticated path exempt from CSRF. |
 | `_PASSWORD_HASH_METHOD` | `scrypt:32768:8:1` | Werkzeug hash method for new and upgraded passwords. |
-| `_PUBLIC_PREFIXES` | `/login`, `/register`, `/logout`, `/landing`, `/pricing`, `/manifest.json`, `/sw.js`, `/static/`, `/robots.txt`, `/sitemap.xml`, `/webhook`, `/success`, `/cancel`, `/api/apple-health/sync` | Routes allowed before login. Entries ending in `/` are prefix matches; others are exact. |
+| `_PUBLIC_PREFIXES` | `/login`, `/register`, `/logout`, `/manifest.json`, `/sw.js`, `/static/`, `/robots.txt`, `/sitemap.xml`, `/api/apple-health/sync` | Routes allowed before login. Entries ending in `/` are prefix matches; others are exact. |
 | `FITNESS_DASHBOARD_SINGLE_USER` | Default `"true"`; `"false"` disables owner restriction | Controls single-owner mode. |
 | `FITNESS_DASHBOARD_NO_LOGIN` | Disabled unless the trimmed, case-insensitive value is exactly `"true"` | Enables request-scoped owner access for the owner's trusted-network boot. |
 | `SESSION_COOKIE_SECURE` | Default true unless env equals `"false"` | Controls session and remember-cookie Secure flag. |
@@ -175,7 +171,7 @@ Existing fallback files are read under a shared lock, including valid read-only 
 
 ## 8. Integration Points
 
-Auth feeds every feature PRD because global guards run before route handlers. The client uses `/api/auth/scope` to bind local queues or cached recommendation payloads to the authenticated user. Billing uses `User.email`, `User.mark_pro()`, and `User.revoke_pro()`; see [13-billing-stripe-landing.md](13-billing-stripe-landing.md). Apple Health uses a token-authenticated public webhook exemption; detailed Apple Health behavior belongs in its integration PRD.
+Auth feeds every feature PRD because global guards run before route handlers. The client uses `/api/auth/scope` to bind local queues or cached recommendation payloads to the authenticated user. Apple Health uses a token-authenticated public webhook exemption; detailed Apple Health behavior belongs in its integration PRD.
 
 The app's single-user model is also a data isolation assumption: most runtime stores are not per-user partitioned. The owner guard prevents non-owner local accounts from seeing or mutating shared dashboard data in the default mode.
 
@@ -187,7 +183,7 @@ The optional local QA account is the only additional identity accepted by the si
 
 Session cookies are HTTP-only, `SameSite=Lax`, and Secure by default. Local HTTP development can set `SESSION_COOKIE_SECURE=false`; production should set `SECRET_KEY` through environment or secret manager. `.flask-secret` is a local-dev fallback and is excluded by Docker hygiene tests.
 
-CSRF protection is not a per-route decorator; it is a global before-request gate. It protects public login/register forms and authenticated API mutations. The two exempt paths rely on other authentication: Apple Health by `HEALTH_SYNC_TOKEN`; Stripe by `Stripe-Signature` when `STRIPE_WEBHOOK_SECRET` is configured. If `STRIPE_WEBHOOK_SECRET` is unset, the Stripe webhook path parses unverified JSON instead; see FIT-255 and the billing PRD.
+CSRF protection is not a per-route decorator; it is a global before-request gate. It protects public login/register forms and authenticated API mutations. The exempt Apple Health path relies on `HEALTH_SYNC_TOKEN` authentication.
 
 `LOGIN_DISABLED` bypasses the global login/owner guard entirely when truthy. This is a test convention, not a production access mode.
 
@@ -243,7 +239,9 @@ The owner must already exist before an enabled restart. Repeating an enabled res
 
 ## 12. Test Coverage
 
-Existing focused tests cover successful login/session access, wrong password behavior, rate-limit recording, DB-unavailable 503 behavior, new-user scrypt storage, legacy SHA-256 migration, constant-time legacy compare, CSRF rejection/allowance paths, checkout form CSRF token presence, public auth form tokens, WHOOP mutation CSRF enforcement, and live JS sending the CSRF header. FIT-385 coverage additionally proves disabled defaults, transactional provisioning and cleanup, idempotent restarts, credential rotation, collision and owner-mapping refusal, stale-mapping repair, designated-QA route access, arbitrary-user denial, session invalidation after disable, and QA-to-owner data resolution with a representative food-log read and mutation.
+Existing focused tests cover successful login/session access, wrong password behavior, rate-limit recording, DB-unavailable 503 behavior, new-user scrypt storage, legacy SHA-256 migration, constant-time legacy compare, CSRF rejection/allowance paths, public auth form tokens, WHOOP mutation CSRF enforcement, and live JS sending the CSRF header.
+
+FIT-385 coverage additionally proves disabled defaults, transactional provisioning and cleanup, idempotent restarts, credential rotation, collision and owner-mapping refusal, stale-mapping repair, designated-QA route access, arbitrary-user denial, session invalidation after disable, and QA-to-owner data resolution with a representative food-log read and mutation.
 
 FIT-386 coverage additionally pins explicit no-login enablement, localhost/Tailscale host enforcement, authorized-node WhoIs matching, unverified-CGNAT and spoofed-host rejection, reverse-proxy rejection, strict current-origin enforcement, configured-public-origin rejection, one-time server-side WHOOP callback completion without a browser cookie, unknown/reused OAuth-state rejection before route work, same-origin access, request-scoped owner identity, configured-owner selection, no authentication session or clean-template cookie, stale non-owner session override while enabled, fail-closed owner lookup, unchanged default redirect/401/403 behavior, and the absence of no-login enablement from factory preview configuration.
 
@@ -252,7 +250,6 @@ Coverage gaps:
 - No focused test proves POST `/login?next=...` rejects external or protocol-relative redirects.
 - No focused test proves `X-Forwarded-For` spoofing cannot bypass rate limiting behind an untrusted client.
 - No test exercises cross-worker or post-restart rate-limit semantics.
-- No test asserts `/landing` is reachable or intentionally absent.
 - No test validates account creation in multi-user mode with shared non-user-partitioned data stores.
 
 ## 13. Gaps & Issue Candidates
@@ -305,19 +302,7 @@ Coverage gaps:
   - FIT-277 added tests for invalid, missing, and valid `FITNESS_DASHBOARD_OWNER_USER_ID`; this follow-up retains the owner-repair flow work.
 - **Duplicate-of:** none
 
-### IC-5: Make `/landing` route status explicit
-- **Type:** Bug
-- **Priority:** medium
-- **Where:** `auth.py:344`, `templates/landing.html`
-- **Problem:** The global public allowlist includes `/landing`, and a complete landing template exists, but route inventory and code search show no route registering it in this checkout.
-- **Why it matters:** Operators and agents can assume a public landing page exists when the app may actually return 404.
-- **Acceptance criteria:**
-  - Either register a deliberate `/landing` route or remove the public allowlist/template expectation.
-  - Add a route test for the chosen behavior.
-  - Update billing/landing documentation to match the live route.
-- **Duplicate-of:** none
-
-### IC-6: Add explicit tests for owner-only non-owner denial
+### IC-5: Add explicit tests for owner-only non-owner denial
 - **Type:** Test
 - **Priority:** low
 - **Where:** `auth.py:249-258`, `auth.py:532-536`
