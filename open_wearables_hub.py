@@ -414,7 +414,8 @@ def store_wearable_facts(
             "blood_oxygen": (("avg_spo2_percent", "spo2", "blood_oxygen", "oxygen_saturation"), "%"),
             "sleep_efficiency": (("sleep_efficiency_percent",), "%"),
             "respiratory_rate": (("respiratory_rate", "breathing_rate"), "breaths/min"),
-            "skin_temperature": (("skin_temperature", "temperature_delta"), "c"),
+            "skin_temperature": (("skin_temperature",), "c"),
+            "temperature_deviation": (("temperature_deviation", "temperature_delta"), "c"),
         }),
     )
     for payload_key, mappings in metric_groups:

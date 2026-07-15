@@ -356,6 +356,39 @@ def test_store_wearable_facts_drops_non_finite_health_values(tmp_path):
     assert source["capabilities"]["replacement_sources"] == ["whoop"]
 
 
+def test_store_wearable_facts_keeps_temperature_deviation_distinct_from_measurement(tmp_path):
+    today = date.today().isoformat()
+    from wearable_fact_store import list_recommendation_facts
+
+    for temperature_field in ("temperature_deviation", "temperature_delta"):
+        db_file = str(tmp_path / f"{temperature_field}.sqlite3")
+        hub.store_wearable_facts(
+            {
+                "fetched_at": f"{today}T10:00:00Z",
+                "recovery_summary": {"data": [{
+                    "date": today,
+                    temperature_field: -0.3,
+                    "source": {"provider": "oura"},
+                }]},
+                "body_summary": {"latest": {
+                    "skin_temperature_celsius": 34.2,
+                    "skin_temperature_measured_at": f"{today}T09:00:00Z",
+                }},
+            },
+            db_file=db_file,
+            profile_key="profile-42",
+            activity_extractor=lambda _payload: [],
+            sleep_extractor=lambda _payload: None,
+            row_replacement_sources=lambda _row: [],
+        )
+
+        facts = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+        assert {(fact["metric"], fact["value"]) for fact in facts} == {
+            ("temperature_deviation", -0.3),
+            ("skin_temperature", 34.2),
+        }
+
+
 def test_store_wearable_facts_rejects_malformed_temporal_keys_and_provenance(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
 
