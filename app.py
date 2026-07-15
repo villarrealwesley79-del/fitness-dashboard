@@ -8252,12 +8252,30 @@ def _meal_negative_feedback_fingerprint(prepared: list[dict]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _meal_event_feedback_conflicts(event: dict, skipped_count: int, deleted_count: int, feedback_fingerprint: str) -> bool:
+def _meal_event_feedback_conflicts(
+    event: dict,
+    skipped_count: int,
+    deleted_count: int,
+    feedback_fingerprint: str,
+) -> bool:
     if int(event.get("skipped_count") or 0) != skipped_count:
         return True
     if int(event.get("deleted_count") or 0) != deleted_count:
         return True
     saved_fingerprint = event.get("feedback_fingerprint")
+    if isinstance(saved_fingerprint, str) and saved_fingerprint.startswith("v2:"):
+        fingerprint_parts = saved_fingerprint.split(":", 2)
+        if len(fingerprint_parts) != 3 or any(
+            not part for part in fingerprint_parts
+        ):
+            return True
+        version, canonical_fingerprint, request_fingerprint = fingerprint_parts
+        if version != "v2":
+            return True
+        return feedback_fingerprint not in {
+            canonical_fingerprint,
+            request_fingerprint,
+        }
     return bool(saved_fingerprint and saved_fingerprint != feedback_fingerprint)
 
 
@@ -8794,7 +8812,12 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
         existing_event_ids = set(existing_event.get("included_client_ids") or [])
         if (
             existing_event_ids != incoming_client_ids
-            or _meal_event_feedback_conflicts(existing_event, skipped_count, deleted_count, feedback_fingerprint)
+            or _meal_event_feedback_conflicts(
+                existing_event,
+                skipped_count,
+                deleted_count,
+                feedback_fingerprint,
+            )
         ):
             return jsonify({
                 "status": "conflict",
@@ -8984,8 +9007,8 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                 != len(snapshot_discard_item_ids)
                 or len(submitted_discard_item_ids)
                 != len(submitted_discard_item_id_list)
-                or set(snapshot_discard_item_ids)
-                != submitted_discard_item_ids
+                or snapshot_discard_item_ids
+                != submitted_discard_item_id_list
             ):
                 batch_conn.rollback()
                 return api_error(
@@ -8993,9 +9016,17 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                     409,
                     code="stale_pending_review",
                 )
+            pending_discard_items = sorted(
+                transaction_pending_children.values(),
+                key=lambda row: (
+                    row.get("item_index")
+                    if row.get("item_index") is not None
+                    else 10_000
+                ),
+            )
             pending_discard_item_ids = [
                 str(row.get("meal_item_id") or "")
-                for row in transaction_pending_children.values()
+                for row in pending_discard_items
             ]
             if (
                 transaction_pending_children
@@ -9005,8 +9036,8 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                     != len(pending_discard_item_ids)
                     or len(submitted_discard_item_ids)
                     != len(submitted_discard_item_id_list)
-                    or set(pending_discard_item_ids)
-                    != submitted_discard_item_ids
+                    or pending_discard_item_ids
+                    != submitted_discard_item_id_list
                 )
             ):
                 batch_conn.rollback()
@@ -9046,6 +9077,11 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                     409,
                     code="stale_pending_review",
                 )
+            transaction_pending_children_by_item_id = {
+                str(row["meal_item_id"]): row
+                for row in transaction_pending_children.values()
+                if row.get("meal_item_id")
+            }
             discard_feedback_items = {}
             only_pending_child = (
                 next(iter(transaction_pending_children.values()))
@@ -9053,8 +9089,8 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                 else None
             )
             for item in prepared:
-                pending_feedback_row = transaction_pending_children.get(
-                    item["client_id"]
+                pending_feedback_row = transaction_pending_children_by_item_id.get(
+                    str(item["meal_item_id"])
                 )
                 if (
                     not isinstance(pending_feedback_row, dict)
@@ -9065,6 +9101,21 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                     discard_feedback_items[item["index"]] = pending_feedback_item(
                         pending_feedback_row
                     )
+            discard_feedback_fingerprint = _meal_negative_feedback_fingerprint([
+                {
+                    **item,
+                    "raw": discard_feedback_items.get(
+                        item["index"],
+                        item["raw"],
+                    ),
+                }
+                for item in prepared
+            ])
+            persisted_discard_feedback_fingerprint = discard_feedback_fingerprint
+            if discard_feedback_fingerprint != feedback_fingerprint:
+                persisted_discard_feedback_fingerprint = (
+                    f"v2:{discard_feedback_fingerprint}:{feedback_fingerprint}"
+                )
             transaction_event = data_store_module.get_meal_acceptance_event(
                 user_id,
                 meal_id,
@@ -9081,7 +9132,7 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                         transaction_event,
                         skipped_count,
                         deleted_count,
-                        feedback_fingerprint,
+                        discard_feedback_fingerprint,
                     )
                 ):
                     batch_conn.rollback()
@@ -9118,7 +9169,7 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                 feedback_fingerprint=(
                     transaction_event.get("feedback_fingerprint")
                     if isinstance(transaction_event, dict)
-                    else feedback_fingerprint
+                    else persisted_discard_feedback_fingerprint
                 ),
                 has_image=discard_image_received,
                 _conn=batch_conn,

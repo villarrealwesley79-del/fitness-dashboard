@@ -8279,7 +8279,7 @@ def test_pending_multi_recovery_full_discard_removes_child_rows(monkeypatch, tmp
     assert data_store.get_food_logs_by_meal_id(1, meal_id) == []
 
 
-def test_pending_multi_recovery_full_discard_allows_reordered_items(
+def test_pending_multi_recovery_full_discard_rejects_reordered_items(
     monkeypatch,
     tmp_path,
 ):
@@ -8321,14 +8321,152 @@ def test_pending_multi_recovery_full_discard_allows_reordered_items(
             }
         )
 
+    reordered_items = list(reversed(items))
+    for item in reordered_items:
+        item["text"] = f"Forged {item['item_id']}"
+        item["estimate"] = _accepted_estimate(
+            item_name=f"Forged {item['item_id']}",
+            calories=999,
+        )
+
     response = module.app.test_client().post(
         f"/api/meal-intake/{parent_client_id}/accept",
-        json={"meal_id": meal_id, "items": list(reversed(items))},
+        json={"meal_id": meal_id, "items": reordered_items},
     )
 
-    assert response.status_code == 200, response.get_data(as_text=True)
-    assert response.get_json()["status"] == "discarded"
-    assert data_store.get_food_logs_by_meal_id(1, meal_id) == []
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    assert len(data_store.get_food_logs_by_meal_id(1, meal_id)) == 2
+    assert data_store.get_meal_acceptance_event(1, meal_id) is None
+    assert data_store.get_personal_vocab_entry(1, "forged skip") is None
+    assert data_store.get_personal_vocab_entry(1, "forged delete") is None
+
+
+def test_pending_multi_recovery_discard_fingerprints_canonical_feedback(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "pending-canonical-feedback-parent"
+    meal_id = "pending-canonical-feedback-meal"
+    items = []
+    for index, item_id in enumerate(("skip", "delete")):
+        estimate = _accepted_estimate(
+            item_name=f"Canonical {item_id}",
+            calories=200 + index * 100,
+        )
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": module._meal_item_client_id(
+                    parent_client_id,
+                    {"item_id": item_id},
+                    index,
+                ),
+                "meal_id": meal_id,
+                "meal_item_id": item_id,
+                "item_index": index,
+                "item_state": "included",
+                "date": "2026-07-13",
+                "logged_at": "2026-07-13T12:00:00",
+                **estimate,
+                "correction_state": "pending_review",
+                "original_estimate": estimate,
+            },
+        )
+        items.append(
+            {
+                "state": "skipped" if index == 0 else "deleted",
+                "item_id": item_id,
+                "text": estimate["item_name"],
+                "estimate": estimate,
+            }
+        )
+
+    client = module.app.test_client()
+    forged_items = [
+        {
+            **item,
+            "text": f"Forged {item['item_id']}",
+            "estimate": _accepted_estimate(
+                item_name=f"Forged {item['item_id']}",
+                calories=999,
+            ),
+        }
+        for item in items
+    ]
+    first = client.post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={"meal_id": meal_id, "items": forged_items},
+    )
+    exact_retry = client.post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={"meal_id": meal_id, "items": forged_items},
+    )
+    canonical_retry = client.post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={"meal_id": meal_id, "items": items},
+    )
+    changed_retry = client.post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [
+                {
+                    **item,
+                    "text": f"Changed {item['item_id']}",
+                }
+                for item in items
+            ],
+        },
+    )
+
+    assert first.status_code == 200, first.get_data(as_text=True)
+    assert exact_retry.status_code == 200, exact_retry.get_data(as_text=True)
+    assert canonical_retry.status_code == 200, canonical_retry.get_data(as_text=True)
+    assert canonical_retry.get_json()["status"] == "discarded"
+    assert changed_retry.status_code == 409, changed_retry.get_data(as_text=True)
+    assert data_store.get_personal_vocab_entry(1, "canonical skip")["skip_count"] == 1
+    assert data_store.get_personal_vocab_entry(1, "canonical delete")["deleted_count"] == 1
+    assert data_store.get_personal_vocab_entry(1, "forged skip") is None
+    assert data_store.get_personal_vocab_entry(1, "forged delete") is None
+
+
+def test_discard_retry_rejects_malformed_versioned_feedback_fingerprint(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "malformed-versioned-feedback-meal"
+    item = {
+        "state": "skipped",
+        "item_id": "skip",
+        "text": "Malformed fingerprint retry",
+        "estimate": _accepted_estimate(
+            item_name="Malformed fingerprint retry",
+            calories=200,
+        ),
+    }
+    data_store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="discarded",
+        included_client_ids=[],
+        skipped_count=1,
+        deleted_count=0,
+        feedback_fingerprint="v2:malformed",
+        has_image=False,
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={"meal_id": meal_id, "items": [item]},
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["status"] == "conflict"
 
 
 def test_pending_multi_recovery_partial_discard_preserves_omitted_children(
