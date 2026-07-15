@@ -127,6 +127,18 @@ def test_whoop_frontend_calls_expected_status_sync_and_disconnect_endpoints():
     assert "if (modal.id === 'modal-whoop-intake') clearWhoopImportInput();" in app_js
 
 
+def test_whoop_import_success_banner_summarizes_all_row_outcomes():
+    app_js = APP_JS.read_text()
+
+    assert "function formatWhoopImportSummary(importResult)" in app_js
+    assert "importResult.parsed_rows" in app_js
+    assert "importResult.imported_rows" in app_js
+    assert "importResult.skipped_unsupported_rows" in app_js
+    assert "importResult.ignored_nap_rows" in app_js
+    assert "importResult.duplicate_or_upserted_rows" in app_js
+    assert "Parsed ${parsed} · Imported ${imported} · Unsupported ${unsupported} · Naps ${naps} · Duplicates/updates ${duplicates}" in app_js
+
+
 def test_whoop_missing_config_modal_disables_dead_live_connect_path():
     app_js = APP_JS.read_text()
 

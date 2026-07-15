@@ -76,6 +76,7 @@ from whoop_recommendations import (
 )
 from whoop_store import (
     clear_whoop_data,
+    count_whoop_upsert_conflicts,
     consume_oauth_state,
     create_oauth_state,
     delete_protected_secret,
@@ -14170,21 +14171,34 @@ def _run_whoop_sync_unlocked(reason="manual", *, days_back=7, client_factory=Who
 def _parse_whoop_csv_rows(text):
     reader = csv.DictReader(io.StringIO(text))
     records = []
+    outcomes = {
+        "parsed_rows": 0,
+        "accepted_rows": 0,
+        "skipped_unsupported_rows": 0,
+        "ignored_nap_rows": 0,
+    }
     for index, row in enumerate(reader, start=1):
         if index > WHOOP_CSV_MAX_ROWS:
             raise ValueError(f"WHOOP CSV row limit exceeded ({WHOOP_CSV_MAX_ROWS}).")
+        outcomes["parsed_rows"] += 1
         if not isinstance(row, dict):
             continue
         record_type = (row.get("record_type") or row.get("type") or "recovery").strip().lower()
         if record_type not in {"recovery", "sleep", "cycle", "workout"}:
+            outcomes["skipped_unsupported_rows"] += 1
             continue
         _validate_whoop_raw_metric_fields(row)
+        is_nap = record_type == "sleep" and _whoop_truthy(row.get("nap"))
         normalized = _normalize_whoop_record(record_type, row)
+        if is_nap:
+            outcomes["ignored_nap_rows"] += 1
+            continue
         if normalized:
             normalized["local_date"] = _validate_imported_whoop_local_date(normalized["local_date"])
             _validate_whoop_metric_bounds(normalized)
-        records.append((record_type, normalized))
-    return [(kind, row) for kind, row in records if row]
+            records.append((record_type, normalized))
+            outcomes["accepted_rows"] += 1
+    return records, outcomes
 
 
 def _whoop_has_csv_imported_data(freshness=None):
@@ -14490,7 +14504,7 @@ def whoop_import_csv():
     if not text.strip():
         return api_error("CSV content is required.", 400, code="missing_csv")
     try:
-        parsed = _parse_whoop_csv_rows(text)
+        parsed, outcomes = _parse_whoop_csv_rows(text)
     except ValueError as exc:
         error_code = "whoop_csv_too_many_rows" if "row limit" in str(exc).lower() else "invalid_whoop_csv_metric"
         status_code = 413 if error_code == "whoop_csv_too_many_rows" else 400
@@ -14505,6 +14519,13 @@ def whoop_import_csv():
         by_type = {"recovery": [], "sleep": [], "cycle": [], "workout": []}
         for record_type, row in parsed:
             by_type[record_type].append(row)
+        duplicate_or_upserted = sum(
+            count_whoop_upsert_conflicts(WHOOP_DB_FILE, record_type, rows)
+            for record_type, rows in by_type.items()
+        )
+        accepted_rows = outcomes.pop("accepted_rows")
+        outcomes["imported_rows"] = accepted_rows - duplicate_or_upserted
+        outcomes["duplicate_or_upserted_rows"] = duplicate_or_upserted
         upserted = 0
         for record_type, rows in by_type.items():
             upserted += upsert_whoop_records(WHOOP_DB_FILE, record_type, rows, sync_run_id=run_id)
@@ -14515,6 +14536,7 @@ def whoop_import_csv():
                 "status": "success",
                 "import": {
                     "run_id": run_id,
+                    **outcomes,
                     "records_upserted": upserted,
                 },
                 "connection": _whoop_public_status(),

@@ -2629,6 +2629,17 @@
         }
     }
 
+    function formatWhoopImportSummary(importResult) {
+        if (!importResult) return null;
+        const parsed = importResult.parsed_rows;
+        const imported = importResult.imported_rows;
+        const unsupported = importResult.skipped_unsupported_rows;
+        const naps = importResult.ignored_nap_rows;
+        const duplicates = importResult.duplicate_or_upserted_rows;
+        if (![parsed, imported, unsupported, naps, duplicates].every(Number.isFinite)) return null;
+        return `Parsed ${parsed} · Imported ${imported} · Unsupported ${unsupported} · Naps ${naps} · Duplicates/updates ${duplicates}`;
+    }
+
     async function importWhoopCsvFromModal() {
         if (state.whoopUi.importInFlight) return;
         const textArea = $('whoop-import-csv-text');
@@ -2665,9 +2676,11 @@
             state.reco = null;
             await getWhoopStatus(true);
             await renderSettings();
-            const count = body && body.import && body.import.records_upserted != null ? body.import.records_upserted : null;
+            const importResult = body && body.import ? body.import : null;
+            const summary = formatWhoopImportSummary(importResult);
+            const count = importResult && importResult.records_upserted != null ? importResult.records_upserted : null;
             clearWhoopImportInput();
-            setWhoopIntakeStatus(count != null ? `WHOOP import saved ${count} record${count === 1 ? '' : 's'}.` : 'WHOOP import saved.', 'ok');
+            setWhoopIntakeStatus(summary || (count != null ? `WHOOP import saved ${count} record${count === 1 ? '' : 's'}.` : 'WHOOP import saved.'), 'ok');
             toast('WHOOP import saved.', 'ok');
         } catch (err) {
             setWhoopIntakeStatus((err && err.message) || 'WHOOP import failed.', 'error');
