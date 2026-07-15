@@ -449,6 +449,7 @@ def upsert_daily_facts(
     profile_key: str | int | None = None,
     replace_source_ids: set[str] | None = None,
     replace_fact_scopes: set[tuple[str, str, str, str]] | None = None,
+    replace_source_id_date_windows: set[tuple[str, str, str, str]] | None = None,
     replace_provider_metric_observation_windows: set[tuple[str, str, str, str]] | None = None,
 ) -> int:
     init_wearable_fact_db(db_path)
@@ -475,6 +476,13 @@ def upsert_daily_facts(
         payload["imported_at"] = payload.get("imported_at") or payload.get("updated_at") or now
         rows.append(payload)
     with sqlite3.connect(db_path) as conn:
+        for source_system, source_id, start_date, end_date in replace_source_id_date_windows or set():
+            conn.execute(
+                "DELETE FROM wearable_daily_facts "
+                "WHERE profile_key = ? AND source_system = ? AND source_id = ? "
+                "AND date >= date(?) AND date < date(?)",
+                (scoped_profile, source_system, source_id, start_date, end_date),
+            )
         for source_system, provider_id, metric, metric_domain in replace_fact_scopes or set():
             conn.execute(
                 "DELETE FROM wearable_daily_facts "
@@ -648,6 +656,7 @@ def list_recommendation_facts(
     usable_only: bool = False,
     latest_per_metric: bool = False,
     source_system: str | None = None,
+    metric_names: set[str] | None = None,
 ) -> list[dict]:
     init_wearable_fact_db(db_path)
     scoped_profile = _normalize_profile_key(profile_key)
@@ -665,6 +674,9 @@ def list_recommendation_facts(
             AND (observed_at IS NULL OR datetime(observed_at) <= datetime(?))
         ))
     """
+    metric_filter = tuple(sorted({str(metric) for metric in metric_names or set() if str(metric)}))
+    if metric_filter:
+        where_clause += f" AND metric IN ({','.join('?' for _ in metric_filter)})"
     order_clause = (
         "date DESC, COALESCE(julianday(observed_at), julianday(date)) DESC, "
         "provider_id, metric, updated_at DESC, source_id"
@@ -712,7 +724,9 @@ def list_recommendation_facts(
                 scoped_profile, provider_id, provider_id, source_system, source_system,
                 1 if usable_only else 0,
                 (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat(), usable_cutoff,
-                (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(), int(limit),
+                (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                *metric_filter,
+                int(limit),
             ),
         ).fetchall()
     facts = []

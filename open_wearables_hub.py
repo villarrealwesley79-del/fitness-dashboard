@@ -381,6 +381,7 @@ def workout_marker(data, *, sleep_extractor: Callable[[object], dict | None]) ->
             "event_time": sleep.get("event_time") if sleep else None,
             "recent": sleep.get("recent") if sleep else None,
         },
+        "sleep_summary": payload_marker(data.get("sleep_summary")),
         "workouts": payload_marker(data.get("workouts")),
         "activity_summary": payload_marker(data.get("activity_summary")),
     }
@@ -403,6 +404,7 @@ def sync_error_code(key):
         "auth": "open_wearables_auth_error",
         "config": "open_wearables_config_error",
         "sleep": "open_wearables_sync_error",
+        "sleep_summary": "open_wearables_sync_error",
         "workouts": "open_wearables_sync_error",
         "activity_summary": "open_wearables_sync_error",
         "recovery_summary": "open_wearables_sync_error",
@@ -412,7 +414,10 @@ def sync_error_code(key):
 
 
 def public_error_key(key):
-    public_names = {"auth", "config", "sleep", "workouts", "activity_summary", "recovery_summary", "body_summary"}
+    public_names = {
+        "auth", "config", "sleep", "sleep_summary", "workouts",
+        "activity_summary", "recovery_summary", "body_summary",
+    }
     name = str(key)
     return name if name in public_names else "sync"
 
@@ -420,7 +425,10 @@ def public_error_key(key):
 def sync_metadata(data, *, now: Callable[[], datetime] = datetime.now) -> dict:
     data = data if isinstance(data, dict) else {}
     counts = {}
-    for key in ("sleep", "workouts", "activity_summary", "recovery_summary", "body_summary"):
+    for key in (
+        "sleep", "sleep_summary", "workouts", "activity_summary",
+        "recovery_summary", "body_summary",
+    ):
         count = sync_count(data.get(key))
         if count is not None:
             counts[key] = count
@@ -519,14 +527,33 @@ def store_wearable_facts(
         and body_snapshot_valid
     )
     body_rows = _payload_rows(body_payload) if body_payload is not None and body_snapshot_valid else []
-    replacement_source_dates = {}
+    sleep_summary_rows = _authoritative_collection_rows(data.get("sleep_summary"))
+    sleep_summary_query = (
+        data.get("_sleep_summary_query")
+        if isinstance(data.get("_sleep_summary_query"), dict)
+        else {}
+    )
+    sleep_summary_query_start = _temporal_text(sleep_summary_query.get("start_date"))
+    sleep_summary_query_end = _temporal_text(sleep_summary_query.get("end_date"))
+    sleep_summary_window_start = _temporal_value(sleep_summary_query_start)
+    sleep_summary_window_end = _temporal_value(sleep_summary_query_end)
+    sleep_summary_snapshot_replacement_safe = (
+        "sleep_summary" not in errors
+        and data.get("_sleep_summary_snapshot_complete") is True
+        and sleep_summary_rows is not None
+        and sleep_summary_query_start is not None
+        and sleep_summary_query_end is not None
+        and sleep_summary_window_start < sleep_summary_window_end
+    )
+    replacement_source_domain_dates = {}
 
-    def mark_replacement_sources(raw_row, date_s):
-        if not raw_row or not date_s:
+    def mark_replacement_sources(raw_row, date_s, domain):
+        if not raw_row or not date_s or not domain:
             return
         for source_key in row_replacement_sources(raw_row):
-            if date_s > replacement_source_dates.get(source_key, ""):
-                replacement_source_dates[source_key] = date_s
+            domain_dates = replacement_source_domain_dates.setdefault(source_key, {})
+            if date_s > domain_dates.get(domain, ""):
+                domain_dates[domain] = date_s
 
     facts = []
     activity = activity_extractor(data.get("activity_summary"))
@@ -562,7 +589,7 @@ def store_wearable_facts(
             facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "distance", distance, "m", confidence="medium", freshness=_fact_freshness(date_s, fetched_at), **activity_provenance))
             added_activity_fact = True
         if added_activity_fact:
-            mark_replacement_sources(latest.get("raw"), date_s)
+            mark_replacement_sources(latest.get("raw"), date_s, "activity")
 
     sleep = sleep_extractor(data.get("sleep"))
     sleep_event_time = _temporal_text(sleep.get("event_time")) if sleep else None
@@ -600,7 +627,110 @@ def store_wearable_facts(
             facts.append(WearableDailyFact(date_s, "open_wearables", "Open Wearables", "sleep_is_nap", sleep.get("is_nap"), "boolean", confidence="medium", freshness=_fact_freshness(sleep_observed_at, fetched_at), **sleep_provenance))
             added_sleep_fact = True
         if added_sleep_fact:
-            mark_replacement_sources(sleep.get("raw"), date_s)
+            mark_replacement_sources(sleep.get("raw"), date_s, "sleep")
+
+    sleep_summary_mappings = {
+        "sleep_duration": (("duration_minutes",), "min"),
+        "sleep_time_in_bed": (("time_in_bed_minutes",), "min"),
+        "sleep_efficiency": (("efficiency_percent",), "%"),
+        "sleep_interruptions": (("interruptions_count",), "count"),
+        "sleep_nap_count": (("nap_count",), "count"),
+        "sleep_nap_duration": (("nap_duration_minutes",), "min"),
+        "sleep_avg_heart_rate": (("avg_heart_rate_bpm",), "bpm"),
+        "sleep_hrv_sdnn": (("avg_hrv_sdnn_ms",), "ms"),
+        "sleep_hrv_rmssd": (("avg_hrv_rmssd_ms",), "ms"),
+        "sleep_respiratory_rate": (("avg_respiratory_rate",), "breaths/min"),
+        "sleep_blood_oxygen": (("avg_spo2_percent",), "%"),
+    }
+
+    def valid_optional_sleep_number(value):
+        return (
+            value is None
+            or (
+                not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(float(value))
+                and float(value) >= 0
+            )
+        )
+
+    for row in sleep_summary_rows or []:
+        date_s = _row_date(row)
+        provider = _source_provider(row)
+        if date_s is None:
+            sleep_summary_snapshot_replacement_safe = False
+            continue
+        row_date = _temporal_value(date_s)
+        if (
+            row_date is None
+            or sleep_summary_window_start is None
+            or sleep_summary_window_end is None
+            or not (
+                sleep_summary_window_start.date()
+                <= row_date.date()
+                < sleep_summary_window_end.date()
+            )
+        ):
+            sleep_summary_snapshot_replacement_safe = False
+        if provider is None:
+            sleep_summary_snapshot_replacement_safe = False
+        invalid_sleep_keys = {
+            key
+            for aliases, _unit in sleep_summary_mappings.values()
+            for key in aliases
+            if key in row and not valid_optional_sleep_number(row[key])
+        }
+        if invalid_sleep_keys:
+            sleep_summary_snapshot_replacement_safe = False
+        raw_stages = row.get("stages")
+        invalid_stage_keys = set()
+        if raw_stages is not None and not isinstance(raw_stages, dict):
+            sleep_summary_snapshot_replacement_safe = False
+        elif isinstance(raw_stages, dict):
+            invalid_stage_keys = {
+                key
+                for key in ("awake_minutes", "light_minutes", "deep_minutes", "rem_minutes")
+                if key in raw_stages and not valid_optional_sleep_number(raw_stages[key])
+            }
+            if invalid_stage_keys:
+                sleep_summary_snapshot_replacement_safe = False
+        observed_at = _temporal_text(_first_value(row, "end_time", "end", "date"))
+        provenance = {
+            "source_id": "sleep-summary",
+            "source_provider": provider,
+            "observed_at": observed_at,
+            "source_record_kind": "summary",
+            "metric_domain": "sleep",
+        }
+        before_count = len(facts)
+        for metric, (aliases, unit) in sleep_summary_mappings.items():
+            if any(key in invalid_sleep_keys for key in aliases):
+                continue
+            value = _number(row, *aliases)
+            if metric == "sleep_duration" and value is not None and value <= 0:
+                value = None
+            if value is not None:
+                facts.append(WearableDailyFact(
+                    date_s, "open_wearables", "Open Wearables", metric, value, unit,
+                    confidence="medium",
+                    freshness=_fact_freshness(observed_at or date_s, fetched_at),
+                    **provenance,
+                ))
+        stages = row.get("stages") if isinstance(row.get("stages"), dict) else {}
+        for stage in ("awake", "light", "deep", "rem"):
+            stage_key = f"{stage}_minutes"
+            if stage_key in invalid_stage_keys:
+                continue
+            value = _number(stages, stage_key)
+            if value is not None:
+                facts.append(WearableDailyFact(
+                    date_s, "open_wearables", "Open Wearables",
+                    f"sleep_{stage}_duration", value, "min", confidence="medium",
+                    freshness=_fact_freshness(observed_at or date_s, fetched_at),
+                    **provenance,
+                ))
+        if len(facts) > before_count:
+            mark_replacement_sources(row, date_s, "sleep")
 
     metric_groups = (
         ("recovery_summary", {
@@ -646,7 +776,7 @@ def store_wearable_facts(
                         **recovery_provenance,
                     ))
             if len(facts) > before_count:
-                mark_replacement_sources(row, date_s)
+                mark_replacement_sources(row, date_s, "recovery")
 
     for body in body_rows:
         averaged = body.get("averaged") if isinstance(body.get("averaged"), dict) else {}
@@ -709,6 +839,7 @@ def store_wearable_facts(
                     metric_domain="body",
                 ))
 
+    workout_replacement_domain_dates = {}
     for row in workout_rows or []:
         workout_source_id = _first_value(row, "id", "event_id", "workout_id")
         if workout_source_id is None or not str(workout_source_id).strip():
@@ -788,9 +919,17 @@ def store_wearable_facts(
                     confidence="medium", freshness=_fact_freshness(observed_at, fetched_at), **provenance,
                 ))
         if len(facts) > before_count:
-            mark_replacement_sources(row, date_s)
+            for source_key in row_replacement_sources(row):
+                if date_s > workout_replacement_domain_dates.get(source_key, ""):
+                    workout_replacement_domain_dates[source_key] = date_s
         else:
             workout_snapshot_replacement_safe = False
+
+    if workout_snapshot_replacement_safe:
+        for source_key, date_s in workout_replacement_domain_dates.items():
+            domain_dates = replacement_source_domain_dates.setdefault(source_key, {})
+            if date_s > domain_dates.get("workouts", ""):
+                domain_dates["workouts"] = date_s
 
     facts = [
         fact for fact in facts
@@ -809,7 +948,12 @@ def store_wearable_facts(
         )
         for fact in facts
     ]
-    if facts or workout_snapshot_replacement_safe or body_snapshot_replacement_safe:
+    if (
+        facts
+        or workout_snapshot_replacement_safe
+        or body_snapshot_replacement_safe
+        or sleep_summary_snapshot_replacement_safe
+    ):
         facts = [
             replace(fact, used_for_recommendation=fact.freshness in {"fresh", "aging"})
             for fact in facts
@@ -833,6 +977,16 @@ def store_wearable_facts(
                 if body_snapshot_replacement_safe
                 else None
             ),
+            replace_source_id_date_windows=(
+                {(
+                    "open_wearables",
+                    "sleep-summary",
+                    sleep_summary_query_start,
+                    sleep_summary_query_end,
+                )}
+                if sleep_summary_snapshot_replacement_safe
+                else None
+            ),
             replace_provider_metric_observation_windows=(
                 {(
                     "open_wearables",
@@ -851,6 +1005,10 @@ def store_wearable_facts(
         source_system="open_wearables",
         usable_only=True,
     )
+    # FIT-350 is the slice-one normalized-fact expansion. Provider-specific
+    # parity and retirement gates are separate follow-up issues, so domain
+    # observations are diagnostic only and must not hide a direct fallback.
+    replacement_source_dates = {}
     if errors and not facts:
         source_status = "error"
     elif any(fact["freshness"] == "fresh" for fact in persisted_usable):
@@ -876,6 +1034,7 @@ def store_wearable_facts(
             "sync": True,
             "replacement_sources": sorted(replacement_source_dates),
             "replacement_source_dates": replacement_source_dates,
+            "replacement_source_domain_dates": replacement_source_domain_dates,
         },
         "used_for_recommendation": bool(persisted_usable),
     }, profile_key=profile_key)
@@ -883,14 +1042,31 @@ def store_wearable_facts(
 
 
 def recommendation_facts(db_file: str, profile_key: str, limit: int = 20) -> list[dict]:
-    return list_recommendation_facts(
+    query_args = {
+        "profile_key": profile_key,
+        "source_system": "open_wearables",
+        "usable_only": True,
+        "latest_per_metric": True,
+    }
+    display_facts = list_recommendation_facts(
         db_file,
         limit=limit,
-        profile_key=profile_key,
-        source_system="open_wearables",
-        usable_only=True,
-        latest_per_metric=True,
+        **query_args,
     )
+    guard_facts = list_recommendation_facts(
+        db_file,
+        limit=2,
+        metric_names={"sleep_duration", "active_minutes"},
+        **query_args,
+    )
+    seen = {
+        (fact["metric"], fact["provider_id"], fact["source_system"])
+        for fact in display_facts
+    }
+    return display_facts + [
+        fact for fact in guard_facts
+        if (fact["metric"], fact["provider_id"], fact["source_system"]) not in seen
+    ]
 
 
 def conservative_modifier(facts) -> dict:

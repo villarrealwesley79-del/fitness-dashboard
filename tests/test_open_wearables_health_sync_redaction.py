@@ -447,7 +447,7 @@ def test_open_wearables_replacement_sources_accept_offset_aware_sync_timestamp(m
     assert replacement_dates == {"oura": "2026-06-29"}
 
 
-def test_open_wearables_store_records_replacement_dates_from_fact_provenance(monkeypatch, tmp_path):
+def test_open_wearables_store_records_domain_dates_without_claiming_partial_replacement(monkeypatch, tmp_path):
     module = _fitness_app()
     facts_db = tmp_path / "wearable_facts.sqlite3"
     monkeypatch.setattr(module, "WEARABLE_FACTS_DB_FILE", str(facts_db))
@@ -465,10 +465,11 @@ def test_open_wearables_store_records_replacement_dates_from_fact_provenance(mon
     assert facts_count == 2
     stored = module.list_wearable_sources(str(facts_db), profile_key=module._open_wearables_profile_key())
     open_wearables = next(source for source in stored if source["provider_id"] == "open_wearables")
-    assert open_wearables["capabilities"]["replacement_sources"] == ["apple_health", "oura"]
-    assert open_wearables["capabilities"]["replacement_source_dates"] == {
-        "apple_health": "2026-06-28",
-        "oura": "2026-06-28",
+    assert open_wearables["capabilities"]["replacement_sources"] == []
+    assert open_wearables["capabilities"]["replacement_source_dates"] == {}
+    assert open_wearables["capabilities"]["replacement_source_domain_dates"] == {
+        "apple_health": {"sleep": "2026-06-28"},
+        "oura": {"activity": "2026-06-28"},
     }
 
 
@@ -1385,12 +1386,16 @@ def test_open_wearables_fetch_includes_today_and_paginates_workouts(monkeypatch)
     }
     recovery_url = next(url for url in requested if "/summaries/recovery" in url)
     recovery_query = module.urllib.parse.parse_qs(module.urllib.parse.urlparse(recovery_url).query)
+    sleep_summary_url = next(url for url in requested if "/summaries/sleep" in url)
+    sleep_summary_query = module.urllib.parse.parse_qs(module.urllib.parse.urlparse(sleep_summary_url).query)
     activity_url = next(url for url in requested if "/summaries/activity" in url)
     activity_query = module.urllib.parse.parse_qs(module.urllib.parse.urlparse(activity_url).query)
     expected_start_date = module.datetime.fromisoformat(expected_start).date().isoformat()
     expected_end_date = module.datetime.fromisoformat(expected_end).date().isoformat()
     assert recovery_query["start_date"] == [expected_start_date]
     assert recovery_query["end_date"] == [expected_end_date]
+    assert sleep_summary_query["start_date"] == [expected_start_date]
+    assert sleep_summary_query["end_date"] == [expected_end_date]
     assert activity_query["start_date"] == [expected_start_date]
     assert activity_query["end_date"] == [expected_end_date]
     assert any("cursor=page%202" in url for url in requested)

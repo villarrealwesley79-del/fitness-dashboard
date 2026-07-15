@@ -12594,10 +12594,12 @@ def fetch_open_wearables_data():
     if missing:
         return {
             "sleep": None,
+            "sleep_summary": None,
             "workouts": None,
             "activity_summary": None,
             "recovery_summary": None,
             "body_summary": None,
+            "_sleep_summary_snapshot_complete": False,
             "_workout_snapshot_complete": False,
             "fetched_at": datetime.now().astimezone().isoformat(),
             "errors": {"config": f"missing:{','.join(missing)}"},
@@ -12618,6 +12620,7 @@ def fetch_open_wearables_data():
 
     endpoints = {
         "sleep": f"{_open_wearables_user_base()}/events/sleep?{event_range_query}",
+        "sleep_summary": f"{_open_wearables_user_base()}/summaries/sleep?{summary_range_query}",
         "workouts": f"{_open_wearables_user_base()}/events/workouts?{event_range_query}",
         "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?{summary_range_query}",
         "recovery_summary": f"{_open_wearables_user_base()}/summaries/recovery?{summary_range_query}",
@@ -12626,10 +12629,16 @@ def fetch_open_wearables_data():
 
     result = {
         "sleep": None,
+        "sleep_summary": None,
         "workouts": None,
         "activity_summary": None,
         "recovery_summary": None,
         "body_summary": None,
+        "_sleep_summary_snapshot_complete": False,
+        "_sleep_summary_query": {
+            "start_date": datetime.fromisoformat(start_at).date().isoformat(),
+            "end_date": datetime.fromisoformat(end_at).date().isoformat(),
+        },
         "_workout_snapshot_complete": False,
         "_workout_query": {
             "start_at": start_at,
@@ -12694,6 +12703,8 @@ def fetch_open_wearables_data():
                 pagination_complete = payload.pop("_pagination_complete", False)
                 if key == "workouts":
                     result["_workout_snapshot_complete"] = pagination_complete is True
+                elif key == "sleep_summary":
+                    result["_sleep_summary_snapshot_complete"] = pagination_complete is True
             result[key] = payload
         except Exception as e:
             result["errors"][key] = str(e)
