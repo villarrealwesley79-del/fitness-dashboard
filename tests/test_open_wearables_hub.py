@@ -430,6 +430,29 @@ def test_complete_body_snapshot_with_unmapped_measurement_retires_mapped_facts(t
         },
         "latest": {},
     },
+    {
+        "source": {"provider": "unknown"},
+        "slow_changing": {"weight_kg": 99},
+        "averaged": {
+            "period_days": 7,
+            "period_start": "2026-07-07T00:00:00",
+            "period_end": "2026-07-14T00:00:00Z",
+        },
+        "latest": {},
+    },
+    {
+        "source": {"provider": "unknown"},
+        "slow_changing": {},
+        "averaged": {
+            "period_days": 7,
+            "period_start": "2026-07-07T00:00:00Z",
+            "period_end": "2026-07-14T00:00:00Z",
+        },
+        "latest": {
+            "body_temperature_celsius": 36.7,
+            "body_temperature_measured_at": "2026-07-14T08:00:00",
+        },
+    },
 ])
 def test_malformed_body_snapshot_preserves_last_known_body_snapshot(tmp_path, body_summary):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
@@ -871,6 +894,59 @@ def test_malformed_authoritative_sleep_summary_preserves_prior_window(
     assert len(facts) == 1
     assert facts[0]["metric"] == "sleep_duration"
     assert facts[0]["value"] == 390
+
+
+@pytest.mark.parametrize("temporal_key", ["start_time", "end_time"])
+@pytest.mark.parametrize("invalid_mode", ["malformed", "naive"])
+def test_ambiguous_sleep_summary_timestamp_preserves_omitted_prior_metrics(
+    tmp_path, temporal_key, invalid_mode,
+):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    query = {
+        "start_date": today,
+        "end_date": (date.today() + timedelta(days=1)).isoformat(),
+    }
+    valid_row = {
+        "date": today,
+        "source": {"provider": "oura"},
+        "start_time": f"{today}T00:30:00Z",
+        "end_time": f"{today}T08:00:00Z",
+        "duration_minutes": 390,
+        "avg_heart_rate_bpm": 54,
+    }
+    invalid_row = {
+        "date": today,
+        "source": {"provider": "oura"},
+        "start_time": f"{today}T00:30:00Z",
+        "end_time": f"{today}T08:00:00Z",
+        "duration_minutes": 420,
+    }
+    invalid_row[temporal_key] = (
+        "not-a-timestamp" if invalid_mode == "malformed" else f"{today}T08:00:00"
+    )
+    for row in (valid_row, invalid_row):
+        hub.store_wearable_facts(
+            {
+                "fetched_at": f"{today}T12:00:00Z",
+                "_sleep_summary_snapshot_complete": True,
+                "_sleep_summary_query": query,
+                "sleep_summary": {"data": [row]},
+            },
+            db_file=db_file,
+            profile_key="profile-42",
+            activity_extractor=lambda _payload: [],
+            sleep_extractor=lambda _payload: None,
+            row_replacement_sources=lambda row: ["oura"] if row else [],
+        )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    by_metric = {
+        fact["metric"]: fact
+        for fact in list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    }
+    assert by_metric["sleep_avg_heart_rate"]["value"] == 54
 
 
 @pytest.mark.parametrize(

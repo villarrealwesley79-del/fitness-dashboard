@@ -114,12 +114,8 @@ def _valid_body_snapshot(payload: object) -> bool:
     if not valid_number(averaged.get("avg_hrv_rmssd_ms")):
         return False
     period_days = averaged.get("period_days")
-    period_start = _temporal_value(averaged.get("period_start"))
-    period_end = _temporal_value(averaged.get("period_end"))
-    if period_start is not None and period_start.tzinfo is None:
-        period_start = period_start.astimezone()
-    if period_end is not None and period_end.tzinfo is None:
-        period_end = period_end.astimezone()
+    period_start = _utc_temporal_value(averaged.get("period_start"))
+    period_end = _utc_temporal_value(averaged.get("period_end"))
     if (
         isinstance(period_days, bool)
         or not isinstance(period_days, int)
@@ -148,7 +144,7 @@ def _valid_body_snapshot(payload: object) -> bool:
             return False
         if (value is None) != (measured_at is None):
             return False
-        if measured_at is not None and _temporal_text(measured_at) is None:
+        if measured_at is not None and _utc_temporal_value(measured_at) is None:
             return False
 
     blood_pressure = latest.get("blood_pressure")
@@ -171,7 +167,10 @@ def _valid_body_snapshot(payload: object) -> bool:
             return False
     if (blood_pressure is None) != (blood_pressure_measured_at is None):
         return False
-    if blood_pressure_measured_at is not None and _temporal_text(blood_pressure_measured_at) is None:
+    if (
+        blood_pressure_measured_at is not None
+        and _utc_temporal_value(blood_pressure_measured_at) is None
+    ):
         return False
 
     measurement_present = (
@@ -730,7 +729,19 @@ def store_wearable_facts(
             }
             if invalid_stage_keys:
                 sleep_summary_snapshot_replacement_safe = False
-        observed_at = _temporal_text(_first_value(row, "end_time", "end", "date"))
+        supplied_sleep_instants = [
+            row[key]
+            for key in ("start_time", "start", "end_time", "end")
+            if row.get(key) is not None
+        ]
+        if any(_utc_temporal_value(value) is None for value in supplied_sleep_instants):
+            sleep_summary_snapshot_replacement_safe = False
+        raw_observed_at = _first_value(row, "end_time", "end")
+        observed_at = (
+            str(raw_observed_at)
+            if raw_observed_at is not None and _utc_temporal_value(raw_observed_at) is not None
+            else date_s if raw_observed_at is None else None
+        )
         provenance = {
             "source_id": "sleep-summary",
             "source_provider": provider,
