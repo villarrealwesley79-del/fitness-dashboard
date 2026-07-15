@@ -74,7 +74,7 @@ def test_latest_per_metric_orders_observation_instants_chronologically(tmp_path)
             source_id="older", observed_at="2026-07-14T13:00:00+00:00",
         ),
         WearableDailyFact(
-            "2026-07-14", "whoop", "WHOOP", "recovery_score", 80, "score",
+            "2026-07-14", "oura", "Oura", "recovery_score", 80, "score",
             source_id="newer", observed_at="2026-07-14T08:30:00-05:00",
         ),
     ])
@@ -135,7 +135,7 @@ def test_latest_per_metric_prefers_newer_fact_date_before_observation_instant(tm
             source_id="older-local-day", observed_at="2026-07-14T23:30:00-05:00",
         ),
         WearableDailyFact(
-            "2026-07-15", "whoop", "WHOOP", "recovery_score", 80, "score",
+            "2026-07-15", "oura", "Oura", "recovery_score", 80, "score",
             source_id="newer-date",
         ),
     ])
@@ -144,6 +144,28 @@ def test_latest_per_metric_prefers_newer_fact_date_before_observation_instant(tm
 
     assert fact["source_id"] == "newer-date"
     assert fact["value"] == 80
+
+
+def test_distinct_metric_limit_orders_by_one_real_representative_row(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    upsert_daily_facts(str(db), [
+        WearableDailyFact(
+            "2026-07-15", "oura", "Oura", "metric_a", 1, "score",
+            source_system="open_wearables",
+        ),
+        WearableDailyFact(
+            "2026-07-14", "whoop", "WHOOP", "metric_a", 2, "score",
+            source_system="open_wearables", observed_at="2026-07-14T23:30:00-05:00",
+        ),
+        WearableDailyFact(
+            "2026-07-15", "oura", "Oura", "metric_b", 3, "score",
+            source_system="open_wearables", observed_at="2026-07-15T01:00:00Z",
+        ),
+    ])
+
+    facts = list_recommendation_facts(str(db), latest_per_metric=True, limit=1)
+
+    assert {fact["metric"] for fact in facts} == {"metric_b"}
 
 
 def test_timestamped_sleep_fact_defaults_to_summary_record_kind(tmp_path):

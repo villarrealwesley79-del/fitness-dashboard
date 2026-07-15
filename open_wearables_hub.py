@@ -97,7 +97,7 @@ def _temporal_text(value: object) -> str | None:
     return str(value) if _temporal_value(value) is not None else None
 
 
-def _row_date(row: dict, fallback: str) -> str | None:
+def _row_date(row: dict, fallback: str | None = None) -> str | None:
     value = _first_value(row, "date", "day", "summary_date", "period_end", "end", "end_time", "start", "start_time", "timestamp")
     parsed = _temporal_value(value if value is not None else fallback)
     return parsed.date().isoformat() if parsed is not None else None
@@ -477,7 +477,7 @@ def store_wearable_facts(
     )
     for payload_key, mappings in metric_groups:
         for row in _payload_rows(data.get(payload_key)):
-            date_s = _row_date(row, fetched_at)
+            date_s = _row_date(row)
             if date_s is None:
                 continue
             provider = _source_provider(row)
@@ -510,7 +510,7 @@ def store_wearable_facts(
                 mark_replacement_sources(row, date_s)
 
     for body in _payload_rows(data.get("body_summary")):
-        date_s = _row_date(body.get("averaged") if isinstance(body.get("averaged"), dict) else body, fetched_at)
+        date_s = _row_date(body.get("averaged") if isinstance(body.get("averaged"), dict) else body)
         # The body summary is composite: its top-level source can describe only
         # one constituent measurement, not every averaged/latest field.
         provider = None
@@ -527,7 +527,6 @@ def store_wearable_facts(
                 "heart_rate_variability_rmssd_average": (("avg_hrv_rmssd_ms",), "ms"),
             }),
         )
-        trusted_body_fact_added = False
         for values, undated, mappings in body_groups:
             for metric, (aliases, unit) in mappings.items():
                 value = _number(values, *aliases)
@@ -543,9 +542,6 @@ def store_wearable_facts(
                         source_record_kind="summary",
                         metric_domain=("body" if undated else "recovery"),
                     ))
-                    trusted_body_fact_added = trusted_body_fact_added or not undated
-        if date_s and trusted_body_fact_added and _fact_freshness(date_s, fetched_at) in {"fresh", "aging"}:
-            mark_replacement_sources(body, date_s)
         latest = body.get("latest") if isinstance(body.get("latest"), dict) else {}
         for metric, value_key, measured_at_key in (
             ("body_temperature", "body_temperature_celsius", "body_temperature_measured_at"),
@@ -568,7 +564,6 @@ def store_wearable_facts(
                     source_record_kind="summary",
                     metric_domain="body",
                 ))
-                mark_replacement_sources(body, measured_date)
 
     for row in workout_rows or []:
         workout_source_id = _first_value(row, "id", "event_id", "workout_id")
@@ -740,28 +735,25 @@ def recommendation_facts(db_file: str, profile_key: str, limit: int = 20) -> lis
 
 def conservative_modifier(facts) -> dict:
     facts = facts or []
-    latest_by_metric = {}
-    for fact in facts:
-        metric = fact.get("metric")
-        if metric and metric not in latest_by_metric:
-            latest_by_metric[metric] = fact
-
     applied = []
     details = []
-    sleep = latest_by_metric.get("sleep_duration")
-    try:
-        sleep_min = float(sleep.get("value")) if sleep and sleep.get("value") is not None else None
-    except Exception:
-        sleep_min = None
+    sleep_values = []
+    active_values = []
+    for fact in facts:
+        try:
+            value = float(fact.get("value")) if fact.get("value") is not None else None
+        except (TypeError, ValueError):
+            continue
+        if fact.get("metric") == "sleep_duration" and value is not None:
+            sleep_values.append(value)
+        elif fact.get("metric") == "active_minutes" and value is not None:
+            active_values.append(value)
+    sleep_min = min(sleep_values, default=None)
     if sleep_min is not None and sleep_min < 360:
         applied.append("sleep_caution")
         details.append(f"Open Wearables sleep duration {int(round(sleep_min))} min")
 
-    active = latest_by_metric.get("active_minutes")
-    try:
-        active_min = float(active.get("value")) if active and active.get("value") is not None else None
-    except Exception:
-        active_min = None
+    active_min = max(active_values, default=None)
     if active_min is not None and active_min >= 90:
         applied.append("activity_caution")
         details.append(f"Open Wearables active minutes {int(round(active_min))}")

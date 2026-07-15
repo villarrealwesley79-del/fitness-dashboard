@@ -135,6 +135,105 @@ def test_conservative_modifier_no_caution_when_within_bounds():
     assert modifier["detail"] is None
 
 
+def test_recommendation_facts_preserves_provider_alternatives_for_conservative_guard(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    upsert_daily_facts(db_file, [
+        WearableDailyFact(
+            today, "oura", "Oura", "sleep_duration", 480, "min",
+            source_system="open_wearables", freshness="fresh", used_for_recommendation=True,
+        ),
+        WearableDailyFact(
+            today, "whoop", "WHOOP", "sleep_duration", 300, "min",
+            source_system="open_wearables", freshness="fresh", used_for_recommendation=True,
+        ),
+    ], profile_key="profile-42")
+
+    facts = hub.recommendation_facts(db_file, "profile-42")
+    modifier = hub.conservative_modifier(facts)
+
+    assert {fact["provider_id"] for fact in facts} == {"oura", "whoop"}
+    assert "sleep_caution" in modifier["applied_modifiers"]
+
+
+def test_provider_alternatives_do_not_exhaust_distinct_metric_limit(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    today = date.today().isoformat()
+    facts = []
+    for index in range(19):
+        for provider_id, label in (("oura", "Oura"), ("whoop", "WHOOP")):
+            facts.append(WearableDailyFact(
+                today, provider_id, label, f"metric_{index:02d}", index, "score",
+                source_system="open_wearables", freshness="fresh", used_for_recommendation=True,
+            ))
+    facts.extend([
+        WearableDailyFact(
+            today, "oura", "Oura", "sleep_duration", 480, "min",
+            source_system="open_wearables", freshness="fresh", used_for_recommendation=True,
+        ),
+        WearableDailyFact(
+            today, "whoop", "WHOOP", "sleep_duration", 300, "min",
+            source_system="open_wearables", freshness="fresh", used_for_recommendation=True,
+        ),
+    ])
+    upsert_daily_facts(db_file, facts, profile_key="profile-42")
+
+    recommendation_facts = hub.recommendation_facts(db_file, "profile-42", limit=20)
+    modifier = hub.conservative_modifier(recommendation_facts)
+
+    assert len({fact["metric"] for fact in recommendation_facts}) == 20
+    assert {fact["provider_id"] for fact in recommendation_facts if fact["metric"] == "sleep_duration"} == {"oura", "whoop"}
+    assert "sleep_caution" in modifier["applied_modifiers"]
+
+
+def test_dated_summaries_without_observation_dates_fail_closed(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    count = hub.store_wearable_facts(
+        {
+            "fetched_at": "2026-07-14T10:00:00Z",
+            "recovery_summary": {"data": [{"recovery_score": 80}]},
+            "body_summary": {"averaged": {"resting_heart_rate_bpm": 52}},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    assert count == 0
+    assert list_recommendation_facts(db_file, profile_key="profile-42") == []
+
+
+def test_composite_body_summary_does_not_mark_direct_provider_replacement(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+    hub.store_wearable_facts(
+        {
+            "fetched_at": "2026-07-14T10:00:00Z",
+            "body_summary": {
+                "source": {"provider": "oura"},
+                "averaged": {
+                    "period_end": "2026-07-14T09:00:00Z",
+                    "resting_heart_rate_bpm": 52,
+                },
+            },
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda row: [row["source"]["provider"]],
+    )
+
+    from wearable_fact_store import list_wearable_sources
+
+    [source] = list_wearable_sources(db_file, profile_key="profile-42")
+    assert source["capabilities"]["replacement_sources"] == []
+    assert source["capabilities"]["replacement_source_dates"] == {}
+
+
 def test_apply_recommendation_guard_downgrades_once_when_modifier_applies():
     facts = [{"metric": "sleep_duration", "value": 200}]
 

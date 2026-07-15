@@ -657,16 +657,30 @@ def list_recommendation_facts(
     )
     query = (
         f"""
-        SELECT * FROM (
+        WITH ranked_provider_facts AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY metric, provider_id, source_system ORDER BY {order_clause}
+            ) AS provider_rank
+            FROM wearable_daily_facts
+            WHERE {where_clause}
+        ), latest_provider_facts AS (
+            SELECT * FROM ranked_provider_facts WHERE provider_rank = 1
+        ), metric_representatives AS (
             SELECT *, ROW_NUMBER() OVER (
                 PARTITION BY metric ORDER BY {order_clause}
             ) AS metric_rank
-            FROM wearable_daily_facts
-            WHERE {where_clause}
+            FROM latest_provider_facts
+        ), selected_metrics AS (
+            SELECT metric
+            FROM metric_representatives
+            WHERE metric_rank = 1
+            ORDER BY {order_clause}
+            LIMIT ?
         )
-        WHERE metric_rank = 1
+        SELECT latest_provider_facts.*
+        FROM latest_provider_facts
+        JOIN selected_metrics USING (metric)
         ORDER BY {order_clause}
-        LIMIT ?
         """
         if latest_per_metric
         else f"""
