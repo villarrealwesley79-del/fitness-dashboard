@@ -1880,6 +1880,15 @@ def _food_log_entries_for_context(since=None, limit=None):
         return []
 
 
+def _food_log_entries_for_workout_adaptation(plan_date: str) -> list[dict]:
+    """Read one bounded snapshot for same-day and next-day adaptation."""
+    try:
+        since = (datetime.strptime(plan_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        since = plan_date
+    return _food_log_entries_for_context(since=since)
+
+
 def _legacy_nutrition_client_id(entry: dict, index: int) -> str:
     payload = {
         "index": index,
@@ -4931,8 +4940,8 @@ def api_next_workout():
     completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
     can_evaluate_active = not active_open_requested or bool(completed_sets_by_exercise)
     today_s = _today_str()
-    food_log_entries = _food_log_entries_for_context(since=today_s)
-    adaptation_food_entries = _food_log_entries_for_context()
+    adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
+    food_log_entries = adaptation_food_entries
     nutrition_context = _nutrition_context_for_date(
         today_s,
         hard_training_planned=_workout_looks_hard(current_plan or {}),
@@ -5202,8 +5211,8 @@ def api_dashboard():
             training_recommendation=guarded_dashboard_recommendation,
             consume_cardio_rotation=False,
         )
-    food_log_entries = _food_log_entries_for_context(since=today_s)
-    adaptation_food_entries = _food_log_entries_for_context()
+    adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
+    food_log_entries = adaptation_food_entries
     nutrition_context = _nutrition_context_for_date(
         today_s,
         hard_training_planned=_workout_looks_hard(next_workout),
@@ -9632,8 +9641,8 @@ def workout_adaptation_events():
     active_open_requested = active_open_raw in {"1", "true", "yes"}
     active_workout_open = active_open_requested and bool(completed_sets_by_exercise)
     today_s = _today_str()
-    food_log_entries = _food_log_entries_for_context(since=today_s)
-    adaptation_food_entries = _food_log_entries_for_context()
+    adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
+    food_log_entries = adaptation_food_entries
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
     next_workout = _current_workout_plan_for_fingerprint(fingerprint)
@@ -15804,8 +15813,8 @@ def smart_recommendation_api():
         consume_cardio_rotation=False,
     )
     freshness = _compute_data_freshness()
-    food_log_entries = _food_log_entries_for_context(since=today)
-    adaptation_food_entries = _food_log_entries_for_context()
+    adaptation_food_entries = _food_log_entries_for_workout_adaptation(today)
+    food_log_entries = adaptation_food_entries
     nutrition_context = _nutrition_context_for_date(
         today,
         hard_training_planned=_workout_looks_hard(next_workout),

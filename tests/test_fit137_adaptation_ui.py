@@ -317,6 +317,94 @@ sandbox.module.exports().then((result) => process.stdout.write(JSON.stringify(re
     }
 
 
+@pytest.mark.parametrize("trigger", ["correction", "deletion"])
+@pytest.mark.parametrize("first_request_fails", [False, True], ids=["success", "error"])
+def test_meal_mutation_refresh_queues_one_followup_during_inflight_poll(trigger, first_request_fails):
+    js = APP_JS.read_text()
+    fetch_block = _block(
+        js,
+        "async function fetchWorkoutAdaptationNotices()",
+        "function newWorkoutId",
+    )
+    if trigger == "correction":
+        caller_block = _block(js, "async function saveMealCorrection", "function foodLogYmd")
+    else:
+        caller_block = _block(js, "function openMealDetailModal", "function setMealDetailMode")
+    assert "fetchWorkoutAdaptationNotices().catch" in caller_block
+
+    if not shutil.which("node"):
+        pytest.skip("meal mutation adaptation refresh race requires node")
+    script = f"""
+const vm = require('node:vm');
+const fetchSource = {json.dumps(fetch_block)};
+const source = `
+let resolveFirst;
+let rejectFirst;
+let feedCalls = 0;
+const firstRequest = new Promise((resolve, reject) => {{ resolveFirst = resolve; rejectFirst = reject; }});
+const shown = [];
+const cards = [];
+const host = {{
+  querySelectorAll() {{ return cards.filter((card) => !card.removed); }},
+}};
+const workoutAdaptationNoticeState = {{
+  fetching: false,
+  refillRequested: false,
+  seen: new Set(),
+  statuses: new Map(),
+  dismissed: new Set(),
+}};
+function withActiveWorkoutAdaptationParams(path) {{ return path; }}
+function workoutAdaptationIsRenderable() {{ return true; }}
+function $(id) {{ return id === 'workout-adaptation-host' ? host : null; }}
+function showWorkoutAdaptationNotice(event) {{
+  shown.push(event.status);
+  cards.push({{
+    dataset: {{ workoutAdaptationId: event.id }},
+    removed: false,
+    remove() {{ this.removed = true; }},
+  }});
+}}
+async function api() {{
+  feedCalls += 1;
+  if (feedCalls === 1) return firstRequest;
+  return {{ events: [{{ id: 'event-1', status: 'stale' }}] }};
+}}
+${{fetchSource}}
+module.exports = async () => {{
+  const inFlight = fetchWorkoutAdaptationNotices();
+  await Promise.resolve();
+  await fetchWorkoutAdaptationNotices();
+  if ({json.dumps(first_request_fails)}) rejectFirst(new Error('stale response failed'));
+  else resolveFirst({{ events: [{{ id: 'event-1', status: 'applied' }}] }});
+  try {{ await inFlight; }} catch (_err) {{}}
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  return {{
+    feed_calls: feedCalls,
+    shown,
+    active: cards.filter((card) => !card.removed).length,
+    first_removed: cards.length > 1 ? cards[0].removed : null,
+  }};
+}};
+`;
+const sandbox = {{ module: {{ exports: {{}} }}, console, setImmediate }};
+vm.runInNewContext(source, sandbox);
+sandbox.module.exports().then((result) => process.stdout.write(JSON.stringify(result)));
+"""
+    result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True)
+    if first_request_fails:
+        expected = {"feed_calls": 2, "shown": ["stale"], "active": 1, "first_removed": None}
+    else:
+        expected = {
+            "feed_calls": 2,
+            "shown": ["applied", "stale"],
+            "active": 1,
+            "first_removed": True,
+        }
+    assert json.loads(result.stdout) == expected
+
+
 def test_adaptation_notice_renders_neutral_reason_and_collapsed_details():
     js = APP_JS.read_text()
     notice = _block(

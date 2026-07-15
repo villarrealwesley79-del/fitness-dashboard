@@ -416,6 +416,55 @@ def test_next_workout_route_replays_due_adaptation_even_with_cached_plan(monkeyp
     assert "_fit136_lightweight_no_ow" not in payload["next_workout"]
 
 
+def test_next_workout_uses_one_food_log_snapshot_for_context_and_adaptation(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    monkeypatch.setattr(module, "SORENESS_DATA", [])
+    cached = _recommendation()
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", cached)
+    monkeypatch.setattr(
+        module,
+        "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT",
+        module._workout_recommendation_fingerprint(),
+    )
+    real_context = module._nutrition_context_for_date
+    real_apply = module._apply_due_workout_adaptations_for_plan
+    snapshot_flow = []
+
+    def tracked_context(*args, **kwargs):
+        snapshot_flow.append(("context", id(kwargs.get("food_log_entries"))))
+        return real_context(*args, **kwargs)
+
+    def tracked_apply(*args, **kwargs):
+        snapshot_flow.append(("apply", id(kwargs.get("food_log_entries"))))
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_nutrition_context_for_date", tracked_context)
+    monkeypatch.setattr(module, "_apply_due_workout_adaptations_for_plan", tracked_apply)
+
+    response = client.get("/api/next-workout?active_workout_open=false")
+
+    assert response.status_code == 200
+    apply_index = next(index for index, call in enumerate(snapshot_flow) if call[0] == "apply")
+    assert snapshot_flow[apply_index - 1][0] == "context"
+    assert snapshot_flow[apply_index - 1][1] == snapshot_flow[apply_index][1]
+
+
+def test_adaptation_food_snapshot_is_bounded_to_two_day_eligibility(monkeypatch, tmp_path):
+    module, _client_instance = _client(monkeypatch, tmp_path)
+    calls = []
+
+    def tracked_snapshot(*, since=None, limit=None):
+        calls.append({"since": since, "limit": limit})
+        return []
+
+    monkeypatch.setattr(module, "_food_log_entries_for_context", tracked_snapshot)
+
+    assert module._food_log_entries_for_workout_adaptation("2026-05-24") == []
+    assert calls == [{"since": "2026-05-23", "limit": None}]
+
+
 def test_active_workout_poll_without_completed_sets_defers_pending_window(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")

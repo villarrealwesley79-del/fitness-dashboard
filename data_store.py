@@ -1250,7 +1250,13 @@ def list_pending_workout_adaptation_windows(user_id: int) -> list[dict]:
     return [_workout_adaptation_pending_payload(row) for row in rows]
 
 
-def save_workout_adaptation_event(user_id: int, pending_id: str, event: dict) -> dict | None:
+def save_workout_adaptation_event(
+    user_id: int,
+    pending_id: str,
+    event: dict,
+    *,
+    source_fingerprint: str | None = None,
+) -> dict | None:
     """Persist one evaluated workout adaptation audit/event row."""
     init_data_db()
     event_id = event.get("id") or str(uuid.uuid4())
@@ -1276,6 +1282,37 @@ def save_workout_adaptation_event(user_id: int, pending_id: str, event: dict) ->
     }
     cols = list(payload.keys())
     with _get_db() as conn:
+        # Serialize source validation with correction/deletion writes. If a
+        # mutation wins first, this transaction sees it; if it starts later,
+        # it waits until the new event exists and can mark that event stale.
+        conn.execute("BEGIN IMMEDIATE")
+        pending = conn.execute(
+            """
+            SELECT *
+              FROM workout_adaptation_pending
+             WHERE user_id = ?
+               AND id = ?
+            """,
+            (user_id, pending_id),
+        ).fetchone()
+        if not pending:
+            return None
+        if pending["processed_event_id"]:
+            existing = conn.execute(
+                "SELECT * FROM workout_adaptation_events WHERE id = ?",
+                (pending["processed_event_id"],),
+            ).fetchone()
+            return _workout_adaptation_event_payload(existing) if existing else None
+        if pending["status"] != "pending":
+            return None
+        if source_fingerprint is not None:
+            current_rows = _current_workout_adaptation_source_rows(
+                conn,
+                user_id,
+                _workout_adaptation_pending_payload(pending),
+            )
+            if workout_adaptation_source_fingerprint(current_rows) != source_fingerprint:
+                return None
         claim = conn.execute(
             """
             UPDATE workout_adaptation_pending
@@ -1288,22 +1325,6 @@ def save_workout_adaptation_event(user_id: int, pending_id: str, event: dict) ->
             (created_at, user_id, pending_id),
         )
         if claim.rowcount == 0:
-            pending = conn.execute(
-                """
-                SELECT processed_event_id
-                  FROM workout_adaptation_pending
-                 WHERE user_id = ?
-                   AND id = ?
-                """,
-                (user_id, pending_id),
-            ).fetchone()
-            processed_event_id = pending["processed_event_id"] if pending else None
-            if processed_event_id:
-                existing = conn.execute(
-                    "SELECT * FROM workout_adaptation_events WHERE id = ?",
-                    (processed_event_id,),
-                ).fetchone()
-                return _workout_adaptation_event_payload(existing) if existing else None
             return None
         conn.execute(
             f"INSERT INTO workout_adaptation_events ({', '.join(cols)}) "
@@ -1425,6 +1446,65 @@ def _mark_source_workout_adaptations_stale(
     return len(matching_ids)
 
 
+def _cancel_source_workout_adaptation_pending(
+    conn,
+    user_id: int,
+    *,
+    client_ids: set[str] | None = None,
+    meal_ids: set[str] | None = None,
+) -> int:
+    """Cancel open windows whose trigger source has been deleted."""
+    client_ids = {value for value in (client_ids or set()) if value}
+    meal_ids = {value for value in (meal_ids or set()) if value}
+    if not client_ids and not meal_ids:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT id, food_log_client_ids_json, meal_ids_json
+          FROM workout_adaptation_pending
+         WHERE user_id = ? AND status = 'pending'
+        """,
+        (user_id,),
+    ).fetchall()
+    source_rows = [
+        _food_log_row_to_dict(row)
+        for row in conn.execute(
+            "SELECT * FROM food_logs WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+    ]
+    matching_ids = []
+    for row in rows:
+        pending_client_ids = _json_loads_or_none(row["food_log_client_ids_json"]) or []
+        pending_meal_ids = _json_loads_or_none(row["meal_ids_json"]) or []
+        matches_deleted_source = (
+            client_ids.intersection(pending_client_ids)
+            or meal_ids.intersection(pending_meal_ids)
+        )
+        has_accepted_source = any(
+            str(source.get("correction_state") or source.get("status") or "").strip().lower()
+            not in {"pending", "pending_review", "needs_review", "review"}
+            and (
+                source.get("client_id") in pending_client_ids
+                or (source.get("meal_id") and source.get("meal_id") in pending_meal_ids)
+            )
+            for source in source_rows
+        )
+        if matches_deleted_source and not has_accepted_source:
+            matching_ids.append(row["id"])
+    if matching_ids:
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        conn.executemany(
+            """
+            UPDATE workout_adaptation_pending
+               SET status = 'canceled', updated_at = ?
+             WHERE id = ? AND user_id = ? AND status = 'pending'
+            """,
+            [(now_iso, pending_id, user_id) for pending_id in matching_ids],
+        )
+    return len(matching_ids)
+
+
 _WORKOUT_ADAPTATION_SOURCE_FIELDS = (
     "date",
     "logged_at",
@@ -1444,16 +1524,54 @@ _WORKOUT_ADAPTATION_SOURCE_FIELDS = (
 )
 
 
+def _workout_adaptation_source_value(row: dict, field: str):
+    value = row.get(field)
+    if field in {"meal_type", "portion_description"} and value == "":
+        return None
+    return value
+
+
+def workout_adaptation_source_fingerprint(rows: list[dict]) -> str:
+    """Return a deterministic fingerprint of adaptation-relevant food rows."""
+    projections = [
+        {
+            "client_id": row.get("client_id"),
+            **{
+                field: _workout_adaptation_source_value(row, field)
+                for field in _WORKOUT_ADAPTATION_SOURCE_FIELDS
+            },
+        }
+        for row in rows
+    ]
+    projections.sort(key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")))
+    encoded = json.dumps(projections, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _current_workout_adaptation_source_rows(
+    conn: sqlite3.Connection,
+    user_id: int,
+    pending: dict,
+) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM food_logs WHERE user_id = ? AND date = ?",
+        (user_id, pending.get("date")),
+    ).fetchall()
+    matching = []
+    for raw_row in rows:
+        row = _food_log_row_to_dict(raw_row)
+        status = str(row.get("correction_state") or row.get("status") or "").strip().lower()
+        accepted = status not in {"pending", "pending_review", "needs_review", "review"}
+        if accepted:
+            matching.append(row)
+    return matching
+
+
 def _workout_adaptation_source_changed(previous: dict, current: dict) -> bool:
     """Return whether a persisted field used by adaptation logic changed."""
-    def comparable_value(row: dict, field: str):
-        value = row.get(field)
-        if field in {"meal_type", "portion_description"} and value == "":
-            return None
-        return value
-
     return any(
-        comparable_value(previous, field) != comparable_value(current, field)
+        _workout_adaptation_source_value(previous, field)
+        != _workout_adaptation_source_value(current, field)
         for field in _WORKOUT_ADAPTATION_SOURCE_FIELDS
     )
 
@@ -2272,6 +2390,13 @@ def delete_food_log_by_client_id(user_id: int, client_id: str) -> bool:
             "DELETE FROM food_logs WHERE user_id = ? AND client_id = ?",
             (user_id, client_id),
         )
+        if source and cursor.rowcount:
+            _cancel_source_workout_adaptation_pending(
+                conn,
+                user_id,
+                client_ids={client_id},
+                meal_ids={source["meal_id"]} if source["meal_id"] else set(),
+            )
         conn.commit()
         return cursor.rowcount > 0
 
@@ -2303,6 +2428,13 @@ def delete_food_logs_by_meal_id(user_id: int, meal_id: str) -> int:
             "DELETE FROM food_logs WHERE user_id = ? AND meal_id = ?",
             (user_id, key),
         )
+        if source_rows and cursor.rowcount:
+            _cancel_source_workout_adaptation_pending(
+                conn,
+                user_id,
+                client_ids={row["client_id"] for row in source_rows if row["client_id"]},
+                meal_ids={key},
+            )
         conn.commit()
         return int(cursor.rowcount or 0)
 

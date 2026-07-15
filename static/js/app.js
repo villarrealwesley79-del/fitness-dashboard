@@ -529,7 +529,10 @@
     }
 
     async function fetchWorkoutAdaptationNotices() {
-        if (workoutAdaptationNoticeState.fetching) return;
+        if (workoutAdaptationNoticeState.fetching) {
+            workoutAdaptationNoticeState.refillRequested = true;
+            return;
+        }
         workoutAdaptationNoticeState.fetching = true;
         workoutAdaptationNoticeState.refillRequested = false;
         try {

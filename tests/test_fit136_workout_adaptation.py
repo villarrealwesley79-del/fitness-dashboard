@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import datetime, timedelta
+
+import pytest
 
 import data_store
 import workout_adaptation
@@ -210,6 +213,209 @@ def test_under_fueled_adaptation_reduces_and_clamps_to_available_time(monkeypatc
     assert coverage["target_fraction"] == 1.0
     assert coverage["effective_calorie_pct_threshold"] == 60.0
     assert coverage["effective_protein_pct_threshold"] == 80.0
+
+
+@pytest.mark.parametrize("mutation", ["correction", "deletion", "context_correction"])
+def test_late_source_mutation_rejects_stale_adaptation_snapshot(monkeypatch, tmp_path, mutation):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    earlier_row = _food_log(
+        "late-source-earlier",
+        meal_id="meal-late-source-earlier",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        logged_at="2026-05-24T08:00:00",
+    )
+    source_row = _food_log(
+        "late-source",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        logged_at="2026-05-24T18:00:00",
+    )
+    pending = workout_adaptation.enqueue_accepted_food_logs(1, [source_row], clock=start)
+    recommendation = _recommendation()
+    real_save = workout_adaptation.save_workout_adaptation_event
+
+    def save_after_source_mutation(user_id, pending_id, event, **kwargs):
+        if mutation == "context_correction":
+            _food_log(
+                "late-source-earlier",
+                meal_id="meal-late-source-earlier",
+                calories=850,
+                protein_g=40,
+                confidence=0.9,
+                logged_at="2026-05-24T08:00:00",
+                correction_state="corrected",
+            )
+        elif mutation == "correction":
+            _food_log(
+                "late-source",
+                calories=650,
+                protein_g=20,
+                confidence=0.9,
+                logged_at="2026-05-24T18:00:00",
+                correction_state="corrected",
+            )
+        else:
+            assert data_store.delete_food_log_by_client_id(1, "late-source") is True
+        return real_save(user_id, pending_id, event, **kwargs)
+
+    monkeypatch.setattr(workout_adaptation, "save_workout_adaptation_event", save_after_source_mutation)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        recommendation,
+        food_log_entries=[earlier_row, source_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 35},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    assert patched == recommendation
+    assert events == []
+    assert data_store.list_workout_adaptation_events(1, unacknowledged=False) == []
+    pending_ids = [row["id"] for row in data_store.list_pending_workout_adaptation_windows(1)]
+    assert pending_ids == ([] if mutation == "deletion" else [pending["id"]])
+
+
+def test_source_snapshot_validation_is_user_scoped_and_accepts_unchanged_rows(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    earlier_row = _food_log(
+        "scoped-source-earlier",
+        meal_id="meal-scoped-source-earlier",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        logged_at="2026-05-24T08:00:00",
+    )
+    source_row = _food_log(
+        "scoped-source",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        logged_at="2026-05-24T18:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [source_row], clock=start)
+    recommendation = _recommendation()
+    real_save = workout_adaptation.save_workout_adaptation_event
+
+    def save_after_other_user_mutation(user_id, pending_id, event, **kwargs):
+        _food_log(
+            "scoped-source",
+            user_id=2,
+            calories=900,
+            protein_g=10,
+            confidence=0.9,
+            logged_at="2026-05-24T18:00:00",
+            correction_state="corrected",
+        )
+        return real_save(user_id, pending_id, event, **kwargs)
+
+    monkeypatch.setattr(workout_adaptation, "save_workout_adaptation_event", save_after_other_user_mutation)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        recommendation,
+        food_log_entries=[earlier_row, source_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 35},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    assert len(events) == 1
+    assert workout_adaptation.project_event(events[0])["status"] == "applied"
+    assert patched != recommendation
+
+
+def test_concurrent_source_correction_cannot_leave_new_event_applied(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    earlier_row = _food_log(
+        "concurrent-source-earlier",
+        meal_id="meal-concurrent-source-earlier",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        logged_at="2026-05-24T08:00:00",
+    )
+    source_row = _food_log(
+        "concurrent-source",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        logged_at="2026-05-24T18:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [source_row], clock=start)
+    real_current_rows = data_store._current_workout_adaptation_source_rows
+    mutation_done = threading.Event()
+    mutation_errors = []
+    mutation_thread = None
+
+    def correct_source():
+        try:
+            _food_log(
+                "concurrent-source-earlier",
+                meal_id="meal-concurrent-source-earlier",
+                calories=650,
+                protein_g=20,
+                confidence=0.9,
+                logged_at="2026-05-24T08:00:00",
+                correction_state="corrected",
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            mutation_errors.append(exc)
+        finally:
+            mutation_done.set()
+
+    def current_rows_then_start_correction(conn, user_id, pending):
+        nonlocal mutation_thread
+        rows = real_current_rows(conn, user_id, pending)
+        mutation_thread = threading.Thread(target=correct_source)
+        mutation_thread.start()
+        mutation_done.wait(0.5)
+        return rows
+
+    monkeypatch.setattr(
+        data_store,
+        "_current_workout_adaptation_source_rows",
+        current_rows_then_start_correction,
+    )
+
+    workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[earlier_row, source_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 35},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    assert mutation_thread is not None
+    mutation_thread.join(timeout=2)
+    assert not mutation_thread.is_alive()
+    assert mutation_errors == []
+    stored = data_store.list_workout_adaptation_events(1, unacknowledged=False)
+    assert len(stored) == 1
+    assert stored[0]["status"] == "stale"
+
+
+def test_deleting_one_item_keeps_multi_item_pending_window(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    first = _food_log("meal-item-one", meal_id="shared-meal")
+    second = _food_log("meal-item-two", meal_id="shared-meal")
+    pending = workout_adaptation.enqueue_accepted_food_logs(1, [first, second], clock=start)
+
+    assert data_store.delete_food_log_by_client_id(1, "meal-item-one") is True
+
+    pending_ids = [row["id"] for row in data_store.list_pending_workout_adaptation_windows(1)]
+    assert pending_ids == [pending["id"]]
 
 
 def test_late_day_single_partial_meal_skips_volume_reduction(monkeypatch, tmp_path):
