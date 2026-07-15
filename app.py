@@ -4,7 +4,7 @@ Fitness Intelligence System - Mobile Web App
 Evidence-based resistance training optimization for iOS/Android.
 """
 
-from flask import Flask, has_request_context, render_template, jsonify, request, Response, redirect
+from flask import Flask, after_this_request, has_request_context, render_template, jsonify, request, Response, redirect
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -2221,6 +2221,30 @@ def _enqueue_workout_adaptation_after_accept(user_id: int, food_logs: list[dict]
     except Exception:
         app.logger.warning("workout adaptation enqueue failed", exc_info=True)
         return None
+
+
+def _repair_workout_adaptation_after_replay(user_id: int, food_logs: list[dict]) -> dict | None:
+    """Enqueue canonical replay rows that are absent from open adaptation windows."""
+    try:
+        pending_client_ids = {
+            str(client_id)
+            for window in data_store_module.list_pending_workout_adaptation_windows(user_id)
+            for client_id in window.get("food_log_client_ids") or []
+        }
+    except Exception:
+        app.logger.warning("workout adaptation replay inspection failed", exc_info=True)
+        return None
+    missing_rows = [
+        row
+        for row in food_logs
+        if row.get("client_id") and str(row["client_id"]) not in pending_client_ids
+    ]
+    if not missing_rows:
+        return None
+    repaired = None
+    for row in missing_rows:
+        repaired = _enqueue_workout_adaptation_after_accept(user_id, [row]) or repaired
+    return repaired
 
 
 def _completed_sets_query_param(raw_value: str | None) -> dict[str, int]:
@@ -8425,6 +8449,11 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                 else 10_000
             ),
         )
+        @after_this_request
+        def repair_terminal_replay_adaptation(response):
+            _repair_workout_adaptation_after_replay(user_id, ordered_rows)
+            return response
+
         return _meal_multi_response(
             meal_id,
             ordered_rows,
@@ -8652,6 +8681,7 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                     batch_conn,
                 )
             ordered_rows = sorted(transaction_rows, key=lambda row: row.get("item_index") if row.get("item_index") is not None else 10_000)
+            _repair_workout_adaptation_after_replay(user_id, ordered_rows)
             return _meal_multi_response(
                 meal_id,
                 ordered_rows,
@@ -8768,6 +8798,66 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                 "meal_id": meal_id,
                 "error": {"message": "meal_id already accepted with a different included item set"},
             }), 409
+        existing_client_ids = {
+            row.get("client_id")
+            for row in existing_rows
+            if row.get("client_id")
+        }
+        canonical_rows_complete = (
+            existing_client_ids == incoming_client_ids
+            and all(
+                row.get("correction_state") in {CORRECTION_STATE_ACCEPTED, "corrected"}
+                for row in existing_rows
+            )
+        )
+        if not canonical_rows_complete:
+            with food_log_transaction() as canonical_conn:
+                refreshed_event = data_store_module.get_meal_acceptance_event(
+                    user_id,
+                    meal_id,
+                    _conn=canonical_conn,
+                )
+                refreshed_rows = data_store_module.get_food_logs_by_meal_id(
+                    user_id,
+                    meal_id,
+                    _conn=canonical_conn,
+                )
+            if isinstance(refreshed_event, dict):
+                existing_event = refreshed_event
+                existing_rows = refreshed_rows
+                existing_event_ids = set(existing_event.get("included_client_ids") or [])
+                if (
+                    existing_event_ids != incoming_client_ids
+                    or _meal_event_feedback_conflicts(
+                        existing_event,
+                        skipped_count,
+                        deleted_count,
+                        feedback_fingerprint,
+                    )
+                ):
+                    return jsonify({
+                        "status": "conflict",
+                        "meal_id": meal_id,
+                        "error": {"message": "meal_id already accepted with a different included item set"},
+                    }), 409
+                existing_client_ids = {
+                    row.get("client_id")
+                    for row in existing_rows
+                    if row.get("client_id")
+                }
+                canonical_rows_complete = (
+                    existing_client_ids == incoming_client_ids
+                    and all(
+                        row.get("correction_state") in {CORRECTION_STATE_ACCEPTED, "corrected"}
+                        for row in existing_rows
+                    )
+                )
+        if not canonical_rows_complete:
+            return api_error(
+                "canonical accepted meal rows are incomplete",
+                409,
+                code="stale_canonical_meal",
+            )
         replaying_existing_event = True
 
     if not included_items:
@@ -9389,6 +9479,24 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                     "meal_id": meal_id,
                     "error": {"message": "meal_id already accepted with a different included item set"},
                 }), 409
+            canonical_transaction_rows_complete = (
+                transaction_client_ids == incoming_client_ids
+                and all(
+                    row.get("correction_state") in {CORRECTION_STATE_ACCEPTED, "corrected"}
+                    for row in transaction_rows
+                )
+            )
+            if not canonical_transaction_rows_complete:
+                batch_conn.rollback()
+                return api_error(
+                    "canonical accepted meal rows are incomplete",
+                    409,
+                    code="stale_canonical_meal",
+                )
+            terminal_response = terminal_replay_response(batch_conn)
+            if terminal_response is not None:
+                batch_conn.rollback()
+                return terminal_response
             replaying_existing_event = True
         terminal_has_image = bool(
             trusted_snapshot_has_image
@@ -10326,20 +10434,46 @@ def _reconcile_direct_meal_accept_side_effects(
     text_hint: str | None,
     original_for_log: dict | None,
 ) -> None:
-    if (
+    should_learn = (
         not _review_placeholder_nutrition_not_resolved({
             "estimate": estimate,
             "original_estimate": original_for_log,
         })
         and not _review_estimate_lacks_trainable_nutrition(estimate)
-        and claim_food_log_vocab_learning(user_id, client_id)
-    ):
-        if corrected:
-            vocab_phrase = text_hint or _meal_vocab_learning_phrase(None, estimate)
-            personal_vocab.record_correct(user_id, vocab_phrase, estimate)
-        else:
-            vocab_phrase = _meal_vocab_learning_phrase(text_hint or None, estimate)
-            personal_vocab.record_accept(user_id, vocab_phrase, estimate)
+    )
+    if should_learn:
+        with food_log_transaction() as vocab_conn:
+            if claim_food_log_vocab_learning is data_store_module.claim_food_log_vocab_learning:
+                claimed = claim_food_log_vocab_learning(
+                    user_id,
+                    client_id,
+                    _conn=vocab_conn,
+                )
+            else:
+                claimed = claim_food_log_vocab_learning(user_id, client_id)
+            if claimed:
+                if corrected:
+                    vocab_phrase = text_hint or _meal_vocab_learning_phrase(None, estimate)
+                    if personal_vocab.record_correct is _PERSONAL_VOCAB_RECORD_CORRECT:
+                        personal_vocab.record_correct(
+                            user_id,
+                            vocab_phrase,
+                            estimate,
+                            connection=vocab_conn,
+                        )
+                    else:
+                        personal_vocab.record_correct(user_id, vocab_phrase, estimate)
+                else:
+                    vocab_phrase = _meal_vocab_learning_phrase(text_hint or None, estimate)
+                    if personal_vocab.record_accept is _PERSONAL_VOCAB_RECORD_ACCEPT:
+                        personal_vocab.record_accept(
+                            user_id,
+                            vocab_phrase,
+                            estimate,
+                            connection=vocab_conn,
+                        )
+                    else:
+                        personal_vocab.record_accept(user_id, vocab_phrase, estimate)
     _enqueue_workout_adaptation_after_accept(user_id, [food_log])
 
 
@@ -10863,6 +10997,7 @@ def meal_intake_accept(client_id: str):
         ),
     }
     protected_client_id_conflict = False
+    concurrent_retry_row = None
     with food_log_transaction() as accept_conn:
         if _meal_review_snapshot_changed(
             user_id,
@@ -10909,48 +11044,90 @@ def meal_intake_accept(client_id: str):
                         409,
                         code="duplicate_client_id",
                     )
-                return jsonify({
-                    "status": "logged",
-                    "food_log": transaction_row,
-                    "photo_retention": _food_photo_retention_payload(
-                        _food_log_has_image_provenance(transaction_row)
-                    ),
-                })
-            return api_error(
-                "pending review changed before acceptance",
-                409,
-                code="stale_pending_review",
-            )
-        food_log = _meal_intake_persist(
-            client_id,
-            estimate,
-            connection=accept_conn,
-            **persist_kwargs,
-        )
-        protected_client_id_conflict = food_log.pop(
-            "_protected_client_id_conflict",
-            False,
-        )
-        if protected_client_id_conflict:
-            accepted_current = food_log.get("accepted_estimate")
-            conflict_baseline = (
-                accepted_current
-                if isinstance(accepted_current, dict)
-                else _stored_food_log_current_estimate(food_log)
-            )
-            if _review_estimate_differs(estimate, conflict_baseline):
-                accept_conn.rollback()
+                concurrent_retry_row = transaction_row
+            else:
                 return api_error(
-                    "client_id already belongs to a different accepted meal",
+                    "pending review changed before acceptance",
                     409,
-                    code="duplicate_client_id",
+                    code="stale_pending_review",
                 )
-        _review_cleanup_terminal_snapshot_in_transaction(
+        if concurrent_retry_row is None:
+            food_log = _meal_intake_persist(
+                client_id,
+                estimate,
+                connection=accept_conn,
+                **persist_kwargs,
+            )
+            protected_client_id_conflict = food_log.pop(
+                "_protected_client_id_conflict",
+                False,
+            )
+            if protected_client_id_conflict:
+                accepted_current = food_log.get("accepted_estimate")
+                conflict_baseline = (
+                    accepted_current
+                    if isinstance(accepted_current, dict)
+                    else _stored_food_log_current_estimate(food_log)
+                )
+                if _review_estimate_differs(estimate, conflict_baseline):
+                    accept_conn.rollback()
+                    return api_error(
+                        "client_id already belongs to a different accepted meal",
+                        409,
+                        code="duplicate_client_id",
+                    )
+            _review_cleanup_terminal_snapshot_in_transaction(
+                user_id,
+                client_id,
+                accept_conn,
+            )
+    if concurrent_retry_row is not None:
+        accepted_current = concurrent_retry_row.get("accepted_estimate")
+        concurrent_estimate = (
+            accepted_current
+            if isinstance(accepted_current, dict)
+            else _stored_food_log_current_estimate(concurrent_retry_row)
+        )
+        _reconcile_direct_meal_accept_side_effects(
             user_id,
             client_id,
-            accept_conn,
+            concurrent_retry_row,
+            concurrent_estimate,
+            corrected=concurrent_retry_row.get("correction_state") == "corrected",
+            text_hint=concurrent_retry_row.get("context_note") or None,
+            original_for_log=(
+                concurrent_retry_row.get("original_estimate")
+                if isinstance(concurrent_retry_row.get("original_estimate"), dict)
+                else None
+            ),
         )
+        return jsonify({
+            "status": "logged",
+            "food_log": concurrent_retry_row,
+            "photo_retention": _food_photo_retention_payload(
+                _food_log_has_image_provenance(concurrent_retry_row)
+            ),
+        })
     if protected_client_id_conflict:
+        accepted_current = food_log.get("accepted_estimate")
+        conflict_estimate = (
+            accepted_current
+            if isinstance(accepted_current, dict)
+            else _stored_food_log_current_estimate(food_log)
+        )
+        _reconcile_direct_meal_accept_side_effects(
+            user_id,
+            client_id,
+            food_log,
+            conflict_estimate,
+            corrected=food_log.get("correction_state") == "corrected",
+            text_hint=food_log.get("context_note") or None,
+            original_for_log=(
+                food_log.get("original_estimate")
+                if isinstance(food_log.get("original_estimate"), dict)
+                else None
+            ),
+        )
         return jsonify({
             "status": "logged",
             "food_log": food_log,
