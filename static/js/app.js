@@ -5311,6 +5311,40 @@
         cell.parentNode.appendChild(detail);
     }
 
+    function progressInsightVisual(ins) {
+        const kind = String(ins && ins.type || 'info').toLowerCase();
+        const iconName = String(ins && ins.icon || '').toLowerCase();
+        const toneByType = {
+            positive: 'pos',
+            success: 'pos',
+            warning: 'warn',
+            negative: 'neg',
+            danger: 'neg',
+            info: 'info',
+        };
+        const glyphByIcon = {
+            trending_up: '↑',
+            trending_down: '↓',
+            pause: '‖',
+            schedule: '◷',
+            balance: '↔',
+            warning: '!',
+            emoji_events: '★',
+        };
+        const fallbackGlyphByType = {
+            positive: '↑',
+            success: '↑',
+            warning: '!',
+            negative: '!',
+            danger: '▲',
+            info: 'i',
+        };
+        return {
+            iconClass: toneByType[kind] || 'info',
+            iconChar: glyphByIcon[iconName] || fallbackGlyphByType[kind] || 'i',
+        };
+    }
+
     async function renderStats() {
         const days = state.ranges.stats;
         const [hist, appleWorkouts] = await Promise.all([
@@ -5392,10 +5426,7 @@
             items.forEach((ins) => {
                 const card = document.createElement('div');
                 card.className = 'in-card';
-                const kind = (ins.type || 'info').toLowerCase();
-                const map = { success: 'pos', warning: 'warn', danger: 'neg', info: 'info' };
-                const iconClass = map[kind] || 'info';
-                const iconChar = kind === 'success' ? '↑' : kind === 'warning' ? '!' : kind === 'danger' ? '▲' : 'i';
+                const { iconClass, iconChar } = progressInsightVisual(ins);
                 card.innerHTML = `
                     <div class="in-icon ${iconClass}">${iconChar}</div>
                     <div>
