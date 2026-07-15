@@ -285,6 +285,280 @@ def test_ui_shaped_correction_preserves_omitted_source_metadata(
     assert clear_response.get_json()["food_log"]["context_note"] is None
 
 
+@pytest.mark.parametrize("legacy_plan", [False, True])
+@pytest.mark.parametrize("acknowledged", [False, True])
+@pytest.mark.parametrize("preserve_user_edit", [False, True])
+def test_source_correction_restores_base_plan_and_requeues_adaptation(
+    monkeypatch,
+    tmp_path,
+    legacy_plan,
+    acknowledged,
+    preserve_user_edit,
+):
+    module, _client_instance = _client(monkeypatch, tmp_path)
+    source = data_store.add_food_log(
+        1,
+        {
+            "client_id": "restore-plan-source",
+            "date": "2026-05-24",
+            "logged_at": "2026-05-24T18:00:00",
+            "meal_id": "restore-plan-meal",
+            "item_name": "Small snack",
+            "portion_description": "1 snack",
+            "calories": 250,
+            "protein_g": 5,
+            "carbs_g": 40,
+            "fat_g": 4,
+            "sodium_mg": 200,
+            "fiber_g": 2,
+            "confidence": 0.9,
+            "source": "manual_review_estimate",
+            "correction_state": "accepted",
+        },
+    )
+    pending = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [source],
+        clock=datetime(2026, 5, 24, 18, 0, 0),
+    )
+    event = data_store.save_workout_adaptation_event(
+        1,
+        pending["id"],
+        {
+            "date": "2026-05-24",
+            "status": "applied",
+            "silent": False,
+            "change_type": "reduce_volume",
+            "applies_to": "today",
+            "trigger": {
+                "meal_ids": ["restore-plan-meal"],
+                "food_log_client_ids": ["restore-plan-source"],
+            },
+            "created_at": "2026-05-24T18:03:01",
+        },
+    )
+    base = _recommendation()
+    adapted = json.loads(json.dumps(base))
+    adapted["estimated_minutes"] = 35
+    adapted["_fit136_base_recommendation"] = base
+    adapted["_fit136_last_adapted_plan"] = json.loads(json.dumps({
+        key: value for key, value in adapted.items() if not key.startswith("_fit136_")
+    }))
+    if not legacy_plan:
+        adapted["_fit136_adaptation_event_id"] = event["id"]
+    expected_plan = base
+    if preserve_user_edit:
+        adapted["exercises"][0]["machine"] = "Incline Press"
+        adapted["exercises"][0]["target_sets"] = 5
+        expected_plan = json.loads(json.dumps(base))
+        expected_plan["exercises"][0]["machine"] = "Incline Press"
+        expected_plan["exercises"][0]["target_sets"] = 5
+    data_store.save_current_workout_plan(1, "restore-fingerprint", adapted)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", adapted)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT", "restore-fingerprint")
+    monkeypatch.setattr(
+        module,
+        "LAST_WORKOUT_RECOMMENDATION_OWNER",
+        {"user_id": 1, "fingerprint": "restore-fingerprint", "plan_id": id(adapted)},
+    )
+    if acknowledged:
+        assert data_store.acknowledge_workout_adaptation_event(1, event["id"]) is True
+
+    corrected = data_store.add_food_log(
+        1,
+        {**source, "calories": 650, "protein_g": 20, "correction_state": "corrected"},
+    )
+    replacement = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [corrected],
+        clock=datetime(2026, 5, 24, 18, 4, 0),
+    )
+    if not legacy_plan:
+        data_store.save_current_workout_plan(1, "restore-fingerprint", adapted)
+
+    stored_event = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=False)
+        if item["id"] == event["id"]
+    )
+    assert stored_event["status"] == ("applied" if acknowledged else "stale")
+    assert data_store.get_current_workout_plan(1)["plan"] == expected_plan
+    assert module._current_workout_plan_for_fingerprint("restore-fingerprint") == expected_plan
+    assert replacement["id"] != pending["id"]
+    assert replacement["status"] == "pending"
+    data_store.save_workout_adaptation_event(
+        1,
+        replacement["id"],
+        {
+            "date": "2026-05-24",
+            "status": "no_change",
+            "silent": True,
+            "change_type": "none",
+            "applies_to": "today",
+            "created_at": "2026-05-24T18:07:01",
+        },
+        source_fingerprint=data_store.workout_adaptation_source_fingerprint([corrected]),
+    )
+    retry = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [corrected],
+        clock=datetime(2026, 5, 24, 18, 8, 0),
+    )
+    assert retry["id"] == replacement["id"]
+    corrected_again = data_store.add_food_log(
+        1,
+        {**corrected, "calories": 800, "protein_g": 30, "correction_state": "corrected"},
+    )
+    second_replacement = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [corrected_again],
+        clock=datetime(2026, 5, 24, 18, 9, 0),
+    )
+    assert second_replacement["id"] != replacement["id"]
+    assert second_replacement["status"] == "pending"
+
+
+def test_staling_old_event_does_not_restore_newer_adapted_plan(monkeypatch, tmp_path):
+    _module, _client_instance = _client(monkeypatch, tmp_path)
+    old_source = data_store.add_food_log(
+        1,
+        {
+            "client_id": "old-plan-source",
+            "date": "2026-05-24",
+            "logged_at": "2026-05-24T12:00:00",
+            "meal_id": "old-plan-meal",
+            "item_name": "Lunch",
+            "calories": 400,
+            "protein_g": 20,
+            "confidence": 0.9,
+            "correction_state": "accepted",
+        },
+    )
+    old_pending = workout_adaptation.enqueue_accepted_food_logs(
+        1, [old_source], clock=datetime(2026, 5, 24, 12, 0, 0)
+    )
+    old_event = data_store.save_workout_adaptation_event(
+        1,
+        old_pending["id"],
+        {
+            "date": "2026-05-24",
+            "status": "applied",
+            "silent": False,
+            "change_type": "reduce_volume",
+            "applies_to": "today",
+            "trigger": {
+                "meal_ids": ["old-plan-meal"],
+                "food_log_client_ids": ["old-plan-source"],
+            },
+            "created_at": "2026-05-24T12:03:01",
+        },
+    )
+    current_source = data_store.add_food_log(
+        1,
+        {
+            "client_id": "current-plan-source",
+            "date": "2026-05-24",
+            "logged_at": "2026-05-24T18:00:00",
+            "meal_id": "current-plan-meal",
+            "item_name": "Dinner",
+            "calories": 350,
+            "protein_g": 15,
+            "confidence": 0.9,
+            "correction_state": "accepted",
+        },
+    )
+    current_pending = workout_adaptation.enqueue_accepted_food_logs(
+        1, [current_source], clock=datetime(2026, 5, 24, 18, 0, 0)
+    )
+    current_event = data_store.save_workout_adaptation_event(
+        1,
+        current_pending["id"],
+        {
+            "date": "2026-05-24",
+            "status": "applied",
+            "silent": False,
+            "change_type": "reduce_volume",
+            "applies_to": "today",
+            "trigger": {
+                "meal_ids": ["current-plan-meal"],
+                "food_log_client_ids": ["current-plan-source"],
+            },
+            "created_at": "2026-05-24T18:03:01",
+        },
+    )
+    base = _recommendation()
+    adapted = json.loads(json.dumps(base))
+    adapted["estimated_minutes"] = 35
+    adapted["_fit136_base_recommendation"] = base
+    adapted["_fit136_last_adapted_plan"] = json.loads(json.dumps({
+        key: value for key, value in adapted.items() if not key.startswith("_fit136_")
+    }))
+    data_store.save_current_workout_plan(1, "current-plan-fingerprint", adapted)
+
+    data_store.add_food_log(1, {**old_source, "calories": 700, "correction_state": "corrected"})
+
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=True)
+    assert next(item for item in events if item["id"] == old_event["id"])["status"] == "stale"
+    assert data_store.get_current_workout_plan(1)["plan"] == adapted
+
+
+def test_acknowledged_source_delete_restore_and_readd_requeues(monkeypatch, tmp_path):
+    _module, _client_instance = _client(monkeypatch, tmp_path)
+    source = data_store.add_food_log(
+        1,
+        {
+            "client_id": "delete-readd-source",
+            "date": "2026-05-24",
+            "logged_at": "2026-05-24T18:00:00",
+            "meal_id": "delete-readd-meal",
+            "item_name": "Dinner",
+            "calories": 350,
+            "protein_g": 15,
+            "confidence": 0.9,
+            "correction_state": "accepted",
+        },
+    )
+    pending = workout_adaptation.enqueue_accepted_food_logs(
+        1, [source], clock=datetime(2026, 5, 24, 18, 0, 0)
+    )
+    event = data_store.save_workout_adaptation_event(
+        1,
+        pending["id"],
+        {
+            "date": "2026-05-24",
+            "status": "applied",
+            "silent": False,
+            "change_type": "reduce_volume",
+            "applies_to": "today",
+            "trigger": {
+                "meal_ids": ["delete-readd-meal"],
+                "food_log_client_ids": ["delete-readd-source"],
+            },
+            "created_at": "2026-05-24T18:03:01",
+        },
+    )
+    base = _recommendation()
+    adapted = json.loads(json.dumps(base))
+    adapted["estimated_minutes"] = 35
+    adapted["_fit136_base_recommendation"] = base
+    adapted["_fit136_last_adapted_plan"] = json.loads(json.dumps({
+        key: value for key, value in adapted.items() if not key.startswith("_fit136_")
+    }))
+    adapted["_fit136_adaptation_event_id"] = event["id"]
+    data_store.save_current_workout_plan(1, "delete-readd-fingerprint", adapted)
+    assert data_store.acknowledge_workout_adaptation_event(1, event["id"]) is True
+
+    assert data_store.delete_food_log_by_client_id(1, source["client_id"]) is True
+    restored = data_store.add_food_log(1, source)
+    replacement = workout_adaptation.enqueue_accepted_food_logs(
+        1, [restored], clock=datetime(2026, 5, 24, 18, 5, 0)
+    )
+
+    assert data_store.get_current_workout_plan(1)["plan"] == base
+    assert replacement["id"] != pending["id"]
+    assert replacement["status"] == "pending"
+
+
 def test_pending_manual_nutrition_does_not_schedule_workout_adaptation(monkeypatch, tmp_path):
     _module, client = _client(monkeypatch, tmp_path)
 

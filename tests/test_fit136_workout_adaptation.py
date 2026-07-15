@@ -1667,6 +1667,94 @@ def test_processed_food_log_client_id_cannot_schedule_duplicate_window(monkeypat
     assert data_store.list_pending_workout_adaptation_windows(1) == []
 
 
+def test_legacy_processed_window_without_fingerprint_remains_idempotent(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 12, 0, 0)
+    row = _food_log("legacy-retry-client", calories=300, protein_g=8, confidence=0.9)
+    pending = workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
+    data_store.save_workout_adaptation_event(
+        1,
+        pending["id"],
+        {
+            "date": "2026-05-24",
+            "status": "no_change",
+            "silent": True,
+            "change_type": "none",
+            "applies_to": "today",
+            "created_at": "2026-05-24T12:03:01",
+        },
+    )
+
+    retried = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [row],
+        clock=start + timedelta(minutes=5),
+    )
+
+    assert retried["id"] == pending["id"]
+
+
+def test_unrelated_same_day_food_does_not_requeue_processed_trigger(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 12, 0, 0)
+    trigger = _food_log("stable-trigger", calories=300, protein_g=8, confidence=0.9)
+    pending = workout_adaptation.enqueue_accepted_food_logs(1, [trigger], clock=start)
+    workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[trigger],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+    _food_log(
+        "unrelated-later-meal",
+        meal_id="unrelated-meal",
+        calories=500,
+        protein_g=30,
+        logged_at="2026-05-24T18:00:00",
+    )
+
+    retried = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [trigger],
+        clock=start + timedelta(hours=7),
+    )
+
+    assert retried["id"] == pending["id"]
+
+
+def test_stale_adaptation_revert_matches_reordered_exercises_by_identity():
+    base = {
+        "exercises": [
+            {"machine": "Chest Press", "target_sets": 5},
+            {"machine": "Lat Pulldown", "target_sets": 6},
+        ]
+    }
+    adapted = {
+        "exercises": [
+            {"machine": "Chest Press", "target_sets": 3},
+            {"machine": "Lat Pulldown", "target_sets": 4},
+        ]
+    }
+    reordered = {
+        "exercises": [
+            {"machine": "Lat Pulldown", "target_sets": 4},
+            {"machine": "Chest Press", "target_sets": 3},
+        ]
+    }
+
+    restored = data_store._revert_adaptation_changes(reordered, base, adapted)
+
+    assert restored == {
+        "exercises": [
+            {"machine": "Lat Pulldown", "target_sets": 6},
+            {"machine": "Chest Press", "target_sets": 5},
+        ]
+    }
+
+
 def test_multiple_due_windows_do_not_stack_volume_reductions_in_one_poll(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     earlier = _food_log("due-coverage", meal_id="meal-due-coverage", logged_at="2026-05-24T08:00:00")
@@ -1758,7 +1846,7 @@ def test_stale_pending_window_expires_instead_of_adapting_later_plan(monkeypatch
         item_name="Wine with dinner",
         confidence=0.92,
     )
-    workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
+    pending = workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
 
     patched, events = workout_adaptation.apply_due_adaptations(
         1,
@@ -1775,6 +1863,12 @@ def test_stale_pending_window_expires_instead_of_adapting_later_plan(monkeypatch
     assert event["applies_to"] == "expired"
     assert event["confidence"]["no_change_reason"] == "stale_window"
     assert patched.get("training_recommendation") != "recovery"
+    retried = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [row],
+        clock=start + timedelta(days=3, minutes=1),
+    )
+    assert retried["id"] == pending["id"]
 
 
 def test_previous_day_ordinary_meal_does_not_use_today_underfuel_for_volume_cut(monkeypatch, tmp_path):

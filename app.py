@@ -2195,9 +2195,11 @@ def _apply_due_workout_adaptations_for_plan(
         )
         if not events:
             return next_workout, []
-        if any(event.get("status") == "applied" for event in events):
+        applied_events = [event for event in events if event.get("status") == "applied"]
+        if applied_events:
             patched["_fit136_base_recommendation"] = adaptation_base
             patched["_fit136_last_adapted_plan"] = _fit136_visible_workout_plan(patched)
+            patched["_fit136_adaptation_event_id"] = applied_events[-1]["id"]
         elif events:
             return next_workout, events
         return patched, events
@@ -4739,6 +4741,30 @@ def _current_workout_plan_for_fingerprint(fingerprint: str, *, allow_stale_unsav
             if owner_matches_plan:
                 if owner.get("user_id") == _current_data_user_id():
                     if owner.get("fingerprint") == fingerprint:
+                        persisted = get_current_workout_plan(
+                            _current_data_user_id(),
+                            fingerprint=fingerprint,
+                        )
+                        if (
+                            persisted
+                            and persisted.get("plan")
+                            and persisted["plan"] != LAST_WORKOUT_RECOMMENDATION
+                        ):
+                            if (
+                                LAST_WORKOUT_RECOMMENDATION.get(
+                                    "_fit136_base_recommendation"
+                                )
+                                and not persisted["plan"].get(
+                                    "_fit136_base_recommendation"
+                                )
+                            ):
+                                LAST_WORKOUT_RECOMMENDATION = persisted["plan"]
+                                LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+                                LAST_WORKOUT_RECOMMENDATION_OWNER = {
+                                    "user_id": _current_data_user_id(),
+                                    "fingerprint": fingerprint,
+                                    "plan_id": id(LAST_WORKOUT_RECOMMENDATION),
+                                }
                         return LAST_WORKOUT_RECOMMENDATION
                     if allow_stale_unsaved:
                         return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
