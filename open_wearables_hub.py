@@ -489,13 +489,18 @@ def store_wearable_facts(
         ):
             value = _number(latest, value_key)
             if value is not None:
-                measured = _temporal_value(latest.get(measured_at_key) or date_s)
+                raw_measured_at = latest.get(measured_at_key)
+                measured_at = _temporal_text(raw_measured_at)
+                if raw_measured_at is not None and measured_at is None:
+                    continue
+                measured = _temporal_value(measured_at or date_s)
                 if measured is None:
                     continue
                 measured_date = measured.date().isoformat()
                 facts.append(WearableDailyFact(
                     measured_date, "open_wearables", "Open Wearables", metric, value, "c",
-                    confidence="medium", freshness=_fact_freshness(measured_date, fetched_at), source_provider=provider,
+                    confidence="medium", freshness=_fact_freshness(measured_at or measured_date, fetched_at),
+                    source_provider=provider, observed_at=measured_at,
                 ))
                 mark_replacement_sources(body, measured_date)
 

@@ -389,6 +389,32 @@ def test_store_wearable_facts_keeps_temperature_deviation_distinct_from_measurem
         }
 
 
+def test_body_measurement_freshness_uses_exact_observation_timestamp(tmp_path):
+    db_file = str(tmp_path / "wearable_facts.sqlite3")
+
+    hub.store_wearable_facts(
+        {
+            "fetched_at": "2026-07-01T00:10:00-05:00",
+            "body_summary": {"latest": {
+                "skin_temperature_celsius": 34.2,
+                "skin_temperature_measured_at": "2026-06-29T23:50:00-05:00",
+            }},
+        },
+        db_file=db_file,
+        profile_key="profile-42",
+        activity_extractor=lambda _payload: [],
+        sleep_extractor=lambda _payload: None,
+        row_replacement_sources=lambda _row: [],
+    )
+
+    from wearable_fact_store import list_recommendation_facts
+
+    [fact] = list_recommendation_facts(db_file, limit=100, profile_key="profile-42")
+    assert fact["metric"] == "skin_temperature"
+    assert fact["freshness"] == "aging"
+    assert fact["observed_at"] == "2026-06-29T23:50:00-05:00"
+
+
 def test_store_wearable_facts_rejects_malformed_temporal_keys_and_provenance(tmp_path):
     db_file = str(tmp_path / "wearable_facts.sqlite3")
 
