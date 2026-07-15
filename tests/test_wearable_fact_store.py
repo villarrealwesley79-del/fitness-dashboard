@@ -381,7 +381,10 @@ def test_initialized_composite_body_fact_reads_do_not_rewrite_rows(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM body_fact_update_audit").fetchone()[0] == 0
 
 
-def test_legacy_body_skin_temperature_backfill_uses_conservative_valid_enums(tmp_path):
+@pytest.mark.parametrize("legacy_source_id", [None, "\t"])
+def test_legacy_body_skin_temperature_backfill_uses_conservative_valid_enums(
+    tmp_path, legacy_source_id,
+):
     db = tmp_path / "facts.sqlite3"
     upsert_daily_facts(str(db), [WearableDailyFact(
         "2026-07-14", "open_wearables", "Open Wearables", "skin_temperature", 34.2, "c",
@@ -389,6 +392,11 @@ def test_legacy_body_skin_temperature_backfill_uses_conservative_valid_enums(tmp
     )])
     import sqlite3
     with sqlite3.connect(db) as conn:
+        if legacy_source_id is not None:
+            conn.execute(
+                "UPDATE wearable_daily_facts SET source_id = ?",
+                (legacy_source_id,),
+            )
         conn.execute(
             "UPDATE wearable_daily_facts SET source_record_kind = NULL, metric_domain = NULL"
         )
@@ -554,6 +562,114 @@ def test_version_two_attributed_fact_preserves_explicit_recommendation_exclusion
     assert list_recommendation_facts(str(db), usable_only=True) == []
     [fact] = list_recommendation_facts(str(db))
     assert fact["used_for_recommendation"] is False
+
+
+@pytest.mark.parametrize("schema_version", [2, 3])
+@pytest.mark.parametrize("legacy_source_id", [None, " ", "\t", "\n"])
+def test_existing_source_less_fact_gets_provenance_qualified_identity(
+    tmp_path, schema_version, legacy_source_id,
+):
+    db = tmp_path / "facts.sqlite3"
+    today = datetime.now().date().isoformat()
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        today, "oura", "Oura", "recovery_score", 80, "score",
+        source_provider="oura", source_system="open_wearables",
+        source_record_kind="summary", metric_domain="recovery",
+        observed_at=f"{today}T08:00:00Z",
+    )])
+    with sqlite3.connect(db) as conn:
+        if legacy_source_id is not None:
+            conn.execute(
+                "UPDATE wearable_daily_facts SET source_id = ?",
+                (legacy_source_id,),
+            )
+        conn.execute(f"PRAGMA user_version = {schema_version}")
+
+    [fact] = list_recommendation_facts(str(db))
+
+    assert fact["source_id"] == f"derived:summary:recovery:{today}T08:00:00Z"
+
+
+def test_source_less_identity_migration_keeps_newest_canonical_collision(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    upsert_daily_facts(str(db), [
+        WearableDailyFact(
+            "2026-07-15", "oura", "Oura", "skin_temperature", 34.2, "c",
+            source_system="open_wearables", source_record_kind="summary",
+            metric_domain="recovery", observed_at="2026-07-15T04:30:00Z",
+            updated_at="2026-07-15T06:00:00Z",
+        ),
+        WearableDailyFact(
+            "2026-07-14", "oura", "Oura", "skin_temperature", 34.1, "c",
+            source_system="open_wearables", source_record_kind="summary",
+            metric_domain="recovery", observed_at="2026-07-14T23:30:00-05:00",
+            updated_at="2026-07-15T05:00:00Z",
+        ),
+    ])
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA user_version = 3")
+
+    [fact] = list_recommendation_facts(str(db))
+
+    assert fact["value"] == 34.2
+    assert fact["date"] == "2026-07-15"
+
+
+@pytest.mark.parametrize("padding", [" ", "\t", "\n"])
+def test_source_id_migration_trims_padding_and_keeps_newest_collision(
+    tmp_path, padding,
+):
+    db = tmp_path / "facts.sqlite3"
+    today = datetime.now().date().isoformat()
+    upsert_daily_facts(str(db), [
+        WearableDailyFact(
+            today, "oura", "Oura", "recovery_score", 80, "score",
+            source_id="record-1", source_system="open_wearables",
+            source_record_kind="summary", metric_domain="recovery",
+            updated_at=f"{today}T06:00:00Z",
+        ),
+        WearableDailyFact(
+            today, "oura", "Oura", "recovery_score", 70, "score",
+            source_id="legacy-padded", source_system="open_wearables",
+            source_record_kind="summary", metric_domain="recovery",
+            updated_at=f"{today}T05:00:00Z",
+        ),
+    ])
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE wearable_daily_facts SET source_id = ? "
+            "WHERE source_id = 'legacy-padded'",
+            (f"record-1{padding}",),
+        )
+        conn.execute("PRAGMA user_version = 3")
+
+    [fact] = list_recommendation_facts(str(db))
+
+    assert fact["source_id"] == "record-1"
+    assert fact["value"] == 80
+
+
+def test_direct_provider_keeps_padded_source_id_identity(tmp_path):
+    db = tmp_path / "facts.sqlite3"
+    today = datetime.now().date().isoformat()
+    first = WearableDailyFact(
+        today, "oura", "Oura", "recovery_score", 70, "score",
+        source_id="record-1 ", source_system="oura",
+    )
+    upsert_daily_facts(str(db), [first])
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE wearable_daily_facts SET source_id = 'record-1 '"
+        )
+
+    upsert_daily_facts(str(db), [WearableDailyFact(
+        today, "oura", "Oura", "recovery_score", 80, "score",
+        source_id="record-1 ", source_system="oura",
+    )])
+
+    [fact] = list_recommendation_facts(str(db))
+    assert fact["source_id"] == "record-1 "
+    assert fact["value"] == 80
 
 
 def test_version_one_attributed_fact_keeps_legacy_recommendation_eligibility(tmp_path):

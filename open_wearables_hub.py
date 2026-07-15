@@ -24,6 +24,8 @@ from typing import Callable
 
 from wearable_fact_store import (
     WearableDailyFact,
+    canonical_fact_date,
+    derived_fact_source_id,
     list_recommendation_facts,
     upsert_daily_facts,
     upsert_wearable_source,
@@ -893,6 +895,19 @@ def store_wearable_facts(
         if workout_source_id is None or not str(workout_source_id).strip():
             workout_snapshot_replacement_safe = False
             continue
+        if any(
+            isinstance(row.get(key), bool)
+            for key in (
+                "duration_min", "duration_minutes", "duration_seconds",
+                "distance_meters", "distance",
+                "calories_kcal", "active_calories", "calories",
+                "load", "strain", "training_load",
+                "avg_heart_rate_bpm", "avg_hr", "average_heart_rate",
+                "max_heart_rate_bpm", "max_hr", "max_heart_rate",
+            )
+        ):
+            workout_snapshot_replacement_safe = False
+            continue
         observed_at = _temporal_text(_first_value(row, "start", "start_time", "date"))
         if observed_at is None:
             workout_snapshot_replacement_safe = False
@@ -1034,8 +1049,23 @@ def store_wearable_facts(
     facts = [
         replace(
             fact,
+            date=(
+                canonical_fact_date(fact.observed_at, fact.date)
+                if not str(fact.source_id or "").strip()
+                else fact.date
+            ),
             provider_id=fact.source_provider or "open_wearables",
             source_label=_provider_display_name(fact.source_provider),
+            source_id=(
+                str(fact.source_id).strip()
+                if str(fact.source_id or "").strip()
+                else derived_fact_source_id(
+                    fact.source_record_kind or "summary",
+                    fact.metric_domain or _fact_metric_domain(fact),
+                    fact.observed_at,
+                    fact.date,
+                )
+            ),
             source_system="open_wearables",
             source_record_kind=fact.source_record_kind or "summary",
             metric_domain=fact.metric_domain or _fact_metric_domain(fact),

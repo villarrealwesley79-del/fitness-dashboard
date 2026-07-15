@@ -306,6 +306,7 @@ Normalized wearable facts and source status live in `DATA_DIR/wearable_facts.sql
 
 - Primary key: `(profile_key, date, provider_id, source_system, metric, source_id)`.
 - Fields: `profile_key`, `date`, `provider_id`, `source_label`, `metric`, `value_json`, `unit`, `band`, `confidence`, `freshness`, `conflict_state`, `category`, `source_id`, `source_provider`, `original_label`, `observed_at`, `source_system`, `source_record_kind`, `metric_domain`, `capability_state`, `source_last_synced_at`, `imported_at`, `used_for_recommendation`, `updated_at`.
+- When an upstream record id is absent or blank after trimming, the fact date is normalized to the canonical UTC observation date and `source_id` uses a deterministic `derived:<record-kind>:<domain>:<canonical-UTC-observed-at-or-date>` value. Facts from distinct domains, record kinds, or observations cannot collapse onto the same six-part key, while equivalent timestamp offsets retain one identity.
 
 `wearable_sources`:
 
@@ -326,7 +327,7 @@ Current extraction stores:
 - Body: weight, body-fat percentage, muscle mass, BMI, averaged heart-rate/HRV values, and timestamped body/skin temperature.
 - Training history: workout duration, distance, active calories, load, average/max heart rate, canonical category, original label, and source record id.
 
-Complete sleep-summary and workout snapshots use explicit-offset, half-open query windows for authoritative retraction. Malformed, partial, unattributed, ambiguous-timezone, or out-of-window snapshots cannot delete last-known-good facts. The v3 migration quarantines pre-v3 workout facts whose naive timestamps cannot be reconstructed safely and excludes them from recommendations without deleting their historical rows. Slice one records provider-domain coverage diagnostically and keeps direct Oura, WHOOP, and Apple Health paths visible as fallbacks until provider-specific parity gates are implemented.
+Complete sleep-summary and workout snapshots use explicit-offset, half-open query windows for authoritative retraction. Malformed, partial, unattributed, ambiguous-timezone, or out-of-window snapshots cannot delete last-known-good facts. The v3 migration quarantines pre-v3 workout facts whose naive timestamps cannot be reconstructed safely and excludes them from recommendations without deleting their historical rows; v4 assigns canonical provenance-qualified ids to older source-less Open Wearables facts. Slice one records provider-domain coverage diagnostically and keeps direct Oura, WHOOP, and Apple Health paths visible as fallbacks until provider-specific parity gates are implemented.
 
 ### Forbidden fact fields
 

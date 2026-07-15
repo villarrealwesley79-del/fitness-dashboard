@@ -27,7 +27,7 @@ FORBIDDEN_FIELD_NAMES = {
     "user_id",
 }
 
-WEARABLE_FACT_SCHEMA_VERSION = 3
+WEARABLE_FACT_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -120,10 +120,14 @@ def init_wearable_fact_db(db_path: str) -> None:
         _migrate_profile_key_primary_keys(conn)
         current_version = conn.execute("PRAGMA user_version").fetchone()[0]
         if current_version < WEARABLE_FACT_SCHEMA_VERSION:
+            _normalize_open_wearables_fact_ids(conn, derive_blank_ids=False)
             _backfill_fact_contract(conn)
             if current_version < 2:
                 _migrate_v2_recommendation_eligibility(conn)
-            _migrate_open_wearables_provider_identity(conn)
+            if current_version < 3:
+                _migrate_open_wearables_provider_identity(conn)
+            if current_version < 4:
+                _normalize_open_wearables_fact_ids(conn, derive_blank_ids=True)
             conn.execute(f"PRAGMA user_version = {WEARABLE_FACT_SCHEMA_VERSION}")
 
 
@@ -444,6 +448,84 @@ def _migrate_open_wearables_provider_identity(conn: sqlite3.Connection) -> None:
     )
 
 
+def _normalize_open_wearables_fact_ids(
+    conn: sqlite3.Connection,
+    *,
+    derive_blank_ids: bool,
+) -> None:
+    rows = conn.execute(
+        """
+        SELECT rowid, profile_key, source_id, source_record_kind, metric_domain,
+               observed_at, date, provider_id, source_system, metric, updated_at
+        FROM wearable_daily_facts
+        WHERE COALESCE(NULLIF(source_system, ''), provider_id) = 'open_wearables'
+        ORDER BY COALESCE(julianday(updated_at), 0), updated_at, rowid
+        """
+    ).fetchall()
+    for (
+        rowid, profile_key, source_id, record_kind, metric_domain, observed_at,
+        fact_date, provider_id, source_system, metric, updated_at,
+    ) in rows:
+        raw_source_id = str(source_id or "")
+        normalized_source_id = raw_source_id.strip()
+        if normalized_source_id == raw_source_id and (
+            normalized_source_id or not derive_blank_ids
+        ):
+            continue
+        target_source_id = (
+            normalized_source_id
+            if normalized_source_id or not derive_blank_ids
+            else derived_fact_source_id(
+                record_kind, metric_domain, observed_at, fact_date,
+            )
+        )
+        target_date = (
+            fact_date
+            if normalized_source_id or not derive_blank_ids
+            else canonical_fact_date(observed_at, fact_date)
+        )
+        identity_source_system = str(source_system or provider_id)
+        collision = conn.execute(
+            """
+            SELECT rowid, updated_at
+            FROM wearable_daily_facts
+            WHERE profile_key = ? AND date = ? AND provider_id = ?
+              AND COALESCE(NULLIF(source_system, ''), provider_id) = ?
+              AND metric = ? AND source_id = ?
+              AND rowid != ?
+            LIMIT 1
+            """,
+            (
+                profile_key, target_date, provider_id, identity_source_system, metric,
+                target_source_id, rowid,
+            ),
+        ).fetchone()
+        if collision is not None:
+            collision_rowid, collision_updated_at = collision
+            current_order = conn.execute(
+                "SELECT COALESCE(julianday(?), 0)", (updated_at,)
+            ).fetchone()[0]
+            collision_order = conn.execute(
+                "SELECT COALESCE(julianday(?), 0)", (collision_updated_at,)
+            ).fetchone()[0]
+            if (collision_order, str(collision_updated_at), collision_rowid) >= (
+                current_order, str(updated_at), rowid,
+            ):
+                conn.execute(
+                    "DELETE FROM wearable_daily_facts WHERE rowid = ?",
+                    (rowid,),
+                )
+                continue
+            conn.execute(
+                "DELETE FROM wearable_daily_facts WHERE rowid = ?",
+                (collision_rowid,),
+            )
+        conn.execute(
+            "UPDATE wearable_daily_facts SET source_id = ?, date = ? WHERE rowid = ?",
+            (target_source_id, target_date, rowid),
+        )
+
+
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     if column not in {row[1] for row in rows}:
@@ -477,6 +559,38 @@ def _default_metric_domain(metric: object) -> str:
     return "activity"
 
 
+def derived_fact_source_id(
+    source_record_kind: object,
+    metric_domain: object,
+    observed_at: object,
+    fact_date: object,
+) -> str:
+    identity_time = _canonical_utc_observation(observed_at) or fact_date
+    return (
+        f"derived:{source_record_kind or 'summary'}:"
+        f"{metric_domain or 'activity'}:{identity_time}"
+    )
+
+
+def canonical_fact_date(observed_at: object, fact_date: object) -> str:
+    canonical_observation = _canonical_utc_observation(observed_at)
+    return canonical_observation[:10] if canonical_observation else str(fact_date)
+
+
+def _canonical_utc_observation(observed_at: object) -> str | None:
+    if observed_at:
+        try:
+            parsed = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        else:
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(timezone.utc).isoformat().replace(
+                    "+00:00", "Z"
+                )
+    return None
+
+
 def upsert_daily_facts(
     db_path: str,
     facts: list[WearableDailyFact | dict],
@@ -494,8 +608,13 @@ def upsert_daily_facts(
         payload = fact.public_dict() if isinstance(fact, WearableDailyFact) else dict(fact)
         validate_public_fact_payload(payload)
         payload["profile_key"] = _normalize_profile_key(payload.get("profile_key") or scoped_profile)
-        payload["source_id"] = str(payload.get("source_id") or "")
         payload["source_system"] = str(payload.get("source_system") or payload["provider_id"])
+        raw_source_id = str(payload.get("source_id") or "")
+        payload["source_id"] = (
+            raw_source_id.strip()
+            if payload["source_system"] == "open_wearables"
+            else raw_source_id
+        )
         payload["source_record_kind"] = str(payload.get("source_record_kind") or (
             "event"
             if str(payload.get("metric") or "").startswith("workout_")
