@@ -1,4 +1,9 @@
+import json
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +25,32 @@ def _render_stats_body() -> str:
     marker = "async function renderStats()"
     assert marker in app_js, "renderStats not found"
     return app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
+
+
+def _resolve_progress_insight_visuals(payloads: list[dict]) -> list[dict]:
+    """Execute the production visual resolver for representative API rows."""
+    if not shutil.which("node"):
+        pytest.skip("FIT-322 rendered-payload contract requires Node.js")
+
+    app_js = (ROOT / "static" / "js" / "app.js").read_text()
+    marker = "function progressInsightVisual(ins)"
+    assert marker in app_js, "progressInsightVisual not found"
+    helper = marker + app_js.split(marker, 1)[1].split("\n    async function renderStats()", 1)[0]
+    script = f"""
+const vm = require('node:vm');
+const sandbox = {{}};
+vm.createContext(sandbox);
+vm.runInContext({json.dumps(helper)}, sandbox);
+const payloads = {json.dumps(payloads)};
+process.stdout.write(JSON.stringify(payloads.map((row) => sandbox.progressInsightVisual(row))));
+"""
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
 
 
 def test_render_dashboard_preserves_fit125_repaint_chains():
@@ -290,6 +321,27 @@ def test_stats_insights_empty_state_resets_to_placeholder():
         "Stats insights must clear stale cards, normalize items, then render the "
         "empty placeholder before the card-append branch"
     )
+
+
+def test_stats_insight_visuals_cover_backend_types_and_semantic_icons():
+    """FIT-322: tone comes from type, while the glyph keeps payload meaning."""
+    visuals = _resolve_progress_insight_visuals([
+        {"type": "positive", "icon": "trending_up"},
+        {"type": "warning", "icon": "pause"},
+        {"type": "negative", "icon": "trending_down"},
+        {"type": "info", "icon": "fitness_center"},
+        {"type": "negative", "icon": "warning"},
+        {"type": "danger"},
+    ])
+
+    assert visuals == [
+        {"iconClass": "pos", "iconChar": "↑"},
+        {"iconClass": "warn", "iconChar": "‖"},
+        {"iconClass": "neg", "iconChar": "↓"},
+        {"iconClass": "info", "iconChar": "i"},
+        {"iconClass": "neg", "iconChar": "!"},
+        {"iconClass": "neg", "iconChar": "▲"},
+    ]
 
 
 def test_dashboard_whoop_source_contract_is_wired_into_reco_card():

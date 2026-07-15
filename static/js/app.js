@@ -5343,6 +5343,40 @@
         cell.parentNode.appendChild(detail);
     }
 
+    function progressInsightVisual(ins) {
+        const kind = String(ins && ins.type || 'info').toLowerCase();
+        const iconName = String(ins && ins.icon || '').toLowerCase();
+        const toneByType = {
+            positive: 'pos',
+            success: 'pos',
+            warning: 'warn',
+            negative: 'neg',
+            danger: 'neg',
+            info: 'info',
+        };
+        const glyphByIcon = {
+            trending_up: '↑',
+            trending_down: '↓',
+            pause: '‖',
+            schedule: '◷',
+            balance: '↔',
+            warning: '!',
+            emoji_events: '★',
+        };
+        const fallbackGlyphByType = {
+            positive: '↑',
+            success: '↑',
+            warning: '!',
+            negative: '!',
+            danger: '▲',
+            info: 'i',
+        };
+        return {
+            iconClass: toneByType[kind] || 'info',
+            iconChar: glyphByIcon[iconName] || fallbackGlyphByType[kind] || 'i',
+        };
+    }
+
     async function renderStats() {
         const days = state.ranges.stats;
         const [hist, appleWorkouts] = await Promise.all([
@@ -5424,10 +5458,7 @@
             items.forEach((ins) => {
                 const card = document.createElement('div');
                 card.className = 'in-card';
-                const kind = (ins.type || 'info').toLowerCase();
-                const map = { success: 'pos', warning: 'warn', danger: 'neg', info: 'info' };
-                const iconClass = map[kind] || 'info';
-                const iconChar = kind === 'success' ? '↑' : kind === 'warning' ? '!' : kind === 'danger' ? '▲' : 'i';
+                const { iconClass, iconChar } = progressInsightVisual(ins);
                 card.innerHTML = `
                     <div class="in-icon ${iconClass}">${iconChar}</div>
                     <div>
@@ -7081,11 +7112,26 @@
         } catch (e) { console.error(e); toast('Log failed', 'err'); }
     }
 
+    function syncBodyLogValidation() {
+        const weightInput = $('body-log-weight');
+        const bodyFatInput = $('body-log-bf');
+        const saveButton = $('btn-log-body');
+        const error = $('body-log-error');
+        const weightPresent = Number(weightInput.value) > 0;
+        const bodyFatPresent = bodyFatInput.value.trim() !== '';
+
+        saveButton.disabled = bodyFatPresent && !weightPresent;
+        weightInput.setAttribute('aria-invalid', saveButton.disabled ? 'true' : 'false');
+        error.hidden = !saveButton.disabled;
+        return !saveButton.disabled;
+    }
+
     async function logBody() {
         const payload = {
             weight_lbs: Number($('body-log-weight').value) || null,
             body_fat_pct: Number($('body-log-bf').value) || null,
         };
+        if (!syncBodyLogValidation()) return;
         if (!payload.weight_lbs && !payload.body_fat_pct) return toast('Enter a value', 'err');
         try {
             await api('/api/add-body-measurement', {
@@ -9629,6 +9675,10 @@
         $('btn-log-strength') && $('btn-log-strength').addEventListener('click', logStrength);
         $('btn-log-cardio') && $('btn-log-cardio').addEventListener('click', logCardio);
         $('btn-log-recovery') && $('btn-log-recovery').addEventListener('click', logRecovery);
+        const bodyWeightInput = $('body-log-weight');
+        const bodyFatInput = $('body-log-bf');
+        bodyWeightInput && bodyWeightInput.addEventListener('input', syncBodyLogValidation);
+        bodyFatInput && bodyFatInput.addEventListener('input', syncBodyLogValidation);
         $('btn-log-body') && $('btn-log-body').addEventListener('click', logBody);
 
         // Actions
