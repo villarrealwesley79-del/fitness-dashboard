@@ -220,7 +220,7 @@ def test_merge_workouts_uses_stable_tiebreaker_for_equal_timed_records(order):
         },
     ]
 
-    merged = parser._merge_workouts([workouts[index] for index in order], [])
+    merged = parser._merge_workouts([workouts[order[0]]], [workouts[order[1]]])
 
     assert merged == [workouts[0]]
 
@@ -242,7 +242,7 @@ def test_merge_workouts_uses_stable_tiebreaker_for_startless_records(order):
         },
     ]
 
-    merged = parser._merge_workouts([workouts[index] for index in order], [])
+    merged = parser._merge_workouts([workouts[order[0]]], [workouts[order[1]]])
 
     assert merged == [workouts[0]]
 
