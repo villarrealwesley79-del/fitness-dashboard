@@ -6713,6 +6713,9 @@ def _meal_intake_persist(
     return add_food_log(_current_data_user_id(), record, _conn=connection)
 
 
+_MEAL_INTAKE_PERSIST_PRODUCTION = _meal_intake_persist
+
+
 def _meal_accept_was_corrected(submitted: dict, original: dict | None) -> bool:
     if not isinstance(original, dict):
         return False
@@ -10433,16 +10436,54 @@ def _reconcile_direct_meal_accept_side_effects(
     corrected: bool,
     text_hint: str | None,
     original_for_log: dict | None,
-) -> None:
-    should_learn = (
-        not _review_placeholder_nutrition_not_resolved({
-            "estimate": estimate,
-            "original_estimate": original_for_log,
-        })
-        and not _review_estimate_lacks_trainable_nutrition(estimate)
-    )
-    if should_learn:
-        with food_log_transaction() as vocab_conn:
+) -> dict | None:
+    canonical_food_log = food_log
+    expected_estimate = estimate
+    with food_log_transaction() as vocab_conn:
+        stored_food_log = data_store_module.get_food_log_by_client_id(
+            user_id,
+            client_id,
+            _conn=vocab_conn,
+        )
+        if not (
+            isinstance(stored_food_log, dict)
+            and stored_food_log.get("correction_state")
+            in {CORRECTION_STATE_ACCEPTED, "corrected"}
+        ):
+            using_persistence_test_seam = (
+                add_food_log is not data_store_module.add_food_log
+                or _meal_intake_persist is not _MEAL_INTAKE_PERSIST_PRODUCTION
+            )
+            if not using_persistence_test_seam:
+                return None
+        else:
+            canonical_food_log = stored_food_log
+            accepted_current = stored_food_log.get("accepted_estimate")
+            estimate = (
+                accepted_current
+                if isinstance(accepted_current, dict)
+                else _stored_food_log_current_estimate(stored_food_log)
+            )
+            if (
+                stored_food_log.get("correction_state") == CORRECTION_STATE_ACCEPTED
+                and _review_estimate_differs(expected_estimate, estimate)
+            ):
+                return None
+            corrected = stored_food_log.get("correction_state") == "corrected"
+            text_hint = stored_food_log.get("context_note") or None
+            original_for_log = (
+                stored_food_log.get("original_estimate")
+                if isinstance(stored_food_log.get("original_estimate"), dict)
+                else None
+            )
+        should_learn = (
+            not _review_placeholder_nutrition_not_resolved({
+                "estimate": estimate,
+                "original_estimate": original_for_log,
+            })
+            and not _review_estimate_lacks_trainable_nutrition(estimate)
+        )
+        if should_learn:
             if claim_food_log_vocab_learning is data_store_module.claim_food_log_vocab_learning:
                 claimed = claim_food_log_vocab_learning(
                     user_id,
@@ -10474,7 +10515,8 @@ def _reconcile_direct_meal_accept_side_effects(
                         )
                     else:
                         personal_vocab.record_accept(user_id, vocab_phrase, estimate)
-    _enqueue_workout_adaptation_after_accept(user_id, [food_log])
+    _enqueue_workout_adaptation_after_accept(user_id, [canonical_food_log])
+    return canonical_food_log
 
 
 @app.route("/api/meal-intake/<client_id>/accept", methods=["POST"])
@@ -10849,7 +10891,7 @@ def meal_intake_accept(client_id: str):
                 409,
                 code="duplicate_client_id",
             )
-        _reconcile_direct_meal_accept_side_effects(
+        existing = _reconcile_direct_meal_accept_side_effects(
             user_id,
             client_id,
             existing,
@@ -10862,6 +10904,12 @@ def meal_intake_accept(client_id: str):
                 else None
             ),
         )
+        if existing is None:
+            return api_error(
+                "canonical accepted meal changed before reconciliation",
+                409,
+                code="stale_canonical_meal",
+            )
         return jsonify({
             "status": "logged",
             "food_log": existing,
@@ -11088,7 +11136,7 @@ def meal_intake_accept(client_id: str):
             if isinstance(accepted_current, dict)
             else _stored_food_log_current_estimate(concurrent_retry_row)
         )
-        _reconcile_direct_meal_accept_side_effects(
+        concurrent_retry_row = _reconcile_direct_meal_accept_side_effects(
             user_id,
             client_id,
             concurrent_retry_row,
@@ -11101,6 +11149,12 @@ def meal_intake_accept(client_id: str):
                 else None
             ),
         )
+        if concurrent_retry_row is None:
+            return api_error(
+                "canonical accepted meal changed before reconciliation",
+                409,
+                code="stale_canonical_meal",
+            )
         return jsonify({
             "status": "logged",
             "food_log": concurrent_retry_row,
@@ -11115,7 +11169,7 @@ def meal_intake_accept(client_id: str):
             if isinstance(accepted_current, dict)
             else _stored_food_log_current_estimate(food_log)
         )
-        _reconcile_direct_meal_accept_side_effects(
+        food_log = _reconcile_direct_meal_accept_side_effects(
             user_id,
             client_id,
             food_log,
@@ -11128,6 +11182,12 @@ def meal_intake_accept(client_id: str):
                 else None
             ),
         )
+        if food_log is None:
+            return api_error(
+                "canonical accepted meal changed before reconciliation",
+                409,
+                code="stale_canonical_meal",
+            )
         return jsonify({
             "status": "logged",
             "food_log": food_log,
@@ -11135,7 +11195,7 @@ def meal_intake_accept(client_id: str):
                 _food_log_has_image_provenance(food_log)
             ),
         })
-    _reconcile_direct_meal_accept_side_effects(
+    food_log = _reconcile_direct_meal_accept_side_effects(
         user_id,
         client_id,
         food_log,
@@ -11144,10 +11204,18 @@ def meal_intake_accept(client_id: str):
         text_hint=text_hint or None,
         original_for_log=original_for_log,
     )
+    if food_log is None:
+        return api_error(
+            "canonical accepted meal changed before reconciliation",
+            409,
+            code="stale_canonical_meal",
+        )
     return jsonify({
         "status": "logged",
         "food_log": food_log,
-        "photo_retention": _food_photo_retention_payload(originated_from_image),
+        "photo_retention": _food_photo_retention_payload(
+            _food_log_has_image_provenance(food_log)
+        ),
     })
 
 

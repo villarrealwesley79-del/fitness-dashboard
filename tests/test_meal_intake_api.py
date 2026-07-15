@@ -15175,6 +15175,176 @@ def test_direct_vocab_write_failure_rolls_back_claim_for_retry(
     assert data_store.get_food_log_by_client_id(1, client_id)["vocab_learned_at"] is not None
 
 
+def test_direct_retry_reconciles_concurrent_canonical_correction(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        module.personal_vocab,
+        "record_accept",
+        module._PERSONAL_VOCAB_RECORD_ACCEPT,
+    )
+    monkeypatch.setattr(
+        module.personal_vocab,
+        "record_correct",
+        module._PERSONAL_VOCAB_RECORD_CORRECT,
+    )
+    monkeypatch.setattr(
+        module,
+        "_enqueue_workout_adaptation_after_accept",
+        lambda *_args, **_kwargs: None,
+    )
+    client_id = "direct-concurrent-correction"
+    old_phrase = "old canonical phrase"
+    new_phrase = "new canonical phrase"
+    old_estimate = _accepted_estimate(item_name="Old canonical", calories=410)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            "context_note": old_phrase,
+            **old_estimate,
+            "correction_state": "accepted",
+            "original_estimate": old_estimate,
+            "accepted_estimate": old_estimate,
+        },
+    )
+    original_transaction = module.food_log_transaction
+    correction_committed = False
+
+    @contextmanager
+    def correct_before_reconciliation_transaction():
+        nonlocal correction_committed
+        if not correction_committed:
+            correction_committed = True
+            correction = module.app.test_client().post(
+                "/api/add-nutrition",
+                json={
+                    "client_id": client_id,
+                    "date": "2026-05-22",
+                    "calories": 510,
+                    "protein_g": 41,
+                    "carbs_g": 46,
+                    "fat_g": 19,
+                    "sodium_mg": 710,
+                    "fiber_g": 7,
+                    "item_name": "New canonical",
+                    "context_note": new_phrase,
+                    "correction_state": "corrected",
+                },
+            )
+            assert correction.status_code == 200, correction.get_data(as_text=True)
+        with original_transaction() as connection:
+            yield connection
+
+    monkeypatch.setattr(
+        module,
+        "food_log_transaction",
+        correct_before_reconciliation_transaction,
+    )
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": old_estimate, "text": "request-controlled phrase"},
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert response.get_json()["food_log"]["calories"] == 510
+    assert response.get_json()["food_log"]["correction_state"] == "corrected"
+    assert data_store.get_personal_vocab_entry(1, old_phrase) is None
+    entry = data_store.get_personal_vocab_entry(1, new_phrase)
+    assert (entry["accept_count"], entry["correct_count"]) == (0, 1)
+
+
+@pytest.mark.parametrize("concurrent_outcome", ["manual", "deleted", "accepted_changed"])
+def test_direct_retry_rejects_concurrent_nonterminal_outcome(
+    monkeypatch,
+    tmp_path,
+    concurrent_outcome,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        module.personal_vocab,
+        "record_accept",
+        module._PERSONAL_VOCAB_RECORD_ACCEPT,
+    )
+    monkeypatch.setattr(
+        module,
+        "_enqueue_workout_adaptation_after_accept",
+        lambda *_args, **_kwargs: None,
+    )
+    client_id = f"direct-concurrent-{concurrent_outcome}"
+    phrase = f"stale {concurrent_outcome} phrase"
+    estimate = _accepted_estimate(item_name="Stale accepted", calories=410)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            "context_note": phrase,
+            **estimate,
+            "correction_state": "accepted",
+            "original_estimate": estimate,
+            "accepted_estimate": estimate,
+        },
+    )
+    original_transaction = module.food_log_transaction
+    outcome_committed = False
+
+    @contextmanager
+    def replace_before_reconciliation_transaction():
+        nonlocal outcome_committed
+        if not outcome_committed:
+            outcome_committed = True
+            if concurrent_outcome in {"manual", "accepted_changed"}:
+                replacement = module.app.test_client().post(
+                    "/api/add-nutrition",
+                    json={
+                        "client_id": client_id,
+                        "date": "2026-05-22",
+                        "calories": 510,
+                        "protein_g": 41,
+                        "correction_state": (
+                            "accepted"
+                            if concurrent_outcome == "accepted_changed"
+                            else "manual"
+                        ),
+                    },
+                )
+                assert replacement.status_code == 200, replacement.get_data(as_text=True)
+            else:
+                assert data_store.delete_food_log_by_client_id(1, client_id) is True
+        with original_transaction() as connection:
+            yield connection
+
+    monkeypatch.setattr(
+        module,
+        "food_log_transaction",
+        replace_before_reconciliation_transaction,
+    )
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{client_id}/accept",
+        json={"estimate": estimate, "text": "request-controlled phrase"},
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_canonical_meal"
+    assert data_store.get_personal_vocab_entry(1, phrase) is None
+    stored = data_store.get_food_log_by_client_id(1, client_id)
+    if concurrent_outcome == "manual":
+        assert stored["correction_state"] == "manual"
+    elif concurrent_outcome == "accepted_changed":
+        assert stored["correction_state"] == "accepted"
+        assert stored["calories"] == 510
+    else:
+        assert stored is None
+
+
 @pytest.mark.parametrize("processed_first", [False, True])
 def test_exact_multi_replay_repairs_adaptation_once_from_canonical_rows(
     monkeypatch,
