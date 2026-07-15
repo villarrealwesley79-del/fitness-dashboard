@@ -11060,6 +11060,33 @@ def meal_intake_accept(client_id: str):
             client_id,
             _conn=accept_conn,
         )
+        if (
+            transaction_row is None
+            or transaction_row.get("correction_state")
+            == CORRECTION_STATE_PENDING_REVIEW
+        ):
+            pending_meal_id = (
+                transaction_row.get("meal_id")
+                if transaction_row is not None
+                and transaction_row.get("meal_id")
+                else client_id
+            )
+            pending_meal_children = [
+                row
+                for row in data_store_module.get_food_logs_by_meal_id(
+                    user_id,
+                    pending_meal_id,
+                    _conn=accept_conn,
+                )
+                if row.get("correction_state") == CORRECTION_STATE_PENDING_REVIEW
+            ]
+            if pending_meal_children:
+                accept_conn.rollback()
+                return api_error(
+                    "pending meal items require multi-item acceptance",
+                    409,
+                    code="stale_pending_review",
+                )
         row_changed = (
             transaction_row != stored_pending_preflight
             if stored_pending_preflight is not None

@@ -15142,6 +15142,100 @@ def test_protected_manual_conflict_preserves_pending_meal_children(
     assert child["meal_id"] == parent_client_id
 
 
+@pytest.mark.parametrize("with_pending_parent_alias", [False, True])
+def test_snapshotless_direct_accept_preserves_pending_meal_children(
+    monkeypatch,
+    tmp_path,
+    with_pending_parent_alias,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "snapshotless-direct-parent"
+    child_client_id = "snapshotless-direct-child"
+    estimate = _accepted_estimate(item_name="Pending child", calories=440)
+    if with_pending_parent_alias:
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": parent_client_id,
+                "date": "2026-05-22",
+                "logged_at": "2026-05-22T12:00:00",
+                **estimate,
+                "correction_state": "pending_review",
+                "original_estimate": estimate,
+            },
+        )
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": child_client_id,
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:01:00",
+            **estimate,
+            "correction_state": "pending_review",
+            "original_estimate": estimate,
+            "meal_id": parent_client_id,
+            "meal_item_id": "child",
+            "item_index": 0,
+            "item_state": "included",
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{parent_client_id}/accept",
+        json={"estimate": estimate},
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    parent = data_store.get_food_log_by_client_id(1, parent_client_id)
+    if with_pending_parent_alias:
+        assert parent["correction_state"] == "pending_review"
+    else:
+        assert parent is None
+    child = data_store.get_food_log_by_client_id(1, child_client_id)
+    assert child["correction_state"] == "pending_review"
+    assert child["meal_id"] == parent_client_id
+
+
+def test_direct_child_accept_preserves_snapshotless_pending_siblings(
+    monkeypatch,
+    tmp_path,
+):
+    module = _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    parent_client_id = "snapshotless-child-parent"
+    child_ids = ["snapshotless-child-a", "snapshotless-child-b"]
+    estimate = _accepted_estimate(item_name="Pending child", calories=441)
+    for index, child_client_id in enumerate(child_ids):
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": child_client_id,
+                "date": "2026-05-22",
+                "logged_at": f"2026-05-22T12:0{index}:00",
+                **estimate,
+                "correction_state": "pending_review",
+                "original_estimate": estimate,
+                "meal_id": parent_client_id,
+                "meal_item_id": chr(ord("a") + index),
+                "item_index": index,
+                "item_state": "included",
+            },
+        )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{child_ids[0]}/accept",
+        json={"estimate": estimate},
+    )
+
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error"]["code"] == "stale_pending_review"
+    siblings = data_store.get_food_logs_by_meal_id(1, parent_client_id)
+    assert {row["client_id"] for row in siblings} == set(child_ids)
+    assert {row["correction_state"] for row in siblings} == {"pending_review"}
+
+
 def test_eventless_partial_recovery_enqueues_only_new_canonical_row(
     monkeypatch,
     tmp_path,
