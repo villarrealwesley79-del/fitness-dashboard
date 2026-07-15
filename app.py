@@ -14193,11 +14193,12 @@ def _parse_whoop_csv_rows(text):
         if is_nap:
             outcomes["ignored_nap_rows"] += 1
             continue
-        if normalized:
-            normalized["local_date"] = _validate_imported_whoop_local_date(normalized["local_date"])
-            _validate_whoop_metric_bounds(normalized)
-            records.append((record_type, normalized))
-            outcomes["accepted_rows"] += 1
+        if normalized is None:
+            raise ValueError(f"WHOOP CSV row {index} is missing a valid date.")
+        normalized["local_date"] = _validate_imported_whoop_local_date(normalized["local_date"])
+        _validate_whoop_metric_bounds(normalized)
+        records.append((record_type, normalized))
+        outcomes["accepted_rows"] += 1
     return records, outcomes
 
 

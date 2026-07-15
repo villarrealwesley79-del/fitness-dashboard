@@ -382,6 +382,22 @@ def test_whoop_csv_import_rejects_non_numeric_metric_values(fitness_app):
     assert response.get_json()["error"]["code"] == "invalid_whoop_csv_metric"
 
 
+def test_whoop_csv_import_rejects_supported_rows_without_a_date_before_mutation(fitness_app):
+    csv_text = "\n".join(
+        [
+            "record_type,id,local_date,recovery_score",
+            "recovery,valid-1,2026-06-25,42",
+            "recovery,missing-date,,43",
+        ]
+    )
+
+    response = fitness_app.app.test_client().post("/api/whoop/import-csv", json={"csv": csv_text})
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_whoop_csv_metric"
+    assert whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE, local_date="2026-06-25") is None
+
+
 def test_whoop_csv_import_rejects_future_dates(fitness_app):
     csv_text = "\n".join(
         [
