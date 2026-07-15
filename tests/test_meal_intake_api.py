@@ -126,7 +126,7 @@ def _stub_vision(monkeypatch, module, *, vision=None, lookup=_DEFAULT_LOOKUP):
             "confidence": 0.86,
             "ambiguous": False,
             "uncertainty_notes": [],
-            "source": "nutritionix",
+            "source": "usda_fdc",
         }
     monkeypatch.setattr(module.vision_estimator, "describe", lambda *_a, **_kw: dict(vision))
     monkeypatch.setattr(module.branded_food_lookup, "lookup", lambda *_a, **_kw: dict(lookup) if lookup else None)
@@ -583,7 +583,7 @@ def test_canes_accept_rejects_forged_source_and_accepts_server_selected_candidat
         item_name="Canes Box Combo",
         calories=920,
         confidence=0.90,
-        source="nutritionix",
+        source="usda_fdc",
         external_food_id="server-canes-box",
         verified_source_url="https://example.test/server-canes-box",
     )
@@ -608,7 +608,7 @@ def test_canes_accept_rejects_forged_source_and_accepts_server_selected_candidat
     )
     forged = dict(forged_capture.get_json()["estimate"])
     forged.update({
-        "source": "nutritionix",
+        "source": "open_food_facts",
         "underlying_source": "usda_fdc",
         "external_food_id": "forged",
         "verified_source_url": "https://example.test/forged",
@@ -651,7 +651,7 @@ def test_canes_accept_rejects_forged_source_and_accepts_server_selected_candidat
         headers={"X-Requested-With": "XMLHttpRequest"},
     )
     assert accept.status_code == 200, accept.get_data(as_text=True)
-    assert accept.get_json()["food_logs"][0]["source"] == "nutritionix"
+    assert accept.get_json()["food_logs"][0]["source"] == "usda_fdc"
     assert accept.get_json()["food_logs"][0]["meal_type"] == "dinner"
 
 
@@ -935,7 +935,7 @@ def test_direct_accept_rejects_forged_source_canes_combo_in_single_and_multi_sha
         item_name="Canes Box Combo",
         calories=840,
         confidence=0.85,
-        source="nutritionix",
+        source="usda_fdc",
         underlying_source="usda_fdc",
         external_food_id="forged-canes",
         verified_source_url="https://example.test/forged-canes",
@@ -967,7 +967,7 @@ def test_canes_server_generated_source_backed_edit_and_followup_resolve_policy(m
                     item_name="Canes Box Combo",
                     calories=920,
                     confidence=0.90,
-                    source="nutritionix",
+                    source="usda_fdc",
                     external_food_id="server-canes-refresh",
                     verified_source_url="https://example.test/server-canes-refresh",
                 ),
@@ -1032,7 +1032,7 @@ def test_mixed_source_refresh_accept_exposes_current_provenance_at_public_bounda
                     calories=920,
                     source="mixed_lookup",
                     underlying_source="mixed_lookup",
-                    underlying_sources=["nutritionix", "usda_fdc"],
+                    underlying_sources=["open_food_facts", "usda_fdc"],
                 ),
                 "fallback_used": False,
             }
@@ -1073,7 +1073,7 @@ def test_mixed_source_refresh_accept_exposes_current_provenance_at_public_bounda
     )
     assert accepted.status_code == 200
     row = accepted.get_json()["food_logs"][0]
-    assert row["accepted_estimate"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert row["accepted_estimate"]["underlying_sources"] == ["open_food_facts", "usda_fdc"]
     assert row["original_estimate"]["source"] == "ai_text_estimate"
     assert "underlying_sources" not in row["original_estimate"]
     assert data_store.get_food_logs(1)[0]["accepted_estimate"] == row["accepted_estimate"]
@@ -1292,7 +1292,7 @@ def test_imported_canes_snapshot_without_candidates_cannot_claim_source_backed(m
     forged_estimate = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=840,
-        source="nutritionix",
+        source="usda_fdc",
         external_food_id="imported-forged-canes",
         verified_source_url="https://example.test/imported-forged-canes",
     )
@@ -1346,7 +1346,7 @@ def test_imported_candidate_cannot_retain_client_source_backed_flag(monkeypatch)
     candidate_estimate = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
-        source="nutritionix",
+        source="usda_fdc",
     )
     snapshot = {
         "meal_id": "imported-candidate-source-backed",
@@ -1424,8 +1424,8 @@ def test_material_canes_correction_drops_forged_current_provenance(monkeypatch):
     material = dict(item["estimate"])
     material.update(
         calories=material["calories"] + 50,
-        source="nutritionix",
-        underlying_source="nutritionix",
+        source="usda_fdc",
+        underlying_source="usda_fdc",
         external_food_id="forged-material-correction",
         verified_source_url="https://example.test/forged-material-correction",
     )
@@ -1498,8 +1498,8 @@ def test_snapshotless_canes_pending_row_uses_stored_ai_provenance(monkeypatch):
     material.update(
         item_name="Canes Box Combo",
         calories=material["calories"] + 50,
-        source="nutritionix",
-        underlying_source="nutritionix",
+        source="usda_fdc",
+        underlying_source="usda_fdc",
         external_food_id="forged-snapshotless-canes",
     )
     corrected = client.post(
@@ -1509,7 +1509,7 @@ def test_snapshotless_canes_pending_row_uses_stored_ai_provenance(monkeypatch):
             "original_estimate": _accepted_estimate(
                 item_name="Chicken bowl",
                 calories=900,
-                source="nutritionix",
+                source="usda_fdc",
             ),
         },
         headers=headers,
@@ -1531,7 +1531,7 @@ def test_canes_personal_vocab_underlying_source_stays_untrusted(monkeypatch):
             item_name="Canes Box Combo",
             calories=840,
             source="personal_vocab",
-            underlying_source="nutritionix",
+            underlying_source="usda_fdc",
         ),
         source="personal_vocab",
     )
@@ -1760,9 +1760,9 @@ def test_snapshotless_source_backed_pending_canes_accepts_saved_provenance(monke
     original = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
-        source="nutritionix",
-        external_food_id="saved-nutritionix-canes",
-        verified_source_url="https://example.test/saved-nutritionix-canes",
+        source="usda_fdc",
+        external_food_id="saved-usda_fdc-canes",
+        verified_source_url="https://example.test/saved-usda_fdc-canes",
     )
     data_store.add_food_log(
         1,
@@ -1778,7 +1778,7 @@ def test_snapshotless_source_backed_pending_canes_accepts_saved_provenance(monke
             "fat_g": original["fat_g"],
             "sodium_mg": original["sodium_mg"],
             "fiber_g": original["fiber_g"],
-            "source": "nutritionix",
+            "source": "usda_fdc",
             "correction_state": "pending_review",
             "original_estimate": original,
         },
@@ -1792,9 +1792,9 @@ def test_snapshotless_source_backed_pending_canes_accepts_saved_provenance(monke
 
     assert accepted.status_code == 200, accepted.get_data(as_text=True)
     row = accepted.get_json()["food_log"]
-    assert row["source"] == "nutritionix"
-    assert row["original_estimate"]["source"] == "nutritionix"
-    assert row["accepted_estimate"]["source"] == "nutritionix"
+    assert row["source"] == "usda_fdc"
+    assert row["original_estimate"]["source"] == "usda_fdc"
+    assert row["accepted_estimate"]["source"] == "usda_fdc"
 
 
 def test_snapshotless_source_backed_canes_material_correction_preserves_provenance(monkeypatch):
@@ -1805,9 +1805,9 @@ def test_snapshotless_source_backed_canes_material_correction_preserves_provenan
     original = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
-        source="nutritionix",
-        external_food_id="saved-nutritionix-canes-material",
-        verified_source_url="https://example.test/saved-nutritionix-canes-material",
+        source="usda_fdc",
+        external_food_id="saved-usda_fdc-canes-material",
+        verified_source_url="https://example.test/saved-usda_fdc-canes-material",
     )
     data_store.add_food_log(
         1,
@@ -1823,7 +1823,7 @@ def test_snapshotless_source_backed_canes_material_correction_preserves_provenan
             "fat_g": original["fat_g"],
             "sodium_mg": original["sodium_mg"],
             "fiber_g": original["fiber_g"],
-            "source": "nutritionix",
+            "source": "usda_fdc",
             "correction_state": "pending_review",
             "original_estimate": original,
         },
@@ -1842,7 +1842,7 @@ def test_snapshotless_source_backed_canes_material_correction_preserves_provenan
     assert row["correction_state"] == "corrected"
     assert row["calories"] == 970
     assert row["source"] == "manual_review_estimate"
-    assert row["original_estimate"]["source"] == "nutritionix"
+    assert row["original_estimate"]["source"] == "usda_fdc"
     assert row["accepted_estimate"]["source"] == "manual_review_estimate"
 
 
@@ -1854,7 +1854,7 @@ def test_wrapped_mixed_accepted_estimate_round_trips_public_surfaces(monkeypatch
         calories=920,
         source="vision_claude+mixed_lookup",
         underlying_source="mixed_lookup",
-        underlying_sources=["nutritionix", "usda_fdc"],
+        underlying_sources=["usda_fdc", "usda_fdc"],
     )
     row = data_store.add_food_log(
         1,
@@ -1880,7 +1880,7 @@ def test_wrapped_mixed_accepted_estimate_round_trips_public_surfaces(monkeypatch
         },
     )
 
-    assert row["accepted_estimate"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert row["accepted_estimate"]["underlying_sources"] == ["usda_fdc", "usda_fdc"]
     reloaded = data_store.get_food_logs(1)[0]
     assert reloaded["accepted_estimate"] == row["accepted_estimate"]
     by_date = client.get("/api/food-logs/by-date/2026-05-18")
@@ -1899,7 +1899,7 @@ def test_personal_vocab_wrapped_mixed_provenance_is_untrusted_in_both_predicates
         calories=920,
         source="personal_vocab+mixed_lookup",
         underlying_source="mixed_lookup",
-        underlying_sources=["nutritionix", "usda_fdc"],
+        underlying_sources=["usda_fdc", "usda_fdc"],
     )
 
     assert module._is_source_backed_nutrition(personal_wrapped) is False
@@ -1911,9 +1911,9 @@ def test_direct_provider_with_personal_vocab_underlying_component_is_untrusted(m
     tainted = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
-        source="nutritionix",
+        source="usda_fdc",
         underlying_source="personal_vocab+mixed_lookup",
-        underlying_sources=["nutritionix", "usda_fdc"],
+        underlying_sources=["usda_fdc", "usda_fdc"],
     )
 
     assert module._is_source_backed_nutrition(tainted) is False
@@ -1925,7 +1925,7 @@ def test_direct_provider_with_invalid_mixed_marker_cannot_replace_current_proven
     invalid_mixed = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
-        source="nutritionix",
+        source="usda_fdc",
         underlying_source="mixed_lookup",
         underlying_sources=["ai_text_estimate"],
     )
@@ -2016,7 +2016,7 @@ def test_ambiguous_direct_provider_cannot_accept_or_replace_terminal_provenance(
     original = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
-        source="nutritionix",
+        source="usda_fdc",
         external_food_id="ambiguous-pending-canes",
         verified_source_url="https://example.test/ambiguous-pending-canes",
         ambiguous=True,
@@ -2036,7 +2036,7 @@ def test_ambiguous_direct_provider_cannot_accept_or_replace_terminal_provenance(
             "fat_g": original["fat_g"],
             "sodium_mg": original["sodium_mg"],
             "fiber_g": original["fiber_g"],
-            "source": "nutritionix",
+            "source": "usda_fdc",
             "correction_state": "pending_review",
             "original_estimate": original,
         },
@@ -2055,7 +2055,7 @@ def test_ambiguous_direct_provider_cannot_accept_or_replace_terminal_provenance(
         calories=920,
         source="mixed_lookup",
         underlying_source="mixed_lookup",
-        underlying_sources=["nutritionix", "usda_fdc"],
+        underlying_sources=["usda_fdc", "usda_fdc"],
     )
     terminal_id = "ambiguous-direct-terminal"
     data_store.add_food_log(
@@ -2094,7 +2094,7 @@ def test_ambiguous_direct_provider_cannot_accept_or_replace_terminal_provenance(
             "fat_g": original["fat_g"],
             "sodium_mg": original["sodium_mg"],
             "fiber_g": original["fiber_g"],
-            "source": "nutritionix",
+            "source": "usda_fdc",
             "correction_state": "corrected",
             "accepted_estimate": {**original, "calories": 825},
         },
@@ -2114,9 +2114,9 @@ def test_snapshotless_legacy_source_backed_canes_uses_food_log_row_baseline(monk
     original = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
-        source="nutritionix",
-        external_food_id="legacy-nutritionix-canes",
-        verified_source_url="https://example.test/legacy-nutritionix-canes",
+        source="usda_fdc",
+        external_food_id="legacy-usda_fdc-canes",
+        verified_source_url="https://example.test/legacy-usda_fdc-canes",
     )
     legacy_original = {
         key: value
@@ -2138,7 +2138,7 @@ def test_snapshotless_legacy_source_backed_canes_uses_food_log_row_baseline(monk
             "fat_g": original["fat_g"],
             "sodium_mg": original["sodium_mg"],
             "fiber_g": original["fiber_g"],
-            "source": "nutritionix",
+            "source": "usda_fdc",
             "correction_state": "pending_review",
             "original_estimate": legacy_original,
         },
@@ -2152,9 +2152,9 @@ def test_snapshotless_legacy_source_backed_canes_uses_food_log_row_baseline(monk
 
     assert accepted.status_code == 200, accepted.get_data(as_text=True)
     row = accepted.get_json()["food_log"]
-    assert row["source"] == "nutritionix"
-    assert row["original_estimate"]["source"] == "nutritionix"
-    assert row["accepted_estimate"]["source"] == "nutritionix"
+    assert row["source"] == "usda_fdc"
+    assert row["original_estimate"]["source"] == "usda_fdc"
+    assert row["accepted_estimate"]["source"] == "usda_fdc"
 
 
 def test_import_invalid_current_estimates_preserve_terminal_mixed_provenance(monkeypatch):
@@ -2170,7 +2170,7 @@ def test_import_invalid_current_estimates_preserve_terminal_mixed_provenance(mon
         calories=920,
         source="mixed_lookup",
         underlying_source="mixed_lookup",
-        underlying_sources=["nutritionix", "usda_fdc"],
+        underlying_sources=["usda_fdc", "usda_fdc"],
     )
     cases = [
         ("invalid-mixed-current", {"source": "mixed_lookup", "underlying_sources": []}),
@@ -2247,7 +2247,7 @@ def test_import_partial_approved_current_preserves_terminal_mixed_provenance(mon
         calories=920,
         source="mixed_lookup",
         underlying_source="mixed_lookup",
-        underlying_sources=["nutritionix", "usda_fdc"],
+        underlying_sources=["usda_fdc", "usda_fdc"],
     )
     client_id = "partial-approved-current"
     data_store.add_food_log(
@@ -2289,7 +2289,7 @@ def test_import_partial_approved_current_preserves_terminal_mixed_provenance(mon
                         "correction_state": "corrected",
                         "original_estimate": original_estimate,
                         "accepted_estimate": {
-                            "source": "nutritionix",
+                            "source": "usda_fdc",
                             "calories": 900,
                         },
                     }
@@ -2320,7 +2320,7 @@ def test_history_correction_preserves_existing_mixed_current_provenance(monkeypa
         calories=920,
         source="mixed_lookup",
         underlying_source="mixed_lookup",
-        underlying_sources=["nutritionix", "usda_fdc"],
+        underlying_sources=["usda_fdc", "usda_fdc"],
     )
     data_store.add_food_log(
         1,
@@ -2392,7 +2392,7 @@ def test_legacy_top_level_canes_identity_blocks_component_snapshot_accept(monkey
             item_name="Chicken fingers",
             portion_description="4 fingers",
             calories=520,
-            source="nutritionix",
+            source="usda_fdc",
         ),
         _accepted_estimate(
             item_name="Fries",
@@ -2466,7 +2466,7 @@ def test_imported_canes_candidate_cannot_reacquire_source_backed_trust(monkeypat
         protein_g=75,
         carbs_g=120,
         fat_g=55,
-        source="nutritionix",
+        source="usda_fdc",
         external_food_id="invented-canes-candidate",
         verified_source_url="https://example.test/invented-canes-candidate",
     )
@@ -2479,7 +2479,7 @@ def test_imported_canes_candidate_cannot_reacquire_source_backed_trust(monkeypat
             source="ai_text_estimate",
             candidates=[
                 {
-                    "candidate_id": "imported-forged-nutritionix",
+                    "candidate_id": "imported-forged-usda_fdc",
                     "estimate": forged_candidate,
                 }
             ],
@@ -2511,7 +2511,7 @@ def test_imported_canes_candidate_cannot_reacquire_source_backed_trust(monkeypat
             "kind": "choose_candidate",
             "request_id": "choose-imported-forged-candidate",
             "item_id": "item-1",
-            "candidate_id": "imported-forged-nutritionix",
+            "candidate_id": "imported-forged-usda_fdc",
         },
         headers=headers,
     )
@@ -2548,7 +2548,7 @@ def test_legacy_top_level_canes_identity_blocks_explicit_component_accept(monkey
             item_name="Chicken fingers",
             portion_description="4 fingers",
             calories=520,
-            source="nutritionix",
+            source="usda_fdc",
         ),
         _accepted_estimate(
             item_name="Fries",
@@ -2649,7 +2649,7 @@ def test_manual_history_correction_preserves_mixed_current_provenance(monkeypatc
         calories=920,
         source="mixed_lookup",
         underlying_source="mixed_lookup",
-        underlying_sources=["nutritionix", "usda_fdc"],
+        underlying_sources=["usda_fdc", "usda_fdc"],
     )
     data_store.add_food_log(
         1,
@@ -2726,7 +2726,7 @@ def test_import_null_accepted_estimate_preserves_terminal_current_provenance(mon
         calories=920,
         source="mixed_lookup",
         underlying_source="mixed_lookup",
-        underlying_sources=["nutritionix", "usda_fdc"],
+        underlying_sources=["usda_fdc", "usda_fdc"],
     )
     data_store.add_food_log(
         1,
@@ -2803,7 +2803,7 @@ def test_mixed_vision_cached_lookups_preserve_effective_sources(monkeypatch):
             _accepted_estimate(
                 item_name="Canes Box Combo",
                 source="local_cache",
-                underlying_source="nutritionix",
+                underlying_source="open_food_facts",
             ),
             "Canes Box Combo",
         ),
@@ -2821,7 +2821,7 @@ def test_mixed_vision_cached_lookups_preserve_effective_sources(monkeypatch):
     estimate = module._combine_vision_item_lookups(matched, missing=[])
 
     assert estimate["source"] == "mixed_lookup"
-    assert estimate["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert estimate["underlying_sources"] == ["open_food_facts", "usda_fdc"]
     assert module._is_source_backed_nutrition(estimate) is True
     resolved = module._review_candidate_to_item(
         {"estimate": estimate},
@@ -2847,7 +2847,7 @@ def test_mixed_vision_nested_sources_flatten_with_cached_provider(monkeypatch):
                 item_name="Chicken",
                 source="mixed_lookup",
                 underlying_source="mixed_lookup",
-                underlying_sources=["nutritionix", "usda_fdc"],
+                underlying_sources=["heb_product_page", "usda_fdc"],
             ),
             "Chicken",
         ),
@@ -2866,7 +2866,7 @@ def test_mixed_vision_nested_sources_flatten_with_cached_provider(monkeypatch):
 
     assert estimate["source"] == "mixed_lookup"
     assert estimate["underlying_sources"] == [
-        "nutritionix",
+        "heb_product_page",
         "open_food_facts",
         "usda_fdc",
     ]
@@ -2882,7 +2882,7 @@ def test_mixed_vision_personal_vocab_source_cannot_launder_approved_underlying_s
                 _accepted_estimate(
                     item_name="Canes Box Combo",
                     source="personal_vocab",
-                    underlying_source="nutritionix",
+                    underlying_source="usda_fdc",
                 ),
                 "Canes Box Combo",
             )
@@ -2901,7 +2901,7 @@ def test_wrapped_mixed_vision_source_is_source_backed_without_trusting_personal_
         item_name="Vision Canes Box Combo",
         source="vision_claude+mixed_lookup",
         underlying_source="mixed_lookup",
-        underlying_sources=["nutritionix", "usda_fdc"],
+        underlying_sources=["open_food_facts", "usda_fdc"],
     )
 
     assert module._is_source_backed_nutrition(wrapped) is True
@@ -2987,7 +2987,7 @@ def test_canes_server_produced_source_backed_vision_estimate_is_not_overblocked(
             portion_description="1 combo",
             calories=920,
             confidence=0.92,
-            source="nutritionix",
+            source="usda_fdc",
             external_food_id="server-vision-canes",
             verified_source_url="https://example.test/server-vision-canes",
         ),
@@ -3004,7 +3004,7 @@ def test_canes_server_produced_source_backed_vision_estimate_is_not_overblocked(
     )
     assert capture.status_code == 200, capture.get_data(as_text=True)
     body = capture.get_json()
-    assert body["estimate"]["source"] == "vision_claude+nutritionix"
+    assert body["estimate"]["source"] == "vision_claude+usda_fdc"
     assert body["items"][0]["branded_combo_ai_only"] is False
     accept = client.post(
         "/api/meal-intake/canes-vision-source-backed/accept",
@@ -3044,11 +3044,11 @@ def test_photo_assisted_canes_source_backed_refresh_redacts_pending_context(monk
         estimate=_accepted_estimate(
             item_name="Canes Box Combo",
             calories=920,
-            source="nutritionix",
+            source="usda_fdc",
             external_food_id="photo-refresh-canes",
             verified_source_url="https://example.test/photo-refresh-canes",
         ),
-        source="nutritionix",
+        source="usda_fdc",
     )
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
@@ -3085,23 +3085,23 @@ def test_photo_assisted_canes_source_backed_refresh_redacts_pending_context(monk
 def test_mixed_vision_lookup_source_trust_requires_complete_approved_components(monkeypatch):
     module = _client(monkeypatch)
     matched = [
-        ({"name": "Chicken"}, _accepted_estimate(item_name="Chicken", source="nutritionix"), "Chicken"),
+        ({"name": "Chicken"}, _accepted_estimate(item_name="Chicken", source="open_food_facts"), "Chicken"),
         ({"name": "Fries"}, _accepted_estimate(item_name="Fries", source="usda_fdc"), "Fries"),
     ]
     estimate = module._combine_vision_item_lookups(matched, missing=[])
     assert estimate["source"] == "mixed_lookup"
-    assert estimate["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert estimate["underlying_sources"] == ["open_food_facts", "usda_fdc"]
     assert module._is_source_backed_nutrition(estimate) is True
     review_item = module._review_item_from_estimate(estimate, item_id="item-1", item_order=1)
-    assert review_item["estimate"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert review_item["estimate"]["underlying_sources"] == ["open_food_facts", "usda_fdc"]
     aggregate = module._review_aggregate_estimate({"items": [review_item], "meal_type": "lunch"})
-    assert aggregate["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert aggregate["underlying_sources"] == ["open_food_facts", "usda_fdc"]
 
     for invalid in (
         module._combine_vision_item_lookups(matched, missing=["Drink"]),
         {**estimate, "ambiguous": True},
         {**estimate, "underlying_sources": []},
-        {**estimate, "underlying_sources": ["nutritionix", "ai_text_estimate"]},
+        {**estimate, "underlying_sources": ["open_food_facts", "ai_text_estimate"]},
     ):
         assert module._is_source_backed_nutrition(invalid) is False
 
@@ -3110,14 +3110,14 @@ def test_legacy_snapshot_marker_fallback_blocks_ai_and_allows_source_backed(monk
     module = _client(monkeypatch)
 
     def fake_parser(text, **_kw):
-        source = "nutritionix" if text == "verified legacy" else "ai_text_estimate"
+        source = "open_food_facts" if text == "verified legacy" else "ai_text_estimate"
         estimate = _accepted_estimate(
             item_name="Canes Box Combo", calories=840, confidence=0.85, source=source,
-            external_food_id="verified-legacy" if source == "nutritionix" else None,
-            verified_source_url="https://example.test/verified-legacy" if source == "nutritionix" else None,
+            external_food_id="verified-legacy" if source == "open_food_facts" else None,
+            verified_source_url="https://example.test/verified-legacy" if source == "open_food_facts" else None,
         )
         if text == "mixed legacy":
-            estimate.update(source="mixed_lookup", underlying_source="mixed_lookup", underlying_sources=["nutritionix", "usda_fdc"])
+            estimate.update(source="mixed_lookup", underlying_source="mixed_lookup", underlying_sources=["open_food_facts", "usda_fdc"])
         return {"estimate": estimate, "fallback_used": False}
 
     monkeypatch.setattr(module, "parse_meal_text", fake_parser)
@@ -3142,9 +3142,9 @@ def test_legacy_snapshot_marker_fallback_blocks_ai_and_allows_source_backed(monk
     assert len(rows) == 3
     rows_by_client = {row["client_id"]: row for row in rows}
     assert rows_by_client["legacy-ai-marker"]["correction_state"] == "pending_review"
-    assert next(row for row in rows if row["source"] == "nutritionix")["original_estimate"]["source"] == "nutritionix"
+    assert next(row for row in rows if row["source"] == "open_food_facts")["original_estimate"]["source"] == "open_food_facts"
     mixed_row = next(row for row in accepted_rows if row["source"] == "mixed_lookup")
-    assert mixed_row["accepted_estimate"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert mixed_row["accepted_estimate"]["underlying_sources"] == ["open_food_facts", "usda_fdc"]
     assert data_store.get_meal_acceptance_event(1, "legacy-ai-marker") is None
 
 
@@ -3152,10 +3152,10 @@ def test_mixed_accept_persists_current_provenance_without_mutating_ai_original(m
     module = _client(monkeypatch)
     client = module.app.test_client()
     original = _accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate")
-    mixed = _accepted_estimate(item_name="Canes Box Combo", calories=920, source="mixed_lookup", underlying_source="mixed_lookup", underlying_sources=["nutritionix", "usda_fdc"])
+    mixed = _accepted_estimate(item_name="Canes Box Combo", calories=920, source="mixed_lookup", underlying_source="mixed_lookup", underlying_sources=["usda_fdc", "usda_fdc"])
     row = module._meal_intake_persist("mixed-provenance", mixed, source="mixed_lookup", has_image=False, text_hint=None, original_estimate=original)
     reloaded = data_store.get_food_logs(1)[0]
-    assert row["accepted_estimate"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert row["accepted_estimate"]["underlying_sources"] == ["usda_fdc", "usda_fdc"]
     assert reloaded["accepted_estimate"] == row["accepted_estimate"]
     assert reloaded["original_estimate"]["source"] == "ai_text_estimate"
     assert "underlying_sources" not in reloaded["original_estimate"]
@@ -3163,7 +3163,7 @@ def test_mixed_accept_persists_current_provenance_without_mutating_ai_original(m
 
 def test_malformed_mixed_sources_are_not_persisted_or_trusted(monkeypatch):
     module = _client(monkeypatch)
-    for sources in ([], ["nutritionix", 3], ["nutritionix", "ai_text_estimate"]):
+    for sources in ([], ["usda_fdc", 3], ["usda_fdc", "ai_text_estimate"]):
         estimate = _accepted_estimate(source="mixed_lookup", underlying_source="mixed_lookup", underlying_sources=sources)
         assert module._is_source_backed_nutrition(estimate) is False
         row = module._meal_intake_persist(f"bad-mixed-{len(sources)}-{str(sources)[-1]}", estimate, source="mixed_lookup", has_image=False, text_hint=None)
@@ -3245,7 +3245,7 @@ def test_canes_source_backed_component_items_are_not_overblocked(monkeypatch):
                         item_name="Canes Box Combo",
                         portion_description="1 combo",
                         calories=920,
-                        source="nutritionix",
+                        source="usda_fdc",
                         external_food_id="server-verified-component",
                         verified_source_url="https://example.test/server-verified-component",
                     ),
@@ -3953,7 +3953,7 @@ def test_meal_intake_image_only_returns_pending_review(monkeypatch):
     assert body["photo_retention"]["backup_includes_raw_photo"] is False
     assert "image_bytes" not in str(body)
     assert "plate.png" not in str(body)
-    assert captured["source"] == "vision_claude+nutritionix"
+    assert captured["source"] == "vision_claude+usda_fdc"
     assert captured["context_note"] is None
 
 
@@ -4006,7 +4006,7 @@ def test_meal_intake_bill_miller_cart_uses_structured_item_lookups(monkeypatch):
                 "confidence": 0.86,
                 "ambiguous": False,
                 "uncertainty_notes": [],
-                "source": "nutritionix",
+                "source": "usda_fdc",
             }
         if "Breakfast Sandwich" in text:
             return {
@@ -4022,7 +4022,7 @@ def test_meal_intake_bill_miller_cart_uses_structured_item_lookups(monkeypatch):
                 "confidence": 0.82,
                 "ambiguous": False,
                 "uncertainty_notes": [],
-                "source": "nutritionix",
+                "source": "usda_fdc",
             }
         return None
 
@@ -4049,7 +4049,7 @@ def test_meal_intake_bill_miller_cart_uses_structured_item_lookups(monkeypatch):
         ("2 Bill Miller BBQ Breakfast Sandwich On a Biscuit Sausage Patty Cheese Egg", 42),
     ]
     estimate = body["estimate"]
-    assert estimate["source"] == "vision_lm_studio+nutritionix"
+    assert estimate["source"] == "vision_lm_studio+usda_fdc"
     assert estimate["item_name"] == "Bill Miller BBQ order: 1 Bacon & Egg Taco; 2 Breakfast Sandwich"
     assert estimate["portion_description"] == (
         "1 Bacon & Egg Taco (Hot Sauce, Flour Tortilla); "
@@ -4058,7 +4058,7 @@ def test_meal_intake_bill_miller_cart_uses_structured_item_lookups(monkeypatch):
     assert estimate["calories"] == 1290
     assert estimate["protein_g"] == 58
     assert estimate["sodium_mg"] == 2660
-    assert persisted["record"]["source"] == "vision_lm_studio+nutritionix"
+    assert persisted["record"]["source"] == "vision_lm_studio+usda_fdc"
     assert persisted["record"]["original_estimate"]["vision_description"].startswith("Bill Miller BBQ order")
     assert "image_bytes" not in str(persisted["record"]["original_estimate"])
     assert vocab_calls == []
@@ -4096,7 +4096,7 @@ def test_meal_intake_single_structured_item_applies_top_level_portion_hint(monke
                 "confidence": 0.84,
                 "ambiguous": False,
                 "uncertainty_notes": [],
-                "source": "nutritionix",
+                "source": "usda_fdc",
             }
         return {
             "item_name": "Full burger",
@@ -4111,7 +4111,7 @@ def test_meal_intake_single_structured_item_applies_top_level_portion_hint(monke
             "confidence": 0.84,
             "ambiguous": False,
             "uncertainty_notes": [],
-            "source": "nutritionix",
+            "source": "usda_fdc",
         }
 
     monkeypatch.setattr(module.branded_food_lookup, "lookup", fake_lookup)
@@ -4164,7 +4164,7 @@ def test_meal_intake_single_structured_item_applies_user_portion_modifier(monkey
             "confidence": 0.84,
             "ambiguous": False,
             "uncertainty_notes": [],
-            "source": "nutritionix",
+            "source": "usda_fdc",
         }
 
     monkeypatch.setattr(module.branded_food_lookup, "lookup", fake_lookup)
@@ -4220,7 +4220,7 @@ def test_meal_intake_structured_cart_truncated_items_force_review(monkeypatch):
             "confidence": 0.84,
             "ambiguous": False,
             "uncertainty_notes": [],
-            "source": "nutritionix",
+            "source": "usda_fdc",
         }
 
     monkeypatch.setattr(module.branded_food_lookup, "lookup", fake_lookup)
@@ -4307,7 +4307,7 @@ def test_meal_intake_image_text_is_preserved_as_brand_hint(monkeypatch):
         "confidence": 0.86,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix",
+        "source": "usda_fdc",
     }
     monkeypatch.setattr(module.vision_estimator, "describe", lambda *_a, **_kw: dict(vision))
 
@@ -4401,9 +4401,9 @@ def test_meal_intake_image_lookup_confidence_is_capped_by_vision(monkeypatch):
             "confidence": 0.86,
             "ambiguous": False,
             "uncertainty_notes": [],
-            "source": "nutritionix",
+            "source": "usda_fdc",
             "external_food_id": "shake-1",
-            "verified_source_url": "https://www.nutritionix.com/",
+            "verified_source_url": "https://fdc.nal.usda.gov/",
             "portion_basis": "1 shake",
         },
     )
@@ -4593,7 +4593,7 @@ def test_meal_intake_image_preserves_cached_underlying_source(monkeypatch):
             "ambiguous": False,
             "uncertainty_notes": [],
             "source": "local_cache",
-            "underlying_source": "nutritionix",
+            "underlying_source": "usda_fdc",
         },
     )
 
@@ -4616,8 +4616,8 @@ def test_meal_intake_image_preserves_cached_underlying_source(monkeypatch):
     body = res.get_json()
     assert body["status"] == "pending_review"
     assert body["estimate"]["source"] == "vision_claude+local_cache"
-    assert body["estimate"]["underlying_source"] == "nutritionix"
-    assert captured["original_estimate"]["underlying_source"] == "nutritionix"
+    assert body["estimate"]["underlying_source"] == "usda_fdc"
+    assert captured["original_estimate"]["underlying_source"] == "usda_fdc"
 
 
 def test_meal_intake_rejects_oversize_image(monkeypatch):
@@ -5281,7 +5281,7 @@ def test_meal_intake_accept_uses_vision_description_for_image_only_vocab(monkeyp
                 "confidence": 0.82,
                 "ambiguous": False,
                 "uncertainty_notes": [],
-                "source": "vision_lm_studio+nutritionix",
+                "source": "vision_lm_studio+usda_fdc",
                 "from_image": True,
                 "vision_description": "Bill Miller BBQ cart with Bacon & Egg Taco and two Breakfast Sandwiches",
                 "vision_provider": "lm_studio",
@@ -5317,7 +5317,7 @@ def test_meal_intake_corrected_image_vocab_uses_user_phrase(monkeypatch):
                 "confidence": 0.82,
                 "ambiguous": False,
                 "uncertainty_notes": [],
-                "source": "vision_lm_studio+nutritionix",
+                "source": "vision_lm_studio+usda_fdc",
                 "from_image": True,
                 "vision_description": "Bill Miller BBQ cart with Bacon & Egg Taco and two Breakfast Sandwiches",
                 "vision_provider": "lm_studio",
@@ -5469,7 +5469,7 @@ def test_meal_intake_pending_response_exposes_policy_block_for_review_card(monke
 def test_meal_intake_pending_response_exposes_source_for_review_card(monkeypatch):
     """FIT-6 AC1 + AC5: the review card renders a source chip from
     estimate.source so the user can see whether the numbers came from a
-    branded lookup (Nutritionix / USDA), a cached prior, the AI text
+    branded lookup (USDA / USDA), a cached prior, the AI text
     parser, or a fallback preset. Source presence in the pending
     response is the contract this test guards.
     """
@@ -7397,9 +7397,9 @@ def _barcode_estimate(**overrides):
         "confidence": 0.88,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix_barcode",
+        "source": "usda_fdc_barcode",
         "external_food_id": "barcode-bar-1",
-        "portion_basis": "Nutritionix UPC label serving",
+        "portion_basis": "USDA UPC label serving",
     }
     estimate.update(overrides)
     return estimate
@@ -7422,10 +7422,10 @@ def test_meal_intake_barcode_returns_pending_review_for_verified_lookup(monkeypa
     body = res.get_json()
     assert body["status"] == "pending_review"
     assert body["barcode"] == "012345678905"
-    assert body["lookup_source"] == "nutritionix_barcode"
+    assert body["lookup_source"] == "usda_fdc_barcode"
     assert body["cache_hit"] is False
     assert body["pending_source"] is False
-    assert body["estimate"]["source"] == "nutritionix_barcode"
+    assert body["estimate"]["source"] == "usda_fdc_barcode"
     assert body["food_log"]["client_id"] == "barcode-meal-1"
     assert body["food_log"]["correction_state"] == "pending_review"
 
@@ -8115,11 +8115,11 @@ def test_barcode_lookup_cache_round_trip_and_delete_user_data(tmp_path, monkeypa
     data_store.init_data_db()
     response = _barcode_estimate()
 
-    data_store.save_barcode_lookup_cache("012345678905", "nutritionix_barcode", response, user_id=1)
-    data_store.save_barcode_lookup_cache("012345678905", "nutritionix_barcode", {**response, "item_name": "User 2 bar"}, user_id=2)
+    data_store.save_barcode_lookup_cache("012345678905", "usda_fdc_barcode", response, user_id=1)
+    data_store.save_barcode_lookup_cache("012345678905", "usda_fdc_barcode", {**response, "item_name": "User 2 bar"}, user_id=2)
 
     row = data_store.get_barcode_lookup_cache("012345678905", user_id=1)
-    assert row["source"] == "nutritionix_barcode"
+    assert row["source"] == "usda_fdc_barcode"
     assert row["response_json"] == response
     assert data_store.get_barcode_lookup_cache("012345678905", user_id=2)["response_json"]["item_name"] == "User 2 bar"
 
@@ -8178,7 +8178,7 @@ def test_terminal_capture_replay_returns_current_accepted_estimate_with_legacy_f
     current = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
-        source="nutritionix",
+        source="usda_fdc",
         external_food_id="terminal-replay-current",
     )
     data_store.add_food_log(
@@ -8231,10 +8231,10 @@ def test_imported_pending_canes_food_log_cannot_grant_source_backed_accept(monke
     forged = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
-        source="nutritionix",
+        source="usda_fdc",
         external_food_id="forged-imported-pending",
     )
-    terminal = _accepted_estimate(item_name="Imported terminal", calories=510, source="nutritionix")
+    terminal = _accepted_estimate(item_name="Imported terminal", calories=510, source="usda_fdc")
     restored = client.post(
         "/api/import-backup",
         json={
@@ -8306,7 +8306,7 @@ def test_imported_canes_snapshot_stays_visibly_blocked_and_candidate_selection_c
     forged_candidate = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
-        source="nutritionix",
+        source="usda_fdc",
         external_food_id="forged-ui-candidate",
     )
     snapshot["payload"]["estimate"] = forged_candidate
@@ -8358,7 +8358,7 @@ def test_imported_canes_snapshot_stays_visibly_blocked_and_candidate_selection_c
 def test_negative_canonical_macros_cannot_replace_terminal_current_provenance(monkeypatch):
     _client(monkeypatch)
     original = _accepted_estimate(item_name="Terminal meal", calories=500, source="ai_text_estimate")
-    current = _accepted_estimate(item_name="Terminal meal", calories=540, source="nutritionix")
+    current = _accepted_estimate(item_name="Terminal meal", calories=540, source="usda_fdc")
     data_store.add_food_log(
         1,
         {
@@ -8377,7 +8377,7 @@ def test_negative_canonical_macros_cannot_replace_terminal_current_provenance(mo
         protein_g=-2,
         carbs_g=-3,
         fat_g=-4,
-        source="nutritionix",
+        source="usda_fdc",
     )
 
     assert not data_store._is_authorized_accepted_estimate_replacement(negative)
@@ -8394,7 +8394,7 @@ def test_negative_canonical_macros_cannot_replace_terminal_current_provenance(mo
     )
     assert row["calories"] == current["calories"]
     assert row["accepted_estimate"]["calories"] == current["calories"]
-    assert row["accepted_estimate"]["source"] == "nutritionix"
+    assert row["accepted_estimate"]["source"] == "usda_fdc"
 
 
 def test_terminal_partial_refresh_keeps_row_macros_coherent_with_accepted_estimate(monkeypatch):
@@ -8406,7 +8406,7 @@ def test_terminal_partial_refresh_keeps_row_macros_coherent_with_accepted_estima
         protein_g=36,
         carbs_g=48,
         fat_g=20,
-        source="nutritionix",
+        source="usda_fdc",
     )
     data_store.add_food_log(
         1,
@@ -8441,14 +8441,14 @@ def test_terminal_partial_refresh_keeps_row_macros_coherent_with_accepted_estima
 def test_all_declared_provenance_components_must_be_approved_for_trust(monkeypatch):
     module = _client(monkeypatch)
     contradictory = _accepted_estimate(
-        source="nutritionix",
-        underlying_source="nutritionix",
-        underlying_sources=["nutritionix", "personal_vocab"],
+        source="usda_fdc",
+        underlying_source="usda_fdc",
+        underlying_sources=["usda_fdc", "personal_vocab"],
     )
     unapproved = _accepted_estimate(
-        source="nutritionix",
-        underlying_source="nutritionix",
-        underlying_sources=["nutritionix", "invented_provider"],
+        source="usda_fdc",
+        underlying_source="usda_fdc",
+        underlying_sources=["usda_fdc", "invented_provider"],
     )
 
     for estimate in (contradictory, unapproved):
@@ -8461,7 +8461,7 @@ def test_legacy_meal_type_edit_keeps_trusted_snapshot_candidate_provenance(monke
     candidate = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
-        source="nutritionix",
+        source="usda_fdc",
         external_food_id="legacy-meal-type-candidate",
     )
     _stub_parser(
@@ -8508,8 +8508,8 @@ def test_legacy_meal_type_edit_keeps_trusted_snapshot_candidate_provenance(monke
     assert accepted.status_code == 200, accepted.get_data(as_text=True)
     row = accepted.get_json()["food_logs"][0]
     assert row["meal_type"] == "dinner"
-    assert row["source"] == "nutritionix"
-    assert row["accepted_estimate"]["source"] == "nutritionix"
+    assert row["source"] == "usda_fdc"
+    assert row["accepted_estimate"]["source"] == "usda_fdc"
     assert row["accepted_estimate"]["calories"] == candidate["calories"]
 
 
@@ -8522,7 +8522,7 @@ def test_photo_source_backed_snapshot_accept_keeps_server_image_provenance(monke
                 "estimate": _accepted_estimate(
                     item_name="Canes Box Combo",
                     calories=920,
-                    source="nutritionix",
+                    source="usda_fdc",
                     external_food_id="photo-source-backed-candidate",
                 ),
                 "fallback_used": False,
@@ -8683,7 +8683,7 @@ def test_food_log_current_projection_matches_accepted_estimate_for_inserts_and_r
         carbs_g=70,
         fat_g=30,
         confidence=0.96,
-        source="nutritionix",
+        source="usda_fdc",
     )
     fresh = data_store.add_food_log(
         1,
@@ -8706,7 +8706,7 @@ def test_food_log_current_projection_matches_accepted_estimate_for_inserts_and_r
         carbs_g=75,
         fat_g=32,
         confidence=0.98,
-        source="nutritionix",
+        source="usda_fdc",
     )
     updated = data_store.add_food_log(
         1,
@@ -8742,9 +8742,9 @@ def test_food_log_current_projection_matches_accepted_estimate_for_inserts_and_r
 def test_known_provider_wrappers_authorize_terminal_current_replacement(monkeypatch):
     module = _client(monkeypatch)
     wrappers = (
-        _accepted_estimate(source="local_cache", underlying_source="nutritionix"),
-        _accepted_estimate(source="vision_claude+nutritionix"),
-        _accepted_estimate(source="vision_claude+local_cache", underlying_source="nutritionix"),
+        _accepted_estimate(source="local_cache", underlying_source="usda_fdc"),
+        _accepted_estimate(source="vision_claude+usda_fdc"),
+        _accepted_estimate(source="vision_claude+local_cache", underlying_source="usda_fdc"),
     )
 
     for estimate in wrappers:
@@ -8755,7 +8755,7 @@ def test_known_provider_wrappers_authorize_terminal_current_replacement(monkeypa
 def test_unknown_singular_provenance_component_rejects_app_and_storage_trust(monkeypatch):
     module = _client(monkeypatch)
     contradictory = _accepted_estimate(
-        source="nutritionix",
+        source="usda_fdc",
         underlying_source="invented_provider",
     )
 
@@ -8797,7 +8797,7 @@ def test_imported_canes_snapshot_allows_new_material_correction_but_blocks_uncha
     assert unchanged.status_code == 409, unchanged.get_data(as_text=True)
 
     corrected = dict(capture.get_json()["estimate"])
-    corrected.update(calories=890, source="nutritionix", external_food_id="forged-imported-current")
+    corrected.update(calories=890, source="usda_fdc", external_food_id="forged-imported-current")
     accepted = client.post(
         f"/api/meal-intake/{client_id}/accept",
         json={"estimate": corrected},
@@ -8813,14 +8813,14 @@ def test_imported_canes_snapshot_allows_new_material_correction_but_blocks_uncha
 def test_provider_topology_rejects_contradictory_approved_paths(monkeypatch):
     module = _client(monkeypatch)
     invalid = (
-        _accepted_estimate(source="nutritionix", underlying_source="usda_fdc"),
-        _accepted_estimate(source="nutritionix+usda_fdc"),
-        _accepted_estimate(source="nutritionix", underlying_sources=["usda_fdc"]),
+        _accepted_estimate(source="usda_fdc", underlying_source="open_food_facts"),
+        _accepted_estimate(source="usda_fdc+open_food_facts"),
+        _accepted_estimate(source="usda_fdc", underlying_sources=["open_food_facts"]),
     )
     valid = (
-        _accepted_estimate(source="nutritionix", underlying_source="nutritionix"),
-        _accepted_estimate(source="local_cache", underlying_source="nutritionix"),
-        _accepted_estimate(source="vision_claude+nutritionix"),
+        _accepted_estimate(source="usda_fdc", underlying_source="usda_fdc"),
+        _accepted_estimate(source="local_cache", underlying_source="usda_fdc"),
+        _accepted_estimate(source="vision_claude+usda_fdc"),
     )
 
     for estimate in invalid:
@@ -8839,7 +8839,7 @@ def test_authorized_accepted_estimate_null_optional_fields_clear_top_level_proje
         calories=900,
         sodium_mg=1200,
         fiber_g=8,
-        source="nutritionix",
+        source="usda_fdc",
     )
     data_store.add_food_log(
         1,
@@ -8966,19 +8966,19 @@ def test_imported_legacy_canes_hydration_exposes_blocked_save_warning(monkeypatc
 def test_explicit_accept_preserves_fresh_server_source_backed_snapshot_provenance(monkeypatch):
     module = _client(monkeypatch)
     trusted = _accepted_estimate(
-        item_name="Nutritionix chicken bowl",
+        item_name="USDA chicken bowl",
         calories=720,
-        source="nutritionix",
-        external_food_id="nutritionix:chicken-bowl",
-        verified_source_url="https://www.nutritionix.com/food/chicken-bowl",
+        source="usda_fdc",
+        external_food_id="123456",
+        verified_source_url="https://fdc.nal.usda.gov/food-details/123456/nutrients",
     )
-    _stub_parser(monkeypatch, module, estimate=trusted, source="nutritionix")
+    _stub_parser(monkeypatch, module, estimate=trusted, source="usda_fdc")
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
 
     capture = client.post(
         "/api/meal-intake",
-        data={"text": "nutritionix chicken bowl", "client_id": "fresh-source-backed-explicit"},
+        data={"text": "usda_fdc chicken bowl", "client_id": "fresh-source-backed-explicit"},
         content_type="multipart/form-data",
         headers=headers,
     )
@@ -9001,9 +9001,9 @@ def test_explicit_accept_preserves_fresh_server_source_backed_snapshot_provenanc
 
     assert accepted.status_code == 200, accepted.get_data(as_text=True)
     row = accepted.get_json()["food_logs"][0]
-    assert row["source"] == "nutritionix"
-    assert row["accepted_estimate"]["source"] == "nutritionix"
-    assert row["accepted_estimate"]["external_food_id"] == "nutritionix:chicken-bowl"
+    assert row["source"] == "usda_fdc"
+    assert row["accepted_estimate"]["source"] == "usda_fdc"
+    assert row["accepted_estimate"]["external_food_id"] == "123456"
 
 
 def test_imported_itemless_legacy_canes_snapshot_refreshes_then_accepts_resolution(monkeypatch):
@@ -9023,13 +9023,13 @@ def test_imported_itemless_legacy_canes_snapshot_refreshes_then_accepts_resoluti
                 confidence=0.85,
                 source="ai_text_estimate",
             )
-        elif text == "Nutritionix Canes replacement":
+        elif text == "USDA Canes replacement":
             estimate = _accepted_estimate(
                 item_name="Canes Box Combo",
                 calories=840,
-                source="nutritionix",
-                external_food_id="nutritionix:canes-box",
-                verified_source_url="https://www.nutritionix.com/food/canes-box",
+                source="usda_fdc",
+                external_food_id="234567",
+                verified_source_url="https://fdc.nal.usda.gov/food-details/234567/nutrients",
             )
         else:
             estimate = original
@@ -9041,7 +9041,7 @@ def test_imported_itemless_legacy_canes_snapshot_refreshes_then_accepts_resoluti
 
     for client_id, refresh_text, expected_source in (
         ("itemless-imported-material", "larger Canes Box Combo", "manual_review_estimate"),
-        ("itemless-imported-source", "Nutritionix Canes replacement", "nutritionix"),
+        ("itemless-imported-source", "USDA Canes replacement", "usda_fdc"),
     ):
         capture = client.post(
             "/api/meal-intake",
@@ -9076,7 +9076,7 @@ def test_imported_itemless_legacy_canes_snapshot_refreshes_then_accepts_resoluti
 
     for client_id, refresh_text, expected_source in (
         ("itemless-imported-material", "larger Canes Box Combo", "manual_review_estimate"),
-        ("itemless-imported-source", "Nutritionix Canes replacement", "nutritionix"),
+        ("itemless-imported-source", "USDA Canes replacement", "usda_fdc"),
     ):
         refreshed = client.post(
             f"/api/meal-intake/{client_id}/refresh",
@@ -9271,7 +9271,7 @@ def test_explicit_server_candidate_accept_validates_raw_included_estimate(monkey
     module = _client(monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
-    trusted = _accepted_estimate(item_name="Lookup bowl", calories=720, source="nutritionix")
+    trusted = _accepted_estimate(item_name="Lookup bowl", calories=720, source="usda_fdc")
     original = _accepted_estimate(item_name="AI bowl", calories=700, source="ai_text_estimate")
 
     for index, submitted_estimate in enumerate((None, "not-an-estimate", {"calories": "bad"}), start=1):
@@ -9314,7 +9314,7 @@ def test_add_nutrition_explicit_nullable_fields_clear_terminal_current_provenanc
         calories=900,
         sodium_mg=1200,
         fiber_g=8,
-        source="nutritionix",
+        source="usda_fdc",
     )
     data_store.add_food_log(
         1,
@@ -9355,7 +9355,7 @@ def test_add_nutrition_explicit_nullable_fields_clear_terminal_current_provenanc
 
 def test_terminal_current_replacement_rejects_invalid_projected_numeric_values(monkeypatch):
     _client(monkeypatch)
-    current = _accepted_estimate(item_name="Lookup meal", calories=900, source="nutritionix")
+    current = _accepted_estimate(item_name="Lookup meal", calories=900, source="usda_fdc")
     data_store.add_food_log(
         1,
         {
@@ -9435,8 +9435,8 @@ def test_material_correction_does_not_inherit_authoritative_provider_provenance(
     original = _accepted_estimate(
         item_name="Lookup bowl",
         calories=700,
-        source="nutritionix",
-        external_food_id="nutritionix-original-id",
+        source="usda_fdc",
+        external_food_id="usda_fdc-original-id",
         verified_source_url="https://example.test/original",
     )
     data_store.save_meal_review_snapshot(
@@ -9458,7 +9458,7 @@ def test_material_correction_does_not_inherit_authoritative_provider_provenance(
         applied_refreshes={},
     )
     corrected = dict(original)
-    corrected.update(calories=750, source="nutritionix", external_food_id="forged-correction-id")
+    corrected.update(calories=750, source="usda_fdc", external_food_id="forged-correction-id")
 
     accepted = client.post(
         "/api/meal-intake/material-correction-provenance/accept",
@@ -9480,8 +9480,8 @@ def test_terminal_partial_current_does_not_merge_new_nutrition_with_old_provider
     current = _accepted_estimate(
         item_name="Lookup bowl",
         calories=700,
-        source="nutritionix",
-        external_food_id="nutritionix-current-id",
+        source="usda_fdc",
+        external_food_id="usda_fdc-current-id",
     )
     data_store.add_food_log(
         1,
@@ -9532,8 +9532,8 @@ def test_terminal_partial_current_does_not_merge_new_nutrition_with_old_provider
 def test_supported_vision_wrappers_are_source_backed_in_app_and_storage(monkeypatch):
     module = _client(monkeypatch)
 
-    for source in ("vision_lm_studio+nutritionix", "vision_ollama+nutritionix"):
-        estimate = _accepted_estimate(source=source, underlying_source="nutritionix")
+    for source in ("vision_lm_studio+usda_fdc", "vision_ollama+usda_fdc"):
+        estimate = _accepted_estimate(source=source, underlying_source="usda_fdc")
         assert module._is_source_backed_nutrition(estimate) is True
         assert data_store._is_authorized_accepted_estimate_replacement(estimate) is True
 
@@ -9729,7 +9729,7 @@ def test_imported_pending_source_claim_hydrates_as_visible_canes_block(monkeypat
     claimed_source = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=840,
-        source="nutritionix",
+        source="usda_fdc",
         external_food_id="forged-imported-canes",
     )
     imported = client.post(

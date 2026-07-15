@@ -6,7 +6,7 @@
 |----|-------|
 | FIT-278 | Verify Open Food Facts attribution and rate limits |
 | FIT-279 | Validate body measurement date and tape fields |
-| FIT-280 | Verify Nutritionix quota, cache TTL, and redistribution |
+| FIT-280 | [Historical] Verify Nutritionix quota, cache TTL, and redistribution (superseded by FIT-387 retirement) |
 | FIT-281 | Define full local-data deletion boundaries |
 | FIT-282 | Pin Oura trends and sleep-summary contracts with tests |
 | FIT-283 | Surface provider fallback details in the review card |
@@ -77,24 +77,23 @@ These verified, PRD-derived issues could not be filed on 2026-07-08 because the 
 Already created before the quota tripped: FIT-269, FIT-270, FIT-271, FIT-272, FIT-273, FIT-274, FIT-275, FIT-276.
 
 ---
-## 1. Verify Nutritionix quota, cache TTL, and redistribution
+## 1. Historical: Verify Nutritionix quota, cache TTL, and redistribution (superseded by FIT-387)
+
+> Historical issue record retained for auditability. Nutritionix is retired because no free personal access remains; the verification, credential-onboarding, cache, and redistribution work below is not active.
 
 - **Priority:** High  |  **Labels:** Data contract  |  **Project:** Fitness Dashboard: Photo Food Logging
 
-**Problem**
-The Nutritionix client is implemented, but repository docs still mark live account quota, ToS cache duration, redistribution, and some endpoint details as unverified because the docs were blocked during research.
+**Historical problem**
+The Nutritionix client was implemented, but repository docs marked live account quota, ToS cache duration, redistribution, and some endpoint details as unverified because the docs were blocked during research.
 
 **Where**
 `docs/nutrition_sources.md`; `nutritionix_client.py`; `branded_food_lookup.py`
 
-**Why this matters**
-A 180-day cache or committed/offline snapshot could violate provider terms if the assumptions are wrong.
+**Historical rationale**
+A 180-day cache or committed/offline snapshot could have violated provider terms if the assumptions were wrong. FIT-387 retires the provider instead of relying on those assumptions.
 
-**Acceptance criteria**
-- Owner verifies current Nutritionix dashboard quota and ToS using the production account.
-  - Cache TTL and offline/snapshot permissions are documented with date and source.
-  - Code TTL is adjusted if the verified limit is shorter than 180 days.
-  - PR/test docs state expected behavior when quota is exhausted.
+**Original acceptance criteria (historical, not active)**
+FIT-72 planned owner verification of the dashboard quota and ToS, dated cache/redistribution documentation, TTL adjustment if the limit was shorter than 180 days, and documented quota-exhaustion behavior. Those plans were superseded by the FIT-387 retirement decision.
 
 **Source**
 PRD [06-nutrition-data-sources.md § IC-1](https://github.com/villarrealwesley79-del/fitness-dashboard/blob/villarrealwesley79/fit-268-reverse-engineer-per-feature-prds-and-documentation-for/docs/prd/06-nutrition-data-sources.md) — reverse-engineered documentation pass FIT-268 (PR #226). Verification: CONFIRMED by independent code review.
@@ -435,24 +434,23 @@ Photo logging is a mobile capture workflow; preflight clarity prevents wasted up
 PRD [05-photo-food-logging-vision.md § IC-2](https://github.com/villarrealwesley79-del/fitness-dashboard/blob/villarrealwesley79/fit-268-reverse-engineer-per-feature-prds-and-documentation-for/docs/prd/05-photo-food-logging-vision.md) — reverse-engineered documentation pass FIT-268 (PR #226). Verification: CONFIRMED by independent code review.
 
 ---
-## 17. Add credentialed provider smoke mode with safe output
+## 17. Historical: Add credentialed provider smoke mode with safe output (superseded by FIT-387)
+
+> Historical issue record retained for auditability. Nutritionix credentialed smoke coverage is retired and must not be reintroduced as an active operator prerequisite.
 
 - **Priority:** Medium  |  **Labels:** Smoke/QA  |  **Project:** Fitness Dashboard: Photo Food Logging
 
-**Problem**
-The smoke helper is read-only and useful, but the committed FIT-98 result was environment-limited because Nutritionix and USDA credentials were missing. There is no standardized credentialed smoke report shape that proves live regional/provider coverage without leaking secrets or mutating caches.
+**Historical problem**
+The smoke helper was read-only and useful, but the committed FIT-98 result was environment-limited because Nutritionix and USDA credentials were missing. There was no standardized credentialed smoke report shape that proved live regional/provider coverage without leaking secrets or mutating caches.
 
 **Where**
 `scripts/smoke_branded_lookup_coverage.py`; `docs/nutrition_sources.md`
 
-**Why this matters**
-Provider coverage can appear broken in clean CI while working locally, or vice versa, without a safe evidence artifact.
+**Historical rationale**
+Provider coverage could appear broken in clean CI while working locally, or vice versa, without a safe evidence artifact. Nutritionix retirement removes it from current provider smoke requirements.
 
-**Acceptance criteria**
-- Add a documented credentialed smoke command that redacts secrets and disables cache writes.
-  - Output separates provider unavailable, no match, wrong-chain match, and accepted match.
-  - Report includes provider status, source priority, cache mode, and direct-gate mode.
-  - Tests cover report formatting and redaction without live network.
+**Original acceptance criteria (historical, not active)**
+The historical plan called for a credentialed command with redacted output and disabled cache writes, separate unavailable/no-match/wrong-chain/accepted outcomes, provider/priority/cache/direct-gate fields, and redaction tests. No current Nutritionix credentialed smoke command is required.
 
 **Source**
 PRD [06-nutrition-data-sources.md § IC-8](https://github.com/villarrealwesley79-del/fitness-dashboard/blob/villarrealwesley79/fit-268-reverse-engineer-per-feature-prds-and-documentation-for/docs/prd/06-nutrition-data-sources.md) — reverse-engineered documentation pass FIT-268 (PR #226). Verification: CONFIRMED by independent code review.

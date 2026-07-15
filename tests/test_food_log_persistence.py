@@ -528,3 +528,53 @@ def test_original_estimate_json_preserves_lookup_provenance(isolated_store):
         "url": "https://world.openfoodfacts.org/",
     }
     assert "raw_model_trace" not in payload
+
+
+def test_historical_nutritionix_meal_round_trips_without_recalculation(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+    estimate = {
+        "item_name": "Historical branded meal",
+        "portion_description": "1 serving",
+        "calories": 610,
+        "protein_g": 32,
+        "carbs_g": 58,
+        "fat_g": 24,
+        "sodium_mg": 980,
+        "fiber_g": 6,
+        "confidence": 0.91,
+        "source": "nutritionix",
+        "external_food_id": "legacy-nix-1",
+        "verified_source_url": "https://www.nutritionix.com/legacy-nix-1",
+    }
+
+    assert store._is_authorized_accepted_estimate_replacement(estimate) is False
+
+    store.add_food_log(
+        user_id=1,
+        record={
+            "client_id": "historical-nutritionix-1",
+            "date": "2026-05-19",
+            "correction_state": "accepted",
+            **estimate,
+            "original_estimate": estimate,
+            "accepted_estimate": estimate,
+        },
+    )
+
+    row = store.get_food_logs(user_id=1)[0]
+    for field in (
+        "calories",
+        "protein_g",
+        "carbs_g",
+        "fat_g",
+        "sodium_mg",
+        "fiber_g",
+        "confidence",
+        "source",
+    ):
+        assert row[field] == estimate[field]
+    for snapshot in (row["original_estimate"], row["accepted_estimate"]):
+        assert snapshot["source"] == "nutritionix"
+        assert snapshot["external_food_id"] == "legacy-nix-1"
+        assert snapshot["verified_source_url"] == "https://www.nutritionix.com/legacy-nix-1"

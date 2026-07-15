@@ -10,7 +10,7 @@ Meal logging lets the owner record food quickly from free text or a packaged-foo
 
 The normal text flow is: type a meal, submit, estimate, review card, edit or clarify, save, then the accepted food log feeds dashboard calories/macros and workout adaptation. Barcode follows the same review-first lifecycle. A verified barcode source creates a provider-backed estimate; an unknown barcode creates a persistent manual-review card when the UI retries with `allow_pending: true`.
 
-The live review surface is V2 multi-item meal review when the backend returns `meal_id` plus `items[]`. The older single-item review card still exists for legacy response shapes and tests. Photo capture and vision estimation plug into the same intake contract but belong to PRD 05; this PRD documents only where photo-derived estimates enter the text/barcode review and food-log lifecycle. Branded, USDA, Open Food Facts, Nutritionix, and H-E-B lookup internals belong to [06 Nutrition Data Sources](06-nutrition-data-sources.md).
+The live review surface is V2 multi-item meal review when the backend returns `meal_id` plus `items[]`. The older single-item review card still exists for legacy response shapes and tests. Photo capture and vision estimation plug into the same intake contract but belong to PRD 05; this PRD documents only where photo-derived estimates enter the text/barcode review and food-log lifecycle. Active H-E-B, USDA, Open Food Facts, cache, and fallback lookup internals belong to [06 Nutrition Data Sources](06-nutrition-data-sources.md). Historical Nutritionix provenance remains documented there but is not an active source.
 
 ## 2. User-Facing Surfaces
 
@@ -67,10 +67,10 @@ The live review surface is V2 multi-item meal review when the backend returns `m
 | `ambiguous` | boolean | Yes under schema defaults | `true` | Boolean only | Whether identity, portion, or source is unclear. |
 | `uncertainty_notes` | string array | Yes under schema defaults | `[]` | Strings only; unknown model fields dropped | User-facing reasons or caveats. |
 | `source` | string | Yes | None; fallback/manual sources set explicitly | Required string | Provenance/source tag used for UI labels, trust, and cache behavior. |
-| `external_food_id` | string | No | Omitted | Preserved only as safe provenance | Provider item ID, UPC, FDC ID, Nutritionix ID, OFF code, or H-E-B product ID. |
+| `external_food_id` | string | No | Omitted | Preserved only as safe provenance | Provider item ID, UPC, FDC ID, OFF code, H-E-B product ID, or historical Nutritionix ID. |
 | `verified_source_url` | URL string | No | Omitted | Safe provenance only | Provider/product source link. |
 | `data_fetched_at` | ISO string | No | Current fetch time when provider-backed | Safe provenance only | When provider nutrition was retrieved. |
-| `portion_basis` | string | No | Omitted | Safe provenance only | Explains serving basis such as Nutritionix serving, USDA 100 g, OFF serving, or manual pending. |
+| `portion_basis` | string | No | Omitted | Safe provenance only | Explains serving basis such as USDA 100 g, OFF serving, H-E-B reference, historical Nutritionix serving, or manual pending. |
 | `brand_id` | string | No | Omitted | Safe provenance only | Internal brand/provider identifier for cache trust. |
 | `underlying_source` | string | No | Omitted | Safe provenance only | Original provider when `source` is `local_cache` or composed. |
 | `off_attribution` | string/object | No | Omitted | Safe provenance only | Open Food Facts attribution text/object where present. |
@@ -268,7 +268,7 @@ Runtime data is local under `DATA_DIR`. SQLite lives at `fitness_data.db` throug
 | `meal_review_snapshots` SQLite | `user_id`, `meal_id` | Full V2 review payload JSON, next item sequence, applied refreshes | Saved after initial intake and every refresh; deleted on accept/discard/stale cleanup. |
 | `meal_acceptance_events` SQLite | `user_id`, `meal_id` | Acceptance/discard idempotency and feedback summary | Stores status `logged` or `discarded`, included client IDs, feedback fingerprint, skipped/deleted counts. |
 | `personal_vocab` SQLite | `user_id`, `normalized_input` | Learned phrase to canonical nutrition estimate, accept/correct/skip/delete counters | Exact trusted after 3 accepts and 0 corrections; fuzzy trusted after 1 accept and 0 corrections. |
-| `branded_lookup_cache` / `barcode_lookup_cache` SQLite | `user_id`, normalized text or barcode | Provider estimate JSON and source | TTL 180 days; provider details in PRD 06. |
+| `branded_lookup_cache` / `barcode_lookup_cache` SQLite | `user_id`, normalized text or barcode | Provider estimate JSON and source | TTL 180 days for active sources; retired Nutritionix-tagged rows are historical provenance and are not live lookup results. |
 | IndexedDB `fitMealIntakeQueueDB` | `queued_meals.client_id`, `meal_photos.photo_id` | Offline meal text, timestamps, auth scope, photo blobs, retry status | Removed immediately after server accept; discard removes metadata and photo blobs; orphaned photos are cleaned on boot. |
 | Backup JSON | `data.food_logs`, `data.personal_vocab`, `data.meal_acceptance_events`, `data.meal_review_snapshots`, `data.nutrition` | Portable local backup | Export includes rows; import replays without wiping existing food logs. |
 
@@ -287,7 +287,8 @@ Food-log ordering differs by route: `data_store.get_food_logs` returns newest fi
 | Correction states | `pending_review`, `accepted`, `corrected`, `manual` | Pending excluded from totals; accepted/corrected/manual count. `manual` is from add route defaults. |
 | Confidence bands | `high`, `medium`, `low` | `high >= 0.75`, `medium >= 0.55 and < 0.75`, `low < 0.55` or invalid. |
 | Policy reasons | `low_confidence`, `medium_confidence`, `ambiguous_input`, `implausible_calories`, `implausible_macros`, `implausible_sodium`, `missing_calories` | User-facing reason chips and save-block basis. |
-| Estimate source tags | `ai_text_estimate`, `fallback_text_estimate`, `manual_review_estimate`, `barcode_pending_source`, `nutritionix`, `nutritionix_barcode`, `usda_fdc`, `usda_fdc_barcode`, `open_food_facts`, `open_food_facts_barcode`, `heb_product_page`, `local_cache`, `personal_vocab`, `stub_vision_estimate`, `vision_*`, composed sources such as `vision_*+nutritionix` | Estimate provenance. Provider internals in PRD 06; `stub_vision_estimate`/`vision_*` belong to PRD 05. |
+| Estimate source tags | `ai_text_estimate`, `fallback_text_estimate`, `manual_review_estimate`, `barcode_pending_source`, `usda_fdc`, `usda_fdc_barcode`, `open_food_facts`, `open_food_facts_barcode`, `heb_product_page`, `local_cache`, `personal_vocab`, `stub_vision_estimate`, `vision_*` | Active estimate provenance. `stub_vision_estimate`/`vision_*` belong to PRD 05. |
+| Historical source tags | `nutritionix`, `nutritionix_barcode`, and composed historical values such as `vision_*+nutritionix` | Retained only for old accepted meals, snapshots, cache rows, and audit records; never a live lookup result. |
 | Text parser fallback reasons | `empty_input`, `needs_quantity`, `timeout`, `invalid_json`, `schema_mismatch`, `lock_timeout`, `all_endpoints_failed` | Why deterministic/manual fallback was used. |
 | Ambiguous text tokens | `popcorn`, `movie`, `shared`, `leftover`, `leftovers`, `snacks`, `half`, `buffet`, `potluck`, `?`, `guessing`, `guess`, `some food`, `a bit`, `a few` | Tokens that lower confidence and route to review. |
 | Barcode lengths | 8, 12, 13, 14 digits | Accepted normalized barcode lengths. |
@@ -337,7 +338,6 @@ Barcode camera scanning happens locally in the browser; the decoded barcode stri
 | `DATA_DIR` | App default data directory | Local JSON/SQLite files are stored under the resolved data directory. |
 | `SECRET_KEY` | Required in production/test setup | Used by Flask auth/session/CSRF. |
 | `LM_STUDIO_MEAL_TEXT_TIMEOUT_SEC` | 45 seconds | Text parser local model timeout. |
-| `NUTRITIONIX_APP_ID`, `NUTRITIONIX_APP_KEY` | Unset | Nutritionix text/barcode provider is skipped; details in PRD 06. |
 | `USDA_FDC_API_KEY` | Unset | USDA provider is skipped; details in PRD 06. |
 | Vision model envs | See `docs/MEAL_MODEL_DECISION.md` | Photo route behavior belongs to PRD 05. |
 

@@ -9,7 +9,6 @@ from typing import Any
 
 import data_store
 import heb_product_lookup
-import nutritionix_client
 import open_food_facts_client
 import usda_fdc_client
 from meal_estimate_schema import sanitize_meal_estimate
@@ -17,12 +16,13 @@ from meal_estimate_schema import sanitize_meal_estimate
 
 CACHE_TTL_DAYS = 180
 FALLBACK_CACHE_TTL_DAYS = 1
-LONG_LIVED_CACHE_SOURCE_TIERS = {"heb_product_page", "nutritionix", "nutritionix_barcode"}
-SOURCE_PRIORITY = ("cache", "heb_product_page", "nutritionix", "usda_fdc", "open_food_facts")
+LONG_LIVED_CACHE_SOURCE_TIERS = {"heb_product_page"}
+RETIRED_CACHE_SOURCES = {"nutritionix", "nutritionix_barcode"}
+SOURCE_PRIORITY = ("cache", "heb_product_page", "usda_fdc", "open_food_facts")
 # H-E-B is text-path only via `heb_product_page`; do not add it to the
 # barcode ladder without a real provider. FIT-218 AC4 excludes scraping or
 # hardcoded barcode rows as substitute provider coverage.
-BARCODE_SOURCE_PRIORITY = ("cache", "nutritionix_barcode", "usda_fdc_barcode", "open_food_facts_barcode")
+BARCODE_SOURCE_PRIORITY = ("cache", "usda_fdc_barcode", "open_food_facts_barcode")
 BARCODE_LENGTHS = {8, 12, 13, 14}
 OPEN_FOOD_FACTS_HOME_URL = "https://world.openfoodfacts.org/"
 OPEN_FOOD_FACTS_SOURCES = {"open_food_facts", "open_food_facts_barcode"}
@@ -77,14 +77,6 @@ PLURALS = {
 }
 CUSTOMIZABLE_CHAIN_TOKENS = {"chipotle"}
 CUSTOMIZABLE_ITEM_TOKENS = {"burrito", "bowl", "taco", "tacos", "salad", "quesadilla"}
-NUTRITIONIX_REQUIRED_NUTRIENTS = (
-    "nf_calories",
-    "nf_protein",
-    "nf_total_carbohydrate",
-    "nf_total_fat",
-    "nf_sodium",
-    "nf_dietary_fiber",
-)
 BREAKFAST_TOKENS = {"oat", "oatmeal", "egg", "eggs", "toast", "yogurt", "coffee", "cereal"}
 LUNCH_DINNER_TOKENS = {
     "burrito",
@@ -219,7 +211,7 @@ def lookup(
     source_priority: tuple[str, ...] | list[str] | None = None,
     user_id: int = 1,
 ) -> dict[str, Any] | None:
-    """Return a sanitized estimate from cache/Nutritionix/USDA, or None."""
+    """Return a sanitized estimate from cache, H-E-B, USDA, or Open Food Facts."""
     lookup_text = _text_with_brand_hint(text, brand_hint)
     normalized = normalize_meal_text(lookup_text)
     if not normalized:
@@ -235,14 +227,6 @@ def lookup(
                 cached = None
             if cached and _cache_allowed_for_lookup(cached, private_label_brand):
                 return cached
-        elif source == "nutritionix":
-            try:
-                nutritionix = _nutritionix_lookup(lookup_text, normalized)
-            except Exception:
-                nutritionix = None
-            if nutritionix:
-                _save_cache_best_effort(normalized, nutritionix["source"], nutritionix, user_id=user_id)
-                return nutritionix
         elif source == "heb_product_page":
             try:
                 heb = heb_product_lookup.lookup(lookup_text)
@@ -297,7 +281,6 @@ def lookup_barcode(barcode: str, *, user_id: int = 1) -> dict[str, Any] | None:
                 return cached
             continue
         provider_lookup = {
-            "nutritionix_barcode": _nutritionix_barcode_lookup,
             "usda_fdc_barcode": _usda_barcode_lookup,
             "open_food_facts_barcode": _open_food_facts_barcode_lookup,
         }.get(source)
@@ -402,6 +385,10 @@ def _cache_lookup(normalized: str, *, user_id: int = 1) -> dict[str, Any] | None
     row = data_store.get_branded_lookup_cache(normalized, user_id=user_id)
     if not row:
         return None
+    if RETIRED_CACHE_SOURCES.intersection(
+        {str(row.get("source") or "").strip(), str(row.get("source_tier") or "").strip()}
+    ):
+        return None
     fetched_at = _parse_iso(row.get("fetched_at"))
     if not _cache_entry_fresh(fetched_at, row):
         return None
@@ -438,6 +425,10 @@ def _cache_entry_fresh(fetched_at: datetime | None, row: dict[str, Any]) -> bool
 def _barcode_cache_lookup(barcode: str, *, user_id: int = 1) -> dict[str, Any] | None:
     row = data_store.get_barcode_lookup_cache(barcode, user_id=user_id)
     if not row:
+        return None
+    if RETIRED_CACHE_SOURCES.intersection(
+        {str(row.get("source") or "").strip(), str(row.get("source_tier") or "").strip()}
+    ):
         return None
     fetched_at = _parse_iso(row.get("fetched_at"))
     if not _cache_entry_fresh(fetched_at, row):
@@ -477,95 +468,6 @@ def _save_barcode_cache_best_effort(barcode: str, source: str, estimate: dict[st
         data_store.save_barcode_lookup_cache(barcode, source, estimate, user_id=user_id, source_tier=source)
     except Exception:
         return
-
-
-def _nutritionix_lookup(text: str, normalized: str) -> dict[str, Any] | None:
-    payload = nutritionix_client.natural_nutrients(text)
-    foods = payload.get("foods") if isinstance(payload, dict) else None
-    if not foods:
-        return None
-    food_items = [food for food in foods if isinstance(food, dict)]
-    if not food_items:
-        return None
-    if not _nutritionix_items_have_required_nutrients(food_items):
-        return None
-    food = food_items[0]
-    ambiguous = _needs_modifier_review(normalized)
-    notes = []
-    if ambiguous:
-        notes.append("Customizable item is missing protein or modifier details.")
-    requested_brand = _brand_from_text(normalized)
-    source_brand = _matching_source_brand(food_items, requested_brand)
-    if requested_brand and not source_brand:
-        if _off_private_label_brand_requested(requested_brand):
-            return None
-        ambiguous = True
-        notes.append("Nutritionix did not verify the requested brand; review before logging.")
-    if _requested_item_mismatch(normalized, food_items):
-        ambiguous = True
-        notes.append("Nutritionix returned a different item category; review before logging.")
-    if len(food_items) > 1:
-        notes.append("Nutritionix returned multiple foods; macros were summed from all returned items.")
-    item_name = _nutritionix_item_name(food_items, source_brand)
-    estimate = {
-        "item_name": item_name or str(food.get("food_name") or "Meal"),
-        "portion_description": _portion_from_nutritionix_items(food_items),
-        "meal_type": _infer_meal_type(normalized),
-        "calories": _sum_nutritionix(food_items, "nf_calories"),
-        "protein_g": _sum_nutritionix(food_items, "nf_protein"),
-        "carbs_g": _sum_nutritionix(food_items, "nf_total_carbohydrate"),
-        "fat_g": _sum_nutritionix(food_items, "nf_total_fat"),
-        "sodium_mg": _sum_nutritionix(food_items, "nf_sodium"),
-        "fiber_g": _sum_nutritionix(food_items, "nf_dietary_fiber"),
-        "confidence": 0.55 if ambiguous else 0.85,
-        "ambiguous": ambiguous,
-        "uncertainty_notes": notes,
-        "source": "nutritionix",
-        "external_food_id": _nutritionix_external_id(food_items),
-        "verified_source_url": "https://www.nutritionix.com/",
-        "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
-        "portion_basis": _portion_from_nutritionix_items(food_items),
-        "brand_id": _brand_from_text(normalize_meal_text(source_brand or "")),
-        "source_brand_name": source_brand,
-    }
-    return _sanitize_with_provenance(estimate)
-
-
-def _nutritionix_barcode_lookup(barcode: str) -> dict[str, Any] | None:
-    payload = nutritionix_client.search_item_by_upc(barcode)
-    foods = payload.get("foods") if isinstance(payload, dict) else None
-    if not foods:
-        return None
-    food_items = [food for food in foods if isinstance(food, dict)]
-    if not food_items or not _nutritionix_items_have_required_nutrients(food_items):
-        return None
-    food = food_items[0]
-    source_brand = str(food.get("brand_name") or "").strip() or None
-    item_name = _nutritionix_item_name([food], source_brand) or "Packaged food"
-    portion = _portion_from_nutritionix(food)
-    external_id = str(food.get("nix_item_id") or food.get("upc") or barcode).strip()
-    estimate = {
-        "item_name": item_name,
-        "portion_description": portion,
-        "meal_type": "snack",
-        "calories": food.get("nf_calories"),
-        "protein_g": food.get("nf_protein"),
-        "carbs_g": food.get("nf_total_carbohydrate"),
-        "fat_g": food.get("nf_total_fat"),
-        "sodium_mg": food.get("nf_sodium"),
-        "fiber_g": food.get("nf_dietary_fiber"),
-        "confidence": 0.88,
-        "ambiguous": False,
-        "uncertainty_notes": [],
-        "source": "nutritionix_barcode",
-        "external_food_id": external_id or barcode,
-        "verified_source_url": "https://www.nutritionix.com/",
-        "data_fetched_at": datetime.now().isoformat(timespec="seconds"),
-        "portion_basis": "Nutritionix UPC label serving",
-        "brand_id": _brand_from_text(normalize_meal_text(source_brand or "")),
-        "source_brand_name": source_brand,
-    }
-    return _sanitize_with_provenance(estimate)
 
 
 def _usda_barcode_lookup(barcode: str) -> dict[str, Any] | None:
@@ -1176,60 +1078,6 @@ def _off_serving_sodium_mg(nutriments: dict[str, Any], *, serving_quantity_g: fl
             if salt is not None:
                 return int(round(salt * 393.4 * serving_factor))
     return 0
-
-
-def _portion_from_nutritionix(food: dict[str, Any]) -> str | None:
-    qty = food.get("serving_qty")
-    unit = food.get("serving_unit")
-    weight = food.get("serving_weight_grams")
-    pieces = " ".join(str(part).strip() for part in (qty, unit) if part not in (None, "")).strip()
-    if weight:
-        return f"{pieces} ({weight:g} g)" if pieces else f"{weight:g} g"
-    return pieces or None
-
-
-def _portion_from_nutritionix_items(foods: list[dict[str, Any]]) -> str | None:
-    portions = [_portion_from_nutritionix(food) for food in foods]
-    portions = [portion for portion in portions if portion]
-    if len(portions) == 1:
-        return portions[0]
-    if portions:
-        return "; ".join(portions)
-    return f"{len(foods)} items" if len(foods) > 1 else None
-
-
-def _sum_nutritionix(foods: list[dict[str, Any]], key: str) -> float:
-    total = 0.0
-    for food in foods:
-        value = food.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            total += float(value)
-    return total
-
-
-def _nutritionix_items_have_required_nutrients(foods: list[dict[str, Any]]) -> bool:
-    for food in foods:
-        for key in NUTRITIONIX_REQUIRED_NUTRIENTS:
-            value = food.get(key)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                return False
-    return True
-
-
-def _nutritionix_external_id(foods: list[dict[str, Any]]) -> str | None:
-    ids = [
-        str(food.get("nix_item_id") or food.get("tag_id") or food.get("food_name") or "").strip()
-        for food in foods
-    ]
-    ids = [external_id for external_id in ids if external_id]
-    return ",".join(ids) or None
-
-
-def _nutritionix_item_name(foods: list[dict[str, Any]], source_brand: str | None) -> str:
-    names = [str(food.get("food_name") or "").strip() for food in foods]
-    names = [name for name in names if name]
-    item = ", ".join(names)
-    return " ".join(part for part in (source_brand, item) if part).strip()
 
 
 def _matching_source_brand(foods: list[dict[str, Any]], requested_brand: str | None) -> str | None:

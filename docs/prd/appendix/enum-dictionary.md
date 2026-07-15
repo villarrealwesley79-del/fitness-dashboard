@@ -98,8 +98,9 @@ Food-source and lookup constants:
 
 | Value | Meaning | Provenance |
 | --- | --- | --- |
-| `cache`, `heb_product_page`, `nutritionix`, `usda_fdc`, `open_food_facts` | Text lookup source priority. | `branded_food_lookup.py:19` |
-| `cache`, `nutritionix_barcode`, `usda_fdc_barcode`, `open_food_facts_barcode` | Barcode lookup source priority. | `branded_food_lookup.py:23` |
+| `cache`, `heb_product_page`, `usda_fdc`, `open_food_facts` | Active text lookup source priority. | Historical code contract; Nutritionix is retired. |
+| `cache`, `usda_fdc_barcode`, `open_food_facts_barcode` | Active barcode lookup source priority. | Historical code contract; Nutritionix is retired. |
+| `nutritionix`, `nutritionix_barcode` | Historical Nutritionix source tags retained on old meals/cache rows. They are not live lookup results or active priority values. | Historical provenance/audit record. |
 | Barcode lengths | `8`, `12`, `13`, `14` | Accepted barcode lengths. | `branded_food_lookup.py:24` |
 | `KJ_PER_KCAL` | `4.184` | Energy conversion. | `branded_food_lookup.py:27` |
 | `CACHE_TTL_DAYS` | `180` | Branded lookup cache TTL. | `branded_food_lookup.py:18` |

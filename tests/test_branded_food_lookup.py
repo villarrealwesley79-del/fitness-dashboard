@@ -6,25 +6,6 @@ import importlib
 import branded_food_lookup
 
 
-def _nutritionix_payload(food_name="chicken burrito", **overrides):
-    food = {
-        "food_name": food_name,
-        "brand_name": "Chipotle",
-        "serving_qty": 1,
-        "serving_unit": "burrito",
-        "serving_weight_grams": 440,
-        "nf_calories": 1075,
-        "nf_protein": 51,
-        "nf_total_carbohydrate": 116,
-        "nf_total_fat": 41,
-        "nf_sodium": 2310,
-        "nf_dietary_fiber": 13,
-        "nix_item_id": "chipotle-burrito",
-    }
-    food.update(overrides)
-    return {"foods": [food]}
-
-
 def test_normalize_plural_and_brand_typos():
     assert branded_food_lookup.normalize_meal_text("chipotole chicken burritos") == "chipotle chicken burrito"
     assert branded_food_lookup.normalize_meal_text("starbuks wraps") == "starbucks wrap"
@@ -132,11 +113,6 @@ def test_lookup_uses_open_food_facts_for_heb_private_label_when_other_sources_do
         ),
     )
     monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda *_a, **_kw: _nutritionix_payload(food_name="California roll", brand_name=None),
-    )
-    monkeypatch.setattr(
         branded_food_lookup.usda_fdc_client,
         "search_foods",
         lambda *_a, **_kw: {
@@ -160,7 +136,7 @@ def test_lookup_uses_open_food_facts_for_heb_private_label_when_other_sources_do
 
     estimate = branded_food_lookup.lookup(
         "HEB California Roll",
-        source_priority=("nutritionix", "usda_fdc", "open_food_facts"),
+        source_priority=("usda_fdc", "open_food_facts"),
         user_id=42,
     )
 
@@ -190,7 +166,6 @@ def test_lookup_rejects_off_neighboring_heb_variant(monkeypatch):
     }
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -233,7 +208,6 @@ def test_lookup_rejects_off_non_heb_brand_for_heb_private_label(monkeypatch):
         "save_branded_lookup_cache",
         lambda normalized, source, response, **kwargs: saved.append((normalized, source, response, kwargs)),
     )
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -269,7 +243,6 @@ def test_lookup_rejects_off_substring_brand_for_heb_private_label(monkeypatch):
     }
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -292,11 +265,6 @@ def test_lookup_uses_official_heb_product_page_for_plain_california_roll(monkeyp
         lambda normalized, source, response, **kwargs: saved.update(
             {"normalized": normalized, "source": source, "response": response, "user_id": kwargs.get("user_id")}
         ),
-    )
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("Nutritionix should not run for known HEB item")),
     )
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -336,530 +304,7 @@ def test_official_heb_product_page_does_not_match_quantified_roll_input(monkeypa
     ) is None
 
 
-def test_lookup_uses_nutritionix_and_records_provenance(monkeypatch):
-    saved = {}
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.data_store,
-        "save_branded_lookup_cache",
-        lambda normalized, source, response, **kwargs: saved.update(
-            {"normalized": normalized, "source": source, "response": response, "user_id": kwargs.get("user_id")}
-        ),
-    )
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(),
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    estimate = branded_food_lookup.lookup("Chipotle chicken burritos")
-
-    assert estimate["source"] == "nutritionix"
-    assert estimate["item_name"] == "Chipotle chicken burrito"
-    assert estimate["calories"] == 1075
-    assert estimate["protein_g"] == 51.0
-    assert estimate["meal_type"] == "lunch"
-    assert estimate["external_food_id"] == "chipotle-burrito"
-    assert estimate["verified_source_url"] == "https://www.nutritionix.com/"
-    assert estimate["portion_basis"] == "1 burrito (440 g)"
-    assert saved["normalized"] == "chipotle chicken burrito"
-    assert saved["source"] == "nutritionix"
-    assert saved["user_id"] == 1
-
-
-def test_lookup_attempts_provider_for_regional_restaurant_query(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: captured.update({"query": query}) or _nutritionix_payload(
-            food_name="brisket sandwich",
-            brand_name="Bill Miller Bar-B-Q",
-            serving_unit="sandwich",
-            nf_calories=610,
-            nf_protein=32,
-            nf_total_carbohydrate=58,
-            nf_total_fat=27,
-            nf_sodium=1450,
-            nf_dietary_fiber=3,
-            nix_item_id="bill-miller-brisket-sandwich",
-        ),
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    estimate = branded_food_lookup.lookup("bill miller brisket sandwich")
-
-    assert captured["query"] == "bill miller brisket sandwich"
-    assert estimate["source"] == "nutritionix"
-    assert estimate["item_name"] == "Bill Miller Bar-B-Q brisket sandwich"
-    assert estimate["calories"] == 610
-    assert estimate["confidence"] == 0.85
-
-
-def test_taco_cabana_brand_item_token_does_not_create_category_mismatch(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-
-    def natural_nutrients(query):
-        if "salad" in query:
-            return _nutritionix_payload(
-                food_name="Chicken Salad",
-                brand_name="Taco Cabana",
-                serving_unit="salad",
-                nf_calories=360,
-                nf_protein=24,
-                nf_total_carbohydrate=18,
-                nf_total_fat=21,
-                nf_sodium=980,
-                nf_dietary_fiber=5,
-            )
-        return _nutritionix_payload(
-            food_name="Bean and Cheese Burrito",
-            brand_name="Taco Cabana",
-            serving_unit="burrito",
-            nf_calories=500,
-            nf_protein=20,
-            nf_total_carbohydrate=70,
-            nf_total_fat=14,
-            nf_sodium=1200,
-            nf_dietary_fiber=8,
-        )
-
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", natural_nutrients)
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    burrito = branded_food_lookup.lookup("taco cabana bean and cheese burrito")
-    salad = branded_food_lookup.lookup("taco cabana salad")
-
-    assert burrito["confidence"] == 0.85
-    assert burrito["ambiguous"] is False
-    assert not any("different item category" in note for note in burrito["uncertainty_notes"])
-    assert salad["confidence"] == 0.85
-    assert salad["ambiguous"] is False
-    assert not any("different item category" in note for note in salad["uncertainty_notes"])
-
-
-def test_taco_cabana_item_category_mismatch_still_requires_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(
-            food_name="Chicken Salad",
-            brand_name="Taco Cabana",
-            serving_unit="salad",
-            nf_calories=360,
-            nf_protein=24,
-            nf_total_carbohydrate=18,
-            nf_total_fat=21,
-            nf_sodium=980,
-            nf_dietary_fiber=5,
-        ),
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    estimate = branded_food_lookup.lookup("taco cabana bean and cheese burrito")
-
-    assert estimate["confidence"] == 0.55
-    assert estimate["ambiguous"] is True
-    assert any("different item category" in note for note in estimate["uncertainty_notes"])
-
-
-def test_regional_restaurant_lookup_marks_wrong_chain_for_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(
-            food_name="brisket sandwich",
-            brand_name="Other BBQ",
-            serving_unit="sandwich",
-            nf_calories=610,
-            nf_protein=32,
-            nf_total_carbohydrate=58,
-            nf_total_fat=27,
-            nf_sodium=1450,
-            nf_dietary_fiber=3,
-        ),
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    estimate = branded_food_lookup.lookup("bill miller brisket sandwich")
-
-    assert estimate["confidence"] == 0.55
-    assert any(
-        "Nutritionix did not verify the requested brand" in note
-        for note in estimate["uncertainty_notes"]
-    )
-
-
-def test_lookup_infers_breakfast_meal_type_for_external_result(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(
-            food_name="oatmeal",
-            brand_name=None,
-            serving_unit="bowl",
-            nf_calories=210,
-            nf_protein=6,
-            nf_total_carbohydrate=36,
-            nf_total_fat=4,
-            nf_sodium=120,
-            nf_dietary_fiber=5,
-        ),
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    estimate = branded_food_lookup.lookup("oatmeal")
-
-    assert estimate["source"] == "nutritionix"
-    assert estimate["meal_type"] == "breakfast"
-
-
-def test_lookup_uses_brand_hint_in_source_query(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: captured.update({"query": query}) or _nutritionix_payload(),
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    branded_food_lookup.lookup("foil wrapped burrito", brand_hint="chipotle")
-
-    assert captured["query"] == "chipotle foil wrapped burrito"
-
-
-def test_lookup_honors_source_priority_order(monkeypatch):
-    calls = []
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: calls.append("nutritionix") or _nutritionix_payload(),
-    )
-    monkeypatch.setattr(
-        branded_food_lookup.usda_fdc_client,
-        "search_foods",
-        lambda query: calls.append("usda_fdc") or {
-            "foods": [
-                {
-                    "fdcId": 173944,
-                    "description": "BANANAS,RAW",
-                    "foodNutrients": [
-                        {"nutrientName": "Energy", "value": 89},
-                        {"nutrientName": "Protein", "value": 1.1},
-                        {"nutrientName": "Carbohydrate, by difference", "value": 22.8},
-                        {"nutrientName": "Total lipid (fat)", "value": 0.3},
-                    ],
-                }
-            ]
-        },
-    )
-
-    estimate = branded_food_lookup.lookup("banana", source_priority=("usda_fdc", "nutritionix"))
-
-    assert estimate["source"] == "usda_fdc"
-    assert calls == ["usda_fdc"]
-
-
-def test_lookup_does_not_duplicate_existing_brand_hint(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: captured.update({"query": query}) or _nutritionix_payload(),
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    branded_food_lookup.lookup("Chipotle chicken burrito", brand_hint="chipotle")
-
-    assert captured["query"] == "Chipotle chicken burrito"
-
-
-def test_lookup_does_not_duplicate_regional_brand_hint(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: captured.update({"query": query})
-        or _nutritionix_payload(food_name="brisket sandwich", brand_name="Bill Miller BBQ"),
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    branded_food_lookup.lookup("Bill Miller brisket sandwich", brand_hint="bill miller")
-
-    assert captured["query"] == "Bill Miller brisket sandwich"
-
-
-def test_lookup_regional_brand_hint_cache_key_not_duplicated(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.data_store,
-        "save_branded_lookup_cache",
-        lambda normalized, *_a, **_kw: captured.update({"normalized": normalized}),
-    )
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda _query: _nutritionix_payload(food_name="brisket sandwich", brand_name="Bill Miller BBQ"),
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    branded_food_lookup.lookup("Bill Miller brisket sandwich", brand_hint="bill miller")
-
-    assert captured["normalized"] == "bill miller brisket sandwich"
-
-
-def test_customizable_item_without_modifier_goes_pending_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(food_name="burrito"),
-    )
-
-    estimate = branded_food_lookup.lookup("Chipotle burrito")
-
-    assert estimate["source"] == "nutritionix"
-    assert estimate["ambiguous"] is True
-    assert estimate["confidence"] == 0.55
-    assert "protein" in estimate["uncertainty_notes"][0].lower()
-
-
-def test_nutritionix_multi_item_response_sums_all_foods(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: {
-            "foods": [
-                {
-                    "food_name": "burger",
-                    "brand_name": "McDonalds",
-                    "serving_qty": 1,
-                    "serving_unit": "burger",
-                    "nf_calories": 500,
-                    "nf_protein": 25,
-                    "nf_total_carbohydrate": 40,
-                    "nf_total_fat": 25,
-                    "nf_sodium": 900,
-                    "nf_dietary_fiber": 2,
-                    "nix_item_id": "burger-id",
-                },
-                {
-                    "food_name": "fries",
-                    "brand_name": "McDonalds",
-                    "serving_qty": 1,
-                    "serving_unit": "serving",
-                    "nf_calories": 300,
-                    "nf_protein": 4,
-                    "nf_total_carbohydrate": 45,
-                    "nf_total_fat": 15,
-                    "nf_sodium": 250,
-                    "nf_dietary_fiber": 4,
-                    "nix_item_id": "fries-id",
-                },
-            ]
-        },
-    )
-
-    estimate = branded_food_lookup.lookup("McDonalds burger fries")
-
-    assert estimate["item_name"] == "McDonalds burger, fries"
-    assert estimate["calories"] == 800
-    assert estimate["protein_g"] == 29.0
-    assert estimate["carbs_g"] == 85.0
-    assert estimate["fat_g"] == 40.0
-    assert estimate["sodium_mg"] == 1150
-    assert estimate["fiber_g"] == 6.0
-    assert estimate["external_food_id"] == "burger-id,fries-id"
-
-
-def test_requested_brand_without_source_brand_is_pending_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(brand_name=None),
-    )
-
-    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
-
-    assert estimate["item_name"] == "chicken burrito"
-    assert estimate["confidence"] == 0.55
-    assert estimate["ambiguous"] is True
-    assert estimate.get("brand_id") is None
-    assert any("did not verify" in note for note in estimate["uncertainty_notes"])
-
-
-def test_brand_aliases_verify_against_provider_brand(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(
-            food_name="sandwich",
-            brand_name="Chick-fil-A",
-            serving_unit="sandwich",
-            nf_calories=420,
-            nf_protein=29,
-            nf_total_carbohydrate=41,
-            nf_total_fat=18,
-            nf_sodium=1460,
-            nf_dietary_fiber=1,
-            nix_item_id="chickfila-sandwich",
-        ),
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    estimate = branded_food_lookup.lookup("Chickfila sandwich")
-
-    assert estimate["item_name"] == "Chick-fil-A sandwich"
-    assert estimate["brand_id"] == "chick-fil-a"
-    assert estimate["confidence"] == 0.85
-    assert estimate["ambiguous"] is False
-    assert not any("did not verify" in note for note in estimate["uncertainty_notes"])
-
-
-def test_requested_item_category_mismatch_is_pending_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(food_name="chicken bowl"),
-    )
-
-    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
-
-    assert estimate["item_name"] == "Chipotle chicken bowl"
-    assert estimate["confidence"] == 0.55
-    assert estimate["ambiguous"] is True
-    assert any("different item category" in note for note in estimate["uncertainty_notes"])
-
-
-def test_requested_burrito_rejects_burrito_bowl_hit(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(food_name="chicken burrito bowl"),
-    )
-
-    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
-
-    assert estimate["item_name"] == "Chipotle chicken burrito bowl"
-    assert estimate["confidence"] == 0.55
-    assert estimate["ambiguous"] is True
-    assert any("different item category" in note for note in estimate["uncertainty_notes"])
-
-
-def test_requested_item_category_missing_is_pending_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(food_name="chicken"),
-    )
-
-    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
-
-    assert estimate["item_name"] == "Chipotle chicken"
-    assert estimate["confidence"] == 0.55
-    assert estimate["ambiguous"] is True
-    assert any("different item category" in note for note in estimate["uncertainty_notes"])
-
-
-def test_requested_quesadilla_category_mismatch_is_pending_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(food_name="chicken burrito"),
-    )
-
-    estimate = branded_food_lookup.lookup("Chipotle chicken quesadilla")
-
-    assert estimate["item_name"] == "Chipotle chicken burrito"
-    assert estimate["confidence"] == 0.55
-    assert estimate["ambiguous"] is True
-    assert any("different item category" in note for note in estimate["uncertainty_notes"])
-
-
-def test_mixed_brand_nutritionix_multi_item_is_pending_review(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: {
-            "foods": [
-                {
-                    "food_name": "burger",
-                    "brand_name": "McDonalds",
-                    "serving_qty": 1,
-                    "serving_unit": "burger",
-                    "nf_calories": 500,
-                    "nf_protein": 25,
-                    "nf_total_carbohydrate": 40,
-                    "nf_total_fat": 25,
-                    "nf_sodium": 900,
-                    "nf_dietary_fiber": 2,
-                    "nix_item_id": "burger-id",
-                },
-                {
-                    "food_name": "fries",
-                    "brand_name": "Generic Diner",
-                    "serving_qty": 1,
-                    "serving_unit": "serving",
-                    "nf_calories": 300,
-                    "nf_protein": 4,
-                    "nf_total_carbohydrate": 45,
-                    "nf_total_fat": 15,
-                    "nf_sodium": 250,
-                    "nf_dietary_fiber": 4,
-                    "nix_item_id": "fries-id",
-                },
-            ]
-        },
-    )
-
-    estimate = branded_food_lookup.lookup("McDonalds burger fries")
-
-    assert estimate["item_name"] == "burger, fries"
-    assert estimate["confidence"] == 0.55
-    assert estimate["ambiguous"] is True
-    assert estimate.get("brand_id") is None
-    assert any("did not verify" in note for note in estimate["uncertainty_notes"])
-
-
 def test_cache_hit_returns_local_cache_without_network(monkeypatch):
-    fetched_at = datetime.now().isoformat(timespec="seconds")
-    cached = _nutritionix_payload()["foods"][0]
     cached_estimate = {
         "item_name": "Chipotle chicken burrito",
         "portion_description": "1 burrito",
@@ -873,30 +318,57 @@ def test_cache_hit_returns_local_cache_without_network(monkeypatch):
         "confidence": 0.85,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix",
-        "external_food_id": cached["nix_item_id"],
+        "source": "usda_fdc",
+        "external_food_id": "67890",
     }
     monkeypatch.setattr(
         branded_food_lookup.data_store,
         "get_branded_lookup_cache",
         lambda normalized, **_kw: {
             "normalized_text": normalized,
-            "source": "nutritionix",
+            "source": "usda_fdc",
             "response_json": cached_estimate,
-            "fetched_at": fetched_at,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
         },
-    )
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("network tier must not run")),
     )
 
     estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
 
     assert estimate["source"] == "local_cache"
-    assert estimate["underlying_source"] == "nutritionix"
-    assert estimate["external_food_id"] == "chipotle-burrito"
+    assert estimate["underlying_source"] == "usda_fdc"
+    assert estimate["external_food_id"] == "67890"
+
+
+def test_active_provider_priorities_exclude_retired_nutritionix():
+    assert "nutritionix" not in branded_food_lookup.SOURCE_PRIORITY
+    assert "nutritionix_barcode" not in branded_food_lookup.BARCODE_SOURCE_PRIORITY
+
+
+def test_retired_nutritionix_text_cache_is_not_replayed(monkeypatch):
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "get_branded_lookup_cache",
+        lambda *_a, **_kw: {
+            "source": "nutritionix",
+            "source_tier": "nutritionix",
+            "response_json": {
+                "item_name": "Retired cached meal",
+                "calories": 500,
+                "protein_g": 30,
+                "carbs_g": 50,
+                "fat_g": 20,
+                "sodium_mg": 800,
+                "fiber_g": 5,
+                "confidence": 0.9,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+                "source": "nutritionix",
+            },
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+
+    assert branded_food_lookup._cache_lookup("retired cached meal", user_id=1) is None
 
 
 def test_heb_private_label_bypasses_cache_without_verified_brand(monkeypatch):
@@ -941,23 +413,31 @@ def test_malformed_cache_row_is_treated_as_miss(monkeypatch):
         branded_food_lookup.data_store,
         "get_branded_lookup_cache",
         lambda *_a, **_kw: {
-            "source": "nutritionix",
-            "response_json": {"item_name": "Bad cached row", "source": "nutritionix"},
+            "source": "usda_fdc",
+            "response_json": {"item_name": "Bad cached row", "source": "usda_fdc"},
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
         },
     )
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(),
+        branded_food_lookup.usda_fdc_client,
+        "search_foods",
+        lambda *_a, **_kw: {"foods": [{
+            "fdcId": 173944,
+            "description": "BANANAS,RAW",
+            "foodNutrients": [
+                {"nutrientName": "Energy", "value": 89},
+                {"nutrientName": "Protein", "value": 1.1},
+                {"nutrientName": "Carbohydrate, by difference", "value": 22.8},
+                {"nutrientName": "Total lipid (fat)", "value": 0.3},
+            ],
+        }]},
     )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
 
-    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
+    estimate = branded_food_lookup.lookup("banana")
 
-    assert estimate["source"] == "nutritionix"
-    assert estimate["item_name"] == "Chipotle chicken burrito"
+    assert estimate["source"] == "usda_fdc"
+    assert estimate["item_name"] == "BANANAS,RAW"
 
 
 def test_cache_write_failure_does_not_drop_valid_source_result(monkeypatch):
@@ -968,43 +448,18 @@ def test_cache_write_failure_does_not_drop_valid_source_result(monkeypatch):
 
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", fail_save)
     monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(),
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    estimate = branded_food_lookup.lookup("Chipotle chicken burrito")
-
-    assert estimate["source"] == "nutritionix"
-    assert estimate["item_name"] == "Chipotle chicken burrito"
-
-
-def test_malformed_nutritionix_result_falls_through_to_usda(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(nf_calories=99999),
-    )
-    monkeypatch.setattr(
         branded_food_lookup.usda_fdc_client,
         "search_foods",
-        lambda *_a: {
-            "foods": [
-                {
-                    "fdcId": 173944,
-                    "description": "BANANAS,RAW",
-                    "foodNutrients": [
-                        {"nutrientName": "Energy", "value": 89},
-                        {"nutrientName": "Protein", "value": 1.1},
-                        {"nutrientName": "Carbohydrate, by difference", "value": 22.8},
-                        {"nutrientName": "Total lipid (fat)", "value": 0.3},
-                    ],
-                }
-            ]
-        },
+        lambda *_a, **_kw: {"foods": [{
+            "fdcId": 173944,
+            "description": "BANANAS,RAW",
+            "foodNutrients": [
+                {"nutrientName": "Energy", "value": 89},
+                {"nutrientName": "Protein", "value": 1.1},
+                {"nutrientName": "Carbohydrate, by difference", "value": 22.8},
+                {"nutrientName": "Total lipid (fat)", "value": 0.3},
+            ],
+        }]},
     )
 
     estimate = branded_food_lookup.lookup("banana")
@@ -1013,60 +468,15 @@ def test_malformed_nutritionix_result_falls_through_to_usda(monkeypatch):
     assert estimate["item_name"] == "BANANAS,RAW"
 
 
-def test_incomplete_nutritionix_result_is_a_miss(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: {"foods": [{"food_name": "mystery bar", "brand_name": "Starbucks"}]},
-    )
-    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: None)
-
-    assert branded_food_lookup.lookup("Starbucks mystery bar") is None
 
 
-def test_incomplete_nutritionix_result_falls_through_to_usda(monkeypatch):
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(nf_protein=None),
-    )
-    monkeypatch.setattr(
-        branded_food_lookup.usda_fdc_client,
-        "search_foods",
-        lambda *_a: {
-            "foods": [
-                {
-                    "fdcId": 173944,
-                    "description": "BANANAS,RAW",
-                    "foodNutrients": [
-                        {"nutrientName": "Energy", "value": 89},
-                        {"nutrientName": "Protein", "value": 1.1},
-                        {"nutrientName": "Carbohydrate, by difference", "value": 22.8},
-                        {"nutrientName": "Total lipid (fat)", "value": 0.3},
-                    ],
-                }
-            ]
-        },
-    )
 
-    estimate = branded_food_lookup.lookup("banana")
 
-    assert estimate["source"] == "usda_fdc"
-    assert estimate["item_name"] == "BANANAS,RAW"
 
 
 def test_malformed_external_results_return_none(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "natural_nutrients",
-        lambda query: _nutritionix_payload(nf_calories=99999),
-    )
     monkeypatch.setattr(
         branded_food_lookup.usda_fdc_client,
         "search_foods",
@@ -1096,13 +506,12 @@ def test_stale_cache_falls_through_to_usda(monkeypatch):
         "get_branded_lookup_cache",
         lambda normalized, **_kw: {
             "normalized_text": normalized,
-            "source": "nutritionix",
+            "source": "usda_fdc",
             "response_json": {},
             "fetched_at": stale_at,
         },
     )
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.usda_fdc_client,
         "search_foods",
@@ -1135,7 +544,6 @@ def test_stale_cache_falls_through_to_usda(monkeypatch):
 def test_usda_lookup_preserves_zero_calorie_energy(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.usda_fdc_client,
         "search_foods",
@@ -1165,7 +573,6 @@ def test_usda_lookup_preserves_zero_calorie_energy(monkeypatch):
 def test_usda_lookup_prefers_kcal_energy_over_kj(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.usda_fdc_client,
         "search_foods",
@@ -1199,7 +606,6 @@ def test_usda_lookup_prefers_kcal_energy_over_kj(monkeypatch):
 def test_usda_lookup_converts_kj_energy_to_kcal(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.usda_fdc_client,
         "search_foods",
@@ -1232,7 +638,6 @@ def test_usda_lookup_converts_kj_energy_to_kcal(monkeypatch):
 def test_branded_usda_fallback_without_verified_brand_is_pending_review(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.usda_fdc_client,
         "search_foods",
@@ -1264,7 +669,6 @@ def test_branded_usda_fallback_without_verified_brand_is_pending_review(monkeypa
 def test_branded_usda_fallback_with_verified_brand_stays_pending_review(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.usda_fdc_client,
         "search_foods",
@@ -1338,7 +742,7 @@ def test_parse_meal_text_uses_branded_lookup_before_lm(monkeypatch):
         "confidence": 0.85,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix",
+        "source": "usda_fdc",
     }
     monkeypatch.setattr(parser.branded_food_lookup, "lookup", lambda text, **_kw: branded_estimate)
     monkeypatch.setattr(parser, "_completion_json", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("LM must not run")))
@@ -1400,7 +804,7 @@ def test_parse_meal_text_surfaces_no_branded_match_for_heb_private_label(monkeyp
     assert result["estimate"]["ambiguous"] is True
     assert result["estimate"]["confidence"] <= 0.45
     assert result["estimate"]["uncertainty_notes"][0] == (
-        "Low confidence — no branded match found in Nutritionix, USDA, or Open Food Facts."
+        "Low confidence — no branded match found in USDA or Open Food Facts."
     )
 
 
@@ -1435,7 +839,7 @@ def test_parse_meal_text_uses_parser_for_quantified_heb_branded_miss(monkeypatch
     assert result["estimate"]["ambiguous"] is True
     assert result["estimate"]["confidence"] <= 0.45
     assert result["estimate"]["uncertainty_notes"][0] == (
-        "Low confidence — no branded match found in Nutritionix, USDA, or Open Food Facts."
+        "Low confidence — no branded match found in USDA or Open Food Facts."
     )
 
 
@@ -1454,7 +858,7 @@ def test_parse_meal_text_skips_direct_lookup_for_half_portions(monkeypatch):
         "confidence": 0.85,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix",
+        "source": "usda_fdc",
     }
     monkeypatch.setattr(
         parser.branded_food_lookup,
@@ -1568,13 +972,13 @@ def test_text_fallback_cache_expires_before_top_tier_cache(monkeypatch):
 
     assert branded_food_lookup._cache_lookup("banana", user_id=1) is None
 
-    row["source"] = "nutritionix"
-    row["source_tier"] = "nutritionix"
-    row["response_json"] = {**base, "source": "nutritionix"}
+    row["source"] = "heb_product_page"
+    row["source_tier"] = "heb_product_page"
+    row["response_json"] = {**base, "source": "heb_product_page"}
     estimate = branded_food_lookup._cache_lookup("banana", user_id=1)
 
     assert estimate["source"] == "local_cache"
-    assert estimate["underlying_source"] == "nutritionix"
+    assert estimate["underlying_source"] == "heb_product_page"
 
 
 def test_normalize_barcode_accepts_supported_digit_lengths():
@@ -1595,7 +999,6 @@ def test_lookup_barcode_does_not_route_to_heb_product_page(monkeypatch):
         "lookup",
         lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("H-E-B is text-path only")),
     )
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods_by_barcode", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "get_product_by_barcode", lambda *_a, **_kw: None)
 
@@ -1616,7 +1019,7 @@ def test_lookup_barcode_uses_local_cache_first(monkeypatch):
         "confidence": 0.88,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix_barcode",
+        "source": "usda_fdc_barcode",
         "external_food_id": "cached-id",
     }
     monkeypatch.setattr(
@@ -1629,21 +1032,16 @@ def test_lookup_barcode_uses_local_cache_first(monkeypatch):
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
         },
     )
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "search_item_by_upc",
-        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("provider should not run on cache hit")),
-    )
 
     estimate = branded_food_lookup.lookup_barcode("012345678905", user_id=7)
 
     assert estimate["source"] == "local_cache"
-    assert estimate["underlying_source"] == "nutritionix_barcode"
+    assert estimate["underlying_source"] == "usda_fdc_barcode"
     assert estimate["item_name"] == "Cached chips"
     assert estimate["external_food_id"] == "cached-id"
 
 
-def test_barcode_fallback_cache_expires_before_top_tier_cache(monkeypatch):
+def test_barcode_fallback_cache_expires_after_one_day(monkeypatch):
     base = {
         "item_name": "Cached chips",
         "portion_description": "1 bag",
@@ -1671,13 +1069,31 @@ def test_barcode_fallback_cache_expires_before_top_tier_cache(monkeypatch):
 
     assert branded_food_lookup._barcode_cache_lookup("500032837010", user_id=1) is None
 
-    row["source"] = "nutritionix_barcode"
-    row["source_tier"] = "nutritionix_barcode"
-    row["response_json"] = {**base, "source": "nutritionix_barcode"}
-    estimate = branded_food_lookup._barcode_cache_lookup("500032837010", user_id=1)
+def test_retired_nutritionix_barcode_cache_is_not_replayed(monkeypatch):
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "get_barcode_lookup_cache",
+        lambda *_a, **_kw: {
+            "source": "nutritionix_barcode",
+            "source_tier": "nutritionix_barcode",
+            "response_json": {
+                "item_name": "Retired cached barcode",
+                "calories": 210,
+                "protein_g": 3,
+                "carbs_g": 25,
+                "fat_g": 11,
+                "sodium_mg": 280,
+                "fiber_g": 2,
+                "confidence": 0.9,
+                "ambiguous": False,
+                "uncertainty_notes": [],
+                "source": "nutritionix_barcode",
+            },
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
 
-    assert estimate["source"] == "local_cache"
-    assert estimate["underlying_source"] == "nutritionix_barcode"
+    assert branded_food_lookup._barcode_cache_lookup("500032837010", user_id=1) is None
 
 
 def test_lookup_barcode_off_cache_replay_derives_verified_source_url(monkeypatch):
@@ -1774,7 +1190,7 @@ def test_lookup_barcode_non_off_cache_replay_does_not_derive_verified_source_url
         "confidence": 0.88,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix_barcode",
+        "source": "usda_fdc_barcode",
         "external_food_id": "cached-id",
         "verified_source_url": None,
     }
@@ -1789,7 +1205,7 @@ def test_lookup_barcode_non_off_cache_replay_does_not_derive_verified_source_url
         },
     )
     estimate = branded_food_lookup.lookup_barcode("012345678905", user_id=7)
-    assert estimate["underlying_source"] == "nutritionix_barcode"
+    assert estimate["underlying_source"] == "usda_fdc_barcode"
     assert estimate.get("verified_source_url") is None
 
     cached["source"] = "usda_fdc_barcode"
@@ -1798,54 +1214,6 @@ def test_lookup_barcode_non_off_cache_replay_does_not_derive_verified_source_url
     assert estimate.get("verified_source_url") is None
 
 
-def test_lookup_barcode_uses_nutritionix_upc_and_saves_cache(monkeypatch):
-    saved = {}
-    monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        branded_food_lookup.data_store,
-        "save_barcode_lookup_cache",
-        lambda barcode, source, response, **kwargs: saved.update({
-            "barcode": barcode,
-            "source": source,
-            "response": response,
-            "user_id": kwargs.get("user_id"),
-        }),
-    )
-    monkeypatch.setattr(
-        branded_food_lookup.nutritionix_client,
-        "search_item_by_upc",
-        lambda *_a, **_kw: _nutritionix_payload(
-            "protein bar",
-            brand_name="Clif",
-            serving_qty=1,
-            serving_unit="bar",
-            serving_weight_grams=68,
-            nf_calories=250,
-            nf_protein=10,
-            nf_total_carbohydrate=43,
-            nf_total_fat=5,
-            nf_sodium=190,
-            nf_dietary_fiber=5,
-            nix_item_id="clif-bar-1",
-        ),
-    )
-    monkeypatch.setattr(
-        branded_food_lookup.open_food_facts_client,
-        "get_product_by_barcode",
-        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("OFF should not run after Nutritionix hit")),
-    )
-
-    estimate = branded_food_lookup.lookup_barcode("012345678905", user_id=42)
-
-    assert estimate["source"] == "nutritionix_barcode"
-    assert estimate["item_name"] == "Clif protein bar"
-    assert estimate["portion_description"] == "1 bar (68 g)"
-    assert estimate["calories"] == 250
-    assert estimate["external_food_id"] == "clif-bar-1"
-    assert estimate["portion_basis"] == "Nutritionix UPC label serving"
-    assert saved["barcode"] == "012345678905"
-    assert saved["source"] == "nutritionix_barcode"
-    assert saved["user_id"] == 42
 
 
 def test_lookup_barcode_uses_usda_before_open_food_facts(monkeypatch):
@@ -1871,10 +1239,6 @@ def test_lookup_barcode_uses_usda_before_open_food_facts(monkeypatch):
         lambda barcode, source, response, **kwargs: saved.update({"barcode": barcode, "source": source}),
     )
 
-    def nutritionix_miss(*_a, **_kw):
-        calls.append("nutritionix")
-        return None
-
     def usda_hit(*_a, **_kw):
         calls.append("usda")
         return {"foods": [food]}
@@ -1883,13 +1247,12 @@ def test_lookup_barcode_uses_usda_before_open_food_facts(monkeypatch):
         calls.append("off")
         raise AssertionError("OFF should not run after USDA barcode hit")
 
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", nutritionix_miss)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods_by_barcode", usda_hit)
     monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "get_product_by_barcode", off_should_not_run)
 
     estimate = branded_food_lookup.lookup_barcode("801176022386")
 
-    assert calls == ["nutritionix", "usda"]
+    assert calls == ["usda"]
     assert estimate["source"] == "usda_fdc_barcode"
     assert estimate["item_name"] == "J&K BRISKET BEEF JERKY"
     assert estimate["calories"] == 286
@@ -1927,7 +1290,6 @@ def test_lookup_barcode_skips_incomplete_duplicate_usda_match(monkeypatch):
     }
     monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.usda_fdc_client,
         "search_foods_by_barcode",
@@ -1965,10 +1327,6 @@ def test_lookup_barcode_falls_through_to_off_after_usda_miss(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
 
-    def nutritionix_miss(*_a, **_kw):
-        calls.append("nutritionix")
-        return None
-
     def usda_miss(*_a, **_kw):
         calls.append("usda")
         return {"foods": []}
@@ -1977,13 +1335,12 @@ def test_lookup_barcode_falls_through_to_off_after_usda_miss(monkeypatch):
         calls.append("off")
         return product
 
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", nutritionix_miss)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods_by_barcode", usda_miss)
     monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "get_product_by_barcode", off_hit)
 
     estimate = branded_food_lookup.lookup_barcode("3017620422003")
 
-    assert calls == ["nutritionix", "usda", "off"]
+    assert calls == ["usda", "off"]
     assert estimate["source"] == "open_food_facts_barcode"
     assert estimate["calories"] == 539
 
@@ -2018,7 +1375,6 @@ def test_lookup_barcode_accepts_exact_off_product_with_nutrition_but_missing_com
     }
     monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods_by_barcode", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "get_product_by_barcode", lambda *_a, **_kw: product)
 
@@ -2062,7 +1418,6 @@ def test_lookup_barcode_uses_open_food_facts_serving_macros(monkeypatch):
         "save_barcode_lookup_cache",
         lambda barcode, source, response, **kwargs: saved.update({"barcode": barcode, "source": source}),
     )
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "get_product_by_barcode",
@@ -2113,7 +1468,6 @@ def _off_barcode_product(
 def _mock_barcode_off(monkeypatch, product):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "get_product_by_barcode",
@@ -2262,7 +1616,6 @@ def test_open_food_facts_barcode_serving_quantity_precedes_package_quantity(monk
     }
     monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "get_product_by_barcode",
@@ -2298,7 +1651,6 @@ def test_open_food_facts_barcode_serving_sodium_derives_from_100g(monkeypatch):
     }
     monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "get_product_by_barcode",
@@ -2335,7 +1687,6 @@ def test_open_food_facts_barcode_does_not_label_serving_macros_as_package_quanti
     }
     monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "get_product_by_barcode",

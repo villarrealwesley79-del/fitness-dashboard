@@ -135,7 +135,6 @@ def test_barcode_smoke_scores_real_lookup_outputs_from_recorded_off_fixtures(mon
     }
     monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "search_item_by_upc", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
         "get_product_by_barcode",

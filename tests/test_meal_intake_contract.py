@@ -113,7 +113,7 @@ def test_zero_context_image_request_uses_same_estimate_shape_without_raw_image_e
         "confidence": 0.86,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix",
+        "source": "usda_fdc",
     })
 
     def fake_add_food_log(_user_id, record):

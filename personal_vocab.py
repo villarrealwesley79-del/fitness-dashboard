@@ -13,6 +13,7 @@ from meal_estimate_schema import sanitize_meal_estimate
 MIN_ACCEPTS_FOR_EXACT = 3
 MIN_ACCEPTS_FOR_FUZZY = MIN_ACCEPTS_FOR_EXACT
 FUZZY_CUTOFF = 0.78
+RETIRED_NUTRITION_SOURCES = {"nutritionix", "nutritionix_barcode"}
 
 
 def record_accept(user_id: int, phrase: str | None, estimate: dict[str, Any]) -> dict | None:
@@ -118,11 +119,46 @@ def _canonical_estimate(estimate: dict[str, Any]) -> dict | None:
     ):
         if estimate.get(key) is not None:
             canonical[key] = estimate[key]
+    underlying_sources = estimate.get("underlying_sources")
+    if (
+        isinstance(underlying_sources, list)
+        and underlying_sources
+        and all(isinstance(value, str) and value.strip() for value in underlying_sources)
+    ):
+        canonical["underlying_sources"] = [value.strip().lower() for value in underlying_sources]
     return canonical
 
 
 def _trusted(entry: dict, *, minimum_accepts: int) -> bool:
-    return int(entry.get("accept_count") or 0) >= minimum_accepts and int(entry.get("correct_count") or 0) == 0
+    return (
+        int(entry.get("accept_count") or 0) >= minimum_accepts
+        and int(entry.get("correct_count") or 0) == 0
+        and not _has_retired_or_incomplete_nutrition_provenance(entry)
+    )
+
+
+def _has_retired_or_incomplete_nutrition_provenance(entry: dict) -> bool:
+    canonical = entry.get("canonical_resolution")
+    if not isinstance(canonical, dict):
+        return False
+    values = [canonical.get("source"), canonical.get("underlying_source")]
+    underlying_sources = canonical.get("underlying_sources")
+    if isinstance(underlying_sources, list):
+        values.extend(underlying_sources)
+    provenance = {
+        part.strip().lower()
+        for value in values
+        if isinstance(value, str)
+        for part in value.split("+")
+        if part.strip()
+    }
+    if "mixed_lookup" in provenance and not (
+        isinstance(underlying_sources, list)
+        and underlying_sources
+        and all(isinstance(value, str) and value.strip() for value in underlying_sources)
+    ):
+        return True
+    return bool(provenance & RETIRED_NUTRITION_SOURCES)
 
 
 def _abbreviation_match(query: str, candidate_keys) -> str | None:

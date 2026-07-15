@@ -183,7 +183,7 @@ _FALLBACK_DEFAULT = dict(
     item_name="Meal", meal_type="snack", calories=400, protein_g=22,
     carbs_g=40, fat_g=15, sodium_mg=560, fiber_g=4,
 )
-_NO_BRANDED_MATCH_NOTE = "Low confidence — no branded match found in Nutritionix, USDA, or Open Food Facts."
+_NO_BRANDED_MATCH_NOTE = "Low confidence — no branded match found in USDA or Open Food Facts."
 _QUANTITY_WORDS = {
     "one": 1,
     "two": 2,

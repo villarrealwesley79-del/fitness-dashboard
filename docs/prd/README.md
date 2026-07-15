@@ -18,7 +18,7 @@ Runtime data is local by default. The public repo intentionally excludes owner d
 - `ai_fact_query.py` - Sanitized fact-context question answering and pending suggestion creation for the AI fact modal.
 - `apple_health_parser.py` - Apple Health file parsing, Health Auto Export webhook ingestion, sync DB, setup URL, and Apple Health status routes.
 - `auth.py` - Flask-Login, single-owner guard, auth DB, login/register/logout, CSRF/origin checks, session config, and public route allowlist.
-- `branded_food_lookup.py` - Branded, restaurant, cache, Nutritionix, USDA, Open Food Facts, and product-page lookup orchestration for food estimates.
+- `branded_food_lookup.py` - Branded, restaurant, cache, USDA, Open Food Facts, curated H-E-B, and deterministic fallback lookup orchestration for food estimates.
 - `claude_vision_adapter.py` - Optional Anthropic vision estimate adapter; real only when `ANTHROPIC_API_KEY` is configured.
 - `data_loader.py` - Legacy workout-log parsing and summary helpers.
 - `data_store.py` - SQLite store for body, cardio, nutrition, food logs, review snapshots, vocab, push subscriptions, and workout-adaptation events.
@@ -30,7 +30,6 @@ Runtime data is local by default. The public repo intentionally excludes owner d
 - `meal_estimate_schema.py` - Public meal estimate schema sanitizer and plausible-range validator.
 - `meal_log_policy.py` - Meal auto-log versus pending-review policy, confidence bands, and reason codes.
 - `meal_text_parser.py` - Text meal parser, branded lookup fallback, LM Studio meal-text estimate, and deterministic presets.
-- `nutritionix_client.py` - Nutritionix natural-language and item lookup client.
 - `open_food_facts_client.py` - Open Food Facts search/product client with locale and timeout rules.
 - `open_wearables_adapter.py` - Open Wearables status normalization, provider payload normalization, base URL validation, and error redaction.
 - `oura_client.py` - Oura API client and Oura daily SQLite cache.
@@ -73,7 +72,7 @@ Data locations:
 | Workout planning and execution | [03-workout-planning-execution.md](03-workout-planning-execution.md) | Next workout, active workout modal, swaps, manual logging, completion, history, stats, adherence, progressive overload. |
 | Meal logging: text and barcode | [04-meal-logging-text-barcode.md](04-meal-logging-text-barcode.md) | Meal composer text path, barcode lookup, pending review, food logs, personal vocab, refresh events. |
 | Photo food logging and vision | [05-photo-food-logging-vision.md](05-photo-food-logging-vision.md) | Multi-photo capture/upload, local VLM estimation, image validation, privacy retention, manual review. |
-| Nutrition data sources | [06-nutrition-data-sources.md](06-nutrition-data-sources.md) | Nutritionix, USDA, Open Food Facts, H-E-B, branded lookup cache, nutrition history, source provenance. |
+| Nutrition data sources | [06-nutrition-data-sources.md](06-nutrition-data-sources.md) | USDA, Open Food Facts, curated H-E-B, deterministic fallbacks, branded lookup cache, nutrition history, and source provenance; historical Nutritionix rows remain documented but are not live results. |
 | Oura integration | [07-oura-integration.md](07-oura-integration.md) | Oura daily cache, sleep sync, readiness/trends/status, recommendation recovery source. |
 | Apple Health integration | [08-apple-health-integration.md](08-apple-health-integration.md) | Health Auto Export token webhook, setup URL, legacy HealthKit JSON exports, sync freshness. |
 | WHOOP integration | [09-whoop-integration.md](09-whoop-integration.md) | WHOOP OAuth, CSV import, protected material, freshness/status, daily facts, recommendation modifiers. |

@@ -7010,7 +7010,6 @@ def _review_item_is_blocked(item: dict) -> bool:
 _CANES_TOKEN_PATTERN = re.compile(r"(?:^|\s)canes(?:$|\s)")
 _BOX_COMBO_PATTERN = re.compile(r"(?:^|\s)box\s+combo(?:$|\s)")
 _SOURCE_BACKED_NUTRITION_SOURCES = {
-    "nutritionix",
     "usda_fdc",
     "open_food_facts",
     "heb_product_page",

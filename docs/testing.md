@@ -4,8 +4,10 @@
 
 The pytest suite blocks uncassetted external network access by default. The
 autouse guard in `tests/conftest.py` patches socket connects and
-`urllib.request.urlopen` so Nutritionix, USDA FDC, Anthropic vision, Open Food
-Facts, and similar clients cannot accidentally hit live services in CI.
+`urllib.request.urlopen` so active USDA FDC, Open Food Facts, Anthropic vision,
+and similar clients cannot accidentally hit live services in CI. Legacy
+Nutritionix fixtures, if present, are historical-only and must not be used for
+live lookup coverage.
 
 Loopback endpoints such as `127.0.0.1`, `::1`, and `localhost` remain allowed so
 tests can exercise local Flask or LM Studio-style services.

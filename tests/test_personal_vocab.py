@@ -20,7 +20,7 @@ def _estimate(**overrides):
         "confidence": 0.85,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix",
+        "source": "usda_fdc",
         "external_food_id": "chipotle-burrito",
     }
     base.update(overrides)
@@ -40,7 +40,7 @@ def test_personal_vocab_learns_after_three_accepts(tmp_path, monkeypatch):
     result = personal_vocab.lookup("chip ckn bur", user_id=1)
 
     assert result["source"] == "personal_vocab"
-    assert result["underlying_source"] == "nutritionix"
+    assert result["underlying_source"] == "usda_fdc"
     assert result["confidence"] == 0.9
     assert result["item_name"] == "Chipotle chicken burrito"
     assert result["external_food_id"] == "chipotle-burrito"
@@ -54,6 +54,77 @@ def test_personal_vocab_exact_match_waits_for_accept_threshold(tmp_path, monkeyp
     personal_vocab.record_accept(1, "chip ckn bur", _estimate())
 
     assert personal_vocab.lookup("chip ckn bur", user_id=1) is None
+
+
+def test_personal_vocab_does_not_replay_retired_nutritionix_resolution(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    historical = _estimate(
+        source="nutritionix",
+        underlying_source="nutritionix",
+    )
+    for _ in range(3):
+        personal_vocab.record_accept(1, "historical usual", historical)
+
+    assert data_store.get_personal_vocab_entry(1, "historical usual") is not None
+    assert personal_vocab.lookup("historical usual", user_id=1) is None
+
+
+def test_personal_vocab_preserves_but_does_not_replay_mixed_retired_provenance(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    historical = _estimate(
+        source="mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["nutritionix", "usda_fdc"],
+    )
+    for _ in range(3):
+        personal_vocab.record_accept(1, "historical mixed usual", historical)
+
+    entry = data_store.get_personal_vocab_entry(1, "historical mixed usual")
+    assert entry["canonical_resolution"]["underlying_sources"] == ["nutritionix", "usda_fdc"]
+    assert personal_vocab.lookup("historical mixed usual", user_id=1) is None
+
+
+def test_personal_vocab_does_not_replay_legacy_mixed_resolution_without_components(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    canonical = _estimate(source="mixed_lookup", underlying_source="mixed_lookup")
+    for _ in range(3):
+        data_store.upsert_personal_vocab_entry(
+            1,
+            normalized_input="legacy mixed usual",
+            phrase="legacy mixed usual",
+            canonical_resolution=canonical,
+            accepted=True,
+        )
+
+    assert data_store.get_personal_vocab_entry(1, "legacy mixed usual") is not None
+    assert personal_vocab.lookup("legacy mixed usual", user_id=1) is None
+
+
+def test_personal_vocab_replays_mixed_active_provider_resolution(tmp_path, monkeypatch):
+    import data_store
+
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    active = _estimate(
+        source="mixed_lookup",
+        underlying_source="mixed_lookup",
+        underlying_sources=["open_food_facts", "usda_fdc"],
+    )
+    for _ in range(3):
+        personal_vocab.record_accept(1, "active mixed usual", active)
+
+    result = personal_vocab.lookup("active mixed usual", user_id=1)
+    assert result["source"] == "personal_vocab"
+    assert result["underlying_sources"] == ["open_food_facts", "usda_fdc"]
 
 
 def test_personal_vocab_untrusted_exact_match_blocks_fuzzy_substitution(tmp_path, monkeypatch):
@@ -328,7 +399,7 @@ def test_meal_intake_preserves_personal_vocab_provenance(monkeypatch, tmp_path):
     estimate = _estimate(
         source="personal_vocab",
         confidence=0.95,
-        underlying_source="nutritionix",
+        underlying_source="usda_fdc",
         personal_vocab_phrase="chip usual",
     )
     monkeypatch.setattr(app, "parse_meal_text", lambda *_a, **_kw: {"estimate": estimate, "fallback_used": False})
@@ -342,9 +413,9 @@ def test_meal_intake_preserves_personal_vocab_provenance(monkeypatch, tmp_path):
     body = res.get_json()
     assert res.status_code == 200
     assert body["estimate"]["source"] == "personal_vocab"
-    assert body["estimate"]["underlying_source"] == "nutritionix"
+    assert body["estimate"]["underlying_source"] == "usda_fdc"
     assert body["estimate"]["personal_vocab_phrase"] == "chip usual"
-    assert captured["original_estimate"]["underlying_source"] == "nutritionix"
+    assert captured["original_estimate"]["underlying_source"] == "usda_fdc"
     assert captured["original_estimate"]["personal_vocab_phrase"] == "chip usual"
 
 
