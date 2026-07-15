@@ -178,7 +178,13 @@ from meal_log_policy import (
 app = Flask(__name__)
 
 # ── Auth (must be after app creation) ──────────────────────────
-from auth import CSRF_HEADER_NAME, CSRF_HEADER_VALUE, init_auth
+from auth import (
+    CSRF_HEADER_NAME,
+    CSRF_HEADER_VALUE,
+    data_user_id_for,
+    init_auth,
+    remember_trusted_no_login_oauth_state,
+)
 init_auth(app)
 
 # ── Health route registration (Apple Health + HealthKit ingest) ──
@@ -1795,10 +1801,11 @@ def _browser_local_date_from_iso(local_iso):
 def _current_data_user_id():
     try:
         from flask_login import current_user
-        if current_user and current_user.is_authenticated:
-            return int(current_user.get_id())
-    except Exception:
-        pass
+        authenticated = bool(current_user and current_user.is_authenticated)
+    except RuntimeError:
+        authenticated = False
+    if authenticated:
+        return data_user_id_for(current_user.get_id())
     return 1
 
 
@@ -5752,6 +5759,13 @@ def _meal_intake_public_vision_error(_exc: Exception) -> str:
     return "vision_estimator_failed"
 
 
+def _meal_intake_vision_contention(exc: Exception) -> bool:
+    return (
+        isinstance(exc, vision_estimator.VisionEstimatorError)
+        and str(exc) == "busy: LM Studio vision inference already running"
+    )
+
+
 def _meal_text_fallback_reason(parsed: dict | None) -> str | None:
     if not isinstance(parsed, dict):
         return None
@@ -8209,7 +8223,12 @@ def meal_intake():
                 "confidence": estimate.get("vision_confidence"),
             }
         except Exception as exc:
-            if not isinstance(exc, vision_estimator.VisionEstimatorError):
+            if _meal_intake_vision_contention(exc):
+                app.logger.warning(
+                    "vision_busy_contention",
+                    extra={"event": "vision_busy_contention"},
+                )
+            elif not isinstance(exc, vision_estimator.VisionEstimatorError):
                 app.logger.warning("Vision meal estimate failed before fallback", exc_info=True)
             public_vision_error = _meal_intake_public_vision_error(exc)
             if not text_raw:
@@ -12477,6 +12496,8 @@ def _open_wearables_authorization_url(provider):
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None, "provider_authorization_failed"
+    state = (urllib.parse.parse_qs(parsed.query).get("state") or [""])[0]
+    remember_trusted_no_login_oauth_state(state)
     return url, None
 
 
@@ -13864,14 +13885,14 @@ def _whoop_day_from_record(record, record_type=None):
     return None
 
 
-def _validate_imported_whoop_local_date(local_date):
+def _validate_imported_whoop_local_date(local_date, *, now=None):
     try:
         parsed = datetime.strptime(str(local_date), "%Y-%m-%d").date()
     except Exception:
         raise ValueError("local_date must be a valid YYYY-MM-DD date.")
-    tomorrow = datetime.now().date() + timedelta(days=1)
+    tomorrow = (now or datetime.now()).date() + timedelta(days=1)
     if parsed > tomorrow:
-        raise ValueError("local_date cannot be in the future.")
+        raise ValueError("local_date cannot be more than one day ahead.")
     return parsed.isoformat()
 
 
@@ -14330,6 +14351,7 @@ def whoop_connect_start():
         user_binding=_whoop_user_binding(),
         ttl_minutes=10,
     )
+    remember_trusted_no_login_oauth_state(state)
     return _whoop_no_store(jsonify(
         {
             "status": "success",

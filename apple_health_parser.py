@@ -285,9 +285,8 @@ def health_data_available() -> bool:
     # Also check sync DB
     try:
         db_path = _apple_health_sync_db_path()
-        conn = sqlite3.connect(db_path)
-        count = conn.execute("SELECT COUNT(*) FROM ah_sync_log").fetchone()[0]
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM ah_sync_log").fetchone()[0]
         return count > 0
     except Exception:
         return False
@@ -634,76 +633,75 @@ def register_apple_health_routes(flask_app):
 
     # ── Sync endpoint for Health Auto Export app (interim auto-sync) ──
     def _init_ah_sync_db():
-        conn = sqlite3.connect(_apple_health_sync_db_path())
-        conn.execute("""CREATE TABLE IF NOT EXISTS ah_sync_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            record_type TEXT NOT NULL,
-            record_date TEXT NOT NULL,
-            record_key TEXT NOT NULL DEFAULT '',
-            data_json TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(source, record_type, record_date, record_key)
-        )""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS ah_sync_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            inserted_count INTEGER NOT NULL DEFAULT 0,
-            skipped_count INTEGER NOT NULL DEFAULT 0,
-            total_count INTEGER NOT NULL DEFAULT 0,
-            remote_addr TEXT,
-            created_at TEXT DEFAULT (datetime('now'))
-        )""")
-        # Migrate legacy DBs: add record_key column + rebuild the table so the
-        # old UNIQUE(source, record_type, record_date) constraint gets replaced
-        # with the widened UNIQUE(... record_key) version. SQLite can't ALTER a
-        # UNIQUE constraint — requires a table rebuild.
-        cur = conn.execute("PRAGMA table_info(ah_sync_log)")
-        cols = [row[1] for row in cur.fetchall()]
-        if "record_key" not in cols:
-            conn.execute("ALTER TABLE ah_sync_log ADD COLUMN record_key TEXT NOT NULL DEFAULT ''")
-        # Detect whether the old 3-field UNIQUE is still in place. We look at
-        # the index metadata; if there's an auto-index on just (source,
-        # record_type, record_date) we rebuild.
-        needs_rebuild = False
-        try:
-            idx_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='ah_sync_log'").fetchall()
-            for (idx_name,) in idx_rows:
-                info = conn.execute(f"PRAGMA index_info('{idx_name}')").fetchall()
-                col_names = [r[2] for r in info]
-                if col_names == ["source", "record_type", "record_date"]:
-                    needs_rebuild = True
-                    break
-        except Exception:
+        with closing(sqlite3.connect(_apple_health_sync_db_path())) as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS ah_sync_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                record_type TEXT NOT NULL,
+                record_date TEXT NOT NULL,
+                record_key TEXT NOT NULL DEFAULT '',
+                data_json TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(source, record_type, record_date, record_key)
+            )""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS ah_sync_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                inserted_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                total_count INTEGER NOT NULL DEFAULT 0,
+                remote_addr TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            )""")
+            # Migrate legacy DBs: add record_key column + rebuild the table so the
+            # old UNIQUE(source, record_type, record_date) constraint gets replaced
+            # with the widened UNIQUE(... record_key) version. SQLite can't ALTER a
+            # UNIQUE constraint — requires a table rebuild.
+            cur = conn.execute("PRAGMA table_info(ah_sync_log)")
+            cols = [row[1] for row in cur.fetchall()]
+            if "record_key" not in cols:
+                conn.execute("ALTER TABLE ah_sync_log ADD COLUMN record_key TEXT NOT NULL DEFAULT ''")
+            # Detect whether the old 3-field UNIQUE is still in place. We look at
+            # the index metadata; if there's an auto-index on just (source,
+            # record_type, record_date) we rebuild.
             needs_rebuild = False
-
-        if needs_rebuild:
-            conn.execute("BEGIN")
             try:
-                conn.execute("""CREATE TABLE ah_sync_log_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source TEXT NOT NULL,
-                    record_type TEXT NOT NULL,
-                    record_date TEXT NOT NULL,
-                    record_key TEXT NOT NULL DEFAULT '',
-                    data_json TEXT NOT NULL,
-                    created_at TEXT DEFAULT (datetime('now')),
-                    UNIQUE(source, record_type, record_date, record_key)
-                )""")
-                conn.execute("""INSERT INTO ah_sync_log_new
-                    (id, source, record_type, record_date, record_key, data_json, created_at)
-                    SELECT id, source, record_type, record_date, COALESCE(record_key, ''), data_json, created_at
-                    FROM ah_sync_log""")
-                conn.execute("DROP TABLE ah_sync_log")
-                conn.execute("ALTER TABLE ah_sync_log_new RENAME TO ah_sync_log")
-                conn.execute("COMMIT")
-                print("INFO: rebuilt ah_sync_log with widened UNIQUE(source, record_type, record_date, record_key)")
-            except Exception as exc:
-                conn.execute("ROLLBACK")
-                print(f"WARN: ah_sync_log rebuild failed: {exc}")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_ah_sync_date ON ah_sync_log(record_date)")
-        conn.commit()
-        conn.close()
+                idx_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='ah_sync_log'").fetchall()
+                for (idx_name,) in idx_rows:
+                    info = conn.execute(f"PRAGMA index_info('{idx_name}')").fetchall()
+                    col_names = [r[2] for r in info]
+                    if col_names == ["source", "record_type", "record_date"]:
+                        needs_rebuild = True
+                        break
+            except Exception:
+                needs_rebuild = False
+
+            if needs_rebuild:
+                conn.execute("BEGIN")
+                try:
+                    conn.execute("""CREATE TABLE ah_sync_log_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source TEXT NOT NULL,
+                        record_type TEXT NOT NULL,
+                        record_date TEXT NOT NULL,
+                        record_key TEXT NOT NULL DEFAULT '',
+                        data_json TEXT NOT NULL,
+                        created_at TEXT DEFAULT (datetime('now')),
+                        UNIQUE(source, record_type, record_date, record_key)
+                    )""")
+                    conn.execute("""INSERT INTO ah_sync_log_new
+                        (id, source, record_type, record_date, record_key, data_json, created_at)
+                        SELECT id, source, record_type, record_date, COALESCE(record_key, ''), data_json, created_at
+                        FROM ah_sync_log""")
+                    conn.execute("DROP TABLE ah_sync_log")
+                    conn.execute("ALTER TABLE ah_sync_log_new RENAME TO ah_sync_log")
+                    conn.execute("COMMIT")
+                    print("INFO: rebuilt ah_sync_log with widened UNIQUE(source, record_type, record_date, record_key)")
+                except Exception as exc:
+                    conn.execute("ROLLBACK")
+                    print(f"WARN: ah_sync_log rebuild failed: {exc}")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_ah_sync_date ON ah_sync_log(record_date)")
+            conn.commit()
 
     def _record_key(record_type, rec):
         """Secondary key that lets us store multiple records per day for granular
