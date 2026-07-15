@@ -1,13 +1,15 @@
 # Fitness Dashboard Current State
 
 Status: Snapshot from current implementation
-Last updated: 2026-06-27 local time
+Last updated: 2026-07-14 local time
 
 ## Summary
 
 Fitness Dashboard is a Flask-based, mobile-first personal fitness coaching web app running locally on the Mac mini at port 5050. It combines manual workout logging, deterministic workout prescription, Oura recovery data, Apple Health sync data, WHOOP recovery/strain/sleep facts, Open Wearables hub data, body-composition tracking, nutrition targets/logs, food-photo estimation/review paths, and a constrained LM Studio AI coach layer.
 
 The current product is functional but still in a draft product state. The app has a real runtime, real data stores, and a substantial mobile UI. Productized wearable confidence now includes Oura, Apple Health, WHOOP, and Open Wearables as a local hub wrapper, but the app remains single-owner and local-first by default.
+
+The app has no billing, Stripe, paid entitlement, public landing, pricing, trial, or selling surface. Existing auth databases are migrated in place to remove the retired billing columns while preserving account ids and credentials.
 
 ## Runtime State
 

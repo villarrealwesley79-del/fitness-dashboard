@@ -154,9 +154,6 @@ OW_PORTAL_URL=
 OW_SIDECAR_ENV_PATH=
 OW_ALLOWED_HOSTS=
 SECRET_KEY=
-STRIPE_SECRET_KEY=
-STRIPE_WEBHOOK_SECRET=
-STRIPE_PRICE_ID=
 LM_STUDIO_URL=
 LM_STUDIO_MODEL=
 LM_STUDIO_PRIMARY_URL=
@@ -233,7 +230,7 @@ Open Wearables has separate metadata-check and durable-sync contracts:
 Neither route returns raw health payloads. Durable WHOOP OAuth sync remains a
 separate provider-specific flow.
 
-Browser-initiated state-changing requests send `X-Requested-With: XMLHttpRequest`; the server also accepts browser same-origin metadata for cached app-shell rollouts and rejects mismatched browser origins before checking the CSRF header. The token-authenticated Apple Health sync endpoint and Stripe's signed webhook are explicitly exempt because they are called by external systems rather than the dashboard UI.
+Browser-initiated state-changing requests send `X-Requested-With: XMLHttpRequest`; the server also accepts browser same-origin metadata for cached app-shell rollouts and rejects mismatched browser origins before checking the CSRF header. The token-authenticated Apple Health sync endpoint is explicitly exempt because it is called by an external system rather than the dashboard UI.
 
 ## Git Workflow
 
