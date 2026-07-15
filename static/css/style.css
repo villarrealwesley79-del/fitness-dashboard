@@ -3788,6 +3788,11 @@ input[type=number] { -moz-appearance: textfield; }
     color: var(--fg-dim);
     font-variant-numeric: tabular-nums;
 }
+.meal-pending-provider-detail,
+.meal-review-v2-provider-detail {
+    font-size: 11px;
+    color: var(--fg-dim);
+}
 /* FIT-219 item 5: the confidence band was previously only in a title tooltip
    (inaccessible to keyboard/AT users). It is now visible text next to the
    percentage; dim it so it reads as secondary to the headline number. */
