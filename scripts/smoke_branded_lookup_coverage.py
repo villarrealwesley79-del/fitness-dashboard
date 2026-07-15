@@ -84,6 +84,7 @@ PROXY_REGIONAL_QUERIES: tuple[CoverageQuery, ...] = (
 )
 
 DEFAULT_QUERIES: tuple[CoverageQuery, ...] = REQUIRED_BILL_MILLER_QUERIES + PROXY_REGIONAL_QUERIES
+ACTIVE_PROVIDER_SOURCES: tuple[str, ...] = ("heb_product_page", "usda_fdc", "open_food_facts")
 
 
 def provider_status(
@@ -93,7 +94,6 @@ def provider_status(
     env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     env = os.environ if env is None else env
-    nutritionix_ready = bool(env.get("NUTRITIONIX_APP_ID") and env.get("NUTRITIONIX_APP_KEY"))
     usda_ready = bool(env.get("USDA_FDC_API_KEY"))
     return {
         "cache": "read enabled" if include_cache else "skipped",
@@ -102,7 +102,6 @@ def provider_status(
             if respect_direct_lookup_gate
             else "bypassed for coverage matrix; production gate recorded per row"
         ),
-        "nutritionix": "configured" if nutritionix_ready else "missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY",
         "usda_fdc": "configured" if usda_ready else "missing USDA_FDC_API_KEY",
         "open_food_facts": "no credentials required",
     }
@@ -116,9 +115,11 @@ def run_coverage(
     user_id: int = 1,
     env: dict[str, str] | None = None,
 ) -> list[CoverageResult]:
-    priorities = list(branded_food_lookup.SOURCE_PRIORITY)
-    if not include_cache:
-        priorities = [source for source in priorities if source != "cache"]
+    priorities = [
+        source
+        for source in branded_food_lookup.SOURCE_PRIORITY
+        if source in ACTIVE_PROVIDER_SOURCES or (include_cache and source == "cache")
+    ]
     unavailable_sources = _unavailable_sources(env)
 
     original_save = branded_food_lookup.data_store.save_branded_lookup_cache
@@ -247,8 +248,6 @@ def _coverage_result(
 def _unavailable_sources(env: dict[str, str] | None = None) -> dict[str, str]:
     status = provider_status(env=env)
     unavailable: dict[str, str] = {}
-    if status["nutritionix"] != "configured":
-        unavailable["nutritionix"] = f"nutritionix skipped: {status['nutritionix']}"
     if status["usda_fdc"] != "configured":
         unavailable["usda_fdc"] = f"usda_fdc skipped: {status['usda_fdc']}"
     return unavailable

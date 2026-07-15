@@ -174,10 +174,10 @@ Failure → Invalid keys, malformed JSON, or mismatched expected count fail befo
 
 ### Branded Nutrition Coverage Smoke
 
-Trigger → Operator runs `scripts/smoke_branded_lookup_coverage.py`.  
-Behavior → Runs required and proxy restaurant queries against branded lookup providers while skipping existing cache and disabling cache writes by default. Reports provider credential presence without exposing values.  
-Validation → Nutritionix requires `NUTRITIONIX_APP_ID` and `NUTRITIONIX_APP_KEY`; USDA requires `USDA_FDC_API_KEY`; Open Food Facts needs no credentials. `--include-cache` opt-in reads cache. `--respect-gate` can honor production direct-lookup gate.  
-Success → Prints Markdown table or JSON.  
+Trigger → Operator runs `scripts/smoke_branded_lookup_coverage.py`.
+Behavior → Runs required and proxy restaurant queries against active H-E-B, USDA, and Open Food Facts paths while skipping existing cache and disabling cache writes by default.
+Validation → Nutritionix is retired and requires no credentials. USDA uses `USDA_FDC_API_KEY`; Open Food Facts and the curated H-E-B reference require none. `--include-cache` opts into active cache reads, and `--respect-gate` honors the production direct-lookup gate.
+Success → Prints Markdown table or JSON.
 Failure → Provider misses are recorded as coverage rows, not necessarily process failures.
 
 ## 5. API Endpoints
@@ -296,7 +296,6 @@ Gunicorn access logs avoid full query strings. Tests assert Dockerfile and Procf
 | `COOKIE_JAR`, `BODY_FILE` | Temp files | Smoke debug overrides; still cleaned up. |
 | `FITNESS_SKIP_PRE_PUSH_TESTS` | `0` | If `1`, pre-push hook skips pytest suite. |
 | `WHOOP_SYNC_BACKEND` | `app:_run_whoop_sync` | Allows replacing default app-backed sync adapter. |
-| `NUTRITIONIX_APP_ID`, `NUTRITIONIX_APP_KEY` | Empty | Coverage smoke reports Nutritionix missing and skips it. |
 | `USDA_FDC_API_KEY` | Empty | Coverage smoke reports USDA missing and skips it. |
 
 ## 12. Test Coverage

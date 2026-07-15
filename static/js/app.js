@@ -10440,9 +10440,9 @@
     // FIT-6: format a source code into a UI-friendly label. Source
     // strings come from the meal_estimate_schema (e.g. "ai_text_estimate",
     // "fallback_text_estimate", "stub_vision_estimate") and from the
-    // FIT-72 branded-lookup pipeline (e.g. "nutritionix", "usda_fdc",
-    // "local_cache", "personal_vocab"). Unknown codes fall through to
-    // a humanized lower-case form.
+    // branded-lookup pipeline. Labels also retain retired historical sources
+    // such as "nutritionix" so older records stay readable. Unknown codes
+    // fall through to a humanized lower-case form.
     function mealSourceLabel(source) {
         if (!source) return 'AI estimate';
         const map = {
@@ -10458,8 +10458,8 @@
         };
         const key = String(source).trim().toLowerCase();
         if (map[key]) return map[key];
-        // Strip a known prefix like "vision_claude+nutritionix" → use the
-        // more authoritative downstream source label when present.
+        // Strip composed provenance prefixes and use the downstream source
+        // label, including retired historical sources, when present.
         if (key.includes('+')) {
             const tail = key.split('+').pop();
             if (map[tail]) return map[tail];

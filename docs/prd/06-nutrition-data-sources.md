@@ -1,16 +1,16 @@
 # Nutrition Data Sources — PRD
 
-> **Sources:** `branded_food_lookup.py`, `nutritionix_client.py`, `open_food_facts_client.py`, `usda_fdc_client.py`, `heb_product_lookup.py`, `docs/nutrition_sources.md`, `docs/FIT202_PUBLIC_FOOD_SMOKE_AND_ACCURACY_REPORT.md`, `scripts/smoke_branded_lookup_coverage.py`, `tests/test_branded_food_lookup.py`, `app.py`, `meal_text_parser.py`, `meal_estimate_schema.py`
-> **Routes:** Consumed by `POST /api/meal-intake`, `POST /api/meal-intake/barcode`, and `POST /api/meal-intake/<meal_id>/refresh`; provider endpoints are Nutritionix `POST /v2/natural/nutrients`, Nutritionix `GET /v2/search/item`, USDA FDC `/foods/search`, Open Food Facts product lookup, Open Food Facts search, and a curated H-E-B product URL.
+> **Sources:** `branded_food_lookup.py`, `open_food_facts_client.py`, `usda_fdc_client.py`, `heb_product_lookup.py`, `docs/nutrition_sources.md`, `docs/FIT202_PUBLIC_FOOD_SMOKE_AND_ACCURACY_REPORT.md`, `scripts/smoke_branded_lookup_coverage.py`, `tests/test_branded_food_lookup.py`, `app.py`, `meal_text_parser.py`, `meal_estimate_schema.py`; historical Nutritionix provenance is retained in `docs/nutrition_sources.md`.
+> **Routes:** Consumed by `POST /api/meal-intake`, `POST /api/meal-intake/barcode`, and `POST /api/meal-intake/<meal_id>/refresh`; active source paths are USDA FDC `/foods/search`, Open Food Facts product/search lookup, and a curated H-E-B product URL.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
 ## 1. Overview
 
 Nutrition data sources turn owner-entered branded foods, restaurant items, packaged barcodes, and selected review-card edits into structured nutrition estimates. They sit inside the meal logging flow but are intentionally separate from canonical food-log persistence: providers propose estimates, the review policy decides whether the estimate needs review, and accepted rows become the durable food log.
 
-The source hierarchy favors the most specific, low-friction source available: fresh local cache, curated H-E-B reference for one known private-label item, Nutritionix, USDA FoodData Central, then Open Food Facts. Barcode lookup uses a related but narrower order: barcode cache, Nutritionix UPC, USDA branded barcode search, then Open Food Facts barcode. H-E-B product-page lookup is intentionally not used for barcode lookup.
+The active source hierarchy favors the most specific, low-friction source available: fresh local cache, curated H-E-B reference for one known private-label item, USDA FoodData Central, then Open Food Facts. Barcode lookup uses a related but narrower order: barcode cache, USDA branded barcode search, then Open Food Facts barcode. H-E-B product-page lookup is intentionally not used for barcode lookup. Nutritionix is retired; old Nutritionix cache rows and accepted meals are historical provenance, not live lookup results.
 
-Real integration status is mixed. USDA and Open Food Facts client code points at public APIs and gracefully skips/fails closed. Nutritionix client code is implemented, but the repository documentation still marks account quota, Terms of Service, and redistribution/caching details as unverified because the developer docs were not reachable during the earlier research pass. H-E-B is not a general provider client; it is a curated hardcoded reference for one H-E-B Sushiya California Roll product page.
+Real integration status is mixed. USDA and Open Food Facts client code points at public APIs and gracefully skips/fails closed. H-E-B is not a general provider client; it is a curated hardcoded reference for one H-E-B Sushiya California Roll product page. Nutritionix implementation details are retained only as historical audit context in `docs/nutrition_sources.md` and are not active integration behavior.
 
 ## 2. User-Facing Surfaces
 
@@ -64,11 +64,10 @@ Real integration status is mixed. USDA and Open Food Facts client code points at
 
 | Provider | Fields used | Meaning |
 | --- | --- | --- |
-| Nutritionix natural nutrients | `foods[]`, `food_name`, `brand_name`, `serving_qty`, `serving_unit`, `serving_weight_grams`, `nf_calories`, `nf_protein`, `nf_total_carbohydrate`, `nf_total_fat`, `nf_sodium`, `nf_dietary_fiber`, `nix_item_id` | Food identity, serving, macros, sodium, fiber, and provenance. Multi-food responses are summed. |
-| Nutritionix UPC item | Same nutrition fields plus UPC item identity | Barcode-specific packaged item estimate. |
 | USDA FDC search | `foods[]`, `fdcId`, `description`, `brandOwner`, `gtinUpc`, `foodNutrients`, serving-related data where present | Text and barcode fallback, mostly 100 g basis in current code. |
 | Open Food Facts search/product | `code`, `product_name`, `brands`, `url`, `nutriments`, `data_quality_tags`, `countries_tags`, `serving_size`, `serving_quantity`, `quantity` | Packaged product identity, quality filters, nutrition per 100 g or serving, attribution source. |
 | H-E-B curated reference | Hardcoded product name, URL, macros, portion | One product-specific trusted estimate. |
+| Historical Nutritionix records | Historical `foods[]`/UPC estimate fields and source tags | Retained only to explain old accepted meals, snapshots, and cache provenance; not queried or treated as live results. |
 
 ## 4. Interactions & Flows
 
@@ -90,7 +89,7 @@ Failure → Parser continues to LM Studio text estimation; if the model is unava
 
 Trigger → `/api/meal-intake/barcode` receives validated barcode digits.
 
-Behavior → `lookup_barcode` tries barcode cache, Nutritionix UPC, USDA branded barcode search, then Open Food Facts barcode. It never tries H-E-B product-page lookup for barcode. Pending-source fallback is created by `app.py`, not by the provider module.
+Behavior → `lookup_barcode` tries barcode cache, USDA branded barcode search, then Open Food Facts barcode. It never tries H-E-B product-page lookup for barcode. Pending-source fallback is created by `app.py`, not by the provider module.
 
 Validation → Provider estimates must sanitize through the meal estimate schema. USDA barcode results must match barcode variants. Open Food Facts barcode can accept an exact product with nutrition even when complete-quality tags are absent, but still rejects severe quality/energy/macro inconsistencies.
 
@@ -116,7 +115,7 @@ Failure → Lookup continues to the next source in priority order.
 
 Trigger → Query contains a recognized regional chain name such as Bill Miller, Whataburger, Taco Cabana, Torchy's, Rudy's, P. Terry's, Schlotzsky's, Golden Chick, or La Madeleine.
 
-Behavior → The direct lookup gate allows single-menu-item restaurant queries with item tokens and blocks multi-item/meal/combo style phrases. Nutritionix is the primary expected source when credentials are configured. USDA and OFF are unlikely to cover regional chain restaurant items.
+Behavior → The direct lookup gate allows single-menu-item restaurant queries with item tokens and blocks multi-item/meal/combo style phrases. With Nutritionix retired, regional restaurant queries use the remaining active providers when they match; otherwise they fall through to local text estimation or deterministic/manual review. USDA and OFF may be unlikely to cover regional chain restaurant items.
 
 Validation → Wrong-chain or item-category mismatch lowers confidence to review levels. Missing provider brand for a requested brand also lowers confidence.
 
@@ -155,8 +154,6 @@ Failure → Lookup continues to later sources or falls back to review/manual par
 | POST | `/api/meal-intake` | Owner session/CSRF | Text meal submit | `text`, `client_id`, timestamps | Review estimate/payload | Real app route; providers internal |
 | POST | `/api/meal-intake/barcode` | Owner session/CSRF | Barcode lookup | `barcode`, `allow_pending`, `client_id` | Review payload plus barcode metadata | Real app route; providers internal |
 | POST | `/api/meal-intake/<meal_id>/refresh` | Owner session/CSRF | Add/edit/choose source item in review | Refresh kind and item text/candidate | Replacement review payload | Real app route; providers internal |
-| POST | `https://trackapi.nutritionix.com/v2/natural/nutrients` | `x-app-id`, `x-app-key` | Text branded/restaurant lookup | JSON `{"query": "<text>"}` | Nutritionix foods array | Real client code; account/TOS details unverified |
-| GET | `https://trackapi.nutritionix.com/v2/search/item` | `x-app-id`, `x-app-key` | UPC lookup | `upc`, `servings_per_container=true` | Nutritionix foods/items payload | Real client code; account/TOS details unverified |
 | GET | `https://api.nal.usda.gov/fdc/v1/foods/search` | `api_key` query param | Text or barcode USDA lookup | `query`, `dataType`, `pageSize=5` | FDC search payload | Real public API client |
 | GET | `https://world.openfoodfacts.org/cgi/search.pl` | None; User-Agent | OFF text search | Search params, fields, optional country tag | Product list | Real public API client |
 | GET | `https://world.openfoodfacts.org/api/v2/product/<barcode>.json` | None; User-Agent | OFF barcode lookup | Barcode path; fields query | Product payload with `status==1` | Real public API client |
@@ -164,7 +161,6 @@ Failure → Lookup continues to later sources or falls back to review/manual par
 
 Endpoint details:
 
-- Nutritionix clients use 1.5 second timeouts and return `None` for missing credentials, HTTP errors, URL errors, OS errors, timeouts, or JSON parse failures.
 - USDA client uses 1.5 second timeout, requires `USDA_FDC_API_KEY`, and returns `None` on missing key or network/parse errors.
 - Open Food Facts client uses 5 second per-request timeout, 6 second total timeout for search variants, and a fixed User-Agent string.
 - No live scraping or browser automation is allowed in the meal logging path.
@@ -173,8 +169,8 @@ Endpoint details:
 
 | Store | Key | Schema/fields | Retention |
 | --- | --- | --- | --- |
-| `branded_lookup_cache` | `user_id`, `normalized_text` | Source name, response JSON, fetched timestamp | TTL 180 days. Text source replay is `local_cache` with `underlying_source`. |
-| `barcode_lookup_cache` | `user_id`, `barcode` | Source name, response JSON, fetched timestamp | TTL 180 days. Pending-source fallbacks are not cached. |
+| `branded_lookup_cache` | `user_id`, `normalized_text` | Source name, response JSON, fetched timestamp | TTL 180 days for active sources. Retired Nutritionix-tagged rows are historical provenance and are not live lookup results. |
+| `barcode_lookup_cache` | `user_id`, `barcode` | Source name, response JSON, fetched timestamp | TTL 180 days for active sources. Retired Nutritionix-tagged rows are historical provenance and are not live lookup results; pending-source fallbacks are not cached. |
 | `food_logs.original_estimate_json` | `client_id` | Accepted estimate/provenance snapshot | Retained with canonical food log and backup export. |
 | `personal_vocab.canonical_resolution` | `normalized_input` | Learned canonical estimate JSON | Trust controlled by accept/correct/skip/delete counters. |
 | Backup JSON | `food_logs`, `personal_vocab`, `meal_acceptance_events`, `meal_review_snapshots` | Export/import includes provider-derived estimates only after they are part of app data | Raw provider responses are not separately exported unless stored inside safe estimate fields. |
@@ -185,11 +181,11 @@ No provider responses are committed by this feature at runtime. The smoke covera
 
 | Name | Values | Meaning |
 | --- | --- | --- |
-| Text source priority | `cache`, `heb_product_page`, `nutritionix`, `usda_fdc`, `open_food_facts` | Default text lookup order. |
-| Barcode source priority | `cache`, `nutritionix_barcode`, `usda_fdc_barcode`, `open_food_facts_barcode` | Default barcode lookup order; excludes H-E-B page lookup. |
-| Cache TTL | 180 days | Max age for text/barcode lookup cache rows. Nutritionix ToS compatibility is unverified. |
+| Text source priority | `cache`, `heb_product_page`, `usda_fdc`, `open_food_facts` | Active text lookup order. |
+| Barcode source priority | `cache`, `usda_fdc_barcode`, `open_food_facts_barcode` | Active barcode lookup order; excludes H-E-B page lookup. |
+| Cache TTL | 180 days | Max age for active text/barcode lookup cache rows. Retired Nutritionix rows are historical and not live lookup results. |
 | Barcode lengths | 8, 12, 13, 14 | Supported UPC/EAN/GTIN normalized digit lengths. |
-| Nutritionix source tags | `nutritionix`, `nutritionix_barcode` | Text and UPC estimates from Nutritionix. |
+| Historical Nutritionix source tags | `nutritionix`, `nutritionix_barcode` | Historical text/UPC provenance only; never an active provider or live lookup result. |
 | USDA source tags | `usda_fdc`, `usda_fdc_barcode` | Text and barcode estimates from FoodData Central. |
 | Open Food Facts source tags | `open_food_facts`, `open_food_facts_barcode` | Text/search and barcode/product estimates from OFF. |
 | Local/curated source tags | `local_cache`, `heb_product_page` | Cache replay and curated H-E-B product reference. |
@@ -197,8 +193,8 @@ No provider responses are committed by this feature at runtime. The smoke covera
 | USDA text data types | `Branded`, `Foundation`, `SR Legacy` | Data types requested for text search. |
 | USDA barcode data types | `Branded` | Data type requested for barcode search. |
 | Open Food Facts complete-quality tags | `en:nutriments-completed`, `en:nutrition-completed`, `en:nutrition-data-complete` | Quality tags accepted for text search. Barcode can be exact-product permissive. |
-| Provider timeouts | Nutritionix 1.5s; USDA 1.5s; OFF 5s request / 6s total search | Network budget before skipping/failing closed. |
-| Confidence levels | Nutritionix clean 0.85; Nutritionix barcode 0.88; H-E-B curated 0.88; USDA text 0.55; USDA barcode 0.72; OFF text 0.72; OFF barcode 0.72 or 0.82 serving-based; personal vocab at least 0.9 | Review policy and user trust. |
+| Provider timeouts | USDA 1.5s; OFF 5s request / 6s total search | Active network budget before skipping/failing closed. |
+| Confidence levels | H-E-B curated 0.88; USDA text 0.55; USDA barcode 0.72; OFF text 0.72; OFF barcode 0.72 or 0.82 serving-based; personal vocab at least 0.9 | Review policy and user trust. Historical Nutritionix confidence values may remain in old records. |
 | OFF attribution | `Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)` | Best-effort attribution text currently carried in estimates. [TBC] Exact required text remains unverified. |
 | Energy conversion | `KJ_PER_KCAL = 4.184` | Used to convert USDA FDC kJ energy rows to kcal; the OFF energy-mismatch check uses Atwater 4/4/9 factors with 12%/25 kcal tolerance. |
 | Smoke query categories | `required`, `proxy` | Required Bill Miller queries and proxy regional-chain checks. |
@@ -217,7 +213,7 @@ No provider responses are committed by this feature at runtime. The smoke covera
 
 Provider API keys are read from environment variables and are never logged or echoed by the clients. Missing credentials cause silent source skips, not user-visible secret errors. The app stores sanitized estimates and safe provenance, not raw provider payloads, prompt traces, or model messages.
 
-Open Food Facts uses a public API with a fixed app User-Agent. USDA uses a query-parameter API key. Nutritionix uses app ID/key headers. Live scraping is explicitly prohibited in the meal path; any future scraper must be an offline admin script with separate issue, ToS review, robots review, fixtures, and no user-facing endpoint access.
+Open Food Facts uses a public API with a fixed app User-Agent. USDA uses a query-parameter API key. Nutritionix credentials are retired and must not be configured. Live scraping is explicitly prohibited in the meal path; any future scraper must be an offline admin script with separate issue, ToS review, robots review, fixtures, and no user-facing endpoint access.
 
 Source links shown in V2 source viewer are expected to be same-origin sanitized links. Legacy provenance may render external source links with `target="_blank"` and `rel="noopener noreferrer"`.
 
@@ -225,7 +221,6 @@ Source links shown in V2 source viewer are expected to be same-origin sanitized 
 
 - Cache wins first when fresh and trusted for the query context.
 - H-E-B curated lookup wins before provider APIs only for the exact known H-E-B Sushiya California Roll pattern and never for barcode.
-- Nutritionix is the preferred live provider for restaurant/branded natural-language lookup when credentials are configured.
 - USDA is authoritative/public-domain but often generic and serving-size limited; current text estimates are review-oriented and usually 100 g based.
 - Open Food Facts is best for packaged products and international/non-US products, not restaurant chains.
 - Unknown barcode with `allow_pending: false` returns 404; with `allow_pending: true` creates a manual review card with confidence 0.2 and source `barcode_pending_source`.
@@ -238,8 +233,6 @@ Source links shown in V2 source viewer are expected to be same-origin sanitized 
 
 | Config | Default | Behavior when unset |
 | --- | --- | --- |
-| `NUTRITIONIX_APP_ID` | Unset | Nutritionix text and UPC calls return `None`; lookup continues. |
-| `NUTRITIONIX_APP_KEY` | Unset | Same as above. |
 | `USDA_FDC_API_KEY` | Unset | USDA text and barcode calls return `None`; lookup continues. |
 | Open Food Facts credentials | None required | Client can call public endpoints with User-Agent. |
 | `DATA_DIR` | App data directory | Lookup caches live in local SQLite under resolved data dir. |
@@ -247,38 +240,34 @@ Source links shown in V2 source viewer are expected to be same-origin sanitized 
 
 Documentation caveats:
 
-- Nutritionix endpoint/header names are implemented in code but account quota, cache TTL permission, and redistribution rights remain [TBC] in `docs/nutrition_sources.md`.
+- Nutritionix endpoint/header names, quota, cache, and redistribution questions are historical FIT-72/FIT-81 records only; FIT-387 retirement closes them for current runtime use.
 - Open Food Facts license family is documented, but exact attribution text/format, rate limits, and any current API header requirements remain [TBC].
 
 ## 12. Test Coverage
 
-`tests/test_branded_food_lookup.py` is the main coverage file. It covers normalization, direct-lookup gating, H-E-B private-label matching and variant rejection, Nutritionix provenance, regional restaurant handling, category mismatch confidence lowering, source priority order, cache replay, H-E-B cache trust, barcode normalization, barcode cache replay, Nutritionix UPC, USDA-before-OFF ordering, USDA duplicate/incomplete match behavior, OFF barcode fallback, OFF serving macros, and OFF energy mismatch/Atwater checks.
+`tests/test_branded_food_lookup.py` is the main coverage file. It covers normalization, direct-lookup gating, H-E-B private-label matching and variant rejection, historical Nutritionix provenance fixtures, regional restaurant handling, category mismatch confidence lowering, active source priority order, cache replay, H-E-B cache trust, barcode normalization, barcode cache replay, USDA-before-OFF ordering, USDA duplicate/incomplete match behavior, OFF barcode fallback, OFF serving macros, and OFF energy mismatch/Atwater checks.
 
-`scripts/smoke_branded_lookup_coverage.py` provides a read-only regional-chain coverage matrix. It reports provider readiness, skips cache by default, disables cache writes, and records whether production direct lookup would block a query. The committed `docs/nutrition_sources.md` FIT-98 smoke result showed Nutritionix and USDA credentials missing, OFF reachable but not useful for restaurant-chain rows, and regional-chain coverage therefore unresolved in that environment.
+`scripts/smoke_branded_lookup_coverage.py` provides a read-only regional-chain coverage matrix. The committed FIT-98 smoke result is a historical audit artifact: it reported retired Nutritionix and USDA credentials missing, OFF reachable but not useful for restaurant-chain rows, and regional-chain coverage unresolved in that environment. It is not a current Nutritionix smoke requirement.
 
 `docs/FIT202_PUBLIC_FOOD_SMOKE_AND_ACCURACY_REPORT.md` documents CI-safe public barcode/package and photo metadata cases. It records strict barcode assertions, generic photo confidence/pending-review gates, and known macro accuracy limits for vision. For this PRD, the relevant point is that barcode/package cases require strict source/nutrition assertions, while pure vision remains confidence-capped and pending-review.
 
-Coverage gaps: no live-provider integration test can run without credentials; Nutritionix ToS/account verification is not testable in code; source refresh events are only indirectly tied to accepted verified estimates in the assigned sources. [TBC] Additional tests outside the assigned list may cover refresh event creation.
+Coverage gaps: no live-provider integration test can run without credentials; historical Nutritionix ToS/account questions are not testable in code and are closed by retirement; source refresh events are only indirectly tied to accepted verified estimates in the assigned sources. [TBC] Additional tests outside the assigned list may cover refresh event creation.
 
 ## 13. Gaps & Issue Candidates
 
-### IC-1: Verify Nutritionix quota, cache TTL, and redistribution
+### Historical IC-1: Verify Nutritionix quota, cache TTL, and redistribution (superseded by FIT-387)
 - **Type:** Data-contract
 - **Priority:** high
 - **Where:** `docs/nutrition_sources.md`; `nutritionix_client.py`; `branded_food_lookup.py`
-- **Problem:** The Nutritionix client is implemented, but repository docs still mark live account quota, ToS cache duration, redistribution, and some endpoint details as unverified because the docs were blocked during research.
-- **Why it matters:** A 180-day cache or committed/offline snapshot could violate provider terms if the assumptions are wrong.
-- **Acceptance criteria:**
-  - Owner verifies current Nutritionix dashboard quota and ToS using the production account.
-  - Cache TTL and offline/snapshot permissions are documented with date and source.
-  - Code TTL is adjusted if the verified limit is shorter than 180 days.
-  - PR/test docs state expected behavior when quota is exhausted.
+- **Historical problem:** The Nutritionix client was implemented, but repository docs marked live account quota, ToS cache duration, redistribution, and some endpoint details as unverified because the docs were blocked during research.
+- **Historical rationale:** A 180-day cache or committed/offline snapshot could have violated provider terms if the assumptions were wrong. FIT-387 retires the provider instead of relying on those assumptions.
+- **Original acceptance criteria (historical, not active):** FIT-72 planned owner verification of the dashboard quota and ToS, dated cache/redistribution documentation, TTL adjustment if the limit was shorter than 180 days, and documented quota-exhaustion behavior. Those plans were superseded by the retirement decision.
 - **Duplicate-of:** none
 
 ### IC-2: Add provider fallback observability
 - **Type:** Improvement
 - **Priority:** high
-- **Where:** `branded_food_lookup.py`; `nutritionix_client.py`; `usda_fdc_client.py`; `open_food_facts_client.py`
+- **Where:** `branded_food_lookup.py`; `usda_fdc_client.py`; `open_food_facts_client.py`
 - **Problem:** Provider clients generally fail closed by returning `None`, which is user-safe but makes it hard to distinguish missing credentials, quota failures, provider errors, quality rejection, and no-match fallthrough.
 - **Why it matters:** Silent fallback can turn a provider coverage issue into a low-confidence manual estimate without enough evidence to fix the source chain.
 - **Acceptance criteria:**
@@ -353,15 +342,11 @@ Coverage gaps: no live-provider integration test can run without credentials; Nu
   - Rate-limit/backoff behavior is documented or implemented if OFF requires it.
 - **Duplicate-of:** none
 
-### IC-8: Add credentialed provider smoke mode with safe output
+### Historical IC-8: Add credentialed provider smoke mode with safe output (superseded by FIT-387)
 - **Type:** Test
 - **Priority:** medium
 - **Where:** `scripts/smoke_branded_lookup_coverage.py`; `docs/nutrition_sources.md`
-- **Problem:** The smoke helper is read-only and useful, but the committed FIT-98 result was environment-limited because Nutritionix and USDA credentials were missing. There is no standardized credentialed smoke report shape that proves live regional/provider coverage without leaking secrets or mutating caches.
-- **Why it matters:** Provider coverage can appear broken in clean CI while working locally, or vice versa, without a safe evidence artifact.
-- **Acceptance criteria:**
-  - Add a documented credentialed smoke command that redacts secrets and disables cache writes.
-  - Output separates provider unavailable, no match, wrong-chain match, and accepted match.
-  - Report includes provider status, source priority, cache mode, and direct-gate mode.
-  - Tests cover report formatting and redaction without live network.
+- **Historical problem:** The smoke helper was read-only and useful, but the committed FIT-98 result was environment-limited because Nutritionix and USDA credentials were missing. There was no standardized credentialed smoke report shape that proved live regional/provider coverage without leaking secrets or mutating caches.
+- **Historical rationale:** Provider coverage could appear broken in clean CI while working locally, or vice versa, without a safe evidence artifact. Nutritionix retirement removes it from current provider smoke requirements.
+- **Original acceptance criteria (historical, not active):** The historical plan called for a credentialed command with redacted output and disabled cache writes, separate unavailable/no-match/wrong-chain/accepted outcomes, provider/priority/cache/direct-gate fields, and redaction tests. No current Nutritionix credentialed smoke command is required.
 - **Duplicate-of:** none

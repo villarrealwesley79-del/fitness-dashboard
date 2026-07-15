@@ -33,7 +33,7 @@ def _estimate(**overrides):
         "confidence": 0.86,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix",
+        "source": "usda_fdc",
     }
     estimate.update(overrides)
     return estimate
@@ -56,7 +56,7 @@ def _stub_parser(monkeypatch, module):
                 portion_description="1 bowl",
                 calories=520,
                 confidence=0.91,
-                source="nutritionix",
+                source="usda_fdc",
             )
         else:
             estimate = _estimate(
@@ -84,7 +84,7 @@ def _stub_parser(monkeypatch, module):
                         "confidence": 0.9,
                         "ambiguous": False,
                         "uncertainty_notes": [],
-                        "source": "nutritionix",
+                        "source": "usda_fdc",
                         "verified_source_url": "https://example.com/raw-candidate",
                         "prompt": "do not persist",
                     }
@@ -376,7 +376,7 @@ def test_refresh_add_item_appends_once_with_stable_sequence(monkeypatch, tmp_pat
     assert added.status_code == 200, added.get_data(as_text=True)
     assert [item["item_id"] for item in added_body["items"]] == ["item-1", "item-2"]
     assert added_body["items"][1]["name"] == "Burrito bowl"
-    assert added_body["items"][1]["source"] == {"kind": "nutritionix", "label": "nutritionix", "link": None}
+    assert added_body["items"][1]["source"] == {"kind": "usda_fdc", "label": "usda_fdc", "link": None}
     assert added_body["meal_totals"]["calories"] == 1160
     assert added_body["save_blocked_item_ids"] == ["item-1"]
     assert replay.status_code == 200, replay.get_data(as_text=True)

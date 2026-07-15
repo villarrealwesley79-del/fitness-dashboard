@@ -289,7 +289,6 @@ def test_open_food_facts_lookup_uses_later_usable_variant(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
 
     estimate = branded_food_lookup.lookup("Australian Tim Tams")
@@ -304,7 +303,6 @@ def test_open_food_facts_prefers_requested_country(monkeypatch):
     australia = _product("Tim Tam", code="right", country="en:australia")
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -321,7 +319,6 @@ def test_open_food_facts_prefers_requested_country(monkeypatch):
 def test_open_food_facts_rejects_wrong_country_for_locale(monkeypatch):
     wrong_country = _product("Tim Tam US", code="wrong", country="en:united-states")
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -339,7 +336,6 @@ def test_open_food_facts_rejects_us_only_for_non_us_query(monkeypatch):
     canada = _product("Smarties Canada", code="canada", country="en:canada")
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -356,7 +352,6 @@ def test_open_food_facts_rejects_us_only_for_non_us_query(monkeypatch):
 def test_open_food_facts_tier_runs_after_usda(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -376,7 +371,6 @@ def test_open_food_facts_tier_runs_after_usda(monkeypatch):
 
 def test_open_food_facts_skips_generic_meal_text(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -442,7 +436,6 @@ def test_open_food_facts_accepts_zero_calorie_products(monkeypatch):
     )
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -461,7 +454,6 @@ def test_open_food_facts_filters_bad_quality(monkeypatch):
     bad = _product("Bad Product")
     bad["data_quality_tags"] = ["en:nutrition-data-error"]
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "search_products", lambda *_a, **_kw: {"products": [bad]})
 
@@ -472,7 +464,6 @@ def test_open_food_facts_rejects_rows_without_complete_quality_tag(monkeypatch):
     product = _product("Untagged Product", code="untagged")
     product["data_quality_tags"] = []
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -490,7 +481,6 @@ def test_open_food_facts_accepts_actual_completion_quality_tag(monkeypatch):
     product["data_quality_tags"] = ["en:nutrition-completed"]
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -509,7 +499,6 @@ def test_open_food_facts_handles_punctuated_uk_locale(monkeypatch):
     uk_product = _product("Walkers Crisps", code="uk", country="en:united-kingdom")
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -532,7 +521,6 @@ def test_open_food_facts_skips_nutrition_mismatch_warnings(monkeypatch):
     good = _product("Clean Product", code="good")
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -557,7 +545,6 @@ def test_open_food_facts_skips_salt_quality_warnings(monkeypatch):
     good["nutriments"]["sodium_100g"] = 0.252
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -578,7 +565,6 @@ def test_open_food_facts_defaults_malformed_optional_nutrients(monkeypatch):
     product["nutriments"]["sodium_100g"] = "unknown"
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -600,7 +586,6 @@ def test_open_food_facts_falls_back_to_salt_when_sodium_malformed(monkeypatch):
     product["nutriments"]["salt_100g"] = 0.64
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -621,7 +606,6 @@ def test_open_food_facts_skips_schema_invalid_candidates(monkeypatch):
     good = _product("Clean Product", code="good")
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
     monkeypatch.setattr(
         branded_food_lookup.open_food_facts_client,
@@ -646,7 +630,6 @@ def test_open_food_facts_non_us_cases_are_appendable(monkeypatch):
     ]
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
-    monkeypatch.setattr(branded_food_lookup.nutritionix_client, "natural_nutrients", lambda *_a: None)
     monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a: None)
 
     for query, name, country in cases:

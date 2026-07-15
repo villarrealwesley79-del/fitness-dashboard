@@ -57,11 +57,11 @@ def test_sanitize_meal_estimate_returns_public_schema_only():
 def test_sanitize_meal_estimate_preserves_lookup_provenance():
     sanitized = sanitize_meal_estimate(_valid_estimate(
         external_food_id="chipotle-burrito",
-        verified_source_url="https://www.nutritionix.com/",
+        verified_source_url="https://fdc.nal.usda.gov/",
         data_fetched_at="2026-05-19T10:00:00",
         portion_basis="1 burrito",
         brand_id="chipotle",
-        underlying_source="nutritionix",
+        underlying_source="usda_fdc",
         off_attribution={
             "name": "Open Food Facts",
             "url": "https://world.openfoodfacts.org/",
@@ -70,11 +70,11 @@ def test_sanitize_meal_estimate_preserves_lookup_provenance():
     ))
 
     assert sanitized["external_food_id"] == "chipotle-burrito"
-    assert sanitized["verified_source_url"] == "https://www.nutritionix.com/"
+    assert sanitized["verified_source_url"] == "https://fdc.nal.usda.gov/"
     assert sanitized["data_fetched_at"] == "2026-05-19T10:00:00"
     assert sanitized["portion_basis"] == "1 burrito"
     assert sanitized["brand_id"] == "chipotle"
-    assert sanitized["underlying_source"] == "nutritionix"
+    assert sanitized["underlying_source"] == "usda_fdc"
     assert sanitized["off_attribution"] == {
         "name": "Open Food Facts",
         "url": "https://world.openfoodfacts.org/",
@@ -132,7 +132,7 @@ def test_image_meal_intake_uses_public_schema_and_drops_private_fields(monkeypat
         "confidence": 0.82,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix",
+        "source": "usda_fdc",
     })
     monkeypatch.setattr(module, "add_food_log", lambda _uid, record: {
         "client_id": record["client_id"],
@@ -142,7 +142,7 @@ def test_image_meal_intake_uses_public_schema_and_drops_private_fields(monkeypat
     res = module.app.test_client().post(
         "/api/meal-intake",
         data={
-            "client_id": "fit5-image-1",
+            "client_id": "fit387-schema-usda-1",
             "text": "burger",
             "image": (io.BytesIO(b"fake-image"), "meal.jpg"),
         },
@@ -151,7 +151,7 @@ def test_image_meal_intake_uses_public_schema_and_drops_private_fields(monkeypat
 
     assert res.status_code == 200, res.get_data(as_text=True)
     body = res.get_json()
-    assert body["estimate"]["source"] == "vision_claude+nutritionix"
+    assert body["estimate"]["source"] == "vision_claude+usda_fdc"
     assert {
         "item_name",
         "portion_description",

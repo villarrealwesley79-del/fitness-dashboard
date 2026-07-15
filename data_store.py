@@ -91,7 +91,11 @@ FOOD_ESTIMATE_FIELDS = {
     "vision_confidence",
     "_imported_pending_untrusted",
 }
-_ACCEPTED_NUTRITION_SOURCES = {"nutritionix", "usda_fdc", "open_food_facts", "heb_product_page"}
+# Keep retired sources in the persistence vocabulary so existing accepted
+# estimates round-trip without rewriting their historical provenance. Only
+# active sources may authorize a new accepted-estimate replacement.
+_PERSISTED_NUTRITION_SOURCES = {"nutritionix", "usda_fdc", "open_food_facts", "heb_product_page"}
+_ACTIVE_NUTRITION_SOURCES = {"usda_fdc", "open_food_facts", "heb_product_page"}
 _ACCEPTED_NUTRITION_WRAPPERS = {
     "vision_claude",
     "vision_lm_studio",
@@ -153,13 +157,17 @@ def sanitize_food_estimate(estimate: Optional[dict]) -> Optional[dict]:
     return safe or None
 
 
-def _has_accepted_mixed_provenance(estimate: Optional[dict]) -> bool:
+def _has_accepted_mixed_provenance(
+    estimate: Optional[dict],
+    *,
+    allowed_sources: set[str] = _PERSISTED_NUTRITION_SOURCES,
+) -> bool:
     if not isinstance(estimate, dict):
         return False
     source = str(estimate.get("source") or "").strip().lower()
     underlying_source = str(estimate.get("underlying_source") or "").strip().lower()
     provenance_parts = _provenance_components(source, underlying_source)
-    allowed_components = _ACCEPTED_NUTRITION_SOURCES | _ACCEPTED_NUTRITION_WRAPPERS | {"mixed_lookup"}
+    allowed_components = allowed_sources | _ACCEPTED_NUTRITION_WRAPPERS | {"mixed_lookup"}
     if not provenance_parts or not provenance_parts.issubset(allowed_components):
         return False
     is_mixed = "mixed_lookup" in provenance_parts
@@ -169,7 +177,7 @@ def _has_accepted_mixed_provenance(estimate: Optional[dict]) -> bool:
         and not bool(estimate.get("ambiguous"))
         and isinstance(sources, list)
         and bool(sources)
-        and _has_valid_declared_underlying_sources(estimate)
+        and _has_valid_declared_underlying_sources(estimate, allowed_sources=allowed_sources)
     )
 
 
@@ -182,7 +190,11 @@ def _provenance_components(source: str, underlying_source: str) -> set[str]:
     }
 
 
-def _has_valid_declared_underlying_sources(estimate: Optional[dict]) -> bool:
+def _has_valid_declared_underlying_sources(
+    estimate: Optional[dict],
+    *,
+    allowed_sources: set[str] = _PERSISTED_NUTRITION_SOURCES,
+) -> bool:
     if not isinstance(estimate, dict):
         return False
     sources = estimate.get("underlying_sources")
@@ -193,7 +205,7 @@ def _has_valid_declared_underlying_sources(estimate: Optional[dict]) -> bool:
         and bool(sources)
         and all(
             isinstance(value, str)
-            and value.strip().lower() in _ACCEPTED_NUTRITION_SOURCES
+            and value.strip().lower() in allowed_sources
             for value in sources
         )
     )
@@ -217,7 +229,7 @@ def _is_authorized_accepted_estimate_replacement(estimate: Optional[dict]) -> bo
         return False
     if bool(safe.get("ambiguous")):
         return False
-    if not _has_valid_declared_underlying_sources(estimate):
+    if not _has_valid_declared_underlying_sources(estimate, allowed_sources=_ACTIVE_NUTRITION_SOURCES):
         return False
     for field in ("calories", "protein_g", "carbs_g", "fat_g"):
         value = safe.get(field)
@@ -250,12 +262,12 @@ def _is_authorized_accepted_estimate_replacement(estimate: Optional[dict]) -> bo
     source = str(safe.get("source") or "").strip().lower()
     underlying_source = str(safe.get("underlying_source") or "").strip().lower()
     provenance_parts = _provenance_components(source, underlying_source)
-    allowed_components = _ACCEPTED_NUTRITION_SOURCES | _ACCEPTED_NUTRITION_WRAPPERS | {"mixed_lookup"}
+    allowed_components = _ACTIVE_NUTRITION_SOURCES | _ACCEPTED_NUTRITION_WRAPPERS | {"mixed_lookup"}
     if not provenance_parts or not provenance_parts.issubset(allowed_components):
         return False
     if "mixed_lookup" in provenance_parts:
-        return _has_accepted_mixed_provenance(estimate)
-    providers = provenance_parts & _ACCEPTED_NUTRITION_SOURCES
+        return _has_accepted_mixed_provenance(estimate, allowed_sources=_ACTIVE_NUTRITION_SOURCES)
+    providers = provenance_parts & _ACTIVE_NUTRITION_SOURCES
     if len(providers) != 1:
         return False
     declared_sources = estimate.get("underlying_sources") if isinstance(estimate, dict) else None

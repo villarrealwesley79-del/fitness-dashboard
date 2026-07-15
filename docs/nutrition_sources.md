@@ -1,53 +1,52 @@
 # Nutrition data sources — compliance, auth, caching, attribution
 
-**Owner:** Codex research; this doc gates FIT-72 / FIT-75 / FIT-76 PR merges.
-**Last verified:** 2026-05-19 (Claude Code via WebFetch + planning context).
-**Re-verify:** quarterly, or before any nutrition-source PR ships.
+**Status:** Nutritionix is retired as of 2026-07-15 because no free personal access remains. It is not an active lookup source, credential target, cache-refresh target, or smoke-test prerequisite.
+**Owner:** Historical source-compliance and audit record; active-source changes belong to a new issue.
+**Last verified:** 2026-05-19 for the historical FIT-72/FIT-75/FIT-76 research record.
+**Re-verify:** Nutritionix is not re-verified unless a future, separately approved reintroduction issue exists.
 
 ## Why this doc exists
 
-FIT-72 introduces external nutrition-data lookups (Nutritionix, USDA FoodData Central). FIT-75 ships an offline snapshot. FIT-76 adds Open Food Facts for non-US foods. Each source has its own auth model, rate limits, license, and Terms of Service constraints. Before any of those PRs merge, this file must show the current numbers and constraints for each source — pinned to a verification date so future re-verification is mechanical.
+FIT-72 introduced external nutrition-data lookups and FIT-75/FIT-76 added offline and Open Food Facts coverage. Those are historical implementation and audit records. Active lookup sources are the curated H-E-B product reference, USDA FoodData Central, Open Food Facts, local cache replay where valid, and deterministic/manual fallbacks. Each active source has its own auth model, rate limits, license, and Terms of Service constraints.
 
 Additionally, this doc codifies the repo-wide rule that **live scraping is not allowed in the meal log path** — see [Scraping policy](#scraping-policy) below.
 
 ---
 
-## 1. Nutritionix
+## 1. Nutritionix (retired)
 
-### Status: **research gap — requires owner verification at account onboarding**
+### Status: **retired — no free personal access remains**
 
-The Nutritionix developer documentation site (`developer.nutritionix.com`) is behind Cloudflare bot protection at the time of this writeup; the WebFetch tool could not retrieve its content. The following is what FIT-72 / FIT-16 planning context recorded, **explicitly marked unverified.**
+Nutritionix is not an active provider. Do not configure Nutritionix credentials, onboard an account, refresh Nutritionix cache rows, or use Nutritionix in runtime/provider priority or smoke coverage. Existing accepted meals, provenance fields, and cache rows tagged `nutritionix` or `nutritionix_barcode` remain historical records only; they are not live lookup results.
 
-Before merging FIT-72 (PR #56), the owner must log into the Nutritionix developer dashboard with the actual account that will be used in production and confirm each of these numbers in writing in this doc.
+The remainder of this section preserves the FIT-72/FIT-81 planning record for auditability. It is historical context, not current integration or onboarding guidance.
 
-### Endpoint (planning context, unverified)
-- **Base URL:** `https://trackapi.nutritionix.com`
-- **Natural-language nutrition endpoint:** `POST /v2/natural/nutrients`
-- **Body:** `{"query": "<free text>"}`
-- **Response:** array of `foods` with `food_name`, `serving_qty`, `serving_unit`, `nf_calories`, `nf_protein`, `nf_total_carbohydrate`, `nf_total_fat`, `nf_sodium`, `nf_dietary_fiber`, and per-food provenance fields.
+### Endpoint (historical planning context, unverified)
+- **Historical base URL:** `https://trackapi.nutritionix.com`
+- **Historical natural-language nutrition endpoint:** `POST /v2/natural/nutrients`
+- **Historical body:** `{"query": "<free text>"}`
+- **Historical response:** array of `foods` with `food_name`, `serving_qty`, `serving_unit`, `nf_calories`, `nf_protein`, `nf_total_carbohydrate`, `nf_total_fat`, `nf_sodium`, `nf_dietary_fiber`, and per-food provenance fields.
 
-### Auth (planning context, **UNVERIFIED**)
-- Two env vars expected: `NUTRITIONIX_APP_ID` and `NUTRITIONIX_APP_KEY`.
-- Expected to pass as request headers: `x-app-id`, `x-app-key`.
-- Never logged or echoed. Absent keys → silently skip the Nutritionix layer (FIT-72 AC8).
-- **Owner must verify the exact header names and env-var contract from the Nutritionix developer dashboard before FIT-72 PR #56 merges.**
+### Auth (historical planning context, **UNVERIFIED**)
+- Historical env vars recorded: `NUTRITIONIX_APP_ID` and `NUTRITIONIX_APP_KEY`.
+- Historical request headers recorded: `x-app-id`, `x-app-key`.
+- Never logged or echoed. FIT-72 recorded absent keys as a graceful skip.
+- The recorded header and env-var names are retained for historical provenance only; no current owner verification or credential onboarding is required.
 
-### Quota (planning context, UNVERIFIED — owner must confirm)
-- "Free developer tier: ~150 requests/day" — **this number is from prior planning notes, NOT confirmed against the live dashboard**. The actual number may differ. Verify before relying on it.
+### Quota (historical planning context, UNVERIFIED)
+- "Free developer tier: ~150 requests/day" — **this number is from prior planning notes, NOT confirmed against the live dashboard**. The actual number may differ. It must not be relied on for current runtime behavior.
 - Paid tiers: existence unverified. The $79/mo / 5K req/day figure mentioned in earlier planning is **also unverified.**
 
-### ToS — caching duration (UNVERIFIED — research gap)
-- FIT-72 plan assumes 180-day local-cache TTL is acceptable.
-- The actual Nutritionix Terms of Service may restrict response caching duration. **Owner must read the ToS during account onboarding and document the actual allowed TTL here.** If it is shorter than 180 days, FIT-72's cache TTL must be tightened before merge.
+### ToS — caching duration (historical planning context, UNVERIFIED)
+- FIT-72 plan assumed 180-day local-cache TTL was acceptable.
+- The actual Nutritionix Terms of Service were not verified in that planning record. No current cache refresh or TTL decision is based on this assumption.
 
-### ToS — redistribution (UNVERIFIED — research gap)
-- FIT-75 (offline snapshot bundle) plans to commit Nutritionix responses to the repo for offline use. Whether the ToS permits this is **unverified**. If forbidden, FIT-75 reduces to a USDA-FDC-only snapshot.
+### ToS — redistribution (historical planning context, UNVERIFIED)
+- FIT-75 recorded a planned offline snapshot containing Nutritionix responses. Redistribution permission was not verified. This plan is historical and is not an active snapshot or redistribution requirement.
 
-### Verification checklist for the owner
-- [ ] Log into Nutritionix developer dashboard with the production account.
-- [ ] Record the actual free-tier daily quota in this doc.
-- [ ] Read the current Terms of Service. Record cache-TTL and redistribution constraints in this doc.
-- [ ] If quota or ToS differ from FIT-72's assumptions, comment on PR #56 to gate merge until reconciled.
+### Historical verification record
+
+FIT-72/FIT-81 retained the endpoint, header, quota, cache, and redistribution questions above as unverified research gaps. FIT-387 supersedes those onboarding and verification actions by retiring Nutritionix; no current credentials or provider smoke run should be created from this record.
 
 ---
 
@@ -81,7 +80,7 @@ Source: the FDC API Guide page, sections "Sample Calls," "Gaining Access," "Rate
 - Experimental Foods
 - Branded Foods
 
-Which subset FIT-72 actually filters to is a repo-specific implementation choice; see `usda_fdc_client.py` on the FIT-72 branch for the current `PREFERRED_DATA_TYPES` value. Branded Foods coverage exists but is thin for chain restaurants — see FIT-72's rationale for Nutritionix sitting ahead in the lookup chain.
+Which subset FIT-72 actually filters to is a repo-specific implementation choice; see `usda_fdc_client.py` on the FIT-72 branch for the historical `PREFERRED_DATA_TYPES` value. Branded Foods coverage exists but is thin for chain restaurants — FIT-72's historical rationale placed the now-retired Nutritionix ahead in the old lookup chain.
 
 ### License
 - **Public domain** under CC0 1.0 Universal. "USDA FoodData Central data are in the public domain and they are not copyrighted."
@@ -150,7 +149,7 @@ Source: the OFF data page (https://world.openfoodfacts.org/data). The Terms of U
 - BeautifulSoup against restaurant or grocery sites
 - Any other HTML scraping / browser automation library
 
-Source aggregators (Nutritionix, USDA FDC, Open Food Facts) have already paid the licensing cost; rebuilding that data via scraping is wasted effort with active ToS exposure.
+Active source aggregators (USDA FDC and Open Food Facts) already publish licensed data; rebuilding that data via scraping is wasted effort with active ToS exposure.
 
 ### Audit
 
@@ -175,7 +174,9 @@ This is the same posture FIT-72 documented in its rejection of Scrapling. Do not
 
 ---
 
-## 5. FIT-98 regional-chain coverage smoke test
+## 5. FIT-98 regional-chain coverage smoke test (historical)
+
+This section is a retained FIT-98 audit artifact from 2026-05-20. It is not a current Nutritionix smoke procedure. Nutritionix is retired, and no credentialed Nutritionix smoke run is expected.
 
 **Run date:** 2026-05-20 23:35 CDT
 **Command:** `.venv/bin/python scripts/smoke_branded_lookup_coverage.py`
@@ -184,7 +185,7 @@ This is the same posture FIT-72 documented in its rejection of Scrapling. Do not
 Provider status for this run:
 
 - **Direct lookup gate:** bypassed for coverage matrix; production gate recorded per row.
-- **Nutritionix:** missing `NUTRITIONIX_APP_ID` / `NUTRITIONIX_APP_KEY`, so this run could not prove Nutritionix live coverage.
+- **Nutritionix (historical):** missing `NUTRITIONIX_APP_ID` / `NUTRITIONIX_APP_KEY`, so this run could not prove Nutritionix live coverage. This remains historical evidence, not a current credential prerequisite.
 - **USDA FDC:** missing `USDA_FDC_API_KEY`, so this run could not prove USDA live coverage.
 - **Open Food Facts:** no credentials required. The restaurant-chain queries below are not packaged-food queries, so OFF is not expected to cover them.
 
@@ -194,23 +195,23 @@ Follow-up filed: FIT-123 tracks the direct-lookup gate blocking regional restaur
 
 | Category | Query | Outcome | Matched item | Calories | Source URL | Confidence | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| required | bill miller bacon and egg taco | provider unavailable |  |  |  |  | FIT-98 Bill Miller BBQ query; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
-| required | bill miller breakfast sandwich on biscuit | provider unavailable |  |  |  |  | FIT-98 Bill Miller BBQ query; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
-| required | bill miller brisket sandwich | provider unavailable |  |  |  |  | FIT-98 Bill Miller BBQ query; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
-| proxy | whataburger patty melt | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
-| proxy | taco cabana bean and cheese taco | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
-| proxy | torchys democrat taco | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
-| proxy | rudys brisket sandwich | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
-| proxy | p terrys cheeseburger | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
-| proxy | schlotzskys original sandwich | provider unavailable |  |  |  |  | Regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
-| proxy | golden chick chicken tenders | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
-| proxy | la madeleine chicken caesar salad | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| required | bill miller bacon and egg taco | provider unavailable |  |  |  |  | FIT-98 historical Bill Miller BBQ query; historical Nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; historical usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| required | bill miller breakfast sandwich on biscuit | provider unavailable |  |  |  |  | FIT-98 historical Bill Miller BBQ query; historical Nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; historical usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| required | bill miller brisket sandwich | provider unavailable |  |  |  |  | FIT-98 historical Bill Miller BBQ query; historical Nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; historical usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | whataburger patty melt | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; historical Nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; historical usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | taco cabana bean and cheese taco | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; historical Nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; historical usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | torchys democrat taco | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; historical Nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; historical usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | rudys brisket sandwich | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; historical Nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; historical usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | p terrys cheeseburger | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; historical Nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; historical usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | schlotzskys original sandwich | provider unavailable |  |  |  |  | Regional chain proxy, not user-confirmed; historical Nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; historical usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | golden chick chicken tenders | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; historical Nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; historical usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
+| proxy | la madeleine chicken caesar salad | provider unavailable |  |  |  |  | Texas/regional chain proxy, not user-confirmed; historical Nutritionix skipped: missing NUTRITIONIX_APP_ID/NUTRITIONIX_APP_KEY; historical usda_fdc skipped: missing USDA_FDC_API_KEY; open_food_facts reached with no verified match; fell through before AI fallback; production direct-lookup gate would block this query |
 
 ### FIT-98 UI source-label verification
 
 The meal review surface already distinguishes source types in `static/js/app.js`:
 
-- Verified branded/generic lookup labels: `Nutritionix`, `USDA`, `Open Food Facts`.
+- Historical verified branded/generic lookup labels included `Nutritionix`, `USDA`, and `Open Food Facts`; Nutritionix labels are retained only to explain old meal provenance.
 - Fallback/low-certainty label: `Fallback preset`.
 - Provenance links render from `verified_source_url`, `source_url`, or `product_url` when present.
 
@@ -218,25 +219,19 @@ FIT-98 added static test coverage for these labels so a future UI edit does not 
 
 ---
 
-## 6. Verification log
+## 6. Verification log (historical)
 
 | Date | Verifier | Source | Action |
 |---|---|---|---|
 | 2026-05-19 | Claude Code | https://fdc.nal.usda.gov/api-guide/ | Initial USDA FDC section populated from live docs. |
 | 2026-05-19 | Claude Code | https://world.openfoodfacts.org/data | OFF license confirmed (ODbL + DbCL + CC-BY-SA). Attribution text unresolved — flagged for FIT-76 verification. |
-| 2026-05-19 | Claude Code | developer.nutritionix.com | **Blocked by Cloudflare; could not retrieve.** Nutritionix section relies on prior planning context, marked unverified throughout. Owner verification required before FIT-72 PR #56 merges. |
-| 2026-05-20 | Codex | FIT-98 smoke helper | Regional-chain smoke matrix added. Provider lookup was exercised for coverage, with the production direct-lookup gate recorded separately per row. Live provider coverage remains environment-limited because Nutritionix and USDA credentials were absent; Open Food Facts was reached and did not verify these restaurant-chain rows. |
+| 2026-05-19 | Claude Code | developer.nutritionix.com | **Blocked by Cloudflare; could not retrieve.** Historical Nutritionix section relied on prior planning context and remained unverified. Owner verification was a FIT-72-era action, superseded by FIT-387 retirement. |
+| 2026-05-20 | Codex | FIT-98 smoke helper | Historical regional-chain smoke matrix. Provider lookup was exercised for coverage, with the production direct-lookup gate recorded separately per row. Historical live coverage was environment-limited because retired Nutritionix and USDA credentials were absent; Open Food Facts was reached and did not verify these restaurant-chain rows. |
 
-### Open verification items (must close before the named PRs merge)
+### Historical issue records (superseded by FIT-387)
 
-- [ ] **FIT-72 (PR #56):** owner verifies all Nutritionix integration details that this doc marks unverified, AND updates the doc with the verified numbers:
-  - Exact base URL and `/v2/natural/nutrients` endpoint shape.
-  - Required auth header names (`x-app-id` / `x-app-key`) and env-var contract (`NUTRITIONIX_APP_ID` / `NUTRITIONIX_APP_KEY`).
-  - Required response and provenance fields actually returned by the live API.
-  - Free-tier daily request quota.
-  - ToS cache-TTL constraint (relative to the planned 180-day local cache).
-  - Whether the planned `vcr` cassettes the implementation depends on can be recorded under the free tier.
-- [ ] **FIT-75 (PR #59):** owner confirms whether Nutritionix ToS permits redistributing response data in this repo's offline snapshot bundle. If forbidden, FIT-75 reduces to USDA-FDC-only snapshot.
+- **FIT-72 (PR #56):** retained the original Nutritionix endpoint, credential, quota, response, cache, and cassette verification questions. No current verification or onboarding action remains.
+- **FIT-75 (PR #59):** retained the original Nutritionix offline-snapshot redistribution question. No current Nutritionix snapshot or redistribution action remains.
 - [ ] **FIT-76 (PR #60):** integrator verifies all OFF integration details that this doc marks partial / unverified, AND updates the doc with verified facts:
   - Exact attribution text and format required by ODbL + DbCL for derived works.
   - Share-alike obligations that apply to per-row consumption vs full-database republication.

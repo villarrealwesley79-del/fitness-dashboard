@@ -128,7 +128,7 @@ def _stub_vision_pipeline(monkeypatch, module):
                 confidence=0.45,
                 ambiguous=True,
                 uncertainty_notes=["Portion is unclear."],
-                source="nutritionix",
+                source="usda_fdc",
             )
         if "half" in norm:
             return _estimate(
@@ -138,9 +138,9 @@ def _stub_vision_pipeline(monkeypatch, module):
                 carbs_g=41,
                 fat_g=12,
                 confidence=0.84,
-                source="nutritionix",
+                source="usda_fdc",
             )
-        return _estimate(portion_description="1 burrito", confidence=0.84, source="nutritionix")
+        return _estimate(portion_description="1 burrito", confidence=0.84, source="usda_fdc")
 
     monkeypatch.setattr(module.vision_estimator, "describe", fake_describe)
     monkeypatch.setattr(module.branded_food_lookup, "lookup", fake_lookup)
@@ -224,7 +224,7 @@ def test_text_only_submit_persists_pending_review_burrito(meal_e2e, monkeypatch)
     _stub_text_parser(
         monkeypatch,
         meal_e2e.module,
-        _estimate(source="nutritionix"),
+        _estimate(source="usda_fdc"),
     )
 
     body = _post_text(
@@ -235,7 +235,7 @@ def test_text_only_submit_persists_pending_review_burrito(meal_e2e, monkeypatch)
 
     assert body["status"] == "pending_review"
     assert body["estimate"]["confidence"] >= 0.75
-    assert body["estimate"]["source"] in {"nutritionix", "ai_text_estimate"}
+    assert body["estimate"]["source"] in {"usda_fdc", "ai_text_estimate"}
     row = _log_by_client_id(meal_e2e, "fit83-text-auto-1")
     assert row["correction_state"] == "pending_review"
     assert row["item_name"] == "Chipotle chicken burrito"
@@ -275,12 +275,12 @@ def test_photo_only_submit_uses_vision_pipeline_and_drops_raw_image(meal_e2e):
 
     assert body["status"] == "pending_review"
     assert body["estimate"]["from_image"] is True
-    assert body["estimate"]["source"] == "vision_claude+nutritionix"
+    assert body["estimate"]["source"] == "vision_claude+usda_fdc"
     assert body["estimate"]["item_name"]
     assert body["photo_retention"]["image_received"] is True
     assert body["photo_retention"]["raw_photo_retained"] is False
     row = _log_by_client_id(meal_e2e, "fit83-photo-auto-1")
-    assert row["source"] == "vision_claude+nutritionix"
+    assert row["source"] == "vision_claude+usda_fdc"
     assert PHOTO_BYTE_PROBE not in meal_e2e.db_path.read_bytes()
 
 
@@ -481,4 +481,4 @@ def test_pending_photo_accept_round_trips_retention_metadata(meal_e2e):
     assert accepted.get_json()["save_blocked_item_ids"] == ["item-1"]
     row = _log_by_client_id(meal_e2e, "fit83-photo-retention-1")
     assert row["correction_state"] == "pending_review"
-    assert row["source"] == "vision_claude+nutritionix"
+    assert row["source"] == "vision_claude+usda_fdc"

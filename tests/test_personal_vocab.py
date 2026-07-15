@@ -20,7 +20,7 @@ def _estimate(**overrides):
         "confidence": 0.85,
         "ambiguous": False,
         "uncertainty_notes": [],
-        "source": "nutritionix",
+        "source": "usda_fdc",
         "external_food_id": "chipotle-burrito",
     }
     base.update(overrides)
@@ -40,7 +40,7 @@ def test_personal_vocab_learns_after_three_accepts(tmp_path, monkeypatch):
     result = personal_vocab.lookup("chip ckn bur", user_id=1)
 
     assert result["source"] == "personal_vocab"
-    assert result["underlying_source"] == "nutritionix"
+    assert result["underlying_source"] == "usda_fdc"
     assert result["confidence"] == 0.9
     assert result["item_name"] == "Chipotle chicken burrito"
     assert result["external_food_id"] == "chipotle-burrito"
@@ -328,7 +328,7 @@ def test_meal_intake_preserves_personal_vocab_provenance(monkeypatch, tmp_path):
     estimate = _estimate(
         source="personal_vocab",
         confidence=0.95,
-        underlying_source="nutritionix",
+        underlying_source="usda_fdc",
         personal_vocab_phrase="chip usual",
     )
     monkeypatch.setattr(app, "parse_meal_text", lambda *_a, **_kw: {"estimate": estimate, "fallback_used": False})
@@ -342,9 +342,9 @@ def test_meal_intake_preserves_personal_vocab_provenance(monkeypatch, tmp_path):
     body = res.get_json()
     assert res.status_code == 200
     assert body["estimate"]["source"] == "personal_vocab"
-    assert body["estimate"]["underlying_source"] == "nutritionix"
+    assert body["estimate"]["underlying_source"] == "usda_fdc"
     assert body["estimate"]["personal_vocab_phrase"] == "chip usual"
-    assert captured["original_estimate"]["underlying_source"] == "nutritionix"
+    assert captured["original_estimate"]["underlying_source"] == "usda_fdc"
     assert captured["original_estimate"]["personal_vocab_phrase"] == "chip usual"
 
 
