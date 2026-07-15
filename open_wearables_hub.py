@@ -730,8 +730,18 @@ def store_wearable_facts(
             db_file,
             facts,
             profile_key=profile_key,
-            replace_source_scopes=(
-                {("open_wearables", "undated-latest")}
+            replace_fact_scopes=(
+                {
+                    ("open_wearables", "open_wearables", "weight", "body"),
+                    ("open_wearables", "open_wearables", "body_fat_percent", "body"),
+                    ("open_wearables", "open_wearables", "muscle_mass", "body"),
+                    ("open_wearables", "open_wearables", "body_mass_index", "body"),
+                    ("open_wearables", "open_wearables", "resting_heart_rate_average", "recovery"),
+                    ("open_wearables", "open_wearables", "heart_rate_variability_sdnn_average", "recovery"),
+                    ("open_wearables", "open_wearables", "heart_rate_variability_rmssd_average", "recovery"),
+                    ("open_wearables", "open_wearables", "body_temperature", "body"),
+                    ("open_wearables", "open_wearables", "skin_temperature", "body"),
+                }
                 if body_snapshot_replacement_safe
                 else None
             ),

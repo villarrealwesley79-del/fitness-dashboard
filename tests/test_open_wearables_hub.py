@@ -242,8 +242,23 @@ def test_authoritative_empty_body_snapshot_clears_undated_latest_facts(tmp_path)
         date.today().isoformat(), "open_wearables", "Open Wearables", "weight", 82.4, "kg",
         source_id="undated-latest", source_system="open_wearables",
     ), WearableDailyFact(
+        date.today().isoformat(), "open_wearables", "Open Wearables",
+        "resting_heart_rate_average", 52, "bpm", source_system="open_wearables",
+        metric_domain="recovery",
+    ), WearableDailyFact(
+        date.today().isoformat(), "open_wearables", "Open Wearables",
+        "body_temperature", 36.7, "c", source_system="open_wearables",
+        metric_domain="body",
+    ), WearableDailyFact(
         date.today().isoformat(), "manual", "Manual", "weight", 81.9, "kg",
         source_id="undated-latest", source_system="manual",
+    ), WearableDailyFact(
+        date.today().isoformat(), "oura", "Oura", "skin_temperature", 34.1, "c",
+        source_id="recovery-1", source_system="open_wearables", metric_domain="recovery",
+    ), WearableDailyFact(
+        date.today().isoformat(), "open_wearables", "Open Wearables",
+        "skin_temperature", 33.9, "c", source_id="recovery-no-provider",
+        source_system="open_wearables", metric_domain="recovery",
     )], profile_key="profile-42")
 
     hub.store_wearable_facts(
@@ -258,7 +273,14 @@ def test_authoritative_empty_body_snapshot_clears_undated_latest_facts(tmp_path)
     from wearable_fact_store import list_recommendation_facts
 
     facts = list_recommendation_facts(db_file, profile_key="profile-42")
-    assert [(fact["source_system"], fact["value"]) for fact in facts] == [("manual", 81.9)]
+    assert {
+        (fact["provider_id"], fact["metric"], fact["value"])
+        for fact in facts
+    } == {
+        ("manual", "weight", 81.9),
+        ("oura", "skin_temperature", 34.1),
+        ("open_wearables", "skin_temperature", 33.9),
+    }
 
 
 def test_auth_failure_preserves_last_known_body_snapshot(tmp_path):

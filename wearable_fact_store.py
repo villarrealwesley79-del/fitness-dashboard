@@ -448,7 +448,7 @@ def upsert_daily_facts(
     facts: list[WearableDailyFact | dict],
     profile_key: str | int | None = None,
     replace_source_ids: set[str] | None = None,
-    replace_source_scopes: set[tuple[str, str]] | None = None,
+    replace_fact_scopes: set[tuple[str, str, str, str]] | None = None,
     replace_provider_metric_observation_windows: set[tuple[str, str, str, str]] | None = None,
 ) -> int:
     init_wearable_fact_db(db_path)
@@ -475,11 +475,12 @@ def upsert_daily_facts(
         payload["imported_at"] = payload.get("imported_at") or payload.get("updated_at") or now
         rows.append(payload)
     with sqlite3.connect(db_path) as conn:
-        for source_system, source_id in replace_source_scopes or set():
+        for source_system, provider_id, metric, metric_domain in replace_fact_scopes or set():
             conn.execute(
                 "DELETE FROM wearable_daily_facts "
-                "WHERE profile_key = ? AND source_system = ? AND source_id = ?",
-                (scoped_profile, source_system, source_id),
+                "WHERE profile_key = ? AND source_system = ? AND provider_id = ? "
+                "AND metric = ? AND metric_domain = ?",
+                (scoped_profile, source_system, provider_id, metric, metric_domain),
             )
         for source_system, metric_prefix, start_at, end_at in replace_provider_metric_observation_windows or set():
             conn.execute(
