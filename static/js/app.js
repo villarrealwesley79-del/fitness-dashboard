@@ -6689,7 +6689,9 @@
         if (row) row.hidden = false;
         if (detailPanel) detailPanel.hidden = hideDirectFallback;
         const dot = $('whoop-int-dot');
-        if (dot) dot.className = uiState === WHOOP_UI_STATES.disconnected ? 'int-dot' : 'int-dot int-dot-on';
+        if (dot) dot.className = uiState === WHOOP_UI_STATES.disconnected || uiState === WHOOP_UI_STATES.missing_config
+            ? 'int-dot'
+            : 'int-dot int-dot-on';
 
         const lastSyncRaw = whoop && (whoop.last_successful_sync_at || whoop.last_sync_at || whoop.last_sync);
         if ($('whoop-last-sync')) {

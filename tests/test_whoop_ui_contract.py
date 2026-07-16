@@ -139,6 +139,7 @@ def test_whoop_no_data_states_keep_manual_import_row_reachable():
     assert "if (row) row.hidden = false;" in renderer
     assert "if (detailPanel) detailPanel.hidden = hideDirectFallback;" in renderer
     assert "if (hideDirectFallback) return;" not in renderer
+    assert "uiState === WHOOP_UI_STATES.disconnected || uiState === WHOOP_UI_STATES.missing_config" in renderer
     assert renderer.index("if (detailPanel) detailPanel.hidden = hideDirectFallback;") < renderer.index(
         "setWhoopActionButtons(whoop, uiState);"
     )
