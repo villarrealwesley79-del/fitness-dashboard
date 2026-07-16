@@ -66,8 +66,14 @@ def test_render_dashboard_preserves_fit125_repaint_chains():
     # Each of the four primary fetchers must have its own .then chain in
     # renderDashboard. We assert this by checking that each fetcher's
     # invocation inside renderDashboard is immediately followed by `.then(`.
-    for fetcher in ("getDashboard", "getOuraStatus", "getReco", "getOuraSleep"):
-        assert f"{fetcher}().then(" in body, (
+    invocations = {
+        "getDashboard": "getDashboard(true, isRecoCurrent).then(",
+        "getOuraStatus": "getOuraStatus(true, false, isOuraCurrent).then(",
+        "getReco": "getReco(true, isRecoCurrent).then(",
+        "getOuraSleep": "getOuraSleep(true, isSleepCurrent).then(",
+    }
+    for fetcher, invocation in invocations.items():
+        assert invocation in body, (
             f"FIT-125 per-slice fan-out must remain — {fetcher} must have its "
             f"own .then chain inside renderDashboard so a slow endpoint can't "
             f"block the others"

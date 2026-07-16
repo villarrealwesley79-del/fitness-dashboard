@@ -1179,11 +1179,15 @@
     }
 
     // --- loaders (cached) ----------------------------------------
-    async function getDashboard(force = false) {
+    async function getDashboard(force = false, isCurrent = () => true) {
         if (!force && state.dashboard) return state.dashboard;
-        state.dashboard = await api('/api/dashboard', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
-        if (state.dashboard && state.dashboard.next_workout) state.nextWorkout = state.dashboard.next_workout;
-        return state.dashboard;
+        if (force && isCurrent()) state.dashboard = null;
+        const dashboard = await api('/api/dashboard', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+        if (isCurrent()) {
+            state.dashboard = dashboard;
+            if (dashboard && dashboard.next_workout) state.nextWorkout = dashboard.next_workout;
+        }
+        return dashboard;
     }
     async function getNextWorkout(force = false) {
         if (!force && state.nextWorkout) return state.nextWorkout;
@@ -1196,7 +1200,7 @@
         state.vitals = await api('/api/vitals');
         return state.vitals;
     }
-    async function getOuraStatus(force = false, refreshApi = false) {
+    async function getOuraStatus(force = false, refreshApi = false, isCurrent = () => true) {
         if (!force && !refreshApi && state.oura) return state.oura;
         // FIT-129: sentinel ownership moved to renderDashboard's settle helper
         // so a stale fetch from an older render/retry can no longer flip
@@ -1204,15 +1208,25 @@
         // failure) for non-dashboard callers (renderVitals, renderSettings).
         // timeoutMs makes a hung endpoint reject after 30s instead of leaving
         // the chip silent forever.
-        try { state.oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : ''), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
-        catch { state.oura = null; }
-        return state.oura;
+        try {
+            const oura = await api('/api/oura/status' + (refreshApi ? '?refresh=true' : ''), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+            if (isCurrent()) state.oura = oura;
+            return oura;
+        } catch {
+            if (isCurrent()) state.oura = null;
+            return null;
+        }
     }
-    async function getOuraSleep(force = false) {
+    async function getOuraSleep(force = false, isCurrent = () => true) {
         if (!force && state.ouraSleep) return state.ouraSleep;
-        try { state.ouraSleep = await api('/api/oura/sleep-summary', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
-        catch { state.ouraSleep = null; }
-        return state.ouraSleep;
+        try {
+            const sleep = await api('/api/oura/sleep-summary', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+            if (isCurrent()) state.ouraSleep = sleep;
+            return sleep;
+        } catch {
+            if (isCurrent()) state.ouraSleep = null;
+            return null;
+        }
     }
     async function getWhoopStatus(force = false) {
         if (!force && state.whoopStatus) return state.whoopStatus;
@@ -1236,17 +1250,27 @@
         }
         return state.wearableSources;
     }
-    async function getOuraTrends(force = false) {
+    async function getOuraTrends(force = false, isCurrent = () => true) {
         if (!force && state.ouraTrends) return state.ouraTrends;
-        try { state.ouraTrends = await api('/api/oura/trends'); }
-        catch { state.ouraTrends = null; }
-        return state.ouraTrends;
+        try {
+            const trends = await api('/api/oura/trends', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+            if (isCurrent()) state.ouraTrends = trends;
+            return trends;
+        } catch {
+            if (isCurrent()) state.ouraTrends = null;
+            return null;
+        }
     }
-    async function getReco(force = false) {
+    async function getReco(force = false, isCurrent = () => true) {
         if (!force && state.reco) return state.reco;
-        try { state.reco = await api('/api/recommendation/smart', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }); }
-        catch { state.reco = null; }
-        return state.reco;
+        try {
+            const reco = await api('/api/recommendation/smart', { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS });
+            if (isCurrent()) state.reco = reco;
+            return reco;
+        } catch {
+            if (isCurrent()) state.reco = null;
+            return null;
+        }
     }
     async function getInsights(force = false) {
         if (!force && state.insights) return state.insights;
@@ -2975,8 +2999,15 @@
         state.ouraError = false;
         state.recoError = false;
         state.ouraSleepError = false;
+        state.dashboard = null;
+        state.oura = null;
+        state.reco = null;
+        state.ouraSleep = null;
+        state.ouraTrends = null;
+        state.nextWorkout = null;
 
         paintDashboardFromState();
+        paintReadinessTrendChart(null);
 
         const repaint = () => {
             if (gen !== dashboardRenderGen) return;
@@ -2996,13 +3027,29 @@
         // FIT-128/129: getDashboard rejects on failure (unlike the other
         // three, which swallow and return null). Both endpoints feed the AI
         // Recommendation card, so both map to recoError.
-        const dashP  = getDashboard().then(() => settle(true,      'recoError'),       () => settle(false, 'recoError'));
-        const ouraP  = getOuraStatus().then(v => settle(v != null, 'ouraError'));
-        const recoP  = getReco().then(v       => settle(v != null, 'recoError'));
-        const sleepP = getOuraSleep().then(v  => settle(v != null, 'ouraSleepError'));
+        // Always revalidate dashboard-owned data. Cached values may belong to
+        // an earlier online session; if the device is now offline, the real
+        // fetch failures must clear them before repainting degraded states.
+        const isRenderCurrent = () => gen === dashboardRenderGen;
+        const isOuraCurrent = () => (
+            isRenderCurrent() && sentinelGens.ouraError === dashboardSentinelGen.ouraError
+        );
+        const isRecoCurrent = () => (
+            isRenderCurrent() && sentinelGens.recoError === dashboardSentinelGen.recoError
+        );
+        const isSleepCurrent = () => (
+            isRenderCurrent() && sentinelGens.ouraSleepError === dashboardSentinelGen.ouraSleepError
+        );
+        const dashP  = getDashboard(true, isRecoCurrent).then(() => settle(true,      'recoError'),       () => settle(false, 'recoError'));
+        const ouraP  = getOuraStatus(true, false, isOuraCurrent).then(v => settle(v != null, 'ouraError'));
+        const recoP  = getReco(true, isRecoCurrent).then(v       => settle(v != null, 'recoError'));
+        const sleepP = getOuraSleep(true, isSleepCurrent).then(v => settle(v != null, 'ouraSleepError'));
 
         // Independent trend + history charts paint as soon as their own data lands.
-        getOuraTrends().then(paintReadinessTrendChart, () => paintReadinessTrendChart(null));
+        getOuraTrends(true, isRenderCurrent).then(
+            (trends) => { if (isRenderCurrent()) paintReadinessTrendChart(trends); },
+            () => { if (isRenderCurrent()) paintReadinessTrendChart(null); },
+        );
         if (state.history) paintVolumeChart(state.history);
         else getHistory().then(paintVolumeChart, () => paintVolumeChart(null));
 
@@ -3301,21 +3348,21 @@
         // catches and writes state[sentinelKey] = true under guard); the
         // null-as-failure normalization below adapts the swallow-on-failure
         // fetchers to that contract.
-        paintRetryChip('readiness-retry', state.ouraError, 'ouraError', async () => {
-            if (await getOuraStatus(true) == null) throw new Error('readiness retry failed');
+        paintRetryChip('readiness-retry', state.ouraError, 'ouraError', async (isCurrent) => {
+            if (await getOuraStatus(true, false, isCurrent) == null) throw new Error('readiness retry failed');
         });
-        paintRetryChip('reco-retry', state.recoError, 'recoError', async () => {
+        paintRetryChip('reco-retry', state.recoError, 'recoError', async (isCurrent) => {
             // The AI Recommendation chip covers BOTH dashboard and reco
             // because the card chrome is fed by both endpoints. getDashboard
             // throws on failure (unlike the other fetchers); getReco swallows
             // and returns null. Either failing surfaces the chip.
             let dashOk = true;
-            try { await getDashboard(true); } catch { dashOk = false; }
-            const reco = await getReco(true);
+            try { await getDashboard(true, isCurrent); } catch { dashOk = false; }
+            const reco = await getReco(true, isCurrent);
             if (!dashOk || reco == null) throw new Error('reco retry failed');
         });
-        paintRetryChip('insight-retry', state.ouraSleepError, 'ouraSleepError', async () => {
-            if (await getOuraSleep(true) == null) throw new Error('insight retry failed');
+        paintRetryChip('insight-retry', state.ouraSleepError, 'ouraSleepError', async (isCurrent) => {
+            if (await getOuraSleep(true, isCurrent) == null) throw new Error('insight retry failed');
         });
     }
 
@@ -3336,7 +3383,11 @@
             chip.disabled = true;
             chip.hidden = true;
             let failed = false;
-            try { await retryFn(); } catch { failed = true; }
+            const isCurrent = () => (
+                clickGen === dashboardRenderGen
+                && clickSentinelGen === dashboardSentinelGen[sentinelKey]
+            );
+            try { await retryFn(isCurrent); } catch { failed = true; }
             finally {
                 if (clickGen !== dashboardRenderGen) return;
                 if (clickSentinelGen !== dashboardSentinelGen[sentinelKey]) return;
