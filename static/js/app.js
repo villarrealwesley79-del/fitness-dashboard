@@ -6686,9 +6686,8 @@
         );
         const row = $('whoop-settings-row');
         const detailPanel = $('whoop-detail');
-        if (row) row.hidden = hideDirectFallback;
+        if (row) row.hidden = false;
         if (detailPanel) detailPanel.hidden = hideDirectFallback;
-        if (hideDirectFallback) return;
         const dot = $('whoop-int-dot');
         if (dot) dot.className = uiState === WHOOP_UI_STATES.disconnected ? 'int-dot' : 'int-dot int-dot-on';
 
