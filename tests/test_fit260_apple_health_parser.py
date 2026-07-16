@@ -337,6 +337,37 @@ def test_merge_workouts_prefers_positive_metrics_over_extra_metadata():
     assert merged == [metric_rich_sync_workout]
 
 
+@pytest.mark.parametrize(
+    ("sparse_start", "rich_start"),
+    [
+        ("2026-07-09T11:00:00Z", "2026-07-09T11:02:00Z"),
+        ("2026-07-09T11:02:00Z", "2026-07-09T11:00:00Z"),
+    ],
+)
+def test_merge_workouts_prefers_measurements_across_tolerated_start_difference(
+    sparse_start,
+    rich_start,
+):
+    sparse_workout = {
+        "activity": "Running",
+        "date": "2026-07-09",
+        "start": sparse_start,
+        "duration_min": 30,
+        "energy_kcal": 0,
+        "distance_m": 0,
+    }
+    rich_workout = {
+        "activity": "Running",
+        "date": "2026-07-09",
+        "start": rich_start,
+        "duration_min": 30,
+        "energy_kcal": 500,
+        "distance_m": 5000,
+    }
+
+    assert parser._merge_workouts([sparse_workout], [rich_workout]) == [rich_workout]
+
+
 def test_merge_workouts_uses_metadata_then_canonical_json_for_equal_measurement_quality():
     metadata_rich = {
         "activity": "Running",
@@ -359,6 +390,42 @@ def test_merge_workouts_uses_metadata_then_canonical_json_for_equal_measurement_
     canonical_first = dict(metadata_sparse, source_record_id="a")
     canonical_second = dict(metadata_sparse, source_record_id="b")
     assert parser._merge_workouts([canonical_second], [canonical_first]) == [canonical_first]
+
+
+def test_merge_workouts_keeps_earliest_start_before_extra_metadata_when_measurements_tie():
+    earliest = {
+        "activity": "Running",
+        "date": "2026-07-09",
+        "start": "2026-07-09T11:00:00Z",
+        "duration_min": 30,
+    }
+    later_with_metadata = {
+        "activity": "Running",
+        "date": "2026-07-09",
+        "start": "2026-07-09T11:02:00Z",
+        "end": "2026-07-09T11:32:00Z",
+        "source": "HealthKit",
+        "duration_min": 30,
+    }
+
+    assert parser._merge_workouts([later_with_metadata], [earliest]) == [earliest]
+
+
+def test_merge_workouts_prefers_parseable_start_when_measurements_tie():
+    parseable = {
+        "activity": "Running",
+        "date": "2026-07-09",
+        "start": "2026-07-09T11:00:00Z",
+        "duration_min": 30,
+    }
+    unparseable = {
+        "activity": "Running",
+        "date": "2026-07-09",
+        "start": "not-a-date",
+        "duration_min": 30,
+    }
+
+    assert parser._merge_workouts([unparseable], [parseable]) == [parseable]
 
 
 @pytest.mark.parametrize("order", [(0, 1), (1, 0)])

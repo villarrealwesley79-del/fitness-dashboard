@@ -434,9 +434,9 @@ def _workout_representative_key(workout: dict) -> tuple:
         default=str,
     )
     return (
+        -measurement_count,
         _workout_start_datetime(workout)
         or datetime.max.replace(tzinfo=timezone.utc),
-        -measurement_count,
         -metadata_count,
         canonical_payload,
     )
