@@ -1,31 +1,29 @@
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
-from pathlib import Path
-
-import pytest
-
-
-ROOT = Path(__file__).resolve().parents[1]
-APP_JS = (ROOT / "static" / "js" / "app.js").read_text()
+from js_runtime import run_app_js
 
 
 def test_restored_adjust_preview_does_not_mutate_active_workout():
-    body = APP_JS.split("function renderAdjustResult(payload, opts = {})", 1)[1].split(
-        "async function submitAdjust()",
-        1,
-    )[0]
-
-    assert "renderAdjustResult(saved, { restored: true" in APP_JS
-    assert "state.activeWorkout && kind === 'changed' && !opts.restored" in body
+    output = run_app_js(
+        ["renderAdjustResult", "state"],
+        """
+['adjust-state', 'adjust-result', 'adjust-summary', 'adjust-notes', 'adjust-meta', 'adjust-restored-banner'].forEach((id) => {
+  sandbox.elements[id] = { textContent: '', innerHTML: '', className: '', hidden: true };
+});
+e.state.activeWorkout = { exercises: [{ exercise: 'Chest Press', logged_sets: [{ done: true, notes: 'keep' }] }] };
+const calls = [];
+sandbox.__fitSet.renderAdjustedPlanPreview(() => calls.push('preview'));
+sandbox.__fitSet.renderActiveWorkout(() => calls.push('active'));
+sandbox.__fitSet.renderNextWorkout(() => calls.push('next'));
+e.renderAdjustResult({ result_kind: 'changed', recommendation: { id: 'adjusted', exercises: [] }, applied_notes: ['restored'] }, { restored: true });
+process.stdout.write(JSON.stringify({ active: e.state.activeWorkout.exercises[0].logged_sets[0].notes, calls, adjusted: e.state.adjustedWorkout.id }));
+""",
+        mocks=["renderAdjustedPlanPreview", "renderActiveWorkout", "renderNextWorkout"],
+    )
+    assert output == {"active": "keep", "calls": ["preview"], "adjusted": "adjusted"}
 
 
 def test_start_workout_confirms_before_discarding_logged_active_sets():
-    if not shutil.which("node"):
-        pytest.skip("FIT-187 runtime regression requires node to execute app.js")
-
     outputs = _run_start_guard_fixture()
 
     cancel = outputs["cancelStart"]
@@ -115,57 +113,29 @@ def test_start_workout_confirms_before_discarding_logged_active_sets():
 
 
 def _run_start_guard_fixture() -> dict:
-    helper_source = "function setActiveWorkoutFromRecommendation" + _slice_between(
-        APP_JS,
-        "function setActiveWorkoutFromRecommendation",
-        "const SYNC_QUEUE_KEY",
-    )
-    node_script = f"""
-const vm = require('node:vm');
-const helperSource = {json.dumps(helper_source)};
-const sandbox = {{ module: {{ exports: {{}} }} }};
-vm.runInNewContext(`
-const state = {{
-  activeWorkout: null,
-  adjustedWorkout: null,
-  dashboard: null,
-}};
-const elements = {{
-  'modal-adjust': {{ hidden: false }},
-  'active-workout-body': null,
-}};
+    return run_app_js(
+        ["startWorkout", "startAdjustedWorkout", "applyAdjustedRecommendationToActiveWorkout", "state"],
+        f"""
 let confirmCalls = [];
 let confirmResponses = [];
 let renderCount = 0;
 let dashboardNext = null;
-const window = {{
-  confirm(message) {{
-    confirmCalls.push(message);
-    return confirmResponses.length ? confirmResponses.shift() : true;
-  }},
+const api = {{
+  state: e.state,
+  startWorkout: e.startWorkout,
+  startAdjustedWorkout: e.startAdjustedWorkout,
+  applyAdjustedRecommendationToActiveWorkout: e.applyAdjustedRecommendationToActiveWorkout,
+  elements: sandbox.elements,
 }};
-const $ = (id) => elements[id] || null;
-const qs = () => ({{ value: '', checked: false }});
-const qsa = () => [];
-const toast = () => {{}};
-const saveActiveWorkoutDraft = () => {{}};
-const getDashboard = async () => ({{ next_workout: dashboardNext }});
-const newWorkoutId = (id) => 'new-' + (id || 'generated');
-const exerciseName = (ex) => ex.exercise || ex.name || ex.machine || '';
-const numericInputValue = (value) => {{
-  if (value == null || value === '') return '';
-  const n = Number(value);
-  return Number.isFinite(n) ? String(n) : '';
+sandbox.elements['modal-adjust'] = {{ hidden: false }};
+sandbox.confirm = (message) => {{
+  confirmCalls.push(message);
+  return confirmResponses.length ? confirmResponses.shift() : true;
 }};
-const buildActiveExercise = (ex, previous) => ({{
-  ...ex,
-  logged_sets: previous && Array.isArray(previous.logged_sets)
-    ? previous.logged_sets
-    : [{{ weight: ex.target_weight || '', reps: ex.target_reps || '', done: false, notes: '' }}],
-}});
-const currentActiveWorkoutDraftScope = () => 'user:fit187';
-${{helperSource}}
-renderActiveWorkout = () => {{ renderCount += 1; }};
+sandbox.__fitSet.getNextWorkout(async () => dashboardNext);
+sandbox.__fitSet.renderActiveWorkout(() => {{ renderCount += 1; }});
+sandbox.__fitSet.saveActiveWorkoutDraft(() => {{}});
+sandbox.__fitSet.toast(() => {{}});
 function activeWithProgress() {{
   return {{
     id: 'existing-workout',
@@ -197,25 +167,20 @@ function resetHarness() {{
   confirmCalls = [];
   confirmResponses = [];
   renderCount = 0;
-  elements['modal-adjust'].hidden = false;
+  api.state.activeWorkout = null;
+  api.state.adjustedWorkout = null;
+  api.state.dashboard = null;
+  api.state.nextWorkout = null;
+  sandbox.elements['modal-adjust'].hidden = false;
   dashboardNext = null;
 }}
-module.exports = {{
-  state,
-  elements,
-  startWorkout,
-  startAdjustedWorkout,
-  applyAdjustedRecommendationToActiveWorkout,
-  activeWithProgress,
-  plannedWorkout,
-  resetHarness,
-  setConfirmResponses(values) {{ confirmResponses = values.slice(); }},
-  setDashboardNext(value) {{ dashboardNext = value; }},
-  confirmCalls() {{ return confirmCalls.slice(); }},
-  renderCount() {{ return renderCount; }},
-}};
-`, sandbox);
-const api = sandbox.module.exports;
+api.activeWithProgress = activeWithProgress;
+api.plannedWorkout = plannedWorkout;
+api.resetHarness = resetHarness;
+api.setConfirmResponses = (values) => {{ confirmResponses = values.slice(); }};
+api.setDashboardNext = (value) => {{ dashboardNext = value; }};
+api.confirmCalls = () => confirmCalls.slice();
+api.renderCount = () => renderCount;
 
 async function run() {{
   const outputs = {{}};
@@ -528,22 +493,12 @@ async function run() {{
 
   process.stdout.write(JSON.stringify(outputs));
 }}
-run().catch((err) => {{
-  console.error(err && err.stack ? err.stack : err);
-  process.exit(1);
-}});
-"""
-    result = subprocess.run(
-        ["node", "-e", node_script],
-        capture_output=True,
-        text=True,
-        check=False,
+await run();
+""",
+        mocks=[
+            "getNextWorkout",
+            "renderActiveWorkout",
+            "saveActiveWorkoutDraft",
+            "toast",
+        ],
     )
-    assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout)
-
-
-def _slice_between(source: str, start_marker: str, end_marker: str) -> str:
-    assert start_marker in source, f"{start_marker!r} missing from app.js"
-    assert end_marker in source, f"{end_marker!r} missing from app.js"
-    return source.split(start_marker, 1)[1].split(end_marker, 1)[0]

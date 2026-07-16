@@ -11,17 +11,7 @@ Two assertions:
    emptyMaxY: 100 so both guards are active for the chart that was showing
    negative/sub-pound labels.
 """
-from pathlib import Path
-
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def _linechart_body() -> str:
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-    marker = "function lineChart(container, points, opts = {})"
-    assert marker in app_js, "lineChart not found in app.js"
-    return app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
+from js_runtime import run_app_js
 
 
 def test_linechart_honours_nonnegative_y_option():
@@ -31,16 +21,35 @@ def test_linechart_honours_nonnegative_y_option():
     series whose minimum value is 0, including the common [0, 100, 200]
     volume pattern, producing impossible negative Y-axis tick labels.
     """
-    body = _linechart_body()
-    assert "opts.nonNegativeY" in body, (
-        "lineChart must read opts.nonNegativeY to know when to apply the "
-        "non-negative floor; the flag was not found in the function body"
+    labels = run_app_js(
+        ["lineChart"],
+        """
+const makeNode = (tag) => ({
+  tag, attrs: {}, children: [], textContent: '',
+  setAttribute(key, value) { this.attrs[key] = String(value); },
+  appendChild(child) { this.children.push(child); },
+});
+sandbox.document.createElementNS = (_ns, tag) => makeNode(tag);
+const container = makeNode('div');
+container.innerHTML = '';
+e.lineChart(container, [
+  { value: 0, label: 'A' },
+  { value: 100, label: 'B' },
+  { value: 200, label: 'C' },
+], { nonNegativeY: true });
+const texts = [];
+const visit = (node) => {
+  if (node.tag === 'text') texts.push(node.textContent);
+  (node.children || []).forEach(visit);
+};
+container.children.forEach(visit);
+process.stdout.write(JSON.stringify(texts));
+""",
     )
-    assert "Math.max(0," in body, (
-        "lineChart must call Math.max(0, ...) to clamp minPad when "
-        "opts.nonNegativeY is set — negative y-domain floor causes impossible "
-        "axis labels for any series that starts at 0"
-    )
+
+    numeric_labels = [float(label) for label in labels if label not in {"A", "B", "C"}]
+    assert min(numeric_labels) == 0
+    assert all(label >= 0 for label in numeric_labels)
 
 
 def test_linechart_uses_nominal_empty_domain_for_zero_volume_series():
@@ -50,9 +59,34 @@ def test_linechart_uses_nominal_empty_domain_for_zero_volume_series():
     points to produce a synthetic 0-to-0.1 lb axis. FIT-152 allows a nominal
     non-negative scale such as 0 to 100 lb for that empty range.
     """
-    body = _linechart_body()
-    assert "const useEmptyDomain = opts.nonNegativeY && max <= 0;" in body
-    assert "const maxPad = useEmptyDomain ? emptyMaxY : max + range * 0.12;" in body
+    labels = run_app_js(
+        ["lineChart"],
+        """
+const makeNode = (tag) => ({
+  tag, attrs: {}, children: [], textContent: '',
+  setAttribute(key, value) { this.attrs[key] = String(value); },
+  appendChild(child) { this.children.push(child); },
+});
+sandbox.document.createElementNS = (_ns, tag) => makeNode(tag);
+const container = makeNode('div');
+container.innerHTML = '';
+e.lineChart(container, [
+  { value: 0, label: 'A' },
+  { value: 0, label: 'B' },
+], { nonNegativeY: true, emptyMaxY: 100 });
+const texts = [];
+const visit = (node) => {
+  if (node.tag === 'text') texts.push(node.textContent);
+  (node.children || []).forEach(visit);
+};
+container.children.forEach(visit);
+process.stdout.write(JSON.stringify(texts));
+""",
+    )
+
+    numeric_labels = [float(label) for label in labels if label not in {"A", "B"}]
+    assert min(numeric_labels) == 0
+    assert max(numeric_labels) == 100
 
 
 def test_history_volume_chart_passes_nonnegative_y_options():
@@ -63,17 +97,35 @@ def test_history_volume_chart_passes_nonnegative_y_options():
     show a synthetic sub-pound axis. Passing the opts at this call site (and
     only this call site) avoids changing lineChart defaults for other callers.
     """
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-    linechart_call = "lineChart($('chart-history-volume')"
-    assert linechart_call in app_js, "lineChart call for chart-history-volume not found"
-    volume_call = app_js.split(linechart_call, 1)[1].split("\n", 1)[0]
-    assert "nonNegativeY: true" in volume_call, (
-        "The lineChart call for chart-history-volume must pass "
-        "nonNegativeY: true so the y-axis floor is clamped to 0; "
-        f"got: {volume_call!r}"
+    options = run_app_js(
+        ["renderHistory", "state"],
+        """
+const ids = [
+  'history-count', 'history-freq-sub', 'history-total-volume', 'history-vol-sub',
+  'chart-history-freq', 'chart-history-volume', 'history-top-exercises',
+  'history-workout-list', 'history-type-filter',
+];
+ids.forEach((id) => {
+  sandbox.elements[id] = {
+    innerHTML: '', textContent: '', children: [],
+    appendChild(child) { this.children.push(child); },
+  };
+});
+let captured;
+e.state.ranges = { history: 30 };
+sandbox.__fitSet.getHistory(async () => ({ workouts: [] }));
+sandbox.__fitSet.getAppleHealthWorkouts(async () => []);
+sandbox.__fitSet.barChart(() => {});
+sandbox.__fitSet.lineChart((_container, _points, opts) => { captured = opts; });
+sandbox.__fitSet.setChartTakeaway(() => {});
+await e.renderHistory();
+process.stdout.write(JSON.stringify(captured));
+""",
+        mocks=[
+            "getHistory", "getAppleHealthWorkouts", "barChart", "lineChart",
+            "setChartTakeaway",
+        ],
     )
-    assert "emptyMaxY: 100" in volume_call, (
-        "The lineChart call for chart-history-volume must pass "
-        "emptyMaxY: 100 so empty ranges render a sane 0-to-100 lb scale; "
-        f"got: {volume_call!r}"
-    )
+
+    assert options["nonNegativeY"] is True
+    assert options["emptyMaxY"] == 100
