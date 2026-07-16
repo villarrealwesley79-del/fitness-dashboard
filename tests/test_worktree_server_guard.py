@@ -123,6 +123,74 @@ def test_installer_scopes_hooks_path_to_linked_worktree(tmp_path):
     assert repo_hooks_after.stdout == repo_hooks_before.stdout
 
 
+def test_installer_repairs_shared_bare_config_for_fresh_worktrees(tmp_path):
+    repo = _init_repo(tmp_path)
+    tests = repo / "tests"
+    tests.mkdir()
+    (tests / "test_push_smoke.py").write_text("def test_push_smoke():\n    assert True\n")
+    _run(["git", "add", "tests/test_push_smoke.py"], repo, check=True)
+    _run(["git", "commit", "-m", "add push smoke test"], repo, check=True)
+    remote = tmp_path / "remote.git"
+    _run(["git", "init", "--bare", str(remote)], tmp_path, check=True)
+    _run(["git", "remote", "add", "origin", str(remote)], repo, check=True)
+    _run(["git", "config", "--worktree", "core.bare", "false"], repo, check=True)
+    _run(
+        ["git", "config", "--file", str(repo / ".git" / "config"), "core.bare", "true"],
+        repo,
+        check=True,
+    )
+
+    _run(["scripts/install-worktree-guard.sh"], repo, check=True)
+    sibling = tmp_path / "fresh-worktree"
+    _run(["git", "worktree", "add", "-b", "fresh-worktree", str(sibling)], repo, check=True)
+
+    root = _run(["git", "rev-parse", "--show-toplevel"], sibling)
+    shared_bare = _run(
+        ["git", "config", "--file", str(repo / ".git" / "config"), "--get", "core.bare"],
+        sibling,
+        check=True,
+    )
+    (sibling / "README.md").write_text("fresh worktree push\n")
+    _run(["git", "add", "README.md"], sibling, check=True)
+    _run(["git", "commit", "-m", "fresh worktree proof"], sibling, check=True)
+    push = _run(["git", "push", "-u", "origin", "fresh-worktree"], sibling)
+    assert push.returncode == 0, push.stderr
+    local_head = _run(["git", "rev-parse", "HEAD"], sibling, check=True)
+    remote_head = _run(
+        ["git", "--git-dir", str(remote), "rev-parse", "refs/heads/fresh-worktree"],
+        tmp_path,
+        check=True,
+    )
+
+    assert root.returncode == 0
+    assert Path(root.stdout.strip()) == sibling
+    assert shared_bare.stdout.strip() == "false"
+    assert "Running pre-push pytest suite" in push.stderr
+    assert remote_head.stdout == local_head.stdout
+
+
+def test_installer_resolves_relative_common_dir_from_subdirectory(tmp_path):
+    repo = _init_repo(tmp_path)
+    nested = repo / "tests"
+    nested.mkdir()
+    _run(["git", "config", "--worktree", "core.bare", "false"], repo, check=True)
+    _run(
+        ["git", "config", "--file", str(repo / ".git" / "config"), "core.bare", "true"],
+        repo,
+        check=True,
+    )
+
+    install = _run(["../scripts/install-worktree-guard.sh"], nested)
+    shared_bare = _run(
+        ["git", "config", "--file", str(repo / ".git" / "config"), "--get", "core.bare"],
+        repo,
+        check=True,
+    )
+
+    assert install.returncode == 0
+    assert shared_bare.stdout.strip() == "false"
+
+
 def test_guard_detects_matching_server_process(tmp_path):
     repo = _init_repo(tmp_path)
     proc = _start_stub_server(repo)

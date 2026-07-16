@@ -545,6 +545,7 @@ def init_data_db():
                 active_workout_json TEXT,
                 reason_metadata_json TEXT,
                 created_at          TEXT    NOT NULL,
+                stale_at            TEXT,
                 acknowledged_at     TEXT
             );
 
@@ -697,6 +698,11 @@ def init_data_db():
             conn.execute("ALTER TABLE meal_acceptance_events ADD COLUMN feedback_fingerprint TEXT")
         if "has_image" not in existing_meal_event_cols:
             conn.execute("ALTER TABLE meal_acceptance_events ADD COLUMN has_image INTEGER NOT NULL DEFAULT 0")
+        existing_workout_event_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(workout_adaptation_events)").fetchall()
+        }
+        if "stale_at" not in existing_workout_event_cols:
+            conn.execute("ALTER TABLE workout_adaptation_events ADD COLUMN stale_at TEXT")
         existing_push_cols = {r["name"] for r in conn.execute("PRAGMA table_info(push_subscriptions)").fetchall()}
         push_columns = {
             "permission_state": "TEXT",
@@ -797,8 +803,28 @@ def save_current_workout_plan(user_id: int, fingerprint: str, plan: dict) -> dic
     if not fingerprint:
         raise ValueError("fingerprint is required")
     now = datetime.now().isoformat(timespec="seconds")
-    plan_json = json.dumps(plan, sort_keys=True, default=str)
     with _get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        plan_to_save = plan
+        adaptation_event_id = plan.get("_fit136_adaptation_event_id")
+        if adaptation_event_id:
+            source_state = conn.execute(
+                """
+                SELECT event.status AS event_status, pending.status AS pending_status
+                  FROM workout_adaptation_events AS event
+                  LEFT JOIN workout_adaptation_pending AS pending
+                    ON pending.processed_event_id = event.id
+                   AND pending.user_id = event.user_id
+                 WHERE event.id = ? AND event.user_id = ?
+                """,
+                (adaptation_event_id, user_id),
+            ).fetchone()
+            if not source_state or not (
+                source_state["event_status"] == "applied"
+                and source_state["pending_status"] == "processed"
+            ):
+                plan_to_save = _workout_plan_without_stale_adaptation(plan)
+        plan_json = json.dumps(plan_to_save, sort_keys=True, default=str)
         conn.execute(
             """
             INSERT INTO current_workout_plans (user_id, fingerprint, plan_json, updated_at)
@@ -811,7 +837,12 @@ def save_current_workout_plan(user_id: int, fingerprint: str, plan: dict) -> dic
             (user_id, fingerprint, plan_json, now),
         )
         conn.commit()
-    return {"user_id": user_id, "fingerprint": fingerprint, "plan": json.loads(plan_json), "updated_at": now}
+    return {
+        "user_id": user_id,
+        "fingerprint": fingerprint,
+        "plan": json.loads(plan_json),
+        "updated_at": now,
+    }
 
 
 def get_current_workout_plan(user_id: int, fingerprint: str | None = None) -> Optional[dict]:
@@ -1201,13 +1232,29 @@ def enqueue_workout_adaptation_pending(
                   FROM workout_adaptation_pending
                  WHERE user_id = ?
                    AND food_log_client_ids_json LIKE ?
-                 ORDER BY created_at ASC
+                 ORDER BY window_started_at DESC, created_at DESC
                  LIMIT 1
                 """,
                 (user_id, f'%"{client_id}"%'),
             ).fetchone()
             if existing_trigger:
-                return _workout_adaptation_pending_payload(existing_trigger)
+                existing = _workout_adaptation_pending_payload(existing_trigger)
+                processed_event = None
+                if existing.get("processed_event_id"):
+                    processed_event = conn.execute(
+                        """
+                        SELECT status
+                          FROM workout_adaptation_events
+                         WHERE id = ?
+                        """,
+                        (existing["processed_event_id"],),
+                    ).fetchone()
+                may_requeue = (
+                    existing.get("status") in {"canceled", "invalidated"}
+                    or (processed_event and processed_event["status"] == "stale")
+                )
+                if not may_requeue:
+                    return existing
         row = conn.execute(
             """
             SELECT *
@@ -1307,11 +1354,20 @@ def list_pending_workout_adaptation_windows(user_id: int) -> list[dict]:
     return [_workout_adaptation_pending_payload(row) for row in rows]
 
 
-def save_workout_adaptation_event(user_id: int, pending_id: str, event: dict) -> dict | None:
+def save_workout_adaptation_event(
+    user_id: int,
+    pending_id: str,
+    event: dict,
+    *,
+    source_fingerprint: str | None = None,
+) -> dict | None:
     """Persist one evaluated workout adaptation audit/event row."""
     init_data_db()
     event_id = event.get("id") or str(uuid.uuid4())
     created_at = event.get("created_at") or datetime.now().isoformat(timespec="seconds")
+    reason_metadata = dict(event.get("reason_metadata") or {})
+    if source_fingerprint is not None:
+        reason_metadata["source_fingerprint"] = source_fingerprint
     payload = {
         "id": event_id,
         "user_id": user_id,
@@ -1328,11 +1384,42 @@ def save_workout_adaptation_event(user_id: int, pending_id: str, event: dict) ->
         "before_plan_json": _json_dumps_or_none(event.get("before_remaining_plan")),
         "after_plan_json": _json_dumps_or_none(event.get("after_remaining_plan")),
         "active_workout_json": _json_dumps_or_none(event.get("active_workout")),
-        "reason_metadata_json": _json_dumps_or_none(event.get("reason_metadata")),
+        "reason_metadata_json": _json_dumps_or_none(reason_metadata),
         "created_at": created_at,
     }
     cols = list(payload.keys())
     with _get_db() as conn:
+        # Serialize source validation with correction/deletion writes. If a
+        # mutation wins first, this transaction sees it; if it starts later,
+        # it waits until the new event exists and can mark that event stale.
+        conn.execute("BEGIN IMMEDIATE")
+        pending = conn.execute(
+            """
+            SELECT *
+              FROM workout_adaptation_pending
+             WHERE user_id = ?
+               AND id = ?
+            """,
+            (user_id, pending_id),
+        ).fetchone()
+        if not pending:
+            return None
+        if pending["processed_event_id"]:
+            existing = conn.execute(
+                "SELECT * FROM workout_adaptation_events WHERE id = ?",
+                (pending["processed_event_id"],),
+            ).fetchone()
+            return _workout_adaptation_event_payload(existing) if existing else None
+        if pending["status"] != "pending":
+            return None
+        if source_fingerprint is not None:
+            current_rows = _current_workout_adaptation_source_rows(
+                conn,
+                user_id,
+                _workout_adaptation_pending_payload(pending),
+            )
+            if workout_adaptation_source_fingerprint(current_rows) != source_fingerprint:
+                return None
         claim = conn.execute(
             """
             UPDATE workout_adaptation_pending
@@ -1345,22 +1432,6 @@ def save_workout_adaptation_event(user_id: int, pending_id: str, event: dict) ->
             (created_at, user_id, pending_id),
         )
         if claim.rowcount == 0:
-            pending = conn.execute(
-                """
-                SELECT processed_event_id
-                  FROM workout_adaptation_pending
-                 WHERE user_id = ?
-                   AND id = ?
-                """,
-                (user_id, pending_id),
-            ).fetchone()
-            processed_event_id = pending["processed_event_id"] if pending else None
-            if processed_event_id:
-                existing = conn.execute(
-                    "SELECT * FROM workout_adaptation_events WHERE id = ?",
-                    (processed_event_id,),
-                ).fetchone()
-                return _workout_adaptation_event_payload(existing) if existing else None
             return None
         conn.execute(
             f"INSERT INTO workout_adaptation_events ({', '.join(cols)}) "
@@ -1404,18 +1475,426 @@ def list_workout_adaptation_events(
         clauses.append("created_at >= ?")
         params.append(since)
     where_sql = " AND ".join(clauses)
+    if unacknowledged:
+        order_sql = """
+            CASE
+              WHEN status IN ('applied', 'stale') AND silent = 0 THEN 0
+              ELSE 1
+            END,
+            ROW_NUMBER() OVER (
+              PARTITION BY CASE
+                WHEN status IN ('applied', 'stale') AND silent = 0 THEN status
+                ELSE 'silent'
+              END
+              ORDER BY CASE
+                WHEN status = 'stale' THEN COALESCE(stale_at, created_at)
+                ELSE created_at
+              END DESC
+            ),
+            CASE WHEN status = 'stale' THEN 0 ELSE 1 END,
+            created_at DESC
+        """
+    else:
+        order_sql = "created_at DESC"
     with _get_db() as conn:
         rows = conn.execute(
             f"""
             SELECT *
               FROM workout_adaptation_events
              WHERE {where_sql}
-             ORDER BY created_at DESC
+             ORDER BY {order_sql}
              LIMIT ?
             """,
             [*params, safe_limit],
         ).fetchall()
     return [_workout_adaptation_event_payload(row) for row in rows]
+
+
+def _mark_source_workout_adaptations_stale(
+    conn,
+    user_id: int,
+    *,
+    client_ids: set[str] | None = None,
+    meal_ids: set[str] | None = None,
+    reason: str,
+) -> int:
+    client_ids = {value for value in (client_ids or set()) if value}
+    meal_ids = {value for value in (meal_ids or set()) if value}
+    if not client_ids and not meal_ids:
+        return 0
+    stale_at = datetime.now().isoformat(timespec="seconds")
+    rows = conn.execute(
+        """
+        SELECT id, trigger_json
+          FROM workout_adaptation_events
+         WHERE user_id = ? AND status = 'applied'
+        """,
+        (user_id,),
+    ).fetchall()
+    matching_ids = []
+    for row in rows:
+        trigger = _json_loads_or_none(row["trigger_json"]) or {}
+        if (
+            client_ids.intersection(trigger.get("food_log_client_ids") or [])
+            or meal_ids.intersection(trigger.get("meal_ids") or [])
+        ):
+            matching_ids.append(row["id"])
+    for event_id in matching_ids:
+        conn.execute(
+            """
+            UPDATE workout_adaptation_events
+               SET status = 'stale', silent = 0, reason = ?,
+                   stale_at = COALESCE(stale_at, ?)
+             WHERE id = ? AND user_id = ? AND acknowledged_at IS NULL
+               AND status = 'applied'
+            """,
+            (reason, stale_at, event_id, user_id),
+        )
+    if matching_ids:
+        _restore_stale_workout_adaptation_plan(conn, user_id, set(matching_ids))
+    return len(matching_ids)
+
+
+def _mark_changed_workout_adaptation_snapshots_stale(
+    conn,
+    user_id: int,
+    *,
+    date_s: str,
+    reason: str,
+) -> int:
+    current_rows = _current_workout_adaptation_source_rows(conn, user_id, {"date": date_s})
+    current_fingerprint = workout_adaptation_source_fingerprint(current_rows)
+    rows = conn.execute(
+        """
+        SELECT id, reason_metadata_json
+          FROM workout_adaptation_events
+         WHERE user_id = ? AND date = ? AND status = 'applied'
+        """,
+        (user_id, date_s),
+    ).fetchall()
+    matching_ids = []
+    for row in rows:
+        metadata = _json_loads_or_none(row["reason_metadata_json"]) or {}
+        source_fingerprint = metadata.get("source_fingerprint")
+        if source_fingerprint and source_fingerprint != current_fingerprint:
+            matching_ids.append(row["id"])
+    if not matching_ids:
+        return 0
+    stale_at = datetime.now().isoformat(timespec="seconds")
+    conn.executemany(
+        """
+        UPDATE workout_adaptation_events
+           SET status = 'stale', silent = 0, reason = ?,
+               stale_at = COALESCE(stale_at, ?)
+         WHERE id = ? AND user_id = ? AND status = 'applied'
+        """,
+        [(reason, stale_at, event_id, user_id) for event_id in matching_ids],
+    )
+    _restore_stale_workout_adaptation_plan(conn, user_id, set(matching_ids))
+    return len(matching_ids)
+
+
+def _restore_stale_workout_adaptation_plan(
+    conn,
+    user_id: int,
+    stale_event_ids: set[str],
+) -> bool:
+    """Restore the unadapted base when the persisted plan still matches it."""
+    row = conn.execute(
+        "SELECT plan_json FROM current_workout_plans WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    plan = _json_loads_or_none(row["plan_json"]) if row else None
+    if not isinstance(plan, dict):
+        return False
+    base = plan.get("_fit136_base_recommendation")
+    last_adapted = plan.get("_fit136_last_adapted_plan")
+    adaptation_event_id = plan.get("_fit136_adaptation_event_id")
+    visible = {
+        key: value
+        for key, value in plan.items()
+        if not str(key).startswith("_fit136_")
+    }
+    if not isinstance(base, dict) or not isinstance(last_adapted, dict):
+        return False
+    if adaptation_event_id:
+        if adaptation_event_id not in stale_event_ids:
+            return False
+    else:
+        latest = conn.execute(
+            """
+            SELECT id
+             FROM workout_adaptation_events
+             WHERE user_id = ?
+               AND status IN ('applied', 'stale')
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        if not latest or latest["id"] not in stale_event_ids:
+            return False
+    restored = _revert_adaptation_changes(visible, base, last_adapted)
+    conn.execute(
+        """
+        UPDATE current_workout_plans
+           SET plan_json = ?, updated_at = ?
+         WHERE user_id = ?
+        """,
+        (
+            json.dumps(restored, sort_keys=True, default=str),
+            datetime.now().isoformat(timespec="seconds"),
+            user_id,
+        ),
+    )
+    return True
+
+
+def _workout_plan_without_stale_adaptation(plan: dict) -> dict:
+    base = plan.get("_fit136_base_recommendation")
+    last_adapted = plan.get("_fit136_last_adapted_plan")
+    if not isinstance(base, dict) or not isinstance(last_adapted, dict):
+        return plan
+    visible = {
+        key: value
+        for key, value in plan.items()
+        if not str(key).startswith("_fit136_")
+    }
+    return _revert_adaptation_changes(visible, base, last_adapted)
+
+
+def _revert_adaptation_changes(current, base, adapted):
+    """Three-way revert adaptation-owned values while retaining user edits."""
+    if current == adapted:
+        return json.loads(json.dumps(base))
+    if isinstance(current, dict) and isinstance(base, dict) and isinstance(adapted, dict):
+        restored = json.loads(json.dumps(current))
+        for key in set(base).union(adapted):
+            if key not in current:
+                continue
+            if key not in base:
+                if key in adapted and current[key] == adapted[key]:
+                    restored.pop(key, None)
+                continue
+            if key not in adapted:
+                continue
+            restored[key] = _revert_adaptation_changes(current[key], base[key], adapted[key])
+        return restored
+    if isinstance(current, list) and isinstance(base, list) and isinstance(adapted, list):
+        current_identities = [_workout_plan_item_identity(item) for item in current]
+        base_identities = [_workout_plan_item_identity(item) for item in base]
+        adapted_identities = [_workout_plan_item_identity(item) for item in adapted]
+        if (
+            all(identity is not None for identity in current_identities)
+            and len(set(current_identities)) == len(current_identities)
+            and all(identity is not None for identity in base_identities)
+            and len(set(base_identities)) == len(base_identities)
+            and all(identity is not None for identity in adapted_identities)
+            and len(set(adapted_identities)) == len(adapted_identities)
+        ):
+            base_by_identity = dict(zip(base_identities, base))
+            adapted_by_identity = dict(zip(adapted_identities, adapted))
+            return [
+                _revert_adaptation_changes(
+                    item,
+                    base_by_identity[identity],
+                    adapted_by_identity[identity],
+                )
+                if identity in base_by_identity and identity in adapted_by_identity
+                else json.loads(json.dumps(item))
+                for item, identity in zip(current, current_identities)
+            ]
+        restored = json.loads(json.dumps(current))
+        for index in range(min(len(current), len(base), len(adapted))):
+            restored[index] = _revert_adaptation_changes(
+                current[index],
+                base[index],
+                adapted[index],
+            )
+        return restored
+    return json.loads(json.dumps(current))
+
+
+def _workout_plan_item_identity(item):
+    if not isinstance(item, dict):
+        return None
+    for key in ("id", "exercise_id", "machine", "name", "exercise"):
+        value = item.get(key)
+        if value not in (None, ""):
+            return key, str(value)
+    return None
+
+
+def _cancel_source_workout_adaptation_pending(
+    conn,
+    user_id: int,
+    *,
+    client_ids: set[str] | None = None,
+    meal_ids: set[str] | None = None,
+) -> int:
+    """Cancel open windows whose trigger source has been deleted."""
+    client_ids = {value for value in (client_ids or set()) if value}
+    meal_ids = {value for value in (meal_ids or set()) if value}
+    if not client_ids and not meal_ids:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT id, food_log_client_ids_json, meal_ids_json
+          FROM workout_adaptation_pending
+         WHERE user_id = ? AND status = 'pending'
+        """,
+        (user_id,),
+    ).fetchall()
+    source_rows = [
+        _food_log_row_to_dict(row)
+        for row in conn.execute(
+            "SELECT * FROM food_logs WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+    ]
+    matching_ids = []
+    for row in rows:
+        pending_client_ids = _json_loads_or_none(row["food_log_client_ids_json"]) or []
+        pending_meal_ids = _json_loads_or_none(row["meal_ids_json"]) or []
+        matches_deleted_source = (
+            client_ids.intersection(pending_client_ids)
+            or meal_ids.intersection(pending_meal_ids)
+        )
+        has_accepted_source = any(
+            str(source.get("correction_state") or source.get("status") or "").strip().lower()
+            not in {"pending", "pending_review", "needs_review", "review"}
+            and (
+                source.get("client_id") in pending_client_ids
+                or (source.get("meal_id") and source.get("meal_id") in pending_meal_ids)
+            )
+            for source in source_rows
+        )
+        if matches_deleted_source and not has_accepted_source:
+            matching_ids.append(row["id"])
+    if matching_ids:
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        conn.executemany(
+            """
+            UPDATE workout_adaptation_pending
+               SET status = 'canceled', updated_at = ?
+             WHERE id = ? AND user_id = ? AND status = 'pending'
+            """,
+            [(now_iso, pending_id, user_id) for pending_id in matching_ids],
+        )
+    return len(matching_ids)
+
+
+def _invalidate_source_workout_adaptation_pending(
+    conn,
+    user_id: int,
+    *,
+    client_ids: set[str] | None = None,
+    meal_ids: set[str] | None = None,
+) -> int:
+    """Mark processed windows eligible for reevaluation after source changes."""
+    client_ids = {value for value in (client_ids or set()) if value}
+    meal_ids = {value for value in (meal_ids or set()) if value}
+    if not client_ids and not meal_ids:
+        return 0
+    rows = conn.execute(
+        """
+        SELECT id, food_log_client_ids_json, meal_ids_json
+          FROM workout_adaptation_pending
+         WHERE user_id = ? AND status = 'processed'
+        """,
+        (user_id,),
+    ).fetchall()
+    matching_ids = []
+    for row in rows:
+        pending_client_ids = _json_loads_or_none(row["food_log_client_ids_json"]) or []
+        pending_meal_ids = _json_loads_or_none(row["meal_ids_json"]) or []
+        if (
+            client_ids.intersection(pending_client_ids)
+            or meal_ids.intersection(pending_meal_ids)
+        ):
+            matching_ids.append(row["id"])
+    if matching_ids:
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        conn.executemany(
+            """
+            UPDATE workout_adaptation_pending
+               SET status = 'invalidated', updated_at = ?
+             WHERE id = ? AND user_id = ? AND status = 'processed'
+            """,
+            [(now_iso, pending_id, user_id) for pending_id in matching_ids],
+        )
+    return len(matching_ids)
+
+
+_WORKOUT_ADAPTATION_SOURCE_FIELDS = (
+    "date",
+    "logged_at",
+    "meal_id",
+    "meal_type",
+    "item_name",
+    "portion_description",
+    "context_note",
+    "calories",
+    "protein_g",
+    "carbs_g",
+    "fat_g",
+    "sodium_mg",
+    "fiber_g",
+    "confidence",
+    "source",
+)
+
+
+def _workout_adaptation_source_value(row: dict, field: str):
+    value = row.get(field)
+    if field in {"meal_type", "portion_description"} and value == "":
+        return None
+    return value
+
+
+def workout_adaptation_source_fingerprint(rows: list[dict]) -> str:
+    """Return a deterministic fingerprint of adaptation-relevant food rows."""
+    projections = [
+        {
+            "client_id": row.get("client_id"),
+            **{
+                field: _workout_adaptation_source_value(row, field)
+                for field in _WORKOUT_ADAPTATION_SOURCE_FIELDS
+            },
+        }
+        for row in rows
+    ]
+    projections.sort(key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")))
+    encoded = json.dumps(projections, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _current_workout_adaptation_source_rows(
+    conn: sqlite3.Connection,
+    user_id: int,
+    pending: dict,
+) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM food_logs WHERE user_id = ? AND date = ?",
+        (user_id, pending.get("date")),
+    ).fetchall()
+    matching = []
+    for raw_row in rows:
+        row = _food_log_row_to_dict(raw_row)
+        status = str(row.get("correction_state") or row.get("status") or "").strip().lower()
+        accepted = status not in {"pending", "pending_review", "needs_review", "review"}
+        if accepted:
+            matching.append(row)
+    return matching
+
+
+def _workout_adaptation_source_changed(previous: dict, current: dict) -> bool:
+    """Return whether a persisted field used by adaptation logic changed."""
+    return any(
+        _workout_adaptation_source_value(previous, field)
+        != _workout_adaptation_source_value(current, field)
+        for field in _WORKOUT_ADAPTATION_SOURCE_FIELDS
+    )
 
 
 def acknowledge_workout_adaptation_event(user_id: int, event_id: str) -> bool:
@@ -2315,6 +2794,18 @@ def delete_food_log_by_client_id(
     if not client_id:
         return False
     with _reuse_or_open_db(_conn) as conn:
+        source = conn.execute(
+            "SELECT meal_id FROM food_logs WHERE user_id = ? AND client_id = ? LIMIT 1",
+            (user_id, client_id),
+        ).fetchone()
+        if source:
+            _mark_source_workout_adaptations_stale(
+                conn,
+                user_id,
+                client_ids={client_id},
+                meal_ids={source["meal_id"]} if source["meal_id"] else set(),
+                reason="Source meal was deleted; this workout update is no longer current.",
+            )
         conn.execute(
             "DELETE FROM food_log_refresh_events WHERE user_id = ? AND client_id = ?",
             (user_id, client_id),
@@ -2323,6 +2814,19 @@ def delete_food_log_by_client_id(
             "DELETE FROM food_logs WHERE user_id = ? AND client_id = ?",
             (user_id, client_id),
         )
+        if source and cursor.rowcount:
+            _invalidate_source_workout_adaptation_pending(
+                conn,
+                user_id,
+                client_ids={client_id},
+                meal_ids={source["meal_id"]} if source["meal_id"] else set(),
+            )
+            _cancel_source_workout_adaptation_pending(
+                conn,
+                user_id,
+                client_ids={client_id},
+                meal_ids={source["meal_id"]} if source["meal_id"] else set(),
+            )
         if _conn is None:
             conn.commit()
         return cursor.rowcount > 0
@@ -2334,6 +2838,18 @@ def delete_food_logs_by_meal_id(user_id: int, meal_id: str) -> int:
     if not key:
         return 0
     with _get_db() as conn:
+        source_rows = conn.execute(
+            "SELECT client_id FROM food_logs WHERE user_id = ? AND meal_id = ?",
+            (user_id, key),
+        ).fetchall()
+        if source_rows:
+            _mark_source_workout_adaptations_stale(
+                conn,
+                user_id,
+                client_ids={row["client_id"] for row in source_rows if row["client_id"]},
+                meal_ids={key},
+                reason="Source meal was deleted; this workout update is no longer current.",
+            )
         conn.execute(
             "DELETE FROM food_log_refresh_events WHERE user_id = ? AND client_id IN "
             "(SELECT client_id FROM food_logs WHERE user_id = ? AND meal_id = ?)",
@@ -2343,6 +2859,19 @@ def delete_food_logs_by_meal_id(user_id: int, meal_id: str) -> int:
             "DELETE FROM food_logs WHERE user_id = ? AND meal_id = ?",
             (user_id, key),
         )
+        if source_rows and cursor.rowcount:
+            _invalidate_source_workout_adaptation_pending(
+                conn,
+                user_id,
+                client_ids={row["client_id"] for row in source_rows if row["client_id"]},
+                meal_ids={key},
+            )
+            _cancel_source_workout_adaptation_pending(
+                conn,
+                user_id,
+                client_ids={row["client_id"] for row in source_rows if row["client_id"]},
+                meal_ids={key},
+            )
         conn.commit()
         return int(cursor.rowcount or 0)
 
@@ -2418,6 +2947,18 @@ def add_food_log(
                 conn.commit()
             previous["_protected_client_id_conflict"] = True
             return previous
+        if isinstance(previous, dict):
+            for field in (
+                "meal_id",
+                "meal_type",
+                "portion_description",
+                "fiber_g",
+                "confidence",
+            ):
+                if field not in record:
+                    entry[field] = previous.get(field)
+            if "context_note" not in record and "notes" not in record:
+                entry["context_note"] = previous.get("context_note")
         if previous_is_terminal:
             previous_original = previous.get("original_estimate")
             if isinstance(previous_original, dict):
@@ -2448,7 +2989,15 @@ def add_food_log(
                         "confidence",
                     ):
                         value = entry.get(field)
-                        nullable_nutrition = {"carbs_g", "fat_g", "sodium_mg", "fiber_g", "confidence"}
+                        nullable_nutrition = {
+                            "meal_type",
+                            "portion_description",
+                            "carbs_g",
+                            "fat_g",
+                            "sodium_mg",
+                            "fiber_g",
+                            "confidence",
+                        }
                         if field in nullable_nutrition and field in record and value is None:
                             changed_nutrition = changed_nutrition or merged_current.get(field) is not None
                             merged_current[field] = None
@@ -2529,6 +3078,47 @@ def add_food_log(
                 _food_log_row_to_dict(row),
                 refresh_metadata,
                 now_iso,
+            )
+        persisted = _food_log_row_to_dict(row) if row is not None else None
+        source_was_added = bool(
+            previous is None
+            and persisted is not None
+            and str(persisted.get("correction_state") or "").strip().lower()
+            not in {"pending", "pending_review", "needs_review", "review"}
+        )
+        if source_was_added and persisted.get("date"):
+            _mark_changed_workout_adaptation_snapshots_stale(
+                conn,
+                user_id,
+                date_s=persisted["date"],
+                reason="Source meal changed; this workout update is no longer current.",
+            )
+        source_became_pending = bool(
+            previous is not None
+            and persisted is not None
+            and previous.get("correction_state") != "pending_review"
+            and persisted.get("correction_state") == "pending_review"
+        )
+        if (
+            previous is not None
+            and persisted is not None
+            and (
+                source_became_pending
+                or _workout_adaptation_source_changed(previous, persisted)
+            )
+        ):
+            _invalidate_source_workout_adaptation_pending(
+                conn,
+                user_id,
+                client_ids={persisted["client_id"]} if persisted.get("client_id") else set(),
+                meal_ids={persisted["meal_id"]} if persisted.get("meal_id") else set(),
+            )
+            _mark_source_workout_adaptations_stale(
+                conn,
+                user_id,
+                client_ids={persisted["client_id"]} if persisted.get("client_id") else set(),
+                meal_ids={persisted["meal_id"]} if persisted.get("meal_id") else set(),
+                reason="Source meal changed; this workout update is no longer current.",
             )
         if _conn is None:
             conn.commit()

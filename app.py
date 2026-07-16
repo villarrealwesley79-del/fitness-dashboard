@@ -76,6 +76,7 @@ from whoop_recommendations import (
 )
 from whoop_store import (
     clear_whoop_data,
+    count_whoop_upsert_conflicts,
     consume_oauth_state,
     create_oauth_state,
     delete_protected_secret,
@@ -1887,6 +1888,15 @@ def _food_log_entries_for_context(since=None, limit=None):
         return []
 
 
+def _food_log_entries_for_workout_adaptation(plan_date: str) -> list[dict]:
+    """Read one bounded snapshot for same-day and next-day adaptation."""
+    try:
+        since = (datetime.strptime(plan_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        since = plan_date
+    return _food_log_entries_for_context(since=since)
+
+
 def _legacy_nutrition_client_id(entry: dict, index: int) -> str:
     payload = {
         "index": index,
@@ -2193,9 +2203,11 @@ def _apply_due_workout_adaptations_for_plan(
         )
         if not events:
             return next_workout, []
-        if any(event.get("status") == "applied" for event in events):
+        applied_events = [event for event in events if event.get("status") == "applied"]
+        if applied_events:
             patched["_fit136_base_recommendation"] = adaptation_base
             patched["_fit136_last_adapted_plan"] = _fit136_visible_workout_plan(patched)
+            patched["_fit136_adaptation_event_id"] = applied_events[-1]["id"]
         elif events:
             return next_workout, events
         return patched, events
@@ -4665,15 +4677,17 @@ def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
 def _persist_current_workout_plan(recommendation: dict, fingerprint: str) -> dict:
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT, LAST_WORKOUT_RECOMMENDATION_OWNER
     with CURRENT_WORKOUT_PLAN_LOCK:
-        LAST_WORKOUT_RECOMMENDATION = recommendation
+        user_id = _current_data_user_id()
+        persisted = save_current_workout_plan(user_id, fingerprint, recommendation)
+        authoritative_plan = persisted["plan"]
+        LAST_WORKOUT_RECOMMENDATION = authoritative_plan
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
         LAST_WORKOUT_RECOMMENDATION_OWNER = {
-            "user_id": _current_data_user_id(),
+            "user_id": user_id,
             "fingerprint": fingerprint,
-            "plan_id": id(recommendation),
+            "plan_id": id(authoritative_plan),
         }
-        save_current_workout_plan(_current_data_user_id(), fingerprint, recommendation)
-    return recommendation
+    return authoritative_plan
 
 
 def _wearable_adjusted_for_display(base_plan, guarded_recommendation, whoop_context) -> dict:
@@ -4761,6 +4775,38 @@ def _current_workout_plan_for_fingerprint(fingerprint: str, *, allow_stale_unsav
             if owner_matches_plan:
                 if owner.get("user_id") == _current_data_user_id():
                     if owner.get("fingerprint") == fingerprint:
+                        persisted = get_current_workout_plan(
+                            _current_data_user_id(),
+                            fingerprint=fingerprint,
+                        )
+                        if (
+                            persisted
+                            and persisted.get("plan")
+                            and persisted["plan"] != LAST_WORKOUT_RECOMMENDATION
+                        ):
+                            if (
+                                LAST_WORKOUT_RECOMMENDATION.get(
+                                    "_fit136_base_recommendation"
+                                )
+                                and not persisted["plan"].get(
+                                    "_fit136_base_recommendation"
+                                )
+                            ):
+                                if LAST_WORKOUT_RECOMMENDATION.get("_fit136_adaptation_event_id"):
+                                    authoritative = save_current_workout_plan(
+                                        _current_data_user_id(),
+                                        fingerprint,
+                                        LAST_WORKOUT_RECOMMENDATION,
+                                    )
+                                    LAST_WORKOUT_RECOMMENDATION = authoritative["plan"]
+                                else:
+                                    LAST_WORKOUT_RECOMMENDATION = persisted["plan"]
+                                LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+                                LAST_WORKOUT_RECOMMENDATION_OWNER = {
+                                    "user_id": _current_data_user_id(),
+                                    "fingerprint": fingerprint,
+                                    "plan_id": id(LAST_WORKOUT_RECOMMENDATION),
+                                }
                         return LAST_WORKOUT_RECOMMENDATION
                     if allow_stale_unsaved:
                         return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
@@ -4956,14 +5002,14 @@ def api_next_workout():
             training_recommendation=guarded_training_recommendation,
             consume_cardio_rotation=False,
         )
-        _persist_current_workout_plan(current_plan, fingerprint)
+        current_plan = _persist_current_workout_plan(current_plan, fingerprint)
     active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
     active_open_requested = active_open_raw in {"1", "true", "yes"}
     completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
     can_evaluate_active = not active_open_requested or bool(completed_sets_by_exercise)
     today_s = _today_str()
-    food_log_entries = _food_log_entries_for_context(since=today_s)
-    adaptation_food_entries = _food_log_entries_for_context()
+    adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
+    food_log_entries = adaptation_food_entries
     nutrition_context = _nutrition_context_for_date(
         today_s,
         hard_training_planned=_workout_looks_hard(current_plan or {}),
@@ -4979,7 +5025,7 @@ def api_next_workout():
             active_workout_open=active_open_requested,
             completed_sets_by_exercise=completed_sets_by_exercise,
         )
-        _persist_current_workout_plan(current_plan, fingerprint)
+        current_plan = _persist_current_workout_plan(current_plan, fingerprint)
     today_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context(today_oura.get("readiness_score"))
@@ -5233,8 +5279,8 @@ def api_dashboard():
             training_recommendation=guarded_dashboard_recommendation,
             consume_cardio_rotation=False,
         )
-    food_log_entries = _food_log_entries_for_context(since=today_s)
-    adaptation_food_entries = _food_log_entries_for_context()
+    adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
+    food_log_entries = adaptation_food_entries
     nutrition_context = _nutrition_context_for_date(
         today_s,
         hard_training_planned=_workout_looks_hard(next_workout),
@@ -5270,7 +5316,7 @@ def api_dashboard():
     # transform on the way out only. Persisting the base first is safe: the base
     # is the correct canonical value regardless, and the fail-open display
     # transform below degrades to the base plan rather than 500-ing.
-    _persist_current_workout_plan(next_workout, fingerprint)
+    next_workout = _persist_current_workout_plan(next_workout, fingerprint)
     whoop_adjusted = _wearable_adjusted_for_display(
         next_workout, guarded_dashboard_recommendation, whoop_context
     )
@@ -5662,6 +5708,9 @@ def add_nutrition():
     meal_type, err2 = _coerce_str(data.get("meal_type"), "meal_type", required=False, max_len=64)
     if err2:
         return err2
+    meal_id, err2 = _coerce_str(data.get("meal_id"), "meal_id", required=False, max_len=128)
+    if err2:
+        return err2
     context_note, err2 = _coerce_str(data.get("context_note"), "context_note", required=False, max_len=500)
     if err2:
         return err2
@@ -5748,9 +5797,14 @@ def add_nutrition():
         **entry,
         "logged_at": logged_at,
         "source_timestamp": source_timestamp,
+        "meal_id": meal_id,
         "meal_type": meal_type,
         "item_name": item_name,
-        "portion_description": portion_description,
+        "portion_description": (
+            None
+            if "portion_description" in data and data["portion_description"] is None
+            else portion_description
+        ),
         "context_note": context_note,
         "confidence": round(float(confidence), 3) if confidence is not None else None,
         "source": food_log_source,
@@ -5758,7 +5812,18 @@ def add_nutrition():
         "client_id": client_id,
         "original_estimate": original_estimate,
     }
-    for field in ("carbs_g", "fat_g", "sodium_mg", "fiber_g", "confidence"):
+    for field in (
+        "carbs_g",
+        "fat_g",
+        "sodium_mg",
+        "fiber_g",
+        "confidence",
+        "notes",
+        "meal_id",
+        "meal_type",
+        "portion_description",
+        "context_note",
+    ):
         if field not in data:
             food_log_record.pop(field, None)
     food_log = add_food_log(_current_data_user_id(), food_log_record)
@@ -11717,8 +11782,8 @@ def workout_adaptation_events():
     active_open_requested = active_open_raw in {"1", "true", "yes"}
     active_workout_open = active_open_requested and bool(completed_sets_by_exercise)
     today_s = _today_str()
-    food_log_entries = _food_log_entries_for_context(since=today_s)
-    adaptation_food_entries = _food_log_entries_for_context()
+    adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
+    food_log_entries = adaptation_food_entries
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
     fingerprint = _workout_recommendation_fingerprint()
     next_workout = _current_workout_plan_for_fingerprint(fingerprint)
@@ -11729,7 +11794,7 @@ def workout_adaptation_events():
             training_recommendation=_current_workout_training_recommendation(),
             consume_cardio_rotation=False,
         )
-        _persist_current_workout_plan(next_workout, fingerprint)
+        next_workout = _persist_current_workout_plan(next_workout, fingerprint)
     nutrition_context = _nutrition_context_for_date(
         today_s,
         hard_training_planned=_workout_looks_hard(next_workout),
@@ -11744,7 +11809,7 @@ def workout_adaptation_events():
             active_workout_open=active_workout_open,
             completed_sets_by_exercise=completed_sets_by_exercise,
         )
-        _persist_current_workout_plan(next_workout, fingerprint)
+        next_workout = _persist_current_workout_plan(next_workout, fingerprint)
 
     events = list_workout_adaptation_events(
         _current_data_user_id(),
@@ -12288,7 +12353,7 @@ def swap_workout_exercise():
 
     exercises[exercise_index] = updated_ex
     recommendation["exercises"] = exercises
-    _persist_current_workout_plan(recommendation, fingerprint)
+    recommendation = _persist_current_workout_plan(recommendation, fingerprint)
 
     # Persist the base plan (above), but return the wearable-adjusted view so an
     # active deload/caution clamps every exercise -- including the untouched ones
@@ -12747,7 +12812,7 @@ def adjust_workout():
     recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
     if not recommendation:
         recommendation = generate_next_workout(WORKOUTS, SORENESS_DATA)
-        _persist_current_workout_plan(recommendation, fingerprint)
+        recommendation = _persist_current_workout_plan(recommendation, fingerprint)
 
     goal = recommendation.get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
     goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
@@ -12771,7 +12836,7 @@ def adjust_workout():
                 equipment_pref,
                 "adapter_missing",
             )
-            _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
             _ai_metric_log("ok", reason="deterministic_fallback: adapter_missing", constraint_len=len(constraint))
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
@@ -12810,7 +12875,7 @@ def adjust_workout():
             # so a follow-up Adjust or Swap operates on the patched plan, not the
             # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
             if cached.get("recommendation"):
-                _persist_current_workout_plan(cached["recommendation"], fingerprint)
+                cached["recommendation"] = _persist_current_workout_plan(cached["recommendation"], fingerprint)
             return jsonify(_payload_with_recommendation_display_scope(cached))
 
     if route_candidate is None:
@@ -12826,7 +12891,7 @@ def adjust_workout():
                 equipment_pref,
                 "preflight_unavailable",
             )
-            _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
             _ai_metric_log("ok", reason="deterministic_fallback: preflight_unavailable", constraint_len=len(constraint), model_version=route_model_version)
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log(
@@ -12871,7 +12936,7 @@ def adjust_workout():
                 equipment_pref,
                 reason_code,
             )
-            _persist_current_workout_plan(payload["recommendation"], fingerprint)
+            payload["recommendation"] = _persist_current_workout_plan(payload["recommendation"], fingerprint)
             _ai_metric_log(
                 "ok",
                 constraint_len=len(constraint),
@@ -12964,8 +13029,9 @@ def adjust_workout():
     # Cache and persist the BASE patched plan (display transform must not be
     # baked into the cache or the durable row -- FIT-256 finding 2); apply the
     # wearable display transform only on the outgoing response.
+    patched = _persist_current_workout_plan(patched, fingerprint)
+    payload["recommendation"] = patched
     _ai_cache_put(cache_write_key, payload)
-    _persist_current_workout_plan(patched, fingerprint)
     _ai_metric_log(
         "ok",
         latency_ms=raw_meta.get("elapsed_ms", 0),
@@ -16274,21 +16340,35 @@ def _run_whoop_sync_unlocked(reason="manual", *, days_back=7, client_factory=Who
 def _parse_whoop_csv_rows(text):
     reader = csv.DictReader(io.StringIO(text))
     records = []
+    outcomes = {
+        "parsed_rows": 0,
+        "accepted_rows": 0,
+        "skipped_unsupported_rows": 0,
+        "ignored_nap_rows": 0,
+    }
     for index, row in enumerate(reader, start=1):
         if index > WHOOP_CSV_MAX_ROWS:
             raise ValueError(f"WHOOP CSV row limit exceeded ({WHOOP_CSV_MAX_ROWS}).")
+        outcomes["parsed_rows"] += 1
         if not isinstance(row, dict):
             continue
         record_type = (row.get("record_type") or row.get("type") or "recovery").strip().lower()
         if record_type not in {"recovery", "sleep", "cycle", "workout"}:
+            outcomes["skipped_unsupported_rows"] += 1
             continue
         _validate_whoop_raw_metric_fields(row)
+        is_nap = record_type == "sleep" and _whoop_truthy(row.get("nap"))
         normalized = _normalize_whoop_record(record_type, row)
-        if normalized:
-            normalized["local_date"] = _validate_imported_whoop_local_date(normalized["local_date"])
-            _validate_whoop_metric_bounds(normalized)
+        if is_nap:
+            outcomes["ignored_nap_rows"] += 1
+            continue
+        if normalized is None:
+            raise ValueError(f"WHOOP CSV row {index} is missing a valid date.")
+        normalized["local_date"] = _validate_imported_whoop_local_date(normalized["local_date"])
+        _validate_whoop_metric_bounds(normalized)
         records.append((record_type, normalized))
-    return [(kind, row) for kind, row in records if row]
+        outcomes["accepted_rows"] += 1
+    return records, outcomes
 
 
 def _whoop_has_csv_imported_data(freshness=None):
@@ -16594,7 +16674,7 @@ def whoop_import_csv():
     if not text.strip():
         return api_error("CSV content is required.", 400, code="missing_csv")
     try:
-        parsed = _parse_whoop_csv_rows(text)
+        parsed, outcomes = _parse_whoop_csv_rows(text)
     except ValueError as exc:
         error_code = "whoop_csv_too_many_rows" if "row limit" in str(exc).lower() else "invalid_whoop_csv_metric"
         status_code = 413 if error_code == "whoop_csv_too_many_rows" else 400
@@ -16609,6 +16689,13 @@ def whoop_import_csv():
         by_type = {"recovery": [], "sleep": [], "cycle": [], "workout": []}
         for record_type, row in parsed:
             by_type[record_type].append(row)
+        duplicate_or_upserted = sum(
+            count_whoop_upsert_conflicts(WHOOP_DB_FILE, record_type, rows)
+            for record_type, rows in by_type.items()
+        )
+        accepted_rows = outcomes.pop("accepted_rows")
+        outcomes["imported_rows"] = accepted_rows - duplicate_or_upserted
+        outcomes["duplicate_or_upserted_rows"] = duplicate_or_upserted
         upserted = 0
         for record_type, rows in by_type.items():
             upserted += upsert_whoop_records(WHOOP_DB_FILE, record_type, rows, sync_run_id=run_id)
@@ -16619,6 +16706,7 @@ def whoop_import_csv():
                 "status": "success",
                 "import": {
                     "run_id": run_id,
+                    **outcomes,
                     "records_upserted": upserted,
                 },
                 "connection": _whoop_public_status(),
@@ -17889,8 +17977,8 @@ def smart_recommendation_api():
         consume_cardio_rotation=False,
     )
     freshness = _compute_data_freshness()
-    food_log_entries = _food_log_entries_for_context(since=today)
-    adaptation_food_entries = _food_log_entries_for_context()
+    adaptation_food_entries = _food_log_entries_for_workout_adaptation(today)
+    food_log_entries = adaptation_food_entries
     nutrition_context = _nutrition_context_for_date(
         today,
         hard_training_planned=_workout_looks_hard(next_workout),
@@ -17952,7 +18040,7 @@ def smart_recommendation_api():
                 completed_sets_by_exercise=completed_sets_by_exercise,
             )
             if workout_adaptation_events:
-                _persist_current_workout_plan(next_workout, fingerprint)
+                next_workout = _persist_current_workout_plan(next_workout, fingerprint)
         if workout_adaptation_events:
             nutrition_context = _nutrition_context_for_date(
                 today,
@@ -19336,6 +19424,18 @@ def sleep_import():
             return 0,True,'out_of_range'
         return int(value),True,None
 
+    def parse_sleep_timestamp(value):
+        if value is None or value == '':
+            return None,None
+        if not isinstance(value, str):
+            return None,'invalid_timestamp'
+        try:
+            if 'T' in value or ' ' in value:
+                return ('datetime', datetime.fromisoformat(value)),None
+            return ('time', datetime.strptime(value, '%H:%M').time()),None
+        except ValueError:
+            return None,'invalid_timestamp'
+
     entries=[]
     errors=[]
     for row_number,r in enumerate(raw, start=1):
@@ -19384,6 +19484,88 @@ def sleep_import():
             errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
         e['sleep_start']=r.get('sleep_start')
         e['sleep_end']=r.get('sleep_end')
+        timestamp_error_count=len(errors)
+        parsed_start,start_error=parse_sleep_timestamp(e['sleep_start'])
+        parsed_end,end_error=parse_sleep_timestamp(e['sleep_end'])
+        if start_error:
+            errors.append({'row':row_number,'field':'sleep_start','code':start_error})
+        if end_error:
+            errors.append({'row':row_number,'field':'sleep_end','code':end_error})
+        if len(errors)>timestamp_error_count:
+            continue
+        if bool(parsed_start)!=bool(parsed_end):
+            missing_field='sleep_end' if parsed_start else 'sleep_start'
+            errors.append({'row':row_number,'field':missing_field,'code':'missing_timestamp'})
+            continue
+        if parsed_start and parsed_end:
+            start_kind,start_value=parsed_start
+            end_kind,end_value=parsed_end
+            if start_kind!=end_kind:
+                errors.append({'row':row_number,'field':'sleep_end','code':'invalid_timestamp'})
+                continue
+            if start_kind=='datetime':
+                try:
+                    record_date=datetime.strptime(date, '%Y-%m-%d').date()
+                except ValueError:
+                    errors.append({'row':row_number,'field':'date','code':'invalid_date'})
+                    continue
+                try:
+                    window_minutes=(end_value-start_value).total_seconds()/60
+                except TypeError:
+                    errors.append({'row':row_number,'field':'sleep_end','code':'invalid_timestamp'})
+                    continue
+                if window_minutes<=0:
+                    errors.append({'row':row_number,'field':'sleep_end','code':'contradictory_timestamp'})
+                    continue
+                if window_minutes>1440:
+                    errors.append({'row':row_number,'field':'sleep_end','code':'out_of_range'})
+                    continue
+                start_date=start_value.date()
+                start_matches_record_date=(
+                    start_date==record_date
+                    or (start_date<record_date and (record_date-start_date).days==1)
+                )
+                if end_value.date()!=record_date or not start_matches_record_date:
+                    errors.append({'row':row_number,'field':'date','code':'contradictory_timestamp'})
+                    continue
+            else:
+                try:
+                    anchor_date=datetime.strptime(date, '%Y-%m-%d').date()
+                except ValueError:
+                    errors.append({'row':row_number,'field':'date','code':'invalid_date'})
+                    continue
+                start_dt=datetime.combine(anchor_date,start_value)
+                end_dt=datetime.combine(anchor_date,end_value)
+                if end_dt<=start_dt:
+                    try:
+                        start_dt-=timedelta(days=1)
+                    except OverflowError:
+                        errors.append({'row':row_number,'field':'date','code':'contradictory_timestamp'})
+                        continue
+                window_minutes=(end_dt-start_dt).total_seconds()/60
+                e['sleep_start']=start_dt.isoformat()
+                e['sleep_end']=end_dt.isoformat()
+            if window_minutes>1440:
+                errors.append({'row':row_number,'field':'sleep_end','code':'out_of_range'})
+                continue
+            if supplied['time_in_bed_min'] and e['time_in_bed_min']!=int(window_minutes):
+                errors.append({'row':row_number,'field':'time_in_bed_min','code':'contradictory_minutes'})
+                continue
+            if supplied['sleep_duration_min'] and e['sleep_duration_min']>window_minutes:
+                errors.append({'row':row_number,'field':'sleep_duration_min','code':'contradictory_minutes'})
+                continue
+            if stages_supplied and stages>window_minutes:
+                errors.append({'row':row_number,'field':'stage_total_min','code':'contradictory_minutes'})
+                continue
+            if supplied['awake_min'] and e['awake_min']>window_minutes:
+                errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
+                continue
+            if stages_supplied and supplied['awake_min'] and stages+e['awake_min']>window_minutes:
+                errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
+                continue
+            if supplied['sleep_duration_min'] and supplied['awake_min'] and e['sleep_duration_min']+e['awake_min']>window_minutes:
+                errors.append({'row':row_number,'field':'awake_min','code':'contradictory_minutes'})
+                continue
         entries.append(e)
     if errors:
         return api_error('Sleep import contains invalid rows', 400, code='invalid_sleep_rows', details=errors)
