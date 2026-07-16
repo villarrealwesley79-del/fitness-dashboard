@@ -1,6 +1,6 @@
 # Fitness Dashboard PRD Index
 
-> **Sources:** `README.md`, `docs/VISION.md`, `docs/PRD.md`, `docs/CURRENT_STATE.md`, `app.py`, `auth.py`, `apple_health_parser.py`, `health_ingest.py`, `stripe_checkout.py`, `templates/index.html`, `static/js/app.js`, `static/js/sw.js`
+> **Sources:** `README.md`, `docs/VISION.md`, `docs/PRD.md`, `docs/CURRENT_STATE.md`, `app.py`, `auth.py`, `apple_health_parser.py`, `health_ingest.py`, `templates/index.html`, `static/js/app.js`, `static/js/sw.js`
 > **Routes:** Master index for all documented app, API, auth, integration, PWA, and dead/legacy route surfaces.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
@@ -38,7 +38,6 @@ Runtime data is local by default. The public repo intentionally excludes owner d
 - `personal_vocab.py` - Personal food vocabulary match thresholds and fuzzy matching.
 - `recommendation_sources.py` - Open Wearables recommendation-source projection.
 - `runtime_config.py` - `DATA_DIR` path resolution and public base URL normalization.
-- `stripe_checkout.py` - Stripe pricing/checkout/webhook blueprint; defined but never registered in the running app.
 - `usda_fdc_client.py` - USDA FoodData Central search client.
 - `vision_estimator.py` - Vision provider selection and supported provider dispatch.
 - `wearable_fact_store.py` - Redacted normalized wearable-fact SQLite store and source metadata.
@@ -51,7 +50,6 @@ Frontend:
 
 - `templates/index.html` - Main app shell with eight tabs, modal stack, sync banner, and dashboard regions.
 - `templates/login.html` - Login/register form rendered by `auth.py`.
-- `templates/landing.html`, `templates/pricing.html`, `templates/checkout_success.html`, `templates/checkout_cancel.html` - Public marketing/billing templates. `pricing/success/cancel/webhook` are declared in `stripe_checkout.py` but its blueprint is never registered; `/landing` is allowlisted in auth but no matching route exists.
 - `static/js/app-loader.js` - Defers loading `static/js/app.js` until window load with a cache-bust version.
 - `static/js/app.js` - SPA controller: data loading, tab switching, charts, forms, workout modal, offline queues, integration setup, push, AI status, and meal review.
 - `static/js/sw.js` - Service worker: no app-shell cache, network-first fetch, offline JSON/HTML failure responses, and low-stakes push display.
@@ -68,7 +66,7 @@ Data locations:
 
 | Module | PRD doc link | Core functionality |
 | --- | --- | --- |
-| Auth and account | [01-auth-and-account.md](01-auth-and-account.md) | Login, registration, owner-only authorization, sessions, CSRF/origin rules, auth scope, Stripe account fields. |
+| Auth and account | [01-auth-and-account.md](01-auth-and-account.md) | Login, registration, owner-only authorization, sessions, CSRF/origin rules, and auth scope. |
 | Daily brief dashboard | [02-daily-brief-dashboard.md](02-daily-brief-dashboard.md) | First-screen readiness, recommendation, daily glance, insight cards, food context, freshness chips. |
 | Workout planning and execution | [03-workout-planning-execution.md](03-workout-planning-execution.md) | Next workout, active workout modal, swaps, manual logging, completion, history, stats, adherence, progressive overload. |
 | Meal logging: text and barcode | [04-meal-logging-text-barcode.md](04-meal-logging-text-barcode.md) | Meal composer text path, barcode lookup, pending review, food logs, personal vocab, refresh events. |
@@ -80,7 +78,6 @@ Data locations:
 | Open Wearables integration | [10-open-wearables-integration.md](10-open-wearables-integration.md) | Hub setup, provider catalog, cloud sign-in gates, phone invites, metadata-only sync, normalized facts. |
 | AI coach and recommendations | [11-ai-coach-recommendations.md](11-ai-coach-recommendations.md) | LM Studio health/metrics, adjust plan, analyze workout, fact query, suggestion approval/rejection. |
 | Push notifications | [12-push-notifications.md](12-push-notifications.md) | Web Push subscription lifecycle, reminder preview, test delivery, service-worker notification display. |
-| Billing and landing | [13-billing-stripe-landing.md](13-billing-stripe-landing.md) | Marketing pages, pricing template, Stripe checkout/webhook blueprint, Pro flags. |
 | Data layer and persistence | [14-data-layer-persistence.md](14-data-layer-persistence.md) | JSON/SQLite stores, backup/export/import, local queues, sanitized backup contracts, migrations. |
 | Ops and deployment | [15-ops-deployment.md](15-ops-deployment.md) | Local runtime, launchd, environment variables, smoke testing, release/cache-bust behavior, staleness jobs. |
 | Progress analytics and body composition | [16-progress-analytics-body.md](16-progress-analytics-body.md) | Body/recomp trends, sleep analytics, vitals, adherence, muscle fatigue, ACWR, progressive overload, weather, and advanced analytics. |
@@ -123,14 +120,11 @@ Data locations:
 | Logout | `GET /logout` | Ends owner session. | [01-auth-and-account.md](01-auth-and-account.md) |
 | PWA manifest | `GET /manifest.json` | Public install metadata generated from `app.py`. | [15-ops-deployment.md](15-ops-deployment.md) |
 | Service worker | `GET /sw.js`, `static/js/sw.js` | Public service worker with network-first app behavior and push notification display. | [15-ops-deployment.md](15-ops-deployment.md), [12-push-notifications.md](12-push-notifications.md) |
-| Pricing | `GET /pricing` in `stripe_checkout.py` | Stripe pricing page; blueprint defined but never registered, so the route 404s. | [13-billing-stripe-landing.md](13-billing-stripe-landing.md) |
-| Checkout success/cancel | `GET /success`, `GET /cancel` in `stripe_checkout.py` | Post-checkout pages; blueprint defined but never registered, so the routes 404. | [13-billing-stripe-landing.md](13-billing-stripe-landing.md) |
-| Landing page | `templates/landing.html`, auth allowlist `/landing` | Marketing page template exists, but no live route exists. | [13-billing-stripe-landing.md](13-billing-stripe-landing.md) |
 | Test chart page | `GET /test-chart` | Auth-gated chart test page; appears legacy/dev-only. | [15-ops-deployment.md](15-ops-deployment.md) |
 
 ## Full Endpoint Inventory Summary
 
-See [appendix/api-inventory.md](appendix/api-inventory.md) for the route-by-route reference. See also [appendix/enum-dictionary.md](appendix/enum-dictionary.md) and [appendix/page-relationships.md](appendix/page-relationships.md). This run documented 119 appendix rows covering 118 unique routes:
+See [appendix/api-inventory.md](appendix/api-inventory.md) for the route-by-route reference. See also [appendix/enum-dictionary.md](appendix/enum-dictionary.md) and [appendix/page-relationships.md](appendix/page-relationships.md). This run documented 114 appendix rows covering 113 unique routes:
 
 | Feature area | Endpoint count |
 | --- | ---: |
@@ -146,7 +140,6 @@ See [appendix/api-inventory.md](appendix/api-inventory.md) for the route-by-rout
 | Open Wearables and wearable facts | 11 |
 | Push notifications | 5 |
 | Backup/import/export | 3 |
-| Billing/Stripe declared routes | 5 |
 | Dev/legacy route | 1 |
 
 ## Global Notes
@@ -154,10 +147,9 @@ See [appendix/api-inventory.md](appendix/api-inventory.md) for the route-by-rout
 Permission model:
 
 - Most app and API routes are protected by Flask-Login and, in default single-owner mode, by owner-only user-id enforcement.
-- Public route allowlist includes login/register/logout, landing, pricing, manifest, service worker, static assets, robots/sitemap, Stripe webhook, checkout success/cancel, and the exact Apple Health sync webhook path.
+- Public route allowlist includes login/register/logout, manifest, service worker, static assets, robots/sitemap, and the exact Apple Health sync webhook path.
 - Mutating browser requests must pass same-origin browser metadata, a valid form CSRF token, or `X-Requested-With: XMLHttpRequest`.
 - `/api/apple-health/sync` is token-authenticated by `HEALTH_SYNC_TOKEN` via `X-Sync-Token` or `?token=...`, and is exempt from session and CSRF because it is called by Health Auto Export/Shortcuts.
-- `/webhook` is intended to be Stripe-signed webhook auth and CSRF-exempt, but `stripe_checkout.py` allows unsigned JSON when `STRIPE_WEBHOOK_SECRET` is unset; this overlaps open issues FIT-254/FIT-255.
 - `app.py` adds permissive CORS headers globally. Browser session/auth still gate protected routes, but the policy should be reviewed before any public multi-user deployment.
 
 Common interaction patterns:

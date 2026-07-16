@@ -238,7 +238,7 @@ Pre-boot dashboard HTML can show empty/default copy such as "No food logged toda
 
 ## 9. Permissions & Security
 
-All dashboard APIs are session-authenticated by default through Flask-Login unless `LOGIN_DISABLED` is set in testing. Browser API calls include `X-Requested-With: XMLHttpRequest`; mutating routes require that header, a valid form CSRF token, or same-origin browser metadata. Cross-origin browser mutations are rejected before CSRF fallback. Token-authenticated Apple Health sync and Stripe webhook are separate exemptions, not part of this daily brief surface.
+All dashboard APIs are session-authenticated by default through Flask-Login unless `LOGIN_DISABLED` is set in testing. Browser API calls include `X-Requested-With: XMLHttpRequest`; mutating routes require that header, a valid form CSRF token, or same-origin browser metadata. Cross-origin browser mutations are rejected before CSRF fallback. Token-authenticated Apple Health sync is a separate exemption, not part of this daily brief surface.
 
 The app is single-owner by default. `FITNESS_DASHBOARD_SINGLE_USER=false` disables the owner-only guard; otherwise the minimum user id or `FITNESS_DASHBOARD_OWNER_USER_ID` is the owner. Runtime data is local and excluded from Git. Normal dashboard responses should not expose raw wearable payloads, Open Wearables hub secrets, WHOOP token material, or raw food photos.
 
