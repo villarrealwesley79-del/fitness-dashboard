@@ -2169,6 +2169,14 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     gap: 8px;
     margin-bottom: 14px;
 }
+.workout-detail-kpis-four {
+    grid-template-columns: repeat(4, 1fr);
+}
+@media (max-width: 540px) {
+    .workout-detail-kpis-four {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
 .workout-detail-kpis div {
     padding: 10px;
     border-radius: 10px;

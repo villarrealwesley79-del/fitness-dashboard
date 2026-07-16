@@ -13841,6 +13841,67 @@ def wearable_facts_api():
     })
 
 
+def _cross_source_workout_fingerprints(workout):
+    start = _workout_start_dt(workout)
+    if start is None:
+        return set()
+    if workout.get("source") == "open_wearables":
+        labels = (
+            workout.get("session_type") or workout.get("type"),
+            workout.get("activity_type") or workout.get("canonical_category"),
+        )
+    else:
+        labels = (_workout_activity_for_dedupe(workout),)
+    second = int(start.timestamp())
+    def canonical_activity(label):
+        training_category = canonical_training_category(label)
+        if training_category == "strength_training":
+            return training_category
+        return _canonical_cardio_fatigue_type(label)
+    return {
+        (second, activity)
+        for activity in (canonical_activity(label) for label in labels)
+        if activity
+    }
+
+
+def _merge_open_wearables_history_rows(base_rows, open_wearables_rows):
+    base = [dict(row) for row in (base_rows or [])]
+    open_wearables = [dict(row) for row in (open_wearables_rows or [])]
+    base_by_fingerprint = {}
+    open_wearables_by_fingerprint = {}
+    for index, row in enumerate(base):
+        for fingerprint in _cross_source_workout_fingerprints(row):
+            base_by_fingerprint.setdefault(fingerprint, set()).add(index)
+    for index, row in enumerate(open_wearables):
+        for fingerprint in _cross_source_workout_fingerprints(row):
+            open_wearables_by_fingerprint.setdefault(fingerprint, set()).add(index)
+
+    matched_open_wearables = set()
+    for base_index, base_row in enumerate(base):
+        open_wearables_candidates = set()
+        for fingerprint in _cross_source_workout_fingerprints(base_row):
+            open_wearables_candidates.update(open_wearables_by_fingerprint.get(fingerprint, set()))
+        if len(open_wearables_candidates) != 1:
+            continue
+        open_wearables_index = next(iter(open_wearables_candidates))
+        base_candidates = set()
+        for fingerprint in _cross_source_workout_fingerprints(open_wearables[open_wearables_index]):
+            base_candidates.update(base_by_fingerprint.get(fingerprint, set()))
+        if base_candidates != {base_index}:
+            continue
+        open_wearables_row = open_wearables[open_wearables_index]
+        for field in ("calories_burned", "avg_heart_rate", "max_heart_rate"):
+            if base_row.get(field) is None and open_wearables_row.get(field) is not None:
+                base_row[field] = open_wearables_row[field]
+        matched_open_wearables.add(open_wearables_index)
+
+    return base + [
+        row for index, row in enumerate(open_wearables)
+        if index not in matched_open_wearables
+    ]
+
+
 def _ai_history_context(limit=80):
     rows = []
     for w in sorted(WORKOUTS, key=lambda x: x.get("date", ""), reverse=True)[:limit]:
@@ -13856,32 +13917,30 @@ def _ai_history_context(limit=80):
         apple_rows = _load_apple_health_recommendation_workouts(days=365)
     except Exception:
         apple_rows = []
-    for row in apple_rows[:limit]:
-        rows.append(normalize_history_item({
-            "id": row.get("id"),
-            "date": row.get("date"),
-            "session_type": row.get("session_type"),
-            "activity_type": (row.get("apple_health") or {}).get("activity_type") or row.get("session_type"),
-            "duration_minutes": row.get("duration_minutes"),
-            "source": "apple_health",
-        }, source="apple_health"))
     try:
         open_wearables_rows = _load_open_wearables_workouts()
     except Exception:
         open_wearables_rows = []
-    for row in open_wearables_rows[:limit]:
-        rows.append(normalize_history_item({
+    wearable_rows = _merge_open_wearables_history_rows(apple_rows, open_wearables_rows)
+    for row in wearable_rows:
+        source = "open_wearables" if row.get("source") == "open_wearables" else "apple_health"
+        activity_type = row.get("activity_type")
+        if source == "apple_health":
+            activity_type = (row.get("apple_health") or {}).get("activity_type") or row.get("session_type")
+        item = {
             "id": row.get("id"),
             "date": row.get("date"),
             "session_type": row.get("session_type"),
-            "activity_type": row.get("activity_type"),
+            "activity_type": activity_type,
             "duration_minutes": row.get("duration_minutes"),
             "calories_burned": row.get("calories_burned"),
             "avg_heart_rate": row.get("avg_heart_rate"),
             "max_heart_rate": row.get("max_heart_rate"),
-            "source": "open_wearables",
-            "provider": "Open Wearables",
-        }, source="open_wearables"))
+            "source": source,
+        }
+        if source == "open_wearables":
+            item["provider"] = "Open Wearables"
+        rows.append(normalize_history_item(item, source=source))
     rows.sort(key=lambda x: x.get("date") or "", reverse=True)
     return rows[:limit]
 

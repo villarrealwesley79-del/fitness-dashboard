@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import shutil
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -68,6 +70,23 @@ def _normalized_workout(*, max_hr=176):
         "avg_heart_rate": 148,
         "max_heart_rate": max_hr,
         "notes": "Steady aerobic run",
+    }
+
+
+def _apple_health_workout(*, start="2026-07-12T07:00:00-05:00", avg_hr=None):
+    return {
+        "id": "apple-health:synthetic-id",
+        "date": "2026-07-12",
+        "created_at": start,
+        "session_type": "Running",
+        "duration_minutes": 42,
+        "avg_heart_rate": avg_hr,
+        "unrelated": "preserve-me",
+        "source": "apple_health",
+        "apple_health": {
+            "activity_type": "Running",
+            "start": start,
+        },
     }
 
 
@@ -270,6 +289,278 @@ def test_ai_history_context_includes_nullable_open_wearables_metrics(fitness_app
     assert open_wearables["calories_burned"] == 386.4
     assert open_wearables["avg_heart_rate"] == 148
     assert open_wearables["max_heart_rate"] is None
+
+
+def test_cross_source_merge_uses_unique_utc_second_and_preserves_base_values(fitness_app):
+    apple = _apple_health_workout(start="2026-07-12T07:00:00.900-05:00", avg_hr=0)
+    open_wearables = {**_normalized_workout(), "activity_type": "Tempo Run"}
+
+    merged = fitness_app._merge_open_wearables_history_rows([apple], [open_wearables])
+
+    assert len(merged) == 1
+    assert merged[0]["id"] == apple["id"]
+    assert merged[0]["source"] == "apple_health"
+    assert merged[0]["unrelated"] == "preserve-me"
+    assert merged[0]["calories_burned"] == 386.4
+    assert merged[0]["avg_heart_rate"] == 0
+    assert merged[0]["max_heart_rate"] == 176
+
+
+def test_cross_source_merge_leaves_ambiguous_and_startless_rows_unmerged(fitness_app):
+    apple = _apple_health_workout()
+    duplicate_apple = {**apple, "id": "apple-health:second"}
+    open_wearables = _normalized_workout()
+
+    ambiguous = fitness_app._merge_open_wearables_history_rows(
+        [apple, duplicate_apple],
+        [open_wearables],
+    )
+    startless = fitness_app._merge_open_wearables_history_rows(
+        [{**apple, "created_at": None, "apple_health": {"activity_type": "Running"}}],
+        [{**open_wearables, "start_time": None}],
+    )
+
+    assert [row["id"] for row in ambiguous] == [
+        "apple-health:synthetic-id",
+        "apple-health:second",
+        open_wearables["id"],
+    ]
+    assert len(startless) == 2
+
+
+def test_cross_source_merge_accepts_canonical_activity_candidate(fitness_app):
+    apple = _apple_health_workout()
+    apple["session_type"] = "Treadmill Run"
+    apple["apple_health"]["activity_type"] = "Treadmill Run"
+    open_wearables = {
+        **_normalized_workout(),
+        "activity_type": "Treadmill Run",
+        "session_type": "running",
+    }
+
+    merged = fitness_app._merge_open_wearables_history_rows([apple], [open_wearables])
+
+    assert len(merged) == 1
+    assert merged[0]["calories_burned"] == 386.4
+
+
+def test_ai_history_context_dedupes_unique_pair_and_keeps_ambiguous_collisions(
+    fitness_app,
+    monkeypatch,
+):
+    apple = _apple_health_workout()
+    open_wearables = _normalized_workout()
+    monkeypatch.setattr(fitness_app, "_load_apple_health_recommendation_workouts", lambda **_kwargs: [apple])
+    monkeypatch.setattr(fitness_app, "_load_open_wearables_workouts", lambda: [open_wearables])
+
+    unique_history = fitness_app._ai_history_context()
+
+    assert len(unique_history) == 1
+    assert unique_history[0]["source"] == "apple_health"
+    assert unique_history[0]["calories_burned"] == 386.4
+    assert unique_history[0]["avg_heart_rate"] == 148
+    assert unique_history[0]["max_heart_rate"] == 176
+
+    duplicate_apple = {**apple, "id": "apple-health:second"}
+    monkeypatch.setattr(
+        fitness_app,
+        "_load_apple_health_recommendation_workouts",
+        lambda **_kwargs: [apple, duplicate_apple],
+    )
+
+    ambiguous_history = fitness_app._ai_history_context()
+
+    assert len(ambiguous_history) == 3
+    assert sum(row["source"] == "apple_health" for row in ambiguous_history) == 2
+    assert sum(row["source"] == "open_wearables" for row in ambiguous_history) == 1
+
+
+def test_ai_history_context_applies_limit_after_combining_sources(fitness_app, monkeypatch):
+    apple_rows = [
+        _apple_health_workout(start=f"2026-01-{day:02d}T12:00:00Z")
+        for day in range(1, 11)
+    ]
+    newest_open_wearables = {
+        **_normalized_workout(),
+        "date": "2026-07-14",
+        "start_time": "2026-07-14T12:00:00Z",
+    }
+    monkeypatch.setattr(
+        fitness_app,
+        "_load_apple_health_recommendation_workouts",
+        lambda **_kwargs: apple_rows,
+    )
+    monkeypatch.setattr(
+        fitness_app,
+        "_load_open_wearables_workouts",
+        lambda: [newest_open_wearables],
+    )
+
+    history = fitness_app._ai_history_context(limit=5)
+
+    assert len(history) == 5
+    assert history[0]["id"] == newest_open_wearables["id"]
+
+
+def test_history_cross_source_merge_runtime_is_unique_and_collision_safe():
+    if not shutil.which("node"):
+        pytest.skip("FIT-382 runtime regression requires node")
+    js = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text()
+    helper_block = "function historyWorkoutFingerprints" + js.split(
+        "function historyWorkoutFingerprints", 1
+    )[1].split("async function renderHistory", 1)[0]
+    canonical_helper = "function canonicalHistoryCategory" + js.split(
+        "function canonicalHistoryCategory", 1
+    )[1].split("function normalizeWatchHistoryRow", 1)[0]
+    calorie_helper = "function historyCaloriesForDisplay" + js.split(
+        "function historyCaloriesForDisplay", 1
+    )[1].split("function openWorkoutDetail", 1)[0]
+    node_script = f"""
+{helper_block}
+{canonical_helper}
+{calorie_helper}
+const base = {{ id: 'watch-1', source: 'watch', canonical_category: 'running', start: '2026-07-12T07:00:00.900-05:00', calories_burned: null, avg_heart_rate: 0, max_heart_rate: null, keep: 'yes' }};
+const ow = {{ id: 'open-wearables-1', source: 'open_wearables', canonical_category: 'tempo_run', activity_type: 'Tempo Run', session_type: 'running', start_time: '2026-07-12T12:00:00Z', calories_burned: 386.4, avg_heart_rate: 148, max_heart_rate: 176 }};
+const unique = mergeOpenWearablesHistory([base], [ow]);
+const ambiguous = mergeOpenWearablesHistory([base, {{ ...base, id: 'watch-2' }}], [ow]);
+const startless = mergeOpenWearablesHistory([{{ ...base, start: null }}], [{{ ...ow, start_time: null }}]);
+const noImport = mergeOpenWearablesHistory([{{ ...base, calories_burned: 300, avg_heart_rate: 140, max_heart_rate: 170 }}], [ow]);
+const treadmillBase = {{ ...base, canonical_category: 'treadmill' }};
+const treadmillOw = {{ ...ow, canonical_category: 'treadmill', activity_type: 'Treadmill Run', session_type: 'running' }};
+const treadmill = mergeOpenWearablesHistory([treadmillBase], [treadmillOw]);
+const candidateCollision = mergeOpenWearablesHistory([base, treadmillBase], [treadmillOw]);
+const strengthAlias = mergeOpenWearablesHistory([{{ ...base, canonical_category: 'strength_training' }}], [{{ ...ow, canonical_category: 'functional_strength_training', activity_type: 'Functional Strength Training', session_type: 'functional strength training' }}]);
+const strengthWatch = {{ ...base, date: '2026-07-12', canonical_category: 'strength_training' }};
+const strengthOw = {{ ...ow, canonical_category: 'strength_training', session_type: 'strength training' }};
+const enrichedStrength = mergeOpenWearablesHistory([strengthWatch], [strengthOw]);
+const strength = mergeStrengthHistorySources([{{ id: 'lift-1', date: '2026-07-12', source: 'lifted' }}], enrichedStrength);
+const ambiguousStrength = mergeStrengthHistorySources([{{ id: 'lift-1', date: '2026-07-12', source: 'lifted' }}, {{ id: 'lift-2', date: '2026-07-12', source: 'lifted' }}], enrichedStrength);
+const noImportStrength = mergeStrengthHistorySources([{{ id: 'lift-1', date: '2026-07-12', source: 'lifted' }}], [{{ ...noImport[0], date: '2026-07-12', canonical_category: 'strength_training' }}]);
+const placeholderCalories = historyCaloriesForDisplay({{ total_energy_kcal: 0, calories_burned: 386.4, open_wearables_metrics: true }});
+console.log(JSON.stringify({{ unique, ambiguous, startless, noImport, treadmill, candidateCollision, strengthAlias, strength, ambiguousStrength, noImportStrength, placeholderCalories }}));
+"""
+    result = subprocess.run(
+        ["node", "-e", node_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["unique"] == [{
+        "id": "watch-1",
+        "source": "watch",
+        "canonical_category": "running",
+        "start": "2026-07-12T07:00:00.900-05:00",
+        "calories_burned": 386.4,
+        "avg_heart_rate": 0,
+        "max_heart_rate": 176,
+        "keep": "yes",
+        "open_wearables_match": True,
+        "open_wearables_metrics": True,
+    }]
+    assert len(payload["ambiguous"]) == 3
+    assert len(payload["startless"]) == 2
+    assert payload["noImport"][0]["open_wearables_match"] is True
+    assert payload["noImport"][0].get("open_wearables_metrics") is None
+    assert len(payload["treadmill"]) == 1
+    assert payload["treadmill"][0]["calories_burned"] == 386.4
+    assert len(payload["candidateCollision"]) == 3
+    assert len(payload["strengthAlias"]) == 1
+    assert len(payload["strength"]) == 2
+    assert payload["strength"][0].get("open_wearables_metrics") is None
+    assert payload["strength"][1]["open_wearables_metrics"] is True
+    assert payload["strength"][1]["calories_burned"] == 386.4
+    assert len(payload["ambiguousStrength"]) == 3
+    assert payload["ambiguousStrength"][0].get("open_wearables_metrics") is None
+    assert payload["ambiguousStrength"][1].get("open_wearables_metrics") is None
+    assert payload["ambiguousStrength"][2]["open_wearables_metrics"] is True
+    assert len(payload["noImportStrength"]) == 2
+    assert payload["noImportStrength"][1]["open_wearables_match"] is True
+    assert payload["placeholderCalories"] == 386.4
+
+
+def test_matched_watch_rows_render_open_wearables_metrics_and_provenance():
+    js = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text()
+    css = (Path(__file__).resolve().parents[1] / "static" / "css" / "style.css").read_text()
+
+    assert "const kcal = historyCaloriesForDisplay(w)" in js
+    assert "formatOptionalWorkoutMetric(w.max_heart_rate, 'bpm max'" in js
+    assert "OPEN WEARABLES METRICS" in js
+    assert "loggedMatches.length === 1 && watchMatches.length === 1" in js
+    assert "!row.open_wearables_match" in js
+    assert "workout-detail-kpis workout-detail-kpis-four" in js
+    assert ".workout-detail-kpis-four" in css
+
+
+def test_setup_success_invalidates_workout_cache_and_failure_preserves_it():
+    if not shutil.which("node"):
+        pytest.skip("FIT-382 cache regression requires node")
+    js = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text()
+    get_source = "async function getOpenWearablesWorkouts" + js.split(
+        "async function getOpenWearablesWorkouts", 1
+    )[1].split("async function getBody", 1)[0]
+    bootstrap_source = "async function bootstrapOpenWearablesSetup" + js.split(
+        "async function bootstrapOpenWearablesSetup", 1
+    )[1].split("async function prepareOpenWearablesThenContinue", 1)[0]
+    save_source = "async function saveOpenWearablesSetup" + js.split(
+        "async function saveOpenWearablesSetup", 1
+    )[1].split("function openOpenWearablesPortal", 1)[0]
+    node_script = f"""
+const state = {{ openWearablesUi: {{ bootstrapInFlight: false, saveInFlight: false, config: {{}}, providerActions: [] }}, openWearablesStatus: null, wearableSources: null, dashboard: {{}} }};
+const DASHBOARD_FETCH_TIMEOUT_MS = 1000;
+let fail = false;
+let workoutFetches = 0;
+async function api(path) {{
+  if (fail) throw new Error('failed');
+  if (path === '/api/open-wearables/workouts') {{ workoutFetches += 1; return {{ workouts: [{{ id: 'fresh' }}] }}; }}
+  return {{ config: {{}}, open_wearables: {{ status: 'connected' }}, status: 'connected' }};
+}}
+const noop = () => {{}};
+const renderOpenWearablesDetail = noop, setOpenWearablesSetupStatus = noop, populateOpenWearablesSetupFields = noop;
+const deriveOpenWearablesSetupState = () => 'connected', openWearablesSetupCopy = () => '', toast = noop;
+const renderOpenWearablesProviderActions = noop, readOpenWearablesSetupFields = () => ({{}}), openWearablesIsConnected = () => true;
+const renderSettings = async () => {{}}, getOpenWearablesStatus = async () => ({{ status: 'connected' }});
+const $ = () => ({{ disabled: false }});
+{get_source}
+{bootstrap_source}
+{save_source}
+(async () => {{
+  state.open_wearables_workouts = [];
+  await saveOpenWearablesSetup();
+  const saveInvalidated = state.open_wearables_workouts === null;
+  await getOpenWearablesWorkouts();
+  const saveRefetched = workoutFetches === 1;
+  state.open_wearables_workouts = [{{ id: 'stale' }}];
+  await bootstrapOpenWearablesSetup();
+  const bootstrapInvalidated = state.open_wearables_workouts === null;
+  await getOpenWearablesWorkouts();
+  const bootstrapRefetched = workoutFetches === 2;
+  fail = true;
+  state.open_wearables_workouts = [];
+  await saveOpenWearablesSetup();
+  const saveFailurePreserved = Array.isArray(state.open_wearables_workouts) && state.open_wearables_workouts.length === 0;
+  state.open_wearables_workouts = [{{ id: 'stale' }}];
+  await bootstrapOpenWearablesSetup();
+  const bootstrapFailurePreserved = state.open_wearables_workouts[0].id === 'stale';
+  console.log(JSON.stringify({{ saveInvalidated, saveRefetched, bootstrapInvalidated, bootstrapRefetched, saveFailurePreserved, bootstrapFailurePreserved }}));
+}})();
+"""
+    result = subprocess.run(
+        ["node", "-e", node_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "saveInvalidated": True,
+        "saveRefetched": True,
+        "bootstrapInvalidated": True,
+        "bootstrapRefetched": True,
+        "saveFailurePreserved": True,
+        "bootstrapFailurePreserved": True,
+    }
 
 
 def test_analyze_open_wearables_workout_carries_metrics_without_fabrication(fitness_app, monkeypatch):

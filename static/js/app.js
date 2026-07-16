@@ -2263,6 +2263,7 @@
             if (body && body.config) populateOpenWearablesSetupFields(body.config);
             state.openWearablesStatus = body && body.open_wearables ? body.open_wearables : await getOpenWearablesStatus(true);
             state.dashboard = null;
+            state.open_wearables_workouts = null;
             renderOpenWearablesDetail(state.openWearablesStatus, state.wearableSources);
             const nextState = deriveOpenWearablesSetupState(state.openWearablesStatus, state.openWearablesUi.config);
             setOpenWearablesSetupStatus(
@@ -2472,6 +2473,7 @@
                 setOpenWearablesSetupStatus('Saved locally. Check setup once the wrapper and providers are running.', 'warn');
             }
             state.dashboard = null;
+            state.open_wearables_workouts = null;
             toast('Open Wearables setup saved.', 'ok');
         } catch (error) {
             setOpenWearablesSetupStatus(error && error.message ? error.message : 'Open Wearables setup save failed.', 'error');
@@ -3821,6 +3823,78 @@
         };
     }
 
+    function historyWorkoutFingerprints(row) {
+        const rawStart = row && (row.startDate || row.start || row.start_time || row.created_at);
+        const timestamp = Date.parse(rawStart || '');
+        if (!Number.isFinite(timestamp)) return [];
+        const labels = row && row.source === 'open_wearables'
+            ? [row.session_type || row.type, row.activity_type || row.activity || row.canonical_category]
+            : [row && (row.canonical_category || canonicalHistoryCategory(
+                row.activity_type || row.activity || row.session_type,
+                row.source
+            ))];
+        const aliases = {
+            bike: 'cycling',
+            rower: 'rowing',
+            'treadmill incline walk': 'treadmill',
+            'treadmill run': 'treadmill',
+            'outdoor run': 'running',
+            'outdoor walk': 'walking',
+            walk: 'walking',
+        };
+        const second = Math.floor(timestamp / 1000);
+        return Array.from(new Set(labels.map((label) => {
+            const canonicalLabel = canonicalHistoryCategory(label, row && row.source);
+            const normalized = String(canonicalLabel || '').trim().toLowerCase().replace(/[_-]+/g, ' ');
+            const category = aliases[normalized] || normalized.replace(/\s+/g, '_');
+            return category ? `${second}:${category}` : null;
+        }).filter(Boolean)));
+    }
+
+    function mergeOpenWearablesHistory(baseRows, openWearablesRows) {
+        const base = (baseRows || []).map((row) => ({ ...row }));
+        const openWearables = (openWearablesRows || []).map((row) => ({ ...row }));
+        const baseByFingerprint = new Map();
+        const openWearablesByFingerprint = new Map();
+        base.forEach((row, index) => {
+            historyWorkoutFingerprints(row).forEach((fingerprint) => {
+                baseByFingerprint.set(fingerprint, new Set([...(baseByFingerprint.get(fingerprint) || []), index]));
+            });
+        });
+        openWearables.forEach((row, index) => {
+            historyWorkoutFingerprints(row).forEach((fingerprint) => {
+                openWearablesByFingerprint.set(fingerprint, new Set([...(openWearablesByFingerprint.get(fingerprint) || []), index]));
+            });
+        });
+
+        const matchedOpenWearables = new Set();
+        base.forEach((baseRow, baseIndex) => {
+            const openWearablesCandidates = new Set();
+            historyWorkoutFingerprints(baseRow).forEach((fingerprint) => {
+                (openWearablesByFingerprint.get(fingerprint) || []).forEach((index) => openWearablesCandidates.add(index));
+            });
+            if (openWearablesCandidates.size !== 1) return;
+            const openWearablesIndex = openWearablesCandidates.values().next().value;
+            const baseCandidates = new Set();
+            historyWorkoutFingerprints(openWearables[openWearablesIndex]).forEach((fingerprint) => {
+                (baseByFingerprint.get(fingerprint) || []).forEach((index) => baseCandidates.add(index));
+            });
+            if (baseCandidates.size !== 1 || !baseCandidates.has(baseIndex)) return;
+            const openWearablesRow = openWearables[openWearablesIndex];
+            let importedMetric = false;
+            ['calories_burned', 'avg_heart_rate', 'max_heart_rate'].forEach((field) => {
+                if (baseRow[field] == null && openWearablesRow[field] != null) {
+                    baseRow[field] = openWearablesRow[field];
+                    importedMetric = true;
+                }
+            });
+            baseRow.open_wearables_match = true;
+            if (importedMetric) baseRow.open_wearables_metrics = true;
+            matchedOpenWearables.add(openWearablesIndex);
+        });
+        return base.concat(openWearables.filter((_, index) => !matchedOpenWearables.has(index)));
+    }
+
     function mergeStrengthHistorySources(lifts, watchRows) {
         const loggedByDate = new Map();
         const mergedLifts = (lifts || []).map((w) => {
@@ -3832,15 +3906,26 @@
                 source_label: w.source_label || 'Strength - Logged',
                 merged_sources: Array.isArray(w.merged_sources) ? [...w.merged_sources] : ['logged'],
             };
-            if (row.date && row.canonical_category === 'strength_training' && !loggedByDate.has(row.date)) {
-                loggedByDate.set(row.date, row);
+            if (row.date && row.canonical_category === 'strength_training') {
+                loggedByDate.set(row.date, [...(loggedByDate.get(row.date) || []), row]);
             }
             return row;
         });
+        const watchByDate = new Map();
+        (watchRows || []).forEach((row) => {
+            if (row.source === 'watch' && row.canonical_category === 'strength_training' && row.date) {
+                watchByDate.set(row.date, [...(watchByDate.get(row.date) || []), row]);
+            }
+        });
         const visibleWatch = [];
         (watchRows || []).forEach((row) => {
-            if (row.canonical_category === 'strength_training' && row.date && loggedByDate.has(row.date)) {
-                const logged = loggedByDate.get(row.date);
+            const loggedMatches = loggedByDate.get(row.date) || [];
+            const watchMatches = watchByDate.get(row.date) || [];
+            // Logged lifts have no reliable start timestamp. A Watch/Open Wearables
+            // match proves those two sources are the same workout, but date alone
+            // cannot safely attach their health metrics to a logged strength row.
+            if (row.source === 'watch' && !row.open_wearables_match && row.canonical_category === 'strength_training' && loggedMatches.length === 1 && watchMatches.length === 1) {
+                const logged = loggedMatches[0];
                 logged.merged_sources = Array.from(new Set([...(logged.merged_sources || []), 'watch']));
                 logged.source_label = 'Strength - Logged + Watch';
                 logged.watch_duration_minutes = row.duration_minutes || row.duration || logged.watch_duration_minutes || null;
@@ -3899,7 +3984,8 @@
         const openWearables = (Array.isArray(ow) ? ow : [])
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
             .map(normalizeOpenWearablesHistoryRow);
-        const mergedHistoryRows = mergeStrengthHistorySources(lifts, watch).concat(openWearables);
+        const wearableRows = mergeOpenWearablesHistory(watch, openWearables);
+        const mergedHistoryRows = mergeStrengthHistorySources(lifts, wearableRows);
 
         const workouts = mergedHistoryRows.filter((w) => w.source === 'lifted');
 
@@ -4060,13 +4146,17 @@
             } else if (w.source === 'watch') {
                 const title = w.activity_type || w.activity || 'Workout';
                 const mins = w.duration_minutes || w.duration_min || 0;
-                const kcal = w.total_energy_kcal || w.energy_kcal || 0;
-                const hr = w.avg_heart_rate ? `${Math.round(w.avg_heart_rate)} bpm` : '';
-                const meta = [mins ? `${Math.round(mins)} min` : null, kcal ? `${Math.round(kcal)} kcal` : null, hr].filter(Boolean).join(' · ');
+                const kcal = historyCaloriesForDisplay(w);
+                const meta = [
+                    mins ? `${Math.round(mins)} min` : null,
+                    formatOptionalWorkoutMetric(kcal, 'kcal', { omitMissing: true }),
+                    formatOptionalWorkoutMetric(w.avg_heart_rate, 'bpm avg', { omitMissing: true }),
+                    formatOptionalWorkoutMetric(w.max_heart_rate, 'bpm max', { omitMissing: true }),
+                ].filter(Boolean).join(' · ');
                 row.innerHTML = `
                     <div class="w-date">${fmtDate(w.date)}</div>
                     <div>
-                        <div class="w-summary"><span class="src-tag src-watch">WATCH</span>${escapeHtml(title)}</div>
+                        <div class="w-summary"><span class="src-tag src-watch">WATCH</span>${w.open_wearables_metrics ? '<span class="src-tag src-open-wearables">OPEN WEARABLES</span>' : ''}${escapeHtml(title)}</div>
                         <div class="w-meta">${escapeHtml(meta) || '—'}</div>
                     </div>
                         <div class="w-volume watch-volume">${mins ? Math.round(mins) + ' min' : ''}</div>
@@ -4178,6 +4268,13 @@
         return unit ? `${rounded} ${unit}` : String(rounded);
     }
 
+    function historyCaloriesForDisplay(item) {
+        if (item && item.open_wearables_metrics && item.calories_burned != null) {
+            return item.calories_burned;
+        }
+        return item && (item.total_energy_kcal ?? item.energy_kcal ?? item.calories_burned);
+    }
+
     function openWorkoutDetail(item) {
         const modal = $('modal-workout-detail');
         const body = $('workout-detail-body');
@@ -4232,14 +4329,18 @@
         if (item.source === 'watch') {
             const activity = item.activity_type || item.activity || 'Workout';
             const mins = item.duration_minutes || item.duration_min || 0;
-            const kcal = item.total_energy_kcal || item.energy_kcal || 0;
-            const hr = item.avg_heart_rate ? `${Math.round(item.avg_heart_rate)} bpm` : '';
+            const kcal = historyCaloriesForDisplay(item);
             title.textContent = `${activity} · ${fmtDate(item.date)}`;
             body.innerHTML = `
-                <div class="workout-detail-kpis">
+                <div class="workout-source-line">
+                    <span class="src-tag src-watch">WATCH</span>
+                    ${item.open_wearables_metrics ? '<span class="src-tag src-open-wearables">OPEN WEARABLES METRICS</span>' : ''}
+                </div>
+                <div class="workout-detail-kpis workout-detail-kpis-four">
                     <div><span>${Math.round(mins || 0)}</span><label>minutes</label></div>
-                    <div><span>${Math.round(kcal || 0)}</span><label>kcal</label></div>
-                    <div><span>${escapeHtml(hr || '—')}</span><label>avg HR</label></div>
+                    <div><span>${escapeHtml(formatOptionalWorkoutMetric(kcal, ''))}</span><label>kcal</label></div>
+                    <div><span>${escapeHtml(formatOptionalWorkoutMetric(item.avg_heart_rate, ''))}</span><label>avg HR</label></div>
+                    <div><span>${escapeHtml(formatOptionalWorkoutMetric(item.max_heart_rate, ''))}</span><label>max HR</label></div>
                 </div>
                 ${item.notes ? `<div class="workout-detail-section"><div class="analyze-label">NOTES</div><div class="workout-note">${escapeHtml(item.notes)}</div></div>` : ''}
             `;
@@ -4359,7 +4460,6 @@
                 </button>
             </div>
         `;
-
         body.innerHTML = `
             <div class="workout-detail-kpis">
                 <div><span>${fmtInt(totalSets)}</span><label>sets</label></div>
