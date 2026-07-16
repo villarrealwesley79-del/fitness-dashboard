@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from contextlib import closing
+from contextvars import ContextVar
 import copy
 import csv
 import io
@@ -143,6 +144,7 @@ from data_store import (
     delete_current_workout_plan,
     expire_unpublished_workout_adaptation_events,
     get_current_workout_plan,
+    get_current_workout_plan_snapshot,
     get_workout_adaptation_revision,
     get_push_subscription_for_delivery,
     list_push_subscriptions,
@@ -557,7 +559,40 @@ LAST_WORKOUT_RECOMMENDATION = None  # Most recent recommendation for swap action
 LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = None
 LAST_WORKOUT_RECOMMENDATION_OWNER = None
 CURRENT_WORKOUT_PLAN_LOCK = threading.RLock()
+_WORKOUT_PLAN_STATE_CONTEXT: ContextVar[dict | None] = ContextVar(
+    "workout_plan_state_context",
+    default=None,
+)
 OPEN_WEARABLES_WORKOUT_MARKER_CACHE = {}
+
+
+class _WorkoutPlanSnapshot(dict):
+    """Dict-compatible plan snapshot carrying its durable CAS identity."""
+
+    def __init__(
+        self,
+        plan=None,
+        *,
+        plan_generation=None,
+        plan_version=None,
+        current_plan_absent=False,
+        absent_plan_generation=None,
+    ):
+        super().__init__(plan or {})
+        self.plan_generation = plan_generation
+        self.plan_version = plan_version
+        self.current_plan_absent = current_plan_absent
+        self.absent_plan_generation = absent_plan_generation
+
+
+_WORKOUT_PLAN_PERSISTENCE_CONFLICT = object()
+_WORKOUT_PLAN_INTERNAL_KEYS = frozenset(
+    {
+        "_fit233_current_plan_absent",
+        "_fit233_expected_plan_generation",
+        "_fit233_expected_plan_version",
+    }
+)
 
 # ==================== CARDIO RECOMMENDATIONS ====================
 # Heart rate zones based on % of max HR (220 - age, assume age 30 for now = 190 max HR)
@@ -2180,6 +2215,7 @@ def _apply_due_workout_adaptations_for_plan(
     completed_sets_by_exercise: dict[str, int] | None = None,
     raise_on_error: bool = False,
     recovery_fingerprint: str | None = None,
+    recovery_source_plan_generation: int | None = None,
     recovery_source_plan_version: int | None = None,
 ) -> tuple[dict, list[dict]]:
     """Evaluate closed FIT-136 windows against a generated remaining plan."""
@@ -2201,6 +2237,7 @@ def _apply_due_workout_adaptations_for_plan(
             active_workout_open=active_workout_open,
             completed_sets_by_exercise=completed_sets_by_exercise or {},
             plan_fingerprint=recovery_fingerprint,
+            source_plan_generation=recovery_source_plan_generation,
             source_plan_version=recovery_source_plan_version,
         )
         if not events:
@@ -3437,7 +3474,10 @@ def _deterministic_adjust_payload(
     equipment_pref,
     reason,
 ):
-    patched = json.loads(json.dumps(recommendation, default=str))
+    patched = _copy_workout_plan_cas_identity(
+        recommendation,
+        json.loads(json.dumps(recommendation, default=str)),
+    )
     intent = _merge_deterministic_adjust_swap({}, deterministic_swap)
     patched, applied_notes = _apply_intent_patch(
         patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
@@ -4650,6 +4690,8 @@ def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
     if recommendation is None:
         return None
     scoped = dict(recommendation)
+    for key in _WORKOUT_PLAN_INTERNAL_KEYS:
+        scoped.pop(key, None)
     scoped["auth_scope"] = _current_auth_scope()
     return scoped
 
@@ -4663,6 +4705,30 @@ def _persist_current_workout_plan(
 ) -> dict | None:
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT, LAST_WORKOUT_RECOMMENDATION_OWNER
     with CURRENT_WORKOUT_PLAN_LOCK:
+        expected_current_plan_absent = (
+            recommendation.get("_fit233_current_plan_absent") is True
+            or getattr(recommendation, "current_plan_absent", False) is True
+        )
+        expected_plan_generation = recommendation.get("_fit233_expected_plan_generation")
+        expected_plan_version = recommendation.get("_fit233_expected_plan_version")
+        if expected_plan_generation is None:
+            expected_plan_generation = getattr(recommendation, "plan_generation", None)
+        if expected_plan_version is None:
+            expected_plan_version = getattr(recommendation, "plan_version", None)
+        expected_absent_plan_generation = getattr(
+            recommendation,
+            "absent_plan_generation",
+            None,
+        )
+        expected_plan_identity = (
+            expected_plan_generation is not None and expected_plan_version is not None
+        )
+        if expected_current_plan_absent or expected_plan_identity or any(
+            key in recommendation for key in _WORKOUT_PLAN_INTERNAL_KEYS
+        ):
+            recommendation = dict(recommendation)
+            for key in _WORKOUT_PLAN_INTERNAL_KEYS:
+                recommendation.pop(key, None)
         stored_customization_marker = recommendation.get("_user_customized") is True
         if stored_customization_marker:
             recommendation = dict(recommendation)
@@ -4682,15 +4748,37 @@ def _persist_current_workout_plan(
         persisted_recommendation = dict(recommendation)
         if customized:
             persisted_recommendation["_user_customized"] = True
+        only_if_current_plan_absent = bool(
+            publish_adaptation_event_ids is None
+            and expected_current_plan_absent
+        )
+        save_kwargs = {
+            "publish_adaptation_event_ids": publish_adaptation_event_ids,
+        }
+        if only_if_current_plan_absent:
+            save_kwargs["only_if_current_plan_absent"] = True
+            if expected_absent_plan_generation is not None:
+                save_kwargs["expected_absent_plan_generation"] = int(
+                    expected_absent_plan_generation
+                )
+        if expected_plan_identity:
+            save_kwargs["expected_plan_generation"] = int(expected_plan_generation)
+            save_kwargs["expected_plan_version"] = int(expected_plan_version)
         persisted = save_current_workout_plan(
             current_user_id,
             fingerprint,
             persisted_recommendation,
-            publish_adaptation_event_ids=publish_adaptation_event_ids,
+            **save_kwargs,
         )
         if persisted is None:
+            if only_if_current_plan_absent or expected_plan_identity:
+                return _WORKOUT_PLAN_PERSISTENCE_CONFLICT
             return None
-        authoritative_plan = dict(persisted["plan"])
+        authoritative_plan = _WorkoutPlanSnapshot(
+            persisted["plan"],
+            plan_generation=persisted.get("plan_generation"),
+            plan_version=persisted.get("plan_version"),
+        )
         authoritative_plan.pop("_user_customized", None)
         LAST_WORKOUT_RECOMMENDATION = authoritative_plan
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
@@ -4700,6 +4788,13 @@ def _persist_current_workout_plan(
             "plan_id": id(authoritative_plan),
             "customized": customized,
         }
+        if persisted.get("plan_generation") is not None and persisted.get("plan_version") is not None:
+            LAST_WORKOUT_RECOMMENDATION_OWNER.update(
+                {
+                    "plan_generation": persisted["plan_generation"],
+                    "plan_version": persisted["plan_version"],
+                }
+            )
     return authoritative_plan
 
 
@@ -4712,9 +4807,16 @@ def _publish_unpublished_workout_adaptations(
         unpublished = list_unpublished_applied_workout_adaptation_events(user_id)
         if not unpublished:
             return []
-        current_plan = get_current_workout_plan(user_id)
-        current_plan_version = (
-            int(current_plan.get("plan_version") or 0) if current_plan else None
+        plan_state = get_current_workout_plan_snapshot(user_id)
+        current_plan = plan_state["current_plan"]
+        current_plan_generation = int(plan_state["plan_generation"])
+        current_plan_identity = (
+            (
+                current_plan.get("plan_generation"),
+                current_plan.get("plan_version"),
+            )
+            if current_plan
+            else (current_plan_generation, None)
         )
         obsolete_ids = [
             str(event["id"])
@@ -4723,7 +4825,16 @@ def _publish_unpublished_workout_adaptations(
             and (
                 str(event.get("target_plan_date") or "") != today_s
                 or event.get("plan_fingerprint") != fingerprint
-                or event.get("source_plan_version") != current_plan_version
+                or (
+                    (
+                        0
+                        if not current_plan
+                        and current_plan_generation == 0
+                        and event.get("source_plan_generation") is None
+                        else event.get("source_plan_generation")
+                    ),
+                    event.get("source_plan_version"),
+                ) != current_plan_identity
             )
         ]
         if obsolete_ids:
@@ -4834,87 +4945,107 @@ def _is_lightweight_current_workout_plan(recommendation: dict | None) -> bool:
     return bool((recommendation or {}).get("_fit136_lightweight_no_ow"))
 
 
-def _current_workout_plan_for_fingerprint(fingerprint: str, *, allow_stale_unsaved: bool = False) -> dict | None:
+def _current_workout_plan_for_fingerprint(
+    fingerprint: str,
+    *,
+    allow_stale_unsaved: bool = False,
+    return_lookup_token: bool = False,
+    durable_only: bool = False,
+    plan_state: dict | None = None,
+) -> dict | None:
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT, LAST_WORKOUT_RECOMMENDATION_OWNER
     with CURRENT_WORKOUT_PLAN_LOCK:
-        if LAST_WORKOUT_RECOMMENDATION and not _is_lightweight_current_workout_plan(LAST_WORKOUT_RECOMMENDATION):
-            owner = LAST_WORKOUT_RECOMMENDATION_OWNER or {}
-            owner_matches_plan = owner.get("plan_id") == id(LAST_WORKOUT_RECOMMENDATION)
-            if owner_matches_plan:
-                if owner.get("user_id") == _current_data_user_id():
-                    if owner.get("fingerprint") == fingerprint:
-                        persisted = get_current_workout_plan(
-                            _current_data_user_id(),
-                            fingerprint=fingerprint,
-                        )
-                        if (
-                            persisted
-                            and persisted.get("plan")
-                            and persisted["plan"] != LAST_WORKOUT_RECOMMENDATION
-                        ):
-                            if (
-                                LAST_WORKOUT_RECOMMENDATION.get(
-                                    "_fit136_base_recommendation"
-                                )
-                                and not persisted["plan"].get(
-                                    "_fit136_base_recommendation"
-                                )
-                            ):
-                                if LAST_WORKOUT_RECOMMENDATION.get("_fit136_adaptation_event_id"):
-                                    authoritative = save_current_workout_plan(
-                                        _current_data_user_id(),
-                                        fingerprint,
-                                        LAST_WORKOUT_RECOMMENDATION,
-                                    )
-                                    LAST_WORKOUT_RECOMMENDATION = authoritative["plan"]
-                                else:
-                                    LAST_WORKOUT_RECOMMENDATION = persisted["plan"]
-                                LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
-                                LAST_WORKOUT_RECOMMENDATION_OWNER = {
-                                    "user_id": _current_data_user_id(),
-                                    "fingerprint": fingerprint,
-                                    "plan_id": id(LAST_WORKOUT_RECOMMENDATION),
-                                }
-                        return LAST_WORKOUT_RECOMMENDATION
-                    if allow_stale_unsaved:
-                        return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-            elif LAST_WORKOUT_RECOMMENDATION_FINGERPRINT == fingerprint:
-                return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-            elif allow_stale_unsaved and (
-                LAST_WORKOUT_RECOMMENDATION_FINGERPRINT is None
-                or LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint
-            ):
-                return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-        row = get_current_workout_plan(_current_data_user_id(), fingerprint=fingerprint)
-        if row and row.get("plan") and not _is_lightweight_current_workout_plan(row.get("plan")):
-            plan = row["plan"]
+        current_user_id = _current_data_user_id()
+        plan_state = (
+            plan_state
+            or _WORKOUT_PLAN_STATE_CONTEXT.get()
+            or get_current_workout_plan_snapshot(current_user_id)
+        )
+        row = plan_state["current_plan"]
+        if (
+            row
+            and row.get("plan")
+            and not _is_lightweight_current_workout_plan(row["plan"])
+            and (row["fingerprint"] == fingerprint or allow_stale_unsaved or durable_only)
+        ):
+            plan = _WorkoutPlanSnapshot(
+                row["plan"],
+                plan_generation=row.get("plan_generation"),
+                plan_version=row.get("plan_version"),
+            )
             customized = plan.get("_user_customized") is True
             if customized:
-                plan = dict(plan)
                 plan.pop("_user_customized", None)
             LAST_WORKOUT_RECOMMENDATION = plan
-            LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
+            LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = row["fingerprint"]
             LAST_WORKOUT_RECOMMENDATION_OWNER = {
-                "user_id": _current_data_user_id(),
-                "fingerprint": fingerprint,
+                "user_id": current_user_id,
+                "fingerprint": row["fingerprint"],
                 "plan_id": id(plan),
                 "customized": customized,
+                "plan_generation": row.get("plan_generation"),
+                "plan_version": row.get("plan_version"),
             }
             return plan
+        if durable_only:
+            return None
+        owner = LAST_WORKOUT_RECOMMENDATION_OWNER or {}
         if (
             allow_stale_unsaved
             and LAST_WORKOUT_RECOMMENDATION
             and not _is_lightweight_current_workout_plan(LAST_WORKOUT_RECOMMENDATION)
-            and not (
-                (LAST_WORKOUT_RECOMMENDATION_OWNER or {}).get("plan_id") == id(LAST_WORKOUT_RECOMMENDATION)
-            )
+            and owner.get("user_id") == current_user_id
+            and owner.get("plan_id") == id(LAST_WORKOUT_RECOMMENDATION)
         ):
-            return _persist_current_workout_plan(LAST_WORKOUT_RECOMMENDATION, fingerprint)
-        if allow_stale_unsaved:
-            row = get_current_workout_plan(_current_data_user_id())
-            if row and row.get("plan") and not _is_lightweight_current_workout_plan(row.get("plan")):
-                return _persist_current_workout_plan(row["plan"], fingerprint)
+            mutation_snapshot = _WorkoutPlanSnapshot(
+                LAST_WORKOUT_RECOMMENDATION,
+                current_plan_absent=True,
+                absent_plan_generation=int(plan_state["plan_generation"]),
+            )
+            mutation_snapshot["_fit233_current_plan_absent"] = True
+            return mutation_snapshot
+        if return_lookup_token:
+            if row:
+                return _WorkoutPlanSnapshot(
+                    {},
+                    plan_generation=row.get("plan_generation"),
+                    plan_version=row.get("plan_version"),
+                )
+            return _WorkoutPlanSnapshot(
+                {},
+                current_plan_absent=True,
+                absent_plan_generation=int(plan_state["plan_generation"]),
+            )
         return None
+
+
+def _copy_workout_plan_cas_identity(source: dict, target: dict) -> dict:
+    """Copy mutation-only CAS metadata without exposing it in API payloads."""
+    copied = dict(target)
+    current_plan_absent = (
+        source.get("_fit233_current_plan_absent") is True
+        or getattr(source, "current_plan_absent", False) is True
+    )
+    plan_generation = source.get("_fit233_expected_plan_generation")
+    plan_version = source.get("_fit233_expected_plan_version")
+    if plan_generation is None:
+        plan_generation = getattr(source, "plan_generation", None)
+    if plan_version is None:
+        plan_version = getattr(source, "plan_version", None)
+    if plan_generation is not None and plan_version is not None:
+        plan_generation = int(plan_generation)
+        plan_version = int(plan_version)
+    for key in _WORKOUT_PLAN_INTERNAL_KEYS:
+        copied.pop(key, None)
+    if current_plan_absent or (plan_generation is not None and plan_version is not None):
+        return _WorkoutPlanSnapshot(
+            copied,
+            plan_generation=plan_generation,
+            plan_version=plan_version,
+            current_plan_absent=current_plan_absent,
+            absent_plan_generation=getattr(source, "absent_plan_generation", None),
+        )
+    return copied
 
 
 def _payload_with_recommendation_auth_scope(payload: dict) -> dict:
@@ -5064,8 +5195,14 @@ def api_next_workout():
     fingerprint = _workout_recommendation_fingerprint()
     today_s = _today_str()
     current_plan = _same_day_preserved_workout_plan(today_s)
+    lookup_token = None
     if not current_plan:
-        current_plan = _current_workout_plan_for_fingerprint(fingerprint)
+        current_plan = _current_workout_plan_for_fingerprint(
+            fingerprint,
+            return_lookup_token=True,
+        )
+        if not current_plan:
+            lookup_token = current_plan
     training_recommendation = _current_workout_training_recommendation()
     open_wearables_facts = _open_wearables_recommendation_facts()
     guarded_training_recommendation, open_wearables_modifier = _apply_open_wearables_recommendation_guard(
@@ -5073,13 +5210,28 @@ def api_next_workout():
         open_wearables_facts,
     )
     if not current_plan:
-        current_plan = generate_next_workout(
+        generated_plan = generate_next_workout(
             WORKOUTS,
             SORENESS_DATA,
             training_recommendation=guarded_training_recommendation,
             consume_cardio_rotation=False,
         )
-        current_plan = _persist_current_workout_plan(current_plan, fingerprint) or current_plan
+        if lookup_token is not None:
+            generated_plan = _copy_workout_plan_cas_identity(lookup_token, generated_plan)
+        persisted = _persist_current_workout_plan(generated_plan, fingerprint)
+        if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+            current_plan = _current_workout_plan_for_fingerprint(
+                fingerprint,
+                durable_only=True,
+            )
+            if current_plan is None:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+        else:
+            current_plan = persisted or generated_plan
     workout_adaptation_events = []
     today_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
     freshness = _compute_data_freshness()
@@ -5330,8 +5482,14 @@ def api_dashboard():
     fingerprint = _workout_recommendation_fingerprint()
     next_workout = _same_day_preserved_workout_plan(today_s)
     using_stored_customization = next_workout is not None
+    lookup_token = None
     if not next_workout:
-        next_workout = _current_workout_plan_for_fingerprint(fingerprint)
+        next_workout = _current_workout_plan_for_fingerprint(
+            fingerprint,
+            return_lookup_token=True,
+        )
+        if not next_workout:
+            lookup_token = next_workout
     if not next_workout or next_workout.get("_fit136_lightweight_no_ow"):
         next_workout = generate_next_workout(
             WORKOUTS,
@@ -5339,6 +5497,8 @@ def api_dashboard():
             training_recommendation=guarded_dashboard_recommendation,
             consume_cardio_rotation=False,
         )
+        if lookup_token is not None:
+            next_workout = _copy_workout_plan_cas_identity(lookup_token, next_workout)
     adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
     food_log_entries = adaptation_food_entries
     nutrition_context = _nutrition_context_for_date(
@@ -5359,7 +5519,20 @@ def api_dashboard():
     # is the correct canonical value regardless, and the fail-open display
     # transform below degrades to the base plan rather than 500-ing.
     if not using_stored_customization:
-        next_workout = _persist_current_workout_plan(next_workout, fingerprint) or next_workout
+        persisted = _persist_current_workout_plan(next_workout, fingerprint)
+        if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+            next_workout = _current_workout_plan_for_fingerprint(
+                fingerprint,
+                durable_only=True,
+            )
+            if next_workout is None:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+        else:
+            next_workout = persisted or next_workout
     whoop_adjusted = _wearable_adjusted_for_display(
         next_workout, guarded_dashboard_recommendation, whoop_context
     )
@@ -9793,8 +9966,14 @@ def _evaluate_workout_adaptation_events_locked():
             500,
             code="publication_failed",
         )
-    current_plan = _current_workout_plan_for_fingerprint(fingerprint)
-    stored_plan = get_current_workout_plan(user_id)
+    plan_state = get_current_workout_plan_snapshot(user_id)
+    source_plan_row = plan_state["current_plan"]
+    state_token = _WORKOUT_PLAN_STATE_CONTEXT.set(plan_state)
+    try:
+        current_plan = _current_workout_plan_for_fingerprint(fingerprint)
+    finally:
+        _WORKOUT_PLAN_STATE_CONTEXT.reset(state_token)
+    stored_plan = source_plan_row
     stored_plan_written_today = bool(
         stored_plan and str(stored_plan.get("updated_at") or "")[:10] == today_s
     )
@@ -9832,12 +10011,13 @@ def _evaluate_workout_adaptation_events_locked():
         food_log_entries=food_log_entries,
     )
     events = []
-    source_plan_row = get_current_workout_plan(user_id)
+    source_plan_generation = (
+        source_plan_row.get("plan_generation")
+        if source_plan_row
+        else plan_state["plan_generation"]
+    )
     source_plan_version = None
-    if (
-        source_plan_row
-        and (source_plan_row.get("plan") or {}) == (next_workout or {})
-    ):
+    if source_plan_row:
         source_plan_version = int(source_plan_row.get("plan_version") or 0)
     if not active_open_requested or completed_sets_by_exercise:
         try:
@@ -9850,6 +10030,7 @@ def _evaluate_workout_adaptation_events_locked():
                 completed_sets_by_exercise=completed_sets_by_exercise,
                 raise_on_error=True,
                 recovery_fingerprint=fingerprint,
+                recovery_source_plan_generation=source_plan_generation,
                 recovery_source_plan_version=source_plan_version,
             )
         except Exception:
@@ -10395,6 +10576,10 @@ def swap_workout_exercise():
     recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
     if not recommendation:
         return api_error("No recent workout recommendation available", 404, code="not_found")
+    recommendation = _copy_workout_plan_cas_identity(
+        recommendation,
+        json.loads(json.dumps(recommendation, default=str)),
+    )
 
     exercises = recommendation.get("exercises") or []
     if not (0 <= exercise_index < len(exercises)):
@@ -10453,10 +10638,18 @@ def swap_workout_exercise():
 
     exercises[exercise_index] = updated_ex
     recommendation["exercises"] = exercises
-    recommendation = (
-        _persist_current_workout_plan(recommendation, fingerprint, customized=True)
-        or recommendation
+    persisted = _persist_current_workout_plan(
+        recommendation,
+        fingerprint,
+        customized=True,
     )
+    if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+        return api_error(
+            "Workout plan changed while this request was in progress. Refresh and retry.",
+            409,
+            code="workout_plan_conflict",
+        )
+    recommendation = persisted or recommendation
 
     # Persist the base plan (above), but return the wearable-adjusted view so an
     # active deload/caution clamps every exercise -- including the untouched ones
@@ -10912,10 +11105,23 @@ def adjust_workout():
         return err2
 
     fingerprint = _workout_recommendation_fingerprint()
-    recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
+    recommendation = _current_workout_plan_for_fingerprint(
+        fingerprint,
+        allow_stale_unsaved=True,
+        return_lookup_token=True,
+    )
     if not recommendation:
-        recommendation = generate_next_workout(WORKOUTS, SORENESS_DATA)
-        recommendation = _persist_current_workout_plan(recommendation, fingerprint)
+        lookup_token = recommendation
+        generated_plan = generate_next_workout(WORKOUTS, SORENESS_DATA)
+        generated_plan = _copy_workout_plan_cas_identity(lookup_token, generated_plan)
+        persisted = _persist_current_workout_plan(generated_plan, fingerprint)
+        if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+            return api_error(
+                "Workout plan changed while this request was in progress. Refresh and retry.",
+                409,
+                code="workout_plan_conflict",
+            )
+        recommendation = persisted or generated_plan
 
     goal = recommendation.get("goal") or USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
     goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
@@ -10939,11 +11145,18 @@ def adjust_workout():
                 equipment_pref,
                 "adapter_missing",
             )
-            payload["recommendation"] = _persist_current_workout_plan(
+            persisted = _persist_current_workout_plan(
                 payload["recommendation"],
                 fingerprint,
                 customized=payload.get("result_kind") == "changed",
-            ) or payload["recommendation"]
+            )
+            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+            payload["recommendation"] = persisted or payload["recommendation"]
             _ai_metric_log("ok", reason="deterministic_fallback: adapter_missing", constraint_len=len(constraint))
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
@@ -10982,11 +11195,22 @@ def adjust_workout():
             # so a follow-up Adjust or Swap operates on the patched plan, not the
             # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
             if cached.get("recommendation"):
-                cached["recommendation"] = _persist_current_workout_plan(
+                cached_recommendation = _copy_workout_plan_cas_identity(
+                    recommendation,
                     cached["recommendation"],
+                )
+                persisted = _persist_current_workout_plan(
+                    cached_recommendation,
                     fingerprint,
                     customized=cached.get("result_kind") == "changed",
-                ) or cached["recommendation"]
+                )
+                if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                    return api_error(
+                        "Workout plan changed while this request was in progress. Refresh and retry.",
+                        409,
+                        code="workout_plan_conflict",
+                    )
+                cached["recommendation"] = persisted or cached_recommendation
             return jsonify(_payload_with_recommendation_display_scope(cached))
 
     if route_candidate is None:
@@ -11002,11 +11226,18 @@ def adjust_workout():
                 equipment_pref,
                 "preflight_unavailable",
             )
-            payload["recommendation"] = _persist_current_workout_plan(
+            persisted = _persist_current_workout_plan(
                 payload["recommendation"],
                 fingerprint,
                 customized=payload.get("result_kind") == "changed",
-            ) or payload["recommendation"]
+            )
+            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+            payload["recommendation"] = persisted or payload["recommendation"]
             _ai_metric_log("ok", reason="deterministic_fallback: preflight_unavailable", constraint_len=len(constraint), model_version=route_model_version)
             return jsonify(_payload_with_recommendation_display_scope(payload))
         _ai_metric_log(
@@ -11051,11 +11282,18 @@ def adjust_workout():
                 equipment_pref,
                 reason_code,
             )
-            payload["recommendation"] = _persist_current_workout_plan(
+            persisted = _persist_current_workout_plan(
                 payload["recommendation"],
                 fingerprint,
                 customized=payload.get("result_kind") == "changed",
-            ) or payload["recommendation"]
+            )
+            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+                return api_error(
+                    "Workout plan changed while this request was in progress. Refresh and retry.",
+                    409,
+                    code="workout_plan_conflict",
+                )
+            payload["recommendation"] = persisted or payload["recommendation"]
             _ai_metric_log(
                 "ok",
                 constraint_len=len(constraint),
@@ -11084,7 +11322,10 @@ def adjust_workout():
 
     # Deep-copy the recommendation so the in-memory canonical isn't mutated
     # if the user re-opens without applying.
-    patched = json.loads(json.dumps(recommendation, default=str))
+    patched = _copy_workout_plan_cas_identity(
+        recommendation,
+        json.loads(json.dumps(recommendation, default=str)),
+    )
     try:
         patched, applied_notes = _apply_intent_patch(
             patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
@@ -11148,11 +11389,18 @@ def adjust_workout():
     # Cache and persist the BASE patched plan (display transform must not be
     # baked into the cache or the durable row -- FIT-256 finding 2); apply the
     # wearable display transform only on the outgoing response.
-    patched = _persist_current_workout_plan(
+    persisted = _persist_current_workout_plan(
         patched,
         fingerprint,
         customized=result_kind == "changed",
-    ) or patched
+    )
+    if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
+        return api_error(
+            "Workout plan changed while this request was in progress. Refresh and retry.",
+            409,
+            code="workout_plan_conflict",
+        )
+    patched = persisted or patched
     payload["recommendation"] = patched
     _ai_cache_put(cache_write_key, payload)
     _ai_metric_log(

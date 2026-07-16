@@ -196,6 +196,7 @@ def apply_due_adaptations(
     completed_sets_by_exercise: dict[str, int] | None = None,
     clock: Callable[[], datetime] | datetime | None = None,
     plan_fingerprint: str | None = None,
+    source_plan_generation: int | None = None,
     source_plan_version: int | None = None,
 ) -> tuple[dict, list[dict]]:
     """Evaluate closed coalescing windows and return a patched recommendation."""
@@ -237,6 +238,7 @@ def apply_due_adaptations(
             event["_adapted_plan"] = recovery_plan
             event["_plan_fingerprint"] = plan_fingerprint
             event["_target_plan_date"] = plan_date
+            event["_source_plan_generation"] = source_plan_generation
             event["_source_plan_version"] = source_plan_version
         trigger = event.setdefault("trigger", {})
         trigger["food_log_client_ids"] = sorted(

@@ -230,7 +230,7 @@ def test_equivalent_plan_copy_preserves_existing_customization(monkeypatch, tmp_
     assert data_store.get_current_workout_plan(1)["plan"]["_user_customized"] is True
 
 
-def test_fingerprint_rekey_preserves_existing_customization(monkeypatch, tmp_path):
+def test_fingerprint_drift_lookup_preserves_customization_without_rekey(monkeypatch, tmp_path):
     module, _client_instance, _state = _client(monkeypatch, tmp_path)
     customized_plan = _recommendation(module)
     module._persist_current_workout_plan(
@@ -239,15 +239,503 @@ def test_fingerprint_rekey_preserves_existing_customization(monkeypatch, tmp_pat
         customized=True,
     )
 
-    rekeyed = module._current_workout_plan_for_fingerprint(
+    resolved = module._current_workout_plan_for_fingerprint(
         "fp-after-refresh",
         allow_stale_unsaved=True,
     )
 
-    assert rekeyed["id"] == customized_plan["id"]
+    assert resolved["id"] == customized_plan["id"]
     stored = data_store.get_current_workout_plan(1)
-    assert stored["fingerprint"] == "fp-after-refresh"
+    assert stored["fingerprint"] == "fp-before-refresh"
     assert stored["plan"]["_user_customized"] is True
+
+
+def test_durable_plan_beats_stale_cache_with_different_identity(monkeypatch, tmp_path):
+    module, _client_instance, _state = _client(monkeypatch, tmp_path)
+    durable = _plan_with_id(module, "durable-plan")
+    stale = _plan_with_id(module, "stale-cache")
+    data_store.save_current_workout_plan(1, "durable-fingerprint", durable)
+    module.LAST_WORKOUT_RECOMMENDATION = stale
+    module.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = "stale-fingerprint"
+    module.LAST_WORKOUT_RECOMMENDATION_OWNER = {
+        "user_id": 1,
+        "fingerprint": "stale-fingerprint",
+        "plan_id": id(stale),
+    }
+
+    resolved = module._current_workout_plan_for_fingerprint(
+        "requested-fingerprint",
+        allow_stale_unsaved=True,
+    )
+
+    assert resolved == durable
+    assert module.LAST_WORKOUT_RECOMMENDATION == durable
+    assert module.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT == "durable-fingerprint"
+
+
+def test_durable_plan_content_beats_same_identity_cache_drift(monkeypatch, tmp_path):
+    module, _client_instance, _state = _client(monkeypatch, tmp_path)
+    durable = _plan_with_id(module, "durable-plan")
+    drifted = _plan_with_id(module, "drifted-cache")
+    data_store.save_current_workout_plan(1, "same-fingerprint", durable)
+    module.LAST_WORKOUT_RECOMMENDATION = drifted
+    module.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = "same-fingerprint"
+    module.LAST_WORKOUT_RECOMMENDATION_OWNER = {
+        "user_id": 1,
+        "fingerprint": "same-fingerprint",
+        "plan_id": id(drifted),
+    }
+
+    resolved = module._current_workout_plan_for_fingerprint("same-fingerprint")
+
+    assert resolved == durable
+    assert module.LAST_WORKOUT_RECOMMENDATION == durable
+    assert module.LAST_WORKOUT_RECOMMENDATION_OWNER["plan_id"] == id(resolved)
+
+
+def test_default_current_plan_lookup_does_not_return_cache_without_durable_row(
+    monkeypatch,
+    tmp_path,
+):
+    module, _client_instance, _state = _client(monkeypatch, tmp_path)
+    cached = _recommendation(module)
+    module._persist_current_workout_plan(cached, "cached-fingerprint")
+    data_store.delete_current_workout_plan(1)
+    writes = []
+    monkeypatch.setattr(
+        module,
+        "save_current_workout_plan",
+        lambda *_args, **_kwargs: writes.append(True),
+    )
+
+    resolved = module._current_workout_plan_for_fingerprint("cached-fingerprint")
+
+    assert resolved is None
+    assert writes == []
+    assert data_store.get_current_workout_plan(1) is None
+
+
+def test_explicit_stale_unsaved_lookup_returns_cache_without_persisting(
+    monkeypatch,
+    tmp_path,
+):
+    module, _client_instance, _state = _client(monkeypatch, tmp_path)
+    cached = _recommendation(module)
+    module._persist_current_workout_plan(cached, "cached-fingerprint")
+    data_store.delete_current_workout_plan(1)
+    writes = []
+    original_save = module.save_current_workout_plan
+
+    def record_save(*args, **kwargs):
+        writes.append((args, kwargs))
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(module, "save_current_workout_plan", record_save)
+
+    resolved = module._current_workout_plan_for_fingerprint(
+        "new-fingerprint",
+        allow_stale_unsaved=True,
+    )
+
+    assert resolved["_fit233_current_plan_absent"] is True
+    assert {
+        key: value
+        for key, value in resolved.items()
+        if key != "_fit233_current_plan_absent"
+    } == cached
+    assert writes == []
+    assert data_store.get_current_workout_plan(1) is None
+
+
+def test_stale_unsaved_mutation_cannot_overwrite_concurrent_replacement(
+    monkeypatch,
+    tmp_path,
+):
+    module, _client_instance, _state = _client(monkeypatch, tmp_path)
+    cached = _recommendation(module)
+    module._persist_current_workout_plan(cached, "cached-fingerprint")
+    data_store.delete_current_workout_plan(1)
+    mutation = module._current_workout_plan_for_fingerprint(
+        "mutation-fingerprint",
+        allow_stale_unsaved=True,
+    )
+    replacement = _plan_with_id(module, "concurrent-replacement")
+    data_store.save_current_workout_plan(1, "replacement-fingerprint", replacement)
+    assert module._current_workout_plan_for_fingerprint(
+        "replacement-fingerprint"
+    ) == replacement
+    mutation["id"] = "stale-mutation"
+
+    module._persist_current_workout_plan(
+        mutation,
+        "mutation-fingerprint",
+        customized=True,
+    )
+
+    durable = data_store.get_current_workout_plan(1)
+    assert durable["fingerprint"] == "replacement-fingerprint"
+    assert durable["plan"]["id"] == "concurrent-replacement"
+
+
+def test_adjust_cache_hit_preserves_absent_plan_cas(monkeypatch, tmp_path):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    cached_plan = _recommendation(module)
+    module._persist_current_workout_plan(cached_plan, "cached-fingerprint")
+    data_store.delete_current_workout_plan(1)
+    monkeypatch.setattr(
+        module,
+        "_workout_recommendation_fingerprint",
+        lambda: "mutation-fingerprint",
+    )
+
+    class FakeAdapter:
+        def active_candidate(self):
+            return None
+
+        def model_version_for(self, _candidate):
+            return "test-model"
+
+        def fallback_model_versions(self):
+            return []
+
+    replacement = _plan_with_id(module, "concurrent-replacement")
+
+    def cache_get(_key):
+        data_store.save_current_workout_plan(
+            1,
+            "replacement-fingerprint",
+            replacement,
+        )
+        module._current_workout_plan_for_fingerprint(
+            "replacement-fingerprint",
+            allow_stale_unsaved=True,
+        )
+        return {
+            "status": "ok",
+            "result_kind": "changed",
+            "recommendation": _plan_with_id(module, "cached-adjustment"),
+            "summary": "Cached adjustment",
+            "applied_notes": [],
+        }
+
+    monkeypatch.setattr(module, "_lm_studio", FakeAdapter())
+    monkeypatch.setattr(module, "_ai_cache_get", cache_get)
+    monkeypatch.setattr(module, "_ai_metric_log", lambda *_args, **_kwargs: None)
+
+    response = client.post(
+        "/api/workout/adjust",
+        json={"constraint": "use the cached adjustment"},
+    )
+
+    assert response.status_code == 409
+    payload = response.get_json()
+    assert payload["error"]["code"] == "workout_plan_conflict"
+    assert "recommendation" not in payload
+    durable = data_store.get_current_workout_plan(1)
+    assert durable["fingerprint"] == "replacement-fingerprint"
+    assert durable["plan"]["id"] == "concurrent-replacement"
+
+
+def test_absent_plan_cas_rejects_create_delete_aba(monkeypatch, tmp_path):
+    module, _client_instance, _state = _client(monkeypatch, tmp_path)
+    expected_generation = data_store.get_workout_plan_generation(1)
+    assert expected_generation == 0
+
+    data_store.save_current_workout_plan(1, "temporary", _plan_with_id(module, "temporary"))
+    assert data_store.delete_current_workout_plan(1) is True
+    assert data_store.get_current_workout_plan(1) is None
+    assert data_store.get_workout_plan_generation(1) == 1
+
+    stale_insert = data_store.save_current_workout_plan(
+        1,
+        "stale-insert",
+        _plan_with_id(module, "stale-insert"),
+        only_if_current_plan_absent=True,
+        expected_absent_plan_generation=expected_generation,
+    )
+
+    assert stale_insert is None
+    assert data_store.get_current_workout_plan(1) is None
+
+
+def test_adjust_initial_generation_rejects_absent_create_delete_aba(
+    monkeypatch,
+    tmp_path,
+):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    generated = _plan_with_id(module, "generated-adjustment-plan")
+    monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: generated)
+    monkeypatch.setattr(module, "_lm_studio", None)
+    original_save = module.save_current_workout_plan
+    interleaved = {"done": False}
+
+    def save_with_create_delete(user_id, fingerprint, plan, **kwargs):
+        if not interleaved["done"]:
+            interleaved["done"] = True
+            data_store.save_current_workout_plan(
+                user_id,
+                "temporary-adjustment-winner",
+                _plan_with_id(module, "temporary-adjustment-winner"),
+            )
+            data_store.delete_current_workout_plan(user_id)
+        return original_save(user_id, fingerprint, plan, **kwargs)
+
+    monkeypatch.setattr(module, "save_current_workout_plan", save_with_create_delete)
+    response = client.post("/api/workout/adjust", json={"constraint": "make this easier"})
+
+    assert response.status_code == 409
+    payload = response.get_json()
+    assert payload["error"]["code"] == "workout_plan_conflict"
+    assert "recommendation" not in payload
+    assert data_store.get_current_workout_plan(1) is None
+    assert data_store.get_workout_plan_generation(1) == 1
+
+
+def test_swap_rejects_interleaved_existing_plan_write_without_payload_leak(
+    monkeypatch,
+    tmp_path,
+):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    base_plan = _recommendation(module)
+    monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: base_plan)
+    assert client.get("/api/next-workout").status_code == 200
+
+    replacement = _plan_with_id(module, "concurrent-replacement")
+    original_save = module.save_current_workout_plan
+    interleaved = {"done": False}
+
+    def save_with_interleaved_write(user_id, fingerprint, plan, **kwargs):
+        if not interleaved["done"]:
+            interleaved["done"] = True
+            data_store.save_current_workout_plan(
+                user_id,
+                "replacement-fingerprint",
+                replacement,
+            )
+        return original_save(user_id, fingerprint, plan, **kwargs)
+
+    monkeypatch.setattr(module, "save_current_workout_plan", save_with_interleaved_write)
+    response = client.post(
+        "/api/workout/swap",
+        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Incline Press"},
+    )
+
+    assert response.status_code == 409
+    payload = response.get_json()
+    assert payload["error"]["code"] == "workout_plan_conflict"
+    assert "recommendation" not in payload
+    durable = data_store.get_current_workout_plan(1)
+    assert durable["fingerprint"] == "replacement-fingerprint"
+    assert durable["plan"]["id"] == "concurrent-replacement"
+
+
+def test_next_workout_regeneration_cas_preserves_concurrent_fingerprint_winner(
+    monkeypatch,
+    tmp_path,
+):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    stale_plan = _plan_with_id(module, "stale-plan")
+    data_store.save_current_workout_plan(1, "stale-fingerprint", stale_plan)
+    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fresh-fingerprint")
+
+    generated = _plan_with_id(module, "fresh-generated-plan")
+    winner = _plan_with_id(module, "concurrent-customized-winner")
+    monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: generated)
+    original_save = module.save_current_workout_plan
+    interleaved = {"done": False}
+
+    def save_with_interleaved_write(user_id, fingerprint, plan, **kwargs):
+        if not interleaved["done"]:
+            interleaved["done"] = True
+            data_store.save_current_workout_plan(
+                user_id,
+                "winner-fingerprint",
+                {**winner, "_user_customized": True},
+            )
+        return original_save(user_id, fingerprint, plan, **kwargs)
+
+    monkeypatch.setattr(module, "save_current_workout_plan", save_with_interleaved_write)
+    response = client.get("/api/next-workout")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["next_workout"]["id"] == "concurrent-customized-winner"
+    assert "_fit233_current_plan_absent" not in payload["next_workout"]
+    assert "_fit233_expected_plan_generation" not in payload["next_workout"]
+    durable = data_store.get_current_workout_plan(1)
+    assert durable["fingerprint"] == "winner-fingerprint"
+    assert durable["plan"]["id"] == "concurrent-customized-winner"
+    assert durable["plan"]["_user_customized"] is True
+
+
+def test_dashboard_regeneration_rereads_concurrent_winner_across_fingerprint(
+    monkeypatch,
+    tmp_path,
+):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    data_store.save_current_workout_plan(
+        1,
+        "stale-fingerprint",
+        _plan_with_id(module, "stale-dashboard-plan"),
+    )
+    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fresh-fingerprint")
+    monkeypatch.setattr(
+        module,
+        "_apply_open_wearables_recommendation_guard",
+        lambda recommendation, _facts: (recommendation, {}),
+    )
+    monkeypatch.setattr(module, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
+    generated = _plan_with_id(module, "fresh-dashboard-plan")
+    winner = _plan_with_id(module, "concurrent-dashboard-winner")
+    monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: generated)
+    original_save = module.save_current_workout_plan
+    interleaved = {"done": False}
+
+    def save_with_interleaved_write(user_id, fingerprint, plan, **kwargs):
+        if not interleaved["done"]:
+            interleaved["done"] = True
+            data_store.save_current_workout_plan(
+                user_id,
+                "winner-dashboard-fingerprint",
+                {**winner, "_user_customized": True},
+            )
+        return original_save(user_id, fingerprint, plan, **kwargs)
+
+    monkeypatch.setattr(module, "save_current_workout_plan", save_with_interleaved_write)
+    response = client.get("/api/dashboard")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["next_workout"]["id"] == "concurrent-dashboard-winner"
+    assert "_fit233_current_plan_absent" not in payload["next_workout"]
+    assert "_fit233_expected_plan_generation" not in payload["next_workout"]
+    durable = data_store.get_current_workout_plan(1)
+    assert durable["fingerprint"] == "winner-dashboard-fingerprint"
+    assert durable["plan"]["id"] == "concurrent-dashboard-winner"
+    assert durable["plan"]["_user_customized"] is True
+
+
+def test_next_workout_delete_race_returns_conflict_without_losing_payload(
+    monkeypatch,
+    tmp_path,
+):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    data_store.save_current_workout_plan(
+        1,
+        "stale-fingerprint",
+        _plan_with_id(module, "stale-delete-plan"),
+    )
+    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fresh-fingerprint")
+    generated = _plan_with_id(module, "losing-generated-plan")
+    monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: generated)
+    original_save = module.save_current_workout_plan
+
+    def save_then_delete(user_id, fingerprint, plan, **kwargs):
+        data_store.delete_current_workout_plan(user_id)
+        return original_save(user_id, fingerprint, plan, **kwargs)
+
+    monkeypatch.setattr(module, "save_current_workout_plan", save_then_delete)
+    response = client.get("/api/next-workout")
+
+    assert response.status_code == 409
+    payload = response.get_json()
+    assert payload["error"]["code"] == "workout_plan_conflict"
+    assert "next_workout" not in payload
+    assert data_store.get_current_workout_plan(1) is None
+
+
+def test_dashboard_delete_race_returns_conflict_without_losing_payload(
+    monkeypatch,
+    tmp_path,
+):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    data_store.save_current_workout_plan(
+        1,
+        "stale-fingerprint",
+        _plan_with_id(module, "stale-dashboard-delete-plan"),
+    )
+    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fresh-fingerprint")
+    monkeypatch.setattr(
+        module,
+        "_apply_open_wearables_recommendation_guard",
+        lambda recommendation, _facts: (recommendation, {}),
+    )
+    monkeypatch.setattr(module, "_nutrition_today_public_payload", lambda *_args, **_kwargs: {})
+    generated = _plan_with_id(module, "losing-dashboard-generated-plan")
+    monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: generated)
+    original_save = module.save_current_workout_plan
+
+    def save_then_delete(user_id, fingerprint, plan, **kwargs):
+        data_store.delete_current_workout_plan(user_id)
+        return original_save(user_id, fingerprint, plan, **kwargs)
+
+    monkeypatch.setattr(module, "save_current_workout_plan", save_then_delete)
+    response = client.get("/api/dashboard")
+
+    assert response.status_code == 409
+    payload = response.get_json()
+    assert payload["error"]["code"] == "workout_plan_conflict"
+    assert "next_workout" not in payload
+    assert data_store.get_current_workout_plan(1) is None
+
+
+def test_repeated_adaptation_event_polling_does_not_backfill_plan_tables(
+    monkeypatch,
+    tmp_path,
+):
+    module, client, _state = _client(monkeypatch, tmp_path)
+    trace = []
+    original_connect = data_store.sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connection.set_trace_callback(trace.append)
+        return connection
+
+    monkeypatch.setattr(data_store.sqlite3, "connect", traced_connect)
+    for _ in range(3):
+        response = client.get("/api/workout-adaptation-events?unacknowledged=false")
+        assert response.status_code == 200
+        assert response.get_json()["events"] == []
+
+    plan_table_dml = []
+    for statement in trace:
+        normalized = statement.strip().upper()
+        if (
+            normalized.startswith("INSERT")
+            or normalized.startswith("UPDATE")
+            or normalized.startswith("DELETE")
+        ) and (
+            "WORKOUT_PLAN_GENERATIONS" in normalized
+            or "CURRENT_WORKOUT_PLANS" in normalized
+        ):
+            plan_table_dml.append(statement)
+    assert plan_table_dml == []
+    assert data_store.list_workout_adaptation_events(1, unacknowledged=False) == []
+
+
+def test_current_plan_lookup_uses_atomic_plan_snapshot(monkeypatch, tmp_path):
+    module, _client_instance, _state = _client(monkeypatch, tmp_path)
+    snapshot_calls = []
+
+    def snapshot(user_id):
+        snapshot_calls.append(user_id)
+        return {"current_plan": None, "plan_generation": 7}
+
+    def fail_separate_plan_read(*_args, **_kwargs):
+        raise AssertionError("lookup must not perform a separate current-plan read")
+
+    monkeypatch.setattr(module, "get_current_workout_plan_snapshot", snapshot)
+    monkeypatch.setattr(module, "get_current_workout_plan", fail_separate_plan_read)
+
+    token = module._current_workout_plan_for_fingerprint(
+        "missing-fingerprint",
+        return_lookup_token=True,
+    )
+
+    assert token.current_plan_absent is True
+    assert token.absent_plan_generation == 7
+    assert snapshot_calls == [1]
 
 
 def test_worker_rehydration_restores_customization_without_exposing_marker(monkeypatch, tmp_path):

@@ -4,6 +4,22 @@ import copy
 import importlib
 
 import pytest
+import data_store
+
+
+def _set_last_workout_recommendation(module, monkeypatch, recommendation):
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    monkeypatch.setattr(
+        module,
+        "LAST_WORKOUT_RECOMMENDATION_OWNER",
+        {"user_id": 1, "plan_id": id(recommendation)},
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_data_db(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
 
 
 def _module(monkeypatch):
@@ -23,6 +39,7 @@ def _module(monkeypatch):
     monkeypatch.setattr(module, "COMPLETED_WORKOUTS", [])
     monkeypatch.setattr(module, "WORKOUT_RECOMMENDATIONS", [])
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", None)
     monkeypatch.setattr(module, "_get_oura_readiness_today", lambda: None)
     monkeypatch.setattr(module, "_notify_workout_logged", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
@@ -108,7 +125,7 @@ def test_swap_to_no_history_machine_infers_from_similar_history(monkeypatch):
             _workout("2026-05-08", "Lateral Raise", 25),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
@@ -135,7 +152,7 @@ def test_direct_history_wins_over_similar_machine_inference(monkeypatch):
             _workout("2026-05-10", "Machine Deltoid Raise", 20),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
@@ -160,7 +177,7 @@ def test_alias_named_history_counts_as_direct_progression(monkeypatch):
             _workout("2026-05-10", "Lateral Raise", 35),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
@@ -178,7 +195,7 @@ def test_alias_named_history_counts_as_direct_progression(monkeypatch):
 def test_no_similar_history_falls_back_to_hardcoded_baseline(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
@@ -202,7 +219,7 @@ def test_loose_same_muscle_history_does_not_infer_starter_load(monkeypatch):
             _workout("2026-05-08", "Shoulder Press", 75),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
@@ -322,9 +339,9 @@ def test_adjust_deterministic_fallback_accepts_bare_tricep_extensions(monkeypatc
             _workout("2026-05-08", "Cable Pushdown", 60, muscle="triceps"),
         ],
     )
-    monkeypatch.setattr(
+    _set_last_workout_recommendation(
         module,
-        "LAST_WORKOUT_RECOMMENDATION",
+        monkeypatch,
         _recommendation_for(module, [_rec_exercise("Cable Pushdown", "triceps", 55)]),
     )
 
@@ -694,7 +711,7 @@ def test_adjust_deterministic_fallback_leaves_unclassified_request_unchanged(mon
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "_lm_studio", None)
     recommendation = _recommendation_for(module, [_rec_exercise("Chest Press", "chest", 100)])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(module, monkeypatch, recommendation)
 
     response = module.app.test_client().post(
         "/api/workout/adjust",
@@ -717,7 +734,7 @@ def test_adjust_deterministic_rejects_generic_press_false_positive(monkeypatch):
             _rec_exercise("Seated Row", "back", 90),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(module, monkeypatch, recommendation)
 
     response = module.app.test_client().post(
         "/api/workout/adjust",
@@ -746,9 +763,9 @@ def test_adjust_direct_history_wins_over_similar_pattern_inference(monkeypatch):
             _workout("2026-05-15", "Overhead Tricep Extension", 45, muscle="triceps"),
         ],
     )
-    monkeypatch.setattr(
+    _set_last_workout_recommendation(
         module,
-        "LAST_WORKOUT_RECOMMENDATION",
+        monkeypatch,
         _recommendation_for(module, [_rec_exercise("Cable Pushdown", "triceps", 55)]),
     )
 
@@ -803,7 +820,7 @@ def test_ai_adjust_rejects_unknown_dragon_press_target(monkeypatch):
 def test_swap_endpoint_rejects_single_generic_press_token(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _chest_recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
@@ -817,7 +834,7 @@ def test_swap_endpoint_rejects_single_generic_press_token(monkeypatch):
 def test_swap_endpoint_allows_distinctive_single_token_incline(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _chest_recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",
@@ -832,7 +849,7 @@ def test_swap_endpoint_allows_singular_one_word_plural_dip(monkeypatch):
     module = _module(monkeypatch)
     module.USER_SETTINGS["equipment_preference"] = "all"
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+    _set_last_workout_recommendation(module, monkeypatch, _chest_recommendation(module))
 
     response = module.app.test_client().post(
         "/api/workout/swap",

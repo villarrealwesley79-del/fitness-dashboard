@@ -5,11 +5,22 @@ import importlib
 from datetime import datetime, timedelta
 
 import pytest
+import data_store
+
+
+def _set_last_workout_recommendation(module, recommendation):
+    module.LAST_WORKOUT_RECOMMENDATION = recommendation
+    module.LAST_WORKOUT_RECOMMENDATION_OWNER = {
+        "user_id": 1,
+        "plan_id": id(recommendation),
+    }
 
 
 @pytest.fixture()
-def fitness_app(monkeypatch):
+def fitness_app(monkeypatch, tmp_path):
     monkeypatch.setenv("SECRET_KEY", "fit104-muscle-recovery-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     monkeypatch.setattr(module, "WORKOUTS", [])
@@ -20,6 +31,7 @@ def fitness_app(monkeypatch):
     monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "_notify_workout_logged", lambda *_args, **_kwargs: None)
     module.LAST_WORKOUT_RECOMMENDATION = None
+    module.LAST_WORKOUT_RECOMMENDATION_OWNER = None
     yield module
     module.app.config.update(LOGIN_DISABLED=False)
 
@@ -89,7 +101,7 @@ def _stored_chest_workout(*, workout_id, completed_at, overall_fatigue):
 
 
 def test_muscle_recovery_stays_at_recent_training_debt_when_reps_completed(fitness_app):
-    fitness_app.LAST_WORKOUT_RECOMMENDATION = _recommendation()
+    _set_last_workout_recommendation(fitness_app, _recommendation())
 
     response = fitness_app.app.test_client().post(
         "/api/complete-workout",
@@ -235,7 +247,7 @@ def test_readiness_combines_soreness_and_fatigue_signals(fitness_app):
 
 
 def test_muscle_recovery_drops_when_recent_planned_reps_were_missed(fitness_app):
-    fitness_app.LAST_WORKOUT_RECOMMENDATION = _recommendation()
+    _set_last_workout_recommendation(fitness_app, _recommendation())
 
     response = fitness_app.app.test_client().post(
         "/api/complete-workout",
@@ -260,7 +272,7 @@ def test_muscle_recovery_drops_when_recent_planned_reps_were_missed(fitness_app)
 
 
 def test_recommended_workout_retry_remains_idempotent_after_planned_targets_are_stored(fitness_app):
-    fitness_app.LAST_WORKOUT_RECOMMENDATION = _recommendation()
+    _set_last_workout_recommendation(fitness_app, _recommendation())
     payload = _payload(reps=[10, 8, 6])
 
     client = fitness_app.app.test_client()
@@ -356,7 +368,7 @@ def test_next_workout_fallback_does_not_readd_low_readiness_muscle(fitness_app):
 
 
 def test_incomplete_prefilled_set_rows_do_not_count_as_completed_work(fitness_app):
-    fitness_app.LAST_WORKOUT_RECOMMENDATION = _recommendation()
+    _set_last_workout_recommendation(fitness_app, _recommendation())
     payload = _payload(reps=[10, 10, 10])
     payload["id"] = "fit104-incomplete-row"
     payload["client_workout_id"] = "fit104-incomplete-row"
@@ -379,7 +391,7 @@ def test_incomplete_prefilled_set_rows_do_not_count_as_completed_work(fitness_ap
 
 
 def test_muscle_recovery_drops_when_planned_sets_were_missed(fitness_app):
-    fitness_app.LAST_WORKOUT_RECOMMENDATION = _recommendation()
+    _set_last_workout_recommendation(fitness_app, _recommendation())
 
     response = fitness_app.app.test_client().post(
         "/api/complete-workout",

@@ -536,7 +536,6 @@ def test_dashboard_release_assets_and_reload_contract_remain_stable():
     assert "@app.route('/api/next-workout')" in app_py
     assert "def _current_workout_training_recommendation():" in app_py
     assert "def _workout_recommendation_fingerprint():" in app_py
-    assert "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint" in app_py
     assert "workout_recommendation_fingerprint.build_fingerprint(" in app_py
     assert "day=today_s" in app_py
     assert "get_oura_daily_range(OURA_DB_FILE" in app_py

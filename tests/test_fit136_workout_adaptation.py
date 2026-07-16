@@ -1235,7 +1235,10 @@ def test_applied_event_is_published_atomically_with_persisted_plan(monkeypatch, 
     assert data_store.get_workout_adaptation_revision(1) == 1
 
 
-def _applied_event_with_source_plan_version(source_plan_version: int | None) -> dict:
+def _applied_event_with_source_plan_identity(
+    source_plan_generation: int | None,
+    source_plan_version: int | None,
+) -> dict:
     pending = data_store.enqueue_workout_adaptation_pending(
         1,
         date="2026-05-24",
@@ -1254,6 +1257,7 @@ def _applied_event_with_source_plan_version(source_plan_version: int | None) -> 
             "change_type": "reduce_volume",
             "applies_to": "today",
             "created_at": "2026-05-24T12:03:01",
+            "_source_plan_generation": source_plan_generation,
             "_source_plan_version": source_plan_version,
         },
     )
@@ -1262,7 +1266,11 @@ def _applied_event_with_source_plan_version(source_plan_version: int | None) -> 
 def test_publishing_applied_event_requires_matching_source_plan_version(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     data_store.save_current_workout_plan(1, "base-fingerprint", {"id": "base-plan"})
-    event = _applied_event_with_source_plan_version(1)
+    current = data_store.get_current_workout_plan(1)
+    event = _applied_event_with_source_plan_identity(
+        current["plan_generation"],
+        current["plan_version"],
+    )
 
     published = data_store.save_current_workout_plan(
         1,
@@ -1273,6 +1281,7 @@ def test_publishing_applied_event_requires_matching_source_plan_version(monkeypa
 
     assert published is not None
     assert data_store.get_current_workout_plan(1)["plan"]["id"] == "adapted-plan"
+    assert data_store.get_current_workout_plan(1)["plan_generation"] == 1
     assert data_store.get_current_workout_plan(1)["plan_version"] == 2
     assert data_store.get_workout_adaptation_revision(1) == 1
     assert data_store.list_unpublished_applied_workout_adaptation_events(1) == []
@@ -1281,7 +1290,11 @@ def test_publishing_applied_event_requires_matching_source_plan_version(monkeypa
 def test_changed_source_plan_version_blocks_publish_without_overwriting(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     data_store.save_current_workout_plan(1, "base-fingerprint", {"id": "base-plan"})
-    event = _applied_event_with_source_plan_version(1)
+    current = data_store.get_current_workout_plan(1)
+    event = _applied_event_with_source_plan_identity(
+        current["plan_generation"],
+        current["plan_version"],
+    )
     data_store.save_current_workout_plan(1, "replacement-fingerprint", {"id": "replacement-plan"})
 
     published = data_store.save_current_workout_plan(
@@ -1303,7 +1316,7 @@ def test_changed_source_plan_version_blocks_publish_without_overwriting(monkeypa
 
 def test_null_source_plan_version_rejects_plan_that_appeared(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
-    event = _applied_event_with_source_plan_version(None)
+    event = _applied_event_with_source_plan_identity(None, None)
     data_store.save_current_workout_plan(1, "appeared-fingerprint", {"id": "appeared-plan"})
 
     published = data_store.save_current_workout_plan(
@@ -1321,6 +1334,116 @@ def test_null_source_plan_version_rejects_plan_that_appeared(monkeypatch, tmp_pa
     unpublished = data_store.list_unpublished_applied_workout_adaptation_events(1)
     assert [row["id"] for row in unpublished] == [event["id"]]
     assert unpublished[0]["published_at"] is None
+
+
+def test_recreated_plan_generation_blocks_old_adaptation_event(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    data_store.save_current_workout_plan(1, "base-fingerprint", {"id": "base-plan"})
+    original = data_store.get_current_workout_plan(1)
+    event = _applied_event_with_source_plan_identity(
+        original["plan_generation"],
+        original["plan_version"],
+    )
+    assert data_store.delete_current_workout_plan(1) is True
+    recreated = data_store.save_current_workout_plan(
+        1,
+        "recreated-fingerprint",
+        {"id": "recreated-plan"},
+    )
+
+    published = data_store.save_current_workout_plan(
+        1,
+        "adapted-fingerprint",
+        {"id": "stale-adapted-plan"},
+        publish_adaptation_event_ids=[event["id"]],
+    )
+
+    current = data_store.get_current_workout_plan(1)
+    assert original["plan_generation"] == 1
+    assert recreated["plan_generation"] == 2
+    assert current["plan_generation"] == 2
+    assert current["plan_version"] == 1
+    assert current["plan"]["id"] == "recreated-plan"
+    assert published is None
+    assert data_store.get_workout_adaptation_revision(1) == 0
+
+
+def test_workout_plan_generation_migration_is_idempotent_and_blocks_legacy_event(
+    monkeypatch,
+    tmp_path,
+):
+    db_path = tmp_path / "fitness_data.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE current_workout_plans (
+                user_id INTEGER PRIMARY KEY,
+                fingerprint TEXT NOT NULL,
+                plan_json TEXT NOT NULL,
+                plan_version INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO current_workout_plans (
+                user_id, fingerprint, plan_json, plan_version, updated_at
+            ) VALUES (1, 'legacy-fingerprint', '{"id": "legacy-plan"}', 3, '2026-05-24')
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE workout_adaptation_events (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                silent INTEGER NOT NULL DEFAULT 1,
+                change_type TEXT NOT NULL,
+                applies_to TEXT NOT NULL,
+                source_plan_version INTEGER,
+                created_at TEXT NOT NULL,
+                published_at TEXT,
+                acknowledged_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO workout_adaptation_events (
+                id, user_id, date, status, silent, change_type, applies_to,
+                source_plan_version, created_at, published_at
+            ) VALUES (
+                'legacy-event', 1, '2026-05-24', 'applied', 0, 'reduce_volume',
+                'today', 3, '2026-05-24T12:03:01', NULL
+            )
+            """
+        )
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+
+    data_store.init_data_db()
+    data_store.init_data_db()
+
+    current = data_store.get_current_workout_plan(1)
+    assert current["plan_generation"] == 1
+    with sqlite3.connect(db_path) as conn:
+        generation = conn.execute(
+            "SELECT generation FROM workout_plan_generations WHERE user_id = 1"
+        ).fetchone()[0]
+        legacy_source_generation = conn.execute(
+            "SELECT source_plan_generation FROM workout_adaptation_events "
+            "WHERE id = 'legacy-event'"
+        ).fetchone()[0]
+    assert generation == 1
+    assert legacy_source_generation is None
+    assert data_store.save_current_workout_plan(
+        1,
+        "adapted-fingerprint",
+        {"id": "adapted-plan"},
+        publish_adaptation_event_ids=["legacy-event"],
+    ) is None
+    assert data_store.get_current_workout_plan(1)["plan"]["id"] == "legacy-plan"
 
 
 def test_losing_pending_claim_does_not_adopt_independently_patched_plan(monkeypatch):
@@ -1388,6 +1511,9 @@ def _saved_adaptation_event(user_id: int, *, client_id: str, created_at: str, st
             "reason": "Adjusted the workout." if status == "applied" else "Preserved the workout.",
             "trigger": {"meal_ids": ["meal-1"], "food_log_client_ids": [client_id]},
             "created_at": created_at,
+            "_source_plan_generation": (
+                current_plan["plan_generation"] if current_plan else None
+            ),
             "_source_plan_version": current_plan["plan_version"] if current_plan else None,
         },
     )

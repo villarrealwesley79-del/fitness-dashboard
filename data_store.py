@@ -531,6 +531,7 @@ def init_data_db():
                 adapted_plan_json   TEXT,
                 plan_fingerprint    TEXT,
                 target_plan_date    TEXT,
+                source_plan_generation INTEGER,
                 source_plan_version INTEGER,
                 created_at          TEXT    NOT NULL,
                 published_at        TEXT,
@@ -543,8 +544,14 @@ def init_data_db():
                 fingerprint   TEXT    NOT NULL,
                 plan_json     TEXT    NOT NULL,
                 adaptation_revision INTEGER NOT NULL DEFAULT 0,
+                plan_generation INTEGER,
                 plan_version  INTEGER NOT NULL DEFAULT 0,
                 updated_at    TEXT    NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS workout_plan_generations (
+                user_id       INTEGER PRIMARY KEY,
+                generation    INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS workout_adaptation_revisions (
@@ -721,6 +728,11 @@ def init_data_db():
             conn.execute(
                 "ALTER TABLE workout_adaptation_events ADD COLUMN source_plan_version INTEGER"
             )
+        if "source_plan_generation" not in existing_adaptation_event_cols:
+            conn.execute(
+                "ALTER TABLE workout_adaptation_events "
+                "ADD COLUMN source_plan_generation INTEGER"
+            )
         existing_current_plan_cols = {
             r["name"]
             for r in conn.execute("PRAGMA table_info(current_workout_plans)").fetchall()
@@ -734,6 +746,47 @@ def init_data_db():
             conn.execute(
                 "ALTER TABLE current_workout_plans "
                 "ADD COLUMN plan_version INTEGER NOT NULL DEFAULT 0"
+            )
+        if "plan_generation" not in existing_current_plan_cols:
+            conn.execute(
+                "ALTER TABLE current_workout_plans ADD COLUMN plan_generation INTEGER"
+            )
+        generation_backfill_needed = conn.execute(
+            """
+            SELECT 1
+              FROM current_workout_plans AS current_plan
+              LEFT JOIN workout_plan_generations AS generations
+                ON generations.user_id = current_plan.user_id
+             WHERE current_plan.plan_generation IS NULL
+                OR generations.user_id IS NULL
+                OR generations.generation < current_plan.plan_generation
+             LIMIT 1
+            """
+        ).fetchone() is not None
+        if generation_backfill_needed:
+            conn.execute(
+                """
+                INSERT INTO workout_plan_generations (user_id, generation)
+                SELECT user_id, COALESCE(plan_generation, 1)
+                  FROM current_workout_plans
+                 WHERE true
+                ON CONFLICT(user_id) DO UPDATE SET
+                    generation = MAX(
+                        workout_plan_generations.generation,
+                        excluded.generation
+                    )
+                """
+            )
+            conn.execute(
+                """
+                UPDATE current_workout_plans
+                   SET plan_generation = (
+                       SELECT generation
+                         FROM workout_plan_generations
+                        WHERE workout_plan_generations.user_id = current_workout_plans.user_id
+                   )
+                 WHERE plan_generation IS NULL
+                """
             )
         if "stale_at" not in existing_adaptation_event_cols:
             conn.execute("ALTER TABLE workout_adaptation_events ADD COLUMN stale_at TEXT")
@@ -823,21 +876,22 @@ def save_current_workout_plan(
     plan: dict,
     *,
     publish_adaptation_event_ids: list[str] | None = None,
+    only_if_current_plan_absent: bool = False,
+    expected_plan_generation: int | None = None,
+    expected_plan_version: int | None = None,
+    expected_absent_plan_generation: int | None = None,
 ) -> dict | None:
     """Persist the current generated workout plan for one user.
 
-    KNOWN LIMITATION (FIT-256 finding 3): this is a blind
-    ``INSERT ... ON CONFLICT(user_id) DO UPDATE`` -- last write wins, with no
-    version/optimistic-lock check. `app._persist_current_workout_plan` guards
-    this with a process-local `threading.RLock`, which only serializes writes
-    within a single worker process; it gives no cross-process protection.
-    The app currently mitigates this by running gunicorn with a single worker
-    (see Dockerfile), which makes the process-local lock effectively global.
-    If this ever needs to scale to >1 worker/instance again, this function
-    needs a real compare-and-set (e.g. a `version` column, update only when
-    `version = expected_version`, caller reconciles on conflict) before that
-    change is safe.
+    When an expected plan identity is supplied, the write is a compare-and-set
+    against the durable ``(plan_generation, plan_version)`` pair.  A mismatch
+    returns ``None`` without changing the row.  ``only_if_current_plan_absent``
+    provides the equivalent compare-and-set for an expected absent row.  An
+    absent-row expectation may also include the durable generation tombstone,
+    preventing a create-delete ABA from being mistaken for the original
+    absence.
     """
+    init_data_db()
     if not isinstance(plan, dict):
         raise ValueError("plan must be an object")
     if not fingerprint:
@@ -847,18 +901,72 @@ def save_current_workout_plan(
     event_ids = list(dict.fromkeys(publish_adaptation_event_ids or []))
     with _get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        current_plan_row = conn.execute(
+            """
+            SELECT plan_generation, plan_version
+              FROM current_workout_plans
+             WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+        if only_if_current_plan_absent and current_plan_row is not None:
+            conn.rollback()
+            return None
+        if only_if_current_plan_absent and expected_absent_plan_generation is not None:
+            generation_row = conn.execute(
+                "SELECT generation FROM workout_plan_generations WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            current_generation = int(generation_row["generation"] or 0) if generation_row else 0
+            if current_generation != int(expected_absent_plan_generation):
+                conn.rollback()
+                return None
+        if expected_plan_generation is not None or expected_plan_version is not None:
+            if expected_plan_generation is None or expected_plan_version is None:
+                conn.rollback()
+                return None
+            if (
+                current_plan_row is None
+                or int(current_plan_row["plan_generation"]) != int(expected_plan_generation)
+                or int(current_plan_row["plan_version"] or 0) != int(expected_plan_version)
+            ):
+                conn.rollback()
+                return None
         if event_ids:
+            current_plan_generation = None
+            if current_plan_row is None:
+                generation_row = conn.execute(
+                    "SELECT generation FROM workout_plan_generations WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                current_plan_generation = (
+                    int(generation_row["generation"] or 0) if generation_row else 0
+                )
             placeholders = ", ".join(["?"] * len(event_ids))
             event_rows = conn.execute(
                 f"""
-                SELECT id, status, published_at, source_plan_version
+                SELECT id, status, published_at,
+                       source_plan_generation, source_plan_version
                   FROM workout_adaptation_events
                  WHERE user_id = ?
                    AND id IN ({placeholders})
                 """,
                 [user_id, *event_ids],
             ).fetchall()
-            source_plan_version = event_rows[0]["source_plan_version"] if event_rows else None
+            source_plan_identity = (
+                (
+                    (
+                        0
+                        if current_plan_row is None
+                        and current_plan_generation == 0
+                        and event_rows[0]["source_plan_generation"] is None
+                        else event_rows[0]["source_plan_generation"]
+                    ),
+                    event_rows[0]["source_plan_version"],
+                )
+                if event_rows
+                else (None, None)
+            )
             if (
                 len(event_rows) != len(event_ids)
                 or any(
@@ -866,18 +974,30 @@ def save_current_workout_plan(
                     for row in event_rows
                 )
                 or any(
-                    row["source_plan_version"] != source_plan_version
+                    (
+                        (
+                            0
+                            if current_plan_row is None
+                            and current_plan_generation == 0
+                            and row["source_plan_generation"] is None
+                            else row["source_plan_generation"]
+                        ),
+                        row["source_plan_version"],
+                    ) != source_plan_identity
                     for row in event_rows
                 )
             ):
                 conn.rollback()
                 return None
-            current_plan_row = conn.execute(
-                "SELECT plan_version FROM current_workout_plans WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
-            current_plan_version = current_plan_row["plan_version"] if current_plan_row else None
-            if source_plan_version != current_plan_version:
+            current_plan_identity = (
+                (
+                    current_plan_row["plan_generation"],
+                    current_plan_row["plan_version"],
+                )
+                if current_plan_row
+                else (current_plan_generation, None)
+            )
+            if source_plan_identity != current_plan_identity:
                 conn.rollback()
                 return None
         plan_to_save = plan
@@ -900,12 +1020,29 @@ def save_current_workout_plan(
             ):
                 plan_to_save = _workout_plan_without_stale_adaptation(plan)
         plan_json = json.dumps(plan_to_save, sort_keys=True, default=str)
+        if current_plan_row is None:
+            conn.execute(
+                """
+                INSERT INTO workout_plan_generations (user_id, generation)
+                VALUES (?, 1)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    generation = workout_plan_generations.generation + 1
+                """,
+                (user_id,),
+            )
+            plan_generation = conn.execute(
+                "SELECT generation FROM workout_plan_generations WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()["generation"]
+        else:
+            plan_generation = current_plan_row["plan_generation"]
         conn.execute(
             """
             INSERT INTO current_workout_plans (
-                user_id, fingerprint, plan_json, plan_version, updated_at
+                user_id, fingerprint, plan_json,
+                plan_generation, plan_version, updated_at
             )
-            VALUES (?, ?, ?, 1, ?)
+            VALUES (?, ?, ?, ?, 1, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 fingerprint=excluded.fingerprint,
                 plan_json=excluded.plan_json,
@@ -917,7 +1054,7 @@ def save_current_workout_plan(
                 END,
                 updated_at=excluded.updated_at
             """,
-            (user_id, fingerprint, plan_json, now),
+            (user_id, fingerprint, plan_json, plan_generation, now),
         )
         if event_ids:
             placeholders = ", ".join(["?"] * len(event_ids))
@@ -947,12 +1084,22 @@ def save_current_workout_plan(
             "SELECT revision FROM workout_adaptation_revisions WHERE user_id = ?",
             (user_id,),
         ).fetchone()
+        saved_plan_row = conn.execute(
+            """
+            SELECT plan_generation, plan_version
+              FROM current_workout_plans
+             WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
         conn.commit()
     return {
         "user_id": user_id,
         "fingerprint": fingerprint,
         "plan": json.loads(plan_json),
         "adaptation_revision": int(revision_row["revision"] or 0) if revision_row else 0,
+        "plan_generation": int(saved_plan_row["plan_generation"]),
+        "plan_version": int(saved_plan_row["plan_version"]),
         "updated_at": now,
     }
 
@@ -973,9 +1120,61 @@ def get_current_workout_plan(user_id: int, fingerprint: str | None = None) -> Op
         "fingerprint": row["fingerprint"],
         "plan": _json_loads_or_none(row["plan_json"]) or {},
         "adaptation_revision": get_workout_adaptation_revision(user_id),
+        "plan_generation": int(row["plan_generation"]),
         "plan_version": int(row["plan_version"] or 0),
         "updated_at": row["updated_at"],
     }
+
+
+def get_current_workout_plan_snapshot(user_id: int) -> dict:
+    """Read the current plan and its generation tombstone in one snapshot.
+
+    The current-plan row and generation tombstone are the identity used by
+    workout-plan CAS and adaptation publication.  Keep both reads on the same
+    SQLite transaction so a concurrent create/delete cannot produce a torn
+    identity pair.
+    """
+    init_data_db()
+    with _get_db() as conn:
+        conn.execute("BEGIN")
+        row = conn.execute(
+            "SELECT * FROM current_workout_plans WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        generation_row = conn.execute(
+            "SELECT generation FROM workout_plan_generations WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        revision_row = conn.execute(
+            "SELECT revision FROM workout_adaptation_revisions WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    current_plan = None
+    if row:
+        current_plan = {
+            "user_id": row["user_id"],
+            "fingerprint": row["fingerprint"],
+            "plan": _json_loads_or_none(row["plan_json"]) or {},
+            "adaptation_revision": int(revision_row["revision"] or 0) if revision_row else 0,
+            "plan_generation": int(row["plan_generation"]),
+            "plan_version": int(row["plan_version"] or 0),
+            "updated_at": row["updated_at"],
+        }
+    return {
+        "current_plan": current_plan,
+        "plan_generation": int(generation_row["generation"] or 0) if generation_row else 0,
+    }
+
+
+def get_workout_plan_generation(user_id: int) -> int:
+    """Return the durable current-plan generation tombstone for one user."""
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT generation FROM workout_plan_generations WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return int(row["generation"] or 0) if row else 0
 
 
 def get_workout_adaptation_revision(user_id: int) -> int:
@@ -1470,6 +1669,7 @@ def save_workout_adaptation_event(
         "adapted_plan_json": _json_dumps_or_none(event.get("_adapted_plan")),
         "plan_fingerprint": event.get("_plan_fingerprint"),
         "target_plan_date": event.get("_target_plan_date"),
+        "source_plan_generation": event.get("_source_plan_generation"),
         "source_plan_version": event.get("_source_plan_version"),
         "created_at": created_at,
     }
@@ -1797,7 +1997,9 @@ def _restore_stale_workout_adaptation_plan(
     conn.execute(
         """
         UPDATE current_workout_plans
-           SET plan_json = ?, updated_at = ?
+           SET plan_json = ?,
+               plan_version = COALESCE(plan_version, 0) + 1,
+               updated_at = ?
          WHERE user_id = ?
         """,
         (
@@ -3253,6 +3455,7 @@ def delete_user_data(user_id: int) -> None:
         "meal_acceptance_events",
         "meal_review_snapshots",
         "current_workout_plans",
+        "workout_plan_generations",
         "workout_adaptation_revisions",
         "recovery_data",
         "user_settings",
