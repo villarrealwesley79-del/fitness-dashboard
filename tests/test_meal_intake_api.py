@@ -11,21 +11,26 @@ from __future__ import annotations
 
 import importlib
 import io
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
 import data_store
 import pytest
+from js_runtime import run_app_js
 
 
-def _client(monkeypatch):
-    monkeypatch.setenv("SECRET_KEY", "fit65-meal-intake-secret")
-    db_path = Path(tempfile.mkdtemp(prefix="fit-meal-intake-api-")) / "fitness_data.db"
-    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
-    data_store.init_data_db()
-    module = importlib.import_module("app")
-    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+_APP_UNDER_TEST = None
+
+
+@pytest.fixture(autouse=True)
+def _meal_app(isolated_app):
+    global _APP_UNDER_TEST
+    _APP_UNDER_TEST = isolated_app
+    yield
+    _APP_UNDER_TEST = None
+
+
+def _configure_meal_app(module, monkeypatch):
     monkeypatch.setattr(module, "NUTRITION_DATA", [])
     monkeypatch.setattr(module, "save_json", lambda *_a, **_kw: None)
     monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
@@ -138,7 +143,7 @@ def test_meal_intake_text_only_returns_pending_review_when_parser_is_confident(m
     """FIT-144 v2 capture: every text submission lands as pending_review and
     is finalized via /accept. The legacy high-confidence auto-log shortcut
     was removed by the FIT-138 + FIT-144 work."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Eggs and toast",
         "portion_description": None,
@@ -187,7 +192,7 @@ def test_meal_intake_text_only_returns_pending_review_when_parser_is_confident(m
 
 
 def test_canes_box_combo_aliases_stay_pending_with_ai_only_policy_warning(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     aliases = (
         "Raising Cane's Box Combo",
         "Raising Canes Box Combo",
@@ -231,7 +236,7 @@ def test_canes_box_combo_aliases_stay_pending_with_ai_only_policy_warning(monkey
 
 
 def test_canes_box_combo_unchanged_ai_only_accept_is_blocked_without_canonical_row(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -267,7 +272,7 @@ def test_canes_box_combo_unchanged_ai_only_accept_is_blocked_without_canonical_r
 
 
 def test_canes_box_combo_material_correction_preserves_ai_original(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -303,7 +308,7 @@ def test_canes_box_combo_material_correction_preserves_ai_original(monkeypatch):
 
 
 def test_canes_box_combo_policy_leaves_ordinary_accept_and_existing_blockers_unchanged(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
 
     ordinary = client.post(
@@ -323,7 +328,7 @@ def test_canes_box_combo_policy_leaves_ordinary_accept_and_existing_blockers_unc
 
 
 def test_canes_raw_alias_marker_survives_parser_rephrasing_and_blocks_accept(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -357,7 +362,7 @@ def test_canes_raw_alias_marker_survives_parser_rephrasing_and_blocks_accept(mon
 
 
 def test_canes_accept_requires_material_nutrition_correction(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -410,7 +415,7 @@ def test_canes_accept_requires_material_nutrition_correction(monkeypatch):
 
 
 def test_canes_omitted_optional_nutrition_cannot_unlock_legacy_accept(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -451,7 +456,7 @@ def test_canes_omitted_optional_nutrition_cannot_unlock_legacy_accept(monkeypatc
 
 
 def test_canes_omitted_optional_nutrition_cannot_unlock_explicit_items_accept(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -494,7 +499,7 @@ def test_canes_omitted_optional_nutrition_cannot_unlock_explicit_items_accept(mo
 
 
 def test_canes_explicit_material_sodium_fiber_and_calorie_corrections_succeed(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -534,7 +539,7 @@ def test_canes_explicit_material_sodium_fiber_and_calorie_corrections_succeed(mo
 
 
 def test_canes_natural_box_combo_phrasings_stay_pending_and_block_unchanged_accept(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     phrases = (
         "Raising Cane's 4-Finger Box Combo",
         "Cane's four finger box combo",
@@ -580,7 +585,7 @@ def test_canes_natural_box_combo_phrasings_stay_pending_and_block_unchanged_acce
 
 
 def test_canes_accept_rejects_forged_source_and_accepts_server_selected_candidate(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     source_backed_candidate = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
@@ -658,7 +663,7 @@ def test_canes_accept_rejects_forged_source_and_accepts_server_selected_candidat
 
 
 def test_canes_refresh_preserves_or_derives_marker_before_accept(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parser(text, **_kw):
         if text == "ordinary lunch":
@@ -716,7 +721,7 @@ def test_canes_refresh_preserves_or_derives_marker_before_accept(monkeypatch):
 
 
 def test_canes_followup_replacement_and_route_body_mismatch_cannot_bypass_marker(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parser(text, **_kw):
         if text == "followup answer":
@@ -775,7 +780,7 @@ def test_canes_followup_replacement_and_route_body_mismatch_cannot_bypass_marker
 
 
 def test_canes_material_refresh_clears_warning_but_unresolved_refresh_keeps_it(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parser(text, **_kw):
         calories = 890 if text == "material correction" else 840
@@ -811,7 +816,7 @@ def test_canes_material_refresh_clears_warning_but_unresolved_refresh_keeps_it(m
 
 
 def test_direct_accept_rejects_unsnapshotted_ai_canes_combo(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
 
     accept = client.post(
@@ -832,7 +837,7 @@ def test_direct_accept_rejects_unsnapshotted_ai_canes_combo(monkeypatch):
 
 
 def test_direct_accept_rejects_unsnapshotted_canes_text_with_innocuous_estimate(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
 
     accept = client.post(
@@ -855,7 +860,7 @@ def test_direct_accept_rejects_unsnapshotted_canes_text_with_innocuous_estimate(
 
 
 def test_direct_multi_accept_rejects_unsnapshotted_canes_item_text_atomically(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
 
     accept = client.post(
@@ -892,7 +897,7 @@ def test_direct_multi_accept_rejects_unsnapshotted_canes_item_text_atomically(mo
 
 
 def test_direct_accept_allows_unrelated_single_and_multi_meals(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
 
     single = client.post(
@@ -931,7 +936,7 @@ def test_direct_accept_allows_unrelated_single_and_multi_meals(monkeypatch):
 
 
 def test_direct_accept_rejects_forged_source_canes_combo_in_single_and_multi_shapes(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     forged = _accepted_estimate(
         item_name="Canes Box Combo",
@@ -960,7 +965,7 @@ def test_direct_accept_rejects_forged_source_canes_combo_in_single_and_multi_sha
 
 
 def test_canes_server_generated_source_backed_edit_and_followup_resolve_policy(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parser(text, **_kw):
         if text == "source-backed refresh":
@@ -1024,7 +1029,7 @@ def test_canes_server_generated_source_backed_edit_and_followup_resolve_policy(m
 
 
 def test_mixed_source_refresh_accept_exposes_current_provenance_at_public_boundaries(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parser(text, **_kw):
         if text == "mixed refresh":
@@ -1098,7 +1103,7 @@ def test_mixed_source_refresh_accept_exposes_current_provenance_at_public_bounda
 
 
 def test_imported_forged_canes_snapshot_cannot_grant_source_backed_accept(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -1148,7 +1153,7 @@ def test_imported_forged_canes_snapshot_cannot_grant_source_backed_accept(monkey
 
 
 def test_imported_ordinary_snapshot_cannot_erase_pending_canes_parent(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -1215,7 +1220,7 @@ def test_imported_ordinary_snapshot_cannot_erase_pending_canes_parent(monkeypatc
 
 
 def test_route_body_meal_id_cannot_bypass_imported_pending_canes_parent(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -1288,7 +1293,7 @@ def test_route_body_meal_id_cannot_bypass_imported_pending_canes_parent(monkeypa
 
 
 def test_imported_canes_snapshot_without_candidates_cannot_claim_source_backed(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     forged_estimate = _accepted_estimate(
@@ -1342,7 +1347,7 @@ def test_imported_canes_snapshot_without_candidates_cannot_claim_source_backed(m
 
 
 def test_imported_candidate_cannot_retain_client_source_backed_flag(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     candidate_estimate = _accepted_estimate(
@@ -1402,7 +1407,7 @@ def test_imported_candidate_cannot_retain_client_source_backed_flag(monkeypatch)
 
 
 def test_material_canes_correction_drops_forged_current_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -1459,7 +1464,7 @@ def test_material_canes_correction_drops_forged_current_provenance(monkeypatch):
 
 
 def test_snapshotless_canes_pending_row_uses_stored_ai_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -1525,7 +1530,7 @@ def test_snapshotless_canes_pending_row_uses_stored_ai_provenance(monkeypatch):
 
 
 def test_canes_personal_vocab_underlying_source_stays_untrusted(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -1563,7 +1568,7 @@ def test_canes_personal_vocab_underlying_source_stays_untrusted(monkeypatch):
 
 
 def test_snapshotless_canes_omitted_optional_nutrition_stays_blocked(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -1601,7 +1606,7 @@ def test_snapshotless_canes_omitted_optional_nutrition_stays_blocked(monkeypatch
 
 
 def test_snapshotless_canes_context_note_preserves_raw_alias_policy(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     client_id = "snapshotless-canes-context-note"
@@ -1642,7 +1647,7 @@ def test_snapshotless_canes_context_note_preserves_raw_alias_policy(monkeypatch)
 
 
 def test_snapshotless_pending_canes_parent_blocks_renamed_multi_accept(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -1703,7 +1708,7 @@ def test_snapshotless_pending_canes_parent_blocks_renamed_multi_accept(monkeypat
 
 
 def test_snapshotless_photo_assisted_canes_keeps_raw_alias_policy(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(
         monkeypatch,
         module,
@@ -1755,7 +1760,7 @@ def test_snapshotless_photo_assisted_canes_keeps_raw_alias_policy(monkeypatch):
 
 
 def test_snapshotless_source_backed_pending_canes_accepts_saved_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     client_id = "snapshotless-source-backed-canes"
@@ -1800,7 +1805,7 @@ def test_snapshotless_source_backed_pending_canes_accepts_saved_provenance(monke
 
 
 def test_snapshotless_source_backed_canes_material_correction_preserves_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     client_id = "snapshotless-source-backed-canes-material"
@@ -1849,7 +1854,7 @@ def test_snapshotless_source_backed_canes_material_correction_preserves_provenan
 
 
 def test_wrapped_mixed_accepted_estimate_round_trips_public_surfaces(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     wrapped = _accepted_estimate(
         item_name="Vision Canes Box Combo",
@@ -1895,7 +1900,7 @@ def test_wrapped_mixed_accepted_estimate_round_trips_public_surfaces(monkeypatch
 
 
 def test_personal_vocab_wrapped_mixed_provenance_is_untrusted_in_both_predicates(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     personal_wrapped = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
@@ -1909,7 +1914,7 @@ def test_personal_vocab_wrapped_mixed_provenance_is_untrusted_in_both_predicates
 
 
 def test_direct_provider_with_personal_vocab_underlying_component_is_untrusted(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     tainted = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
@@ -1923,7 +1928,7 @@ def test_direct_provider_with_personal_vocab_underlying_component_is_untrusted(m
 
 
 def test_direct_provider_with_invalid_mixed_marker_cannot_replace_current_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     invalid_mixed = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
@@ -1937,7 +1942,7 @@ def test_direct_provider_with_invalid_mixed_marker_cannot_replace_current_proven
 
 
 def test_honest_material_correction_restores_trusted_image_boolean(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     original = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=840,
@@ -1958,7 +1963,7 @@ def test_honest_material_correction_restores_trusted_image_boolean(monkeypatch):
 
 
 def test_material_canes_correction_strips_client_provenance_metadata(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -2012,7 +2017,7 @@ def test_material_canes_correction_strips_client_provenance_metadata(monkeypatch
 
 
 def test_ambiguous_direct_provider_cannot_accept_or_replace_terminal_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     original = _accepted_estimate(
@@ -2109,7 +2114,7 @@ def test_ambiguous_direct_provider_cannot_accept_or_replace_terminal_provenance(
 
 
 def test_snapshotless_legacy_source_backed_canes_uses_food_log_row_baseline(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     client_id = "snapshotless-legacy-source-backed-canes"
@@ -2160,7 +2165,7 @@ def test_snapshotless_legacy_source_backed_canes_uses_food_log_row_baseline(monk
 
 
 def test_import_invalid_current_estimates_preserve_terminal_mixed_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     original_estimate = _accepted_estimate(
         item_name="Canes Box Combo",
@@ -2237,7 +2242,7 @@ def test_import_invalid_current_estimates_preserve_terminal_mixed_provenance(mon
 
 
 def test_import_partial_approved_current_preserves_terminal_mixed_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     original_estimate = _accepted_estimate(
         item_name="Canes Box Combo",
@@ -2310,7 +2315,7 @@ def test_import_partial_approved_current_preserves_terminal_mixed_provenance(mon
 
 
 def test_history_correction_preserves_existing_mixed_current_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     original_estimate = _accepted_estimate(
         item_name="Canes Box Combo",
@@ -2388,7 +2393,7 @@ def test_history_correction_preserves_existing_mixed_current_provenance(monkeypa
 
 
 def test_legacy_top_level_canes_identity_blocks_component_snapshot_accept(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     components = [
         _accepted_estimate(
             item_name="Chicken fingers",
@@ -2461,7 +2466,7 @@ def test_legacy_top_level_canes_identity_blocks_component_snapshot_accept(monkey
 
 
 def test_imported_canes_candidate_cannot_reacquire_source_backed_trust(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     forged_candidate = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=1290,
@@ -2544,7 +2549,7 @@ def test_imported_canes_candidate_cannot_reacquire_source_backed_trust(monkeypat
 
 
 def test_legacy_top_level_canes_identity_blocks_explicit_component_accept(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     components = [
         _accepted_estimate(
             item_name="Chicken fingers",
@@ -2639,7 +2644,7 @@ def test_legacy_top_level_canes_identity_blocks_explicit_component_accept(monkey
 
 
 def test_manual_history_correction_preserves_mixed_current_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     original_estimate = _accepted_estimate(
         item_name="Canes Box Combo",
@@ -2716,7 +2721,7 @@ def test_manual_history_correction_preserves_mixed_current_provenance(monkeypatc
 
 
 def test_import_null_accepted_estimate_preserves_terminal_current_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     original_estimate = _accepted_estimate(
         item_name="Canes Box Combo",
@@ -2798,7 +2803,7 @@ def test_import_null_accepted_estimate_preserves_terminal_current_provenance(mon
 
 
 def test_mixed_vision_cached_lookups_preserve_effective_sources(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     matched = [
         (
             {"name": "Canes Box Combo", "brand": "Raising Cane's"},
@@ -2841,7 +2846,7 @@ def test_mixed_vision_cached_lookups_preserve_effective_sources(monkeypatch):
 
 
 def test_mixed_vision_nested_sources_flatten_with_cached_provider(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     matched = [
         (
             {"name": "Chicken"},
@@ -2876,7 +2881,7 @@ def test_mixed_vision_nested_sources_flatten_with_cached_provider(monkeypatch):
 
 
 def test_mixed_vision_personal_vocab_source_cannot_launder_approved_underlying_source(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     estimate = module._combine_vision_item_lookups(
         [
             (
@@ -2898,7 +2903,7 @@ def test_mixed_vision_personal_vocab_source_cannot_launder_approved_underlying_s
 
 
 def test_wrapped_mixed_vision_source_is_source_backed_without_trusting_personal_vocab(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     wrapped = _accepted_estimate(
         item_name="Vision Canes Box Combo",
         source="vision_claude+mixed_lookup",
@@ -2913,7 +2918,7 @@ def test_wrapped_mixed_vision_source_is_source_backed_without_trusting_personal_
 
 
 def test_canes_unverified_vision_capture_stays_pending_and_blocks_unchanged_accept(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(
         monkeypatch,
         module,
@@ -2972,7 +2977,7 @@ def test_canes_unverified_vision_capture_stays_pending_and_blocks_unchanged_acce
 
 
 def test_canes_server_produced_source_backed_vision_estimate_is_not_overblocked(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(
         monkeypatch,
         module,
@@ -3017,7 +3022,7 @@ def test_canes_server_produced_source_backed_vision_estimate_is_not_overblocked(
 
 
 def test_photo_assisted_canes_source_backed_refresh_redacts_pending_context(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(
         monkeypatch,
         module,
@@ -3085,7 +3090,7 @@ def test_photo_assisted_canes_source_backed_refresh_redacts_pending_context(monk
 
 
 def test_mixed_vision_lookup_source_trust_requires_complete_approved_components(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     matched = [
         ({"name": "Chicken"}, _accepted_estimate(item_name="Chicken", source="nutritionix"), "Chicken"),
         ({"name": "Fries"}, _accepted_estimate(item_name="Fries", source="usda_fdc"), "Fries"),
@@ -3109,7 +3114,7 @@ def test_mixed_vision_lookup_source_trust_requires_complete_approved_components(
 
 
 def test_legacy_snapshot_marker_fallback_blocks_ai_and_allows_source_backed(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parser(text, **_kw):
         source = "nutritionix" if text == "verified legacy" else "ai_text_estimate"
@@ -3151,7 +3156,7 @@ def test_legacy_snapshot_marker_fallback_blocks_ai_and_allows_source_backed(monk
 
 
 def test_mixed_accept_persists_current_provenance_without_mutating_ai_original(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     original = _accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate")
     mixed = _accepted_estimate(item_name="Canes Box Combo", calories=920, source="mixed_lookup", underlying_source="mixed_lookup", underlying_sources=["nutritionix", "usda_fdc"])
@@ -3164,7 +3169,7 @@ def test_mixed_accept_persists_current_provenance_without_mutating_ai_original(m
 
 
 def test_malformed_mixed_sources_are_not_persisted_or_trusted(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     for sources in ([], ["nutritionix", 3], ["nutritionix", "ai_text_estimate"]):
         estimate = _accepted_estimate(source="mixed_lookup", underlying_source="mixed_lookup", underlying_sources=sources)
         assert module._is_source_backed_nutrition(estimate) is False
@@ -3173,7 +3178,7 @@ def test_malformed_mixed_sources_are_not_persisted_or_trusted(monkeypatch):
 
 
 def test_canes_component_items_inherit_top_level_ai_only_marker(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     component_items = [
         {
             "item_id": "chicken",
@@ -3231,7 +3236,7 @@ def test_canes_component_items_inherit_top_level_ai_only_marker(monkeypatch):
 
 
 def test_canes_source_backed_component_items_are_not_overblocked(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -3276,7 +3281,7 @@ def test_canes_source_backed_component_items_are_not_overblocked(monkeypatch):
 
 
 def test_canes_add_item_raw_alias_survives_parser_rephrasing(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parser(text, **_kw):
         if text == "Canes Box Combo":
@@ -3320,7 +3325,7 @@ def test_canes_add_item_raw_alias_survives_parser_rephrasing(monkeypatch):
 
 
 def test_canes_edit_portion_raw_alias_survives_parser_rephrasing(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parser(text, **_kw):
         if text == "Canes Box Combo":
@@ -3369,7 +3374,7 @@ def test_canes_edit_portion_raw_alias_survives_parser_rephrasing(monkeypatch):
 
 
 def test_canes_followup_raw_alias_survives_parser_rephrasing(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parser(text, **_kw):
         if text == "Canes Box Combo":
@@ -3420,7 +3425,7 @@ def test_canes_followup_raw_alias_survives_parser_rephrasing(monkeypatch):
 
 
 def test_meal_intake_preserves_open_food_facts_attribution(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Walkers Crisps",
         "portion_description": "100 g",
@@ -3472,7 +3477,7 @@ def test_meal_intake_preserves_open_food_facts_attribution(monkeypatch):
 
 
 def test_meal_intake_text_pending_review_when_parser_ambiguous(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Popcorn",
         "portion_description": "approx half portion",
@@ -3516,7 +3521,7 @@ def test_meal_intake_text_pending_review_when_parser_falls_back(monkeypatch):
     """When LM Studio is unavailable the parser returns a fallback
     estimate; the endpoint must not auto-log it because the fallback
     confidence is intentionally below the auto-log threshold."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Eggs and toast",
         "portion_description": None,
@@ -3561,7 +3566,7 @@ def test_meal_intake_text_idempotent_for_same_client_id(monkeypatch):
     asserts the contract from the parser path's perspective: same client_id
     + same text returns the same logged shape both times.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Protein shake",
         "portion_description": None,
@@ -3614,7 +3619,7 @@ def test_meal_intake_text_idempotent_for_same_client_id(monkeypatch):
 
 def test_meal_intake_pending_retry_does_not_downgrade_accepted_row(monkeypatch):
     """A stale retry of the original pending POST must not undo accept."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Popcorn",
         "portion_description": "shared",
@@ -3655,7 +3660,7 @@ def test_meal_intake_pending_retry_does_not_downgrade_accepted_row(monkeypatch):
 
 def test_meal_intake_late_parser_result_preserves_concurrent_accept(monkeypatch):
     """A parser that finishes after accept must replay the terminal row."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client_id = "meal-race-accepted"
     today = module._today_str()
 
@@ -3727,7 +3732,7 @@ def test_meal_intake_late_parser_result_preserves_concurrent_accept(monkeypatch)
 
 
 def test_food_log_terminal_rows_reject_pending_but_allow_terminal_refresh(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client_id = "terminal-refresh-row"
     today = module._today_str()
 
@@ -3761,7 +3766,7 @@ def test_meal_intake_text_response_omits_meta_and_traces(monkeypatch):
     """No _meta, raw model output, or chain of thought may appear in the
     response shape exposed to the client.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Protein shake",
         "portion_description": None,
@@ -3793,7 +3798,7 @@ def test_meal_intake_text_response_omits_meta_and_traces(monkeypatch):
 
 
 def test_meal_intake_text_response_includes_public_fallback_reason(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -3834,7 +3839,7 @@ def test_meal_intake_text_response_includes_public_fallback_reason(monkeypatch):
 
 
 def test_review_estimate_from_text_preserves_public_fallback_reason(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parse(_text, **_kw):
         return {
@@ -3874,7 +3879,7 @@ def test_review_estimate_from_text_preserves_public_fallback_reason(monkeypatch)
 
 
 def test_review_sanitize_estimate_drops_malformed_fallback_reason(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     estimate = module._review_sanitize_estimate({
         "item_name": "Eggs and toast",
@@ -3898,7 +3903,7 @@ def test_review_sanitize_estimate_drops_malformed_fallback_reason(monkeypatch):
 
 
 def test_meal_intake_rejects_empty_submission(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
 
     res = module.app.test_client().post(
@@ -3912,7 +3917,7 @@ def test_meal_intake_rejects_empty_submission(monkeypatch):
 
 
 def test_meal_intake_requires_client_id(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
 
     res = module.app.test_client().post(
@@ -3926,7 +3931,7 @@ def test_meal_intake_requires_client_id(monkeypatch):
 
 def test_meal_intake_image_only_returns_pending_review(monkeypatch):
     """FIT-144 v2 capture: image-only submissions land as pending_review."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     captured = {}
     _stub_vision(monkeypatch, module)
 
@@ -3960,7 +3965,7 @@ def test_meal_intake_image_only_returns_pending_review(monkeypatch):
 
 
 def test_meal_intake_bill_miller_cart_uses_structured_item_lookups(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "_current_data_user_id", lambda: 42)
     lookup_queries = []
     persisted = {}
@@ -4067,7 +4072,7 @@ def test_meal_intake_bill_miller_cart_uses_structured_item_lookups(monkeypatch):
 
 
 def test_meal_intake_single_structured_item_applies_top_level_portion_hint(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     lookup_queries = []
     vision = {
         "provider": "lm_studio",
@@ -4136,7 +4141,7 @@ def test_meal_intake_single_structured_item_applies_top_level_portion_hint(monke
 
 
 def test_meal_intake_single_structured_item_applies_user_portion_modifier(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     lookup_queries = []
     vision = {
         "provider": "lm_studio",
@@ -4189,7 +4194,7 @@ def test_meal_intake_single_structured_item_applies_user_portion_modifier(monkey
 
 
 def test_meal_intake_structured_cart_truncated_items_force_review(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     lookup_queries = []
     vision = {
         "provider": "lm_studio",
@@ -4249,7 +4254,7 @@ def test_meal_intake_capture_does_not_fire_vocab_learning_under_fit138(monkeypat
     """FIT-138: vocab learning previously fired on the auto-log capture path.
     With the capture flow routed to review before save, vocab learning is
     handled by /accept instead and must NOT fire from /api/meal-intake."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(monkeypatch, module)
     vocab_calls = []
     claims = []
@@ -4284,7 +4289,7 @@ def test_meal_intake_capture_does_not_fire_vocab_learning_under_fit138(monkeypat
 
 
 def test_meal_intake_image_text_is_preserved_as_brand_hint(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "_current_data_user_id", lambda: 42)
     monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [])
     captured = {}
@@ -4342,7 +4347,7 @@ def test_meal_intake_image_text_is_preserved_as_brand_hint(monkeypatch):
 
 
 def test_meal_intake_image_text_respects_direct_lookup_guard(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     vision = {
         "provider": "claude",
         "item_description": "Chipotle chicken burrito",
@@ -4377,7 +4382,7 @@ def test_meal_intake_image_text_respects_direct_lookup_guard(monkeypatch):
 
 
 def test_meal_intake_image_lookup_confidence_is_capped_by_vision(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     persisted = []
     _stub_vision(
         monkeypatch,
@@ -4443,7 +4448,7 @@ def test_meal_intake_image_lookup_confidence_is_capped_by_vision(monkeypatch):
 
 
 def test_meal_intake_image_invalid_macro_estimate_falls_to_manual_review(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     persisted = []
     _stub_vision(
         monkeypatch,
@@ -4483,7 +4488,7 @@ def test_meal_intake_image_invalid_macro_estimate_falls_to_manual_review(monkeyp
 
 
 def test_meal_intake_image_lookup_failure_falls_back_to_macro_estimate(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(
         monkeypatch,
         module,
@@ -4531,7 +4536,7 @@ def test_meal_intake_image_lookup_failure_falls_back_to_macro_estimate(monkeypat
 
 
 def test_meal_intake_image_label_ocr_uses_higher_confidence_cap(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(
         monkeypatch,
         module,
@@ -4576,7 +4581,7 @@ def test_meal_intake_image_label_ocr_uses_higher_confidence_cap(monkeypatch):
 
 
 def test_meal_intake_image_preserves_cached_underlying_source(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     captured = {}
     _stub_vision(
         monkeypatch,
@@ -4623,7 +4628,7 @@ def test_meal_intake_image_preserves_cached_underlying_source(monkeypatch):
 
 
 def test_meal_intake_rejects_oversize_image(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
 
     big = io.BytesIO(b"\0" * (6 * 1024 * 1024 + 1))
@@ -4640,7 +4645,7 @@ def test_meal_intake_rejects_oversize_image(monkeypatch):
 
 
 def test_meal_intake_rejects_non_image_upload(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
 
     res = module.app.test_client().post(
@@ -4656,7 +4661,7 @@ def test_meal_intake_rejects_non_image_upload(monkeypatch):
 
 
 def test_meal_intake_rejects_unsupported_image_type_before_provider(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(
         module.vision_estimator,
         "describe",
@@ -4677,7 +4682,7 @@ def test_meal_intake_rejects_unsupported_image_type_before_provider(monkeypatch)
 
 
 def test_meal_intake_image_provider_failure_uses_text_fallback(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(
         module.vision_estimator,
         "describe",
@@ -4717,7 +4722,7 @@ def test_meal_intake_image_provider_failure_uses_text_fallback(monkeypatch):
 
 
 def test_meal_intake_vision_contention_logs_distinct_tag(monkeypatch, caplog):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(
         module.vision_estimator,
         "describe",
@@ -4762,7 +4767,7 @@ def test_meal_intake_vision_contention_logs_distinct_tag(monkeypatch, caplog):
 
 
 def test_meal_intake_image_merge_exception_uses_text_fallback(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(
         monkeypatch,
         module,
@@ -4809,7 +4814,7 @@ def test_meal_intake_image_merge_exception_uses_text_fallback(monkeypatch):
 
 
 def test_meal_intake_image_provider_failure_handles_text_parser_exception(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(
         module.vision_estimator,
         "describe",
@@ -4846,7 +4851,7 @@ def test_meal_intake_image_provider_failure_handles_text_parser_exception(monkey
 
 
 def test_meal_intake_image_provider_failure_marks_malformed_text_parser_output(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(
         module.vision_estimator,
         "describe",
@@ -4885,7 +4890,7 @@ def test_meal_intake_image_provider_failure_marks_malformed_text_parser_output(m
 
 
 def test_meal_intake_image_provider_failure_preserves_photo_origin_after_pending_reload(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(
         module.vision_estimator,
         "describe",
@@ -4953,7 +4958,7 @@ def test_meal_intake_image_provider_failure_preserves_photo_origin_after_pending
 
 
 def test_meal_intake_image_provider_failure_without_text_returns_clear_error(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(
         module.vision_estimator,
         "describe",
@@ -4977,7 +4982,7 @@ def test_meal_intake_image_provider_failure_without_text_returns_clear_error(mon
 
 
 def test_meal_intake_accept_sanitizes_original_estimate_before_persist(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     persisted = {}
 
     def fake_add_food_log(_user_id, record):
@@ -5030,7 +5035,7 @@ def test_meal_intake_accept_sanitizes_original_estimate_before_persist(monkeypat
 
 
 def test_meal_intake_accept_filters_preserved_metadata_before_persist(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     persisted = {}
 
     def fake_add_food_log(_user_id, record):
@@ -5081,7 +5086,7 @@ def test_meal_intake_accept_filters_preserved_metadata_before_persist(monkeypatc
 
 
 def test_meal_intake_undo_calls_delete_helper(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
     monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [])
 
@@ -5102,7 +5107,7 @@ def test_meal_intake_undo_calls_delete_helper(monkeypatch):
 
 
 def test_meal_intake_undo_removes_food_log_only_entry_and_is_idempotent(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     _add_food_log("food-log-only-delete-me")
     module.NUTRITION_DATA[:] = [
@@ -5131,7 +5136,7 @@ def test_meal_intake_undo_removes_food_log_only_entry_and_is_idempotent(monkeypa
 
 
 def test_meal_intake_undo_returns_not_found_when_missing(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
     monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [])
     monkeypatch.setattr(module, "delete_food_log_by_client_id", lambda *_a, **_kw: False)
@@ -5142,7 +5147,7 @@ def test_meal_intake_undo_returns_not_found_when_missing(monkeypatch):
 
 
 def test_meal_intake_undo_removes_legacy_nutrition_row_by_client_id(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
     monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [])
     monkeypatch.setattr(module, "delete_food_log_by_client_id", lambda *_a, **_kw: False)
@@ -5173,7 +5178,7 @@ def test_meal_intake_undo_removes_legacy_nutrition_row_by_client_id(monkeypatch)
 
 
 def test_meal_intake_undo_removes_dual_write_food_log_and_legacy_entry(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     _add_food_log("dual-write-delete-me", calories=500)
     _add_food_log("food-log-keep-me", calories=700)
@@ -5201,7 +5206,7 @@ def test_meal_intake_undo_removes_dual_write_food_log_and_legacy_entry(monkeypat
 
 
 def test_meal_intake_pending_discard_does_not_delete_accepted_row(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
     monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [{
         "client_id": "meal-accepted-elsewhere",
@@ -5223,7 +5228,7 @@ def test_meal_intake_pending_discard_does_not_delete_accepted_row(monkeypatch):
 
 
 def test_meal_intake_accept_persists_estimate(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     captured = {}
 
     def fake_add_food_log(_user_id, record):
@@ -5258,7 +5263,7 @@ def test_meal_intake_accept_persists_estimate(monkeypatch):
 
 
 def test_direct_accept_ignores_client_asserted_correction_state(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     captured = {}
     monkeypatch.setattr(
         module,
@@ -5281,7 +5286,7 @@ def test_direct_accept_ignores_client_asserted_correction_state(monkeypatch):
 
 
 def test_duplicate_accept_with_changed_payload_keeps_original_accepted_row(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     first = client.post(
         "/api/meal-intake/duplicate-accept/accept",
@@ -5302,7 +5307,7 @@ def test_duplicate_accept_with_changed_payload_keeps_original_accepted_row(monke
 
 
 def test_duplicate_accept_cannot_claim_refresh_authority_from_request_metadata(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     first = client.post(
         "/api/meal-intake/client-refresh-claim/accept",
@@ -5328,7 +5333,7 @@ def test_duplicate_accept_cannot_claim_refresh_authority_from_request_metadata(m
 
 
 def test_legacy_corrected_duplicate_uses_current_row_and_stored_image_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     original = _accepted_estimate(calories=400, source="ai_text_estimate", from_image=True)
     current = _accepted_estimate(calories=500, source="manual_review_estimate")
     stored = data_store.add_food_log(
@@ -5354,7 +5359,7 @@ def test_legacy_corrected_duplicate_uses_current_row_and_stored_image_provenance
 
 
 def test_legacy_duplicate_rejects_request_asserted_image_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     current = _accepted_estimate(calories=500, source="manual_review_estimate")
     data_store.add_food_log(
         1,
@@ -5379,7 +5384,7 @@ def test_legacy_duplicate_rejects_request_asserted_image_provenance(monkeypatch)
 
 
 def test_fresh_legacy_accept_does_not_infer_image_from_client_source(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     estimate = _accepted_estimate(
         source="vision_forged",
@@ -5409,7 +5414,7 @@ def test_fresh_legacy_accept_does_not_infer_image_from_client_source(monkeypatch
 
 
 def test_legacy_pending_accept_uses_stored_provenance_and_capture_fields(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client_id = "legacy-pending-stored-provenance"
     estimate = _accepted_estimate(
@@ -5466,7 +5471,7 @@ def test_legacy_pending_accept_uses_stored_provenance_and_capture_fields(monkeyp
 
 
 def test_legacy_pending_meal_type_edit_preserves_stored_nutrition_provenance(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client_id = "legacy-pending-meal-type"
     estimate = _accepted_estimate(
@@ -5516,7 +5521,7 @@ def test_legacy_pending_meal_type_edit_preserves_stored_nutrition_provenance(mon
 
 
 def test_legacy_pending_accept_rejects_concurrent_refresh(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client_id = "legacy-pending-race"
     original_estimate = _accepted_estimate(item_name="Original", calories=300)
@@ -5560,7 +5565,7 @@ def test_legacy_pending_accept_rejects_concurrent_refresh(monkeypatch, tmp_path)
 
 
 def test_legacy_accept_rejects_pending_row_created_after_empty_preflight(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client_id = "legacy-new-pending-race"
     submitted_estimate = _accepted_estimate(item_name="Submitted", calories=300)
@@ -5601,7 +5606,7 @@ def test_legacy_accept_rejects_pending_row_created_after_empty_preflight(monkeyp
 
 
 def test_race_conflict_legacy_row_uses_current_values_and_stored_image_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     original = _accepted_estimate(calories=400, source="ai_text_estimate")
     current = _accepted_estimate(calories=500, source="manual_review_estimate")
     conflict_row = {
@@ -5632,7 +5637,7 @@ def test_direct_protected_conflict_rolls_back_pending_child_cleanup(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client_id = "direct-manual-conflict"
     child_id = "direct-manual-conflict-pending-child"
@@ -5677,7 +5682,7 @@ def test_direct_protected_conflict_rolls_back_pending_child_cleanup(
 
 
 def test_identical_direct_retry_repairs_accept_side_effects(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client_id = "direct-retry-side-effects"
     estimate = _accepted_estimate(item_name="Retry side effects", calories=300)
@@ -5721,7 +5726,7 @@ def test_identical_direct_retry_repairs_accept_side_effects(monkeypatch, tmp_pat
 
 
 def test_protected_food_log_accept_is_atomic_across_connections(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
@@ -5747,7 +5752,7 @@ def test_protected_food_log_accept_is_atomic_across_connections(monkeypatch):
 
 
 def test_concurrent_identical_food_log_accepts_are_idempotent(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
@@ -5774,7 +5779,7 @@ def test_concurrent_identical_food_log_accepts_are_idempotent(monkeypatch):
 
 
 def test_concurrent_identical_corrected_accepts_are_idempotent(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
@@ -5813,7 +5818,7 @@ def test_concurrent_identical_corrected_accepts_are_idempotent(monkeypatch):
 
 
 def test_meal_intake_accept_uses_vision_description_for_image_only_vocab(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     vocab_calls = []
     monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: True)
     monkeypatch.setattr(module.personal_vocab, "record_accept", lambda *args, **_kw: vocab_calls.append(args))
@@ -5849,7 +5854,7 @@ def test_meal_intake_accept_uses_vision_description_for_image_only_vocab(monkeyp
 
 
 def test_meal_intake_client_correction_flag_does_not_train_as_correction(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     vocab_calls = []
     monkeypatch.setattr(module, "claim_food_log_vocab_learning", lambda *_a, **_kw: True)
     monkeypatch.setattr(module.personal_vocab, "record_accept", lambda *args, **_kw: vocab_calls.append(args))
@@ -5887,7 +5892,7 @@ def test_meal_intake_client_correction_flag_does_not_train_as_correction(monkeyp
 
 
 def test_meal_intake_accept_requires_calories(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
 
     res = module.app.test_client().post(
@@ -5904,7 +5909,7 @@ def test_meal_intake_accept_persists_sodium_and_meal_type_from_review_card(monke
     the user-confirmed sodium and meal time values into the day's nutrition
     totals. Regression-guards the AC1 "sodium" and AC3 "meal time" edit fields.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     captured = {}
 
     def fake_add_food_log(_user_id, record):
@@ -5951,7 +5956,7 @@ def test_meal_intake_accept_rejects_invalid_meal_type_from_review_card(monkeypat
     values. A bogus meal_type submitted via the review card payload must
     fail schema validation, not silently coerce to a default.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
 
     res = module.app.test_client().post(
@@ -5981,7 +5986,7 @@ def test_meal_intake_pending_response_exposes_policy_block_for_review_card(monke
     backend's _POLICY_REASON_NOTES; this test guards the contract by
     asserting the policy block is present with the expected shape.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Burrito",
         "portion_description": None,
@@ -6027,7 +6032,7 @@ def test_meal_intake_pending_response_exposes_source_for_review_card(monkeypatch
     parser, or a fallback preset. Source presence in the pending
     response is the contract this test guards.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Burrito",
         "portion_description": None,
@@ -6114,7 +6119,7 @@ def test_meal_intake_text_stores_logged_at_as_naive_local(monkeypatch):
     is persisted as a naive ISO (no offset) so downstream local-hour
     extractors see the user's actual hour.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Protein shake",
         "portion_description": None,
@@ -6199,7 +6204,7 @@ def test_meal_intake_text_preserves_client_local_timestamp(monkeypatch):
     `logged_at`/`source_timestamp` rather than stamping server time.
     FIT-59 acceptance: optional local timestamp.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Protein shake",
         "portion_description": None,
@@ -6254,7 +6259,7 @@ def test_meal_intake_text_preserves_client_local_timestamp(monkeypatch):
 
 
 def test_meal_intake_prefers_browser_local_date_and_iso_over_utc_timestamp(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Late protein shake",
         "portion_description": None,
@@ -6298,7 +6303,7 @@ def test_meal_intake_prefers_browser_local_date_and_iso_over_utc_timestamp(monke
 def test_meal_intake_text_falls_back_to_server_time_when_local_timestamp_absent(monkeypatch):
     """When the client does not send a local_timestamp, persistence
     should fall back to server now (existing behavior preserved)."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Protein shake",
         "portion_description": None,
@@ -6333,7 +6338,7 @@ def test_meal_intake_text_falls_back_to_server_time_when_local_timestamp_absent(
 
 
 def test_meal_intake_text_rejects_oversize_local_timestamp(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
 
     res = module.app.test_client().post(
@@ -6353,7 +6358,7 @@ def test_meal_intake_text_passes_local_timestamp_through_to_parser(monkeypatch):
     """The parser receives ``timestamp=`` so it can future-use the signal
     (e.g. meal-type inference). FIT-59 acceptance.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     seen = {}
 
     def fake_parse(text, *, timestamp=None, user_id=None):
@@ -6391,7 +6396,7 @@ def test_meal_intake_text_passes_local_timestamp_through_to_parser(monkeypatch):
 
 def test_meal_intake_accept_persists_parser_source_when_present(monkeypatch):
     """A fresh accept cannot assert parser provenance without stored state."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     captured = {}
 
     def fake_add_food_log(_user_id, record):
@@ -6435,7 +6440,7 @@ def test_meal_intake_response_surfaces_policy_band_and_reasons(monkeypatch):
     but the response status is pending_review because the capture path now
     always routes to review before save.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Eggs and toast",
         "portion_description": None,
@@ -6470,7 +6475,7 @@ def test_meal_intake_implausible_macros_force_pending_review(monkeypatch):
     """Even at high confidence, macro-out-of-range estimates must be held
     for review. FIT-61 policy: backend enforces, not UI copy.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     # Parser returns plausible-looking confidence but absurd calories.
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Mystery dish",
@@ -6505,7 +6510,7 @@ def test_meal_intake_implausible_macros_force_pending_review(monkeypatch):
 def test_meal_intake_medium_confidence_falls_to_pending(monkeypatch):
     """Confidence 0.6 (the FIT-59 deterministic-fallback ceiling) must
     fall to pending review under FIT-61's 0.75 auto-log threshold."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Eggs and toast",
         "portion_description": None,
@@ -6537,7 +6542,7 @@ def test_meal_intake_medium_confidence_falls_to_pending(monkeypatch):
 
 
 def test_meal_intake_pending_response_round_trips_browser_local_time(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Eggs and toast",
         "portion_description": None,
@@ -6579,7 +6584,7 @@ def test_meal_intake_pending_response_round_trips_browser_local_time(monkeypatch
 
 
 def test_meal_intake_accept_honors_pending_submission_browser_local_time(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     captured = {}
 
     def fake_add_food_log(_user_id, record):
@@ -6628,7 +6633,7 @@ def test_meal_intake_submit_persists_with_pending_review_state(monkeypatch):
     FIT-138 + FIT-144: the legacy high-confidence auto-log shortcut is
     removed from the capture path; review-before-save holds universally.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Protein shake",
         "portion_description": None,
@@ -6666,7 +6671,7 @@ def test_nutrition_today_excludes_pending_review_entries_from_totals(monkeypatch
     pending_review_count but never roll into calories/protein/etc.
     This is what makes "save as pending review" actually safe.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     today = module._today_str()
     # Mix: one accepted (counts), one pending (doesn't), one legacy (counts).
     fake_logs = [
@@ -6712,7 +6717,7 @@ def test_meal_intake_pending_response_surfaces_policy_reasons_as_notes(monkeypat
     be translated into human-readable notes so the user sees an
     explanation — not just an empty card with no rationale.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     # Estimate that the parser would consider clean — confidence 0.60
     # lands in the new MEDIUM band, where uncertainty_notes from the
     # parser is empty. The policy must add a note so the UI can render it.
@@ -6750,7 +6755,7 @@ def test_meal_intake_policy_notes_do_not_duplicate_existing_uncertainty(monkeypa
     """When the parser already surfaced an ambiguity note, the policy's
     translated note for the same code must not be duplicated.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     existing_note = "Portion or items are unclear — confirm before it counts."
     _stub_parser(monkeypatch, module, estimate={
         "item_name": "Popcorn",
@@ -6787,7 +6792,7 @@ def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
     inside that dict for the policy to route shared/unclear photos to pending
     review.
     """
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     persisted = []
     _stub_vision(
         monkeypatch,
@@ -6849,7 +6854,7 @@ def test_meal_intake_image_with_ambiguous_text_falls_to_pending(monkeypatch):
 def test_nutrition_today_surfaces_pending_review_count(monkeypatch):
     """Pending entries must be counted separately so freshness UI can
     surface them ("3 meals awaiting review")."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     today = module._today_str()
     fake_logs = [
         {"id": 1, "client_id": "a", "date": today, "logged_at": f"{today}T08:00:00",
@@ -6873,9 +6878,19 @@ def test_nutrition_today_surfaces_pending_review_count(monkeypatch):
 
 def test_meal_intake_pending_endpoint_lists_visible_rows_and_cleans_stale(monkeypatch):
     """FIT-67: pending rows are durable, reloadable, and TTL-cleaned."""
-    module = _client(monkeypatch)
-    today = module.datetime.now().date()
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
+    real_datetime = module.datetime
+    frozen_now = real_datetime(2026, 7, 15, 23, 59, 59)
+
+    class FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_now
+
+    monkeypatch.setattr(module, "datetime", FrozenDateTime)
+    today = module.datetime.strptime(module._today_str(), "%Y-%m-%d").date()
     visible_day = today.isoformat()
+    boundary_day = (today - module.timedelta(days=module.PENDING_MEAL_REVIEW_TTL_DAYS)).isoformat()
     stale_day = (today - module.timedelta(days=module.PENDING_MEAL_REVIEW_TTL_DAYS + 1)).isoformat()
     visible_estimate = {
         "item_name": "Shared popcorn",
@@ -6898,6 +6913,14 @@ def test_meal_intake_pending_endpoint_lists_visible_rows_and_cleans_stale(monkey
             "date": visible_day,
             "logged_at": f"{visible_day}T12:30:00",
             "context_note": "shared popcorn",
+            "correction_state": "pending_review",
+            "original_estimate": dict(visible_estimate),
+        },
+        {
+            "client_id": "meal-boundary-pending",
+            "date": boundary_day,
+            "logged_at": f"{boundary_day}T12:30:00",
+            "context_note": "boundary popcorn",
             "correction_state": "pending_review",
             "original_estimate": dict(visible_estimate),
         },
@@ -6926,19 +6949,26 @@ def test_meal_intake_pending_endpoint_lists_visible_rows_and_cleans_stale(monkey
     assert res.status_code == 200
     body = res.get_json()
 
-    assert body["pending_count"] == 1
+    assert body["pending_count"] == 2
     assert body["ttl_days"] == module.PENDING_MEAL_REVIEW_TTL_DAYS
     assert body["stale_removed"] == 1
     assert deleted == ["meal-stale-pending"]
-    assert body["pending"][0]["client_id"] == "meal-visible-pending"
-    assert body["pending"][0]["estimate"]["item_name"] == "Shared popcorn"
-    assert body["pending"][0]["text_hint"] == "shared popcorn"
-    assert body["pending"][0]["policy"]["reasons"], "pending payload should include review rationale"
+    assert {entry["client_id"] for entry in body["pending"]} == {
+        "meal-visible-pending",
+        "meal-boundary-pending",
+    }
+    visible = next(
+        entry for entry in body["pending"]
+        if entry["client_id"] == "meal-visible-pending"
+    )
+    assert visible["estimate"]["item_name"] == "Shared popcorn"
+    assert visible["text_hint"] == "shared popcorn"
+    assert visible["policy"]["reasons"], "pending payload should include review rationale"
 
 
 def test_meal_intake_pending_endpoint_restores_photo_origin_marker(monkeypatch):
-    module = _client(monkeypatch)
-    today = module.datetime.now().date().isoformat()
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
+    today = module._today_str()
     estimate = {
         "item_name": "Photo meal",
         "calories": 400,
@@ -6967,7 +6997,7 @@ def test_meal_intake_pending_endpoint_restores_photo_origin_marker(monkeypatch):
 
 
 def test_multi_item_accept_persists_included_rows_and_totals_only(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
 
@@ -7054,7 +7084,7 @@ def test_multi_item_accept_persists_included_rows_and_totals_only(monkeypatch, t
 
 
 def test_unsnapshotted_multi_accept_ignores_client_correction_claims(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     accepted_calls = []
     corrected_calls = []
@@ -7096,7 +7126,7 @@ def test_unsnapshotted_multi_accept_ignores_client_correction_claims(monkeypatch
 
 
 def test_concurrent_changed_multi_accepts_cannot_overwrite_terminal_row(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -7137,7 +7167,7 @@ def test_concurrent_changed_multi_accepts_cannot_overwrite_terminal_row(monkeypa
 
 
 def test_concurrent_disjoint_item_sets_cannot_share_a_meal_id(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -7172,7 +7202,7 @@ def test_concurrent_disjoint_item_sets_cannot_share_a_meal_id(monkeypatch, tmp_p
 
 
 def test_concurrent_identical_multi_replay_records_negative_feedback_once(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -7212,7 +7242,7 @@ def test_concurrent_identical_multi_replay_records_negative_feedback_once(monkey
 
 
 def test_concurrent_identical_pending_multi_accepts_return_canonical_success(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier, Lock
@@ -7272,7 +7302,7 @@ def test_concurrent_identical_pending_multi_accepts_return_canonical_success(mon
 
 
 def test_concurrent_identical_snapshot_accepts_return_canonical_success(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event, Lock
@@ -7340,7 +7370,7 @@ def test_concurrent_identical_snapshot_accepts_return_canonical_success(monkeypa
 
 
 def test_concurrent_identical_discarded_meal_records_negative_feedback_once(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -7375,7 +7405,7 @@ def test_concurrent_identical_discarded_meal_records_negative_feedback_once(monk
 
 
 def test_multi_accept_preflights_all_terminal_conflicts_before_writing(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "multi-preflight-parent"
     meal_id = "multi-preflight-meal"
@@ -7423,7 +7453,7 @@ def test_multi_accept_preflights_all_terminal_conflicts_before_writing(monkeypat
 
 
 def test_multi_accept_rolls_back_earlier_rows_on_late_atomic_conflict(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     original_persist = module._meal_intake_persist
     calls = 0
@@ -7469,7 +7499,7 @@ def test_multi_accept_rolls_back_earlier_rows_on_late_atomic_conflict(monkeypatc
 
 
 def test_multi_accept_rolls_back_rows_when_vocab_learning_fails(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     module.app.config.update(PROPAGATE_EXCEPTIONS=False)
     monkeypatch.setattr(
@@ -7499,7 +7529,7 @@ def test_multi_accept_rolls_back_rows_when_vocab_learning_fails(monkeypatch, tmp
 
 
 def test_equivalent_multi_item_client_id_cannot_move_to_another_meal(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "multi-meal-identity-parent"
     item = {
@@ -7524,7 +7554,7 @@ def test_equivalent_multi_item_client_id_cannot_move_to_another_meal(monkeypatch
 
 
 def test_multi_item_accept_blocks_unsaved_review_item_without_snapshot(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
     meal_id = "photo-meal-noenap-1"
@@ -7560,7 +7590,7 @@ def test_multi_item_accept_blocks_unsaved_review_item_without_snapshot(monkeypat
 
 
 def test_multi_item_accept_persists_clear_item_without_snapshot(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
 
@@ -7589,7 +7619,7 @@ def test_multi_item_accept_persists_clear_item_without_snapshot(monkeypatch, tmp
 
 
 def test_multi_item_accept_blocked_sibling_prevents_partial_persist(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
 
@@ -7628,7 +7658,7 @@ def test_multi_item_accept_blocked_sibling_prevents_partial_persist(monkeypatch,
 
 
 def test_multi_item_accept_blocked_new_sibling_rejected_when_event_missing(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
     meal_id = "photo-meal-partial-event-missing"
@@ -7680,7 +7710,7 @@ def test_multi_item_accept_blocked_new_sibling_rejected_when_event_missing(monke
 
 
 def test_multi_item_accept_preserves_blocked_fallback_id_when_event_missing(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
     meal_id = "photo-meal-partial-fallback-id"
@@ -7718,7 +7748,7 @@ def test_multi_item_accept_preserves_blocked_fallback_id_when_event_missing(monk
 
 
 def test_snapshot_path_blocked_item_still_409(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
     meal_id = "meal-snapshot-blocked-1"
@@ -7766,7 +7796,7 @@ def test_review_snapshot_refresh_writes_pending_row_and_snapshot_in_one_transact
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     connections = {}
     estimate = _accepted_estimate(item_name="Atomic refresh", calories=300)
@@ -7804,7 +7834,7 @@ def test_review_snapshot_refresh_does_not_recreate_pending_row_after_terminal_ev
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "terminal-before-refresh-save"
     estimate = _accepted_estimate(item_name="Already accepted", calories=300)
@@ -7882,7 +7912,7 @@ def test_review_snapshot_save_does_not_reopen_logged_event_with_missing_rows(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "logged-event-missing-rows"
     estimate = _accepted_estimate(item_name="Missing accepted child", calories=300)
@@ -7922,7 +7952,7 @@ def test_review_snapshot_save_does_not_reopen_logged_event_with_missing_rows(
 
 
 def test_review_snapshot_save_preserves_recoverable_partial_child_rows(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "partial-review-save"
     accepted = _accepted_estimate(item_name="Accepted child", calories=300)
@@ -7986,7 +8016,7 @@ def test_review_snapshot_save_preserves_recoverable_partial_child_rows(monkeypat
 
 
 def test_review_snapshot_save_preserves_missing_child_without_event(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "partial-review-missing-child"
     accepted = _accepted_estimate(item_name="Accepted child", calories=300)
@@ -8043,7 +8073,7 @@ def test_review_terminal_conflict_ignores_imported_payload_image_claim(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "terminal-imported-image-conflict"
     estimate = _accepted_estimate(
@@ -8087,7 +8117,7 @@ def test_review_terminal_conflict_preserves_canonical_row_image_provenance(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "terminal-canonical-image-conflict"
     estimate = _accepted_estimate(
@@ -8122,7 +8152,7 @@ def test_review_terminal_conflict_preserves_canonical_row_image_provenance(
 
 
 def test_exact_terminal_replay_revalidates_rows_inside_transaction(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "terminal-revalidate-parent"
     meal_id = "terminal-revalidate-meal"
@@ -8175,7 +8205,7 @@ def test_exact_terminal_replay_revalidates_rows_inside_transaction(monkeypatch, 
 
 
 def test_pending_multi_recovery_allows_skipping_one_pending_item(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-skip-parent"
     meal_id = "pending-skip-meal"
@@ -8232,7 +8262,7 @@ def test_pending_multi_recovery_allows_skipping_one_pending_item(monkeypatch, tm
 
 
 def test_pending_multi_recovery_full_discard_removes_child_rows(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-child-discard-parent"
     meal_id = "pending-child-discard-meal"
@@ -8285,7 +8315,7 @@ def test_pending_multi_recovery_full_discard_rejects_reordered_items(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-reordered-discard-parent"
     meal_id = "pending-reordered-discard-meal"
@@ -8348,7 +8378,7 @@ def test_pending_multi_recovery_discard_fingerprints_canonical_feedback(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-canonical-feedback-parent"
     meal_id = "pending-canonical-feedback-meal"
@@ -8439,7 +8469,7 @@ def test_discard_retry_rejects_malformed_versioned_feedback_fingerprint(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "malformed-versioned-feedback-meal"
     item = {
@@ -8475,7 +8505,7 @@ def test_pending_multi_recovery_partial_discard_preserves_omitted_children(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-partial-discard-parent"
     meal_id = "pending-partial-discard-meal"
@@ -8531,7 +8561,7 @@ def test_pending_multi_recovery_partial_discard_preserves_omitted_children(
 
 
 def test_snapshot_multi_partial_discard_preserves_omitted_items(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "snapshot-partial-discard-meal"
     estimates = [
@@ -8585,7 +8615,7 @@ def test_snapshot_multi_partial_discard_preserves_omitted_items(monkeypatch, tmp
 
 
 def test_skipped_pending_row_refresh_race_is_rejected_before_delete(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-skip-stale-parent"
     meal_id = "pending-skip-stale-meal"
@@ -8675,7 +8705,7 @@ def test_source_backed_refresh_cannot_restore_imported_snapshot_image_claim(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "imported-image-then-source-refresh"
     imported = _accepted_estimate(
@@ -8750,7 +8780,7 @@ def test_source_backed_refresh_cannot_restore_imported_snapshot_image_claim(
 
 
 def test_imported_source_candidate_cannot_copy_untrusted_original_image(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "imported-source-candidate-image"
     original = _accepted_estimate(
@@ -8808,7 +8838,7 @@ def test_imported_snapshot_sync_marks_pending_row_untrusted_for_cross_meal_accep
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     route_meal_id = "imported-sync-route-meal"
     accepted_meal_id = "imported-sync-different-meal"
@@ -8879,7 +8909,7 @@ def test_imported_snapshot_sync_marks_pending_row_untrusted_for_cross_meal_accep
 
 
 def test_cross_meal_full_discard_rejects_pending_route_alias(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     route_meal_id = "discard-route-alias"
     accepted_meal_id = "discard-terminal-meal"
@@ -8933,7 +8963,7 @@ def test_cross_meal_accept_rejects_pending_child_owned_by_another_meal(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "shared-pending-child-parent"
     original_meal_id = "pending-child-original-meal"
@@ -8985,7 +9015,7 @@ def test_cross_meal_terminal_paths_reject_pending_route_alias(
     tmp_path,
     terminal_replay,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     from contextlib import contextmanager
 
@@ -9103,7 +9133,7 @@ def test_logged_child_event_does_not_downgrade_unrelated_direct_terminal_row(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "logged-child-with-direct-row"
     child_id = "logged-child-row"
@@ -9189,7 +9219,7 @@ def test_complete_eventless_child_rows_repair_event_before_terminal_replay(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "complete-eventless-terminal-rows"
     rows = []
@@ -9275,7 +9305,7 @@ def test_eventless_repair_rejects_same_count_changed_feedback_identity(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "eventless-feedback-identity"
     included_item = {
@@ -9341,7 +9371,7 @@ def test_eventless_repair_preparation_failure_preserves_snapshot(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "eventless-preparation-failure"
     included_item = {
@@ -9396,7 +9426,7 @@ def test_eventless_manual_snapshot_waits_for_ordinary_accept_promotion(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "eventless-manual-awaits-accept"
     estimate = _accepted_estimate(item_name="Reviewed manual", calories=430)
@@ -9460,7 +9490,7 @@ def test_eventless_manual_snapshot_waits_for_ordinary_accept_promotion(
 
 
 def test_pending_snapshot_with_no_food_logs_is_persisted(monkeypatch, tmp_path):
-    _client(monkeypatch)
+    _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "fit231-no-food-rows"
     payload = {"status": "pending_review", "meal_id": meal_id, "marker": "initial"}
@@ -9486,7 +9516,7 @@ def test_pending_snapshot_terminal_filter_for_direct_food_log(
     correction_state,
     terminal,
 ):
-    _client(monkeypatch)
+    _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = f"fit231-direct-{correction_state}"
     original_payload = {
@@ -9545,7 +9575,7 @@ def test_pending_snapshot_terminal_filter_for_meal_id_food_log_siblings(
     correction_states,
     terminal,
 ):
-    _client(monkeypatch)
+    _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = f"fit231-siblings-{'-'.join(correction_states)}"
     original_payload = {
@@ -9598,7 +9628,7 @@ def test_discarded_event_does_not_cleanup_snapshot_with_manual_child(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "discarded-event-manual-child"
     estimate = _accepted_estimate(item_name="Manual child", calories=430)
@@ -9674,7 +9704,7 @@ def test_logged_event_does_not_cleanup_snapshot_with_extra_manual_child(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "logged-event-extra-manual-child"
     accepted_estimate = _accepted_estimate(item_name="Accepted child", calories=300)
@@ -9733,7 +9763,7 @@ def test_logged_event_does_not_cleanup_snapshot_with_extra_manual_child(
 
 
 def test_direct_terminal_row_with_own_logged_event_is_canonical(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "direct-terminal-own-event"
     estimate = _accepted_estimate(item_name="Direct terminal meal", calories=400)
@@ -9788,7 +9818,7 @@ def test_protected_fresh_accept_rejects_event_without_transaction_rows(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "protected-fresh-conflict-parent"
     meal_id = "protected-fresh-conflict-meal"
@@ -9859,7 +9889,7 @@ def test_protected_fresh_accept_rejects_event_without_transaction_rows(
 
 
 def test_multi_item_accept_retry_is_noop_and_changed_item_set_conflicts(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
     payload = {
@@ -9910,7 +9940,7 @@ def test_multi_item_accept_retry_is_noop_and_changed_item_set_conflicts(monkeypa
 
 
 def test_multi_item_retry_rejects_request_asserted_image_provenance(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
     payload = {
@@ -9943,7 +9973,7 @@ def test_multi_item_retry_rejects_request_asserted_image_provenance(monkeypatch,
 
 
 def test_multi_item_accept_queries_only_target_meal_inside_transaction(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     original_get_food_logs = data_store.get_food_logs
 
@@ -9971,7 +10001,7 @@ def test_multi_item_accept_queries_only_target_meal_inside_transaction(monkeypat
 
 
 def test_multi_item_accept_retry_with_existing_rows_does_not_require_estimates(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
     payload = {
@@ -10001,7 +10031,7 @@ def test_multi_item_accept_retry_with_existing_rows_does_not_require_estimates(m
 
 
 def test_multi_item_accept_namespaces_explicit_item_client_ids(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
 
@@ -10042,7 +10072,7 @@ def test_multi_item_accept_namespaces_explicit_item_client_ids(monkeypatch, tmp_
 
 
 def test_multi_item_accept_does_not_delete_same_id_legacy_log(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     data_store.add_food_log(
         1,
@@ -10080,7 +10110,7 @@ def test_multi_item_accept_does_not_delete_same_id_legacy_log(monkeypatch, tmp_p
 
 
 def test_multi_item_accept_validates_all_items_before_persisting(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
 
     res = module.app.test_client().post(
@@ -10100,7 +10130,7 @@ def test_multi_item_accept_validates_all_items_before_persisting(monkeypatch, tm
 
 
 def test_multi_item_accept_retry_completes_partial_existing_rows(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "photo-parent-partial"
     partial_client_id = module._meal_item_client_id(parent_client_id, {"item_id": "a"}, 0)
@@ -10142,7 +10172,7 @@ def test_multi_item_accept_retry_completes_partial_existing_rows(monkeypatch, tm
 
 
 def test_partial_corrected_row_recovery_records_correction_learning(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     accepted_calls = []
     corrected_calls = []
@@ -10197,7 +10227,7 @@ def test_partial_corrected_row_recovery_records_correction_learning(monkeypatch,
 
 
 def test_partial_protected_row_learning_uses_stored_phrase_and_estimate(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     accepted_calls = []
     monkeypatch.setattr(
@@ -10248,7 +10278,7 @@ def test_partial_protected_row_learning_uses_stored_phrase_and_estimate(monkeypa
 
 
 def test_multi_item_accept_rejects_matching_event_when_rows_are_missing(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "photo-parent-event-only"
     client_ids = [
@@ -10291,7 +10321,7 @@ def test_multi_item_accept_rejects_matching_event_when_rows_are_missing(monkeypa
 
 
 def test_multi_item_accept_existing_event_missing_row_still_blocks_unclear_item(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "photo-parent-event-missing-blocked"
     meal_id = "photo-meal-event-missing-blocked"
@@ -10331,7 +10361,7 @@ def test_multi_item_accept_existing_event_missing_row_still_blocks_unclear_item(
 
 
 def test_multi_item_accept_replay_repairs_missing_event_when_rows_exist(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "photo-parent-rows-only"
     meal_id = "photo-meal-rows-only"
@@ -10394,7 +10424,7 @@ def test_partial_event_recovery_rejects_request_driven_missing_row(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "partial-event-photo-parent"
     meal_id = "partial-event-photo-meal"
@@ -10458,7 +10488,7 @@ def test_partial_event_recovery_rejects_request_driven_missing_row(
 
 
 def test_terminal_replays_preserve_unknown_feedback_fingerprints(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
     parent_client_id = "unknown-feedback-parent"
@@ -10539,7 +10569,7 @@ def test_terminal_replays_preserve_unknown_feedback_fingerprints(monkeypatch, tm
 
 
 def test_multi_item_exact_set_pending_replay_finalizes_rows(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-parent-exact-replay"
     meal_id = "pending-meal-exact-replay"
@@ -10585,7 +10615,7 @@ def test_multi_item_exact_set_pending_replay_finalizes_rows(monkeypatch, tmp_pat
 
 
 def test_multi_item_pending_replay_rechecks_stored_placeholder_policy(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-placeholder-parent"
     meal_id = "pending-placeholder-meal"
@@ -10632,7 +10662,7 @@ def test_multi_item_pending_replay_rechecks_stored_placeholder_policy(monkeypatc
 
 
 def test_snapshotless_pending_replay_accepts_unchanged_low_confidence_row(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-low-confidence-parent"
     meal_id = "pending-low-confidence-meal"
@@ -10676,7 +10706,7 @@ def test_snapshotless_pending_replay_accepts_unchanged_low_confidence_row(monkey
 
 
 def test_snapshotless_pending_ai_only_combo_uses_stored_baseline(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-stored-combo-parent"
     meal_id = "pending-stored-combo-meal"
@@ -10720,7 +10750,7 @@ def test_snapshotless_pending_ai_only_combo_uses_stored_baseline(monkeypatch, tm
 
 
 def test_snapshotless_pending_source_backed_combo_accepts_stored_baseline(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-source-combo-parent"
     meal_id = "pending-source-combo-meal"
@@ -10764,7 +10794,7 @@ def test_snapshotless_pending_source_backed_combo_accepts_stored_baseline(monkey
 
 
 def test_multi_pending_meal_type_edit_preserves_stored_nutrition_provenance(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-meal-type-parent"
     meal_id = "pending-meal-type-meal"
@@ -10828,7 +10858,7 @@ def test_multi_pending_meal_type_edit_preserves_stored_nutrition_provenance(monk
 
 
 def test_multi_item_pending_replay_preserves_stored_text_provenance(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-text-parent"
     meal_id = "pending-text-meal"
@@ -10891,7 +10921,7 @@ def test_multi_item_pending_replay_preserves_stored_text_provenance(monkeypatch,
 
 
 def test_multi_item_pending_replay_rejects_concurrent_pending_refresh(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-race-parent"
     meal_id = "pending-race-meal"
@@ -10944,7 +10974,7 @@ def test_multi_item_pending_replay_rejects_concurrent_pending_refresh(monkeypatc
 
 
 def test_multi_item_snapshot_time_fields_override_independently(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "pending-snapshot-time-meal"
     item_id = "time"
@@ -11001,7 +11031,7 @@ def test_multi_item_snapshot_time_fields_override_independently(monkeypatch, tmp
 
 
 def test_multi_item_snapshot_replay_rejects_concurrent_snapshot_refresh(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "pending-snapshot-race-meal"
     item_id = "race"
@@ -11073,7 +11103,7 @@ def test_multi_item_snapshot_replay_rejects_concurrent_snapshot_refresh(monkeypa
 
 
 def test_successful_snapshot_accept_cleans_up_inside_accept_transaction(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "atomic-snapshot-cleanup"
     item_id = "item"
@@ -11121,7 +11151,7 @@ def test_successful_snapshot_accept_cleans_up_inside_accept_transaction(monkeypa
 
 
 def test_terminal_idempotent_accept_cleans_trusted_snapshot_in_transaction(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "terminal-snapshot-parent"
     meal_id = "terminal-snapshot-meal"
@@ -11177,7 +11207,7 @@ def test_terminal_idempotent_accept_cleans_trusted_snapshot_in_transaction(monke
 
 
 def test_multi_item_accept_rejects_snapshot_created_after_empty_preflight(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "new-snapshot-race-meal"
     item_id = "race"
@@ -11227,7 +11257,7 @@ def test_multi_item_accept_rejects_pending_parent_created_after_empty_preflight(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     from contextlib import contextmanager
 
@@ -11281,7 +11311,7 @@ def test_logged_retry_replays_when_pending_alias_is_removed_by_overlapping_accep
 ):
     from contextlib import contextmanager
 
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "overlap-logged-parent"
     meal_id = "overlap-logged-meal"
@@ -11365,7 +11395,7 @@ def test_discard_retry_replays_when_pending_alias_is_removed_by_overlapping_acce
 ):
     from contextlib import contextmanager
 
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "overlap-discard-parent"
     meal_id = "overlap-discard-meal"
@@ -11428,7 +11458,7 @@ def test_discard_retry_replays_when_pending_alias_is_removed_by_overlapping_acce
 
 
 def test_legacy_snapshot_replay_rejects_concurrent_snapshot_refresh(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "legacy-snapshot-race-meal"
     estimate = _accepted_estimate(item_name="Legacy original", calories=300)
@@ -11491,7 +11521,7 @@ def test_legacy_snapshot_replay_rejects_concurrent_snapshot_refresh(monkeypatch,
 
 
 def test_multi_item_snapshot_discard_rejects_concurrent_snapshot_refresh(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "pending-snapshot-discard-race"
     item_id = "discard"
@@ -11566,7 +11596,7 @@ def test_multi_item_snapshot_discard_rejects_concurrent_snapshot_refresh(monkeyp
 
 
 def test_discarded_event_replay_rejects_concurrent_snapshot_refresh(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "discarded-event-snapshot-race"
     item_id = "discard"
@@ -11633,7 +11663,7 @@ def test_discarded_event_replay_rejects_concurrent_snapshot_refresh(monkeypatch,
 
 
 def test_discard_rejects_pending_parent_created_after_empty_preflight(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "discard-new-pending-parent-race"
     estimate = _accepted_estimate(item_name="New pending parent", calories=300)
@@ -11686,7 +11716,7 @@ def test_discard_rejects_pending_parent_created_after_empty_preflight(monkeypatc
 
 
 def test_trusted_multi_item_snapshot_preserves_per_item_image_provenance(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "mixed-photo-text-snapshot"
     photo_estimate = _accepted_estimate(
@@ -11748,7 +11778,7 @@ def test_trusted_multi_item_snapshot_preserves_per_item_image_provenance(monkeyp
 
 
 def test_imported_untrusted_snapshot_cannot_assert_image_provenance(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "imported-untrusted-image"
     item_id = "forged-photo"
@@ -11816,7 +11846,7 @@ def test_snapshotless_imported_parent_cannot_assert_image_on_discard(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "snapshotless-imported-parent-discard"
     imported = _accepted_estimate(
@@ -11859,7 +11889,7 @@ def test_snapshotless_imported_parent_cannot_assert_image_on_discard(
 
 
 def test_imported_pending_single_accept_does_not_promote_forged_provenance(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client_id = "imported-pending-single-provenance"
     imported = _accepted_estimate(
@@ -11902,7 +11932,7 @@ def test_imported_pending_single_accept_does_not_promote_forged_provenance(monke
 
 
 def test_imported_pending_multi_accept_does_not_promote_forged_provenance(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "imported-pending-multi-provenance"
     item_client_id = module._meal_item_client_id(meal_id, {"item_id": "item-1"}, 0)
@@ -11963,7 +11993,7 @@ def test_add_nutrition_pending_rows_cannot_stage_forged_provenance(
     multi_item,
     pending_state,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = f"client-staged-pending-{multi_item}"
     item_id = "item-1"
@@ -12041,7 +12071,7 @@ def test_add_nutrition_pending_rows_cannot_stage_forged_provenance(
 
 
 def test_add_nutrition_rejects_unknown_correction_state(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client_id = "unknown-correction-state"
 
@@ -12062,7 +12092,7 @@ def test_add_nutrition_rejects_unknown_correction_state(monkeypatch, tmp_path):
 
 
 def test_add_nutrition_pending_without_source_stays_manual(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client_id = "manual-pending-without-source"
 
@@ -12094,7 +12124,7 @@ def test_trusted_photo_snapshot_preserves_meal_image_when_photo_item_is_skipped(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "mixed-photo-text-skip-photo"
     photo_estimate = _accepted_estimate(
@@ -12160,7 +12190,7 @@ def test_trusted_photo_snapshot_preserves_meal_image_when_photo_item_is_skipped(
 
 
 def test_rows_missing_recovery_rejects_request_driven_reconstruction(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "rows-missing-photo-parent"
     meal_id = "rows-missing-photo-meal"
@@ -12194,7 +12224,7 @@ def test_rows_missing_recovery_rejects_request_driven_reconstruction(monkeypatch
 
 
 def test_discarded_multi_item_retry_rejects_request_asserted_image_provenance(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
     payload = {
@@ -12227,7 +12257,7 @@ def test_discarded_multi_item_retry_rejects_request_asserted_image_provenance(mo
 
 
 def test_discarded_photo_retry_preserves_stored_image_provenance(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client = module.app.test_client()
     meal_id = "discarded-photo-retry"
@@ -12296,7 +12326,7 @@ def test_discarded_photo_retry_preserves_stored_image_provenance(monkeypatch, tm
 
 
 def test_fresh_multi_accept_does_not_infer_image_from_client_source(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     estimate = _accepted_estimate(
         source="vision_forged",
@@ -12336,7 +12366,7 @@ def test_fresh_multi_accept_does_not_infer_image_from_client_source(monkeypatch,
 
 
 def test_pending_row_with_logged_event_is_not_rebuilt_from_retry(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-repair-parent"
     meal_id = "pending-repair-meal"
@@ -12390,7 +12420,7 @@ def test_pending_row_with_logged_event_is_not_rebuilt_from_retry(monkeypatch, tm
 
 
 def test_partial_pending_accept_rejects_omitted_pending_child(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "partial-pending-omission-parent"
     meal_id = "partial-pending-omission-meal"
@@ -12449,7 +12479,7 @@ def test_partial_pending_accept_rejects_omitted_pending_child(monkeypatch, tmp_p
 
 
 def test_partial_pending_skip_learns_from_stored_child(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "partial-pending-feedback-parent"
     meal_id = "partial-pending-feedback-meal"
@@ -12500,7 +12530,7 @@ def test_partial_pending_skip_learns_from_stored_child(monkeypatch, tmp_path):
 
 
 def test_pending_full_discard_learns_from_stored_child(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "pending-discard-feedback-parent"
     meal_id = "pending-discard-feedback-meal"
@@ -12544,7 +12574,7 @@ def test_pending_full_discard_learns_from_stored_child(monkeypatch, tmp_path):
 
 
 def test_child_pending_accept_rejects_concurrent_parent_alias_refresh(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     from contextlib import contextmanager
 
@@ -12625,7 +12655,7 @@ def test_child_pending_accept_rejects_concurrent_parent_alias_refresh(monkeypatc
 
 
 def test_partial_recovery_accepts_unchanged_pending_parent_alias(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "partial-parent-alias-parent"
     meal_id = "partial-parent-alias-meal"
@@ -12693,7 +12723,7 @@ def test_imported_snapshot_and_pending_child_cannot_restore_image_provenance(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "imported-snapshot-pending-image"
     item_id = "item-1"
@@ -12767,7 +12797,7 @@ def test_partial_pending_repair_enqueues_only_newly_finalized_rows(
     tmp_path,
     existing_event,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "partial-pending-repair-parent"
     meal_id = "partial-pending-repair-meal"
@@ -12851,7 +12881,7 @@ def test_partial_pending_repair_enqueues_only_newly_finalized_rows(
 
 
 def test_concurrent_rows_only_recovery_records_feedback_once(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -12904,7 +12934,7 @@ def test_concurrent_rows_only_recovery_records_feedback_once(monkeypatch, tmp_pa
 
 
 def test_multi_accept_cannot_overwrite_existing_manual_client_id(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "photo-parent-manual-conflict"
     item_client_id = module._meal_item_client_id(parent_client_id, {"item_id": "a"}, 0)
@@ -12940,7 +12970,7 @@ def test_multi_accept_cannot_overwrite_existing_manual_client_id(monkeypatch, tm
 
 
 def test_exact_set_replay_rejects_changed_manual_row_estimate(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "photo-parent-manual-replay"
     meal_id = "photo-meal-manual-replay"
@@ -12983,7 +13013,7 @@ def test_exact_set_replay_rejects_changed_manual_row_estimate(monkeypatch, tmp_p
 
 
 def test_multi_item_accept_all_skipped_discards_without_consumed_rows(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
 
     client = module.app.test_client()
@@ -13016,7 +13046,7 @@ def test_multi_item_accept_all_skipped_discards_without_consumed_rows(monkeypatc
 
 
 def test_multi_item_accept_skipped_items_do_not_affect_nutrition_endpoints(monkeypatch, tmp_path):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-22")
     client = module.app.test_client()
@@ -13047,21 +13077,142 @@ def test_multi_item_accept_skipped_items_do_not_affect_nutrition_endpoints(monke
 
 
 def test_meal_composer_js_hydrates_pending_and_rolls_back_failed_discard():
-    """Static guard for the browser-only FIT-67 pending-review workflow."""
-    source = Path("static/js/app.js").read_text()
+    """FIT-67 hydration routes both shapes and failed discard stays retryable."""
+    result = run_app_js(
+        ["hydrateMealPending", "discardMealPending", "mealComposerState"],
+        """
+const calls = [];
+e.mealComposerState.pending = [{ client_id: 'keep-me', estimate: {} }];
+sandbox.__fitSet.api(async (path) => {
+  calls.push(['api', path]);
+  if (path === '/api/meal-intake/pending') {
+    return { pending: [{ kind: 'v2', meal_id: 'm1' }, { client_id: 'legacy-1' }] };
+  }
+  return { removed: false };
+});
+sandbox.__fitSet.isMealV2Payload((entry) => entry.kind === 'v2');
+sandbox.__fitSet.normalizeMealV2Entry((entry) => ({ normalized: entry.meal_id }));
+sandbox.__fitSet.upsertMealV2Entry((entry) => calls.push(['v2', entry.normalized]));
+sandbox.__fitSet.upsertMealPendingEntry((entry) => calls.push(['legacy', entry.client_id]));
+sandbox.__fitSet.renderMealPendingList(() => calls.push(['render']));
+sandbox.__fitSet.releasePendingEntryArtifacts(() => calls.push(['release']));
+sandbox.__fitSet.toast((message, kind) => calls.push(['toast', message, kind]));
+sandbox.__fitSet.refreshMacroCard(() => calls.push(['refresh']));
+await e.hydrateMealPending();
+await e.discardMealPending('keep-me');
+process.stdout.write(JSON.stringify({ calls, pending: e.mealComposerState.pending }));
+""",
+        mocks=[
+            "api", "isMealV2Payload", "normalizeMealV2Entry", "upsertMealV2Entry",
+            "upsertMealPendingEntry", "renderMealPendingList",
+            "releasePendingEntryArtifacts", "toast", "refreshMacroCard",
+        ],
+    )
 
-    assert "api('/api/meal-intake/pending')" in source
-    assert "hydrateMealPending();" in source
-    # FIT-134 rebase routes v2 entries through normalizeMealV2Entry while
-    # keeping the legacy upsertMealPendingEntry path for single-item entries.
-    assert "pending.forEach((entry) => {" in source
-    assert "upsertMealPendingEntry(entry);" in source
-    assert "correction_state=pending_review" in source
-    assert "result.removed !== true" in source
-    assert "Discard failed — retry when connected" in source
-    assert "toast('Review the estimate before it counts toward today.', 'warn');\n            refreshMacroCard();" in source
-    assert "local_timestamp: entry.local_timestamp || null" in source
-    assert "local_timestamp: entry.local_timestamp || fallback.local_timestamp || entry.logged_at" in source
+    assert ["v2", "m1"] in result["calls"]
+    assert ["legacy", "legacy-1"] in result["calls"]
+    assert ["toast", "Discard failed — retry when connected", "err"] in result["calls"]
+    assert ["release"] not in result["calls"]
+    assert ["refresh"] not in result["calls"]
+    assert result["pending"] == [{"client_id": "keep-me", "estimate": {}}]
+
+
+def test_meal_composer_js_preserves_legacy_pending_timestamp_fallbacks():
+    """Hydration/retry use real legacy normalization and upsert behavior."""
+    result = run_app_js(
+        ["hydrateMealPending", "retryMealPending", "mealComposerState"],
+        """
+let retryNumber = 0;
+const retryResponses = [
+  { status: 'pending_review', estimate: {}, food_log: { logged_at: 'retry-log-1' } },
+  { status: 'pending_review', local_timestamp: 'retry-payload-timestamp', estimate: {}, food_log: { logged_at: 'retry-log-2' } },
+];
+const requests = [];
+const row = () => ({
+  classList: { toggle() {}, contains: () => false },
+  querySelector: (selector) => selector === '.meal-pending-retry' ? { textContent: 'Retry' } : null,
+  querySelectorAll: () => [],
+});
+const snapshot = () => e.mealComposerState.pending.map((entry) => ({
+  client_id: entry.client_id,
+  local_timestamp: entry.local_timestamp,
+  logged_at: entry.logged_at,
+}));
+sandbox.crypto = { randomUUID: () => `retry-${++retryNumber}` };
+sandbox.__fitSet.api(async (path) => {
+  if (path === '/api/meal-intake/pending') {
+    return { pending: [
+      { client_id: 'payload-first', local_timestamp: 'payload-timestamp', logged_at: 'payload-log' },
+      { client_id: 'logged-at-fallback', logged_at: 'logged-at-timestamp' },
+      { client_id: 'stored-fallback', text_hint: 'oats', local_timestamp: 'stored-timestamp', logged_at: 'stored-log' },
+    ] };
+  }
+  return { removed: true };
+});
+sandbox.fetch = async (path, options) => {
+  requests.push({ path, local_timestamp: options.body.get('local_timestamp') });
+  return new Response(JSON.stringify(retryResponses.shift()), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+};
+sandbox.__fitSet.renderMealPendingList(() => {});
+sandbox.__fitSet.toast(() => {});
+sandbox.__fitSet.refreshMacroCard(() => {});
+await e.hydrateMealPending();
+const hydrated = snapshot();
+await e.retryMealPending('stored-fallback', row());
+const afterStoredFallback = snapshot();
+await e.retryMealPending('retry-1', row());
+const afterPayloadTimestamp = snapshot();
+process.stdout.write(JSON.stringify({ hydrated, afterStoredFallback, afterPayloadTimestamp, requests }));
+""",
+        mocks=["api", "renderMealPendingList", "toast", "refreshMacroCard"],
+    )
+
+    assert result["hydrated"] == [
+        {
+            "client_id": "payload-first",
+            "local_timestamp": "payload-timestamp",
+            "logged_at": "payload-log",
+        },
+        {
+            "client_id": "logged-at-fallback",
+            "local_timestamp": "logged-at-timestamp",
+            "logged_at": "logged-at-timestamp",
+        },
+        {
+            "client_id": "stored-fallback",
+            "local_timestamp": "stored-timestamp",
+            "logged_at": "stored-log",
+        },
+    ]
+    assert result["afterStoredFallback"] == [
+        {
+            "client_id": "payload-first",
+            "local_timestamp": "payload-timestamp",
+            "logged_at": "payload-log",
+        },
+        {
+            "client_id": "logged-at-fallback",
+            "local_timestamp": "logged-at-timestamp",
+            "logged_at": "logged-at-timestamp",
+        },
+        {
+            "client_id": "retry-1",
+            "local_timestamp": "stored-timestamp",
+            "logged_at": "retry-log-1",
+        },
+    ]
+    assert result["afterPayloadTimestamp"][-1] == {
+        "client_id": "retry-2",
+        "local_timestamp": "retry-payload-timestamp",
+        "logged_at": "retry-log-2",
+    }
+    assert result["requests"] == [
+        {"path": "/api/meal-intake", "local_timestamp": "stored-timestamp"},
+        {"path": "/api/meal-intake", "local_timestamp": "stored-timestamp"},
+    ]
 
 
 def test_fit65_stub_markers_are_removed():
@@ -13074,37 +13225,247 @@ def test_fit65_stub_markers_are_removed():
 
 
 def test_meal_composer_js_surfaces_open_food_facts_attribution():
-    """Static guard for the browser-only FIT-80 source-provenance surface."""
-    js = Path("static/js/app.js").read_text()
+    """FIT-80 attribution and FIT-138 input wiring execute in the bundle."""
     html = Path("templates/index.html").read_text()
     css = Path("static/css/style.css").read_text()
 
-    assert "mealEstimateProvenanceHtml(est)" in js
-    assert "nutritionix: 'Nutritionix'" in js
-    assert "usda_fdc: 'USDA'" in js
-    assert "open_food_facts: 'Open Food Facts'" in js
-    assert "fallback_text_estimate: 'Fallback preset'" in js
-    assert "renderMealComposerProvenance(payload.estimate, ctx.clientId)" in js
-    assert "renderMealComposerProvenance(payload.estimate, newClientId)" in js
-    assert "renderMealComposerProvenance(edited, clientId)" in js
-    assert "clearMealComposerStatus(clientId);\n            toast('Meal removed', 'ok');" in js
-    assert "status.dataset.provenanceClientId !== String(clientId)" in js
-    # FIT-138: input/change handlers were refactored for the multi-photo
-    # state machine; assert the post-FIT-138 shapes.
-    assert "text.addEventListener('input'" in js
-    assert "clearMealComposerStatus();" in js
-    assert "refreshMealSubmitState();" in js
-    assert "saveMealDraft();" in js
-    assert "image.addEventListener('change', () => {\n                clearMealComposerStatus();" in js
-    assert "onMealComposerImageSelected(image.files);" in js
-    # FIT-138: per-thumb × replaces the single previewClear; per-thumb removal
-    # is wired inside renderMealComposerThumbs().
-    assert "function renderMealComposerThumbs()" in js
-    assert "removeMealComposerImage(" in js
-    assert "est.off_attribution" in js
-    assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in js
-    assert "attrUrl || (est && (est.verified_source_url || est.source_url || est.product_url))" in js
-    assert "target=\"_blank\" rel=\"noopener noreferrer\"" in js
+    provenance = run_app_js(
+        ["mealEstimateProvenanceHtml"],
+        """
+process.stdout.write(JSON.stringify(e.mealEstimateProvenanceHtml({
+  source: 'open_food_facts',
+  product_url: 'https://world.openfoodfacts.org/product/123',
+})));
+""",
+    )
+    assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in provenance
+    assert 'target="_blank" rel="noopener noreferrer"' in provenance
+    assert "https://world.openfoodfacts.org/product/123" in provenance
+
+    flows = run_app_js(
+        ["handleMealIntakeResponse", "retryMealPending", "acceptMealPending", "mealComposerState"],
+        """
+const calls = [];
+const status = {
+  hidden: true,
+  innerHTML: '',
+  dataset: {},
+  classList: {
+    names: [],
+    add(name) { this.names.push(name); },
+    contains(name) { return this.names.includes(name); },
+  },
+};
+const estimate = {
+  item_name: 'Chicken bowl',
+  calories: 500,
+  source: 'open_food_facts',
+  product_url: 'https://world.openfoodfacts.org/product/123',
+};
+const editedFields = [
+  { getAttribute: () => 'item_name', value: 'Edited bowl', type: 'text', tagName: 'INPUT' },
+  { getAttribute: () => 'calories', value: '650', type: 'number', tagName: 'INPUT' },
+];
+const row = {
+  classList: { contains: () => false },
+  querySelectorAll: () => editedFields,
+};
+const retryButton = { textContent: 'Retry' };
+const retryRow = {
+  querySelector: () => retryButton,
+};
+sandbox.__fitSet.mealComposerEls(() => ({ status }));
+sandbox.__fitSet.isMealV2Payload(() => false);
+sandbox.__fitSet.clearMealComposerInputs(() => calls.push('clear-inputs'));
+sandbox.__fitSet.clearMealDraft(() => calls.push('clear-draft'));
+sandbox.__fitSet.clearMealComposerStatus(() => calls.push('clear-status'));
+sandbox.__fitSet.mealEstimateChip(() => 'estimate-chip');
+sandbox.__fitSet.mealEntryFromIntakePayload(() => ({ client_id: 'logged-client' }));
+sandbox.__fitSet.toastUndo((message) => calls.push(['undo', message]));
+sandbox.__fitSet.upsertMealPendingEntry((entry) => calls.push(['pending', entry.client_id, entry.estimate.source]));
+sandbox.__fitSet.renderMealPendingList(() => calls.push('render-pending'));
+sandbox.__fitSet.toast((message, kind) => calls.push(['toast', message, kind]));
+sandbox.__fitSet.refreshMacroCard(() => calls.push('refresh-macros'));
+sandbox.__fitSet.releasePendingEntryArtifacts(() => calls.push('release-artifacts'));
+sandbox.__fitSet.newMealClientId(() => 'retry-client');
+sandbox.__fitSet.browserLocalMealTime(() => ({
+  local_timestamp: '2026-07-16T12:00:00',
+  local_date: '2026-07-16',
+  local_iso: '2026-07-16T12:00:00-05:00',
+}));
+sandbox.__fitSet.setMealPendingRowLocked(() => calls.push('lock-retry-row'));
+sandbox.__fitSet.api(async (path, options) => {
+  const body = options && options.body ? JSON.parse(options.body) : null;
+  calls.push(['api', path, body]);
+  return { removed: true };
+});
+sandbox.fetch = async () => new Response(JSON.stringify({ status: 'logged', estimate }), {
+  status: 200,
+  headers: { 'content-type': 'application/json' },
+});
+e.handleMealIntakeResponse(
+  { status: 'logged', estimate, food_log: { logged_at: '2026-07-16T12:00:00' } },
+  { clientId: 'logged-client' },
+);
+const loggedStatus = {
+  html: status.innerHTML,
+  hidden: status.hidden,
+  clientId: status.dataset.provenanceClientId,
+};
+e.handleMealIntakeResponse(
+  {
+    status: 'pending_review',
+    estimate,
+    local_timestamp: '2026-07-16T12:00:00',
+    local_date: '2026-07-16',
+    local_iso: '2026-07-16T12:00:00-05:00',
+    food_log: { logged_at: '2026-07-16T12:00:00' },
+  },
+  { clientId: 'pending-client', textValue: 'chicken bowl', imageFiles: [] },
+);
+e.mealComposerState.pending = [{
+  client_id: 'pending-client',
+  estimate,
+  text: 'chicken bowl',
+  local_timestamp: '2026-07-16T12:00:00',
+  local_date: '2026-07-16',
+  local_iso: '2026-07-16T12:00:00-05:00',
+}];
+await e.retryMealPending('pending-client', retryRow);
+const retryStatus = {
+  html: status.innerHTML,
+  hidden: status.hidden,
+  clientId: status.dataset.provenanceClientId,
+};
+e.mealComposerState.pending = [{
+  client_id: 'pending-client',
+  estimate,
+  text: 'chicken bowl',
+  local_timestamp: '2026-07-16T12:00:00',
+  local_date: '2026-07-16',
+  local_iso: '2026-07-16T12:00:00-05:00',
+}];
+await e.acceptMealPending('pending-client', row);
+const acceptedApi = calls.find((entry) => entry[0] === 'api' && entry[2] && entry[2].estimate);
+process.stdout.write(JSON.stringify({
+  loggedStatus,
+  pendingCalls: calls.filter((entry) => Array.isArray(entry) && entry[0] === 'pending'),
+  retryStatus,
+  accepted: acceptedApi[2].estimate,
+  editStatus: {
+    html: status.innerHTML,
+    hidden: status.hidden,
+    clientId: status.dataset.provenanceClientId,
+  },
+}));
+""",
+        mocks=[
+            "mealComposerEls", "isMealV2Payload", "clearMealComposerInputs",
+            "clearMealDraft", "clearMealComposerStatus", "mealEstimateChip",
+            "mealEntryFromIntakePayload", "toastUndo", "upsertMealPendingEntry",
+            "renderMealPendingList", "toast", "refreshMacroCard",
+            "releasePendingEntryArtifacts", "newMealClientId", "browserLocalMealTime",
+            "setMealPendingRowLocked", "api",
+        ],
+    )
+    assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in flows["loggedStatus"]["html"]
+    assert flows["loggedStatus"]["hidden"] is False
+    assert flows["loggedStatus"]["clientId"] == "logged-client"
+    assert flows["pendingCalls"] == [["pending", "pending-client", "open_food_facts"]]
+    assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in flows["retryStatus"]["html"]
+    assert flows["retryStatus"]["hidden"] is False
+    assert flows["retryStatus"]["clientId"] == "retry-client"
+    assert flows["accepted"]["item_name"] == "Edited bowl"
+    assert flows["accepted"]["calories"] == 650
+    assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in flows["editStatus"]["html"]
+    assert flows["editStatus"]["hidden"] is False
+    assert flows["editStatus"]["clientId"] == "pending-client"
+
+    wiring = run_app_js(
+        ["wireMealComposer"],
+        """
+const calls = [];
+const makeTarget = (name) => ({
+  name, value: '', files: [{ name: 'meal.jpg' }], listeners: {},
+  addEventListener(type, callback) { this.listeners[type] = callback; },
+});
+const form = makeTarget('form');
+const textInput = makeTarget('text');
+const imageInput = makeTarget('image');
+sandbox.__fitSet.mealComposerEls(() => ({
+  form, text: textInput, image: imageInput,
+  scan: null, barcodeInput: null, barcodeSubmit: null, barcodeClose: null, retry: null,
+}));
+sandbox.__fitSet.loadMealDraft(() => calls.push('load'));
+sandbox.__fitSet.hydrateMealPending(() => calls.push('hydrate'));
+sandbox.__fitSet.clearMealComposerStatus(() => calls.push('clear'));
+sandbox.__fitSet.refreshMealSubmitState(() => calls.push('refresh'));
+sandbox.__fitSet.saveMealDraft(() => calls.push('save'));
+sandbox.__fitSet.onMealComposerImageSelected((files) => calls.push(`images:${files.length}`));
+sandbox.__fitSet.refreshMealComposerRetryUI(() => calls.push('retry-ui'));
+e.wireMealComposer();
+textInput.listeners.input();
+imageInput.listeners.change();
+process.stdout.write(JSON.stringify({ calls, imageValue: imageInput.value }));
+""",
+        mocks=[
+            "mealComposerEls", "loadMealDraft", "hydrateMealPending",
+            "clearMealComposerStatus", "refreshMealSubmitState", "saveMealDraft",
+            "onMealComposerImageSelected", "refreshMealComposerRetryUI",
+        ],
+    )
+    assert wiring["calls"][:2] == ["load", "hydrate"]
+    assert wiring["calls"].count("clear") == 2
+    assert "save" in wiring["calls"]
+    assert "images:1" in wiring["calls"]
+    assert wiring["calls"].index("clear") < wiring["calls"].index("save")
+    assert wiring["calls"].index("images:1") < len(wiring["calls"]) - 1
+    assert wiring["imageValue"] == ""
+
+    thumbnails = run_app_js(
+        ["renderMealComposerThumbs", "removeMealComposerImage", "mealComposerState"],
+        """
+const calls = [];
+const makeNode = (tag) => ({
+  tag, children: [], attrs: {}, className: '', textContent: '',
+  setAttribute(key, value) { this.attrs[key] = value; },
+  addEventListener(type, callback) { this.listener = callback; },
+  appendChild(child) { this.children.push(child); },
+});
+sandbox.document.createElement = makeNode;
+const thumbs = makeNode('div');
+thumbs.innerHTML = '';
+const retention = { hidden: true };
+sandbox.__fitSet.mealComposerEls(() => ({ thumbs, retention }));
+sandbox.__fitSet.refreshMealSubmitState(() => calls.push('refresh'));
+sandbox.__fitSet.saveMealDraft(() => calls.push('save'));
+sandbox.URL.revokeObjectURL = (url) => calls.push(`revoke:${url}`);
+e.mealComposerState.imageFiles = [{ name: 'first.jpg' }, { name: 'second.jpg' }];
+e.mealComposerState.imagePreviewUrls = ['blob:first', 'blob:second'];
+e.mealComposerState.draftClientId = 'old-id';
+e.mealComposerState.lastSubmitFailedTransient = true;
+e.renderMealComposerThumbs();
+const labels = thumbs.children.map((thumb) => thumb.children[1].attrs['aria-label']);
+e.removeMealComposerImage(0);
+process.stdout.write(JSON.stringify({
+  labels,
+  files: e.mealComposerState.imageFiles.map((file) => file.name),
+  draftClientId: e.mealComposerState.draftClientId,
+  transient: e.mealComposerState.lastSubmitFailedTransient,
+  calls,
+}));
+""",
+        mocks=["mealComposerEls", "refreshMealSubmitState", "saveMealDraft"],
+    )
+    assert thumbnails["labels"] == [
+        "Remove photo 1 of 2 (first.jpg)",
+        "Remove photo 2 of 2 (second.jpg)",
+    ]
+    assert thumbnails["files"] == ["second.jpg"]
+    assert thumbnails["draftClientId"] is None
+    assert thumbnails["transient"] is False
+    assert thumbnails["calls"] == ["revoke:blob:first", "refresh", "save"]
+
     assert 'data-provenance-surface="meal-estimates"' in html
     assert ".meal-pending-provenance" in css
     assert ".meal-composer-status--provenance" in css
@@ -13124,7 +13485,7 @@ def _png_bytes(filler: int = 32) -> bytes:
 def test_meal_intake_accepts_two_images_under_plural_key(monkeypatch):
     """FIT-138 AC4: 2 photos in one submission → 200, pending_review, vision
     adapter receives the photos as one combined call."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     seen = {}
 
     def fake_describe(*_args, **kwargs):
@@ -13165,7 +13526,7 @@ def test_meal_intake_accepts_two_images_under_plural_key(monkeypatch):
 
 def test_meal_intake_accepts_four_images(monkeypatch):
     """FIT-138 AC4: 4 photos in one submission → 200, pending_review."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(monkeypatch, module)
     monkeypatch.setattr(module, "add_food_log", lambda _u, r: {"client_id": r["client_id"], **r})
 
@@ -13186,7 +13547,7 @@ def test_meal_intake_accepts_four_images(monkeypatch):
 
 def test_meal_intake_rejects_five_images_with_400(monkeypatch):
     """FIT-138 AC4: 5+ photos → 400 too-many."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(monkeypatch, module)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
 
@@ -13208,7 +13569,7 @@ def test_meal_intake_rejects_five_images_with_400(monkeypatch):
 
 def test_meal_intake_rejects_aggregate_over_18_mb_with_413(monkeypatch):
     """FIT-138 AC4: aggregate bytes > 18 MB → 413."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(monkeypatch, module)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
 
@@ -13233,7 +13594,7 @@ def test_meal_intake_rejects_aggregate_over_18_mb_with_413(monkeypatch):
 def test_meal_intake_legacy_image_key_still_accepted(monkeypatch):
     """FIT-138 back-compat: the singular ``image`` FormData key still works
     (FIT-128 pending-card retry path may still send it during rollout)."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(monkeypatch, module)
     monkeypatch.setattr(module, "add_food_log", lambda _u, r: {"client_id": r["client_id"], **r})
 
@@ -13251,7 +13612,7 @@ def test_meal_intake_legacy_image_key_still_accepted(monkeypatch):
 
 def test_meal_intake_rejects_oversize_individual_image_in_multi(monkeypatch):
     """FIT-138: even within a batch, any single photo > 6 MB still returns 413."""
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(monkeypatch, module)
     monkeypatch.setattr(module, "add_food_log", lambda *_a, **_kw: {})
 
@@ -13295,7 +13656,7 @@ def _barcode_estimate(**overrides):
 
 
 def test_meal_intake_barcode_returns_pending_review_for_verified_lookup(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(
         module.branded_food_lookup,
         "lookup_barcode",
@@ -13320,7 +13681,7 @@ def test_meal_intake_barcode_returns_pending_review_for_verified_lookup(monkeypa
 
 
 def test_meal_intake_barcode_reports_cache_hit_metadata(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(
         module.branded_food_lookup,
         "lookup_barcode",
@@ -13340,7 +13701,7 @@ def test_meal_intake_barcode_reports_cache_hit_metadata(monkeypatch):
 
 
 def test_meal_intake_barcode_returns_404_for_unknown_without_pending(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module.branded_food_lookup, "lookup_barcode", lambda *_a, **_kw: None)
 
     res = module.app.test_client().post(
@@ -13354,7 +13715,7 @@ def test_meal_intake_barcode_returns_404_for_unknown_without_pending(monkeypatch
 
 
 def test_meal_intake_barcode_allow_pending_creates_uncached_review_draft(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(module.branded_food_lookup, "lookup_barcode", lambda *_a, **_kw: None)
 
     res = module.app.test_client().post(
@@ -13590,7 +13951,7 @@ def test_single_item_accept_zero_calorie_manual_water_log_persists_without_train
 
 
 def test_barcode_pending_source_without_snapshot_still_requires_real_nutrition(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     data_store.add_food_log(
         1,
         {
@@ -13746,7 +14107,7 @@ def test_snapshotless_items_accept_resolved_barcode_placeholder_and_train_vocab(
 
 
 def test_meal_intake_barcode_validates_json_client_id_and_barcode(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
 
     form_res = client.post(
@@ -13776,7 +14137,7 @@ def test_meal_intake_barcode_validates_json_client_id_and_barcode(monkeypatch):
 
 
 def test_meal_intake_barcode_rejects_oversize_content_length(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     res = module.app.test_client().post(
         "/api/meal-intake/barcode",
@@ -13790,7 +14151,7 @@ def test_meal_intake_barcode_rejects_oversize_content_length(monkeypatch):
 
 
 def test_meal_intake_barcode_replays_existing_snapshot_by_client_id(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     calls = {"count": 0}
 
     def lookup(*_a, **_kw):
@@ -13821,7 +14182,7 @@ def test_meal_intake_barcode_replays_existing_snapshot_by_client_id(monkeypatch)
 
 
 def test_meal_intake_text_preserves_parser_item_breakdown(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parse(_text, **_kw):
         return {
@@ -13914,7 +14275,7 @@ def test_meal_intake_text_preserves_parser_item_breakdown(monkeypatch):
 
 
 def test_meal_intake_photo_text_item_breakdown_preserves_image_origin(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     monkeypatch.setattr(
         module.vision_estimator,
@@ -14018,7 +14379,7 @@ def test_barcode_lookup_cache_round_trip_and_delete_user_data(tmp_path, monkeypa
 
 
 def test_non_boolean_image_provenance_is_not_granted_in_single_multi_or_original(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
 
@@ -14060,7 +14421,7 @@ def test_non_boolean_image_provenance_is_not_granted_in_single_multi_or_original
 
 
 def test_terminal_capture_replay_returns_current_accepted_estimate_with_legacy_fallback(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     original = _accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate")
@@ -14114,7 +14475,7 @@ def test_terminal_capture_replay_returns_current_accepted_estimate_with_legacy_f
 
 
 def test_imported_pending_canes_food_log_cannot_grant_source_backed_accept(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     forged = _accepted_estimate(
@@ -14174,7 +14535,7 @@ def test_imported_pending_canes_food_log_cannot_grant_source_backed_accept(monke
 
 
 def test_imported_canes_snapshot_stays_visibly_blocked_and_candidate_selection_cannot_resolve_it(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -14245,7 +14606,7 @@ def test_imported_canes_snapshot_stays_visibly_blocked_and_candidate_selection_c
 
 
 def test_negative_canonical_macros_cannot_replace_terminal_current_provenance(monkeypatch):
-    _client(monkeypatch)
+    _APP_UNDER_TEST
     original = _accepted_estimate(item_name="Terminal meal", calories=500, source="ai_text_estimate")
     current = _accepted_estimate(item_name="Terminal meal", calories=540, source="nutritionix")
     data_store.add_food_log(
@@ -14287,7 +14648,7 @@ def test_negative_canonical_macros_cannot_replace_terminal_current_provenance(mo
 
 
 def test_terminal_partial_refresh_keeps_row_macros_coherent_with_accepted_estimate(monkeypatch):
-    _client(monkeypatch)
+    _APP_UNDER_TEST
     original = _accepted_estimate(item_name="Coherent meal", calories=500, source="ai_text_estimate")
     current = _accepted_estimate(
         item_name="Coherent meal",
@@ -14328,7 +14689,7 @@ def test_terminal_partial_refresh_keeps_row_macros_coherent_with_accepted_estima
 
 
 def test_all_declared_provenance_components_must_be_approved_for_trust(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     contradictory = _accepted_estimate(
         source="nutritionix",
         underlying_source="nutritionix",
@@ -14346,7 +14707,7 @@ def test_all_declared_provenance_components_must_be_approved_for_trust(monkeypat
 
 
 def test_legacy_meal_type_edit_keeps_trusted_snapshot_candidate_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     candidate = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=920,
@@ -14403,7 +14764,7 @@ def test_legacy_meal_type_edit_keeps_trusted_snapshot_candidate_provenance(monke
 
 
 def test_photo_source_backed_snapshot_accept_keeps_server_image_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parser(text, **_kw):
         if text == "source-backed photo replacement":
@@ -14491,7 +14852,7 @@ def test_photo_source_backed_snapshot_accept_keeps_server_image_provenance(monke
 
 
 def test_imported_item_original_canes_identity_stays_blocked_without_parent_row(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     meal_id = "imported-item-original-canes"
@@ -14561,7 +14922,7 @@ def test_imported_item_original_canes_identity_stays_blocked_without_parent_row(
 
 
 def test_food_log_current_projection_matches_accepted_estimate_for_inserts_and_replacements(monkeypatch):
-    _client(monkeypatch)
+    _APP_UNDER_TEST
     original = _accepted_estimate(item_name="Original AI meal", calories=600, source="ai_text_estimate")
     accepted = _accepted_estimate(
         item_name="Canonical lookup meal",
@@ -14629,7 +14990,7 @@ def test_food_log_current_projection_matches_accepted_estimate_for_inserts_and_r
 
 
 def test_known_provider_wrappers_authorize_terminal_current_replacement(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     wrappers = (
         _accepted_estimate(source="local_cache", underlying_source="nutritionix"),
         _accepted_estimate(source="vision_claude+nutritionix"),
@@ -14642,7 +15003,7 @@ def test_known_provider_wrappers_authorize_terminal_current_replacement(monkeypa
 
 
 def test_unknown_singular_provenance_component_rejects_app_and_storage_trust(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     contradictory = _accepted_estimate(
         source="nutritionix",
         underlying_source="invented_provider",
@@ -14653,7 +15014,7 @@ def test_unknown_singular_provenance_component_rejects_app_and_storage_trust(mon
 
 
 def test_imported_canes_snapshot_allows_new_material_correction_but_blocks_unchanged(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -14700,7 +15061,7 @@ def test_imported_canes_snapshot_allows_new_material_correction_but_blocks_uncha
 
 
 def test_provider_topology_rejects_contradictory_approved_paths(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     invalid = (
         _accepted_estimate(source="nutritionix", underlying_source="usda_fdc"),
         _accepted_estimate(source="nutritionix+usda_fdc"),
@@ -14721,7 +15082,7 @@ def test_provider_topology_rejects_contradictory_approved_paths(monkeypatch):
 
 
 def test_authorized_accepted_estimate_null_optional_fields_clear_top_level_projection(monkeypatch):
-    _client(monkeypatch)
+    _APP_UNDER_TEST
     original = _accepted_estimate(item_name="Original AI meal", source="ai_text_estimate")
     current = _accepted_estimate(
         item_name="Current lookup meal",
@@ -14764,7 +15125,7 @@ def test_authorized_accepted_estimate_null_optional_fields_clear_top_level_proje
 
 
 def test_explicit_item_accept_validates_included_estimates_without_inspecting_nonincluded(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
 
@@ -14808,7 +15169,7 @@ def test_explicit_item_accept_validates_included_estimates_without_inspecting_no
 
 
 def test_imported_legacy_canes_hydration_exposes_blocked_save_warning(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_parser(
         monkeypatch,
         module,
@@ -14853,7 +15214,7 @@ def test_imported_legacy_canes_hydration_exposes_blocked_save_warning(monkeypatc
 
 
 def test_explicit_accept_preserves_fresh_server_source_backed_snapshot_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     trusted = _accepted_estimate(
         item_name="Nutritionix chicken bowl",
         calories=720,
@@ -14896,7 +15257,7 @@ def test_explicit_accept_preserves_fresh_server_source_backed_snapshot_provenanc
 
 
 def test_imported_itemless_legacy_canes_snapshot_refreshes_then_accepts_resolution(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     original = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=840,
@@ -14996,7 +15357,7 @@ def test_imported_itemless_legacy_canes_snapshot_refreshes_then_accepts_resoluti
 
 
 def test_imported_canes_refresh_keeps_untrusted_marker_until_material_resolution(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     original = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=840,
@@ -15091,7 +15452,7 @@ def test_imported_canes_refresh_keeps_untrusted_marker_until_material_resolution
 
 
 def test_imported_canes_followup_keeps_untrusted_marker_after_rename(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     original = _accepted_estimate(
         item_name="Canes Box Combo",
         calories=840,
@@ -15157,7 +15518,7 @@ def test_imported_canes_followup_keeps_untrusted_marker_after_rename(monkeypatch
 
 
 def test_explicit_server_candidate_accept_validates_raw_included_estimate(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     trusted = _accepted_estimate(item_name="Lookup bowl", calories=720, source="nutritionix")
@@ -15196,7 +15557,7 @@ def test_explicit_server_candidate_accept_validates_raw_included_estimate(monkey
 
 
 def test_add_nutrition_explicit_nullable_fields_clear_terminal_current_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     current = _accepted_estimate(
         item_name="Lookup meal",
@@ -15243,7 +15604,7 @@ def test_add_nutrition_explicit_nullable_fields_clear_terminal_current_provenanc
 
 
 def test_terminal_current_replacement_rejects_invalid_projected_numeric_values(monkeypatch):
-    _client(monkeypatch)
+    _APP_UNDER_TEST
     current = _accepted_estimate(item_name="Lookup meal", calories=900, source="nutritionix")
     data_store.add_food_log(
         1,
@@ -15280,7 +15641,7 @@ def test_terminal_current_replacement_rejects_invalid_projected_numeric_values(m
 
 
 def test_imported_corrupt_snapshot_hydrates_without_pending_endpoint_failure(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     legacy = _accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate")
     _stub_parser(monkeypatch, module, estimate=legacy, source="ai_text_estimate")
     client = module.app.test_client()
@@ -15318,7 +15679,7 @@ def test_imported_corrupt_snapshot_hydrates_without_pending_endpoint_failure(mon
 
 
 def test_material_correction_does_not_inherit_authoritative_provider_provenance(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     original = _accepted_estimate(
@@ -15364,7 +15725,7 @@ def test_material_correction_does_not_inherit_authoritative_provider_provenance(
 
 
 def test_terminal_partial_current_does_not_merge_new_nutrition_with_old_provider(monkeypatch):
-    _client(monkeypatch)
+    _APP_UNDER_TEST
     original = _accepted_estimate(item_name="Original AI bowl", source="ai_text_estimate")
     current = _accepted_estimate(
         item_name="Lookup bowl",
@@ -15419,7 +15780,7 @@ def test_terminal_partial_current_does_not_merge_new_nutrition_with_old_provider
 
 
 def test_supported_vision_wrappers_are_source_backed_in_app_and_storage(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     for source in ("vision_lm_studio+nutritionix", "vision_ollama+nutritionix"):
         estimate = _accepted_estimate(source=source, underlying_source="nutritionix")
@@ -15428,7 +15789,7 @@ def test_supported_vision_wrappers_are_source_backed_in_app_and_storage(monkeypa
 
 
 def test_legacy_pending_canes_hydration_derives_visible_branded_policy(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     today = module._today_str()
     canes = _accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate")
@@ -15486,7 +15847,7 @@ def test_legacy_pending_canes_hydration_derives_visible_branded_policy(monkeypat
 
 
 def test_multi_item_accept_rejects_nonfinite_core_nutrition_atomically(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
 
@@ -15509,7 +15870,7 @@ def test_multi_item_accept_rejects_nonfinite_core_nutrition_atomically(monkeypat
 
 
 def test_imported_snapshot_cannot_forge_material_correction_attestation(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     estimate = _accepted_estimate(item_name="Canes Box Combo", calories=840, source="ai_text_estimate")
@@ -15553,7 +15914,7 @@ def test_imported_snapshot_cannot_forge_material_correction_attestation(monkeypa
 
 
 def test_imported_material_correction_keeps_snapshot_original_not_pending_aggregate(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
 
     def fake_parser(text, **_kw):
         calories = 890 if text == "Canes Box Combo larger" else 840
@@ -15611,7 +15972,7 @@ def test_imported_material_correction_keeps_snapshot_original_not_pending_aggreg
 
 
 def test_imported_pending_source_claim_hydrates_as_visible_canes_block(monkeypatch):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     client = module.app.test_client()
     headers = {"X-Requested-With": "XMLHttpRequest"}
     today = module._today_str()
@@ -15718,7 +16079,7 @@ def test_terminal_event_without_canonical_rows_rejects_retry_reconstruction(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "terminal-event-missing-parent"
     meal_id = "terminal-event-missing-meal"
@@ -15747,7 +16108,7 @@ def test_terminal_event_with_partial_canonical_rows_rejects_retry_reconstruction
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "terminal-event-partial-parent"
     meal_id = "terminal-event-partial-meal"
@@ -15784,7 +16145,7 @@ def test_terminal_event_appearing_in_final_transaction_rejects_reconstruction(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "final-transaction-event-parent"
     meal_id = "final-transaction-event-meal"
@@ -15825,7 +16186,7 @@ def test_concurrent_multi_winner_replay_repairs_adaptation_after_transaction(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "concurrent-winner-parent"
     meal_id = "concurrent-winner-meal"
@@ -15879,7 +16240,7 @@ def test_protected_manual_conflict_preserves_pending_meal_children(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "protected-manual-parent"
     child_client_id = "protected-manual-child"
@@ -15926,7 +16287,7 @@ def test_multi_accept_promotes_matching_manual_row_before_logged_event(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "manual-row-multi-accept"
     manual_estimate = _accepted_estimate(item_name="Manual canonical", calories=430)
@@ -15988,7 +16349,7 @@ def test_exact_set_multi_accept_promotes_manual_row_before_logged_event(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     accepted_calls = []
     monkeypatch.setattr(
@@ -16055,7 +16416,7 @@ def test_exact_set_manual_uses_trusted_snapshot_correction_and_learns_once(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     corrected_calls = []
     monkeypatch.setattr(
@@ -16122,7 +16483,7 @@ def test_exact_set_manual_promotion_guard_failure_does_not_log_event(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "exact-set-manual-promotion-race"
     estimate = _accepted_estimate(item_name="Raced manual", calories=430)
@@ -16165,7 +16526,7 @@ def test_manual_row_deleted_after_preflight_is_not_recreated(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "manual-deleted-after-preflight"
     estimate = _accepted_estimate(item_name="Deleted manual", calories=430)
@@ -16219,7 +16580,7 @@ def test_multi_accept_rolls_back_manual_promotion_on_later_conflict(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     meal_id = "manual-promotion-rollback"
     manual_estimate = _accepted_estimate(item_name="Rollback manual", calories=430)
@@ -16283,7 +16644,7 @@ def test_snapshotless_direct_accept_preserves_pending_meal_children(
     tmp_path,
     with_pending_parent_alias,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "snapshotless-direct-parent"
     child_client_id = "snapshotless-direct-child"
@@ -16337,7 +16698,7 @@ def test_direct_child_accept_preserves_snapshotless_pending_siblings(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "snapshotless-child-parent"
     child_ids = ["snapshotless-child-a", "snapshotless-child-b"]
@@ -16375,7 +16736,7 @@ def test_eventless_partial_recovery_enqueues_only_new_canonical_row(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "eventless-partial-parent"
     meal_id = "eventless-partial-meal"
@@ -16425,7 +16786,7 @@ def test_direct_vocab_write_failure_rolls_back_claim_for_retry(
     recorder_name,
     expected_counts,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client_id = f"atomic-vocab-{correction_state}"
     phrase = f"canonical {correction_state} phrase"
@@ -16495,7 +16856,7 @@ def test_direct_retry_reconciles_concurrent_canonical_correction(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     monkeypatch.setattr(
         module.personal_vocab,
@@ -16581,7 +16942,7 @@ def test_direct_retry_rejects_concurrent_nonterminal_outcome(
     tmp_path,
     concurrent_outcome,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     monkeypatch.setattr(
         module.personal_vocab,
@@ -16667,7 +17028,7 @@ def test_exact_multi_replay_repairs_adaptation_once_from_canonical_rows(
     tmp_path,
     processed_first,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     parent_client_id = "multi-replay-adaptation-parent"
     meal_id = "multi-replay-adaptation-meal"
@@ -16720,7 +17081,7 @@ def test_direct_row_changed_race_repairs_canonical_side_effects_once(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     monkeypatch.setattr(
         module.personal_vocab,
@@ -16784,7 +17145,7 @@ def test_direct_protected_conflict_repairs_canonical_side_effects_once(
     monkeypatch,
     tmp_path,
 ):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     monkeypatch.setattr(
         module.personal_vocab,
