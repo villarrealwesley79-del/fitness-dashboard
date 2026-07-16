@@ -7310,6 +7310,7 @@
     const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';
     const ACTIVE_WORKOUT_DRAFT_VERSION = 1;
     let _activeWorkoutDraftSavePending = false;
+    let _activeWorkoutDraftPersistenceFailed = false;
     let _mealQueueAuthScopeRetryTimer = null;
     let _mealQueueAuthScopeRetryDelayMs = 5_000;
 
@@ -7324,6 +7325,16 @@
     function activeWorkoutDraftScopeForWorkout(workout) {
         const workoutScope = String(workout && workout.auth_scope || '').trim();
         return workoutScope || currentActiveWorkoutDraftScope();
+    }
+
+    function setActiveWorkoutDraftPersistenceFailed(failed) {
+        _activeWorkoutDraftPersistenceFailed = Boolean(failed);
+        const warning = $('active-workout-persistence-warning');
+        if (!warning) return;
+        warning.hidden = !_activeWorkoutDraftPersistenceFailed;
+        warning.textContent = _activeWorkoutDraftPersistenceFailed
+            ? 'This workout still works, but it cannot be recovered after closing or reloading this page.'
+            : '';
     }
 
     function activeWorkoutDraftIsValid(parsed) {
@@ -7417,7 +7428,11 @@
             };
             localStorage.setItem(ACTIVE_WORKOUT_DRAFT_KEY, JSON.stringify(draft));
             _activeWorkoutDraftSavePending = false;
-        } catch (_) { /* localStorage may be unavailable; keep in memory for this page. */ }
+            setActiveWorkoutDraftPersistenceFailed(false);
+        } catch (_) {
+            // localStorage may be unavailable; keep the workout in memory for this page.
+            setActiveWorkoutDraftPersistenceFailed(true);
+        }
     }
 
     function flushPendingActiveWorkoutDraftSave() {
@@ -7432,6 +7447,7 @@
 
     function clearActiveWorkoutDraft() {
         try { localStorage.removeItem(ACTIVE_WORKOUT_DRAFT_KEY); } catch (_) {}
+        setActiveWorkoutDraftPersistenceFailed(false);
     }
 
     function restoreActiveWorkoutDraft() {

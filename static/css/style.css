@@ -2815,6 +2815,13 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     font-variant-numeric: tabular-nums;
     z-index: 2;
 }
+.active-workout-persistence-warning {
+    margin: 0;
+    padding: 0 18px 12px;
+    color: #fecaca;
+    font-size: 13px;
+    line-height: 1.4;
+}
 .active-cardio-meta {
     color: var(--fg-dim);
     font-size: 12px;
