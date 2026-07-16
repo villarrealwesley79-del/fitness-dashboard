@@ -1,7 +1,7 @@
 # FIT-393: GX10 LoRA/QLoRA feasibility spike
 
-Date: 2026-07-16  
-Scope: research only; no training run was performed  
+Date: 2026-07-16
+Scope: research only; no training run was performed
 Decision: **NO-GO on building a production pipeline now; conditional GO for one local feasibility probe after the production-prompt benchmark is ready.**
 
 ## Summary and recommendation
