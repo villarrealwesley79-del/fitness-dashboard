@@ -3941,7 +3941,7 @@ def generate_next_workout(
         mesocycle["indicators"] = deload_status.get("indicators", [])
 
     recommendation = {
-        "id": datetime.now().strftime("%Y%m%d%H%M%S"),
+        "id": _new_workout_recommendation_id(),
         "created_at": datetime.now().isoformat(),
         "focus": focus,
         "goal": goal,
@@ -4643,11 +4643,25 @@ def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
     return scoped
 
 
+def _new_workout_recommendation_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:12]}"
+
+
 def _persist_current_workout_plan(recommendation: dict, fingerprint: str) -> dict:
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT, LAST_WORKOUT_RECOMMENDATION_OWNER
     with CURRENT_WORKOUT_PLAN_LOCK:
         user_id = _current_data_user_id()
-        persisted = save_current_workout_plan(user_id, fingerprint, recommendation)
+        plan_to_persist = recommendation
+        current = get_current_workout_plan(user_id)
+        if (
+            current
+            and current.get("plan")
+            and current["plan"].get("id") == recommendation.get("id")
+            and current["plan"] != recommendation
+        ):
+            plan_to_persist = copy.deepcopy(recommendation)
+            plan_to_persist["id"] = _new_workout_recommendation_id()
+        persisted = save_current_workout_plan(user_id, fingerprint, plan_to_persist)
         authoritative_plan = persisted["plan"]
         LAST_WORKOUT_RECOMMENDATION = authoritative_plan
         LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
@@ -4809,6 +4823,40 @@ def _current_workout_plan_for_fingerprint(fingerprint: str, *, allow_stale_unsav
             row = get_current_workout_plan(_current_data_user_id())
             if row and row.get("plan") and not _is_lightweight_current_workout_plan(row.get("plan")):
                 return _persist_current_workout_plan(row["plan"], fingerprint)
+        return None
+
+
+def _read_only_current_workout_plan_for_fingerprint(fingerprint: str) -> dict | None:
+    """Return an immutable snapshot of the current same-user workout plan.
+
+    The swap endpoint uses this before it accepts any exercise mutation.  It
+    deliberately does not promote persisted rows into process globals and
+    never saves a stale in-memory plan when the request fingerprint changes.
+    The exact-fingerprint row is authoritative when present; otherwise a
+    current same-user global plan (or the latest persisted row) preserves the
+    existing plan-selection behavior without side effects.
+    """
+    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_OWNER
+    user_id = _current_data_user_id()
+    with CURRENT_WORKOUT_PLAN_LOCK:
+        exact = get_current_workout_plan(user_id, fingerprint=fingerprint)
+        if exact and exact.get("plan") and not _is_lightweight_current_workout_plan(exact["plan"]):
+            return copy.deepcopy(exact["plan"])
+
+        current = LAST_WORKOUT_RECOMMENDATION
+        owner = LAST_WORKOUT_RECOMMENDATION_OWNER or {}
+        if (
+            current
+            and not _is_lightweight_current_workout_plan(current)
+            and owner.get("plan_id") == id(current)
+            and owner.get("user_id") == user_id
+            and owner.get("fingerprint") in (None, fingerprint)
+        ):
+            return copy.deepcopy(current)
+
+        latest = get_current_workout_plan(user_id)
+        if latest and latest.get("plan") and not _is_lightweight_current_workout_plan(latest["plan"]):
+            return copy.deepcopy(latest["plan"])
         return None
 
 
@@ -10177,20 +10225,33 @@ def swap_workout_exercise():
     if err:
         return err
 
-    workout_index, err2 = _coerce_int(data.get("workout_index", 0), "workout_index", min_v=0, max_v=10_000)
-    if err2:
-        return err2
+    raw_recommendation_id = data.get("recommendation_id")
+    if (
+        not isinstance(raw_recommendation_id, str)
+        or not raw_recommendation_id.strip()
+        or len(raw_recommendation_id.strip()) > 256
+    ):
+        return api_error("recommendation_id must be a non-empty string", 400, code="invalid_field")
+    recommendation_id = raw_recommendation_id.strip()
+
+    fingerprint = _workout_recommendation_fingerprint()
+    recommendation = _read_only_current_workout_plan_for_fingerprint(fingerprint)
+    if not recommendation:
+        return api_error("No recent workout recommendation available", 404, code="not_found")
+    if recommendation.get("id") != recommendation_id:
+        return api_error(
+            "Workout plan changed. Refresh the workout and try again.",
+            409,
+            code="plan_changed",
+        )
+    original_recommendation = copy.deepcopy(recommendation)
+
     exercise_index, err2 = _coerce_int(data.get("exercise_index"), "exercise_index", min_v=0, max_v=10_000)
     if err2:
         return err2
     new_name, err2 = _coerce_str(data.get("new_exercise_name"), "new_exercise_name", required=True, max_len=128)
     if err2:
         return err2
-
-    fingerprint = _workout_recommendation_fingerprint()
-    recommendation = _current_workout_plan_for_fingerprint(fingerprint, allow_stale_unsaved=True)
-    if not recommendation:
-        return api_error("No recent workout recommendation available", 404, code="not_found")
 
     exercises = recommendation.get("exercises") or []
     if not (0 <= exercise_index < len(exercises)):
@@ -10249,7 +10310,19 @@ def swap_workout_exercise():
 
     exercises[exercise_index] = updated_ex
     recommendation["exercises"] = exercises
-    recommendation = _persist_current_workout_plan(recommendation, fingerprint)
+    # The first check protects against a plan that changed before the request.
+    # Re-check under the same lock used by persistence so a regeneration that
+    # finishes while swap resolution is running cannot be overwritten here.
+    with CURRENT_WORKOUT_PLAN_LOCK:
+        current = _read_only_current_workout_plan_for_fingerprint(fingerprint)
+        if not current or current != original_recommendation:
+            return api_error(
+                "Workout plan changed. Refresh the workout and try again.",
+                409,
+                code="plan_changed",
+            )
+        recommendation["id"] = _new_workout_recommendation_id()
+        recommendation = _persist_current_workout_plan(recommendation, fingerprint)
 
     # Persist the base plan (above), but return the wearable-adjusted view so an
     # active deload/caution clamps every exercise -- including the untouched ones
