@@ -198,9 +198,9 @@ def test_next_workout_endpoint_and_asset_bust_are_wired():
         )
     )
     assert "api(withActiveWorkoutAdaptationParams('/api/next-workout'), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS })" in app_js
-    assert "app-loader.js?v=20260713-fit270-oura-detail" in template
-    assert "app.js?v=20260713-fit270-oura-detail" in (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "fitness-dashboard-v20260713-fit270-oura-detail" in sw
+    assert "app-loader.js?v=20260716-fit392-rpe" in template
+    assert "app.js?v=20260716-fit392-rpe" in (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "fitness-dashboard-v20260716-fit392-rpe" in sw
     assert "const STATIC_ASSETS" not in sw
     assert "cache.addAll" not in sw
     assert "caches.keys()" in sw
@@ -239,10 +239,10 @@ def test_dashboard_shell_defers_heavy_app_bundle_until_after_load():
     template = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
 
-    assert "app-loader.js?v=20260713-fit270-oura-detail" in template
+    assert "app-loader.js?v=20260716-fit392-rpe" in template
     assert "<script src=\"/static/js/app.js" not in template
     assert "window.addEventListener('load', loadAppBundle, { once: true });" in loader
-    assert "script.src = '/static/js/app.js?v=20260713-fit270-oura-detail';" in loader
+    assert "script.src = '/static/js/app.js?v=20260716-fit392-rpe';" in loader
     assert "script.async = true;" in loader
 
 

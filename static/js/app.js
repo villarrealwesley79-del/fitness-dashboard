@@ -7359,17 +7359,26 @@
             const ex = aw.exercises && aw.exercises[exIdx];
             const set = ex && ex.logged_sets && ex.logged_sets[setIdx];
             if (!set) return;
+            const rpeInput = qs('input[data-field="rpe"]', row);
+            const rpe = normalizeActiveSetRpe(
+                rpeInput ? rpeInput.value : (set.rpe ?? prescribedRpeValue(ex)),
+                Boolean(set.rpe_observed),
+            );
             const next = {
                 weight: qs('input[data-field="weight"]', row).value,
                 reps: qs('input[data-field="reps"]', row).value,
                 done: qs('input[data-field="done"]', row).checked,
                 notes: qs('input[data-field="notes"]', row).value,
+                rpe: rpe.rpe,
+                rpe_observed: rpe.rpe_observed,
             };
             if (
                 String(set.weight ?? '') !== String(next.weight)
                 || String(set.reps ?? '') !== String(next.reps)
                 || Boolean(set.done) !== Boolean(next.done)
                 || String(set.notes ?? '') !== String(next.notes)
+                || set.rpe !== next.rpe
+                || Boolean(set.rpe_observed) !== next.rpe_observed
             ) {
                 ex.logged_sets[setIdx] = next;
                 aw.dirty = true;
@@ -7486,6 +7495,30 @@
         }, delayMs);
     }
 
+    function prescribedRpeValue(ex) {
+        const candidate = Number(ex && (ex.rpe_target ?? ex.rpe ?? 7));
+        return Number.isFinite(candidate) && candidate >= 1 && candidate <= 10 ? candidate : 7;
+    }
+
+    function normalizeActiveSetRpe(value, observed = false) {
+        if (value === '' || value == null || typeof value === 'boolean') {
+            return { rpe: null, rpe_observed: false };
+        }
+        const candidate = Number(value);
+        const rpe = Number.isFinite(candidate) && candidate >= 1 && candidate <= 10
+            ? candidate
+            : null;
+        return { rpe, rpe_observed: rpe !== null && observed === true };
+    }
+
+    function rpeInteractionObserves(event) {
+        return Boolean(
+            event
+            && event.isTrusted === true
+            && ['click', 'input', 'change'].includes(event.type)
+        );
+    }
+
     function buildLoggedSets(ex, previousSets) {
         const reps = recommendedRepsValue(ex);
         const weight = recommendedWeightValue(ex);
@@ -7493,11 +7526,21 @@
         const rowCount = Math.max(setCountForExercise(ex), priorCount);
         return Array.from({ length: rowCount }, (_, idx) => {
             const prev = previousSets && previousSets[idx];
+            const previousRpe = normalizeActiveSetRpe(prev && prev.rpe, Boolean(prev && prev.rpe_observed));
+            const previousRpeWasCleared = Boolean(
+                prev
+                && Object.prototype.hasOwnProperty.call(prev, 'rpe')
+                && previousRpe.rpe === null
+            );
             return {
                 reps: prev && prev.reps !== '' && prev.reps != null ? prev.reps : reps,
                 weight: prev && prev.weight !== '' && prev.weight != null ? prev.weight : weight,
                 done: prev ? Boolean(prev.done) : false,
                 notes: prev && prev.notes != null ? prev.notes : '',
+                rpe: previousRpe.rpe_observed
+                    ? previousRpe.rpe
+                    : (previousRpeWasCleared ? null : prescribedRpeValue(ex)),
+                rpe_observed: previousRpe.rpe_observed,
             };
         });
     }
@@ -7562,18 +7605,39 @@
         ) : '';
         const editedSet = (s) => {
             if (!s) return false;
-            if (s.done || (s.notes != null && String(s.notes).trim())) return true;
+            if (s.done || s.rpe_observed || (s.notes != null && String(s.notes).trim())) return true;
+            if (
+                Object.prototype.hasOwnProperty.call(s, 'rpe')
+                && normalizeActiveSetRpe(s.rpe, Boolean(s.rpe_observed)).rpe === null
+            ) return true;
             if (previousReps && String(s.reps ?? '') !== previousReps) return true;
             if (previousWeight && String(s.weight ?? '') !== previousWeight) return true;
             return false;
         };
-        const copySet = (s) => ({
-            reps: s && s.reps != null ? s.reps : '',
-            weight: s && s.weight != null ? s.weight : '',
-            done: Boolean(s && s.done),
-            notes: s && s.notes != null ? s.notes : '',
+        const copySet = (s) => {
+            const rpe = normalizeActiveSetRpe(s && s.rpe, Boolean(s && s.rpe_observed));
+            const rpeWasCleared = Boolean(
+                s
+                && Object.prototype.hasOwnProperty.call(s, 'rpe')
+                && rpe.rpe === null
+            );
+            return {
+                reps: s && s.reps != null ? s.reps : '',
+                weight: s && s.weight != null ? s.weight : '',
+                done: Boolean(s && s.done),
+                notes: s && s.notes != null ? s.notes : '',
+                rpe: rpe.rpe !== null ? rpe.rpe : (rpeWasCleared ? null : prescribedRpeValue(newEx)),
+                rpe_observed: rpe.rpe_observed,
+            };
+        };
+        const freshSet = () => ({
+            reps: targetReps,
+            weight: targetWeight,
+            done: false,
+            notes: '',
+            rpe: prescribedRpeValue(newEx),
+            rpe_observed: false,
         });
-        const freshSet = () => ({ reps: targetReps, weight: targetWeight, done: false, notes: '' });
         const rows = Array.from({ length: targetCount }, (_, idx) => {
             const prev = prevList[idx];
             return editedSet(prev) ? copySet(prev) : freshSet();
@@ -7625,7 +7689,7 @@
 
     function activeLoggedSetHasWork(ex, set) {
         if (!set) return false;
-        if (set.done || (set.notes != null && String(set.notes).trim())) return true;
+        if (set.done || set.rpe_observed || (set.notes != null && String(set.notes).trim())) return true;
 
         const targetValue = (value) => {
             if (value == null || value === '') return '';
@@ -7740,17 +7804,24 @@
         };
     }
 
-    function updateLoggedSetFromRow(row) {
+    function updateLoggedSetFromRow(row, { rpeObserved = null } = {}) {
         const exIdx = Number(row.dataset.ex);
         const setIdx = Number(row.dataset.set);
         const ex = state.activeWorkout && state.activeWorkout.exercises && state.activeWorkout.exercises[exIdx];
         if (!ex || !ex.logged_sets || !ex.logged_sets[setIdx]) return;
-        const wasDone = !!ex.logged_sets[setIdx].done;
+        const previousSet = ex.logged_sets[setIdx];
+        const wasDone = !!previousSet.done;
+        const rpe = normalizeActiveSetRpe(
+            qs('input[data-field="rpe"]', row).value,
+            rpeObserved === null ? Boolean(previousSet.rpe_observed) : rpeObserved,
+        );
         ex.logged_sets[setIdx] = {
             weight: qs('input[data-field="weight"]', row).value,
             reps: qs('input[data-field="reps"]', row).value,
             done: qs('input[data-field="done"]', row).checked,
             notes: qs('input[data-field="notes"]', row).value,
+            rpe: rpe.rpe,
+            rpe_observed: rpe.rpe_observed,
         };
         state.activeWorkout.dirty = true;
         saveActiveWorkoutDraft();
@@ -7865,11 +7936,19 @@
             card.className = 'active-ex';
             const sets = setCountForExercise(ex);
             const reps = ex.target_reps || ex.reps || 10;
-            const rpe = ex.rpe_target || ex.rpe || '7';
-            ex.rpe = rpe; // keep for completeWorkout payload
             const target = exerciseTargetText(ex);
             let rowsHtml = '';
             ex.logged_sets.forEach((set, sidx) => {
+                const storedRpe = normalizeActiveSetRpe(set.rpe, Boolean(set.rpe_observed));
+                const rpeWasCleared = Object.prototype.hasOwnProperty.call(set, 'rpe') && storedRpe.rpe === null;
+                const renderedRpe = storedRpe.rpe_observed
+                    ? storedRpe
+                    : {
+                        rpe: rpeWasCleared ? null : prescribedRpeValue(ex),
+                        rpe_observed: false,
+                    };
+                set.rpe = renderedRpe.rpe;
+                set.rpe_observed = renderedRpe.rpe_observed;
                 // FIT-108: flag the first incomplete set across the whole
                 // workout so the user's next action is visually obvious.
                 const isNext = progress.nextIncomplete
@@ -7880,6 +7959,10 @@
                         <label>${sidx + 1}</label>
                         <input type="number" placeholder="Weight" data-field="weight" inputmode="decimal" value="${escapeHtml(set.weight)}">
                         <input type="number" placeholder="Reps" data-field="reps" inputmode="numeric" value="${escapeHtml(set.reps)}">
+                        <label class="set-rpe-cell${set.rpe_observed ? ' observed' : ''}">
+                            <span>RPE</span>
+                            <input type="number" data-field="rpe" inputmode="decimal" min="1" max="10" step="0.5" value="${escapeHtml(set.rpe)}" aria-label="RPE for set ${sidx + 1}; tap to confirm prescribed value">
+                        </label>
                         <label class="set-done-cell" aria-label="mark set done">
                             <input type="checkbox" data-field="done"${set.done ? ' checked' : ''}>
                         </label>
@@ -7945,6 +8028,19 @@
         }
         qsa('.set-row', body).forEach((row) => {
             qsa('input', row).forEach((input) => {
+                if (input.dataset.field === 'rpe') {
+                    ['click', 'input', 'change'].forEach((eventName) => {
+                        input.addEventListener(eventName, (event) => {
+                            updateLoggedSetFromRow(row, {
+                                rpeObserved: rpeInteractionObserves(event) ? true : null,
+                            });
+                            const set = state.activeWorkout.exercises[Number(row.dataset.ex)].logged_sets[Number(row.dataset.set)];
+                            const cell = input.closest('.set-rpe-cell');
+                            if (cell) cell.classList.toggle('observed', Boolean(set.rpe_observed));
+                        });
+                    });
+                    return;
+                }
                 input.addEventListener(input.type === 'checkbox' ? 'change' : 'input', () => updateLoggedSetFromRow(row));
             });
         });
@@ -8906,13 +9002,22 @@
         const exercises = [];
         aw.exercises.forEach((ex, i) => {
             const rows = qsa(`.set-row[data-ex="${i}"]`, $('active-workout-body'));
-            const sets = rows.map((r) => ({
-                reps: Number(qs('input[data-field="reps"]', r).value || 0),
-                weight_lbs: Number(qs('input[data-field="weight"]', r).value || 0),
-                rpe: ex.rpe ? Number(ex.rpe) : null,
-                done: qs('input[data-field="done"]', r).checked,
-                notes: (qs('input[data-field="notes"]', r).value || '').trim(),
-            }));
+            const sets = rows.map((r) => {
+                const setIdx = Number(r.dataset.set);
+                const set = ex.logged_sets[setIdx] || {};
+                const rpe = normalizeActiveSetRpe(
+                    qs('input[data-field="rpe"]', r).value,
+                    Boolean(set.rpe_observed),
+                );
+                return {
+                    reps: Number(qs('input[data-field="reps"]', r).value || 0),
+                    weight_lbs: Number(qs('input[data-field="weight"]', r).value || 0),
+                    rpe: rpe.rpe,
+                    rpe_observed: rpe.rpe_observed,
+                    done: qs('input[data-field="done"]', r).checked,
+                    notes: (qs('input[data-field="notes"]', r).value || '').trim(),
+                };
+            });
             const hasCheckedSets = sets.some((s) => s.done);
             const completedSets = sets
                 .filter((s) => s.reps > 0 && s.weight_lbs >= 0 && (!hasCheckedSets || s.done))

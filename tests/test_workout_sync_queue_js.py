@@ -135,9 +135,9 @@ def test_active_workout_draft_restores_after_auth_scope_refresh_and_saves_on_bac
     assert "window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
     assert "document.addEventListener('visibilitychange', () => {" in boot_block
     assert "if (document.visibilityState === 'hidden') saveActiveWorkoutDraftBeforePageHidden();" in boot_block
-    assert "/static/js/app-loader.js?v=20260713-fit270-oura-detail" in APP_HTML
-    assert "/static/js/app.js?v=20260713-fit270-oura-detail" in APP_LOADER_JS
-    assert "const CACHE_NAME = 'fitness-dashboard-v20260713-fit270-oura-detail';" in APP_SW
+    assert "/static/js/app-loader.js?v=20260716-fit392-rpe" in APP_HTML
+    assert "/static/js/app.js?v=20260716-fit392-rpe" in APP_LOADER_JS
+    assert "const CACHE_NAME = 'fitness-dashboard-v20260716-fit392-rpe';" in APP_SW
 
 
 def test_active_workout_background_save_syncs_live_inputs_to_localstorage():
@@ -153,6 +153,7 @@ const rows = [{{
   fields: {{
     'input[data-field="weight"]': {{ value: '88' }},
     'input[data-field="reps"]': {{ value: '12' }},
+    'input[data-field="rpe"]': {{ value: '7' }},
     'input[data-field="done"]': {{ checked: true }},
     'input[data-field="notes"]': {{ value: 'WHOOP switch proof' }},
   }},
@@ -214,5 +215,7 @@ process.stdout.write(JSON.stringify({{
             "reps": "12",
             "done": True,
             "notes": "WHOOP switch proof",
+            "rpe": 7,
+            "rpe_observed": False,
         },
     }

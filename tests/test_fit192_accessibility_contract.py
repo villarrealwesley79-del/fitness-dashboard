@@ -217,7 +217,7 @@ def test_modal_markup_exposes_dialog_semantics_and_labels():
 def test_app_bundle_and_service_worker_versions_were_bumped_for_rollout():
     html = INDEX_HTML.read_text()
     sw = SW_JS.read_text()
-    assert "/static/css/style.css?v=20260626-fit238-qol" in html
-    assert "/static/js/app-loader.js?v=20260713-fit270-oura-detail" in html
-    assert "/static/js/app.js?v=20260713-fit270-oura-detail" in (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "fitness-dashboard-v20260713-fit270-oura-detail" in sw
+    assert "/static/css/style.css?v=20260716-fit392-rpe" in html
+    assert "/static/js/app-loader.js?v=20260716-fit392-rpe" in html
+    assert "/static/js/app.js?v=20260716-fit392-rpe" in (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "fitness-dashboard-v20260716-fit392-rpe" in sw

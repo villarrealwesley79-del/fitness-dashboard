@@ -11,7 +11,7 @@ APP_LOADER_JS = Path("static/js/app-loader.js").read_text()
 APP_SW_JS = Path("static/js/sw.js").read_text()
 APP_HTML = Path("templates/index.html").read_text()
 
-FIT270_ASSET_VERSION = "20260713-fit270-oura-detail"
+FIT270_ASSET_VERSION = "20260716-fit392-rpe"
 
 
 def _sync_detail_helpers() -> str:

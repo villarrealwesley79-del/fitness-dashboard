@@ -115,10 +115,15 @@ def test_start_workout_confirms_before_discarding_logged_active_sets():
 
 
 def _run_start_guard_fixture() -> dict:
-    helper_source = "function setActiveWorkoutFromRecommendation" + _slice_between(
-        APP_JS,
-        "function setActiveWorkoutFromRecommendation",
-        "const SYNC_QUEUE_KEY",
+    helper_source = (
+        "function prescribedRpeValue"
+        + _slice_between(APP_JS, "function prescribedRpeValue", "function buildLoggedSets")
+        + "function setActiveWorkoutFromRecommendation"
+        + _slice_between(
+            APP_JS,
+            "function setActiveWorkoutFromRecommendation",
+            "const SYNC_QUEUE_KEY",
+        )
     )
     node_script = f"""
 const vm = require('node:vm');
