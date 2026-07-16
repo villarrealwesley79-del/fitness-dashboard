@@ -62,7 +62,7 @@ Backend-only consumers include recommendation generation, AI fact context, Apple
 | Store | File | Owner | Business meaning |
 | --- | --- | --- | --- |
 | Fitness data | `fitness_data.db` | `data_store.py` | Food logs, structured body/cardio/nutrition/recovery data, meal review, adaptation events, lookup caches, push subscriptions, settings table. |
-| Auth | `auth.db` | `auth.py` | Local users, password hashes, owner guard, Stripe ids. |
+| Auth | `auth.db` | `auth.py` | Local users, password hashes, and owner guard. |
 | Oura cache | `oura_daily.sqlite3` | Oura integration | Oura daily readiness/sleep/HRV cache. |
 | Apple Health sync | `apple_health_sync.db` or env override | Apple Health integration | Health Auto Export records/events used for freshness and load. |
 | WHOOP | `whoop.sqlite3` | `whoop_store.py` | WHOOP connection, OAuth states, records, daily facts, sync runs. |
@@ -317,23 +317,23 @@ These differ from app JSON settings defaults and should not be treated as equiva
 | Auth rate window | 600 seconds | Login/register failure window. |
 | Auth max failures | 10 | Lockout threshold. |
 | CSRF header | `X-Requested-With: XMLHttpRequest` | Browser mutation proof accepted by server. |
-| CSRF exempt paths | `/api/apple-health/sync`, `/webhook` | External token/signature-authenticated routes. |
+| CSRF exempt paths | `/api/apple-health/sync` | External token-authenticated route. |
 
 ## 8. Integration Points
 
 - AI Coach / Recommendation Engine reads workouts, soreness, settings, recovery, cardio, food logs, adaptation events, Oura, Apple Health, WHOOP, wearable facts, and AI cache.
 - Food logging writes `food_logs`, lookup caches, personal vocabulary, meal review state, refresh events, and adaptation pending windows.
 - Wearable integrations write Oura cache, Apple Health sync DB, WHOOP DB/protected material, Open Wearables config, and public wearable facts.
-- Auth gates route access and owns `auth.db`, single-owner mode, password hashes, sessions, CSRF, and rate limiting.
+- Auth gates route access and owns `auth.db`, single-owner mode, password hashes, sessions, CSRF, and SQLite-backed shared rate limiting.
 - Backup/import crosses JSON stores, food/meal/vocab SQLite rows, and WHOOP daily facts.
 - Push notifications store subscriptions in `fitness_data.db` and derive public URLs from runtime config.
 - Synthetic cleanup script operates on runtime JSON history and should be coordinated with backup/export flows.
 
 ## 9. Permissions & Security
 
-Runtime data is local but not inherently public-safe. The sanitized repository excludes real `DATA_DIR` artifacts. Session auth protects app routes by default; public prefixes are login/register/logout, landing/pricing/static/manifest/service worker/SEO pages, Stripe webhook, checkout pages, and exact Apple Health sync webhook. Single-user mode is enabled unless `FITNESS_DASHBOARD_SINGLE_USER=false`; registration is disabled once a user exists.
+Runtime data is local but not inherently public-safe. The sanitized repository excludes real `DATA_DIR` artifacts. Session auth protects app routes by default; public prefixes are login/register/logout, static/manifest/service worker/SEO pages, and the exact Apple Health sync webhook. Single-user mode is enabled unless `FITNESS_DASHBOARD_SINGLE_USER=false`; registration is disabled once a user exists.
 
-Mutating browser requests must pass same-origin browser metadata or `X-Requested-With: XMLHttpRequest`. Cross-origin browser headers are rejected before CSRF header checks. Apple Health sync is exempt from browser CSRF because it is token-authenticated; Stripe webhook is exempt because it is signature-authenticated.
+Mutating browser requests must pass same-origin browser metadata or `X-Requested-With: XMLHttpRequest`. Cross-origin browser headers are rejected before CSRF header checks. Apple Health sync is exempt from browser CSRF because it is token-authenticated.
 
 WHOOP access/refresh token values are stored in a protected material file outside SQLite, not in the database. The connection table stores only `material_ref`, expiry, scopes, status, and redacted errors. Backup export validates WHOOP facts to reject token/material/raw payload fields.
 
@@ -376,7 +376,7 @@ Existing focused tests cover:
 
 - `tests/test_data_store_connection_lifecycle.py`: food-log operations close every `fitness_data.db` connection.
 - `tests/test_data_store_sodium.py`: sodium round-trip through nutrition records, migration adding sodium to pre-existing nutrition table, and missing sodium accepted.
-- `tests/test_fit183_runtime_paths.py`: `DATA_DIR` controls JSON and SQLite stores, `save_json` uses unique atomic temp files, public base URL feeds Apple Health and push, VAPID claims keep mailto fallback for local HTTP, Stripe/Oura helpers use `DATA_DIR`, and launchd installer exports runtime path/public base URL without hardcoding.
+- `tests/test_fit183_runtime_paths.py`: `DATA_DIR` controls JSON and SQLite stores, `save_json` uses unique atomic temp files, public base URL feeds Apple Health and push, VAPID claims keep mailto fallback for local HTTP, auth/Oura helpers use `DATA_DIR`, and launchd installer exports runtime path/public base URL without hardcoding.
 - Adjacent assigned tests also exercise persistence contracts indirectly: FIT-136 adaptation events/pending rows, AI fact context sanitization, AI metrics cache, Apple Health recommendation bridge history normalization/deduping, and dynamic cardio plan cache behavior.
 
 Coverage gaps:

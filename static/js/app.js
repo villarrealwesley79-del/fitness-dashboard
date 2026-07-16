@@ -168,7 +168,15 @@
         await handleUnauthorizedResponse(res);
         if (!res.ok) {
             const text = await res.text().catch(() => '');
-            throw new Error(`${res.status} ${path}: ${text.slice(0, 120)}`);
+            const requestError = new Error(`${res.status} ${path}: ${text.slice(0, 120)}`);
+            try {
+                const parsed = JSON.parse(text);
+                if (parsed && parsed.error) {
+                    requestError.apiErrorCode = parsed.error.code || null;
+                    requestError.apiErrorMessage = parsed.error.message || null;
+                }
+            } catch {}
+            throw requestError;
         }
         const ct = res.headers.get('content-type') || '';
         return ct.includes('application/json') ? res.json() : res.text();
@@ -374,26 +382,27 @@
     // --- FIT-137: nutrition-driven workout-adaptation confirmation ----
     // Read/display side of the FIT-136 seam. Mirrors the FIT-139 passive-notice
     // contract: poll the backend event feed, ack on dismiss, no client-side
-    // row diffing. A confirmation renders ONLY when FIT-136 reports an applied
-    // change to *today's* plan. No-change / low-confidence events arrive with
-    // `silent: true` and render nothing; next-day effects surface solely as
-    // #nw-why reasoning when tomorrow's plan opens, never as a toast here. The
+    // row diffing. Applied changes remain visible until acknowledgement, even
+    // after their original day. No-change / low-confidence events arrive with
+    // `silent: true` and render nothing. Stale source-meal events remain
+    // visible so the owner can see and dismiss the invalidated update. The
     // full adaptation audit log is backend-only — this code never fetches or
     // renders it, only the projected event's user-visible reason + signals.
     const workoutAdaptationNoticeState = {
         seen: new Set(),
+        statuses: new Map(),
+        dismissed: new Set(),
         fetching: false,
+        refillRequested: false,
     };
 
     function workoutAdaptationIsRenderable(event) {
-        // Applied-change gate. Silent (no-change / low-confidence) events and
-        // next-day effects render nothing; only an applied change to today's
-        // plan produces a confirmation.
+        // Applied changes and source-invalidated stale markers remain visible
+        // until acknowledgement. Silent no-change events still render nothing.
         if (!event || !event.id) return false;
         if (event.silent) return false;
-        if (event.status !== 'applied') return false;
+        if (!['applied', 'stale'].includes(event.status)) return false;
         if (event.change_type === 'none') return false;
-        if (event.applies_to !== 'today') return false;
         return true;
     }
 
@@ -423,6 +432,8 @@
         // sets survive. The backend has already patched its recommendation, so
         // the freshest next-workout fetch carries the adapted remaining work.
         if (!state.activeWorkout) return;
+        const appliedDate = String(event.created_at || event.date || '').slice(0, 10);
+        if (appliedDate !== today()) return;
         if (!(event.active_workout && event.active_workout.updated_live)) return;
         getNextWorkout(true).then((nw) => {
             if (!nw || !state.activeWorkout) return;
@@ -443,10 +454,14 @@
         const chips = labels.length
             ? `<div class="workout-adaptation-chips">${labels.map((l) => `<span class="workout-adaptation-chip">${escapeHtml(l)}</span>`).join('')}</div>`
             : '';
-        const planRows = workoutAdaptationRemainingPlanRows(event.after_remaining_plan);
+        const planDetails = event.status === 'stale' ? '' : `
+            <div class="workout-adaptation-plan-kicker">Updated remaining plan</div>
+            <div class="workout-adaptation-plan">${workoutAdaptationRemainingPlanRows(event.after_remaining_plan)}</div>
+        `;
 
         const card = document.createElement('div');
         card.className = 'card workout-adaptation-card';
+        card.dataset.workoutAdaptationId = event.id;
         card.setAttribute('role', 'status');
         card.setAttribute('aria-live', 'polite');
 
@@ -454,7 +469,7 @@
         head.className = 'workout-adaptation-head';
         const kicker = document.createElement('span');
         kicker.className = 'workout-adaptation-kicker';
-        kicker.textContent = 'Workout updated';
+        kicker.textContent = event.status === 'stale' ? 'Workout update stale' : 'Workout updated';
         const dismiss = document.createElement('button');
         dismiss.type = 'button';
         dismiss.className = 'workout-adaptation-dismiss';
@@ -475,8 +490,7 @@
         details.innerHTML = `
             <summary class="workout-adaptation-summary">View details</summary>
             ${chips}
-            <div class="workout-adaptation-plan-kicker">Updated remaining plan</div>
-            <div class="workout-adaptation-plan">${planRows}</div>
+            ${planDetails}
         `;
 
         card.appendChild(head);
@@ -488,35 +502,59 @@
             if (dismissed) return;
             dismissed = true;
             dismiss.disabled = true;
+            workoutAdaptationNoticeState.dismissed.add(event.id);
             try {
                 await api(`/api/workout-adaptation-events/${encodeURIComponent(event.id)}/ack`, { method: 'POST' });
                 card.remove();
                 if (!host.children.length) host.hidden = true;
+                workoutAdaptationNoticeState.refillRequested = true;
+                fetchWorkoutAdaptationNotices().catch((fetchErr) => {
+                    console.warn('workout adaptation refresh failed:', fetchErr);
+                });
             } catch (err) {
                 // Keep the existing card and leave the event in `seen` so a
                 // later poll does NOT append a duplicate; just re-enable the
                 // button so the user can retry the ack on this same card.
                 dismissed = false;
                 dismiss.disabled = false;
+                workoutAdaptationNoticeState.dismissed.delete(event.id);
+                fetchWorkoutAdaptationNotices().catch((fetchErr) => {
+                    console.warn('workout adaptation refresh failed:', fetchErr);
+                });
                 console.warn('workout adaptation ack failed:', err);
             }
         });
 
         host.hidden = false;
         host.appendChild(card);
-        applyWorkoutAdaptationToActiveWorkout(event);
+        if (event.status === 'applied') applyWorkoutAdaptationToActiveWorkout(event);
     }
 
     async function fetchWorkoutAdaptationNotices() {
-        if (workoutAdaptationNoticeState.fetching) return;
+        if (workoutAdaptationNoticeState.fetching) {
+            workoutAdaptationNoticeState.refillRequested = true;
+            return;
+        }
         workoutAdaptationNoticeState.fetching = true;
+        workoutAdaptationNoticeState.refillRequested = false;
         try {
             const payload = await api(withActiveWorkoutAdaptationParams('/api/workout-adaptation-events?unacknowledged=true&limit=10'));
             const events = (payload && payload.events) || [];
             for (const event of events) {
                 if (!event || !event.id) continue;
-                if (workoutAdaptationNoticeState.seen.has(event.id)) continue;
+                if (workoutAdaptationNoticeState.dismissed.has(event.id)) continue;
+                const previousStatus = workoutAdaptationNoticeState.statuses.get(event.id);
+                if (workoutAdaptationNoticeState.seen.has(event.id) && previousStatus === event.status) continue;
                 workoutAdaptationNoticeState.seen.add(event.id);
+                workoutAdaptationNoticeState.statuses.set(event.id, event.status);
+                if (previousStatus !== undefined) {
+                    const host = $('workout-adaptation-host');
+                    if (host) {
+                        for (const card of host.querySelectorAll('[data-workout-adaptation-id]')) {
+                            if (card.dataset.workoutAdaptationId === event.id) card.remove();
+                        }
+                    }
+                }
                 // Silent (no-change / low-confidence) and next-day events are
                 // intentionally swallowed — marked seen but never rendered.
                 if (!workoutAdaptationIsRenderable(event)) continue;
@@ -524,6 +562,11 @@
             }
         } finally {
             workoutAdaptationNoticeState.fetching = false;
+            if (workoutAdaptationNoticeState.refillRequested) {
+                fetchWorkoutAdaptationNotices().catch((fetchErr) => {
+                    console.warn('workout adaptation refresh failed:', fetchErr);
+                });
+            }
         }
     }
 
@@ -2621,6 +2664,17 @@
         }
     }
 
+    function formatWhoopImportSummary(importResult) {
+        if (!importResult) return null;
+        const parsed = importResult.parsed_rows;
+        const imported = importResult.imported_rows;
+        const unsupported = importResult.skipped_unsupported_rows;
+        const naps = importResult.ignored_nap_rows;
+        const duplicates = importResult.duplicate_or_upserted_rows;
+        if (![parsed, imported, unsupported, naps, duplicates].every(Number.isFinite)) return null;
+        return `Parsed ${parsed} · Imported ${imported} · Unsupported ${unsupported} · Naps ${naps} · Duplicates/updates ${duplicates}`;
+    }
+
     async function importWhoopCsvFromModal() {
         if (state.whoopUi.importInFlight) return;
         const textArea = $('whoop-import-csv-text');
@@ -2657,9 +2711,11 @@
             state.reco = null;
             await getWhoopStatus(true);
             await renderSettings();
-            const count = body && body.import && body.import.records_upserted != null ? body.import.records_upserted : null;
+            const importResult = body && body.import ? body.import : null;
+            const summary = formatWhoopImportSummary(importResult);
+            const count = importResult && importResult.records_upserted != null ? importResult.records_upserted : null;
             clearWhoopImportInput();
-            setWhoopIntakeStatus(count != null ? `WHOOP import saved ${count} record${count === 1 ? '' : 's'}.` : 'WHOOP import saved.', 'ok');
+            setWhoopIntakeStatus(summary || (count != null ? `WHOOP import saved ${count} record${count === 1 ? '' : 's'}.` : 'WHOOP import saved.'), 'ok');
             toast('WHOOP import saved.', 'ok');
         } catch (err) {
             setWhoopIntakeStatus((err && err.message) || 'WHOOP import failed.', 'error');
@@ -4737,6 +4793,7 @@
                     // Force the trend card to re-fetch so the row updates
                     // immediately without a manual reload.
                     renderBodyInterpretationAndNutritionTrend();
+                    fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
                     // FIT-107: notify the food-log sheet (if open) so it
                     // can refresh its sections after a delete.
                     document.dispatchEvent(new CustomEvent('fit107:meal-deleted', {
@@ -4876,7 +4933,7 @@
             // surfaces distinguish corrected entries from estimated ones.
             correction_state: 'corrected',
             item_name: itemName,
-            portion_description: ($('meal-edit-portion').value || '').trim() || undefined,
+            portion_description: ($('meal-edit-portion').value || '').trim() || null,
             calories: Math.round(calories),
             protein_g: protein,
             carbs_g: carbs,
@@ -4892,6 +4949,7 @@
             modal.hidden = true;
             toast('Correction saved', 'ok');
             renderBodyInterpretationAndNutritionTrend();
+            fetchWorkoutAdaptationNotices().catch((err) => console.warn('workout adaptation notices failed:', err));
         } catch (err) {
             console.error(err);
             showError(apiErrorMessage(err, 'Save failed'));
@@ -5303,6 +5361,40 @@
         cell.parentNode.appendChild(detail);
     }
 
+    function progressInsightVisual(ins) {
+        const kind = String(ins && ins.type || 'info').toLowerCase();
+        const iconName = String(ins && ins.icon || '').toLowerCase();
+        const toneByType = {
+            positive: 'pos',
+            success: 'pos',
+            warning: 'warn',
+            negative: 'neg',
+            danger: 'neg',
+            info: 'info',
+        };
+        const glyphByIcon = {
+            trending_up: '↑',
+            trending_down: '↓',
+            pause: '‖',
+            schedule: '◷',
+            balance: '↔',
+            warning: '!',
+            emoji_events: '★',
+        };
+        const fallbackGlyphByType = {
+            positive: '↑',
+            success: '↑',
+            warning: '!',
+            negative: '!',
+            danger: '▲',
+            info: 'i',
+        };
+        return {
+            iconClass: toneByType[kind] || 'info',
+            iconChar: glyphByIcon[iconName] || fallbackGlyphByType[kind] || 'i',
+        };
+    }
+
     async function renderStats() {
         const days = state.ranges.stats;
         const [hist, appleWorkouts] = await Promise.all([
@@ -5384,10 +5476,7 @@
             items.forEach((ins) => {
                 const card = document.createElement('div');
                 card.className = 'in-card';
-                const kind = (ins.type || 'info').toLowerCase();
-                const map = { success: 'pos', warning: 'warn', danger: 'neg', info: 'info' };
-                const iconClass = map[kind] || 'info';
-                const iconChar = kind === 'success' ? '↑' : kind === 'warning' ? '!' : kind === 'danger' ? '▲' : 'i';
+                const { iconClass, iconChar } = progressInsightVisual(ins);
                 card.innerHTML = `
                     <div class="in-icon ${iconClass}">${iconChar}</div>
                     <div>
@@ -6156,7 +6245,7 @@
     const PUSH_STATE_DETAIL = {
         unsupported: 'This browser does not support web push notifications.',
         needs_install: 'Install the app to the Home Screen before enabling push on iOS.',
-        prompt: 'Low-stakes nudges only: stale wearable data and pending food review.',
+        prompt: 'Preview coaching alerts and verify push delivery. This does not schedule reminders.',
         granted_active: 'Subscribed, no scheduled reminders yet. Send a test notification to verify delivery.',
         granted_inactive: 'Permission is granted, but no browser push subscription is active yet.',
         revoked: 'Browser permission was reset. Re-enable to create a fresh subscription, or disable to clean up.',
@@ -6634,11 +6723,12 @@
         );
         const row = $('whoop-settings-row');
         const detailPanel = $('whoop-detail');
-        if (row) row.hidden = hideDirectFallback;
+        if (row) row.hidden = false;
         if (detailPanel) detailPanel.hidden = hideDirectFallback;
-        if (hideDirectFallback) return;
         const dot = $('whoop-int-dot');
-        if (dot) dot.className = uiState === WHOOP_UI_STATES.disconnected ? 'int-dot' : 'int-dot int-dot-on';
+        if (dot) dot.className = uiState === WHOOP_UI_STATES.disconnected || uiState === WHOOP_UI_STATES.missing_config
+            ? 'int-dot'
+            : 'int-dot int-dot-on';
 
         const lastSyncRaw = whoop && (whoop.last_successful_sync_at || whoop.last_sync_at || whoop.last_sync);
         if ($('whoop-last-sync')) {
@@ -7041,11 +7131,26 @@
         } catch (e) { console.error(e); toast('Log failed', 'err'); }
     }
 
+    function syncBodyLogValidation() {
+        const weightInput = $('body-log-weight');
+        const bodyFatInput = $('body-log-bf');
+        const saveButton = $('btn-log-body');
+        const error = $('body-log-error');
+        const weightPresent = Number(weightInput.value) > 0;
+        const bodyFatPresent = bodyFatInput.value.trim() !== '';
+
+        saveButton.disabled = bodyFatPresent && !weightPresent;
+        weightInput.setAttribute('aria-invalid', saveButton.disabled ? 'true' : 'false');
+        error.hidden = !saveButton.disabled;
+        return !saveButton.disabled;
+    }
+
     async function logBody() {
         const payload = {
             weight_lbs: Number($('body-log-weight').value) || null,
             body_fat_pct: Number($('body-log-bf').value) || null,
         };
+        if (!syncBodyLogValidation()) return;
         if (!payload.weight_lbs && !payload.body_fat_pct) return toast('Enter a value', 'err');
         try {
             await api('/api/add-body-measurement', {
@@ -7059,14 +7164,61 @@
         } catch (e) { console.error(e); toast('Save failed', 'err'); }
     }
 
+    function _ouraSyncErrorDetails(err) {
+        if (err && (err.apiErrorCode || err.apiErrorMessage)) {
+            return {
+                code: String(err.apiErrorCode || 'oura_sync_failed'),
+                message: String(err.apiErrorMessage || 'Oura sync failed'),
+            };
+        }
+        const raw = String((err && err.message) || err || '');
+        const jsonStart = raw.indexOf('{');
+        if (jsonStart >= 0) {
+            try {
+                const parsed = JSON.parse(raw.slice(jsonStart));
+                const serverError = parsed && parsed.error;
+                if (serverError) {
+                    return {
+                        code: String(serverError.code || 'oura_sync_failed'),
+                        message: String(serverError.message || 'Oura sync failed'),
+                    };
+                }
+            } catch {}
+        }
+        return { code: 'oura_sync_failed', message: 'Oura sync failed' };
+    }
+
+    function renderOuraSyncResult(payload, err = null) {
+        const row = $('oura-detail-sync-row');
+        const value = $('oura-detail-sync-result');
+        if (!row || !value) return;
+        row.hidden = false;
+        if (err) {
+            const detail = _ouraSyncErrorDetails(err);
+            value.textContent = `${detail.code} · ${detail.message}`;
+            return;
+        }
+        const latestDays = Array.isArray(payload && payload.latest_days)
+            ? payload.latest_days.filter(Boolean)
+            : [];
+        const rangeEnd = payload && payload.synced_through || 'unknown end';
+        const count = Number(payload && payload.latest_records || 0);
+        value.textContent = `Success · ${payload.synced_from || 'unknown start'} → ${rangeEnd} · ${count} latest saved record${count === 1 ? '' : 's'} · saved days ${latestDays.join(', ') || 'none'}`;
+    }
+
     async function syncOura() {
         toast('Syncing Oura…');
         try {
-            await api('/api/oura/sync-sleep', { method: 'POST' });
+            const result = await api('/api/oura/sync-sleep', { method: 'POST' });
+            renderOuraSyncResult(result);
             invalidateCaches();
             toast('Oura synced');
             loadTab(state.currentTab);
-        } catch (e) { console.error(e); toast(apiErrorMessage(e, 'Oura sync failed'), 'err'); }
+        } catch (e) {
+            console.error(e);
+            renderOuraSyncResult(null, e);
+            toast(apiErrorMessage(e, 'Oura sync failed'), 'err');
+        }
     }
 
     function downloadExport() {
@@ -9542,6 +9694,10 @@
         $('btn-log-strength') && $('btn-log-strength').addEventListener('click', logStrength);
         $('btn-log-cardio') && $('btn-log-cardio').addEventListener('click', logCardio);
         $('btn-log-recovery') && $('btn-log-recovery').addEventListener('click', logRecovery);
+        const bodyWeightInput = $('body-log-weight');
+        const bodyFatInput = $('body-log-bf');
+        bodyWeightInput && bodyWeightInput.addEventListener('input', syncBodyLogValidation);
+        bodyFatInput && bodyFatInput.addEventListener('input', syncBodyLogValidation);
         $('btn-log-body') && $('btn-log-body').addEventListener('click', logBody);
 
         // Actions
