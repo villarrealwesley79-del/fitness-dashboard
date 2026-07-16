@@ -221,7 +221,7 @@ Markdown export integrates only workout history. It does not include body, sleep
 
 ## 9. Permissions & Security
 
-All routes in this PRD are owner-session protected by the global auth guard. Public exceptions are limited elsewhere to login/register/static, Stripe webhook, and Apple Health sync. API callers without a session receive `401`; non-owner sessions receive `403`.
+All routes in this PRD are owner-session protected by the global auth guard. Public exceptions are limited elsewhere to login/register/static and Apple Health sync. API callers without a session receive `401`; non-owner sessions receive `403`.
 
 Mutating routes in this PRD (`/api/add-body-measurement`, `/api/body/navy-calc`, `/api/sleep/import`) are protected by the global CSRF/same-origin guard. The frontend API helper always sends `X-Requested-With: XMLHttpRequest` and `credentials: same-origin`.
 

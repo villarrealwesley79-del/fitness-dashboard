@@ -1,6 +1,6 @@
 """
 auth.py — Flask-Login authentication module for Fitness Dashboard.
-SQLite-backed, no SQLAlchemy. Minimal proof-of-concept for SaaS productization.
+SQLite-backed, no SQLAlchemy. Intended for the owner's local app instance.
 """
 
 import os
@@ -243,8 +243,6 @@ _CSRF_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _CSRF_EXEMPT_PATHS = {
     # Health Auto Export / Shortcuts webhook: authenticated by HEALTH_SYNC_TOKEN.
     "/api/apple-health/sync",
-    # Stripe webhook: unauthenticated by session, authenticated by Stripe-Signature.
-    "/webhook",
 }
 _PASSWORD_HASH_METHOD = "scrypt:32768:8:1"
 _LEGACY_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
@@ -441,9 +439,6 @@ def init_auth_db():
                 password          TEXT    NOT NULL,
                 salt              TEXT    NOT NULL,
                 email             TEXT,
-                is_pro            INTEGER NOT NULL DEFAULT 0,
-                stripe_customer   TEXT,
-                stripe_sub        TEXT,
                 created           TEXT    DEFAULT (datetime('now'))
             )
             """
@@ -488,16 +483,14 @@ def init_auth_db():
             ON auth_rate_limit_attempts (identity_hash, attempted_at)
             """
         )
-        # Migrate existing DBs that are missing the new columns
+        # Migrate existing DBs that are missing the current account columns.
         existing = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
-        for col, definition in [
-            ("email",           "TEXT"),
-            ("is_pro",          "INTEGER NOT NULL DEFAULT 0"),
-            ("stripe_customer", "TEXT"),
-            ("stripe_sub",      "TEXT"),
-        ]:
-            if col not in existing:
-                conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+        if "email" not in existing:
+            conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
+            existing.add("email")
+        retired_columns = {"is_pro", "stripe_customer", "stripe_sub"}
+        for column in sorted(existing & retired_columns):
+            conn.execute(f'ALTER TABLE users DROP COLUMN "{column}"')
         if not conn.in_transaction:
             conn.execute("BEGIN IMMEDIATE")
         _reconcile_local_qa_account(conn)
@@ -523,14 +516,10 @@ def _verify_legacy_password(password: str, salt: str, stored_hash: str) -> bool:
 
 # ── User model ────────────────────────────────────────────
 class User(UserMixin):
-    def __init__(self, id: int, username: str, email: str = None, is_pro: bool = False,
-                 stripe_customer: str = None, stripe_sub: str = None):
+    def __init__(self, id: int, username: str, email: str = None):
         self.id = id
         self.username = username
         self.email = email
-        self.is_pro = bool(is_pro)
-        self.stripe_customer = stripe_customer
-        self.stripe_sub = stripe_sub
 
     @staticmethod
     def _from_row(row):
@@ -540,16 +529,13 @@ class User(UserMixin):
             id=row["id"],
             username=row["username"],
             email=row["email"],
-            is_pro=bool(row["is_pro"]),
-            stripe_customer=row["stripe_customer"],
-            stripe_sub=row["stripe_sub"],
         )
 
     @staticmethod
     def get_by_id(user_id: int):
         with _get_db() as conn:
             row = conn.execute(
-                "SELECT id, username, email, is_pro, stripe_customer, stripe_sub FROM users WHERE id = ?",
+                "SELECT id, username, email FROM users WHERE id = ?",
                 (user_id,)
             ).fetchone()
         return User._from_row(row)
@@ -558,7 +544,7 @@ class User(UserMixin):
     def get_by_username(username: str):
         with _get_db() as conn:
             row = conn.execute(
-                "SELECT id, username, email, is_pro, stripe_customer, stripe_sub FROM users WHERE username = ?",
+                "SELECT id, username, email FROM users WHERE username = ?",
                 (username,)
             ).fetchone()
         return User._from_row(row)
@@ -567,7 +553,7 @@ class User(UserMixin):
     def authenticate(username: str, password: str):
         with _get_db() as conn:
             row = conn.execute(
-                "SELECT id, username, password, salt, email, is_pro, stripe_customer, stripe_sub FROM users WHERE username = ?",
+                "SELECT id, username, password, salt, email FROM users WHERE username = ?",
                 (username,)
             ).fetchone()
             if not row:
@@ -594,27 +580,6 @@ class User(UserMixin):
                 (username, hashed, "", email),
             )
             conn.commit()
-
-    @staticmethod
-    def mark_pro(user_id: int, stripe_customer: str = None, stripe_sub: str = None):
-        """Upgrade user to Pro, optionally saving Stripe IDs."""
-        with _get_db() as conn:
-            conn.execute(
-                "UPDATE users SET is_pro=1, stripe_customer=?, stripe_sub=? WHERE id=?",
-                (stripe_customer, stripe_sub, user_id),
-            )
-            conn.commit()
-
-    @staticmethod
-    def revoke_pro(user_id: int):
-        """Downgrade user from Pro (e.g. subscription cancelled)."""
-        with _get_db() as conn:
-            conn.execute(
-                "UPDATE users SET is_pro=0, stripe_sub=NULL WHERE id=?",
-                (user_id,)
-            )
-            conn.commit()
-
 
 def _single_user_mode() -> bool:
     return os.environ.get("FITNESS_DASHBOARD_SINGLE_USER", "true").lower() != "false"
@@ -952,11 +917,9 @@ def logout():
 # expose the sync token hint and last-sync metadata.
 _PUBLIC_PREFIXES = (
     "/login", "/register", "/logout",
-    "/landing",  # Separate dormant landing surface; FIT-297 owns its allowlist state.
     "/manifest.json", "/sw.js",
     "/static/",           # prefix — any static asset
     "/robots.txt", "/sitemap.xml",  # SEO crawlers
-    # Stripe blueprint is dormant and intentionally unregistered; see FIT-299.
     "/api/apple-health/sync",   # exact — the POST webhook; its token is its auth
 )
 

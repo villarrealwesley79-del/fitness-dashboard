@@ -10,7 +10,7 @@ The main product surface is one authenticated app shell at `/`. Primary navigati
 
 The app uses modals/sheets for secondary flows instead of route navigation. Important modals include exercise swap, recommendation sources, Ask AI, WHOOP intake, Open Wearables setup, Adjust Plan, Analyze Workout, Workout Detail, Meal Detail, Food Log, Delete confirmation, Apple Health setup, Active Workout, Workout Saved, and Pending Sync.
 
-Public/auth pages are separate server-rendered templates: login/register via `auth.py`, and billing/marketing templates via `stripe_checkout.py`/`templates`. In this checkout, `stripe_bp` is never registered and `/landing` has no route.
+Public/auth pages are limited to the login/register template served by `auth.py` plus PWA and SEO assets.
 
 ## High-Level Page/Data Diagram
 
@@ -165,8 +165,6 @@ Freshness coupling:
 
 ## Public/Dead Page Relationships And [TBC] Hotspots
 
-- `/landing` is public in `auth.py` and `templates/landing.html` exists, but no route exists in `app.py` or the inspected blueprints.
-- `stripe_checkout.py` declares `/pricing`, `/create-checkout-session`, `/success`, `/cancel`, and `/webhook`, and `auth.py` allowlists the public Stripe pages/webhook. `stripe_bp` is never registered, so these routes 404.
 - `/gym-now` is a real auth-gated server-rendered standalone workout page for stale mobile/PWA caches; it regenerates and renders the current workout without the JS shell.
 - `/test-chart` is live in `app.py` but appears developer/test-only and is auth-gated.
 - `/api/health/sync` is an Open Wearables metadata sync route despite the `health` path name; Apple Health sync is `/api/apple-health/sync`.
