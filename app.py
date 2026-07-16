@@ -4760,7 +4760,15 @@ def _current_workout_plan_for_fingerprint(fingerprint: str, *, allow_stale_unsav
                                     "_fit136_base_recommendation"
                                 )
                             ):
-                                LAST_WORKOUT_RECOMMENDATION = persisted["plan"]
+                                if LAST_WORKOUT_RECOMMENDATION.get("_fit136_adaptation_event_id"):
+                                    authoritative = save_current_workout_plan(
+                                        _current_data_user_id(),
+                                        fingerprint,
+                                        LAST_WORKOUT_RECOMMENDATION,
+                                    )
+                                    LAST_WORKOUT_RECOMMENDATION = authoritative["plan"]
+                                else:
+                                    LAST_WORKOUT_RECOMMENDATION = persisted["plan"]
                                 LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = fingerprint
                                 LAST_WORKOUT_RECOMMENDATION_OWNER = {
                                     "user_id": _current_data_user_id(),

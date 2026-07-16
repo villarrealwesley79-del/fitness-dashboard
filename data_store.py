@@ -1527,6 +1527,7 @@ def _mark_changed_workout_adaptation_snapshots_stale(
         """,
         [(reason, stale_at, event_id, user_id) for event_id in matching_ids],
     )
+    _restore_stale_workout_adaptation_plan(conn, user_id, set(matching_ids))
     return len(matching_ids)
 
 

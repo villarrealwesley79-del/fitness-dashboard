@@ -1509,9 +1509,7 @@ def test_new_accepted_source_invalidates_applied_snapshot_and_restores_base(
         if item["id"] == events[0]["id"]
     )
     assert stored_event["status"] == "stale"
-    stale_plan = data_store.get_current_workout_plan(1)["plan"]
-    authoritative = data_store.save_current_workout_plan(1, "snapshot-fingerprint", stale_plan)
-    assert authoritative["plan"] == base_plan
+    assert data_store.get_current_workout_plan(1)["plan"] == base_plan
 
 
 def test_rejected_pending_source_update_keeps_adaptation_applied(monkeypatch, tmp_path):
