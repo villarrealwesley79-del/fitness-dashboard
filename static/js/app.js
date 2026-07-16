@@ -8609,6 +8609,29 @@
         return base || null;
     }
 
+    function mealQueueNextRetryCondition(status) {
+        const conditions = {
+            pending: 'When this device reconnects, when the app opens online, or when you tap Retry.',
+            auth_required: 'After the signed-in account matches the account that saved this meal.',
+            rejected: 'Manual retry only after correcting the meal.',
+            conflicted: 'Manual retry after the server conflict is resolved.',
+            eviction_failed: 'No sync retry. Discard removes the accepted meal’s local copy.',
+        };
+        return conditions[status] || 'Manual retry only.';
+    }
+
+    function mealQueueCanManuallyRetry(status) {
+        return status !== 'eviction_failed';
+    }
+
+    function mealQueueCanAutomaticallyRetry(entry, refreshedScope) {
+        const status = entry.last_status || 'pending';
+        if (!MEAL_QUEUE_RETRYABLE_STATUSES.has(status)) return false;
+        if (status !== 'auth_required') return true;
+        const queuedScope = String(entry.auth_scope || '').trim();
+        return Boolean(queuedScope && queuedScope === refreshedScope);
+    }
+
     async function syncSingleMealQueueEntry(clientId) {
         if (_mealSyncInFlightClientIds.has(clientId)) return { ok: false, status: 'pending' };
         _mealSyncInFlightClientIds.add(clientId);
@@ -8616,19 +8639,17 @@
             const queued = await getQueuedMealWithPhotos(clientId);
             const entry = queued.entry;
             if (!entry) return null;
-            const attemptedAt = new Date().toISOString();
-            const attempts = (entry.attempts || 0) + 1;
             const authGate = await mealQueueAuthGate(entry);
             if (!authGate.ok) {
                 const authStatus = authGate.status || 'auth_required';
                 await updateMealQueueEntry(clientId, {
                     last_status: authStatus,
-                    last_attempt_at: attemptedAt,
-                    attempts,
                     reject_reason: annotateMealSyncReason(authGate.reason, authStatus),
                 });
                 return { ok: false, status: authStatus };
             }
+            const attemptedAt = new Date().toISOString();
+            const attempts = (entry.attempts || 0) + 1;
             try {
                 const latestQueued = await getQueuedMealWithPhotos(clientId);
                 if (!latestQueued.entry) {
@@ -8688,8 +8709,10 @@
         if (!navigator.onLine || _mealSyncFlushInFlight) return;
         _mealSyncFlushInFlight = true;
         try {
+            const scopeResult = await refreshMealQueueAuthScope();
+            const refreshedScope = scopeResult.ok ? scopeResult.scope : '';
             const ids = (await listMealQueueEntries())
-                .filter((e) => MEAL_QUEUE_RETRYABLE_STATUSES.has(e.last_status || 'pending'))
+                .filter((entry) => mealQueueCanAutomaticallyRetry(entry, refreshedScope))
                 .map((e) => e.client_id);
             for (const id of ids) {
                 await syncSingleMealQueueEntry(id);
@@ -8810,6 +8833,9 @@
             }
             const queuedAt = entry.queued_at ? fmtDateTime(entry.queued_at) : 'unknown';
             const lastAttempt = entry.last_attempt_at ? fmtDateTime(entry.last_attempt_at) : 'not tried yet';
+            const nextRetry = mealQueueNextRetryCondition(status);
+            const attemptCount = entry.attempts || 0;
+            const canRetry = mealQueueCanManuallyRetry(status);
             const reasonHtml = entry.reject_reason ? `<div class="sync-row-reason">${escapeHtml(entry.reject_reason)}</div>` : '';
             const inFlight = _mealSyncInFlightClientIds.has(entry.client_id);
             if (inFlight) row.classList.add('sync-row-in-flight');
@@ -8819,11 +8845,13 @@
                     <span class="sync-row-title">Meal · ${escapeHtml(titleText)}</span>
                     <span class="sync-status-pill sync-status-${status}">${escapeHtml(mealStatusLabels[status] || 'Pending')}</span>
                 </div>
-                <div class="sync-row-meta">${escapeHtml(typeLabel)} · saved on this device ${escapeHtml(queuedAt)} · ${entry.attempts || 0} sync attempt${(entry.attempts || 0) === 1 ? '' : 's'} · last try ${escapeHtml(lastAttempt)}</div>
+                <div class="sync-row-meta">${escapeHtml(typeLabel)} · saved on this device ${escapeHtml(queuedAt)}</div>
+                <div class="sync-row-meta">Last attempt: ${escapeHtml(lastAttempt)} · Attempt count: ${attemptCount}</div>
+                <div class="sync-row-meta">Next retry: ${escapeHtml(nextRetry)}</div>
                 ${reasonHtml}
                 <div class="sync-row-actions">
                     <button class="btn btn-ghost btn-sm" data-meal-sync-discard="${escapeHtml(entry.client_id)}" type="button"${syncDisabled}>Discard</button>
-                    <button class="btn btn-primary btn-sm" data-meal-sync-retry="${escapeHtml(entry.client_id)}" type="button"${syncDisabled}>${inFlight ? 'Syncing...' : 'Retry'}</button>
+                    ${canRetry ? `<button class="btn btn-primary btn-sm" data-meal-sync-retry="${escapeHtml(entry.client_id)}" type="button"${syncDisabled}>${inFlight ? 'Syncing...' : 'Retry'}</button>` : ''}
                 </div>
             `;
             host.appendChild(row);
