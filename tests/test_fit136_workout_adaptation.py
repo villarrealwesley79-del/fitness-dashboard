@@ -1451,6 +1451,62 @@ def test_changed_manual_source_food_log_marks_unacknowledged_adaptation_stale(
     assert stored["status"] == "stale"
 
 
+def test_new_accepted_source_invalidates_applied_snapshot_and_restores_base(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    earlier_row = _food_log(
+        "snapshot-earlier",
+        meal_id="meal-snapshot-earlier",
+        calories=690,
+        protein_g=29.5,
+        logged_at="2026-05-24T08:00:00",
+    )
+    source_row = _food_log(
+        "snapshot-source",
+        meal_id="meal-snapshot-source",
+        calories=300,
+        protein_g=8,
+        logged_at="2026-05-24T18:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [source_row], clock=start)
+    base_plan = _recommendation()
+    adapted_plan, events = workout_adaptation.apply_due_adaptations(
+        1,
+        base_plan,
+        food_log_entries=[earlier_row, source_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 35},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+    assert events[0]["status"] == "applied"
+    persisted_adapted_plan = {
+        **adapted_plan,
+        "_fit136_base_recommendation": base_plan,
+        "_fit136_last_adapted_plan": adapted_plan,
+        "_fit136_adaptation_event_id": events[0]["id"],
+    }
+    data_store.save_current_workout_plan(1, "snapshot-fingerprint", persisted_adapted_plan)
+
+    _food_log(
+        "snapshot-added",
+        meal_id="meal-snapshot-added",
+        calories=1200,
+        protein_g=80,
+        logged_at="2026-05-24T20:00:00",
+    )
+
+    stored_event = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == events[0]["id"]
+    )
+    assert stored_event["status"] == "stale"
+    stale_plan = data_store.get_current_workout_plan(1)["plan"]
+    authoritative = data_store.save_current_workout_plan(1, "snapshot-fingerprint", stale_plan)
+    assert authoritative["plan"] == base_plan
+
+
 def test_rejected_pending_source_update_keeps_adaptation_applied(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     _food_log("source-meal", meal_id="meal-1")

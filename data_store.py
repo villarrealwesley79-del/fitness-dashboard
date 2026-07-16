@@ -1492,6 +1492,46 @@ def _mark_source_workout_adaptations_stale(
     return len(matching_ids)
 
 
+def _mark_changed_workout_adaptation_snapshots_stale(
+    conn,
+    user_id: int,
+    *,
+    date_s: str,
+    reason: str,
+) -> int:
+    current_rows = _current_workout_adaptation_source_rows(conn, user_id, {"date": date_s})
+    current_fingerprint = workout_adaptation_source_fingerprint(current_rows)
+    rows = conn.execute(
+        """
+        SELECT id, reason_metadata_json
+          FROM workout_adaptation_events
+         WHERE user_id = ? AND date = ? AND status = 'applied'
+           AND acknowledged_at IS NULL
+        """,
+        (user_id, date_s),
+    ).fetchall()
+    matching_ids = []
+    for row in rows:
+        metadata = _json_loads_or_none(row["reason_metadata_json"]) or {}
+        source_fingerprint = metadata.get("source_fingerprint")
+        if source_fingerprint and source_fingerprint != current_fingerprint:
+            matching_ids.append(row["id"])
+    if not matching_ids:
+        return 0
+    stale_at = datetime.now().isoformat(timespec="seconds")
+    conn.executemany(
+        """
+        UPDATE workout_adaptation_events
+           SET status = 'stale', silent = 0, reason = ?,
+               stale_at = COALESCE(stale_at, ?)
+         WHERE id = ? AND user_id = ? AND acknowledged_at IS NULL
+           AND status = 'applied'
+        """,
+        [(reason, stale_at, event_id, user_id) for event_id in matching_ids],
+    )
+    return len(matching_ids)
+
+
 def _restore_stale_workout_adaptation_plan(
     conn,
     user_id: int,
@@ -2855,6 +2895,19 @@ def add_food_log(user_id: int, record: dict) -> dict:
                 now_iso,
             )
         persisted = _food_log_row_to_dict(row) if row is not None else None
+        source_was_added = bool(
+            previous is None
+            and persisted is not None
+            and str(persisted.get("correction_state") or "").strip().lower()
+            not in {"pending", "pending_review", "needs_review", "review"}
+        )
+        if source_was_added and persisted.get("date"):
+            _mark_changed_workout_adaptation_snapshots_stale(
+                conn,
+                user_id,
+                date_s=persisted["date"],
+                reason="Source meal changed; this workout update is no longer current.",
+            )
         source_became_pending = bool(
             previous is not None
             and persisted is not None
