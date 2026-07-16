@@ -2664,6 +2664,17 @@
         }
     }
 
+    function formatWhoopImportSummary(importResult) {
+        if (!importResult) return null;
+        const parsed = importResult.parsed_rows;
+        const imported = importResult.imported_rows;
+        const unsupported = importResult.skipped_unsupported_rows;
+        const naps = importResult.ignored_nap_rows;
+        const duplicates = importResult.duplicate_or_upserted_rows;
+        if (![parsed, imported, unsupported, naps, duplicates].every(Number.isFinite)) return null;
+        return `Parsed ${parsed} · Imported ${imported} · Unsupported ${unsupported} · Naps ${naps} · Duplicates/updates ${duplicates}`;
+    }
+
     async function importWhoopCsvFromModal() {
         if (state.whoopUi.importInFlight) return;
         const textArea = $('whoop-import-csv-text');
@@ -2700,9 +2711,11 @@
             state.reco = null;
             await getWhoopStatus(true);
             await renderSettings();
-            const count = body && body.import && body.import.records_upserted != null ? body.import.records_upserted : null;
+            const importResult = body && body.import ? body.import : null;
+            const summary = formatWhoopImportSummary(importResult);
+            const count = importResult && importResult.records_upserted != null ? importResult.records_upserted : null;
             clearWhoopImportInput();
-            setWhoopIntakeStatus(count != null ? `WHOOP import saved ${count} record${count === 1 ? '' : 's'}.` : 'WHOOP import saved.', 'ok');
+            setWhoopIntakeStatus(summary || (count != null ? `WHOOP import saved ${count} record${count === 1 ? '' : 's'}.` : 'WHOOP import saved.'), 'ok');
             toast('WHOOP import saved.', 'ok');
         } catch (err) {
             setWhoopIntakeStatus((err && err.message) || 'WHOOP import failed.', 'error');
@@ -6710,11 +6723,12 @@
         );
         const row = $('whoop-settings-row');
         const detailPanel = $('whoop-detail');
-        if (row) row.hidden = hideDirectFallback;
+        if (row) row.hidden = false;
         if (detailPanel) detailPanel.hidden = hideDirectFallback;
-        if (hideDirectFallback) return;
         const dot = $('whoop-int-dot');
-        if (dot) dot.className = uiState === WHOOP_UI_STATES.disconnected ? 'int-dot' : 'int-dot int-dot-on';
+        if (dot) dot.className = uiState === WHOOP_UI_STATES.disconnected || uiState === WHOOP_UI_STATES.missing_config
+            ? 'int-dot'
+            : 'int-dot int-dot-on';
 
         const lastSyncRaw = whoop && (whoop.last_successful_sync_at || whoop.last_sync_at || whoop.last_sync);
         if ($('whoop-last-sync')) {

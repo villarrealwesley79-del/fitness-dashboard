@@ -917,6 +917,29 @@ def upsert_whoop_records(
     return count
 
 
+def count_whoop_upsert_conflicts(db_path: str, record_type: str, records: list[dict]) -> int:
+    """Count rows that will update an existing key or repeat one in this batch."""
+    init_whoop_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        seen = {
+            str(row["upstream_id"])
+            for row in conn.execute(
+                "SELECT upstream_id FROM whoop_records WHERE record_type = ?",
+                (record_type,),
+            ).fetchall()
+        }
+
+    conflicts = 0
+    for record in records or []:
+        upstream_id = str(record.get("upstream_id") or record.get("id") or "").strip()
+        if not upstream_id:
+            continue
+        if upstream_id in seen:
+            conflicts += 1
+        seen.add(upstream_id)
+    return conflicts
+
+
 def project_whoop_daily_facts(db_path: str, *, projected_at: datetime | None = None) -> int:
     init_whoop_db(db_path)
     rows: list[sqlite3.Row]
