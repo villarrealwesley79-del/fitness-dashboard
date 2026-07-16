@@ -2876,6 +2876,66 @@ def delete_food_logs_by_meal_id(user_id: int, meal_id: str) -> int:
         return int(cursor.rowcount or 0)
 
 
+def promote_manual_food_log_to_terminal(
+    user_id: int,
+    client_id: str,
+    meal_id: str,
+    *,
+    expected_updated_at: str | None,
+    correction_state: str,
+    _conn: sqlite3.Connection,
+) -> dict | None:
+    """Promote one matched same-meal manual row inside the caller's transaction."""
+    if _conn is None:
+        raise ValueError("promotion requires an existing transaction")
+    if correction_state not in {"accepted", "corrected"}:
+        raise ValueError("invalid terminal correction state")
+    stored_row = _conn.execute(
+        """
+        SELECT * FROM food_logs
+         WHERE user_id = ?
+           AND client_id = ?
+           AND meal_id = ?
+           AND correction_state = 'manual'
+           AND updated_at IS ?
+        """,
+        (user_id, client_id, meal_id, expected_updated_at),
+    ).fetchone()
+    if stored_row is None:
+        return None
+    stored = _food_log_row_to_dict(stored_row)
+    canonical_estimate = sanitize_accepted_estimate(
+        {
+            field: stored[field]
+            for field in FOOD_ESTIMATE_FIELDS
+            if field in stored and stored[field] is not None
+        }
+    )
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    row = _conn.execute(
+        """
+        UPDATE food_logs
+           SET correction_state = ?, accepted_estimate_json = ?, updated_at = ?
+         WHERE user_id = ?
+           AND client_id = ?
+           AND meal_id = ?
+           AND correction_state = 'manual'
+           AND updated_at IS ?
+        RETURNING *
+        """,
+        (
+            correction_state,
+            _json_dumps_or_none(canonical_estimate),
+            now_iso,
+            user_id,
+            client_id,
+            meal_id,
+            expected_updated_at,
+        ),
+    ).fetchone()
+    return _food_log_row_to_dict(row) if row is not None else None
+
+
 def add_food_log(
     user_id: int,
     record: dict,

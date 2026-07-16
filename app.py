@@ -7684,7 +7684,8 @@ def _review_save_snapshot(user_id: int, meal_id: str, payload: dict, next_item_s
                 for row in terminal_rows
                 if isinstance(row, dict)
                 and row.get("client_id")
-                and row.get("correction_state") != CORRECTION_STATE_PENDING_REVIEW
+                and row.get("correction_state")
+                in {CORRECTION_STATE_ACCEPTED, "corrected"}
             }
             terminal_event_is_canonical = False
             if isinstance(terminal_event, dict):
@@ -7693,15 +7694,25 @@ def _review_save_snapshot(user_id: int, meal_id: str, payload: dict, next_item_s
                     terminal_event_is_canonical = bool(
                         not event_client_ids
                         and not canonical_rows_by_client_id
+                        and all(
+                            row.get("correction_state")
+                            == CORRECTION_STATE_PENDING_REVIEW
+                            for row in terminal_rows
+                        )
                     )
                 elif (
                     terminal_event.get("status") == "logged"
                     and event_client_ids
-                    and not child_rows_have_pending
+                    and all(
+                        row.get("correction_state")
+                        in {CORRECTION_STATE_ACCEPTED, "corrected"}
+                        for row in terminal_rows
+                    )
                 ):
                     terminal_event_is_canonical = bool(
                         (
                             not canonical_rows_by_client_id
+                            and not terminal_rows
                             and not direct_row_is_terminal
                         )
                         or (
@@ -7732,12 +7743,18 @@ def _review_save_snapshot(user_id: int, meal_id: str, payload: dict, next_item_s
                 str(row.get("meal_item_id"))
                 for row in terminal_rows
                 if row.get("meal_item_id")
-                and row.get("correction_state") != CORRECTION_STATE_PENDING_REVIEW
+                and row.get("correction_state")
+                in {CORRECTION_STATE_ACCEPTED, "corrected"}
             }
             complete_eventless_terminal_rows = bool(
                 terminal_event is None
                 and expected_item_ids
                 and not child_rows_have_pending
+                and all(
+                    row.get("correction_state")
+                    in {CORRECTION_STATE_ACCEPTED, "corrected"}
+                    for row in terminal_rows
+                )
                 and terminal_item_ids == expected_item_ids
             )
             if (
@@ -7750,6 +7767,12 @@ def _review_save_snapshot(user_id: int, meal_id: str, payload: dict, next_item_s
                 )
             ):
                 if complete_eventless_terminal_rows:
+                    prepared_items, prepare_error = _prepare_multi_meal_items(
+                        meal_id,
+                        payload.get("items") or [],
+                    )
+                    if prepare_error is not None:
+                        raise ValueError("stored meal snapshot cannot be fingerprinted")
                     data_store_module.save_meal_acceptance_event(
                         user_id,
                         meal_id=meal_id,
@@ -7766,6 +7789,9 @@ def _review_save_snapshot(user_id: int, meal_id: str, payload: dict, next_item_s
                             for item in payload.get("items") or []
                             if isinstance(item, dict)
                             and item.get("status") == "deleted"
+                        ),
+                        feedback_fingerprint=_meal_negative_feedback_fingerprint(
+                            prepared_items
                         ),
                         has_image=any(
                             _food_log_has_image_provenance(row)
@@ -8560,7 +8586,8 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
         if (
             existing_client_ids == incoming_client_ids
             and all(
-                row.get("correction_state") != CORRECTION_STATE_PENDING_REVIEW
+                row.get("correction_state")
+                in {CORRECTION_STATE_ACCEPTED, "corrected"}
                 for row in existing_rows
             )
         ):
@@ -9434,6 +9461,12 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
             ),
             "preflight_existing_row": isinstance(stored_item, dict),
             "preflight_pending_row": dict(stored_item) if stored_pending else None,
+            "preflight_manual_row": (
+                dict(stored_item)
+                if isinstance(stored_item, dict)
+                and stored_item.get("correction_state") == "manual"
+                else None
+            ),
         })
 
     rows = []
@@ -9489,6 +9522,22 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
             for row in transaction_rows
             if row.get("client_id")
         }
+        for record in records:
+            preflight_manual_row = record["preflight_manual_row"]
+            if preflight_manual_row is None:
+                continue
+            current_manual_row = data_store_module.get_food_log_by_client_id(
+                user_id,
+                preflight_manual_row["client_id"],
+                _conn=batch_conn,
+            )
+            if current_manual_row != preflight_manual_row:
+                batch_conn.rollback()
+                return api_error(
+                    "pending review changed before acceptance",
+                    409,
+                    code="stale_pending_review",
+                )
         removed_pending_feedback_row = False
         skipped_pending_has_image = False
         for item in prepared:
@@ -9683,6 +9732,7 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
         for record in records:
             item = record["item"]
             estimate = record["estimate"]
+            promoted_protected_row = False
             food_log = _meal_intake_persist(
                 item["client_id"],
                 estimate,
@@ -9719,13 +9769,47 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                     if isinstance(accepted_current, dict)
                     else _stored_food_log_current_estimate(food_log)
                 )
-                if _review_estimate_differs(estimate, conflict_baseline):
+                if food_log.get("correction_state") == "manual":
+                    estimate_differs = any(
+                        estimate.get(field) != conflict_baseline.get(field)
+                        for field in _REVIEW_ACCEPT_COMPARE_FIELDS
+                        if food_log.get(field) is not None
+                    )
+                else:
+                    estimate_differs = _review_estimate_differs(
+                        estimate,
+                        conflict_baseline,
+                    )
+                if estimate_differs:
                     batch_conn.rollback()
                     return api_error(
                         "client_id already belongs to a different accepted meal",
                         409,
                         code="duplicate_client_id",
                     )
+                if food_log.get("correction_state") == "manual":
+                    target_state = (
+                        "corrected"
+                        if record["corrected"]
+                        else CORRECTION_STATE_ACCEPTED
+                    )
+                    promoted = data_store_module.promote_manual_food_log_to_terminal(
+                        user_id,
+                        item["client_id"],
+                        meal_id,
+                        expected_updated_at=food_log.get("updated_at"),
+                        correction_state=target_state,
+                        _conn=batch_conn,
+                    )
+                    if promoted is None:
+                        batch_conn.rollback()
+                        return api_error(
+                            "accepted meal changed before replay",
+                            409,
+                            code="stale_pending_review",
+                        )
+                    food_log = promoted
+                    promoted_protected_row = True
                 record["corrected"] = food_log.get("correction_state") == "corrected"
                 record["estimate"] = dict(conflict_baseline)
                 record["originated_from_image"] = _food_log_has_image_provenance(food_log)
@@ -9735,10 +9819,13 @@ def _meal_intake_accept_multi(parent_client_id: str, data: dict):
                     record["original_for_log"] = dict(stored_original)
             rows.append(food_log)
             if (
-                not protected_conflict
-                and (
-                    record["preflight_pending_row"] is not None
-                    or not record["preflight_existing_row"]
+                promoted_protected_row
+                or (
+                    not protected_conflict
+                    and (
+                        record["preflight_pending_row"] is not None
+                        or not record["preflight_existing_row"]
+                    )
                 )
             ):
                 newly_finalized_rows.append(food_log)
