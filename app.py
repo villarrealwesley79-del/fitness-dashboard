@@ -15788,8 +15788,6 @@ def smart_recommendation_api():
     acwr_data = calculate_acwr(WORKOUTS)
     sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
     recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
-    freshness = _compute_data_freshness()
-    oura_freshness = freshness.get("oura") or {}
     direct_oura_status, _direct_oura_date, _direct_oura_sync = _latest_oura_freshness()
     # FIT-271 is provenance-only: preserve the established deterministic
     # consumption of cached Oura factors and report their direct freshness.

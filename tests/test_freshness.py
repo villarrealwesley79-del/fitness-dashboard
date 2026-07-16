@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import importlib
 import json
 import logging
+from unittest.mock import Mock
 
 import pytest
 
@@ -124,9 +125,8 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
     monkeypatch.setattr(
         fitness_app, "_fetch_wttr", lambda *_args, **_kwargs: {"available": False}
     )
-    monkeypatch.setattr(
-        fitness_app, "_compute_data_freshness", lambda *_args, **_kwargs: freshness
-    )
+    freshness_probe = Mock(return_value=freshness)
+    monkeypatch.setattr(fitness_app, "_compute_data_freshness", freshness_probe)
     monkeypatch.setattr(
         fitness_app,
         "_latest_oura_freshness",
@@ -136,6 +136,7 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
     response = fitness_app.app.test_client().get("/api/recommendation/smart")
 
     assert response.status_code == 200
+    assert freshness_probe.call_count == 1
     payload = response.get_json()
     assert "freshness" in payload
     assert "confidence_level" in payload
