@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import importlib
 import ipaddress
 import socket
 import urllib.request
 from collections.abc import Iterator
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+import data_store
 from flask.testing import FlaskClient
 from werkzeug.datastructures import Headers
 
@@ -19,6 +22,35 @@ _CSRF_TEST_HEADER = "X-Requested-With"
 _CSRF_TEST_VALUE = "XMLHttpRequest"
 _CSRF_TEST_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _CSRF_TEST_OMIT_ENVIRON = "fitness_dashboard.omit_auto_csrf_header"
+
+
+@pytest.fixture
+def isolated_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Return the Flask module with a per-test data database and auth disabled."""
+    monkeypatch.setenv("SECRET_KEY", "fitness-dashboard-pytest-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
+    module = importlib.import_module("app")
+    previous_secret_key = module.app.config.get("SECRET_KEY")
+    previous_testing = module.app.config.get("TESTING")
+    previous_login_disabled = module.app.config.get("LOGIN_DISABLED")
+    module.app.config.update(
+        SECRET_KEY="fitness-dashboard-pytest-secret",
+        TESTING=True,
+        LOGIN_DISABLED=True,
+    )
+    yield module
+    module.app.config.update(
+        SECRET_KEY=previous_secret_key,
+        TESTING=previous_testing,
+        LOGIN_DISABLED=previous_login_disabled,
+    )
+
+
+@pytest.fixture
+def isolated_client(isolated_app):
+    """Return a Flask client backed by the shared isolated app fixture."""
+    return isolated_app.app.test_client()
 
 
 def pytest_configure(config: pytest.Config) -> None:
