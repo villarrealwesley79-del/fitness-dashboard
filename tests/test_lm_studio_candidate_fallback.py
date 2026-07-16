@@ -204,6 +204,79 @@ def test_adjust_route_succeeds_and_logs_fallback_model_version(monkeypatch):
     assert metrics[-1][1]["model_version"] == "loaded-fallback-model"
 
 
+def test_adjust_route_replaces_model_summary_when_swap_is_skipped(monkeypatch):
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    candidate = _candidates()[0]
+
+    class FakeAdapter:
+        LM_STUDIO_MODEL_VERSION = "missing-primary-model"
+
+        class LmStudioError(Exception):
+            pass
+
+        def active_candidate(self):
+            return candidate
+
+        def model_version_for(self, selected):
+            return selected["model"]
+
+        def model_versions_after(self, _selected):
+            return []
+
+        def adjust_plan(self, *_args, **_kwargs):
+            return {
+                "summary": "Swapped Seated Row for Lat Pulldown.",
+                "intent": {
+                    "swap": [
+                        {
+                            "replace_exercise": "Seated Row",
+                            "target_muscle": "back",
+                            "target_exercise": "Lat Pulldown",
+                        }
+                    ]
+                },
+                "_meta": {"model_version": "missing-primary-model"},
+            }
+
+    recommendation = {
+        "id": "fit-265-summary",
+        "goal": module.TrainingGoal.HYPERTROPHY.value,
+        "estimated_minutes": 45,
+        "mesocycle": {"week": 1},
+        "exercises": [
+            {
+                "exercise": "Chest Press",
+                "muscle": "chest",
+                "target_sets": 3,
+                "target_reps": 10,
+                "target_weight": 100,
+                "rpe_target": 7,
+            }
+        ],
+    }
+    monkeypatch.setattr(module, "_lm_studio", FakeAdapter(), raising=False)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    monkeypatch.setattr(module, "SORENESS_DATA", [])
+    monkeypatch.setattr(module, "_get_oura_readiness_today", lambda: None)
+    monkeypatch.setattr(module, "_ai_cache_get", lambda _key: None)
+    monkeypatch.setattr(module, "_ai_cache_put", lambda *_args: None)
+    monkeypatch.setattr(module, "_ai_metric_log", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "_persist_current_workout_plan", lambda plan, _fingerprint: plan)
+
+    response = module.app.test_client().post(
+        "/api/workout/adjust", json={"constraint": "replace seated row with lat pulldown"}
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["result_kind"] == "unchanged"
+    assert body["applied_notes"] == []
+    assert body["skipped_notes"] == ["could not locate 'Seated Row' in current plan"]
+    assert body["summary"] == "The requested adjustment could not be applied to the current plan."
+
+
 def test_adjust_route_skips_generation_when_no_candidate_preflights(monkeypatch):
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
