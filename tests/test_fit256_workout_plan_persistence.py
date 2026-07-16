@@ -111,6 +111,7 @@ def test_persist_current_workout_plan_uses_authoritative_saved_plan(monkeypatch,
         "user_id": 1,
         "fingerprint": "fp-user-1",
         "plan_id": id(authoritative_plan),
+        "day": module._today_str(),
     }
 
 

@@ -1274,6 +1274,24 @@ def list_due_workout_adaptation_pending(user_id: int, *, now_iso: str) -> list[d
     return [_workout_adaptation_pending_payload(row) for row in rows]
 
 
+def has_due_workout_adaptation_pending(user_id: int, *, now_iso: str) -> bool:
+    """Return whether a user's pending adaptation window is due."""
+    init_data_db()
+    with _get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+              FROM workout_adaptation_pending
+             WHERE user_id = ?
+               AND status = 'pending'
+               AND window_closes_at <= ?
+             LIMIT 1
+            """,
+            (user_id, now_iso),
+        ).fetchone()
+    return row is not None
+
+
 def list_pending_workout_adaptation_windows(user_id: int) -> list[dict]:
     """Return open adaptation windows for tests and event polling."""
     init_data_db()
