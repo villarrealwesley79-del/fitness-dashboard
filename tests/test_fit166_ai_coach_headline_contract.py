@@ -5,9 +5,9 @@ FIT-166 adds a card-level headline plus host-name spans so the operator
 can tell at a glance whether the ASUS GX10 is serving traffic, the Mac
 Studio has taken over, or both hosts are down.
 
-These tests are *static contracts* against the markup and the JS
-render functions. We do not boot a browser here — the runbook covers
-that with mocked screenshots. The goal is just to lock in:
+Markup and CSS are stable contracts; headline behavior is exercised through
+the Node runtime fixture so this suite does not couple behavior to source
+formatting. The goal is just to lock in:
 
   * the new IDs exist
   * the pre-existing FIT-15 / FIT-111 IDs are still present
@@ -20,10 +20,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from js_runtime import run_app_js
+
 
 ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = (ROOT / "templates" / "index.html").read_text()
-APP_JS = (ROOT / "static" / "js" / "app.js").read_text()
 STYLE_CSS = (ROOT / "static" / "css" / "style.css").read_text()
 
 
@@ -72,13 +73,11 @@ def test_existing_ai_coach_ids_preserved():
 
 # ── Host name defaults wired in app.js ───────────────────────────
 
-def test_friendly_host_defaults_wired_in_js():
+def test_friendly_host_defaults_render_in_initial_markup():
     """The adapter returns the generic role names "primary"/"fallback".
     The UI maps those to the deployment's real hosts: ASUS GX10 + Mac
     Studio. Lock in both strings so the headline doesn't silently drop
     back to "primary"/"fallback" after a refactor."""
-    assert "AI_PRIMARY_HOST_DEFAULT = 'ASUS GX10'" in APP_JS
-    assert "AI_FALLBACK_HOST_DEFAULT = 'Mac Studio'" in APP_JS
     # Initial markup also displays these defaults so the card is not
     # blank before the first /api/ai/health response lands.
     assert ">ASUS GX10<" in INDEX_HTML
@@ -93,20 +92,20 @@ def test_headline_renders_three_states_with_correct_chip_class():
       2. Primary down, fallback up → "Fallback active" + warn chip
       3. Both down / unreachable   → "AI offline"     + stale chip
     """
-    headline_fn = _slice_function(APP_JS, "function _aiCoachHeadlineFromHealth")
-
-    # 1) Primary healthy
-    assert "'Ready'" in headline_fn
-    assert "state-chip ok" in headline_fn
-
-    # 2) Fallback active uses warn (NOT stale) — explicit acceptance
-    #    criterion: "Warn-color used for fallback-active state".
-    assert "'Fallback active'" in headline_fn
-    assert "state-chip warn" in headline_fn
-
-    # 3) Both hosts unreachable uses stale.
-    assert "'AI offline'" in headline_fn
-    assert "state-chip stale" in headline_fn
+    output = run_app_js(
+        ["_aiCoachHeadlineFromHealth"],
+        """
+const primary = { reachable: true, model_loaded: true };
+const fallback = { reachable: true, model_loaded: true };
+process.stdout.write(JSON.stringify([
+  e._aiCoachHeadlineFromHealth({ primary, fallback, active_role: 'primary' }),
+  e._aiCoachHeadlineFromHealth({ primary: { reachable: false, model_loaded: false }, fallback, active_role: 'fallback' }),
+  e._aiCoachHeadlineFromHealth({ primary: { reachable: false, model_loaded: false }, fallback: null }),
+]));
+""",
+    )
+    assert [item["stateText"] for item in output] == ["Ready", "Fallback active", "AI offline"]
+    assert [item["chipCls"] for item in output] == ["state-chip ok", "state-chip warn", "state-chip stale"]
 
 
 def test_fallback_active_requires_loaded_fallback_model():
@@ -114,37 +113,54 @@ def test_fallback_active_requires_loaded_fallback_model():
     that the Mac Studio fallback is serving traffic. The headline can
     claim "Fallback active" only when the fallback check itself is
     reachable and has the target model loaded."""
-    headline_fn = _slice_function(APP_JS, "function _aiCoachHeadlineFromHealth")
-    assert "const fallbackOk = !!(fallback && fallback.reachable && fallback.model_loaded);" in headline_fn
-    assert "if (fallbackOk) {" in headline_fn
-    assert "fallbackOk || activeRole === 'fallback'" not in headline_fn
+    output = run_app_js(
+        ["_aiCoachHeadlineFromHealth"],
+        """
+const output = e._aiCoachHeadlineFromHealth({
+  primary: { reachable: true, model_loaded: true },
+  fallback: { reachable: true, model_loaded: false },
+  active_role: 'fallback',
+});
+process.stdout.write(JSON.stringify(output));
+""",
+    )
+    assert output["stateText"] == "AI offline"
 
 
 def test_fallback_detail_distinguishes_model_not_loaded_from_unreachable():
     """Fallback-active detail copy must not call a reachable ASUS host
     unreachable just because its target model is not loaded."""
-    helper_fn = _slice_function(APP_JS, "function _aiPrimaryUnavailableReason")
-    headline_fn = _slice_function(APP_JS, "function _aiCoachHeadlineFromHealth")
-
-    assert "if (!primary || !primary.reachable)" in helper_fn
-    assert "`${primaryHost} unreachable`" in helper_fn
-    assert "if (!primary.model_loaded)" in helper_fn
-    assert "`${primaryHost} model not loaded`" in helper_fn
-    assert "`${primaryHost} not serving traffic`" in helper_fn
-    assert "${_aiPrimaryUnavailableReason(primary, primaryHost)}" in headline_fn
+    output = run_app_js(
+        ["_aiCoachHeadlineFromHealth"],
+        """
+const unreachable = e._aiCoachHeadlineFromHealth({
+  primary: { reachable: false, model_loaded: false },
+  fallback: { name: 'Mac Studio', reachable: true, model_loaded: true },
+  active_role: 'fallback',
+});
+const unloaded = e._aiCoachHeadlineFromHealth({
+  primary: { reachable: true, model_loaded: false },
+  fallback: { name: 'Mac Studio', reachable: true, model_loaded: true },
+  active_role: 'fallback',
+});
+process.stdout.write(JSON.stringify({ unreachable: unreachable.detail, unloaded: unloaded.detail }));
+""",
+    )
+    assert output["unreachable"].startswith("ASUS GX10 unreachable")
+    assert output["unloaded"].startswith("ASUS GX10 model not loaded")
 
 
 def test_absent_fallback_is_not_labeled_mac_studio():
     """When the backend reports no distinct fallback route, preserve
     that meaning instead of inventing a Mac Studio host."""
-    fallback_helper_fn = _slice_function(APP_JS, "function _aiFallbackHostName")
-    headline_fn = _slice_function(APP_JS, "function _aiCoachHeadlineFromHealth")
-    render_fields_fn = _slice_function(APP_JS, "function _renderAiHealthFields")
-
-    assert "fallback ? _aiHostName(fallback, AI_FALLBACK_HOST_DEFAULT) : 'No distinct fallback'" in fallback_helper_fn
-    assert "const fallbackHost = _aiFallbackHostName(fallback);" in headline_fn
-    assert "fallback ? `${primaryHost} & ${fallbackHost} unavailable` : `${primaryHost} unavailable`" in headline_fn
-    assert "const fallbackHost = _aiFallbackHostName(fallback);" in render_fields_fn
+    output = run_app_js(
+        ["_aiCoachHeadlineFromHealth"],
+        """
+const output = e._aiCoachHeadlineFromHealth({ primary: { reachable: false, model_loaded: false } });
+process.stdout.write(JSON.stringify(output));
+""",
+    )
+    assert output["hostText"] == "ASUS GX10 unavailable"
 
 
 def test_fit180_no_distinct_fallback_row_copy_is_less_redundant():
@@ -158,26 +174,27 @@ def test_fit180_no_distinct_fallback_row_copy_is_less_redundant():
     FIT-166's headline math (which interpolates the host name) still
     works, but the chip and detail switch to copy that doesn't repeat
     the word "fallback" in every column."""
-    render_fields_fn = _slice_function(APP_JS, "function _renderAiHealthFields")
-    fallback_helper_fn = _slice_function(APP_JS, "function _aiFallbackHostName")
-
-    # Host label is unchanged — FIT-166 headline depends on it.
-    assert "'No distinct fallback'" in fallback_helper_fn
-    assert "const fallbackRoleEl = $('ai-fallback-role');" in render_fields_fn
-    assert "if (fallbackRoleEl) fallbackRoleEl.hidden = !fallback;" in render_fields_fn
-
-    # Chip copy: "Same as primary" replaced with a shorter non-redundant
-    # label, and the chip class stays the neutral 'unknown' bucket.
-    assert "'Same as primary'" not in render_fields_fn
-    assert (
-        "fallback ? _aiCheckLabel(fallback) : { text: 'Primary only', cls: 'state-chip unknown' }"
-        in render_fields_fn
+    output = run_app_js(
+        ["_renderAiHealthFields"],
+        """
+const ids = ['ai-primary-host', 'ai-fallback-host', 'ai-fallback-role', 'ai-fallback-state', 'ai-fallback-detail'];
+ids.forEach((id) => { sandbox.elements[id] = { textContent: '', hidden: false, className: '' }; });
+e._renderAiHealthFields({ primary: { reachable: true, model_loaded: true }, fallback: null, active_role: 'primary' });
+process.stdout.write(JSON.stringify({
+  host: sandbox.elements['ai-fallback-host'].textContent,
+  roleHidden: sandbox.elements['ai-fallback-role'].hidden,
+  state: sandbox.elements['ai-fallback-state'].textContent,
+  detail: sandbox.elements['ai-fallback-detail'].textContent,
+}));
+""",
+        mocks=["_announceAiCoachHeadline"],
     )
-
-    # Detail copy: drop the redundant "No distinct fallback endpoint"
-    # phrasing in favor of a sentence that explains the routing.
-    assert "'No distinct fallback endpoint'" not in render_fields_fn
-    assert "'Fallback uses the primary route.'" in render_fields_fn
+    assert output == {
+        "host": "No distinct fallback",
+        "roleHidden": True,
+        "state": "Primary only",
+        "detail": "Fallback uses the primary route.",
+    }
 
     # The static "Fallback" role pill is hidden when there is no
     # distinct fallback endpoint so the mobile row does not repeat
@@ -190,22 +207,27 @@ def test_fit180_distinct_fallback_row_still_uses_mac_studio_semantics():
     fallback check is reported, the row still surfaces the Mac Studio
     host name and uses `_aiCheckLabel(fallback)` for its chip / detail
     instead of the no-fallback copy."""
-    render_fields_fn = _slice_function(APP_JS, "function _renderAiHealthFields")
-    fallback_helper_fn = _slice_function(APP_JS, "function _aiFallbackHostName")
-
-    # Mac Studio host default is still wired through _aiFallbackHostName.
-    assert (
-        "fallback ? _aiHostName(fallback, AI_FALLBACK_HOST_DEFAULT) : 'No distinct fallback'"
-        in fallback_helper_fn
+    output = run_app_js(
+        ["_renderAiHealthFields"],
+        """
+['ai-fallback-host', 'ai-fallback-role', 'ai-fallback-state', 'ai-fallback-detail'].forEach((id) => {
+  sandbox.elements[id] = { textContent: '', hidden: false, className: '' };
+});
+e._renderAiHealthFields({
+  primary: { reachable: true, model_loaded: true },
+  fallback: { name: 'Mac Studio', reachable: true, model_loaded: true, model: 'llama' },
+  active_role: 'fallback',
+});
+process.stdout.write(JSON.stringify({
+  host: sandbox.elements['ai-fallback-host'].textContent,
+  hidden: sandbox.elements['ai-fallback-role'].hidden,
+  state: sandbox.elements['ai-fallback-state'].textContent,
+  detail: sandbox.elements['ai-fallback-detail'].textContent,
+}));
+""",
+        mocks=["_announceAiCoachHeadline"],
     )
-    assert "AI_FALLBACK_HOST_DEFAULT = 'Mac Studio'" in APP_JS
-
-    # The fallback-present branch is still _aiCheckLabel(fallback) and
-    # the detail still surfaces fallback.model / fallback.url so the
-    # Mac Studio row reads like a real endpoint, not the "Primary only"
-    # placeholder.
-    assert "fallback ? _aiCheckLabel(fallback)" in render_fields_fn
-    assert "fallback.model || fallback.url" in render_fields_fn
+    assert output == {"host": "Mac Studio", "hidden": False, "state": "Ready · active", "detail": "llama"}
 
 
 def test_setaicoachunavailable_writes_headline_stale():
@@ -213,10 +235,23 @@ def test_setaicoachunavailable_writes_headline_stale():
     headline must degrade to the stale "AI offline" state — not just
     the per-row "Unavailable" chips — so the operator can see the
     failure at a glance."""
-    fn = _slice_function(APP_JS, "function _setAiCoachUnavailable")
-    assert "_renderAiCoachHeadline(" in fn
-    assert "'AI offline'" in fn
-    assert "state-chip stale" in fn
+    output = run_app_js(
+        ["_setAiCoachUnavailable"],
+        """
+['ai-coach-headline-state', 'ai-coach-headline-host', 'ai-coach-headline-chip', 'ai-coach-headline-detail'].forEach((id) => {
+  sandbox.elements[id] = { textContent: '', className: '', hidden: false };
+});
+e._setAiCoachUnavailable('offline proof');
+process.stdout.write(JSON.stringify({
+  state: sandbox.elements['ai-coach-headline-state'].textContent,
+  host: sandbox.elements['ai-coach-headline-host'].textContent,
+  chip: sandbox.elements['ai-coach-headline-chip'].className,
+  detail: sandbox.elements['ai-coach-headline-detail'].textContent,
+}));
+""",
+        mocks=["_announceAiCoachHeadline"],
+    )
+    assert output == {"state": "AI offline", "host": "health endpoint unreachable", "chip": "state-chip stale", "detail": "offline proof"}
 
 
 def test_role_pill_letter_spacing_stays_zero():
@@ -224,15 +259,3 @@ def test_role_pill_letter_spacing_stays_zero():
     rule that letter spacing is zero."""
     role_pill = STYLE_CSS.split(".ai-role-pill {", 1)[1].split("}", 1)[0]
     assert "letter-spacing: 0;" in role_pill
-
-
-# ── Helpers ──────────────────────────────────────────────────────
-
-def _slice_function(source: str, marker: str) -> str:
-    """Return the body of a top-level function so chip-class assertions
-    don't accidentally match elsewhere in app.js."""
-    assert marker in source, f"{marker!r} not found in app.js"
-    after = source.split(marker, 1)[1]
-    # Functions in app.js are formatted with a `    }\n` closing brace at
-    # indent level 1 (the IIFE indents everything 4 spaces).
-    return after.split("\n    }\n", 1)[0]

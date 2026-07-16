@@ -1,530 +1,459 @@
-"""FIT-134 — Frontend review UI contract tests.
-
-The Linear acceptance list calls for visual QA covering 14 scenarios. Without
-a Playwright harness in this project, the established pattern is to assert
-against the JS source so each acceptance bullet has a traceable code path.
-
-These tests sit next to ``test_meal_intake_api.py`` / ``test_meal_logging_e2e.py``
-which exercise the legacy single-item flow. They specifically prove that the
-new multi-item review path (FIT-134) is wired and does not regress the locked
-contract agreed with Codex on 2026-05-22 (see
-``/Users/admin/.claude/plans/codex-is-owrking-on-shiny-ripple.md``).
-"""
+"""FIT-134 multi-item meal review runtime contracts."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from js_runtime import run_app_js
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
 APP_CSS = (ROOT / "static" / "css" / "style.css").read_text(encoding="utf-8")
 
 
-def _v2_block() -> str:
-    """Return the FIT-134 V2 block of app.js so individual assertions don't
-    pick up matches from the legacy single-item review code.
-    """
-    start = APP_JS.find("// FIT-134 — Multi-item meal review (V2).")
-    end = APP_JS.find("function clearMealComposerInputs()", start)
-    assert start != -1 and end != -1, "FIT-134 V2 block markers not found"
-    return APP_JS[start:end]
+def test_normalize_and_accept_body_preserve_backend_fields_and_local_times():
+    output = run_app_js(
+        ["normalizeMealV2Entry", "buildMealV2AcceptBody", "mealComposerState"],
+        """
+e.mealComposerState.pending = [];
+const payload = {
+  meal_id: 'meal-1', meal_type: 'dinner', meal_totals: { calories: 800 },
+  local_timestamp: '2026-07-16T18:00:00', local_date: '2026-07-16', local_iso: '2026-07-16T18:00:00-05:00',
+  followup: { available: false, used: true }, save_blocked_item_ids: [],
+  items: [
+    { item_id: 'included', name: 'Rice', status: 'included', estimate: { calories: 400, ambiguous: false, source: 'usda' } },
+    { item_id: 'skipped', name: 'Sauce', status: 'skipped', original_estimate: { calories: 100, ambiguous: true, source: 'ai' } },
+  ],
+};
+const entry = e.normalizeMealV2Entry(payload);
+const body = e.buildMealV2AcceptBody(entry);
+process.stdout.write(JSON.stringify({ entry: { mealType: entry.meal_type, followup: entry.lastFollowupAnswered, local: [entry.local_timestamp, entry.local_date, entry.local_iso] }, body }));
+""",
+    )
+    assert output["entry"] == {"mealType": "dinner", "followup": True, "local": ["2026-07-16T18:00:00", "2026-07-16", "2026-07-16T18:00:00-05:00"]}
+    assert output["body"]["meal_id"] == "meal-1"
+    assert output["body"]["items"][0]["estimate"]["meal_type"] == "dinner"
+    assert output["body"]["items"][1]["estimate"] == {"calories": 100, "ambiguous": True, "source": "ai"}
+    assert output["body"]["local_date"] == "2026-07-16"
 
 
-# ── Scenario 1: Collapsed view shows meal totals only (no per-item rows) ──
-
-def test_collapsed_view_renders_meal_totals_only():
-    """Collapsed-view markup carries meal_totals + meal-type chip; per-item
-    rows live in the .meal-review-v2-expanded container which is hidden
-    until the user expands.
-    """
-    block = _v2_block()
-    assert "meal-review-v2-collapsed" in block
-    assert "meal-review-v2-totals" in block
-    assert "meal-review-v2-kcal" in block
-    assert "meal-review-v2-macros" in block
-    # The items list lives in the expanded container, not the collapsed one.
-    assert "meal-review-v2-items" in block
-    assert "meal-review-v2-expanded" in block
-    assert "${expanded ? '' : ' hidden'}" in block
-
-
-# ── Scenario 2: NL add item updates totals + items list ──
-
-def test_add_item_uses_natural_language_text_only():
-    block = _v2_block()
-    assert "data-action=\"add-item-form\"" in block
-    assert "data-field=\"add-item-text\"" in block
-    # Refresh is wired as { kind: 'add_item', text }.
-    assert "kind: 'add_item', text" in block
-    # No portion-chip / numeric-macro inputs on the V2 add path.
-    assert "meal-pending-portion-chips" not in block
-    assert 'inputmode="numeric"' not in block
+def test_apply_refresh_replaces_entry_and_expands_new_blocked_items():
+    output = run_app_js(
+        ["normalizeMealV2Entry", "applyMealV2Refresh", "mealComposerState"],
+        """
+const existing = e.normalizeMealV2Entry({
+  meal_id: 'meal-1', meal_type: 'lunch', items: [],
+  policy: { reason: 'keep' }, save_blocked_item_ids: [],
+});
+existing.expandedItems.add('old');
+e.mealComposerState.pending = [existing];
+sandbox.__fitSet.renderMealPendingList(() => {});
+e.applyMealV2Refresh('meal-1', { meal_id: 'meal-1', meal_type: 'lunch', items: [{ item_id: 'new', status: 'included' }], save_blocked_item_ids: ['new'] });
+const entry = e.mealComposerState.pending[0];
+process.stdout.write(JSON.stringify({ ids: Array.from(entry.expandedItems), blocked: entry.save_blocked_item_ids, items: entry.items.map((item) => item.item_id), policy: entry.policy }));
+""",
+        mocks=["renderMealPendingList"],
+    )
+    assert output == {"ids": ["old", "new"], "blocked": ["new"], "items": ["new"], "policy": {"reason": "keep"}}
 
 
-# ── Scenario 3: Branded added item triggers branded-lookup loading state ──
-
-def test_branded_added_item_shows_lookup_state():
-    block = _v2_block()
-    # pendingRefresh state drives the "Looking up…" status indicator.
-    assert "Looking up" in block
-    assert "meal-review-v2--refreshing" in block
-    # The mock recognizes branded names and assigns a branded source.
-    assert "(heb|h-?e-?b|hot cheetos?|chipotle|bill miller|whataburger" in block
-    assert "Branded lookup" in block
-
-
-# ── Scenario 4: Source viewer in-app (no target=_blank) ──
-
-def test_source_viewer_opens_in_app_iframe_not_target_blank():
-    block = _v2_block()
-    # In-app modal with a sandboxed iframe.
-    assert "openMealV2SourceViewer" in block
-    assert "meal-review-v2-source-frame" in block
-    assert "sandbox=\"allow-same-origin\"" in block
-    # The V2 source chip never carries target=_blank.
-    v2_chip_section = block.split("meal-review-v2-source-chip", 2)[1]
-    assert "target=\"_blank\"" not in v2_chip_section[:600]
-    # Sanitizer rejects cross-origin URLs and non-http schemes by checking
-    # against window.location.origin.
-    assert "sanitizeMealV2SourceLink" in block
-    assert "u.origin !== window.location.origin" in block
-    # Defense-in-depth: protocol-relative URLs ("//evil.example.com/x")
-    # would otherwise resolve to an attacker-controlled origin once placed
-    # in an iframe src. The sanitizer rejects them explicitly before the
-    # URL() parse, and also requires the resolved protocol to match the
-    # current page's protocol.
-    assert "value.startsWith('//')" in block
-    assert "u.protocol !== window.location.protocol" in block
+def test_item_renderer_enforces_source_backed_candidates_and_pending_disabled_controls():
+    output = run_app_js(
+        ["buildMealReviewV2ItemHtml"],
+        """
+const html = e.buildMealReviewV2ItemHtml({
+  item_id: 'combo', name: 'Combo', status: 'included', branded_combo_ai_only: true,
+  candidates: [{ candidate_id: 'ai', name: 'AI guess', source_backed: false }, { candidate_id: 'real', name: 'Verified', source_backed: true }],
+}, { blocked: true, expanded: true, pendingRefresh: true, mealId: 'meal-1' });
+process.stdout.write(JSON.stringify(html));
+""",
+    )
+    assert "AI-only restaurant combo" in output
+    assert 'data-candidate-id="real"' in output
+    assert 'data-candidate-id="ai"' not in output
+    candidate_tag = output.split('data-candidate-id="real"', 1)[1].split(">", 1)[0]
+    assert " disabled" in candidate_tag
+    assert 'data-action="portion-edit-open" disabled' in output
 
 
-# ── Scenario 5: NL portion edit triggers refresh; no chips/numeric controls ──
-
-def test_portion_edit_is_natural_language_only():
-    block = _v2_block()
-    assert "data-action=\"portion-edit-form\"" in block
-    assert "data-field=\"portion-text\"" in block
-    assert "kind: 'edit_portion', item_id: itemId, text" in block
-    # The V2 item body does NOT render the portion-chip strip or numeric
-    # macro inputs.
-    after = block.split("function buildMealReviewV2ItemHtml", 1)[1]
-    expanded_item = after.split("\n    function ", 1)[0]
-    assert "meal-pending-portion-chip" not in expanded_item
-    assert 'data-field="calories"' not in expanded_item
-
-
-# ── Scenario 6: One-follow-up budget honored ──
-
-def test_follow_up_budget_uses_server_used_flag():
-    block = _v2_block()
-    # Banner only shows when followup.available && !used && !local mirror.
-    assert "entry.followup.available" in block
-    assert "!entry.followup.used" in block
-    assert "!entry.lastFollowupAnswered" in block
-    # Submit posts followup_answer with the user's text in `answer`, matching
-    # the FIT-144 backend (app.py followup_answer reads `answer` and
-    # `skipped`, not `text`).
-    assert "kind: 'followup_answer', answer: text" in block
-    # The server-side `used` flag is mirrored on normalize so a refresh
-    # that returns used=true keeps the banner dismissed.
-    assert "lastFollowupAnswered = !!(payload.followup && payload.followup.used)" in block
-
-
-# ── Scenario 7: Skipping the follow-up keeps unclear items save-blocked ──
-
-def test_dismiss_follow_up_does_not_unblock_save():
-    block = _v2_block()
-    # Dismiss only flips the local mirror; never posts followup_answer and
-    # never mutates save_blocked_item_ids.
-    needle = 'data-action="followup-dismiss"'
-    idx = block.find('if (dismissBtn) {')
-    assert idx != -1, "followup-dismiss wireup not found"
-    dismiss_section = block[idx:idx + 400]
-    assert "entry.lastFollowupAnswered = true" in dismiss_section
-    assert "kind: 'followup_answer'" not in dismiss_section
-    assert "save_blocked_item_ids" not in dismiss_section
-    # The dismiss button selector is wired with the expected data-action.
-    assert needle in block
-
-
-# ── Scenario 8: All-items-deleted shows Discard log; DELETE called ──
-
-def test_all_items_deleted_replaces_save_with_discard_log():
-    block = _v2_block()
-    # When every included item is gone, the actions row swaps to a single
-    # destructive button.
-    assert "data-state=\"all-removed\"" in block
-    assert "data-action=\"discard-log\"" in block
-    assert "Discard log" in block
-    # The Discard log button calls the same discardMealV2 path as plain
-    # Discard (which posts DELETE /api/meal-intake/<meal_id>).
-    idx = block.find("const discardLogBtn")
-    assert idx != -1, "discard-log button wireup not found"
-    discard_log_section = block[idx:idx + 220]
-    assert "discardMealV2(mealId)" in discard_log_section
-    # discardMealV2 uses DELETE /api/meal-intake/<meal_id>.
-    delete_section = block.split("async function discardMealV2", 1)[1].split("async function", 1)[0]
-    assert "method: 'DELETE'" in delete_section
-    assert "/api/meal-intake/${encodeURIComponent(mealId)}" in delete_section
-
-
-# ── Scenario 9: Expanded details show per-item fields ──
-
-def test_expanded_details_show_item_fields():
-    block = _v2_block()
-    # Slice to the per-item builder; "function buildMealReviewV2ItemHtml"
-    # body ends at the next "function " definition in the block.
-    after = block.split("function buildMealReviewV2ItemHtml", 1)[1]
-    item_html = after.split("\n    function ", 1)[0]
-    assert "meal-review-v2-item-name" in item_html
-    assert "meal-review-v2-item-portion" in item_html
-    assert "meal-review-v2-item-macros" in item_html
-    assert "meal-review-v2-item-conf" in item_html
-    assert "meal-review-v2-source-chip" in item_html
-
-
-# ── Scenario 10: Blocked-save auto-expands save_blocked_item_ids ──
-
-def test_blocked_save_auto_expands_offending_items():
-    block = _v2_block()
-    # Render-time: items in save_blocked_item_ids open expanded.
-    assert "blockedSet.has(item.item_id)" in block
-    # After each refresh, the applier auto-adds blocked ids to the expanded
-    # set so a fresh block opens the right item.
-    apply_section = block.split("function applyMealV2Refresh", 1)[1].split("}\n", 1)[0]
-    assert "entry.save_blocked_item_ids" in apply_section
-    assert "entry.expandedItems.add(id)" in apply_section
-    # Save button is disabled while any item is blocked; FIT-150 keeps it
-    # visually enabled during pendingRefresh because acceptMealV2 has its own guard.
-    assert "data-action=\"save\"${blocked ? ' disabled' : ''}" in block
-    assert "Resolve items to save" in block
-
-
-# ── Scenario 11: Add and Delete item flows update list + totals ──
-
-def test_add_and_delete_item_refresh_payload_replaces_state():
-    block = _v2_block()
-    # Each refresh response fully replaces local entry state (no JSON
-    # patch path), per the locked contract refresh invariant.
-    apply_section = block.split("function applyMealV2Refresh", 1)[1].split("}\n", 1)[0]
-    assert "normalizeMealV2Entry(payload)" in apply_section
-    assert "upsertMealV2Entry(entry)" in apply_section
-    # delete_item is wired.
-    assert "data-action=\"delete-item\"" in block
-    assert "kind: 'delete_item', item_id: itemId" in block
-    # add_item is wired.
-    assert "kind: 'add_item', text" in block
-
-
-# ── Scenario 12: Skip unclear item unblocks Save when no other blocks remain ──
-
-def test_skip_item_routes_through_backend_recompute():
-    block = _v2_block()
-    # Skip posts skip_item; backend recomputes save_blocked_item_ids and
-    # the frontend re-renders with the new state.
-    assert "kind: 'skip_item', item_id: itemId" in block
-    # restore_item is wired so the user can Undo a skip/delete — required
-    # because skipped/deleted items stay in items[] per the contract.
-    assert "kind: 'restore_item', item_id: itemId" in block
-    assert "data-action=\"restore-item\"" in block
-    # The undo affordance only renders on removed items.
-    assert "meal-review-v2-item-actions--removed" in block
-    # Mock backend recompute proves the rule for local exercise.
-    mock_recompute = block.split("recompute(payload) {", 1)[1].split("        }", 1)[0]
-    assert "it.status === 'included' && it.unclear" in mock_recompute
-    assert "payload.save_blocked_item_ids =" in mock_recompute
-
-
-# ── Scenario 13: Meal type inferred + editable via collapsed-view chip ──
-
-def test_meal_type_inferred_and_editable():
-    block = _v2_block()
-    # Backend returns meal_type; frontend renders it as a <select> in the
-    # collapsed head, and change posts set_meal_type refresh.
-    assert "data-action=\"set-meal-type\"" in block
-    assert "kind: 'set_meal_type', meal_type: next" in block
-    # Mock inferMealType drives the default for local exercise.
-    assert "inferMealType(text)" in block
-    assert "breakfast|eggs?|bagel|cereal|oatmeal|pancake" in block
-
-
-# ── Scenario 14: No workout-skip / low-confidence-workout copy in food log UI ──
-
-def test_food_log_review_card_has_no_workout_skip_messaging():
-    """The V2 review card must not surface workout adaptation skip reasons.
-    Workout messaging stays in workout surfaces only (covered by FIT-137).
-    """
-    block = _v2_block()
+def test_food_review_renderers_do_not_leak_workout_adaptation_copy():
+    output = run_app_js(
+        ["buildMealReviewCardV2", "buildMealReviewV2ItemHtml"],
+        """
+sandbox.__fitSet.wireMealReviewCardV2(() => {});
+sandbox.document.createElement = () => ({
+  className: '', innerHTML: '', attrs: {}, classList: { add() {} },
+  setAttribute(name, value) { this.attrs[name] = value; },
+});
+const item = { item_id: 'item-1', name: 'Rice bowl', status: 'included', calories: 450, source: { kind: 'usda', label: 'USDA' } };
+const entry = {
+  __v2: true, meal_id: 'meal-1', meal_type: 'dinner', meal_totals: { calories: 450 },
+  followup: null, save_blocked_item_ids: [], expandedItems: new Set(), pendingRefresh: false, items: [item],
+};
+const card = e.buildMealReviewCardV2(entry).innerHTML;
+const itemHtml = e.buildMealReviewV2ItemHtml(item, { mealId: 'meal-1' });
+process.stdout.write(JSON.stringify(`${card}\n${itemHtml}`));
+""",
+        mocks=["wireMealReviewCardV2"],
+    )
     forbidden = [
-        "Workout updated",
-        "Workout skipped",
-        "Workout adaptation",
+        "workout updated",
+        "workout skipped",
+        "workout adaptation",
         "workout-skip",
         "low-confidence-workout",
         "confidence too low",
     ]
-    for needle in forbidden:
-        assert needle.lower() not in block.lower(), (
-            f"FIT-134 acceptance: the food log review card must not mention "
-            f"workout adaptation. Found {needle!r} in the V2 block."
-        )
+    rendered = output.lower()
+    assert not [phrase for phrase in forbidden if phrase in rendered]
 
 
-# ── Cross-cutting: the duck-typed gate doesn't break the legacy path ──
-
-def test_legacy_single_item_path_still_wired():
-    """FIT-134 only adds a V2 branch; the legacy single-item review card
-    (buildMealPendingRow) and its accept/discard endpoints must stay live
-    so the production path keeps working until FIT-135 lands the new
-    backend contract.
-    """
-    assert "function buildMealPendingRow(entry)" in APP_JS
-    assert "function acceptMealPending(clientId, rowEl)" in APP_JS
-    assert "function discardMealPending(clientId)" in APP_JS
-    # The duck-typed gate routes V2 payloads but does not delete the
-    # legacy branches.
-    branch = APP_JS.split("function handleMealIntakeResponse(payload, ctx) {", 1)[1].split("\n    }\n", 1)[0]
-    assert "isMealV2Payload(payload)" in branch
-    assert "handleMealIntakeV2Response(payload, ctx)" in branch
-    assert "status === 'logged'" in branch
-    assert "status === 'pending_review'" in branch
+def test_refresh_injects_request_id_and_replaces_pending_state():
+    output = run_app_js(
+        ["submitMealV2Refresh", "mealComposerState"],
+        """
+e.mealComposerState.pending = [{ __v2: true, meal_id: 'meal-1', pendingRefresh: false, items: [], expandedItems: new Set(), save_blocked_item_ids: [] }];
+let sent;
+sandbox.__fitSet.postMealV2Refresh(async (_id, body) => { sent = body; return { meal_id: 'meal-1', items: [], save_blocked_item_ids: [] }; });
+sandbox.__fitSet.renderMealPendingList(() => {});
+await e.submitMealV2Refresh('meal-1', { kind: 'add_item', text: 'toast' });
+process.stdout.write(JSON.stringify({ kind: sent.kind, text: sent.text, requestId: typeof sent.request_id, pending: e.mealComposerState.pending[0].pendingRefresh }));
+""",
+        mocks=["postMealV2Refresh", "renderMealPendingList"],
+    )
+    assert output == {"kind": "add_item", "text": "toast", "requestId": "string", "pending": False}
 
 
-def test_contract_refresh_kinds_match_locked_plan():
-    """Every refresh kind from the locked contract is supported, and only
-    those kinds are accepted by submitMealV2Refresh.
-    """
-    block = _v2_block()
-    expected = {
-        "add_item", "edit_portion", "followup_answer", "choose_candidate",
-        "skip_item", "delete_item", "restore_item", "set_meal_type",
+def test_accept_and_discard_use_live_endpoints_and_remove_entry_on_success():
+    output = run_app_js(
+        ["acceptMealV2", "discardMealV2", "mealComposerState"],
+        """
+const calls = [];
+e.mealComposerState.pending = [{ __v2: true, meal_id: 'meal-1', pendingRefresh: false, expandedItems: new Set(), save_blocked_item_ids: [], items: [{ item_id: 'i', status: 'included', estimate: { calories: 1 } }] }];
+sandbox.__fitSet.api(async (path, options) => { calls.push({ path, method: options && options.method }); return {}; });
+sandbox.__fitSet.renderMealPendingList(() => {});
+sandbox.__fitSet.refreshMacroCard(() => {});
+sandbox.__fitSet.toast(() => {});
+await e.acceptMealV2('meal-1');
+e.mealComposerState.pending = [{ __v2: true, meal_id: 'meal-2', pendingRefresh: false, expandedItems: new Set(), save_blocked_item_ids: [], items: [{ item_id: 'i', status: 'included' }] }];
+await e.discardMealV2('meal-2');
+process.stdout.write(JSON.stringify({ calls, pending: e.mealComposerState.pending.map((item) => item.meal_id) }));
+""",
+        mocks=["api", "renderMealPendingList", "refreshMacroCard", "toast"],
+    )
+    assert output["calls"] == [
+        {"path": "/api/meal-intake/meal-1/accept", "method": "POST"},
+        {"path": "/api/meal-intake/meal-2", "method": "DELETE"},
+    ]
+    assert output["pending"] == []
+
+
+def test_rendered_review_controls_drive_accept_discard_and_all_refresh_handlers():
+    output = run_app_js(
+        ["buildMealReviewCardV2", "mealComposerState"],
+        """
+function control(value = '') {
+  return { value, hidden: false, disabled: false, handlers: {}, attrs: {},
+    addEventListener(name, handler) { this.handlers[name] = handler; },
+    getAttribute(name) { return this.attrs[name] || null; },
+    setAttribute(name, value) { this.attrs[name] = value; }, focus() {} };
+}
+function renderedRow() {
+  const expand = control();
+  const mealType = control('dinner');
+  const save = control();
+  const discard = control();
+  const followupInput = control('half cup');
+  const followupDismiss = control();
+  const followupForm = control();
+  followupForm.querySelector = (selector) => selector.includes('followup-answer') ? followupInput : selector.includes('followup-dismiss') ? followupDismiss : null;
+  const addInput = control('banana');
+  const addForm = control();
+  addForm.querySelector = (selector) => selector.includes('add-item-text') ? addInput : null;
+  const candidate = control();
+  candidate.attrs['data-candidate-id'] = 'candidate-1';
+  const portionInput = control('two cups');
+  const portionForm = control();
+  portionForm.hidden = true;
+  portionForm.querySelector = (selector) => selector.includes('portion-text') ? portionInput : null;
+  const portionOpen = control();
+  const portionCancel = control();
+  const skip = control();
+  const del = control();
+  const restore = control();
+  const toggleItem = control();
+  const item = {
+    getAttribute: (name) => name === 'data-item-id' ? 'item-1' : null,
+    querySelector: (selector) => {
+      if (selector.includes('toggle-item')) return toggleItem;
+      if (selector.includes('portion-edit-form')) return portionForm;
+      if (selector.includes('portion-edit-open')) return portionOpen;
+      if (selector.includes('portion-edit-cancel')) return portionCancel;
+      if (selector.includes('skip-item')) return skip;
+      if (selector.includes('delete-item')) return del;
+      if (selector.includes('restore-item')) return restore;
+      return null;
+    },
+    querySelectorAll: (selector) => selector.includes('choose-candidate') ? [candidate] : [],
+  };
+  const row = {
+    classList: { add() {} }, attrs: {}, innerHTML: '',
+    setAttribute(name, value) { this.attrs[name] = value; },
+    querySelector: (selector) => {
+      if (selector.includes('toggle-expand')) return expand;
+      if (selector.includes('set-meal-type')) return mealType;
+      if (selector.includes('data-action="save"')) return save;
+      if (selector.includes('data-action="discard"')) return discard;
+      if (selector.includes('discard-log')) return null;
+      if (selector.includes('followup-form')) return followupForm;
+      if (selector.includes('add-item-form')) return addForm;
+      return null;
+    },
+    querySelectorAll: (selector) => selector === '.meal-review-v2-item' ? [item] : [],
+  };
+  return { row, expand, mealType, save, discard, followupInput, followupDismiss, followupForm, addInput, addForm, candidate, portionInput, portionForm, portionOpen, portionCancel, skip, del, restore, toggleItem, item };
+}
+function entry(mealId, blocked = []) {
+  return {
+    __v2: true, meal_id: mealId, meal_type: 'dinner', meal_totals: { calories: 500 },
+    local_timestamp: '2026-07-16T18:00:00', local_date: '2026-07-16', local_iso: '2026-07-16T18:00:00-05:00',
+    followup: { available: true, question: 'How much?', used: false }, lastFollowupAnswered: false,
+    save_blocked_item_ids: blocked, expandedItems: new Set(), pendingRefresh: false,
+    items: [
+      { item_id: 'item-1', name: 'Rice', status: 'included', estimate: { calories: 400, ambiguous: false, source: 'usda' }, candidates: [{ candidate_id: 'candidate-1', name: 'Verified rice', source_backed: true }] },
+      { item_id: 'item-2', name: 'Sauce', status: 'skipped', original_estimate: { calories: 100, ambiguous: true, source: 'ai' }, candidates: [] },
+    ],
+  };
+}
+const apiCalls = [];
+const refreshCalls = [];
+const toastCalls = [];
+sandbox.__fitSet.api(async (path, options) => { apiCalls.push({ path, method: options && options.method, body: options && options.body ? JSON.parse(options.body) : null }); return {}; });
+sandbox.__fitSet.submitMealV2Refresh(async (mealId, body) => { refreshCalls.push({ mealId, body }); });
+sandbox.__fitSet.renderMealPendingList(() => {});
+sandbox.__fitSet.refreshMacroCard(() => {});
+sandbox.__fitSet.toast((message, tone) => toastCalls.push({ message, tone }));
+let active;
+sandbox.document.createElement = () => active.row;
+
+const saveEntry = entry('meal-save');
+e.mealComposerState.pending = [saveEntry];
+active = renderedRow();
+const saveRow = e.buildMealReviewCardV2(saveEntry);
+await saveRow.querySelector('[data-action="save"]').handlers.click();
+
+const blockedEntry = entry('meal-blocked', ['item-1']);
+e.mealComposerState.pending = [blockedEntry];
+active = renderedRow();
+const blockedRow = e.buildMealReviewCardV2(blockedEntry);
+await blockedRow.querySelector('[data-action="save"]').handlers.click();
+
+const discardEntry = entry('meal-discard');
+e.mealComposerState.pending = [discardEntry];
+active = renderedRow();
+const discardRow = e.buildMealReviewCardV2(discardEntry);
+await discardRow.querySelector('[data-action="discard"]').handlers.click();
+const pendingAfterSaveAndDiscard = e.mealComposerState.pending.map((item) => item.meal_id);
+
+const controlsEntry = entry('meal-controls');
+e.mealComposerState.pending = [controlsEntry];
+active = renderedRow();
+const controls = e.buildMealReviewCardV2(controlsEntry);
+active.mealType.handlers.change();
+await active.followupForm.handlers.submit({ preventDefault() {} });
+active.followupDismiss.handlers.click();
+await active.addForm.handlers.submit({ preventDefault() {} });
+active.candidate.handlers.click();
+active.portionOpen.handlers.click();
+await active.portionForm.handlers.submit({ preventDefault() {} });
+active.portionCancel.handlers.click();
+active.skip.handlers.click();
+active.del.handlers.click();
+active.restore.handlers.click();
+process.stdout.write(JSON.stringify({
+  apiCalls, refreshCalls, toasts: toastCalls,
+  followupAnswered: controlsEntry.lastFollowupAnswered,
+  portion: { formHidden: active.portionForm.hidden, openHidden: active.portionOpen.hidden },
+  pendingAfterSaveAndDiscard,
+}));
+""",
+        mocks=["api", "submitMealV2Refresh", "renderMealPendingList", "refreshMacroCard", "toast"],
+    )
+    assert output["apiCalls"][0]["path"] == "/api/meal-intake/meal-save/accept"
+    assert output["apiCalls"][0]["method"] == "POST"
+    body = output["apiCalls"][0]["body"]
+    assert body["meal_id"] == "meal-save"
+    assert body["local_timestamp"] == "2026-07-16T18:00:00"
+    assert body["local_date"] == "2026-07-16"
+    assert body["local_iso"] == "2026-07-16T18:00:00-05:00"
+    assert body["items"][0]["state"] == "included"
+    assert body["items"][0]["estimate"] == {"calories": 400, "ambiguous": False, "source": "usda", "meal_type": "dinner"}
+    assert body["items"][1]["state"] == "skipped"
+    assert body["items"][1]["estimate"] == {"calories": 100, "ambiguous": True, "source": "ai"}
+    assert output["apiCalls"][1] == {"path": "/api/meal-intake/meal-discard", "method": "DELETE", "body": None}
+    assert output["pendingAfterSaveAndDiscard"] == []
+    assert output["refreshCalls"] == [
+        {"mealId": "meal-controls", "body": {"kind": "set_meal_type", "meal_type": "dinner"}},
+        {"mealId": "meal-controls", "body": {"kind": "followup_answer", "answer": "half cup"}},
+        {"mealId": "meal-controls", "body": {"kind": "add_item", "text": "banana"}},
+        {"mealId": "meal-controls", "body": {"kind": "choose_candidate", "item_id": "item-1", "candidate_id": "candidate-1"}},
+        {"mealId": "meal-controls", "body": {"kind": "edit_portion", "item_id": "item-1", "text": "two cups"}},
+        {"mealId": "meal-controls", "body": {"kind": "skip_item", "item_id": "item-1"}},
+        {"mealId": "meal-controls", "body": {"kind": "delete_item", "item_id": "item-1"}},
+        {"mealId": "meal-controls", "body": {"kind": "restore_item", "item_id": "item-1"}},
+    ]
+    assert output["followupAnswered"] is True
+    assert output["portion"] == {"formHidden": True, "openHidden": False}
+    assert any(toast["message"] == "Resolve flagged items before saving." for toast in output["toasts"])
+
+
+def test_all_removed_meal_renders_discard_log_and_deletes_the_meal():
+    output = run_app_js(
+        ["buildMealReviewCardV2", "mealComposerState"],
+        """
+function control() { return { handlers: {}, addEventListener(name, fn) { this.handlers[name] = fn; } }; }
+const expand = control();
+const mealType = control();
+const discardLog = control();
+const row = {
+  innerHTML: '', attrs: {}, classList: { add() {} },
+  setAttribute(name, value) { this.attrs[name] = value; },
+  querySelector(selector) {
+    if (selector.includes('toggle-expand')) return expand;
+    if (selector.includes('set-meal-type')) return mealType;
+    if (selector.includes('discard-log')) return discardLog;
+    return null;
+  },
+  querySelectorAll: () => [],
+};
+const entry = {
+  __v2: true, meal_id: 'meal-removed', meal_type: 'dinner', meal_totals: {},
+  followup: null, save_blocked_item_ids: [], expandedItems: new Set(), pendingRefresh: false,
+  items: [
+    { item_id: 'skipped', name: 'Rice', status: 'skipped' },
+    { item_id: 'deleted', name: 'Sauce', status: 'deleted' },
+  ],
+};
+e.mealComposerState.pending = [entry];
+const calls = [];
+sandbox.document.createElement = () => row;
+sandbox.__fitSet.api(async (path, options) => { calls.push({ path, method: options.method }); return {}; });
+sandbox.__fitSet.renderMealPendingList(() => {});
+sandbox.__fitSet.refreshMacroCard(() => {});
+sandbox.__fitSet.toast(() => {});
+const rendered = e.buildMealReviewCardV2(entry);
+const html = rendered.innerHTML;
+await discardLog.handlers.click();
+process.stdout.write(JSON.stringify({
+  allRemoved: html.includes('data-state="all-removed"'),
+  discardLabel: html.includes('data-action="discard-log">Discard log</button>'),
+  saveAction: html.includes('data-action="save"'),
+  calls,
+  pending: e.mealComposerState.pending.map((item) => item.meal_id),
+}));
+""",
+        mocks=["api", "renderMealPendingList", "refreshMacroCard", "toast"],
+    )
+    assert output == {
+        "allRemoved": True,
+        "discardLabel": True,
+        "saveAction": False,
+        "calls": [{"path": "/api/meal-intake/meal-removed", "method": "DELETE"}],
+        "pending": [],
     }
-    enum_line = block.split("const MEAL_V2_REFRESH_KINDS = [", 1)[1].split("];", 1)[0]
-    for kind in expected:
-        assert f"'{kind}'" in enum_line, f"refresh kind {kind!r} missing"
 
 
-def test_accept_body_merges_entry_meal_type_into_included_item_estimates():
-    """FIT-144 backend persists food_log.meal_type from each item's
-    `estimate.meal_type`, not from a top-level `meal_type` on the request.
-    `set_meal_type` refresh updates payload.meal_type server-side but
-    does not rewrite per-item estimates, so the frontend must merge the
-    current entry.meal_type into each included item's estimate when
-    posting accept — otherwise the user's meal-type edit silently fails
-    to persist (FIT-134 AC: "meal type can be inferred and edited").
-    Skipped/deleted items keep their original estimate so the backend's
-    negative-feedback path sees the original meal-type context.
-    """
-    block = _v2_block()
-    builder = block.split("function buildMealV2AcceptBody", 1)[1].split("\n    function ", 1)[0]
-    assert "MEAL_TYPE_OPTIONS.includes(entry.meal_type)" in builder
-    # Override only fires for included items.
-    assert "state === 'included' && mealType" in builder
-    # The override spreads the existing estimate first so backend-owned
-    # fields stay intact, then overwrites meal_type.
-    assert "...baseEstimate, meal_type: mealType" in builder
+def test_source_viewer_sanitizer_allows_same_origin_routes_only():
+    output = run_app_js(
+        ["sanitizeMealV2SourceLink"],
+        """
+sandbox.location.origin = 'https://fitness.local';
+sandbox.location.protocol = 'https:';
+process.stdout.write(JSON.stringify([
+  e.sanitizeMealV2SourceLink('/nutrition/1?x=1'),
+  e.sanitizeMealV2SourceLink('https://fitness.local/nutrition/2'),
+  e.sanitizeMealV2SourceLink('https://evil.example/x'),
+  e.sanitizeMealV2SourceLink('//evil.example/x'),
+]));
+""",
+    )
+    assert output == ["/nutrition/1?x=1", "/nutrition/2", "", ""]
 
 
-def test_pending_hydration_routes_v2_entries_through_normalize():
-    """FIT-144's `/api/meal-intake/pending` returns saved v2 snapshots
-    (meal_id + items[]) alongside legacy single-item entries. After a
-    reload, those v2 entries must hydrate into the v2 review card so
-    FIT-134's "Review UI carries the same meal_id through refresh/save/
-    discard" acceptance criterion holds across page reloads. Legacy
-    entries must keep routing through upsertMealPendingEntry.
-    """
-    block = APP_JS  # hydrateMealPending lives outside _v2_block
-    hydrate = block.split("async function hydrateMealPending", 1)[1].split("\n    }\n", 1)[0]
-    assert "isMealV2Payload(entry)" in hydrate
-    assert "normalizeMealV2Entry(entry)" in hydrate
-    assert "upsertMealV2Entry(" in hydrate
-    # Legacy fallback stays wired so single-item entries still hydrate.
-    assert "upsertMealPendingEntry(entry)" in hydrate
-
-
-def test_item_and_candidate_portion_reads_live_backend_field():
-    """FIT-144 backend exposes the review item's portion text as `portion`
-    (app.py:_review_item_from_estimate sets `"portion": estimate.get(
-    "portion_description")`) and the same for candidates. The frontend
-    must read `item.portion` / `c.portion` first, falling back to
-    `portion_description` so the mock backend (which keeps the schema
-    field name) still works.
-    """
-    block = _v2_block()
-    # Expanded item row prefers `item.portion`, with portion_description as
-    # a fallback so the mock data and tests keep working.
-    assert "item.portion || item.portion_description" in block
-    # Candidate chip renders `c.portion` with the same fallback.
-    assert "c.portion || c.portion_description" in block
-
-
-def test_live_accept_sends_meal_id_and_items_body():
-    """FIT-144 _meal_intake_accept_multi (app.py:_meal_intake_accept_multi)
-    expects a JSON body `{ meal_id, items: [{state, item_id, estimate, ...}] }`
-    on POST /api/meal-intake/<meal_id>/accept. PR #123 was coded against an
-    earlier draft that sent no body; the live backend would reject that
-    with `items must be a list`. The backend re-sanitizes each item's
-    `estimate` (requires `ambiguous` bool, `source` string, valid macros),
-    so the frontend must pass the backend-owned `item.estimate` through
-    untouched rather than building a fresh dict from the flattened item
-    fields (which would drop `ambiguous` and send `source` as an object).
-    """
-    block = _v2_block()
-    accept_section = block.split("async function acceptMealV2", 1)[1].split("async function", 1)[0]
-    # Live path posts the body (mock path is allowed to short-circuit).
-    assert "method: 'POST'" in accept_section
-    assert "'Content-Type': 'application/json'" in accept_section
-    assert "JSON.stringify(buildMealV2AcceptBody(entry))" in accept_section
-    # Body builder exists, includes meal_id + items, and maps status -> state.
-    builder_section = block.split("function buildMealV2AcceptBody", 1)[1].split("\n    function ", 1)[0]
-    assert "meal_id: entry.meal_id" in builder_section
-    assert "items:" in builder_section
-    assert "MEAL_V2_ITEM_STATUSES.includes(item.status) ? item.status : 'included'" in builder_section
-    # Reuse the backend's own per-item estimate (schema-clean) instead of
-    # rebuilding one from the flattened top-level fields. Skipped/deleted
-    # items still carry their estimate so backend negative-feedback
-    # persistence (FIT-135) can read the phrase.
-    assert "item.estimate" in builder_section
-    assert "item.original_estimate" in builder_section
-
-
-def test_live_refresh_injects_request_id_for_guarded_kinds():
-    """FIT-144 backend at app.py:_REVIEW_REQUEST_ID_KINDS returns 400 without
-    a `request_id` for add_item, edit_portion, choose_candidate, and
-    followup_answer. A duplicate request_id with the same kind is treated as
-    an idempotent replay (returns the prior payload, drops the new body), so
-    the frontend must generate a fresh id per logical mutation attempt — not
-    one per (meal_id, kind).
-    """
-    block = _v2_block()
-    # The guarded set matches the backend constant exactly.
-    guarded_line = block.split("const MEAL_V2_REQUEST_ID_KINDS = new Set([", 1)[1].split("])", 1)[0]
-    for kind in {"add_item", "edit_portion", "choose_candidate", "followup_answer"}:
-        assert f"'{kind}'" in guarded_line, f"guarded kind {kind!r} missing"
-    # skip_item / delete_item / restore_item / set_meal_type are NOT guarded
-    # (backend does not require request_id for those).
-    for kind in {"skip_item", "delete_item", "restore_item", "set_meal_type"}:
-        assert f"'{kind}'" not in guarded_line, (
-            f"kind {kind!r} should not require request_id"
-        )
-    # Helper exists and mirrors the newMealClientId UUID-with-fallback pattern.
-    assert "function mealV2GenerateRequestId()" in block
-    assert "crypto.randomUUID" in block.split("function mealV2GenerateRequestId", 1)[1].split("\n    }", 1)[0]
-    # submitMealV2Refresh injects request_id BEFORE the network call for
-    # guarded kinds, and leaves it absent otherwise so the backend can
-    # validate the 400 path correctly.
-    submit_section = block.split("async function submitMealV2Refresh", 1)[1].split("async function", 1)[0]
-    assert "MEAL_V2_REQUEST_ID_KINDS.has(body.kind)" in submit_section
-    assert "mealV2GenerateRequestId()" in submit_section
-    # The caller's body object is not mutated (a fresh object with the id
-    # is constructed via spread).
-    assert "{ ...body, request_id:" in submit_section
+def test_rendered_source_control_uses_sanitized_sandboxed_in_app_viewer():
+    output = run_app_js(
+        ["buildMealReviewV2ItemHtml", "wireMealReviewCardV2"],
+        """
+sandbox.location.origin = 'https://fitness.local';
+sandbox.location.protocol = 'https:';
+const appended = [];
+function modalNode() {
+  return {
+    className: '', innerHTML: '', attrs: {},
+    setAttribute(name, value) { this.attrs[name] = value; },
+    querySelector() { return { focus() {} }; },
+    querySelectorAll() { return []; },
+    remove() { this.removed = true; },
+  };
+}
+sandbox.document.createElement = () => modalNode();
+sandbox.document.body.appendChild = (node) => appended.push(node);
+sandbox.__fitSet.focusOpenModal(() => {});
+const sourceAttrs = { 'data-source-link': 'https://evil.example/steal', 'data-source-label': 'USDA' };
+const sourceBtn = {
+  handlers: {},
+  addEventListener(name, fn) { this.handlers[name] = fn; },
+  getAttribute(name) { return sourceAttrs[name]; },
+};
+const itemEl = {
+  getAttribute: () => 'item-1',
+  querySelector(selector) { return selector === '[data-action="open-source"]' ? sourceBtn : null; },
+  querySelectorAll: () => [],
+};
+const toggle = { addEventListener() {} };
+const row = {
+  querySelector(selector) { return selector === '[data-action="toggle-expand"]' ? toggle : null; },
+  querySelectorAll(selector) { return selector === '.meal-review-v2-item' ? [itemEl] : []; },
+};
+const item = { item_id: 'item-1', name: 'Chicken', status: 'included', source: { label: 'USDA', kind: 'usda', link: 'https://evil.example/steal' } };
+const rendered = e.buildMealReviewV2ItemHtml(item, { mealId: 'meal-1' });
+e.wireMealReviewCardV2(row, { meal_id: 'meal-1', items: [item], expandedItems: new Set() });
+sourceBtn.handlers.click();
+const crossOriginModalCount = appended.length;
+sourceAttrs['data-source-link'] = '/nutrition/1?source=usda';
+sourceBtn.handlers.click();
+const modal = appended[0];
+process.stdout.write(JSON.stringify({
+  renderedControl: rendered.includes('data-action="open-source"'),
+  renderedTargetBlank: rendered.includes('target="_blank"'),
+  crossOriginModalCount,
+  role: modal.attrs.role,
+  label: modal.attrs['aria-label'],
+  iframeSrc: modal.innerHTML.includes('src="/nutrition/1?source=usda"'),
+  iframeSandbox: modal.innerHTML.includes('sandbox="allow-same-origin"'),
+  viewerTargetBlank: modal.innerHTML.includes('target="_blank"'),
+}));
+""",
+        mocks=["focusOpenModal"],
+    )
+    assert output == {
+        "renderedControl": True,
+        "renderedTargetBlank": False,
+        "crossOriginModalCount": 0,
+        "role": "dialog",
+        "label": "USDA details",
+        "iframeSrc": True,
+        "iframeSandbox": True,
+        "viewerTargetBlank": False,
+    }
 
 
 def test_css_contains_v2_review_styles():
-    """Visual QA needs the new review card to be styled; assert the V2
-    block actually shipped to style.css so the contract test isn't fooled
-    by JS-only class names.
-    """
     expected = [
-        ".meal-review-v2",
-        ".meal-review-v2-collapsed",
-        ".meal-review-v2-expanded",
-        ".meal-review-v2-totals",
-        ".meal-review-v2-kcal",
-        ".meal-review-v2-items",
-        ".meal-review-v2-item--removed",
-        ".meal-review-v2-item--blocked",
-        ".meal-review-v2-candidate-chip",
-        ".meal-review-v2-source-modal",
-        ".meal-review-v2-source-frame",
-        ".meal-review-v2-followup",
+        ".meal-review-v2", ".meal-review-v2-collapsed", ".meal-review-v2-expanded",
+        ".meal-review-v2-totals", ".meal-review-v2-kcal", ".meal-review-v2-items",
+        ".meal-review-v2-item--removed", ".meal-review-v2-item--blocked",
+        ".meal-review-v2-candidate-chip", ".meal-review-v2-source-modal",
+        ".meal-review-v2-source-frame", ".meal-review-v2-followup",
     ]
-    missing = [s for s in expected if s not in APP_CSS]
+    missing = [selector for selector in expected if selector not in APP_CSS]
     assert not missing, f"FIT-134 V2 styles missing from style.css: {missing}"
-
-
-# FIT-151: local_timestamp / local_date / local_iso thread-through
-
-def _normalize_body() -> str:
-    """Return the normalizeMealV2Entry function body."""
-    start = APP_JS.find("function normalizeMealV2Entry(payload, ctx = {}) {")
-    assert start != -1, "normalizeMealV2Entry not found"
-    end = APP_JS.find("\n    }", start) + len("\n    }")
-    return APP_JS[start:end]
-
-
-def _accept_body_builder() -> str:
-    """Return the buildMealV2AcceptBody function body."""
-    block = _v2_block()
-    start = block.find("function buildMealV2AcceptBody")
-    end = block.find("\n    async function acceptMealV2", start)
-    assert start != -1 and end != -1, "buildMealV2AcceptBody block not found"
-    return block[start:end]
-
-
-def test_normalize_includes_all_three_local_fields():
-    """normalizeMealV2Entry must include local_timestamp, local_date, and
-    local_iso in the returned entry so both hydrateMealPending and
-    applyMealV2Refresh carry these fields through the shared contract.
-    """
-    body = _normalize_body()
-    assert "local_timestamp:" in body, "local_timestamp missing from normalizeMealV2Entry"
-    assert "local_date:" in body, "local_date missing from normalizeMealV2Entry"
-    assert "local_iso:" in body, "local_iso missing from normalizeMealV2Entry"
-
-
-def test_normalize_payload_first_precedence_for_local_fields():
-    """Payload takes precedence over existing entry; existing is the fallback;
-    null is the default.  All three fields must follow this pattern.
-    """
-    body = _normalize_body()
-    for field in ("local_timestamp", "local_date", "local_iso"):
-        needle = (
-            f"{field}: payload.{field} || (existing && existing.{field}) || null"
-        )
-        assert needle in body, (
-            f"Expected payload-first precedence expression for {field!r}: {needle!r}"
-        )
-
-
-def test_accept_body_conditionally_forwards_local_fields():
-    """buildMealV2AcceptBody must forward all three local fields only when
-    truthy: no unconditional spread and no nullish assignment.
-    """
-    builder = _accept_body_builder()
-    for field in ("local_timestamp", "local_date", "local_iso"):
-        assert f"if (entry.{field}) body.{field} = entry.{field};" in builder, (
-            f"buildMealV2AcceptBody missing conditional forward for {field!r}"
-        )
-
-
-def test_normalize_retains_policy_across_v2_refresh_replacements():
-    body = _normalize_body()
-    assert "policy: payload.policy || (existing && existing.policy) || {}" in body
-    apply_section = _v2_block().split("function applyMealV2Refresh", 1)[1].split("}\n", 1)[0]
-    assert "normalizeMealV2Entry(payload)" in apply_section
-
-
-def test_branded_combo_block_renders_resolution_alert_without_unavailable_actions():
-    block = _v2_block()
-    item_html = block.split("function buildMealReviewV2ItemHtml", 1)[1].split("\n    function ", 1)[0]
-    assert "const brandedComboAiOnly = !!item.branded_combo_ai_only" in item_html
-    assert 'role="alert"' in item_html
-    assert "AI-only restaurant combo" in item_html
-    assert "source-backed nutrition" in item_html
-    assert "material nutrition correction" in item_html
-    assert "isIncluded && candidates.length" in item_html
-    assert "!isBrandedComboFollowup" in block
-
-
-def test_ordinary_blocked_items_keep_generic_resolution_message():
-    item_html = _v2_block().split("function buildMealReviewV2ItemHtml", 1)[1].split("\n    function ", 1)[0]
-    assert "Save blocked — clarify, choose a top match, edit, or skip." in item_html
-
-
-def test_branded_combo_candidate_actions_use_server_source_backed_metadata():
-    item_html = _v2_block().split("function buildMealReviewV2ItemHtml", 1)[1].split("\n    function ", 1)[0]
-    assert "candidate.source_backed === true" in item_html
-    assert "!brandedComboAiOnly || candidate.source_backed === true" in item_html
-    assert "isIncluded && candidates.length" in item_html

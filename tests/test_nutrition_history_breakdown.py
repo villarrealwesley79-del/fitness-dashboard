@@ -20,11 +20,21 @@ from datetime import datetime, timedelta
 import pytest
 
 
+REFERENCE_NOW = datetime(2026, 7, 1, 12, 0, 0)
+
+
+class FrozenDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls.fromtimestamp(REFERENCE_NOW.timestamp(), tz=tz)
+
+
 @pytest.fixture()
 def fitness_app(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit13-history-secret")
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "datetime", FrozenDateTime)
     monkeypatch.setattr(module, "_food_log_entries_for_context", lambda since=None, limit=None: [])
     monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "backfill_food_log_client_id", lambda *_args, **_kwargs: False)
@@ -33,11 +43,11 @@ def fitness_app(monkeypatch):
 
 
 def _today() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    return REFERENCE_NOW.strftime("%Y-%m-%d")
 
 
 def _today_minus(days: int) -> str:
-    return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    return (REFERENCE_NOW - timedelta(days=days)).strftime("%Y-%m-%d")
 
 
 def _seed_nutrition(module, entries):
