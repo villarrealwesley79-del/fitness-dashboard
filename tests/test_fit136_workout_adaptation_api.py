@@ -529,6 +529,106 @@ def test_workout_adaptation_recovers_unpublished_applied_plan(monkeypatch, tmp_p
     assert persist_calls[0][1]["publish_adaptation_event_ids"] == ["stranded-event"]
 
 
+def test_workout_adaptation_recovers_unpublished_initial_plan(monkeypatch, tmp_path):
+    module, _client_instance = _client(monkeypatch, tmp_path)
+    recovered_plan = {**_recommendation(), "id": "recovered-initial-plan"}
+    unpublished = [
+        {
+            "id": "stranded-initial-event",
+            "status": "applied",
+            "plan_fingerprint": "recovery-fingerprint",
+            "target_plan_date": "2026-05-24",
+            "source_plan_version": None,
+            "_adapted_plan": recovered_plan,
+        }
+    ]
+    monkeypatch.setattr(
+        module,
+        "list_unpublished_applied_workout_adaptation_events",
+        lambda _user_id: list(unpublished),
+    )
+    monkeypatch.setattr(module, "get_current_workout_plan", lambda _user_id: None)
+    expired = []
+
+    def expire(_user_id, event_ids):
+        expired.extend(event_ids)
+        unpublished.clear()
+
+    monkeypatch.setattr(module, "expire_unpublished_workout_adaptation_events", expire)
+    persist_calls = []
+
+    def persist(*args, **kwargs):
+        persist_calls.append((args, kwargs))
+        unpublished.clear()
+        return recovered_plan
+
+    monkeypatch.setattr(module, "_persist_current_workout_plan", persist)
+
+    published = module._publish_unpublished_workout_adaptations(
+        1,
+        "recovery-fingerprint",
+        "2026-05-24",
+    )
+    repeated = module._publish_unpublished_workout_adaptations(
+        1,
+        "recovery-fingerprint",
+        "2026-05-24",
+    )
+
+    assert published == ["stranded-initial-event"]
+    assert repeated == []
+    assert expired == []
+    assert persist_calls[0][0][0] == recovered_plan
+    assert persist_calls[0][1]["publish_adaptation_event_ids"] == [
+        "stranded-initial-event"
+    ]
+
+
+def test_workout_adaptation_does_not_overwrite_plan_that_appeared(monkeypatch, tmp_path):
+    module, _client_instance = _client(monkeypatch, tmp_path)
+    unpublished = [
+        {
+            "id": "obsolete-initial-event",
+            "status": "applied",
+            "plan_fingerprint": "recovery-fingerprint",
+            "target_plan_date": "2026-05-24",
+            "source_plan_version": None,
+            "_adapted_plan": {**_recommendation(), "id": "obsolete-plan"},
+        }
+    ]
+    monkeypatch.setattr(
+        module,
+        "list_unpublished_applied_workout_adaptation_events",
+        lambda _user_id: list(unpublished),
+    )
+    monkeypatch.setattr(
+        module,
+        "get_current_workout_plan",
+        lambda _user_id: {"plan_version": 1, "fingerprint": "recovery-fingerprint"},
+    )
+    expired = []
+
+    def expire(_user_id, event_ids):
+        expired.extend(event_ids)
+        unpublished.clear()
+
+    monkeypatch.setattr(module, "expire_unpublished_workout_adaptation_events", expire)
+    monkeypatch.setattr(
+        module,
+        "_persist_current_workout_plan",
+        lambda *_args, **_kwargs: pytest.fail("recovery must not overwrite a current plan"),
+    )
+
+    published = module._publish_unpublished_workout_adaptations(
+        1,
+        "recovery-fingerprint",
+        "2026-05-24",
+    )
+
+    assert published == []
+    assert expired == ["obsolete-initial-event"]
+
+
 def test_failed_plan_publication_does_not_advance_in_memory_plan(monkeypatch, tmp_path):
     module, _client_instance = _client(monkeypatch, tmp_path)
     previous_plan = {**_recommendation(), "id": "previous-plan"}

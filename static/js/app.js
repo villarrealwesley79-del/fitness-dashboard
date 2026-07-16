@@ -391,6 +391,7 @@
     const workoutAdaptationNoticeState = {
         seen: new Set(),
         fetching: false,
+        rerunPending: false,
         retryTimer: null,
         retryDeadlineMs: null,
         refreshPending: false,
@@ -584,7 +585,10 @@
     }
 
     async function fetchWorkoutAdaptationNotices() {
-        if (workoutAdaptationNoticeState.fetching) return;
+        if (workoutAdaptationNoticeState.fetching) {
+            workoutAdaptationNoticeState.rerunPending = true;
+            return;
+        }
         workoutAdaptationNoticeState.fetching = true;
         try {
             let evaluation = null;
@@ -644,6 +648,9 @@
             }
         } finally {
             workoutAdaptationNoticeState.fetching = false;
+            const rerunPending = workoutAdaptationNoticeState.rerunPending;
+            workoutAdaptationNoticeState.rerunPending = false;
+            if (rerunPending) await fetchWorkoutAdaptationNotices();
         }
     }
 

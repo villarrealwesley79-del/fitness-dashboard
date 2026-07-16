@@ -4709,7 +4709,6 @@ def _publish_unpublished_workout_adaptations(
             and (
                 str(event.get("target_plan_date") or "") != today_s
                 or event.get("plan_fingerprint") != fingerprint
-                or event.get("source_plan_version") is None
                 or event.get("source_plan_version") != current_plan_version
             )
         ]

@@ -394,6 +394,107 @@ sandbox.module.exports.run().then((outputs) => {{
     assert outputs["seenCount"] == 1
 
 
+def test_overlapping_adaptation_polls_collapse_to_one_follow_up():
+    if not shutil.which("node"):
+        pytest.skip("FIT-233 overlap regression requires node")
+
+    js = APP_JS.read_text()
+    retry_and_fetch_source = _block(
+        js,
+        "function scheduleWorkoutAdaptationEvaluationRetry",
+        "function newWorkoutId",
+    )
+    source_json = json.dumps(retry_and_fetch_source)
+    node_script = f"""
+const vm = require('node:vm');
+const source = {source_json};
+const sandbox = {{ module: {{ exports: {{}} }}, console }};
+const runtimeSource = `
+const DASHBOARD_FETCH_TIMEOUT_MS = 30000;
+const WORKOUT_ADAPTATION_FAILURE_RETRY_MS = 60000;
+const WORKOUT_ADAPTATION_IN_FLIGHT_RETRY_MS = 1000;
+const timers = new Map();
+const calls = [];
+let nextTimerId = 1;
+let releaseFirstEvaluation;
+const firstEvaluation = new Promise((resolve) => {{ releaseFirstEvaluation = resolve; }});
+const workoutAdaptationNoticeState = {{
+  fetching: false,
+  rerunPending: false,
+  seen: new Set(),
+  retryTimer: null,
+  retryDeadlineMs: null,
+  refreshPending: false,
+}};
+function setTimeout(callback, delay) {{
+  const id = nextTimerId++;
+  timers.set(id, {{ callback, delay }});
+  return id;
+}}
+function clearTimeout(id) {{ timers.delete(id); }}
+function withActiveWorkoutAdaptationParams(path) {{ return path; }}
+function workoutAdaptationIsRenderable() {{ return false; }}
+function showWorkoutAdaptationNotice() {{}}
+async function getDashboard() {{}}
+function paintDashboardFromState() {{}}
+async function getNextWorkout() {{ return {{ id: 'adapted-plan' }}; }}
+async function renderNextWorkout() {{}}
+async function api(path, opts = {{}}) {{
+  calls.push({{ path, method: opts.method || null }});
+  if (String(path).startsWith('/api/workout-adaptation-events/evaluate')) {{
+    const evaluationIndex = calls.filter((call) => call.path.startsWith('/api/workout-adaptation-events/evaluate')).length;
+    if (evaluationIndex === 1) return firstEvaluation;
+    return {{ evaluated_count: 0, retry_after_ms: 180000 }};
+  }}
+  return {{ events: [] }};
+}}
+async function run() {{
+  const first = fetchWorkoutAdaptationNotices();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.all([
+    fetchWorkoutAdaptationNotices(),
+    fetchWorkoutAdaptationNotices(),
+    fetchWorkoutAdaptationNotices(),
+  ]);
+  releaseFirstEvaluation({{ evaluated_count: 0, retry_after_ms: null }});
+  await first;
+  return {{
+    evaluationCalls: calls.filter((call) => call.path.startsWith('/api/workout-adaptation-events/evaluate')).length,
+    feedCalls: calls.filter((call) => call.path.startsWith('/api/workout-adaptation-events?')).length,
+    timerDelays: [...timers.values()].map((timer) => timer.delay),
+    fetching: workoutAdaptationNoticeState.fetching,
+    rerunPending: workoutAdaptationNoticeState.rerunPending,
+  }};
+}}
+module.exports = {{ run }};
+` + source;
+vm.runInNewContext(runtimeSource, sandbox);
+sandbox.module.exports.run().then((outputs) => {{
+  process.stdout.write(JSON.stringify(outputs));
+}}).catch((error) => {{
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+}});
+"""
+    result = subprocess.run(
+        ["node", "-e", node_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    outputs = json.loads(result.stdout)
+
+    assert outputs == {
+        "evaluationCalls": 2,
+        "feedCalls": 2,
+        "timerDelays": [180_000],
+        "fetching": False,
+        "rerunPending": False,
+    }
+
+
 def test_adaptation_notice_renders_neutral_reason_and_collapsed_details():
     js = APP_JS.read_text()
     notice = _block(
