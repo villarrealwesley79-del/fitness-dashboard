@@ -220,3 +220,14 @@ def test_oura_modifier_does_not_claim_a_local_recovery_bonus_threshold_change():
         "stable",
         {"debt_minutes": 0},
     ) is False
+
+
+def test_oura_modifier_uses_effective_readiness_for_recovery_threshold():
+    import app as module
+
+    assert module._oura_modifier_rule_applied(
+        65,
+        {"bonus_points": 10},
+        "stable",
+        {"debt_minutes": 0},
+    ) is False

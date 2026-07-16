@@ -15708,16 +15708,21 @@ def _training_recommendation_from_factors(
 
 def _oura_modifier_rule_applied(readiness, recovery_bonus, hrv_trend, sleep_debt):
     """Whether an Oura-owned rule changed the category at its application step."""
+    effective_readiness = _effective_readiness_from(readiness, recovery_bonus)
     recommendation = "moderate"
-    applied = False
+    if effective_readiness is not None:
+        if effective_readiness < 70:
+            recommendation = "recovery"
+        elif effective_readiness > 85:
+            recommendation = "intensity"
+
+    raw_recommendation = "moderate"
     if readiness is not None:
-        next_recommendation = recommendation
         if readiness < 70:
-            next_recommendation = "recovery"
+            raw_recommendation = "recovery"
         elif readiness > 85:
-            next_recommendation = "intensity"
-        applied = applied or next_recommendation != recommendation
-        recommendation = next_recommendation
+            raw_recommendation = "intensity"
+    applied = recommendation != "moderate" and raw_recommendation == recommendation
     if hrv_trend == "declining":
         next_recommendation = _downgrade_training_recommendation_once(recommendation)
         applied = applied or next_recommendation != recommendation
