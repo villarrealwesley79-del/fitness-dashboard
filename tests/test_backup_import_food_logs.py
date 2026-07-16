@@ -64,6 +64,82 @@ def test_import_backup_replays_food_logs_without_wiping_or_duplication(tmp_path,
     assert data_store.get_food_logs(1, since=existing["date"])
 
 
+def test_import_backup_persists_pending_snapshot_after_manual_child_row(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("SECRET_KEY", "fit231-backup-ordering-secret")
+    import data_store
+
+    db_path = tmp_path / "fitness_data.db"
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+    data_store.init_data_db()
+
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "_current_data_user_id", lambda: 1)
+    monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "NUTRITION_DATA", [])
+
+    meal_id = "fit231-import-manual-child"
+    estimate = {
+        "item_name": "Manual child",
+        "calories": 430,
+        "protein_g": 28,
+        "carbs_g": 32,
+        "fat_g": 17,
+        "source": "manual_review_estimate",
+    }
+    backup = {
+        "data": {
+            "food_logs": [
+                {
+                    "client_id": "fit231-manual-child",
+                    "meal_id": meal_id,
+                    "meal_item_id": "manual-item",
+                    "item_index": 0,
+                    "item_state": "included",
+                    "date": "2026-07-16",
+                    "logged_at": "2026-07-16T12:00:00",
+                    **estimate,
+                    "correction_state": "manual",
+                    "original_estimate": estimate,
+                }
+            ],
+            "meal_review_snapshots": [
+                {
+                    "meal_id": meal_id,
+                    "payload": {
+                        "status": "pending_review",
+                        "meal_id": meal_id,
+                        "items": [
+                            {
+                                "item_id": "manual-item",
+                                "item_order": 1,
+                                "status": "included",
+                                "text": "Manual child",
+                                "estimate": estimate,
+                                "original_estimate": estimate,
+                            }
+                        ],
+                    },
+                    "next_item_seq": 2,
+                }
+            ],
+        }
+    }
+
+    restored = module.app.test_client().post("/api/import-backup", json=backup)
+
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+    stored = data_store.get_meal_review_snapshot(1, meal_id)
+    assert stored is not None
+    assert stored["payload"]["status"] == "pending_review"
+    assert data_store.get_food_log_by_client_id(1, "fit231-manual-child")[
+        "correction_state"
+    ] == "manual"
+
+
 def test_backup_round_trips_personal_vocab(tmp_path, monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit74-backup-secret")
     import data_store

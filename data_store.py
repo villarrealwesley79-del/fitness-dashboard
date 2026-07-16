@@ -2250,15 +2250,17 @@ def save_meal_review_snapshot(
                 (user_id, key),
             ).fetchone()
             direct_state = direct_food_log["correction_state"] if direct_food_log else None
+            relevant_food_logs = list(meal_food_logs)
+            if direct_food_log and not any(
+                row["client_id"] == direct_food_log["client_id"]
+                for row in meal_food_logs
+            ):
+                relevant_food_logs.append(direct_food_log)
             terminal_food_log = bool(
-                (
-                    meal_food_logs
-                    and direct_state != "pending_review"
-                    and all(row["correction_state"] != "pending_review" for row in meal_food_logs)
-                )
-                or (
-                    not meal_food_logs
-                    and direct_state in {"accepted", "corrected"}
+                relevant_food_logs
+                and all(
+                    row["correction_state"] in {"accepted", "corrected"}
+                    for row in relevant_food_logs
                 )
             )
             event_row = conn.execute(

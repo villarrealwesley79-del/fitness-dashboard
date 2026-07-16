@@ -9459,6 +9459,141 @@ def test_eventless_manual_snapshot_waits_for_ordinary_accept_promotion(
     assert data_store.get_meal_review_snapshot(1, meal_id) is None
 
 
+def test_pending_snapshot_with_no_food_logs_is_persisted(monkeypatch, tmp_path):
+    _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "fit231-no-food-rows"
+    payload = {"status": "pending_review", "meal_id": meal_id, "marker": "initial"}
+
+    saved = data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=payload,
+        next_item_seq=1,
+    )
+
+    assert saved["payload"] == payload
+    assert data_store.get_meal_review_snapshot(1, meal_id)["payload"] == payload
+
+
+@pytest.mark.parametrize(
+    ("correction_state", "terminal"),
+    [("manual", False), ("accepted", True), ("corrected", True)],
+)
+def test_pending_snapshot_terminal_filter_for_direct_food_log(
+    monkeypatch,
+    tmp_path,
+    correction_state,
+    terminal,
+):
+    _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = f"fit231-direct-{correction_state}"
+    original_payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "marker": "initial",
+    }
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=original_payload,
+        next_item_seq=1,
+    )
+    estimate = _accepted_estimate(item_name="Direct row")
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": meal_id,
+            "date": "2026-07-16",
+            "logged_at": "2026-07-16T12:00:00",
+            **estimate,
+            "correction_state": correction_state,
+            "original_estimate": estimate,
+            "accepted_estimate": estimate if terminal else None,
+        },
+    )
+    replacement_payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "marker": "replacement",
+    }
+
+    saved = data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=replacement_payload,
+        next_item_seq=2,
+    )
+
+    expected_marker = "initial" if terminal else "replacement"
+    assert saved["payload"]["marker"] == expected_marker
+    assert data_store.get_meal_review_snapshot(1, meal_id)["payload"]["marker"] == expected_marker
+
+
+@pytest.mark.parametrize(
+    ("correction_states", "terminal"),
+    [
+        (["manual"], False),
+        (["manual", "accepted"], False),
+        (["accepted", "corrected"], True),
+    ],
+)
+def test_pending_snapshot_terminal_filter_for_meal_id_food_log_siblings(
+    monkeypatch,
+    tmp_path,
+    correction_states,
+    terminal,
+):
+    _client(monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = f"fit231-siblings-{'-'.join(correction_states)}"
+    original_payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "marker": "initial",
+    }
+    data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=original_payload,
+        next_item_seq=1,
+    )
+    for index, correction_state in enumerate(correction_states):
+        estimate = _accepted_estimate(item_name=f"Sibling {index}")
+        data_store.add_food_log(
+            1,
+            {
+                "client_id": f"{meal_id}-child-{index}",
+                "meal_id": meal_id,
+                "meal_item_id": f"item-{index}",
+                "item_index": index,
+                "date": "2026-07-16",
+                "logged_at": f"2026-07-16T12:0{index}:00",
+                **estimate,
+                "correction_state": correction_state,
+                "original_estimate": estimate,
+                "accepted_estimate": estimate if correction_state in {"accepted", "corrected"} else None,
+            },
+        )
+    replacement_payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "marker": "replacement",
+    }
+
+    saved = data_store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=replacement_payload,
+        next_item_seq=2,
+    )
+
+    expected_marker = "initial" if terminal else "replacement"
+    assert saved["payload"]["marker"] == expected_marker
+    assert data_store.get_meal_review_snapshot(1, meal_id)["payload"]["marker"] == expected_marker
+
+
 def test_discarded_event_does_not_cleanup_snapshot_with_manual_child(
     monkeypatch,
     tmp_path,
