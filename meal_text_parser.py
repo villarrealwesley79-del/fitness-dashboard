@@ -224,9 +224,9 @@ _DISH_MODIFIER_TOKENS = {
 _DISH_HEAD_TOKENS = {"taco", "tacos", "burrito", "burritos", "sandwich", "sandwiches"}
 
 _FALLBACK_TOKEN_ALIASES = {
-    "chipotole": "chipotle",
-    "chipoltle": "chipotle",
-    "chiptole": "chipotle",
+    typo: brand
+    for brand, typos in branded_food_lookup.BRAND_TYPOS.items()
+    for typo in typos
 }
 
 

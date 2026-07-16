@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Callable
 from typing import Any
-from urllib import error, parse, request
+from urllib import parse, request
+
+import food_provider_transport
 
 
 OFF_SEARCH_URL = "https://world.openfoodfacts.org/cgi/search.pl"
@@ -57,6 +58,10 @@ COUNTRY_SEARCH_TAGS = {
 }
 
 
+def _effective_timeout(timeout: float) -> float:
+    return food_provider_transport.clamp_timeout(timeout)
+
+
 def search_products(
     query: str,
     *,
@@ -70,7 +75,7 @@ def search_products(
         return None
     combined_products: list[dict[str, Any]] = []
     last_payload: dict[str, Any] | None = None
-    deadline = time.monotonic() + total_timeout
+    deadline = time.monotonic() + _effective_timeout(total_timeout)
     for search_terms in _search_variants(cleaned):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -183,11 +188,11 @@ def _search_products_once(
             "User-Agent": USER_AGENT,
         },
     )
-    try:
-        with request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except (OSError, error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError):
-        return None
+    return food_provider_transport.get_json(
+        req,
+        timeout=_effective_timeout(timeout),
+        provider="open_food_facts",
+    )
 
 
 def get_product_by_barcode(
@@ -221,11 +226,11 @@ def get_product_by_barcode(
             "User-Agent": USER_AGENT,
         },
     )
-    try:
-        with request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except (OSError, error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError):
-        return None
+    payload = food_provider_transport.get_json(
+        req,
+        timeout=_effective_timeout(timeout),
+        provider="open_food_facts",
+    )
     if not isinstance(payload, dict) or payload.get("status") != 1:
         return None
     product = payload.get("product")

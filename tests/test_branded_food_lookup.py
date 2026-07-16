@@ -899,6 +899,225 @@ def test_cache_hit_returns_local_cache_without_network(monkeypatch):
     assert estimate["external_food_id"] == "chipotle-burrito"
 
 
+def test_lookup_text_cache_replay_preserves_off_provenance_and_backfills_url(monkeypatch):
+    now = datetime.now().isoformat(timespec="seconds")
+    cached = {
+        "item_name": "Imported bar",
+        "portion_description": "100 g",
+        "meal_type": "snack",
+        "calories": 200,
+        "protein_g": 4,
+        "carbs_g": 30,
+        "fat_g": 8,
+        "sodium_mg": None,
+        "fiber_g": 2,
+        "confidence": 0.72,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "open_food_facts",
+        "external_food_id": "12345",
+        "off_attribution": "Source: Open Food Facts",
+    }
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "get_branded_lookup_cache",
+        lambda *_a, **_kw: {"source": "open_food_facts", "fetched_at": now, "response_json": cached},
+    )
+
+    estimate = branded_food_lookup.lookup("imported bar", source_priority=("cache",))
+
+    assert estimate["source"] == "local_cache"
+    assert estimate["off_attribution"] == "Source: Open Food Facts"
+    assert estimate["verified_source_url"].endswith("/product/12345")
+    assert estimate["sodium_mg"] == 0
+    assert sum("sodium is unknown" in note.lower() for note in estimate["uncertainty_notes"]) == 1
+
+
+def test_off_reject_us_only_rejects_missing_empty_and_malformed_countries():
+    base = {
+        "product_name": "Imported snack",
+        "nutriments": {"energy-kcal_100g": 200, "proteins_100g": 4, "carbohydrates_100g": 30, "fat_100g": 8},
+        "data_quality_tags": ["en:nutriments-completed"],
+    }
+    for product in (
+        dict(base),
+        {**base, "countries_tags": []},
+        {**base, "countries_tags": "en:united-states"},
+        {**base, "countries_tags": ["garbage"]},
+        {**base, "countries_tags": ["en:united-states", "garbage"]},
+        {**base, "countries_tags": [" en:united-states "]},
+    ):
+        assert branded_food_lookup._off_country_ok(product, None, reject_us_only=True) is False
+    assert branded_food_lookup._off_country_ok(
+        {**base, "countries_tags": ["en:united-states", "en:france"]}, None, reject_us_only=True
+    ) is True
+
+
+def test_registered_timeout_adapter_receives_remaining_and_typeerror_is_not_retried(monkeypatch, caplog):
+    import logging
+
+    previous = dict(branded_food_lookup.PROVIDER_ADAPTERS)
+    calls = []
+
+    def first(query, remaining):
+        calls.append(("first", query, remaining))
+        raise TypeError("adapter bug")
+
+    def second(query):
+        calls.append(("second", query))
+        return None
+
+    branded_food_lookup.register_provider_adapter("fit266-first", first, timeout_aware=True)
+    branded_food_lookup.register_provider_adapter("fit266-second", second)
+    try:
+        with caplog.at_level(logging.WARNING):
+            result = branded_food_lookup.lookup(
+                "banana",
+                source_priority=("fit266-first", "fit266-second"),
+            )
+    finally:
+        branded_food_lookup.PROVIDER_ADAPTERS.clear()
+        branded_food_lookup.PROVIDER_ADAPTERS.update(previous)
+
+    assert result is None
+    assert calls[0][0] == "first"
+    assert calls[0][2] <= branded_food_lookup.BRANDED_LOOKUP_BUDGET_SECONDS
+    assert [call[0] for call in calls] == ["first", "second"]
+    assert sum("fit266-first" in record.getMessage() for record in caplog.records) == 1
+
+
+def test_malformed_nested_provider_containers_warn_once(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(branded_food_lookup.usda_fdc_client, "search_foods", lambda *_a, **_kw: {"foods": "bad"})
+    monkeypatch.setattr(
+        branded_food_lookup.open_food_facts_client,
+        "search_products",
+        lambda *_a, **_kw: {"products": {}},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert branded_food_lookup._usda_lookup("banana", "banana") is None
+        assert branded_food_lookup._open_food_facts_lookup("French imported snack") is None
+
+    warnings = [record.getMessage() for record in caplog.records]
+    assert sum("usda_fdc provider warning" in warning for warning in warnings) == 1
+    assert sum("open_food_facts provider warning" in warning for warning in warnings) == 1
+
+
+def test_legacy_adapter_that_exhausts_deadline_skips_later_providers(monkeypatch):
+    previous = dict(branded_food_lookup.PROVIDER_ADAPTERS)
+    calls = []
+    clock = iter((100.0, 100.0, 106.1))
+
+    def slow_legacy(query):
+        calls.append(("slow", query))
+        return None
+
+    def later(query):
+        calls.append(("later", query))
+        return None
+
+    monkeypatch.setattr(branded_food_lookup.time, "monotonic", lambda: next(clock))
+    branded_food_lookup.register_provider_adapter("fit266-slow", slow_legacy)
+    branded_food_lookup.register_provider_adapter("fit266-later", later)
+    try:
+        result = branded_food_lookup.lookup(
+            "banana",
+            source_priority=("fit266-slow", "fit266-later"),
+        )
+    finally:
+        branded_food_lookup.PROVIDER_ADAPTERS.clear()
+        branded_food_lookup.PROVIDER_ADAPTERS.update(previous)
+
+    assert result is None
+    assert calls == [("slow", "banana")]
+
+
+def test_off_accepted_candidate_is_built_once(monkeypatch):
+    product = {
+        "code": "3017620422003",
+        "product_name": "Imported snack",
+        "countries_tags": ["en:france"],
+        "data_quality_tags": ["en:nutrition-completed"],
+        "nutriments": {
+            "energy-kcal_100g": 200,
+            "proteins_100g": 4,
+            "carbohydrates_100g": 30,
+            "fat_100g": 8,
+        },
+    }
+    builds = []
+    original_build = branded_food_lookup._open_food_facts_estimate
+
+    def search_products(*_args, product_filter, **_kwargs):
+        assert product_filter(product) is True
+        return {"products": [product]}
+
+    def build(candidate):
+        builds.append(candidate)
+        return original_build(candidate)
+
+    monkeypatch.setattr(branded_food_lookup.open_food_facts_client, "search_products", search_products)
+    monkeypatch.setattr(branded_food_lookup, "_open_food_facts_estimate", build)
+
+    estimate = branded_food_lookup._open_food_facts_lookup("French imported snack")
+
+    assert estimate["external_food_id"] == "3017620422003"
+    assert builds == [product]
+
+
+def test_off_raw_filter_rejects_candidate_that_would_fail_schema():
+    product = {
+        "product_name": "Imported snack",
+        "countries_tags": ["en:france"],
+        "data_quality_tags": ["en:nutrition-completed"],
+        "nutriments": {
+            "energy-kcal_100g": "200",
+            "proteins_100g": "4",
+            "carbohydrates_100g": "30",
+            "fat_100g": "8",
+            "sodium_100g": "20",
+        },
+    }
+
+    assert branded_food_lookup._off_candidate_usable(product) is False
+    product["nutriments"]["sodium_100g"] = "0.2"
+    assert branded_food_lookup._off_candidate_usable(product) is True
+    assert branded_food_lookup._open_food_facts_estimate(product)["protein_g"] == 4
+
+    product["nutriments"]["sodium_100g"] = "NaN"
+    assert branded_food_lookup._off_candidate_usable(product) is False
+    product["nutriments"]["sodium_100g"] = 1e308
+    assert branded_food_lookup._off_candidate_usable(product) is False
+    product["nutriments"]["sodium_100g"] = 0.2
+    product["nutriments"]["fiber_100g"] = "NaN"
+    assert branded_food_lookup._off_candidate_usable(product) is False
+
+
+def test_off_blank_verified_url_uses_homepage_fallback():
+    product = {
+        "code": "123",
+        "url": "   ",
+        "product_name": "Imported snack",
+        "countries_tags": ["en:france"],
+        "data_quality_tags": ["en:nutrition-completed"],
+        "nutriments": {
+            "energy-kcal_100g": 200,
+            "proteins_100g": 4,
+            "carbohydrates_100g": 30,
+            "fat_100g": 8,
+        },
+    }
+
+    assert branded_food_lookup._open_food_facts_estimate(product)["verified_source_url"] == (
+        "https://world.openfoodfacts.org/"
+    )
+    assert branded_food_lookup._open_food_facts_barcode_estimate(product)["verified_source_url"] == (
+        "https://world.openfoodfacts.org/"
+    )
+
+
 def test_heb_private_label_bypasses_cache_without_verified_brand(monkeypatch):
     fetched_at = datetime.now().isoformat(timespec="seconds")
     stale_cached_estimate = {

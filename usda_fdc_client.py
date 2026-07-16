@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
-from urllib import error, parse, request
+from urllib import parse, request
+
+import food_provider_transport
 
 
 FDC_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 TIMEOUT_SECONDS = 1.5
 PREFERRED_DATA_TYPES = ("Branded", "Foundation", "SR Legacy")
 BARCODE_DATA_TYPES = ("Branded",)
+
+
+def _effective_timeout(timeout: float) -> float:
+    return food_provider_transport.clamp_timeout(timeout)
 
 
 def search_foods(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any] | None:
@@ -48,8 +53,8 @@ def _search_foods(
     params["api_key"] = api_key
     url = f"{FDC_SEARCH_URL}?{parse.urlencode(params)}"
     req = request.Request(url, headers={"Accept": "application/json"})
-    try:
-        with request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except (OSError, error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError):
-        return None
+    return food_provider_transport.get_json(
+        req,
+        timeout=_effective_timeout(timeout),
+        provider="usda_fdc",
+    )

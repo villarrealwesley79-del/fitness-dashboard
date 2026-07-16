@@ -73,3 +73,24 @@ def test_nutritionix_handles_bad_json(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: BadResponse())
     assert nutritionix_client.natural_nutrients("banana") is None
+
+
+def test_nutritionix_network_warning_is_provider_attributed_and_safe(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv("NUTRITIONIX_APP_ID", "safe-app-id")
+    monkeypatch.setenv("NUTRITIONIX_APP_KEY", "secret-app-key")
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_a, **_kw: (_ for _ in ()).throw(OSError("https://secret-app-key@example.invalid?q=banana")),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert nutritionix_client.natural_nutrients("banana") is None
+
+    warnings = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert "nutritionix" in warnings[0].lower()
+    assert "secret-app-key" not in warnings[0]
+    assert "banana" not in warnings[0]
