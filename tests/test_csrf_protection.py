@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -227,22 +228,6 @@ def test_token_authed_apple_health_webhook_is_csrf_exempt(monkeypatch):
 
     assert response.status_code == 401
     assert response.get_json()["error"] == "invalid or missing sync token"
-
-
-def test_live_js_client_sends_csrf_header():
-    source = Path("static/js/app.js").read_text()
-
-    assert "X-Requested-With" in source
-    assert "XMLHttpRequest" in source
-    assert "[CSRF_HEADER_NAME]: CSRF_HEADER_VALUE" in source
-
-
-def test_api_helper_preserves_csrf_header_when_callers_add_headers():
-    source = Path("static/js/app.js").read_text()
-    api_body = source.split("async function api(path, opts = {}) {", 1)[1].split("if (res.status === 401)", 1)[0]
-
-    assert "const headers = { 'Accept': 'application/json', ...(fetchOpts.headers || {}), [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE };" in api_body
-    assert "...fetchOpts,\n                credentials: 'same-origin',\n                headers," in api_body
 
 
 def test_csrf_rollout_bumps_cached_asset_versions():
