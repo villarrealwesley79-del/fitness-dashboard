@@ -1451,7 +1451,12 @@ def test_changed_manual_source_food_log_marks_unacknowledged_adaptation_stale(
     assert stored["status"] == "stale"
 
 
-def test_new_accepted_source_invalidates_applied_snapshot_and_restores_base(monkeypatch, tmp_path):
+@pytest.mark.parametrize("acknowledged", [False, True])
+def test_new_accepted_source_invalidates_applied_snapshot_and_restores_base(
+    monkeypatch,
+    tmp_path,
+    acknowledged,
+):
     _isolated_db(monkeypatch, tmp_path)
     start = datetime(2026, 5, 24, 18, 0, 0)
     earlier_row = _food_log(
@@ -1487,6 +1492,8 @@ def test_new_accepted_source_invalidates_applied_snapshot_and_restores_base(monk
         "_fit136_adaptation_event_id": events[0]["id"],
     }
     data_store.save_current_workout_plan(1, "snapshot-fingerprint", persisted_adapted_plan)
+    if acknowledged:
+        assert data_store.acknowledge_workout_adaptation_event(1, events[0]["id"]) is True
 
     _food_log(
         "snapshot-added",
@@ -1498,7 +1505,7 @@ def test_new_accepted_source_invalidates_applied_snapshot_and_restores_base(monk
 
     stored_event = next(
         item
-        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=False)
         if item["id"] == events[0]["id"]
     )
     assert stored_event["status"] == "stale"

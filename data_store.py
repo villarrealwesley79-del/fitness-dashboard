@@ -1506,7 +1506,6 @@ def _mark_changed_workout_adaptation_snapshots_stale(
         SELECT id, reason_metadata_json
           FROM workout_adaptation_events
          WHERE user_id = ? AND date = ? AND status = 'applied'
-           AND acknowledged_at IS NULL
         """,
         (user_id, date_s),
     ).fetchall()
@@ -1524,8 +1523,7 @@ def _mark_changed_workout_adaptation_snapshots_stale(
         UPDATE workout_adaptation_events
            SET status = 'stale', silent = 0, reason = ?,
                stale_at = COALESCE(stale_at, ?)
-         WHERE id = ? AND user_id = ? AND acknowledged_at IS NULL
-           AND status = 'applied'
+         WHERE id = ? AND user_id = ? AND status = 'applied'
         """,
         [(reason, stale_at, event_id, user_id) for event_id in matching_ids],
     )
