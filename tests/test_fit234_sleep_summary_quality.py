@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import sqlite3
 
+import pytest
+import oura_client
 import oura_sleep_sync
 
 
@@ -288,3 +291,93 @@ def test_sleep_summary_validates_supplied_zero_duration_without_score(monkeypatc
     assert payload["last_night"]["total_sleep_min"] == 0
     assert payload["data_quality"]["status"] == "inconsistent"
     assert payload["data_quality"]["reason"] == "implausible_duration"
+
+
+@pytest.mark.parametrize("sleep_type", ["nap", " rest ", "LATE_NAP"])
+def test_sleep_summary_accepts_explicit_subhour_nap_types(monkeypatch, sleep_type):
+    monkeypatch.setenv("SECRET_KEY", "fit234-secret")
+    module = importlib.import_module("app")
+
+    quality = module._sleep_summary_data_quality({
+        "day": "2026-06-04",
+        "total_sleep_min": 30,
+        "sleep_score": None,
+        "sleep_type": sleep_type,
+    })
+
+    assert quality == {"status": "ok"}
+
+
+@pytest.mark.parametrize("sleep_type", [None, "", "unknown", "main", "long_sleep"])
+def test_sleep_summary_keeps_subhour_guard_for_non_nap_types(monkeypatch, sleep_type):
+    monkeypatch.setenv("SECRET_KEY", "fit234-secret")
+    module = importlib.import_module("app")
+
+    quality = module._sleep_summary_data_quality({
+        "day": "2026-06-04",
+        "total_sleep_min": 30,
+        "sleep_score": None,
+        "sleep_type": sleep_type,
+    })
+
+    assert quality["status"] == "inconsistent"
+    assert quality["reason"] == "implausible_duration"
+
+
+def test_oura_client_reports_normalized_fallback_sleep_type(monkeypatch):
+    client = oura_client.OuraClient(token="test-token")
+
+    def request(endpoint, **_kwargs):
+        if endpoint == "sleep":
+            return [{
+                "day": "2026-06-04",
+                "type": " NAP ",
+                "total_sleep_duration": 1800,
+            }]
+        return []
+
+    monkeypatch.setattr(client, "_request", request)
+
+    _readiness, _sleep_score, _hrv, metrics, _raw = client.get_today_metrics("2026-06-04")
+
+    assert metrics["sleep_type"] == "nap"
+    assert metrics["sleep_duration_min"] == 30
+
+
+def test_oura_daily_migrates_and_preserves_nullable_sleep_type(tmp_path):
+    db_path = tmp_path / "oura.db"
+    legacy_columns = [
+        f"{name} {column_type}"
+        for name, column_type in oura_client.OURA_COLUMNS.items()
+        if name != "sleep_type"
+    ]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(f"CREATE TABLE oura_daily ({', '.join(legacy_columns)})")
+        conn.execute("INSERT INTO oura_daily(day) VALUES (?)", ("2026-06-03",))
+
+    oura_client.init_oura_db(str(db_path))
+
+    assert oura_client.get_oura_daily(str(db_path), "2026-06-03")["sleep_type"] is None
+
+    oura_client.upsert_oura_daily(
+        str(db_path),
+        "2026-06-04",
+        None,
+        None,
+        None,
+        None,
+        sleep_duration_min=30,
+        sleep_type="nap",
+    )
+    assert oura_client.get_oura_daily(str(db_path), "2026-06-04")["sleep_type"] == "nap"
+
+    oura_client.upsert_oura_daily(
+        str(db_path),
+        "2026-06-04",
+        None,
+        None,
+        None,
+        None,
+        sleep_type=None,
+    )
+    assert oura_client.get_oura_daily(str(db_path), "2026-06-04")["sleep_type"] == "nap"

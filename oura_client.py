@@ -41,6 +41,11 @@ def _seconds_to_minutes(v):
         return None
 
 
+def _normalize_sleep_type(value):
+    normalized = str(value or "").strip().lower()
+    return normalized or None
+
+
 class OuraClient:
     BASE_URL = "https://api.ouraring.com/v2/usercollection"
 
@@ -143,6 +148,7 @@ class OuraClient:
             "active_calories": active_calories,
             "resting_hr": resting_hr,
             "temperature_deviation": temp_deviation,
+            "sleep_type": _normalize_sleep_type(_safe_get(sd_last, "type")),
             "sleep_duration_min": sleep_duration_min,
             "sleep_deep_min": deep_min,
             "sleep_rem_min": rem_min,
@@ -177,6 +183,7 @@ class OuraClient:
             d = by_day.setdefault(day, {})
             d["sleep_score"] = s.get("score")
             d["hrv"] = s.get("average_hrv")
+            d["sleep_type"] = _normalize_sleep_type(s.get("type"))
             d["sleep_duration_min"] = (
                 _seconds_to_minutes(s.get("total_sleep_duration"))
                 or _seconds_to_minutes(s.get("total_sleep_time"))
@@ -226,6 +233,7 @@ OURA_COLUMNS = {
     "active_calories": "INTEGER",
     "resting_hr": "REAL",
     "temperature_deviation": "REAL",
+    "sleep_type": "TEXT",
     "sleep_duration_min": "INTEGER",
     "sleep_deep_min": "INTEGER",
     "sleep_rem_min": "INTEGER",
@@ -253,6 +261,7 @@ def init_oura_db(db_path: str):
                 active_calories INTEGER,
                 resting_hr REAL,
                 temperature_deviation REAL,
+                sleep_type TEXT,
                 sleep_duration_min INTEGER,
                 sleep_deep_min INTEGER,
                 sleep_rem_min INTEGER,
@@ -289,12 +298,14 @@ def upsert_oura_daily(
     active_calories=None,
     resting_hr=None,
     temperature_deviation=None,
+    sleep_type=None,
     sleep_duration_min=None,
     sleep_deep_min=None,
     sleep_rem_min=None,
     sleep_light_min=None,
     sleep_awake_min=None,
 ):
+    sleep_type = _normalize_sleep_type(sleep_type)
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(
@@ -302,10 +313,10 @@ def upsert_oura_daily(
             INSERT INTO oura_daily(
                 day, readiness_score, sleep_score, hrv,
                 steps, activity_score, active_calories, resting_hr, temperature_deviation,
-                sleep_duration_min, sleep_deep_min, sleep_rem_min, sleep_light_min, sleep_awake_min,
+                sleep_type, sleep_duration_min, sleep_deep_min, sleep_rem_min, sleep_light_min, sleep_awake_min,
                 raw_json, created_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(day) DO UPDATE SET
                 readiness_score=COALESCE(excluded.readiness_score, oura_daily.readiness_score),
                 sleep_score=COALESCE(excluded.sleep_score, oura_daily.sleep_score),
@@ -315,6 +326,7 @@ def upsert_oura_daily(
                 active_calories=COALESCE(excluded.active_calories, oura_daily.active_calories),
                 resting_hr=COALESCE(excluded.resting_hr, oura_daily.resting_hr),
                 temperature_deviation=COALESCE(excluded.temperature_deviation, oura_daily.temperature_deviation),
+                sleep_type=COALESCE(excluded.sleep_type, oura_daily.sleep_type),
                 sleep_duration_min=COALESCE(excluded.sleep_duration_min, oura_daily.sleep_duration_min),
                 sleep_deep_min=COALESCE(excluded.sleep_deep_min, oura_daily.sleep_deep_min),
                 sleep_rem_min=COALESCE(excluded.sleep_rem_min, oura_daily.sleep_rem_min),
@@ -333,6 +345,7 @@ def upsert_oura_daily(
                 active_calories,
                 resting_hr,
                 temperature_deviation,
+                sleep_type,
                 sleep_duration_min,
                 sleep_deep_min,
                 sleep_rem_min,
@@ -358,13 +371,14 @@ def _row_to_dict(row):
         "active_calories": row[6],
         "resting_hr": row[7],
         "temperature_deviation": row[8],
-        "sleep_duration_min": row[9],
-        "sleep_deep_min": row[10],
-        "sleep_rem_min": row[11],
-        "sleep_light_min": row[12],
-        "sleep_awake_min": row[13],
-        "raw_json": row[14],
-        "created_at": row[15],
+        "sleep_type": row[9],
+        "sleep_duration_min": row[10],
+        "sleep_deep_min": row[11],
+        "sleep_rem_min": row[12],
+        "sleep_light_min": row[13],
+        "sleep_awake_min": row[14],
+        "raw_json": row[15],
+        "created_at": row[16],
     }
 
 
@@ -375,7 +389,7 @@ def get_oura_daily(db_path: str, day: str):
             """
             SELECT day, readiness_score, sleep_score, hrv,
                    steps, activity_score, active_calories, resting_hr, temperature_deviation,
-                   sleep_duration_min, sleep_deep_min, sleep_rem_min, sleep_light_min, sleep_awake_min,
+                   sleep_type, sleep_duration_min, sleep_deep_min, sleep_rem_min, sleep_light_min, sleep_awake_min,
                    raw_json, created_at
             FROM oura_daily
             WHERE day=?
@@ -395,7 +409,7 @@ def get_oura_daily_range(db_path: str, start_date: str, end_date: str):
             """
             SELECT day, readiness_score, sleep_score, hrv,
                    steps, activity_score, active_calories, resting_hr, temperature_deviation,
-                   sleep_duration_min, sleep_deep_min, sleep_rem_min, sleep_light_min, sleep_awake_min,
+                   sleep_type, sleep_duration_min, sleep_deep_min, sleep_rem_min, sleep_light_min, sleep_awake_min,
                    raw_json, created_at
             FROM oura_daily
             WHERE day >= ? AND day <= ?

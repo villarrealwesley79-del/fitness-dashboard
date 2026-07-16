@@ -14599,6 +14599,7 @@ def oura_status():
             activity_score=metrics.get("activity_score") if activity_day == today else None,
             resting_hr=metrics.get("resting_hr"),
             temperature_deviation=metrics.get("temperature_deviation"),
+            sleep_type=metrics.get("sleep_type"),
             sleep_duration_min=metrics.get("sleep_duration_min"),
             sleep_deep_min=metrics.get("sleep_deep_min"),
             sleep_rem_min=metrics.get("sleep_rem_min"),
@@ -14706,6 +14707,7 @@ def oura_trends():
                     active_calories=d.get("active_calories"),
                     resting_hr=d.get("resting_hr"),
                     temperature_deviation=d.get("temperature_deviation"),
+                    sleep_type=d.get("sleep_type"),
                     sleep_duration_min=d.get("sleep_duration_min"),
                     sleep_deep_min=d.get("sleep_deep_min"),
                     sleep_rem_min=d.get("sleep_rem_min"),
@@ -14794,7 +14796,9 @@ def sync_oura_sleep():
 def _sleep_row_inconsistency_reason(row):
     total_sleep_min = (row or {}).get("total_sleep_min")
     sleep_score = (row or {}).get("sleep_score")
-    if total_sleep_min is not None and total_sleep_min < 60:
+    sleep_type = str((row or {}).get("sleep_type") or "").strip().lower()
+    is_nap = sleep_type in {"nap", "rest", "late_nap"}
+    if total_sleep_min is not None and total_sleep_min < 60 and not is_nap:
         if sleep_score is not None and sleep_score >= 70:
             return "duration_score_conflict"
         return "implausible_duration"
@@ -14893,6 +14897,7 @@ def oura_sleep_summary():
                 return None
             return {
                 "day": d.get("day"),
+                "sleep_type": d.get("sleep_type"),
                 "total_sleep_min": dur,
                 "deep_sleep_min": d.get("sleep_deep_min"),
                 "rem_sleep_min": d.get("sleep_rem_min"),
