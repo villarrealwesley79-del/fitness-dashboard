@@ -5,20 +5,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _vitals_body() -> str:
-    """Extract the body of `async function renderVitals()` from app.js.
-
-    Other Vitals helpers in this file (`v-rhr-delta`, `v-hrv-delta`, etc.)
-    coexist on the same page, and earlier dashboard fetchers also touch
-    DOM ids that begin with `v-`. Scoping assertions to renderVitals
-    avoids a whole-file grep that could pass on the wrong function.
-    """
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-    marker = "async function renderVitals()"
-    assert marker in app_js, "renderVitals() not found in static/js/app.js"
-    return app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
-
-
 def test_vitals_hr_zone_guarded_on_missing_data():
     """FIT-149: the HR Zone card must not paint a hard-coded `Fat burn`
     subtitle next to an empty `--` HR value for a user with no wearable /
@@ -62,26 +48,5 @@ def test_vitals_hr_zone_guarded_on_missing_data():
         f"{element_text!r}"
     )
 
-    # --- renderVitals runtime guard --------------------------------------
-    body = _vitals_body()
-
-    # renderVitals must explicitly write `#v-hr-zone-sub`, otherwise a
-    # subtitle that some earlier render painted (or future code paints)
-    # would survive across a render where HR data has nulled out.
-    assert "$('v-hr-zone-sub').textContent" in body, (
-        "renderVitals must explicitly write `#v-hr-zone-sub` so stale "
-        "prior-render subtitle text is cleared when HR data is missing "
-        "(FIT-149)"
-    )
-    assert "if (rhr != null) {" in body, (
-        "renderVitals must branch on `rhr != null` so missing HR data has "
-        "an explicit clear-on-null path instead of relying on a fallback "
-        "expression or the template default (FIT-149)"
-    )
-    # And the write must not reintroduce the `Fat burn` placeholder.
-    assert "Fat burn" not in body, (
-        "renderVitals must not write the literal 'Fat burn' subtitle - "
-        "no repo-backed zone-description mapping exists, so the only "
-        "correct write for both HR-present and HR-null is an empty string "
-        "(FIT-149)"
-    )
+    # Executable render behavior lives in
+    # test_fit264_frontend_runtime::test_vitals_render_clears_stale_hr_zone_when_heart_rate_is_missing.

@@ -2,255 +2,437 @@ import importlib
 from datetime import datetime, timezone
 from pathlib import Path
 
+from js_runtime import run_app_js
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_template_has_three_retry_chips():
-    """FIT-128: each of the three primary dashboard cards must carry a
-    hidden-by-default retry chip in its header."""
+def test_retry_chips_are_hidden_accessible_buttons():
     template = (ROOT / "templates" / "index.html").read_text()
-
-    # Readiness card → /api/oura/status
-    assert 'id="readiness-retry"' in template, "readiness-retry chip missing"
-    # AI Recommendation card → /api/dashboard + /api/recommendation/smart
-    assert 'id="reco-retry"' in template, "reco-retry chip missing"
-    # Insight card → /api/oura/sleep-summary
-    assert 'id="insight-retry"' in template, "insight-retry chip missing"
-
-    # All three must start hidden so the cold-open path doesn't flash a chip
-    # before any fetch has rejected.
     for chip_id in ("readiness-retry", "reco-retry", "insight-retry"):
-        # The opening tag should carry both id=... and the hidden attribute.
-        # We allow other attributes between them in either order.
         start = template.index(f'id="{chip_id}"')
         end = template.index(">", start)
-        opening_tag = template[start:end + 1]
-        assert " hidden" in opening_tag, f"{chip_id} must start hidden"
-
-    # Chips must use button semantics (not <span>) so they're keyboard-
-    # accessible and screen-readers announce them as clickable.
-    for chip_id in ("readiness-retry", "reco-retry", "insight-retry"):
-        # Walk back from id=... until we hit the opening '<'
-        idx = template.index(f'id="{chip_id}"')
-        tag_open = template.rfind("<", 0, idx)
-        opening = template[tag_open:idx + len(f'id="{chip_id}"')]
-        assert opening.startswith("<button"), (
-            f"{chip_id} must be a <button> element for accessibility, "
-            f"got: {opening[:60]}"
-        )
+        opening_tag = template[template.rfind("<", 0, start): end + 1]
+        assert opening_tag.startswith("<button")
+        assert " hidden" in opening_tag
+        assert 'aria-live="polite"' in opening_tag
 
 
-def test_chip_retry_css_is_defined():
-    """FIT-128: .chip-retry must have its own style so the chips don't fall
-    back to browser-default button chrome (same regression class as FIT-114)."""
+def test_retry_chip_css_is_defined():
     css = (ROOT / "static" / "css" / "style.css").read_text()
-    assert ".chip-retry {" in css, ".chip-retry block missing"
     block = css.split(".chip-retry {", 1)[1].split("}", 1)[0]
-    assert "background:" in block, ".chip-retry missing background rule"
-    assert "color:" in block, ".chip-retry missing color rule"
-    assert "cursor: pointer" in block, ".chip-retry must signal clickability"
-
-    # Hover and focus states (a button without :focus-visible is not
-    # keyboard-accessible).
-    assert ".chip-retry:hover" in css, ".chip-retry:hover state missing"
-    assert ".chip-retry:focus-visible" in css, ".chip-retry:focus-visible missing"
+    assert "background:" in block
+    assert "color:" in block
+    assert "cursor: pointer" in block
+    assert ".chip-retry:hover" in css
+    assert ".chip-retry:focus-visible" in css
 
 
-def test_fetchers_no_longer_write_error_sentinels():
-    """FIT-129: sentinel ownership moved from the fetchers into
-    renderDashboard's settle helper so a stale fetch from an older render or
-    retry can no longer flip the sentinel back on. Each fetcher body must
-    contain NO `state.<X>Error =` writes (any direction). The catch must
-    still null the cache slice (preserves the data-invalidation behavior the
-    rest of the painters rely on), and must NOT re-throw (preserves the
-    swallow-on-failure contract that non-dashboard callers — renderVitals,
-    renderNextWorkout, renderSettings — depend on for graceful-null
-    rendering)."""
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-
-    for fetcher, cache_slice in [
-        ("getOuraStatus", "state.oura"),
-        ("getOuraSleep", "state.ouraSleep"),
-        ("getReco", "state.reco"),
-    ]:
-        marker = f"async function {fetcher}("
-        assert marker in app_js, f"{fetcher} not found"
-        body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
-
-        # Negative: no sentinel writes survive in the fetcher body. A stale
-        # write here would re-introduce the FIT-129 race regardless of the
-        # gen guard.
-        for sentinel in ("state.ouraError", "state.recoError", "state.ouraSleepError"):
-            assert f"{sentinel} =" not in body, (
-                f"{fetcher} body must not write `{sentinel}` — sentinel "
-                f"ownership lives in renderDashboard's settle helper (FIT-129)"
-            )
-
-        # Positive: cache invalidation on failure is preserved.
-        assert f"{cache_slice} = null" in body, (
-            f"{fetcher} catch must still set `{cache_slice} = null` so a "
-            f"failed refetch doesn't leave stale data in the cache"
-        )
-
-        # Positive: catch must not re-throw — non-dashboard callers
-        # (renderVitals / renderNextWorkout / renderSettings) rely on the
-        # swallow-on-failure contract.
-        catch_body = body.split("catch", 1)[1].split("\n", 1)[0]
-        assert "throw" not in catch_body, (
-            f"{fetcher} catch must not re-throw — non-dashboard callers "
-            f"(renderVitals/renderNextWorkout/renderSettings) rely on the "
-            f"swallow-on-failure contract"
-        )
-
-
-def test_next_workout_render_does_not_require_auxiliary_recommendation_calls():
-    """FIT-181: the workout execution tab must still render the dashboard
-    plan when helper calls that only supply copy/chip context fail."""
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-    marker = "async function renderNextWorkout()"
-    body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
-
-    assert "nw = await getNextWorkout(true);" in body, (
-        "renderNextWorkout must load the lightweight workout-only contract "
-        "instead of the full dashboard payload, and must let the server "
-        "fingerprint invalidate stale plans"
+def test_dashboard_fetchers_pass_the_timeout_to_api_at_runtime():
+    output = run_app_js(
+        ["getDashboard", "getOuraStatus", "getOuraSleep", "getReco", "state"],
+        """
+const calls = [];
+sandbox.__fitSet.api(async (path, opts) => { calls.push({ path, timeoutMs: opts.timeoutMs }); return {}; });
+await e.getDashboard(true);
+await e.getOuraStatus(true);
+await e.getOuraSleep(true);
+await e.getReco(true);
+process.stdout.write(JSON.stringify(calls));
+""",
+        mocks=["api"],
     )
-    assert "catch (err)" in body and "state.nextWorkout || (state.dashboard && state.dashboard.next_workout)" in body, (
-        "renderNextWorkout must fall back to the last hydrated workout plan "
-        "when the lightweight endpoint has a transient failure"
+    assert [call["timeoutMs"] for call in output] == [30000, 30000, 30000, 30000]
+    assert [call["path"] for call in output] == [
+        "/api/dashboard",
+        "/api/oura/status",
+        "/api/oura/sleep-summary",
+        "/api/recommendation/smart",
+    ]
+
+
+def test_non_dashboard_fetchers_clear_caches_and_swallow_api_failures():
+    output = run_app_js(
+        ["getOuraStatus", "getOuraSleep", "getReco", "state"],
+        """
+Object.assign(e.state, {
+  oura: { readiness: 80 }, ouraSleep: { score: 90 }, reco: { reasoning: 'cached' },
+  ouraError: false, ouraSleepError: false, recoError: false,
+});
+sandbox.__fitSet.api(async () => { throw new Error('offline'); });
+const values = await Promise.all([e.getOuraStatus(true), e.getOuraSleep(true), e.getReco(true)]);
+process.stdout.write(JSON.stringify({
+  values,
+  caches: { oura: e.state.oura, sleep: e.state.ouraSleep, reco: e.state.reco },
+  sentinels: { oura: e.state.ouraError, sleep: e.state.ouraSleepError, reco: e.state.recoError },
+}));
+""",
+        mocks=["api"],
     )
-    assert "getReco().then(" in body and ".catch(() => {})" in body, (
-        "renderNextWorkout must update /api/recommendation/smart reasoning "
-        "asynchronously so the Workout tab still renders during a reco "
-        "retry-chip state"
+    assert output == {
+        "values": [None, None, None],
+        "caches": {"oura": None, "sleep": None, "reco": None},
+        "sentinels": {"oura": False, "sleep": False, "reco": False},
+    }
+
+
+def test_render_dashboard_resets_and_maps_dashboard_failure_to_reco_retry_state():
+    output = run_app_js(
+        ["renderDashboard", "state"],
+        """
+e.state.ouraError = true;
+e.state.recoError = true;
+e.state.ouraSleepError = true;
+sandbox.__fitSet.paintDashboardFromState(() => {});
+sandbox.__fitSet.paintReadinessTrendChart(() => {});
+sandbox.__fitSet.paintVolumeChart(() => {});
+sandbox.__fitSet.getDashboard(async () => { throw new Error('dashboard down'); });
+sandbox.__fitSet.getOuraStatus(async () => ({ readiness: 82 }));
+sandbox.__fitSet.getReco(async () => ({ recommendation: 'strength' }));
+sandbox.__fitSet.getOuraSleep(async () => ({ score: 88 }));
+sandbox.__fitSet.getOuraTrends(async () => null);
+sandbox.__fitSet.getHistory(async () => null);
+await e.renderDashboard();
+process.stdout.write(JSON.stringify({ oura: e.state.ouraError, reco: e.state.recoError, sleep: e.state.ouraSleepError }));
+""",
+        mocks=[
+            "paintDashboardFromState", "paintReadinessTrendChart", "paintVolumeChart",
+            "getDashboard", "getOuraStatus", "getReco", "getOuraSleep", "getOuraTrends", "getHistory",
+        ],
     )
-    assert "getSettings().then(" in body and "settings unavailable for next workout render" in body, (
-        "renderNextWorkout must update /api/settings RPE context asynchronously; "
-        "settings only decorate the RPE chip"
+    assert output == {"oura": False, "reco": True, "sleep": False}
+
+
+def test_render_dashboard_clears_a_recovered_sentinel_while_other_failures_remain():
+    output = run_app_js(
+        ["renderDashboard", "state"],
+        """
+e.state.ouraError = true;
+e.state.recoError = true;
+e.state.ouraSleepError = true;
+sandbox.__fitSet.paintDashboardFromState(() => {});
+sandbox.__fitSet.paintReadinessTrendChart(() => {});
+sandbox.__fitSet.paintVolumeChart(() => {});
+sandbox.__fitSet.getDashboard(async () => ({}));
+sandbox.__fitSet.getOuraStatus(async () => ({ readiness: 82 }));
+sandbox.__fitSet.getReco(async () => null);
+sandbox.__fitSet.getOuraSleep(async () => null);
+sandbox.__fitSet.getOuraTrends(async () => null);
+sandbox.__fitSet.getHistory(async () => null);
+await e.renderDashboard();
+process.stdout.write(JSON.stringify({ oura: e.state.ouraError, reco: e.state.recoError, sleep: e.state.ouraSleepError }));
+""",
+        mocks=[
+            "paintDashboardFromState", "paintReadinessTrendChart", "paintVolumeChart",
+            "getDashboard", "getOuraStatus", "getReco", "getOuraSleep", "getOuraTrends", "getHistory",
+        ],
     )
-    assert "renderRpe(null);" in body, "renderNextWorkout must paint fallback RPE immediately"
-    assert "renderWhy(null);" in body, "renderNextWorkout must paint fallback reasoning immediately"
-    assert "gen !== nextWorkoutRenderGen" in body, (
-        "late optional helper responses must not overwrite a newer Workout tab render"
+    assert output == {"oura": False, "reco": True, "sleep": True}
+
+
+def test_render_dashboard_drops_a_late_failure_from_an_older_overlapping_render():
+    output = run_app_js(
+        ["renderDashboard", "state"],
+        """
+const deferred = () => { let resolve, reject; const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; }); return { promise, resolve, reject }; };
+const oldOura = deferred();
+let renderCount = 0;
+sandbox.__fitSet.paintDashboardFromState(() => {});
+sandbox.__fitSet.paintReadinessTrendChart(() => {});
+sandbox.__fitSet.paintVolumeChart(() => {});
+sandbox.__fitSet.getDashboard(async () => ({}));
+sandbox.__fitSet.getOuraStatus(() => ++renderCount === 1 ? oldOura.promise : Promise.resolve({ readiness: 84 }));
+sandbox.__fitSet.getReco(async () => null);
+sandbox.__fitSet.getOuraSleep(async () => null);
+sandbox.__fitSet.getOuraTrends(async () => null);
+sandbox.__fitSet.getHistory(async () => null);
+const oldRender = e.renderDashboard();
+await Promise.resolve();
+const currentRender = e.renderDashboard();
+await currentRender;
+oldOura.resolve(null);
+await oldRender;
+process.stdout.write(JSON.stringify({ oura: e.state.ouraError, renderCount }));
+""",
+        mocks=[
+            "paintDashboardFromState", "paintReadinessTrendChart", "paintVolumeChart",
+            "getDashboard", "getOuraStatus", "getReco", "getOuraSleep", "getOuraTrends", "getHistory",
+        ],
     )
-    assert "Promise.all([getDashboard(), getReco(), getSettings()])" not in body, (
-        "renderNextWorkout must not let optional helper failures abort the "
-        "dashboard next_workout render"
+    assert output == {"oura": False, "renderCount": 2}
+
+
+def test_paint_retry_chip_wires_retry_and_updates_sentinel_after_failure():
+    output = run_app_js(
+        ["paintDashboardFromState", "state"],
+        """
+const readiness = { hidden: true, disabled: false };
+const reco = { hidden: true, disabled: false };
+const insight = { hidden: true, disabled: false };
+sandbox.elements['readiness-retry'] = readiness;
+sandbox.elements['reco-retry'] = reco;
+sandbox.elements['insight-retry'] = insight;
+e.state.ouraError = true;
+e.state.recoError = true;
+e.state.ouraSleepError = true;
+sandbox.__fitSet.getOuraStatus(async () => null);
+e.paintDashboardFromState();
+const allWired = [readiness, reco, insight].every((chip) => !chip.hidden && typeof chip.onclick === 'function');
+await readiness.onclick();
+process.stdout.write(JSON.stringify({ hidden: readiness.hidden, disabled: readiness.disabled, error: e.state.ouraError, allWired }));
+""",
+        mocks=["getOuraStatus"],
     )
-    assert "await getDashboard()" not in body, (
-        "renderNextWorkout must not wait on the heavy /api/dashboard endpoint"
+    assert output == {"hidden": False, "disabled": False, "error": True, "allWired": True}
+
+
+def test_retry_success_clears_sentinel_and_repaints():
+    output = run_app_js(
+        ["paintRetryChip", "state"],
+        """
+const chip = { hidden: false, disabled: false };
+sandbox.elements['reco-retry'] = chip;
+let paints = 0;
+sandbox.__fitSet.paintDashboardFromState(() => { paints += 1; });
+e.state.recoError = true;
+e.paintRetryChip('reco-retry', true, 'recoError', async () => {});
+await chip.onclick();
+process.stdout.write(JSON.stringify({ hidden: chip.hidden, disabled: chip.disabled, error: e.state.recoError, paints }));
+""",
+        mocks=["paintDashboardFromState"],
     )
+    assert output == {"hidden": True, "disabled": False, "error": False, "paints": 1}
 
 
-def test_start_workout_falls_back_to_cached_dashboard_plan_on_fetch_failure():
-    """FIT-181: Start Workout should use the already-rendered dashboard plan
-    if a fresh dashboard fetch fails while the user is trying to enter the
-    active workout flow."""
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-    marker = "async function startWorkout()"
-    body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
-
-    assert "try {" in body and "nw = await getNextWorkout(true);" in body
-    assert "catch (err)" in body, "startWorkout must handle next-workout fetch failures"
-    assert "state.nextWorkout || (state.dashboard && state.dashboard.next_workout)" in body, (
-        "startWorkout must fall back to cached workout plans before "
-        "showing No workout planned"
+def test_same_render_retry_success_wins_over_original_pending_fetch_failure():
+    output = run_app_js(
+        ["renderDashboard", "paintRetryChip", "state"],
+        """
+const deferred = () => { let resolve, reject; const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; }); return { promise, resolve, reject }; };
+const originalOura = deferred();
+sandbox.__fitSet.paintDashboardFromState(() => {});
+sandbox.__fitSet.paintReadinessTrendChart(() => {});
+sandbox.__fitSet.paintVolumeChart(() => {});
+sandbox.__fitSet.getDashboard(async () => ({}));
+sandbox.__fitSet.getOuraStatus(() => originalOura.promise);
+sandbox.__fitSet.getReco(async () => null);
+sandbox.__fitSet.getOuraSleep(async () => null);
+sandbox.__fitSet.getOuraTrends(async () => null);
+sandbox.__fitSet.getHistory(async () => null);
+const render = e.renderDashboard();
+await Promise.resolve();
+const chip = { hidden: false, disabled: false };
+sandbox.elements['readiness-retry'] = chip;
+e.state.ouraError = true;
+e.paintRetryChip('readiness-retry', true, 'ouraError', async () => {});
+await chip.onclick();
+originalOura.resolve(null);
+await render;
+process.stdout.write(JSON.stringify({ error: e.state.ouraError, disabled: chip.disabled }));
+""",
+        mocks=[
+            "paintDashboardFromState", "paintReadinessTrendChart", "paintVolumeChart",
+            "getDashboard", "getOuraStatus", "getReco", "getOuraSleep", "getOuraTrends", "getHistory",
+        ],
     )
+    assert output == {"error": False, "disabled": False}
 
 
-def test_next_workout_endpoint_and_asset_bust_are_wired():
-    """FIT-181 urgent follow-up: gym execution must not wait on the heavy
-    dashboard endpoint, and phones must receive the new client bundle."""
-    app_py = (ROOT / "app.py").read_text()
-    auth_py = (ROOT / "auth.py").read_text()
-    fingerprint_py = (ROOT / "workout_recommendation_fingerprint.py").read_text()
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-    template = (ROOT / "templates" / "index.html").read_text()
-    sw = (ROOT / "static" / "js" / "sw.js").read_text()
-
-    assert "@app.route('/api/next-workout')" in app_py
-    assert "def _current_workout_training_recommendation():" in app_py
-    assert "def _workout_recommendation_fingerprint():" in app_py
-    assert "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint" in app_py
-    assert "workout_recommendation_fingerprint.build_fingerprint(" in app_py
-    assert "day=today_s" in app_py
-    assert "\"day\": day" in fingerprint_py
-    assert "\"oura\": {" in fingerprint_py
-    assert "get_oura_daily_range(OURA_DB_FILE" in app_py
-    assert "\"weather\": {" in fingerprint_py
-    assert "\"open_wearables\": {" in fingerprint_py
-    assert "_open_wearables_workout_inputs_live()" in app_py
-    assert "open_wearables_configured=_open_wearables_workout_inputs_live()" in app_py
-    assert "def _open_wearables_recommendation_marker(refresh=False):" in app_py
-    assert "open_wearables_marker=_open_wearables_recommendation_marker()" in app_py
-    assert "include_open_wearables_readiness=False" in app_py
-    compact_rebuild_guard = " ".join(app_py.split())
-    assert "_open_wearables_workout_inputs_live() or not LAST_WORKOUT_RECOMMENDATION" not in compact_rebuild_guard
-    assert "\"apple_health\": {" in fingerprint_py
-    assert "apple_health_sync_db_file=_apple_health_sync_db_file()" in app_py
-    assert "file_marker(apple_health_sync_db_file)" in fingerprint_py
-    assert "healthkit_samples_workout_*.json" in app_py
-    assert (
-        "training_recommendation=_current_workout_training_recommendation()" in app_py
-        or (
-            "training_recommendation = _current_workout_training_recommendation()" in app_py
-            and "training_recommendation=training_recommendation" in app_py
-        )
+def test_stale_retry_completion_cannot_mutate_state_after_newer_dashboard_render():
+    output = run_app_js(
+        ["renderDashboard", "paintRetryChip", "state"],
+        """
+const deferred = () => { let resolve, reject; const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; }); return { promise, resolve, reject }; };
+const oldRetry = deferred();
+const chip = { hidden: false, disabled: false };
+sandbox.elements['reco-retry'] = chip;
+let paints = 0;
+sandbox.__fitSet.paintDashboardFromState(() => { paints += 1; });
+sandbox.__fitSet.paintReadinessTrendChart(() => {});
+sandbox.__fitSet.paintVolumeChart(() => {});
+sandbox.__fitSet.getDashboard(async () => ({}));
+sandbox.__fitSet.getOuraStatus(async () => ({}));
+sandbox.__fitSet.getReco(async () => ({}));
+sandbox.__fitSet.getOuraSleep(async () => ({}));
+sandbox.__fitSet.getOuraTrends(async () => null);
+sandbox.__fitSet.getHistory(async () => null);
+e.state.recoError = true;
+e.paintRetryChip('reco-retry', true, 'recoError', () => oldRetry.promise);
+const staleClick = chip.onclick();
+await Promise.resolve();
+await e.renderDashboard();
+const afterNewRender = { error: e.state.recoError, paints };
+oldRetry.reject(new Error('obsolete retry failed'));
+await staleClick;
+process.stdout.write(JSON.stringify({
+  afterNewRender,
+  afterStaleCompletion: { error: e.state.recoError, paints },
+}));
+""",
+        mocks=[
+            "paintDashboardFromState", "paintReadinessTrendChart", "paintVolumeChart",
+            "getDashboard", "getOuraStatus", "getReco", "getOuraSleep", "getOuraTrends", "getHistory",
+        ],
     )
-    assert "api(withActiveWorkoutAdaptationParams('/api/next-workout'), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS })" in app_js
-    assert "app-loader.js?v=20260713-fit270-oura-detail" in template
-    assert "app.js?v=20260713-fit270-oura-detail" in (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "fitness-dashboard-v20260713-fit270-oura-detail" in sw
-    assert "const STATIC_ASSETS" not in sw
-    assert "cache.addAll" not in sw
-    assert "caches.keys()" in sw
-    assert "keys.map(key => caches.delete(key))" in sw
-    assert "client.navigate(client.url)" not in sw
-    assert "navigator.serviceWorker.addEventListener('controllerchange'" in app_js
-    assert "if (activeWorkoutHasProgress())" in app_js
-    assert "Update ready after workout. Refresh when finished." in app_js
-    assert "window.location.reload()" in app_js
-    assert "body.error === 'reload_required'" in app_js
-    assert "throw new Error('reload required after workout')" in app_js
-    assert "reg.waiting.postMessage({ type: 'SKIP_WAITING' })" in app_js
-    assert 'APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"' in app_py
-    assert 'APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload-r2"' in app_py
-    assert "APP_SHELL_RELOAD_COOKIE_MAX_AGE_S = 365 * 24 * 60 * 60" in app_py
-    assert '"reload_required"' in app_py
-    assert "response.status_code = 401" in app_py
-    assert "response.set_cookie(" in app_py
-    assert 'request.cookies.get("session")' in app_py
-    assert "current_user.is_authenticated" in auth_py
-    assert 'request.args.get("next")' in auth_py
-    assert 'next_page.startswith("//")' in auth_py
-    assert 'fd_shell_reload=20260525-fit181-controller-reload-r2' in auth_py
-    assert "@app.route('/gym-now')" in app_py
-    assert "Cache-Control\": \"no-store\"" in app_py
-    assert "\"Cache-Control\": \"no-store, max-age=0\"" in app_py
-    assert "event.request.mode === 'navigate'" in sw
-    assert "url.pathname.endsWith('.js')" in sw
+    assert output["afterStaleCompletion"] == output["afterNewRender"]
+    assert output["afterStaleCompletion"] == {
+        "error": False,
+        "paints": 5,
+    }
 
 
-def test_dashboard_shell_defers_heavy_app_bundle_until_after_load():
-    """FIT-237: the dashboard document load must not wait on the 500 KB app
-    bundle. A tiny loader may boot the full app after the browser load event,
-    but index.html must not directly include app.js as a parser-blocking
-    script."""
-    template = (ROOT / "templates" / "index.html").read_text()
-    loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
+def test_next_workout_start_uses_cached_plan_when_fresh_load_fails():
+    output = run_app_js(
+        ["startWorkout", "state"],
+        """
+const plan = { focus: 'strength', exercises: [{ exercise: 'Squat' }] };
+e.state.nextWorkout = plan;
+sandbox.__fitSet.getNextWorkout(async () => { throw new Error('offline'); });
+sandbox.__fitSet.confirmDiscardActiveWorkoutForStart(() => true);
+let started = null;
+sandbox.__fitSet.startActiveWorkoutFromRecommendation((value) => { started = value; });
+sandbox.__fitSet.renderActiveWorkout(() => {});
+sandbox.__fitSet.toast(() => {});
+await e.startWorkout();
+process.stdout.write(JSON.stringify(started));
+""",
+        mocks=["getNextWorkout", "confirmDiscardActiveWorkoutForStart", "startActiveWorkoutFromRecommendation", "renderActiveWorkout", "toast"],
+    )
+    assert output == {"focus": "strength", "exercises": [{"exercise": "Squat"}]}
 
-    assert "app-loader.js?v=20260713-fit270-oura-detail" in template
-    assert "<script src=\"/static/js/app.js" not in template
-    assert "window.addEventListener('load', loadAppBundle, { once: true });" in loader
-    assert "script.src = '/static/js/app.js?v=20260713-fit270-oura-detail';" in loader
-    assert "script.async = true;" in loader
+
+def test_next_workout_renders_plan_when_optional_copy_fetches_fail():
+    output = run_app_js(
+        ["renderNextWorkout", "state"],
+        """
+function node() { return { textContent: '', innerHTML: '', hidden: true, children: [], appendChild(child) { this.children.push(child); } }; }
+['nw-title', 'nw-sub', 'nw-duration', 'nw-rpe', 'nw-why', 'nw-exercise-list', 'nw-cardio-card'].forEach((id) => { sandbox.elements[id] = node(); });
+e.state.currentTab = 'tab-workout';
+sandbox.__fitSet.getNextWorkout(async () => ({ focus: 'strength', goal_name: 'build_strength', estimated_minutes: 45, exercises: [] }));
+sandbox.__fitSet.getReco(async () => { throw new Error('reco unavailable'); });
+sandbox.__fitSet.getSettings(async () => { throw new Error('settings unavailable'); });
+await e.renderNextWorkout();
+await Promise.resolve();
+process.stdout.write(JSON.stringify({
+  title: sandbox.elements['nw-title'].textContent,
+  duration: sandbox.elements['nw-duration'].textContent,
+  rpe: sandbox.elements['nw-rpe'].textContent,
+  why: sandbox.elements['nw-why'].textContent,
+  list: sandbox.elements['nw-exercise-list'].innerHTML,
+}));
+""",
+        mocks=["getNextWorkout", "getReco", "getSettings"],
+    )
+    assert output == {
+        "title": "Strength",
+        "duration": "45 min",
+        "rpe": "RPE —",
+        "why": "Your readiness is high and your plan optimizes strength while managing fatigue.",
+        "list": '<div class="empty">No exercises planned — rest day.</div>',
+    }
+
+
+def test_next_workout_drops_late_optional_copy_from_an_older_render():
+    output = run_app_js(
+        ["renderNextWorkout", "state"],
+        """
+function node() { return { textContent: '', innerHTML: '', hidden: true, children: [], appendChild(child) { this.children.push(child); } }; }
+function deferred() { let resolve; const promise = new Promise((ok) => { resolve = ok; }); return { promise, resolve }; }
+['nw-title', 'nw-sub', 'nw-duration', 'nw-rpe', 'nw-why', 'nw-exercise-list', 'nw-cardio-card'].forEach((id) => { sandbox.elements[id] = node(); });
+e.state.currentTab = 'tab-workout';
+const oldReco = deferred();
+const oldSettings = deferred();
+let planCall = 0;
+let recoCall = 0;
+let settingsCall = 0;
+sandbox.__fitSet.getNextWorkout(async () => (++planCall === 1
+  ? { focus: 'strength', exercises: [] }
+  : { focus: 'conditioning', exercises: [] }));
+sandbox.__fitSet.getReco(() => ++recoCall === 1 ? oldReco.promise : Promise.resolve({ reasoning: 'Current reasoning' }));
+sandbox.__fitSet.getSettings(() => ++settingsCall === 1 ? oldSettings.promise : Promise.resolve({ goal_details: { rpe_target: 7 } }));
+await e.renderNextWorkout();
+await e.renderNextWorkout();
+await Promise.resolve();
+oldReco.resolve({ reasoning: 'Stale reasoning' });
+oldSettings.resolve({ goal_details: { rpe_target: 10 } });
+await Promise.resolve();
+process.stdout.write(JSON.stringify({
+  title: sandbox.elements['nw-title'].textContent,
+  why: sandbox.elements['nw-why'].textContent,
+  rpe: sandbox.elements['nw-rpe'].textContent,
+}));
+""",
+        mocks=["getNextWorkout", "getReco", "getSettings"],
+    )
+    assert output == {
+        "title": "Conditioning",
+        "why": "Current reasoning",
+        "rpe": "RPE 7",
+    }
+
+
+def test_invalidate_caches_clears_dashboard_and_workout_state():
+    output = run_app_js(
+        ["invalidateCaches", "state"],
+        """
+Object.assign(e.state, { dashboard: {}, oura: {}, ouraSleep: {}, reco: {}, nextWorkout: {}, settings: {} });
+e.invalidateCaches();
+process.stdout.write(JSON.stringify({ dashboard: e.state.dashboard, reco: e.state.reco, nextWorkout: e.state.nextWorkout, settings: e.state.settings }));
+""",
+    )
+    assert output == {"dashboard": None, "reco": None, "nextWorkout": None, "settings": None}
+
+
+def test_api_timeout_uses_abort_controller_and_rejects_hung_requests():
+    output = run_app_js(
+        ["api"],
+        """
+let aborted = false;
+sandbox.AbortController = class {
+  constructor() { this.signal = { addEventListener: (_name, callback) => { this._abort = callback; } }; }
+  abort() { this._abort(); }
+};
+sandbox.__fitSet.fetch((path, opts) => new Promise((resolve, reject) => {
+  opts.signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
+}));
+let message = '';
+try { await e.api('/api/dashboard', { timeoutMs: 1 }); } catch (error) { message = error.message; }
+process.stdout.write(JSON.stringify({ aborted, message }));
+""",
+        mocks=["fetch"],
+    )
+    assert output["aborted"] is True
+    assert output["message"] == "aborted"
+
+
+def test_handle_unauthorized_preserves_active_workout_and_reload_paths():
+    output = run_app_js(
+        ["handleUnauthorizedResponse"],
+        """
+sandbox.location.reload = () => { sandbox.__reloaded = true; };
+let toasts = [];
+sandbox.__fitSet.toast((message, tone) => toasts.push({ message, tone }));
+let active = true;
+sandbox.__fitSet.activeWorkoutHasProgress(() => active);
+const guarded = new Response(JSON.stringify({ error: 'reload_required' }), { status: 401, headers: { 'content-type': 'application/json' } });
+let first = '';
+try { await e.handleUnauthorizedResponse(guarded); } catch (error) { first = error.message; }
+active = false;
+const reload = new Response(JSON.stringify({ error: 'reload_required' }), { status: 401, headers: { 'content-type': 'application/json' } });
+let second = '';
+try { await e.handleUnauthorizedResponse(reload); } catch (error) { second = error.message; }
+process.stdout.write(JSON.stringify({ first, second, reloaded: Boolean(sandbox.__reloaded), toasts }));
+""",
+        mocks=["toast", "activeWorkoutHasProgress"],
+    )
+    assert output["first"] == "reload required after workout"
+    assert output["second"] == "reload required"
+    assert output["reloaded"] is True
+    assert output["toasts"] == [{"message": "Update ready after workout. Refresh when finished.", "tone": "warn"}]
 
 
 def test_next_workout_endpoint_does_not_fetch_open_wearables(monkeypatch):
-    """FIT-181 review: the gym execution endpoint must stay fast even when
-    Open Wearables is configured but unavailable."""
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
     monkeypatch.setattr(module, "_missing_open_wearables_config", lambda: [])
@@ -273,18 +455,10 @@ def test_next_workout_endpoint_does_not_fetch_open_wearables(monkeypatch):
 
 
 def test_open_wearables_marker_tolerates_timezone_sleep_events():
-    """FIT-181 review: marker caching must not break successful OW fetches
-    when the bridge returns timezone-aware sleep timestamps."""
     module = importlib.import_module("app")
     payload = {
         "sleep": {
-            "events": [
-                {
-                    "end_time": datetime.now(timezone.utc).isoformat(),
-                    "duration_min": 480,
-                    "avg_hr": 60,
-                }
-            ]
+            "events": [{"end_time": datetime.now(timezone.utc).isoformat(), "duration_min": 480, "avg_hr": 60}]
         },
         "workouts": {"events": []},
         "activity_summary": {"summaries": []},
@@ -296,272 +470,125 @@ def test_open_wearables_marker_tolerates_timezone_sleep_events():
     assert marker["sleep"]["recent"] is True
 
 
-def test_next_workout_caches_clear_after_plan_inputs_change():
-    """FIT-181: the fast workout path must not keep serving stale plans
-    after settings, equipment, swap, or adjust flows mutate the canonical
-    recommendation."""
+def test_next_workout_cache_invalidation_is_kept_in_backend_mutation_paths():
     app_py = (ROOT / "app.py").read_text()
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-
     settings_body = app_py.split("def settings():", 1)[1].split("@app.route('/api/settings/equipment'", 1)[0]
     equipment_body = app_py.split("def settings_equipment():", 1)[1].split("@app.route('/api/personal-vocab'", 1)[0]
     assert "global LAST_WORKOUT_RECOMMENDATION" in settings_body
     assert "LAST_WORKOUT_RECOMMENDATION = None" in settings_body
     assert "global LAST_WORKOUT_RECOMMENDATION" in equipment_body
     assert "LAST_WORKOUT_RECOMMENDATION = None" in equipment_body
-
-    assert "state.settings = null; state.dashboard = null; state.nextWorkout = null;" in app_js
-    for marker in [
-        "def add_workout():",
-        "def add_soreness():",
-        "def add_cardio():",
-        "def add_recovery():",
-        "def sync_oura_sleep():",
-    ]:
+    for marker in ["def add_workout():", "def add_soreness():", "def add_cardio():", "def add_recovery():", "def sync_oura_sleep():"]:
         body = app_py.split(marker, 1)[1].split("\n\n@app.route", 1)[0]
         assert "global LAST_WORKOUT_RECOMMENDATION" in body
         assert "LAST_WORKOUT_RECOMMENDATION = None" in body
 
 
-def test_render_dashboard_resets_error_sentinels_and_maps_dashboard_to_reco():
-    """FIT-128 persistence + mapping (FIT-129 refactor): renderDashboard
-    must reset all three error sentinels at the top (so a recovered card
-    doesn't stay stuck), and it must route a dashboard-endpoint rejection
-    onto state.recoError via the settle helper because the AI Recommendation
-    card chip covers BOTH dashboard and reco."""
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-    marker = "async function renderDashboard()"
-    body = app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
-
-    # Sentinels reset at the top of each render.
-    assert "state.ouraError = false;" in body, "renderDashboard must reset state.ouraError"
-    assert "state.recoError = false;" in body, "renderDashboard must reset state.recoError"
-    assert "state.ouraSleepError = false;" in body, "renderDashboard must reset state.ouraSleepError"
-
-    # Dashboard's rejection branch routes onto recoError via settle (FIT-129
-    # shape). getDashboard is the only fetcher that still throws on failure,
-    # so it gets the rejection-handler form of .then; the others use
-    # null-as-failure detection (covered by the gen-counter test below).
-    # Whitespace-tolerant: the source uses vertical alignment in the four
-    # .then chains, so match on the .then structure rather than literal text.
-    import re
-    dash_then = re.search(
-        r"getDashboard\(\)\.then\(\s*\(\)\s*=>\s*settle\(true,\s*'recoError'\)\s*,"
-        r"\s*\(\)\s*=>\s*settle\(false,\s*'recoError'\)\s*\)",
-        body,
-    )
-    assert dash_then is not None, (
-        "renderDashboard's getDashboard .then chain must route both branches "
-        "onto the recoError sentinel via settle — success → settle(true, "
-        "'recoError'), rejection → settle(false, 'recoError'). Both dashboard "
-        "and reco endpoints feed the AI Recommendation card chip."
-    )
-
-
-def test_dashboard_fetchers_pass_30s_timeout_to_api():
-    """FIT-128 AC explicitly requires the chip to surface when an endpoint
-    'times out (>30s)'. The shared api() helper takes an opts.timeoutMs that
-    wires through an AbortController; the four dashboard fetchers must pass
-    that constant so a hung endpoint actually aborts instead of leaving the
-    chip silent forever (the bug Codex flagged in round 1)."""
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-
-    # The constant must exist and be 30 seconds.
-    assert "const DASHBOARD_FETCH_TIMEOUT_MS = 30000" in app_js, (
-        "DASHBOARD_FETCH_TIMEOUT_MS constant must be defined at 30000ms"
-    )
-
-    # api() must honor timeoutMs by wiring an AbortController.
-    api_body = app_js.split("async function api(", 1)[1].split("\n    }\n", 1)[0]
-    assert "AbortController" in api_body, (
-        "api() must use AbortController to enforce timeoutMs — without it a "
-        "hung endpoint sits forever and the retry chip never surfaces"
-    )
-    assert "controller.abort()" in api_body, (
-        "api() must call controller.abort() on timeout fire"
-    )
-
-    # Each of the four dashboard fetchers must pass timeoutMs through.
-    for fetcher in ("getDashboard", "getOuraStatus", "getOuraSleep", "getReco"):
-        body = app_js.split(f"async function {fetcher}(", 1)[1].split("\n    }\n", 1)[0]
-        assert "timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS" in body, (
-            f"{fetcher} must pass `timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS` to "
-            f"api() — otherwise a hung endpoint can never surface the chip"
-        )
-
-
-def test_retry_chips_announce_via_aria_live():
-    """FIT-128 a11y: the chips appear asynchronously when a fetch fails, so
-    screen-reader users need aria-live to hear them. Without the attribute
-    the failure state is silent to assistive tech."""
+def test_dashboard_release_assets_and_reload_contract_remain_stable():
+    app_py = (ROOT / "app.py").read_text()
+    auth_py = (ROOT / "auth.py").read_text()
+    fingerprint_py = (ROOT / "workout_recommendation_fingerprint.py").read_text()
     template = (ROOT / "templates" / "index.html").read_text()
-    for chip_id in ("readiness-retry", "reco-retry", "insight-retry"):
-        start = template.index(f'id="{chip_id}"')
-        end = template.index(">", start)
-        opening_tag = template[start:end + 1]
-        assert 'aria-live="polite"' in opening_tag, (
-            f"{chip_id} must carry aria-live=\"polite\" so screen readers "
-            f"announce when the chip appears"
-        )
+    loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
+    sw = (ROOT / "static" / "js" / "sw.js").read_text()
+    assert "@app.route('/api/next-workout')" in app_py
+    assert "def _current_workout_training_recommendation():" in app_py
+    assert "def _workout_recommendation_fingerprint():" in app_py
+    assert "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint" in app_py
+    assert "workout_recommendation_fingerprint.build_fingerprint(" in app_py
+    assert "day=today_s" in app_py
+    assert "get_oura_daily_range(OURA_DB_FILE" in app_py
+    assert "_open_wearables_workout_inputs_live()" in app_py
+    assert "open_wearables_configured=_open_wearables_workout_inputs_live()" in app_py
+    assert "def _open_wearables_recommendation_marker(refresh=False):" in app_py
+    assert "open_wearables_marker=_open_wearables_recommendation_marker()" in app_py
+    assert "include_open_wearables_readiness=False" in app_py
+    assert "apple_health_sync_db_file=_apple_health_sync_db_file()" in app_py
+    assert "file_marker(apple_health_sync_db_file)" in fingerprint_py
+    assert "healthkit_samples_workout_*.json" in app_py
+    assert "training_recommendation=_current_workout_training_recommendation()" in app_py
+    assert '"day": day' in fingerprint_py
+    assert '"oura": {' in fingerprint_py and '"weather": {' in fingerprint_py
+    assert '"open_wearables": {' in fingerprint_py and '"apple_health": {' in fingerprint_py
+    assert "app-loader.js?v=20260713-fit270-oura-detail" in template
+    assert "app.js?v=20260713-fit270-oura-detail" in loader
+    assert "fitness-dashboard-v20260713-fit270-oura-detail" in sw
+    assert "APP_SHELL_RELOAD_COOKIE = \"fd_shell_reload\"" in app_py
+    assert "APP_SHELL_RELOAD_VERSION = \"20260525-fit181-controller-reload-r2\"" in app_py
+    assert '"reload_required"' in app_py
+    assert "response.status_code = 401" in app_py
+    assert "response.set_cookie(" in app_py
+    assert 'request.cookies.get("session")' in app_py
+    assert "current_user.is_authenticated" in auth_py
+    assert 'request.args.get("next")' in auth_py
+    assert 'next_page.startswith("//")' in auth_py
+    assert 'fd_shell_reload=20260525-fit181-controller-reload-r2' in auth_py
+    assert "@app.route('/gym-now')" in app_py
+    assert '"Cache-Control": "no-store"' in app_py
+    assert '"Cache-Control": "no-store, max-age=0"' in app_py
+    assert "event.request.mode === 'navigate'" in sw
+    assert "url.pathname.endsWith('.js')" in sw
+    assert "caches.keys()" in sw
+    assert "keys.map(key => caches.delete(key))" in sw
+    assert "client.navigate(client.url)" not in sw
 
 
-def test_paint_retry_chip_helper_exists_and_is_called_per_chip():
-    """FIT-128 (FIT-129 signature update): paintRetryChip helper must exist
-    with the (elementId, isErrored, sentinelKey, retryFn) signature, and
-    paintDashboardFromState must call it once per chip with the matching
-    sentinel value, sentinel key string, and retry fn."""
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-
-    # FIT-129: signature now includes sentinelKey so the click handler can
-    # write `state[sentinelKey] = failed` authoritatively under the gen guard
-    # (instead of relying on the fetcher's catch to flip the sentinel).
-    assert "function paintRetryChip(elementId, isErrored, sentinelKey, retryFn)" in app_js, (
-        "paintRetryChip signature must be (elementId, isErrored, sentinelKey, "
-        "retryFn) — the sentinelKey lets the click handler write the sentinel "
-        "authoritatively under the gen guard"
+def test_service_worker_update_handoff_preserves_active_workout_progress():
+    output = run_app_js(
+        ["registerServiceWorker"],
+        """
+const calls = [];
+let controllerChange;
+let updateFound;
+let workerStateChange;
+let hasProgress = true;
+const worker = {
+  state: 'installing',
+  postMessage(message) { calls.push(['worker-message', message.type]); },
+  addEventListener(type, handler) { if (type === 'statechange') workerStateChange = handler; },
+};
+const registration = {
+  waiting: { postMessage(message) { calls.push(['waiting-message', message.type]); } },
+  installing: worker,
+  addEventListener(type, handler) { if (type === 'updatefound') updateFound = handler; },
+  update() { calls.push(['update']); return Promise.resolve(); },
+};
+sandbox.navigator.serviceWorker = {
+  controller: {},
+  addEventListener(type, handler) { if (type === 'controllerchange') controllerChange = handler; },
+  register(path) { calls.push(['register', path]); return Promise.resolve(registration); },
+};
+sandbox.location.reload = () => calls.push(['reload']);
+sandbox.__fitSet.activeWorkoutHasProgress(() => hasProgress);
+sandbox.__fitSet.toast((message) => calls.push(['toast', message]));
+e.registerServiceWorker();
+await new Promise((resolve) => setTimeout(resolve, 0));
+controllerChange();
+hasProgress = false;
+controllerChange();
+controllerChange();
+updateFound();
+worker.state = 'installed';
+workerStateChange();
+process.stdout.write(JSON.stringify(calls));
+""",
+        mocks=["activeWorkoutHasProgress", "toast"],
     )
-
-    # The helper must hide the chip when no error and show it on error,
-    # plus wire an onclick handler.
-    helper = app_js.split("function paintRetryChip(", 1)[1].split("\n    }\n", 1)[0]
-    assert "chip.hidden = !isErrored" in helper, (
-        "paintRetryChip must set chip.hidden based on the error sentinel"
-    )
-    assert "chip.onclick = " in helper, (
-        "paintRetryChip must wire chip.onclick to trigger the retry"
-    )
-
-    # paintDashboardFromState must invoke the helper for all three chips,
-    # passing the matching sentinel-key string as the third argument.
-    paint_body = app_js.split("function paintDashboardFromState()", 1)[1].split("\n    }\n", 1)[0]
-    assert "paintRetryChip('readiness-retry', state.ouraError, 'ouraError'," in paint_body, (
-        "readiness-retry chip must be wired to state.ouraError + 'ouraError' key"
-    )
-    assert "paintRetryChip('reco-retry', state.recoError, 'recoError'," in paint_body, (
-        "reco-retry chip must be wired to state.recoError + 'recoError' key"
-    )
-    assert "paintRetryChip('insight-retry', state.ouraSleepError, 'ouraSleepError'," in paint_body, (
-        "insight-retry chip must be wired to state.ouraSleepError + 'ouraSleepError' key"
-    )
+    assert output == [
+        ["register", "/sw.js"],
+        ["waiting-message", "SKIP_WAITING"],
+        ["update"],
+        ["toast", "Update ready after workout. Refresh when finished."],
+        ["reload"],
+        ["worker-message", "SKIP_WAITING"],
+    ]
 
 
-def test_dashboard_render_uses_generation_counters():
-    """FIT-129: renderDashboard must capture BOTH a render-gen and a
-    per-sentinel gen at the top, and the settle helper must bail on either
-    gen mismatch BEFORE touching the sentinel — otherwise stale fetches
-    (from an older render OR from before a retry click superseded them) can
-    still flip the sentinel back on."""
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-
-    # Module-scope counters.
-    assert "let dashboardRenderGen = 0;" in app_js, (
-        "dashboardRenderGen module-scope counter is missing"
-    )
-    assert "const dashboardSentinelGen = { ouraError: 0, recoError: 0, ouraSleepError: 0 };" in app_js, (
-        "dashboardSentinelGen module-scope per-sentinel counter is missing — "
-        "render-gen alone doesn't close the intra-render retry race"
-    )
-
-    body = app_js.split("async function renderDashboard()", 1)[1].split("\n    }\n", 1)[0]
-
-    # Render-gen capture at top.
-    assert "const gen = ++dashboardRenderGen;" in body, (
-        "renderDashboard must capture `const gen = ++dashboardRenderGen;`"
-    )
-
-    # Per-sentinel gen snapshot at top — all three.
-    for sentinel in ("ouraError", "recoError", "ouraSleepError"):
-        assert f"++dashboardSentinelGen.{sentinel}" in body, (
-            f"renderDashboard must capture sentinel gen for {sentinel} via "
-            f"`++dashboardSentinelGen.{sentinel}` so retry on this chip "
-            f"invalidates older same-render fetches for it"
-        )
-
-    # settle helper has BOTH guards.
-    assert "if (gen !== dashboardRenderGen) return;" in body, (
-        "settle helper must bail on render-gen mismatch"
-    )
-    assert "if (sentinelGens[sentinel] !== dashboardSentinelGen[sentinel]) return;" in body, (
-        "settle helper must bail on per-sentinel-gen mismatch — closes the "
-        "intra-render retry race where the older fetcher from the current "
-        "render rejects after a retry on the same chip has succeeded"
-    )
-
-    # Ordering: both guards must precede any sentinel mutation inside settle.
-    render_gen_idx = body.index("if (gen !== dashboardRenderGen) return;")
-    sentinel_gen_idx = body.index("if (sentinelGens[sentinel] !== dashboardSentinelGen[sentinel]) return;")
-    # The only sentinel write inside settle is `state[sentinel] = true;`.
-    settle_write_idx = body.index("state[sentinel] = true;")
-    assert render_gen_idx < settle_write_idx, (
-        "render-gen guard must appear BEFORE `state[sentinel] = true;` so a "
-        "stale settle never mutates"
-    )
-    assert sentinel_gen_idx < settle_write_idx, (
-        "sentinel-gen guard must appear BEFORE `state[sentinel] = true;` so a "
-        "stale settle never mutates"
-    )
-
-
-def test_paint_retry_chip_guards_on_both_generations():
-    """FIT-129: paintRetryChip's click handler must capture the render-gen
-    AND bump+capture the per-sentinel gen BEFORE retryFn() runs. The bump
-    invalidates any older same-render in-flight fetch for the same sentinel
-    (the intra-render retry race Codex flagged in round 2). Both gens are
-    re-checked at the top of `finally` so a stale retry cannot re-enable the
-    chip, write the sentinel, or repaint."""
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-
-    helper = app_js.split("function paintRetryChip(", 1)[1].split("\n    }\n", 1)[0]
-
-    # Capture render-gen at click time.
-    assert "const clickGen = dashboardRenderGen;" in helper, (
-        "paintRetryChip click handler must capture the render-gen at click time"
-    )
-
-    # Bump + capture per-sentinel gen — must use `++` (the bump) so older
-    # same-render fetches for the same sentinel are invalidated. Capturing
-    # without bumping wouldn't drop the older fetch's settle.
-    assert "const clickSentinelGen = ++dashboardSentinelGen[sentinelKey];" in helper, (
-        "click handler must `++dashboardSentinelGen[sentinelKey]` and capture "
-        "it as clickSentinelGen BEFORE retryFn runs — the bump invalidates "
-        "older same-render in-flight fetches for this sentinel"
-    )
-
-    # Ordering: the sentinel-gen bump must happen BEFORE retryFn is awaited,
-    # otherwise an older in-flight fetch could land between retryFn start and
-    # the bump and still touch the sentinel.
-    bump_idx = helper.index("const clickSentinelGen = ++dashboardSentinelGen[sentinelKey];")
-    try_idx = helper.index("try { await retryFn();")
-    assert bump_idx < try_idx, (
-        "sentinel-gen bump must occur BEFORE retryFn is awaited"
-    )
-
-    # Both bail checks in finally.
-    assert "if (clickGen !== dashboardRenderGen) return;" in helper, (
-        "click handler must bail in finally on render-gen mismatch"
-    )
-    assert "if (clickSentinelGen !== dashboardSentinelGen[sentinelKey]) return;" in helper, (
-        "click handler must bail in finally on sentinel-gen mismatch"
-    )
-
-    # Ordering: both bails must precede the three mutations
-    # (re-enable, sentinel write, repaint) in the finally block.
-    render_bail_idx = helper.index("if (clickGen !== dashboardRenderGen) return;")
-    sentinel_bail_idx = helper.index("if (clickSentinelGen !== dashboardSentinelGen[sentinelKey]) return;")
-    sentinel_write_idx = helper.index("state[sentinelKey] = failed;")
-    disable_idx = helper.index("chip.disabled = false;")
-    repaint_idx = helper.index("paintDashboardFromState();")
-
-    for label, idx in (
-        ("state[sentinelKey] = failed;", sentinel_write_idx),
-        ("chip.disabled = false;", disable_idx),
-        ("paintDashboardFromState();", repaint_idx),
-    ):
-        assert render_bail_idx < idx, (
-            f"render-gen bail must precede `{label}` so a stale retry cannot "
-            f"mutate after a newer render has taken over"
-        )
-        assert sentinel_bail_idx < idx, (
-            f"sentinel-gen bail must precede `{label}` so a stale retry cannot "
-            f"mutate after another retry has superseded it"
-        )
+def test_dashboard_shell_defers_heavy_app_bundle_until_after_load():
+    template = (ROOT / "templates" / "index.html").read_text()
+    loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "app-loader.js?v=20260713-fit270-oura-detail" in template
+    assert '<script src="/static/js/app.js' not in template
+    assert "window.addEventListener('load', loadAppBundle, { once: true });" in loader
+    assert "script.src = '/static/js/app.js?v=20260713-fit270-oura-detail';" in loader
+    assert "script.async = true;" in loader

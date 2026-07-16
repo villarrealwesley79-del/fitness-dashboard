@@ -15,6 +15,7 @@ from pathlib import Path
 
 import data_store
 import pytest
+from js_runtime import run_app_js
 
 
 _APP_UNDER_TEST = None
@@ -4720,7 +4721,7 @@ def test_meal_intake_image_provider_failure_uses_text_fallback(monkeypatch):
 
 
 def test_meal_intake_vision_contention_logs_distinct_tag(monkeypatch, caplog):
-    module = _client(monkeypatch)
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     monkeypatch.setattr(
         module.vision_estimator,
         "describe",
@@ -6331,8 +6332,18 @@ def test_nutrition_today_surfaces_pending_review_count(monkeypatch):
 def test_meal_intake_pending_endpoint_lists_visible_rows_and_cleans_stale(monkeypatch):
     """FIT-67: pending rows are durable, reloadable, and TTL-cleaned."""
     module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
+    real_datetime = module.datetime
+    frozen_now = real_datetime(2026, 7, 15, 23, 59, 59)
+
+    class FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_now
+
+    monkeypatch.setattr(module, "datetime", FrozenDateTime)
     today = module.datetime.strptime(module._today_str(), "%Y-%m-%d").date()
     visible_day = today.isoformat()
+    boundary_day = (today - module.timedelta(days=module.PENDING_MEAL_REVIEW_TTL_DAYS)).isoformat()
     stale_day = (today - module.timedelta(days=module.PENDING_MEAL_REVIEW_TTL_DAYS + 1)).isoformat()
     visible_estimate = {
         "item_name": "Shared popcorn",
@@ -6355,6 +6366,14 @@ def test_meal_intake_pending_endpoint_lists_visible_rows_and_cleans_stale(monkey
             "date": visible_day,
             "logged_at": f"{visible_day}T12:30:00",
             "context_note": "shared popcorn",
+            "correction_state": "pending_review",
+            "original_estimate": dict(visible_estimate),
+        },
+        {
+            "client_id": "meal-boundary-pending",
+            "date": boundary_day,
+            "logged_at": f"{boundary_day}T12:30:00",
+            "context_note": "boundary popcorn",
             "correction_state": "pending_review",
             "original_estimate": dict(visible_estimate),
         },
@@ -6383,14 +6402,21 @@ def test_meal_intake_pending_endpoint_lists_visible_rows_and_cleans_stale(monkey
     assert res.status_code == 200
     body = res.get_json()
 
-    assert body["pending_count"] == 1
+    assert body["pending_count"] == 2
     assert body["ttl_days"] == module.PENDING_MEAL_REVIEW_TTL_DAYS
     assert body["stale_removed"] == 1
     assert deleted == ["meal-stale-pending"]
-    assert body["pending"][0]["client_id"] == "meal-visible-pending"
-    assert body["pending"][0]["estimate"]["item_name"] == "Shared popcorn"
-    assert body["pending"][0]["text_hint"] == "shared popcorn"
-    assert body["pending"][0]["policy"]["reasons"], "pending payload should include review rationale"
+    assert {entry["client_id"] for entry in body["pending"]} == {
+        "meal-visible-pending",
+        "meal-boundary-pending",
+    }
+    visible = next(
+        entry for entry in body["pending"]
+        if entry["client_id"] == "meal-visible-pending"
+    )
+    assert visible["estimate"]["item_name"] == "Shared popcorn"
+    assert visible["text_hint"] == "shared popcorn"
+    assert visible["policy"]["reasons"], "pending payload should include review rationale"
 
 
 def test_meal_intake_pending_endpoint_restores_photo_origin_marker(monkeypatch):
@@ -7163,20 +7189,142 @@ def test_multi_item_accept_skipped_items_do_not_affect_nutrition_endpoints(monke
 
 
 def test_meal_composer_js_hydrates_pending_and_rolls_back_failed_discard():
-    """Static guard for the browser-only FIT-67 pending-review workflow."""
-    source = Path("static/js/app.js").read_text()
+    """FIT-67 hydration routes both shapes and failed discard stays retryable."""
+    result = run_app_js(
+        ["hydrateMealPending", "discardMealPending", "mealComposerState"],
+        """
+const calls = [];
+e.mealComposerState.pending = [{ client_id: 'keep-me', estimate: {} }];
+sandbox.__fitSet.api(async (path) => {
+  calls.push(['api', path]);
+  if (path === '/api/meal-intake/pending') {
+    return { pending: [{ kind: 'v2', meal_id: 'm1' }, { client_id: 'legacy-1' }] };
+  }
+  return { removed: false };
+});
+sandbox.__fitSet.isMealV2Payload((entry) => entry.kind === 'v2');
+sandbox.__fitSet.normalizeMealV2Entry((entry) => ({ normalized: entry.meal_id }));
+sandbox.__fitSet.upsertMealV2Entry((entry) => calls.push(['v2', entry.normalized]));
+sandbox.__fitSet.upsertMealPendingEntry((entry) => calls.push(['legacy', entry.client_id]));
+sandbox.__fitSet.renderMealPendingList(() => calls.push(['render']));
+sandbox.__fitSet.releasePendingEntryArtifacts(() => calls.push(['release']));
+sandbox.__fitSet.toast((message, kind) => calls.push(['toast', message, kind]));
+sandbox.__fitSet.refreshMacroCard(() => calls.push(['refresh']));
+await e.hydrateMealPending();
+await e.discardMealPending('keep-me');
+process.stdout.write(JSON.stringify({ calls, pending: e.mealComposerState.pending }));
+""",
+        mocks=[
+            "api", "isMealV2Payload", "normalizeMealV2Entry", "upsertMealV2Entry",
+            "upsertMealPendingEntry", "renderMealPendingList",
+            "releasePendingEntryArtifacts", "toast", "refreshMacroCard",
+        ],
+    )
 
-    assert "api('/api/meal-intake/pending')" in source
-    assert "hydrateMealPending();" in source
-    # FIT-134 rebase routes v2 entries through normalizeMealV2Entry while
-    # keeping the legacy upsertMealPendingEntry path for single-item entries.
-    assert "pending.forEach((entry) => {" in source
-    assert "upsertMealPendingEntry(entry);" in source
-    assert "correction_state=pending_review" in source
-    assert "result.removed !== true" in source
-    assert "Discard failed — retry when connected" in source
-    assert "local_timestamp: entry.local_timestamp || null" in source
-    assert "local_timestamp: entry.local_timestamp || fallback.local_timestamp || entry.logged_at" in source
+    assert ["v2", "m1"] in result["calls"]
+    assert ["legacy", "legacy-1"] in result["calls"]
+    assert ["toast", "Discard failed — retry when connected", "err"] in result["calls"]
+    assert ["release"] not in result["calls"]
+    assert ["refresh"] not in result["calls"]
+    assert result["pending"] == [{"client_id": "keep-me", "estimate": {}}]
+
+
+def test_meal_composer_js_preserves_legacy_pending_timestamp_fallbacks():
+    """Hydration/retry use real legacy normalization and upsert behavior."""
+    result = run_app_js(
+        ["hydrateMealPending", "retryMealPending", "mealComposerState"],
+        """
+let retryNumber = 0;
+const retryResponses = [
+  { status: 'pending_review', estimate: {}, food_log: { logged_at: 'retry-log-1' } },
+  { status: 'pending_review', local_timestamp: 'retry-payload-timestamp', estimate: {}, food_log: { logged_at: 'retry-log-2' } },
+];
+const requests = [];
+const row = () => ({
+  classList: { toggle() {}, contains: () => false },
+  querySelector: (selector) => selector === '.meal-pending-retry' ? { textContent: 'Retry' } : null,
+  querySelectorAll: () => [],
+});
+const snapshot = () => e.mealComposerState.pending.map((entry) => ({
+  client_id: entry.client_id,
+  local_timestamp: entry.local_timestamp,
+  logged_at: entry.logged_at,
+}));
+sandbox.crypto = { randomUUID: () => `retry-${++retryNumber}` };
+sandbox.__fitSet.api(async (path) => {
+  if (path === '/api/meal-intake/pending') {
+    return { pending: [
+      { client_id: 'payload-first', local_timestamp: 'payload-timestamp', logged_at: 'payload-log' },
+      { client_id: 'logged-at-fallback', logged_at: 'logged-at-timestamp' },
+      { client_id: 'stored-fallback', text_hint: 'oats', local_timestamp: 'stored-timestamp', logged_at: 'stored-log' },
+    ] };
+  }
+  return { removed: true };
+});
+sandbox.fetch = async (path, options) => {
+  requests.push({ path, local_timestamp: options.body.get('local_timestamp') });
+  return new Response(JSON.stringify(retryResponses.shift()), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+};
+sandbox.__fitSet.renderMealPendingList(() => {});
+sandbox.__fitSet.toast(() => {});
+sandbox.__fitSet.refreshMacroCard(() => {});
+await e.hydrateMealPending();
+const hydrated = snapshot();
+await e.retryMealPending('stored-fallback', row());
+const afterStoredFallback = snapshot();
+await e.retryMealPending('retry-1', row());
+const afterPayloadTimestamp = snapshot();
+process.stdout.write(JSON.stringify({ hydrated, afterStoredFallback, afterPayloadTimestamp, requests }));
+""",
+        mocks=["api", "renderMealPendingList", "toast", "refreshMacroCard"],
+    )
+
+    assert result["hydrated"] == [
+        {
+            "client_id": "payload-first",
+            "local_timestamp": "payload-timestamp",
+            "logged_at": "payload-log",
+        },
+        {
+            "client_id": "logged-at-fallback",
+            "local_timestamp": "logged-at-timestamp",
+            "logged_at": "logged-at-timestamp",
+        },
+        {
+            "client_id": "stored-fallback",
+            "local_timestamp": "stored-timestamp",
+            "logged_at": "stored-log",
+        },
+    ]
+    assert result["afterStoredFallback"] == [
+        {
+            "client_id": "payload-first",
+            "local_timestamp": "payload-timestamp",
+            "logged_at": "payload-log",
+        },
+        {
+            "client_id": "logged-at-fallback",
+            "local_timestamp": "logged-at-timestamp",
+            "logged_at": "logged-at-timestamp",
+        },
+        {
+            "client_id": "retry-1",
+            "local_timestamp": "stored-timestamp",
+            "logged_at": "retry-log-1",
+        },
+    ]
+    assert result["afterPayloadTimestamp"][-1] == {
+        "client_id": "retry-2",
+        "local_timestamp": "retry-payload-timestamp",
+        "logged_at": "retry-log-2",
+    }
+    assert result["requests"] == [
+        {"path": "/api/meal-intake", "local_timestamp": "stored-timestamp"},
+        {"path": "/api/meal-intake", "local_timestamp": "stored-timestamp"},
+    ]
 
 
 def test_fit65_stub_markers_are_removed():
@@ -7189,35 +7337,247 @@ def test_fit65_stub_markers_are_removed():
 
 
 def test_meal_composer_js_surfaces_open_food_facts_attribution():
-    """Static guard for the browser-only FIT-80 source-provenance surface."""
-    js = Path("static/js/app.js").read_text()
+    """FIT-80 attribution and FIT-138 input wiring execute in the bundle."""
     html = Path("templates/index.html").read_text()
     css = Path("static/css/style.css").read_text()
 
-    assert "mealEstimateProvenanceHtml(est)" in js
-    assert "nutritionix: 'Nutritionix'" in js
-    assert "usda_fdc: 'USDA'" in js
-    assert "open_food_facts: 'Open Food Facts'" in js
-    assert "fallback_text_estimate: 'Fallback preset'" in js
-    assert "renderMealComposerProvenance(payload.estimate, ctx.clientId)" in js
-    assert "renderMealComposerProvenance(payload.estimate, newClientId)" in js
-    assert "renderMealComposerProvenance(edited, clientId)" in js
-    assert "status.dataset.provenanceClientId !== String(clientId)" in js
-    # FIT-138: input/change handlers were refactored for the multi-photo
-    # state machine; assert the post-FIT-138 shapes.
-    assert "text.addEventListener('input'" in js
-    assert "clearMealComposerStatus();" in js
-    assert "refreshMealSubmitState();" in js
-    assert "saveMealDraft();" in js
-    assert "onMealComposerImageSelected(image.files);" in js
-    # FIT-138: per-thumb × replaces the single previewClear; per-thumb removal
-    # is wired inside renderMealComposerThumbs().
-    assert "function renderMealComposerThumbs()" in js
-    assert "removeMealComposerImage(" in js
-    assert "est.off_attribution" in js
-    assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in js
-    assert "attrUrl || (est && (est.verified_source_url || est.source_url || est.product_url))" in js
-    assert "target=\"_blank\" rel=\"noopener noreferrer\"" in js
+    provenance = run_app_js(
+        ["mealEstimateProvenanceHtml"],
+        """
+process.stdout.write(JSON.stringify(e.mealEstimateProvenanceHtml({
+  source: 'open_food_facts',
+  product_url: 'https://world.openfoodfacts.org/product/123',
+})));
+""",
+    )
+    assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in provenance
+    assert 'target="_blank" rel="noopener noreferrer"' in provenance
+    assert "https://world.openfoodfacts.org/product/123" in provenance
+
+    flows = run_app_js(
+        ["handleMealIntakeResponse", "retryMealPending", "acceptMealPending", "mealComposerState"],
+        """
+const calls = [];
+const status = {
+  hidden: true,
+  innerHTML: '',
+  dataset: {},
+  classList: {
+    names: [],
+    add(name) { this.names.push(name); },
+    contains(name) { return this.names.includes(name); },
+  },
+};
+const estimate = {
+  item_name: 'Chicken bowl',
+  calories: 500,
+  source: 'open_food_facts',
+  product_url: 'https://world.openfoodfacts.org/product/123',
+};
+const editedFields = [
+  { getAttribute: () => 'item_name', value: 'Edited bowl', type: 'text', tagName: 'INPUT' },
+  { getAttribute: () => 'calories', value: '650', type: 'number', tagName: 'INPUT' },
+];
+const row = {
+  classList: { contains: () => false },
+  querySelectorAll: () => editedFields,
+};
+const retryButton = { textContent: 'Retry' };
+const retryRow = {
+  querySelector: () => retryButton,
+};
+sandbox.__fitSet.mealComposerEls(() => ({ status }));
+sandbox.__fitSet.isMealV2Payload(() => false);
+sandbox.__fitSet.clearMealComposerInputs(() => calls.push('clear-inputs'));
+sandbox.__fitSet.clearMealDraft(() => calls.push('clear-draft'));
+sandbox.__fitSet.clearMealComposerStatus(() => calls.push('clear-status'));
+sandbox.__fitSet.mealEstimateChip(() => 'estimate-chip');
+sandbox.__fitSet.mealEntryFromIntakePayload(() => ({ client_id: 'logged-client' }));
+sandbox.__fitSet.toastUndo((message) => calls.push(['undo', message]));
+sandbox.__fitSet.upsertMealPendingEntry((entry) => calls.push(['pending', entry.client_id, entry.estimate.source]));
+sandbox.__fitSet.renderMealPendingList(() => calls.push('render-pending'));
+sandbox.__fitSet.toast((message, kind) => calls.push(['toast', message, kind]));
+sandbox.__fitSet.refreshMacroCard(() => calls.push('refresh-macros'));
+sandbox.__fitSet.releasePendingEntryArtifacts(() => calls.push('release-artifacts'));
+sandbox.__fitSet.newMealClientId(() => 'retry-client');
+sandbox.__fitSet.browserLocalMealTime(() => ({
+  local_timestamp: '2026-07-16T12:00:00',
+  local_date: '2026-07-16',
+  local_iso: '2026-07-16T12:00:00-05:00',
+}));
+sandbox.__fitSet.setMealPendingRowLocked(() => calls.push('lock-retry-row'));
+sandbox.__fitSet.api(async (path, options) => {
+  const body = options && options.body ? JSON.parse(options.body) : null;
+  calls.push(['api', path, body]);
+  return { removed: true };
+});
+sandbox.fetch = async () => new Response(JSON.stringify({ status: 'logged', estimate }), {
+  status: 200,
+  headers: { 'content-type': 'application/json' },
+});
+e.handleMealIntakeResponse(
+  { status: 'logged', estimate, food_log: { logged_at: '2026-07-16T12:00:00' } },
+  { clientId: 'logged-client' },
+);
+const loggedStatus = {
+  html: status.innerHTML,
+  hidden: status.hidden,
+  clientId: status.dataset.provenanceClientId,
+};
+e.handleMealIntakeResponse(
+  {
+    status: 'pending_review',
+    estimate,
+    local_timestamp: '2026-07-16T12:00:00',
+    local_date: '2026-07-16',
+    local_iso: '2026-07-16T12:00:00-05:00',
+    food_log: { logged_at: '2026-07-16T12:00:00' },
+  },
+  { clientId: 'pending-client', textValue: 'chicken bowl', imageFiles: [] },
+);
+e.mealComposerState.pending = [{
+  client_id: 'pending-client',
+  estimate,
+  text: 'chicken bowl',
+  local_timestamp: '2026-07-16T12:00:00',
+  local_date: '2026-07-16',
+  local_iso: '2026-07-16T12:00:00-05:00',
+}];
+await e.retryMealPending('pending-client', retryRow);
+const retryStatus = {
+  html: status.innerHTML,
+  hidden: status.hidden,
+  clientId: status.dataset.provenanceClientId,
+};
+e.mealComposerState.pending = [{
+  client_id: 'pending-client',
+  estimate,
+  text: 'chicken bowl',
+  local_timestamp: '2026-07-16T12:00:00',
+  local_date: '2026-07-16',
+  local_iso: '2026-07-16T12:00:00-05:00',
+}];
+await e.acceptMealPending('pending-client', row);
+const acceptedApi = calls.find((entry) => entry[0] === 'api' && entry[2] && entry[2].estimate);
+process.stdout.write(JSON.stringify({
+  loggedStatus,
+  pendingCalls: calls.filter((entry) => Array.isArray(entry) && entry[0] === 'pending'),
+  retryStatus,
+  accepted: acceptedApi[2].estimate,
+  editStatus: {
+    html: status.innerHTML,
+    hidden: status.hidden,
+    clientId: status.dataset.provenanceClientId,
+  },
+}));
+""",
+        mocks=[
+            "mealComposerEls", "isMealV2Payload", "clearMealComposerInputs",
+            "clearMealDraft", "clearMealComposerStatus", "mealEstimateChip",
+            "mealEntryFromIntakePayload", "toastUndo", "upsertMealPendingEntry",
+            "renderMealPendingList", "toast", "refreshMacroCard",
+            "releasePendingEntryArtifacts", "newMealClientId", "browserLocalMealTime",
+            "setMealPendingRowLocked", "api",
+        ],
+    )
+    assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in flows["loggedStatus"]["html"]
+    assert flows["loggedStatus"]["hidden"] is False
+    assert flows["loggedStatus"]["clientId"] == "logged-client"
+    assert flows["pendingCalls"] == [["pending", "pending-client", "open_food_facts"]]
+    assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in flows["retryStatus"]["html"]
+    assert flows["retryStatus"]["hidden"] is False
+    assert flows["retryStatus"]["clientId"] == "retry-client"
+    assert flows["accepted"]["item_name"] == "Edited bowl"
+    assert flows["accepted"]["calories"] == 650
+    assert "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)" in flows["editStatus"]["html"]
+    assert flows["editStatus"]["hidden"] is False
+    assert flows["editStatus"]["clientId"] == "pending-client"
+
+    wiring = run_app_js(
+        ["wireMealComposer"],
+        """
+const calls = [];
+const makeTarget = (name) => ({
+  name, value: '', files: [{ name: 'meal.jpg' }], listeners: {},
+  addEventListener(type, callback) { this.listeners[type] = callback; },
+});
+const form = makeTarget('form');
+const textInput = makeTarget('text');
+const imageInput = makeTarget('image');
+sandbox.__fitSet.mealComposerEls(() => ({
+  form, text: textInput, image: imageInput,
+  scan: null, barcodeInput: null, barcodeSubmit: null, barcodeClose: null, retry: null,
+}));
+sandbox.__fitSet.loadMealDraft(() => calls.push('load'));
+sandbox.__fitSet.hydrateMealPending(() => calls.push('hydrate'));
+sandbox.__fitSet.clearMealComposerStatus(() => calls.push('clear'));
+sandbox.__fitSet.refreshMealSubmitState(() => calls.push('refresh'));
+sandbox.__fitSet.saveMealDraft(() => calls.push('save'));
+sandbox.__fitSet.onMealComposerImageSelected((files) => calls.push(`images:${files.length}`));
+sandbox.__fitSet.refreshMealComposerRetryUI(() => calls.push('retry-ui'));
+e.wireMealComposer();
+textInput.listeners.input();
+imageInput.listeners.change();
+process.stdout.write(JSON.stringify({ calls, imageValue: imageInput.value }));
+""",
+        mocks=[
+            "mealComposerEls", "loadMealDraft", "hydrateMealPending",
+            "clearMealComposerStatus", "refreshMealSubmitState", "saveMealDraft",
+            "onMealComposerImageSelected", "refreshMealComposerRetryUI",
+        ],
+    )
+    assert wiring["calls"][:2] == ["load", "hydrate"]
+    assert wiring["calls"].count("clear") == 2
+    assert "save" in wiring["calls"]
+    assert "images:1" in wiring["calls"]
+    assert wiring["calls"].index("clear") < wiring["calls"].index("save")
+    assert wiring["calls"].index("images:1") < len(wiring["calls"]) - 1
+    assert wiring["imageValue"] == ""
+
+    thumbnails = run_app_js(
+        ["renderMealComposerThumbs", "removeMealComposerImage", "mealComposerState"],
+        """
+const calls = [];
+const makeNode = (tag) => ({
+  tag, children: [], attrs: {}, className: '', textContent: '',
+  setAttribute(key, value) { this.attrs[key] = value; },
+  addEventListener(type, callback) { this.listener = callback; },
+  appendChild(child) { this.children.push(child); },
+});
+sandbox.document.createElement = makeNode;
+const thumbs = makeNode('div');
+thumbs.innerHTML = '';
+const retention = { hidden: true };
+sandbox.__fitSet.mealComposerEls(() => ({ thumbs, retention }));
+sandbox.__fitSet.refreshMealSubmitState(() => calls.push('refresh'));
+sandbox.__fitSet.saveMealDraft(() => calls.push('save'));
+sandbox.URL.revokeObjectURL = (url) => calls.push(`revoke:${url}`);
+e.mealComposerState.imageFiles = [{ name: 'first.jpg' }, { name: 'second.jpg' }];
+e.mealComposerState.imagePreviewUrls = ['blob:first', 'blob:second'];
+e.mealComposerState.draftClientId = 'old-id';
+e.mealComposerState.lastSubmitFailedTransient = true;
+e.renderMealComposerThumbs();
+const labels = thumbs.children.map((thumb) => thumb.children[1].attrs['aria-label']);
+e.removeMealComposerImage(0);
+process.stdout.write(JSON.stringify({
+  labels,
+  files: e.mealComposerState.imageFiles.map((file) => file.name),
+  draftClientId: e.mealComposerState.draftClientId,
+  transient: e.mealComposerState.lastSubmitFailedTransient,
+  calls,
+}));
+""",
+        mocks=["mealComposerEls", "refreshMealSubmitState", "saveMealDraft"],
+    )
+    assert thumbnails["labels"] == [
+        "Remove photo 1 of 2 (first.jpg)",
+        "Remove photo 2 of 2 (second.jpg)",
+    ]
+    assert thumbnails["files"] == ["second.jpg"]
+    assert thumbnails["draftClientId"] is None
+    assert thumbnails["transient"] is False
+    assert thumbnails["calls"] == ["revoke:blob:first", "refresh", "save"]
+
     assert 'data-provenance-surface="meal-estimates"' in html
     assert ".meal-pending-provenance" in css
     assert ".meal-composer-status--provenance" in css
