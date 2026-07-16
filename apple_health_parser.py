@@ -471,18 +471,27 @@ def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
     startless_components = components(
         workout for workout in candidates if not _workout_start_datetime(workout)
     )
+    unattached_startless_components = []
+    for component in startless_components:
+        matching_timed_components = [
+            timed_component
+            for timed_component in timed_components
+            if any(
+                _same_workout(startless, timed)
+                for startless in component
+                for timed in timed_component
+            )
+        ]
+        if len(matching_timed_components) == 1:
+            matching_timed_components[0].extend(component)
+        else:
+            unattached_startless_components.append(component)
+
     merged = [
         min(component, key=_workout_representative_key)
         for component in timed_components
     ]
-    for component in startless_components:
-        if any(
-            _same_workout(startless, timed)
-            for startless in component
-            for timed_component in timed_components
-            for timed in timed_component
-        ):
-            continue
+    for component in unattached_startless_components:
         merged.append(min(component, key=_workout_representative_key))
     return sorted(merged, key=lambda x: x.get("date", ""), reverse=True)
 

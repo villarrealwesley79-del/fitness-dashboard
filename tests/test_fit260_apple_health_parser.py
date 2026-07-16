@@ -459,11 +459,12 @@ def test_merge_workouts_missing_start_cannot_bridge_distinct_timed_workouts():
 
     merged = parser._merge_workouts(workouts, [])
 
-    assert len(merged) == 2
-    assert {workout["start"] for workout in merged} == {
+    assert len(merged) == 3
+    assert {workout["start"] for workout in merged if workout.get("start")} == {
         "2026-07-09T08:00:00Z",
         "2026-07-09T18:00:00Z",
     }
+    assert sum(not workout.get("start") for workout in merged) == 1
 
 
 def test_merge_workouts_missing_start_matches_discarded_component_member():
@@ -477,6 +478,62 @@ def test_merge_workouts_missing_start_matches_discarded_component_member():
 
     assert len(merged) == 1
     assert merged[0]["start"] == "2026-07-09T11:00:00Z"
+
+
+def test_merge_workouts_ranks_rich_startless_record_with_matching_timed_component():
+    sparse_timed = {
+        "date": "2026-07-09",
+        "activity": "Running",
+        "start": "2026-07-09T11:00:00Z",
+        "duration_min": 30,
+    }
+    rich_startless = {
+        "date": "2026-07-09",
+        "activity": "Running",
+        "duration_min": 30,
+        "energy_kcal": 500,
+        "distance_m": 5000,
+        "avg_heart_rate": 150,
+    }
+
+    assert parser._merge_workouts([sparse_timed], [rich_startless]) == [rich_startless]
+
+
+def test_merge_workouts_keeps_rich_timed_record_over_sparse_startless_match():
+    rich_timed = {
+        "date": "2026-07-09",
+        "activity": "Running",
+        "start": "2026-07-09T11:00:00Z",
+        "duration_min": 30,
+        "energy_kcal": 500,
+        "distance_m": 5000,
+    }
+    sparse_startless = {
+        "date": "2026-07-09",
+        "activity": "Running",
+        "duration_min": 30,
+    }
+
+    assert parser._merge_workouts([rich_timed], [sparse_startless]) == [rich_timed]
+
+
+def test_merge_workouts_uses_timed_start_to_break_mixed_quality_tie():
+    timed = {
+        "date": "2026-07-09",
+        "activity": "Running",
+        "start": "2026-07-09T11:00:00Z",
+        "duration_min": 30,
+        "energy_kcal": 500,
+    }
+    startless = {
+        "date": "2026-07-09",
+        "activity": "Running",
+        "duration_min": 30,
+        "distance_m": 5000,
+        "source": "Health Auto Export",
+    }
+
+    assert parser._merge_workouts([timed], [startless]) == [timed]
 
 
 def test_merge_workouts_preserves_transitive_startless_component_matches():
