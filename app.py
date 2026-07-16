@@ -14844,10 +14844,11 @@ def _sleep_row_inconsistency_reason(row):
     sleep_score = (row or {}).get("sleep_score")
     sleep_type = str((row or {}).get("sleep_type") or "").strip().lower()
     is_nap = sleep_type in {"nap", "rest", "late_nap"}
-    if total_sleep_min is not None and total_sleep_min < 60 and not is_nap:
+    if total_sleep_min is not None and total_sleep_min < 60:
         if sleep_score is not None and sleep_score >= 70:
             return "duration_score_conflict"
-        return "implausible_duration"
+        if not is_nap:
+            return "implausible_duration"
     stage_values = [
         (row or {}).get("deep_sleep_min"),
         (row or {}).get("rem_sleep_min"),

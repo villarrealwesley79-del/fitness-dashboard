@@ -308,6 +308,21 @@ def test_sleep_summary_accepts_explicit_subhour_nap_types(monkeypatch, sleep_typ
     assert quality == {"status": "ok"}
 
 
+def test_sleep_summary_keeps_high_score_conflict_for_explicit_nap(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "fit234-secret")
+    module = importlib.import_module("app")
+
+    quality = module._sleep_summary_data_quality({
+        "day": "2026-06-04",
+        "total_sleep_min": 30,
+        "sleep_score": 88,
+        "sleep_type": "nap",
+    })
+
+    assert quality["status"] == "inconsistent"
+    assert quality["reason"] == "duration_score_conflict"
+
+
 @pytest.mark.parametrize("sleep_type", [None, "", "unknown", "main", "long_sleep"])
 def test_sleep_summary_keeps_subhour_guard_for_non_nap_types(monkeypatch, sleep_type):
     monkeypatch.setenv("SECRET_KEY", "fit234-secret")
