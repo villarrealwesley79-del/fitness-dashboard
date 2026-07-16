@@ -21,9 +21,10 @@ real time moves past them.
 """
 from __future__ import annotations
 
-import importlib
 import sqlite3
 from datetime import datetime, timedelta
+
+import pytest
 
 
 def _iso_minutes_ago(minutes: int) -> str:
@@ -32,11 +33,15 @@ def _iso_minutes_ago(minutes: int) -> str:
     return (datetime.now() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
 
 
-def _client(monkeypatch):
-    monkeypatch.setenv("SECRET_KEY", "fit15-ai-health-secret")
-    module = importlib.import_module("app")
-    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
-    return module
+_APP_UNDER_TEST = None
+
+
+@pytest.fixture(autouse=True)
+def _ai_health_app(isolated_app):
+    global _APP_UNDER_TEST
+    _APP_UNDER_TEST = isolated_app
+    yield
+    _APP_UNDER_TEST = None
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -49,7 +54,7 @@ def test_ai_health_returns_200_when_adapter_missing(monkeypatch):
     ``{reachable: false, error: ...}`` payload. The UI relies on the
     response being JSON, not a 500 page.
     """
-    module = _client(monkeypatch)
+    module = _APP_UNDER_TEST
     monkeypatch.setattr(module, "_lm_studio", None, raising=False)
 
     res = module.app.test_client().get("/api/ai/health")
@@ -64,7 +69,7 @@ def test_ai_health_returns_adapter_payload(monkeypatch):
     payload verbatim. Lock in that the structure the Settings card reads
     (primary/fallback/active_role/reachable) is preserved.
     """
-    module = _client(monkeypatch)
+    module = _APP_UNDER_TEST
 
     class FakeAdapter:
         def health(self):
@@ -97,7 +102,7 @@ def test_ai_health_returns_adapter_payload(monkeypatch):
 
 
 def test_ai_health_reload_gate_skips_non_browser_clients(monkeypatch):
-    module = _client(monkeypatch)
+    module = _APP_UNDER_TEST
 
     class FakeAdapter:
         def health(self):
@@ -119,7 +124,7 @@ def test_ai_health_reload_gate_skips_non_browser_clients(monkeypatch):
 
 
 def test_ai_health_reload_gate_still_refreshes_browser_shell(monkeypatch):
-    module = _client(monkeypatch)
+    module = _APP_UNDER_TEST
     monkeypatch.setattr(module, "_lm_studio", None, raising=False)
     client = module.app.test_client(use_cookies=False)
 
@@ -141,7 +146,7 @@ def test_ai_health_response_does_not_leak_model_traces(monkeypatch):
     carry are a small enum (model identifier, URL, role, boolean flags,
     error strings).
     """
-    module = _client(monkeypatch)
+    module = _APP_UNDER_TEST
 
     class FakeAdapter:
         def health(self):
@@ -194,7 +199,7 @@ def test_ai_metrics_returns_zeros_for_empty_window(monkeypatch, tmp_path):
     The UI shows "No AI requests in the last 24h" for this state and
     must not trip the warning banner.
     """
-    module = _client(monkeypatch)
+    module = _APP_UNDER_TEST
     db_path = tmp_path / "adjust_cache.db"
     _seed_adjust_metrics(db_path, [])
     monkeypatch.setattr(module, "_ADJUST_CACHE_DB", str(db_path), raising=False)
@@ -213,7 +218,7 @@ def test_ai_metrics_returns_zeros_for_empty_window(monkeypatch, tmp_path):
 
 def test_ai_metrics_computes_fallback_pct(monkeypatch, tmp_path):
     """3 ok + 1 fallback ⇒ fallback_pct = 25.0% (rounded 1 decimal)."""
-    module = _client(monkeypatch)
+    module = _APP_UNDER_TEST
     db_path = tmp_path / "adjust_cache.db"
     _seed_adjust_metrics(db_path, [
         (_iso_minutes_ago(240), "ok", 200, None),
@@ -239,7 +244,7 @@ def test_ai_metrics_warning_threshold_triggers_above_twenty_pct(monkeypatch, tmp
     ``AI_COACH_FALLBACK_PCT_WARNING = 20.0``. This test pins the
     response shape so the JS check stays stable.
     """
-    module = _client(monkeypatch)
+    module = _APP_UNDER_TEST
     db_path = tmp_path / "adjust_cache.db"
     # 4 ok + 1 fallback = 20% — boundary case.
     _seed_adjust_metrics(db_path, [
@@ -262,7 +267,7 @@ def test_ai_metrics_recent_does_not_include_prompt_or_completion(monkeypatch, tm
     "cache_hit", etc.) — never user input or model output. Locks the
     field set so a future refactor doesn't accidentally widen it.
     """
-    module = _client(monkeypatch)
+    module = _APP_UNDER_TEST
     db_path = tmp_path / "adjust_cache.db"
     _seed_adjust_metrics(db_path, [
         (_iso_minutes_ago(120), "fallback", 0, "timeout"),
@@ -281,7 +286,7 @@ def test_ai_metrics_clamps_hours_param(monkeypatch, tmp_path):
     """``hours`` accepts 1–720. Out-of-range / invalid values fall back
     to 24 so a misbehaving client can't widen the query window.
     """
-    module = _client(monkeypatch)
+    module = _APP_UNDER_TEST
     db_path = tmp_path / "adjust_cache.db"
     _seed_adjust_metrics(db_path, [])
     monkeypatch.setattr(module, "_ADJUST_CACHE_DB", str(db_path), raising=False)
@@ -301,7 +306,7 @@ def test_ai_metrics_handles_db_failure_gracefully(monkeypatch, tmp_path):
     debug page. The Settings card treats 5xx as "metrics unavailable"
     and shows degraded copy.
     """
-    module = _client(monkeypatch)
+    module = _APP_UNDER_TEST
     # Point at a path inside a non-existent directory so sqlite raises.
     monkeypatch.setattr(
         module, "_ADJUST_CACHE_DB",
