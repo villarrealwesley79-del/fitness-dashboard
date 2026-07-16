@@ -47,9 +47,9 @@ def test_whoop_release_assets_bust_cached_fit238_runtime():
     loader = APP_LOADER.read_text()
     service_worker = APP_SW.read_text()
 
-    assert "/static/js/app-loader.js?v=20260713-fit270-oura-detail" in html
-    assert "/static/js/app.js?v=20260713-fit270-oura-detail" in loader
-    assert "fitness-dashboard-v20260713-fit270-oura-detail" in service_worker
+    assert "/static/js/app-loader.js?v=20260716-fit392-rpe" in html
+    assert "/static/js/app.js?v=20260716-fit392-rpe" in loader
+    assert "fitness-dashboard-v20260716-fit392-rpe" in service_worker
 
 
 def test_whoop_import_explains_timezone_date_tolerance():

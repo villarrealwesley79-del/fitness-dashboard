@@ -2750,9 +2750,8 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 .active-empty { margin-bottom: 14px; }
 .set-row {
     display: grid;
-    /* FIT-108: 4th column widened from 36px → 56px so the Done tap target
-       (now the whole .set-done-cell label) meets the 44pt mobile guideline. */
-    grid-template-columns: 28px 1fr 1fr 56px;
+    /* FIT-108: Done remains a 56px target; FIT-392 adds per-set RPE. */
+    grid-template-columns: 28px minmax(58px, 1fr) minmax(52px, 1fr) minmax(58px, .8fr) 56px;
     gap: 6px;
     align-items: center;
     margin-bottom: 6px;
@@ -2777,8 +2776,40 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 .set-row .set-notes {
     grid-column: 2 / -1;
 }
+.set-rpe-cell {
+    display: grid;
+    grid-template-columns: auto minmax(32px, 1fr);
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 4px;
+    border: 1px solid var(--border-2);
+    border-radius: 8px;
+    background: var(--bg-0);
+    cursor: text;
+}
+.set-rpe-cell > span {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--fg-dim);
+}
+.set-rpe-cell input[type="number"] {
+    min-height: 42px;
+    padding: 6px 2px;
+    border: 0;
+    background: transparent;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+.set-rpe-cell.observed {
+    border-color: rgba(34,197,94,0.55);
+    box-shadow: inset 0 0 0 1px rgba(34,197,94,0.18);
+}
+.set-rpe-cell.observed > span { color: #6ee7b7; }
 .set-row input[type="checkbox"] { width: 28px; height: 28px; accent-color: var(--accent-green); }
-/* FIT-108: enlarged Done tap target — the whole 4th-column cell is the
+/* FIT-108: enlarged Done tap target — the whole final-column cell is the
    hit area, satisfying ≥44×44 pt even on the smallest mobile width. */
 .set-done-cell {
     display: flex;
@@ -2792,6 +2823,13 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 }
 .set-done-cell:hover { background: rgba(51,65,85,0.25); }
 .set-done-cell input[type="checkbox"] { cursor: pointer; }
+@media (max-width: 420px) {
+    .set-row {
+        grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr) 56px;
+    }
+    .set-rpe-cell { grid-column: 2; }
+    .set-row .set-notes { grid-column: 3 / -1; }
+}
 /* FIT-108: highlight the next-incomplete set so the user's next action
    is visually obvious during a real set. */
 .set-row-next {
