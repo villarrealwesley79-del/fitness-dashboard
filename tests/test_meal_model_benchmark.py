@@ -29,13 +29,19 @@ def test_benchmark_case_counts_match_fit58_contract():
     assert len(module.WORKOUT_CASES) == 3
     assert len(module.DAILY_BRIEF_CASES) == 3
     assert len(module.BRANDED_FOOD_CASES) == 4
-    assert len(module.all_cases()) == 70
+    assert len(module.ADJUST_INTENT_CASES) == 20
+    assert len(module.SWAP_RESOLUTION_CASES) == 15
+    assert len(module.POST_WORKOUT_ANALYSIS_CASES) == 5
+    assert len(module.all_cases()) == 110
     assert module.task_class_counts() == {
         "food_photo_nutrition": 40,
         "meal_text_nutrition": 20,
         "workout_analysis_adjustment": 3,
         "daily_coaching_brief": 3,
         "branded_food_resolution": 4,
+        "adjust_intent": 20,
+        "swap_resolution": 15,
+        "post_workout_analysis": 5,
     }
 
 
@@ -924,8 +930,9 @@ def test_vision_benchmark_marks_missing_image_mapping_invalid():
 
     assert summary["schema_valid_count"] == 0
     result = summary["results"][0]
-    assert result["has_image"] is False
-    assert result["schema_errors"] == ["missing_image_mapping"]
+    assert result["task"] == "food_photo_nutrition"
+    assert result["skipped_reason"] == "missing_image_mapping"
+    assert set(result) == {"case_id", "task", "score", "verdict", "failure_reasons", "skipped_reason"}
     assert summary["model_run_count"] == 0
     assert summary["missing_image_count"] == 1
 
@@ -1053,3 +1060,371 @@ def test_probe_only_does_not_run_model_benchmark(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert "benchmark" not in payload
     assert payload["lm_studio"]["reachable"] is True
+
+
+def test_structured_contracts_are_imported_by_identity_from_production_adapter():
+    module = _load_module()
+    import lm_studio_adapter as adapter
+
+    assert module._ADJUST_SYSTEM is adapter._ADJUST_SYSTEM
+    assert module._ADJUST_SCHEMA is adapter.ADJUST_SCHEMA
+    assert module._SWAP_RESOLVE_SYSTEM is adapter._SWAP_RESOLVE_SYSTEM
+    assert module._SWAP_RESOLVE_SCHEMA is adapter.SWAP_RESOLVE_SCHEMA
+    assert module._ANALYZE_SYSTEM is adapter._ANALYZE_SYSTEM
+    assert module._ANALYZE_SCHEMA is adapter.ANALYZE_SCHEMA
+    assert module.STRUCTURED_TASK_LATENCY_PASS_MS == {
+        "adjust_intent": int(adapter.LM_STUDIO_TIMEOUT_SEC * 1000),
+        "swap_resolution": int(adapter.LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC * 1000),
+        "post_workout_analysis": int(adapter.LM_STUDIO_ANALYZE_TIMEOUT_SEC * 1000),
+    }
+
+
+def test_structured_latency_gate_rejects_any_case_over_production_timeout(monkeypatch):
+    module = _load_module()
+    captured_timeouts = []
+
+    def fake_run_model_case(case, *, model, lm_studio_url, image_path=None, timeout=60.0):
+        captured_timeouts.append(timeout)
+        latency = 20_000 if case.case_id == "swap-001" else 1_000
+        return {
+            "case_id": case.case_id,
+            "task_class": case.task_class,
+            "ran_model": True,
+            "latency_ms": latency,
+            "schema_valid": True,
+            "schema_errors": [],
+            "quality": {"passed": True, "score": 1.0, "verdict": "PASS"},
+        }
+
+    monkeypatch.setattr(module, "run_model_case", fake_run_model_case)
+    summary = module.run_model_benchmark(module.SWAP_RESOLUTION_CASES, text_model="text-model")
+
+    assert captured_timeouts == [module.LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC] * 15
+    assert summary["task_latency_gates"]["swap_resolution"]["latency_passed"] is False
+    assert summary["candidate_passed"] is False
+
+
+def test_structured_payloads_use_exact_production_keys_and_schemas():
+    module = _load_module()
+
+    adjust = module._chat_payload(module.ADJUST_INTENT_CASES[0], "local-model")
+    swap = module._chat_payload(module.SWAP_RESOLUTION_CASES[0], "local-model")
+    analysis = module._chat_payload(module.POST_WORKOUT_ANALYSIS_CASES[0], "local-model")
+
+    assert set(json.loads(adjust["messages"][1]["content"])) == {
+        "athlete_constraint", "current_plan", "readiness",
+    }
+    assert set(json.loads(swap["messages"][1]["content"])) == {
+        "typed_name", "current_exercise", "target_muscle", "candidate_names", "candidates",
+    }
+    assert set(json.loads(analysis["messages"][1]["content"])) == {"workout", "context"}
+    assert adjust["response_format"]["json_schema"]["schema"] is module.ADJUST_SCHEMA
+    assert swap["response_format"]["json_schema"]["schema"] is module.SWAP_RESOLVE_SCHEMA
+    assert analysis["response_format"]["json_schema"]["schema"] is module.ANALYZE_SCHEMA
+
+
+def test_analyze_payload_matches_production_compaction_and_request(monkeypatch):
+    module = _load_module()
+    import lm_studio_adapter as adapter
+
+    workout = {
+        "date": "2026-07-16",
+        "focus": "upper",
+        "duration_minutes": 44,
+        "total_sets": 2,
+        "total_volume": 520,
+        "exercises": [{
+            "exercise": "Bench Press",
+            "muscle_group": "chest",
+            "sets": [{"set_number": 2, "reps": 5, "weight_lbs": 100, "rpe": 8, "notes": "left shoulder tight"}],
+        }],
+        "cardio": {"type": "walk", "minutes": 10},
+        "notes": None,
+    }
+    context = {"recent_sessions": [{"bench": "steady"}]}
+    captured = {}
+
+    def fake_completion(*_args, **kwargs):
+        captured["payload"] = _args[1]
+        return {"summary": "ok", "wins": [], "concerns": [], "comparison": "steady", "next_session_cue": "form", "_meta": {}}
+
+    monkeypatch.setattr(adapter, "_completion_json", fake_completion)
+    adapter.analyze_workout(workout, context)
+
+    expected_user = module._analysis_user_payload(workout, context)
+    assert captured["payload"]["messages"][0]["content"] is module._ANALYZE_SYSTEM
+    assert json.loads(captured["payload"]["messages"][1]["content"]) == expected_user
+    assert captured["payload"]["response_format"]["json_schema"]["schema"] is module._ANALYZE_SCHEMA
+
+
+def test_structured_scoring_rejects_invalid_schema_and_scores_real_fields():
+    module = _load_module()
+    adjust_case = module.ADJUST_INTENT_CASES[0]
+    invalid = {"summary": "avoid shoulders"}
+    invalid_score = module._task_quality_score(adjust_case, invalid, ["missing_intent"])
+    assert invalid_score["score"] == 0.0
+    assert invalid_score["verdict"] == "FAIL"
+    assert invalid_score["failure_reasons"] == ["schema_invalid"]
+
+    response = {
+        "summary": "Avoid shoulders today.",
+        "intent": {
+            "avoid_muscles": ["Shoulders"],
+            "avoid_joints": [],
+            "swap": [],
+            "rpe_delta": 0,
+            "sets_delta_pct": 0,
+            "duration_cap_min": 0,
+            "drop_cardio": False,
+        },
+    }
+    score = module._task_quality_score(adjust_case, response, [])
+    assert score["passed"] is True
+    assert score["score"] == 1.0
+    assert score["verdict"] == "PASS"
+
+    swap_case = module.ADJUST_INTENT_CASES[5]
+    swap_response = {
+        "summary": "Use the machine for chest comfort.",
+        "intent": {
+            "avoid_muscles": [],
+            "avoid_joints": [],
+            "swap": [{
+                "replace_exercise": "bench press",
+                "target_muscle": "chest",
+                "target_exercise": "Chest Press Machine",
+                "reason": "explicit replacement",
+            }],
+            "rpe_delta": 0,
+            "sets_delta_pct": 0,
+            "duration_cap_min": 0,
+            "drop_cardio": False,
+        },
+    }
+    assert module._task_quality_score(swap_case, swap_response, [])['passed'] is True
+
+
+def test_swap_and_analysis_mocked_responses_pass_without_raw_report_fields():
+    module = _load_module()
+    swap_case = module.SWAP_RESOLUTION_CASES[0]
+    swap_response = {"canonical_name": "chest press machine", "confidence": 0.9, "reason": "clear candidate match"}
+    swap_score = module._task_quality_score(swap_case, swap_response, [])
+    assert swap_score["passed"] is True
+
+    analysis_case = module.POST_WORKOUT_ANALYSIS_CASES[0]
+    analysis_response = {
+        "summary": "Bench press session was steady.",
+        "wins": ["Bench press had clean reps."],
+        "concerns": [],
+        "comparison": "Steady versus recent sessions.",
+        "next_session_cue": "Keep form consistent.",
+    }
+    analysis_score = module._task_quality_score(analysis_case, analysis_response, [])
+    assert analysis_score["passed"] is True
+
+    report = module._public_case_result(analysis_case, {
+        "quality": analysis_score,
+        "schema_errors": [],
+    })
+    assert set(report) == {"case_id", "task", "score", "verdict", "failure_reasons"}
+    assert not any(key in report for key in ("prompt", "response", "estimate", "endpoint", "path"))
+
+
+def test_public_report_distinguishes_request_failure_without_leaking_error_text():
+    module = _load_module()
+    case = module.ADJUST_INTENT_CASES[0]
+
+    report = module._public_case_result(case, {
+        "quality": {"passed": False, "score": 0.0, "verdict": "FAIL"},
+        "schema_errors": ["request_failed:<private endpoint timed out>"],
+    })
+
+    assert report["failure_reasons"] == ["request_failed"]
+    assert "private endpoint" not in json.dumps(report)
+
+
+def test_analysis_no_concern_case_accepts_contract_compliant_empty_array():
+    module = _load_module()
+    case = module.POST_WORKOUT_ANALYSIS_CASES[0]
+    response = {
+        "summary": "Bench press session was steady.",
+        "wins": ["Bench press had clean reps."],
+        "concerns": [],
+        "comparison": "Steady versus recent sessions.",
+        "next_session_cue": "Keep form consistent.",
+    }
+
+    assert module._task_quality_score(case, response, [])["passed"] is True
+
+
+def test_adjust_explanation_can_describe_avoiding_load_without_being_a_prescription():
+    module = _load_module()
+    case = module.ADJUST_INTENT_CASES[3]
+    response = {
+        "summary": "Avoid loading the sore right knee.",
+        "intent": {
+            "avoid_muscles": [],
+            "avoid_joints": [{"side": "right", "joint": "knee"}],
+            "swap": [],
+            "rpe_delta": 0,
+            "sets_delta_pct": 0,
+            "duration_cap_min": 0,
+            "drop_cardio": False,
+        },
+    }
+
+    assert module._task_quality_score(case, response, [])["passed"] is True
+
+
+def test_adjust_explanation_rejects_numeric_set_prescription():
+    module = _load_module()
+    case = module.ADJUST_INTENT_CASES[0]
+    response = {
+        "summary": "Do 3 sets while avoiding shoulders.",
+        "intent": {
+            "avoid_muscles": ["shoulders"],
+            "avoid_joints": [],
+            "swap": [],
+            "rpe_delta": 0,
+            "sets_delta_pct": 0,
+            "duration_cap_min": 0,
+            "drop_cardio": False,
+        },
+    }
+
+    score = module._task_quality_score(case, response, [])
+    assert score["passed"] is False
+    assert score["forbidden_actions"] is False
+
+
+def test_analysis_notable_note_requires_exact_body_side_context():
+    module = _load_module()
+    case = module.POST_WORKOUT_ANALYSIS_CASES[1]
+    response = {
+        "summary": "Squat work reached RPE 9.",
+        "wins": ["Squat work was completed."],
+        "concerns": ["Tightness noted."],
+        "comparison": "Lower than recent sessions.",
+        "next_session_cue": "Focus on form.",
+    }
+
+    score = module._task_quality_score(case, response, [])
+    assert score["passed"] is False
+    assert score["concerns"] is False
+
+
+def test_analysis_fixture_only_marks_production_notable_notes():
+    module = _load_module()
+
+    assert module.POST_WORKOUT_ANALYSIS_CASES[0].request["workout"]["notable_notes"] == []
+    assert module.POST_WORKOUT_ANALYSIS_CASES[1].request["workout"]["notable_notes"] == [
+        {"exercise": "Squat", "set_number": 1, "note": "left knee tight"}
+    ]
+
+
+def test_main_dispatches_all_cases_to_task_specific_models_without_common_model(monkeypatch, capsys):
+    module = _load_module()
+    captured = []
+    image_map = {case.case_id: "/private/image.jpg" for case in module.image_capable_cases()}
+
+    def fake_run_model_case(case, *, model, lm_studio_url, image_path=None, timeout=60.0):
+        captured.append((case.case_id, model, image_path))
+        return {
+            "case_id": case.case_id,
+            "input_type": case.input_type,
+            "task_class": case.task_class,
+            "model": model,
+            "has_image": bool(image_path),
+            "ran_model": True,
+            "latency_ms": 1,
+            "schema_valid": True,
+            "schema_errors": [],
+            "quality": {"passed": True, "score": 1.0, "verdict": "PASS", "failure_reasons": []},
+            "estimate": None,
+            "confidence": None,
+            "ambiguous": None,
+            "expected_item_hint": case.expected_item_hint,
+        }
+
+    monkeypatch.setattr(module, "run_model_case", fake_run_model_case)
+    monkeypatch.setattr(module, "_load_image_map", lambda _path: image_map)
+    monkeypatch.setattr(module, "probe_lm_studio", lambda _url: {"reachable": True, "models": []})
+    monkeypatch.setattr(module, "mac_hardware_summary", lambda: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "meal_model_benchmark.py",
+            "--text-model", "configured-text-model",
+            "--vision-model", "configured-vision-model",
+            "--image-map", "/private/image-map.json",
+        ],
+    )
+
+    assert module.main() == 0
+    json.loads(capsys.readouterr().out)
+    assert len(captured) == 110
+    assert sum(1 for _case_id, model, _path in captured if model == "configured-vision-model") == 40
+    assert sum(1 for _case_id, model, _path in captured if model == "configured-text-model") == 70
+
+
+def test_corpus_hash_covers_legacy_prompt_content():
+    module = _load_module()
+    original = module.corpus_hash()
+    first = module.TEXT_CASES[0]
+    changed = module.MealCase(
+        first.case_id,
+        first.input_type,
+        first.prompt + " changed",
+        first.expected_item_hint,
+        first.ambiguity,
+        first.notes,
+        first.task_class,
+    )
+
+    cases = [changed, *module.all_cases()[1:]]
+
+    assert module.corpus_hash(cases) != original
+
+
+def test_baseline_records_failed_verdicts_and_reconciled_surface_totals():
+    module = _load_module()
+    cases = [module.ADJUST_INTENT_CASES[0], module.ADJUST_INTENT_CASES[1]]
+    report = [
+        {
+            "case_id": cases[0].case_id,
+            "task": "adjust_intent",
+            "score": 1.0,
+            "verdict": "PASS",
+            "failure_reasons": [],
+        },
+        {
+            "case_id": cases[1].case_id,
+            "task": "adjust_intent",
+            "score": 0.5,
+            "verdict": "FAIL",
+            "failure_reasons": ["rpe_delta"],
+        },
+    ]
+
+    baseline = module._baseline_from_summary(
+        {"report": report, "candidate_passed": False},
+        cases=cases,
+        model_ids={"text": "text-model", "vision": "vision-model"},
+        source_ref="abc123",
+    )
+
+    assert baseline["source_ref"] == "abc123"
+    assert baseline["candidate_passed"] is False
+    assert baseline["results"] == report
+    assert baseline["surfaces"]["adjust_intent"] == {
+        "selected": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0,
+        "mean_score": 0.75,
+        "verdict": "FAIL",
+    }
+    serialized = json.dumps(baseline)
+    assert "http://private-gx10.test" not in serialized
+    assert "/private/image-map.json" not in serialized

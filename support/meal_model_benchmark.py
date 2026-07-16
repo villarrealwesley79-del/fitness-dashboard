@@ -11,15 +11,45 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import math
 import mimetypes
+import os
+from pathlib import Path
 import platform
+import re
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+
+
+# Keep the benchmark tied to the production contract.  This narrow bootstrap
+# also makes ``python support/meal_model_benchmark.py`` work from any cwd.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from lm_studio_adapter import (  # noqa: E402
+    ADJUST_SCHEMA,
+    ANALYZE_SCHEMA,
+    LM_STUDIO_ANALYZE_TIMEOUT_SEC,
+    LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC,
+    LM_STUDIO_TIMEOUT_SEC,
+    SWAP_RESOLVE_SCHEMA,
+    _ADJUST_SYSTEM,
+    _ANALYZE_SYSTEM,
+    _SWAP_RESOLVE_SYSTEM,
+)
+
+# Underscored aliases mirror the production names used in the issue contract;
+# both aliases point at the exact imported schema objects.
+_ADJUST_SCHEMA = ADJUST_SCHEMA
+_SWAP_RESOLVE_SCHEMA = SWAP_RESOLVE_SCHEMA
+_ANALYZE_SCHEMA = ANALYZE_SCHEMA
 
 
 LM_STUDIO_URL = "http://127.0.0.1:1234"
@@ -39,6 +69,17 @@ TASK_LATENCY_PASS_MS = {
     "workout_analysis_adjustment": WORKOUT_ANALYSIS_LATENCY_PASS_MS,
     "daily_coaching_brief": DAILY_BRIEF_LATENCY_PASS_MS,
     "branded_food_resolution": BRANDED_FOOD_LATENCY_PASS_MS,
+}
+STRUCTURED_TASK_LATENCY_PASS_MS = {
+    "adjust_intent": int(LM_STUDIO_TIMEOUT_SEC * 1000),
+    "swap_resolution": int(LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC * 1000),
+    "post_workout_analysis": int(LM_STUDIO_ANALYZE_TIMEOUT_SEC * 1000),
+}
+ALL_TASK_LATENCY_PASS_MS = {**TASK_LATENCY_PASS_MS, **STRUCTURED_TASK_LATENCY_PASS_MS}
+STRUCTURED_TASK_TIMEOUT_SEC = {
+    "adjust_intent": LM_STUDIO_TIMEOUT_SEC,
+    "swap_resolution": LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC,
+    "post_workout_analysis": LM_STUDIO_ANALYZE_TIMEOUT_SEC,
 }
 MEAL_ESTIMATE_RESPONSE_SCHEMA = {
     "type": "object",
@@ -156,6 +197,11 @@ TASK_SCHEMAS = {
     "workout_analysis_adjustment": WORKOUT_ADJUSTMENT_RESPONSE_SCHEMA,
     "daily_coaching_brief": DAILY_COACHING_BRIEF_RESPONSE_SCHEMA,
     "branded_food_resolution": BRANDED_FOOD_RESOLUTION_RESPONSE_SCHEMA,
+    # These objects are imported from lm_studio_adapter.py by identity.  Do
+    # not copy or re-state the production prompt/schema here.
+    "adjust_intent": ADJUST_SCHEMA,
+    "swap_resolution": SWAP_RESOLVE_SCHEMA,
+    "post_workout_analysis": ANALYZE_SCHEMA,
 }
 TASK_SCHEMA_NAMES = {
     "food_photo_nutrition": "meal_estimate",
@@ -163,6 +209,9 @@ TASK_SCHEMA_NAMES = {
     "workout_analysis_adjustment": "workout_adjustment",
     "daily_coaching_brief": "daily_coaching_brief",
     "branded_food_resolution": "branded_food_resolution",
+    "adjust_intent": "adjust_plan_intent",
+    "swap_resolution": "swap_resolution",
+    "post_workout_analysis": "analyze_workout",
 }
 TASK_NUMBER_BOUNDS = {
     "workout_analysis_adjustment": {
@@ -309,6 +358,19 @@ class MealCase:
     ambiguity: str
     notes: str = ""
     task_class: str = "meal_text_nutrition"
+    # Structured workout cases use these fields; legacy nutrition cases leave
+    # them empty so their scoring and serialized shape remain unchanged.
+    request: dict | None = None
+    expected: dict | None = None
+    coverage: tuple[str, ...] = ()
+
+    @property
+    def task(self) -> str:
+        return self.task_class
+
+    @property
+    def coverage_tags(self) -> tuple[str, ...]:
+        return self.coverage
 
 
 TEXT_CASES = [
@@ -485,12 +547,250 @@ BRANDED_FOOD_CASES = [
 ]
 
 
+def _compact_plan(
+    *,
+    focus: str = "upper body",
+    goal_name: str = "strength",
+    estimated_minutes: int = 45,
+    exercises: list[dict] | None = None,
+    cardio: str | None = "easy bike",
+) -> dict:
+    """Return the already-compact plan shape sent by ``adjust_plan``."""
+    if exercises is None:
+        exercises = [
+            {
+                "exercise": "Bench Press",
+                "muscle": "chest",
+                "is_compound": True,
+                "target_sets": 4,
+                "target_reps": 6,
+                "rpe_target": 8,
+            },
+            {
+                "exercise": "Lat Pulldown",
+                "muscle": "back",
+                "is_compound": False,
+                "target_sets": 3,
+                "target_reps": 10,
+                "rpe_target": 7,
+            },
+        ]
+    return {
+        "focus": focus,
+        "goal_name": goal_name,
+        "estimated_minutes": estimated_minutes,
+        "exercises": exercises,
+        "cardio": cardio,
+    }
+
+
+def _adjust_case(
+    number: int,
+    constraint: str,
+    expected: dict,
+    *,
+    readiness: dict | None = None,
+    plan: dict | None = None,
+    coverage: tuple[str, ...] = (),
+) -> MealCase:
+    return MealCase(
+        f"adjust-{number:03d}",
+        "structured",
+        constraint,
+        expected.get("summary_hint", "workout"),
+        "high" if not any(expected.get(key) for key in ("avoid_muscles", "avoid_joints", "swap", "drop_cardio")) else "medium",
+        task_class="adjust_intent",
+        request={
+            "athlete_constraint": constraint,
+            "current_plan": plan or _compact_plan(),
+            "readiness": readiness or {},
+        },
+        expected=expected,
+        coverage=coverage,
+    )
+
+
+_ADJUST_DEFAULT_EXPECTED = {
+    "avoid_muscles": [],
+    "avoid_joints": [],
+    "swap": [],
+    "rpe_delta": 0,
+    "sets_delta_pct": 0,
+    "duration_cap_min": 0,
+    "drop_cardio": False,
+}
+
+
+ADJUST_INTENT_CASES = [
+    _adjust_case(1, "Don't train shoulders today.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_muscles": ["shoulders"]}, coverage=("muscle_avoidance",)),
+    _adjust_case(2, "No overhead pressing; my shoulders need a break.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_muscles": ["shoulders"]}, coverage=("movement_to_muscle",)),
+    _adjust_case(3, "My left shoulder hurts when I reach overhead.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_joints": [{"side": "left", "joint": "shoulder"}]}, coverage=("side_specific_joint",)),
+    _adjust_case(4, "Right knee is sore; avoid loading that side.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_joints": [{"side": "right", "joint": "knee"}]}, coverage=("side_specific_joint",)),
+    _adjust_case(5, "Both wrists are uncomfortable today.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_joints": [{"side": "both", "joint": "wrist"}]}, coverage=("joint_both_sides",)),
+    _adjust_case(6, "Replace Bench Press with a chest press machine.", {**_ADJUST_DEFAULT_EXPECTED, "swap": [{"replace_exercise": "Bench Press", "target_muscle": "chest", "target_exercise": "chest press machine"}]}, coverage=("explicit_swap",)),
+    _adjust_case(7, "The algorithm picked squats; use a leg press instead for quads.", {**_ADJUST_DEFAULT_EXPECTED, "swap": [{"replace_exercise": "squats", "target_muscle": "quads", "target_exercise": "leg press"}]}, coverage=("explicit_swap",)),
+    _adjust_case(8, "Make today's work lighter; RPE should be one point lower.", {**_ADJUST_DEFAULT_EXPECTED, "rpe_delta": -1}, coverage=("make_lighter",)),
+    _adjust_case(9, "I am under-recovered. Reduce target RPE by 0.5.", {**_ADJUST_DEFAULT_EXPECTED, "rpe_delta": -0.5}, coverage=("make_lighter", "readiness")),
+    _adjust_case(10, "Cut the number of sets by twenty percent.", {**_ADJUST_DEFAULT_EXPECTED, "sets_delta_pct": -20}, coverage=("set_reduction",)),
+    _adjust_case(11, "Please cap this session at 30 minutes.", {**_ADJUST_DEFAULT_EXPECTED, "duration_cap_min": 30}, coverage=("duration_cap",)),
+    _adjust_case(12, "I only have 25 minutes today; keep it short.", {**_ADJUST_DEFAULT_EXPECTED, "duration_cap_min": 25}, coverage=("duration_cap",)),
+    _adjust_case(13, "No cardio today, please.", {**_ADJUST_DEFAULT_EXPECTED, "drop_cardio": True}, coverage=("drop_cardio",)),
+    _adjust_case(14, "Skip cardio and make the lifting one point easier.", {**_ADJUST_DEFAULT_EXPECTED, "drop_cardio": True, "rpe_delta": -1}, coverage=("drop_cardio", "combined")),
+    _adjust_case(15, "Avoid shoulders, cut sets by 20%, and cap the workout at 35 minutes.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_muscles": ["shoulders"], "sets_delta_pct": -20, "duration_cap_min": 35}, coverage=("combined",)),
+    _adjust_case(16, "My knee is sore and I have low readiness; use less work and no cardio.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_joints": [{"side": "both", "joint": "knee"}], "sets_delta_pct": -20, "drop_cardio": True}, readiness={"sleep_hours": 5, "readiness_score": 32}, coverage=("readiness", "combined")),
+    _adjust_case(17, "Sleep was 8 hours and I feel ready. Keep the plan unchanged.", _ADJUST_DEFAULT_EXPECTED, readiness={"sleep_hours": 8, "readiness_score": 90}, coverage=("readiness", "no_op")),
+    _adjust_case(18, "Do whatever you think is best.", _ADJUST_DEFAULT_EXPECTED, coverage=("ambiguous", "no_op")),
+    _adjust_case(19, "I have a mild ache somewhere; maybe change things.", _ADJUST_DEFAULT_EXPECTED, coverage=("ambiguous", "no_op")),
+    _adjust_case(20, "Keep the workout as written, but explain it briefly.", _ADJUST_DEFAULT_EXPECTED, coverage=("no_op",)),
+]
+
+
+def _swap_candidates() -> list[dict]:
+    return [
+        {"name": "Chest Press Machine", "equipment": "machine", "aliases": ["machine chest press"], "compound": False},
+        {"name": "Incline Dumbbell Press", "equipment": "dumbbell", "aliases": ["incline db press"], "compound": True},
+        {"name": "Cable Row", "equipment": "cable", "aliases": ["seated cable row"], "compound": True},
+        {"name": "Leg Press", "equipment": "machine", "aliases": ["45 degree leg press"], "compound": True},
+    ]
+
+
+def _swap_case(number: int, typed_name: str, expected_name: str | None, *, current: str = "Bench Press", muscle: str = "chest", candidates: list[dict] | None = None, coverage: tuple[str, ...] = ()) -> MealCase:
+    candidates = candidates or _swap_candidates()
+    names = [candidate["name"] for candidate in candidates]
+    expected = {"canonical_name": expected_name}
+    return MealCase(
+        f"swap-{number:03d}",
+        "structured",
+        typed_name,
+        expected_name or "null",
+        "low" if expected_name else "high",
+        task_class="swap_resolution",
+        request={
+            "typed_name": typed_name,
+            "current_exercise": current,
+            "target_muscle": muscle,
+            "candidate_names": names,
+            "candidates": [
+                {
+                    "name": candidate.get("name"),
+                    "equipment": candidate.get("equipment"),
+                    "aliases": candidate.get("aliases") or [],
+                    "compound": bool(candidate.get("compound")),
+                }
+                for candidate in candidates
+            ],
+        },
+        expected=expected,
+        coverage=coverage,
+    )
+
+
+SWAP_RESOLUTION_CASES = [
+    _swap_case(1, "Chest Press Machine", "Chest Press Machine", coverage=("exact",)),
+    _swap_case(2, "machine chest press", "Chest Press Machine", coverage=("alias",)),
+    _swap_case(3, "chest pres machine", "Chest Press Machine", coverage=("typo",)),
+    _swap_case(4, "something for chest", None, coverage=("null", "vague")),
+    _swap_case(5, "Barbell Bench Press", None, coverage=("no_invention",)),
+    _swap_case(6, "incline dumbbell press", "Incline Dumbbell Press", coverage=("equipment",)),
+    _swap_case(7, "seated cable row", "Cable Row", current="Barbell Row", muscle="back", coverage=("alias", "compound")),
+    _swap_case(8, "leg press", "Leg Press", current="Back Squat", muscle="quads", coverage=("exact",)),
+    _swap_case(9, "45 degree leg press", "Leg Press", current="Front Squat", muscle="quads", coverage=("alias",)),
+    _swap_case(
+        10,
+        "cable row",
+        "Cable Row",
+        current="Pull Up",
+        muscle="back",
+        candidates=[{"name": "Cable Row", "equipment": "cable", "aliases": [], "compound": True}],
+        coverage=("single",),
+    ),
+    _swap_case(11, "press", None, coverage=("crowded", "null")),
+    _swap_case(12, "a safe chest option", None, coverage=("no_invention", "vague")),
+    _swap_case(13, "incline db press", "Incline Dumbbell Press", coverage=("alias", "equipment")),
+    _swap_case(14, "leg press machine", "Leg Press", current="Lunge", muscle="quads", coverage=("equipment",)),
+    _swap_case(15, "unknown movement xyz", None, coverage=("null", "no_invention")),
+]
+
+
+ANALYSIS_NOTABLE_TERMS = (
+    "pain", "hurt", "hurting", "ache", "discomfort", "tight", "tightness",
+    "left", "right", "side", "asymmetry", "imbalance", "worse",
+)
+
+
+def _compact_workout(*, name: str = "Bench Press", muscle: str = "chest", notes: str = "", rpe: float = 7, cardio: object = None, date: str = "2026-07-15", session_type: str = "upper", duration_minutes: int = 45, total_sets: int = 3, total_volume_lbs: int = 300) -> dict:
+    return {
+        "date": date,
+        "session_type": session_type,
+        "duration_minutes": duration_minutes,
+        "total_sets": total_sets,
+        "total_volume_lbs": total_volume_lbs,
+        "exercises": [{
+            "name": name,
+            "muscle": muscle,
+            "sets": [{"reps": 5, "weight_lbs": 100, "rpe": rpe, "notes": notes}],
+        }],
+        "cardio": cardio,
+        "notes": "",
+        "notable_notes": (
+            [{"exercise": name, "set_number": 1, "note": notes}]
+            if notes and any(term in notes.lower() for term in ANALYSIS_NOTABLE_TERMS)
+            else []
+        ),
+    }
+
+
+def _analysis_case(number: int, workout: dict, context: dict, expected: dict, coverage: tuple[str, ...]) -> MealCase:
+    return MealCase(
+        f"analysis-{number:03d}",
+        "structured",
+        json.dumps({"workout": workout, "context": context}, sort_keys=True),
+        "post-workout analysis",
+        "medium",
+        task_class="post_workout_analysis",
+        request={"workout": workout, "context": context},
+        expected=expected,
+        coverage=coverage,
+    )
+
+
+POST_WORKOUT_ANALYSIS_CASES = [
+    _analysis_case(1, _compact_workout(name="Bench Press", notes="clean reps", rpe=7, total_volume_lbs=1500), {"recent_sessions": [{"bench": "steady"}]}, {"summary": (("session",), ("bench", "press")), "wins": (("bench", "press"), ("clean",)), "concerns": (), "comparison": (("steady", "same"),), "next_session_cue": (("form", "progress"),), "empty_fields": ("concerns",)}, ("pr", "win")),
+    _analysis_case(2, _compact_workout(name="Squat", muscle="quads", notes="left knee tight", rpe=9, total_volume_lbs=1800), {"recent_sessions": [{"squat": "lower"}]}, {"summary": (("squat",), ("rpe",)), "wins": (("squat",),), "concerns": (("left",), ("knee",), ("tight",)), "comparison": (("down", "lower"),), "next_session_cue": (("knee",), ("form",)),}, ("rpe_spike", "notable_note")),
+    _analysis_case(3, _compact_workout(name="Deadlift", muscle="posterior chain", rpe=8, total_volume_lbs=2400), {"recent_sessions": [{"deadlift": "up"}, {"deadlift": "steady"}]}, {"summary": (("deadlift",),), "wins": (("deadlift",),), "concerns": (), "comparison": (("up", "steady", "higher"),), "next_session_cue": (("form", "recovery"),), "empty_fields": ("concerns",)}, ("volume_comparison",)),
+    _analysis_case(4, _compact_workout(name="Overhead Press", muscle="shoulders", notes="right side felt worse", rpe=8), {"recent_sessions": [{"overhead_press": "steady"}]}, {"summary": (("press",),), "wins": (("press",),), "concerns": (("right",), ("side",), ("worse",)), "comparison": (("steady",),), "next_session_cue": (("right",), ("side", "shoulder")),}, ("notable_note", "side_context")),
+    _analysis_case(5, _compact_workout(name="Row", muscle="back", cardio={"type": "easy bike", "minutes": 20}, rpe=7), {"recent_sessions": [{"row": "steady"}]}, {"summary": (("row",), ("cardio",)), "wins": (("row",), ("cardio",)), "concerns": (), "comparison": (("steady",),), "next_session_cue": (("recovery", "form"),), "empty_fields": ("concerns",)}, ("cardio",)),
+]
+
+# Short aliases keep callers from needing to know the storage naming detail.
+ADJUST_CASES = ADJUST_INTENT_CASES
+SWAP_CASES = SWAP_RESOLUTION_CASES
+ANALYSIS_CASES = POST_WORKOUT_ANALYSIS_CASES
+POST_WORKOUT_CASES = POST_WORKOUT_ANALYSIS_CASES
+
+
 def nutrition_cases() -> list[MealCase]:
     return TEXT_CASES + PHOTO_CASES + PACKAGED_CASES + AMBIGUOUS_CASES
 
 
+def adjust_intent_cases() -> list[MealCase]:
+    return ADJUST_INTENT_CASES
+
+
+def swap_resolution_cases() -> list[MealCase]:
+    return SWAP_RESOLUTION_CASES
+
+
+def post_workout_analysis_cases() -> list[MealCase]:
+    return POST_WORKOUT_ANALYSIS_CASES
+
+
+def structured_cases() -> list[MealCase]:
+    return ADJUST_INTENT_CASES + SWAP_RESOLUTION_CASES + POST_WORKOUT_ANALYSIS_CASES
+
+
 def all_cases() -> list[MealCase]:
-    return nutrition_cases() + WORKOUT_CASES + DAILY_BRIEF_CASES + BRANDED_FOOD_CASES
+    return nutrition_cases() + WORKOUT_CASES + DAILY_BRIEF_CASES + BRANDED_FOOD_CASES + structured_cases()
 
 
 def probe_lm_studio(url: str = LM_STUDIO_URL, timeout: float = 2.0) -> dict:
@@ -572,6 +872,12 @@ def _schema_name_for_case(case: MealCase) -> str:
 
 
 def _task_instruction(case: MealCase) -> str:
+    if case.task_class == "adjust_intent":
+        return _ADJUST_SYSTEM
+    if case.task_class == "swap_resolution":
+        return _SWAP_RESOLVE_SYSTEM
+    if case.task_class == "post_workout_analysis":
+        return _ANALYZE_SYSTEM
     if case.task_class in {"food_photo_nutrition", "meal_text_nutrition"}:
         return (
             "Estimate this meal as JSON only with keys item_name, portion_description, "
@@ -598,7 +904,150 @@ def _task_instruction(case: MealCase) -> str:
     raise ValueError(f"unsupported task class: {case.task_class}")
 
 
+def _analysis_notable_notes(workout: dict) -> list[dict]:
+    notable_notes = []
+    for ex in (workout.get("exercises") or []):
+        ex_name = ex.get("machine") or ex.get("exercise") or ex.get("name") or "Exercise"
+        for current_set in (ex.get("sets") or []):
+            note = (current_set.get("notes") or "").strip()
+            if note and any(term in note.lower() for term in ANALYSIS_NOTABLE_TERMS):
+                notable_notes.append({
+                    "exercise": ex_name,
+                    "set_number": current_set.get("set_number"),
+                    "note": note,
+                })
+    return notable_notes
+
+
+def _production_compact_workout(workout: dict) -> dict:
+    """Mirror ``lm_studio_adapter.analyze_workout``'s compact projection."""
+    return {
+        "date": workout.get("date"),
+        "session_type": workout.get("session_type") or workout.get("focus"),
+        "duration_minutes": workout.get("duration_minutes"),
+        "total_sets": workout.get("total_sets"),
+        "total_volume_lbs": workout.get("total_volume"),
+        "exercises": [
+            {
+                "name": ex.get("machine") or ex.get("exercise") or ex.get("name"),
+                "muscle": ex.get("muscle_group") or ex.get("muscle"),
+                "sets": [
+                    {
+                        "reps": current_set.get("reps"),
+                        "weight_lbs": current_set.get("weight_lbs"),
+                        "rpe": current_set.get("rpe"),
+                        "notes": current_set.get("notes") or "",
+                    }
+                    for current_set in (ex.get("sets") or [])
+                ],
+            }
+            for ex in (workout.get("exercises") or [])
+        ],
+        "cardio": workout.get("cardio"),
+        "notes": workout.get("notes") or "",
+        "notable_notes": _analysis_notable_notes(workout),
+    }
+
+
+def _analysis_user_payload(workout: dict, context: dict | None = None) -> dict:
+    """Build the exact user object sent by production ``analyze_workout``."""
+    # Cases store the compact shape to make the corpus auditable.  Callers may
+    # also pass the full application workout shape; detect it by projection.
+    compact = workout
+    if not (
+        set(workout) >= {
+            "date", "session_type", "duration_minutes", "total_sets",
+            "total_volume_lbs", "exercises", "cardio", "notes", "notable_notes",
+        }
+    ):
+        compact = _production_compact_workout(workout)
+    return {"workout": compact, "context": context or {}}
+
+
+def _structured_chat_payload(case: MealCase, model: str) -> dict:
+    task = case.task_class
+    if task == "adjust_intent":
+        request = case.request or {}
+        user_payload = {
+            "athlete_constraint": request.get("athlete_constraint", case.prompt),
+            "current_plan": request.get("current_plan") or _compact_plan(),
+            "readiness": request.get("readiness") or {},
+        }
+        temperature, max_tokens = 0.1, 600
+        system = _ADJUST_SYSTEM
+    elif task == "swap_resolution":
+        request = case.request or {}
+        candidates = request.get("candidates") or []
+        user_payload = {
+            "typed_name": str(request.get("typed_name", case.prompt) or "").strip(),
+            "current_exercise": str(request.get("current_exercise", "") or "").strip(),
+            "target_muscle": str(request.get("target_muscle", "") or "").strip(),
+            "candidate_names": [
+                str(candidate.get("name") or "").strip()
+                for candidate in candidates
+                if str(candidate.get("name") or "").strip()
+            ],
+            "candidates": [
+                {
+                    "name": candidate.get("name"),
+                    "equipment": candidate.get("equipment"),
+                    "aliases": candidate.get("aliases") or [],
+                    "compound": bool(candidate.get("compound")),
+                }
+                for candidate in candidates
+            ],
+        }
+        temperature, max_tokens = 0, 220
+        system = _SWAP_RESOLVE_SYSTEM
+    elif task == "post_workout_analysis":
+        request = case.request or {}
+        user_payload = _analysis_user_payload(request.get("workout") or {}, request.get("context") or {})
+        temperature, max_tokens = 0.2, 700
+        system = _ANALYZE_SYSTEM
+    else:
+        raise ValueError(f"unsupported structured task class: {task}")
+    return {
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(user_payload, default=str)},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": TASK_SCHEMA_NAMES[task],
+                "schema": TASK_SCHEMAS[task],
+                "strict": True,
+            },
+        },
+    }
+
+
+# Public-ish aliases used by parity tests and future benchmark tooling.
+adjust_intent_payload = _structured_chat_payload
+swap_resolution_payload = _structured_chat_payload
+post_workout_analysis_payload = _structured_chat_payload
+
+
+def build_adjust_intent_payload(case: MealCase, model: str = "benchmark-model") -> dict:
+    return _structured_chat_payload(case, model)
+
+
+def build_swap_resolution_payload(case: MealCase, model: str = "benchmark-model") -> dict:
+    return _structured_chat_payload(case, model)
+
+
+def build_post_workout_analysis_payload(case: MealCase, model: str = "benchmark-model") -> dict:
+    return _structured_chat_payload(case, model)
+
+
 def _chat_payload(case: MealCase, model: str, image_path: str | None = None) -> dict:
+    if case.task_class in {"adjust_intent", "swap_resolution", "post_workout_analysis"}:
+        if image_path:
+            raise ValueError(f"image payloads are not supported for {case.task_class}")
+        return _structured_chat_payload(case, model)
     instruction = _task_instruction(case)
     content: str | list[dict] = f"{instruction}\n\nTask input: {case.prompt}"
     if image_path:
@@ -886,6 +1335,8 @@ def _task_confidence_calibrated(case: MealCase, response: dict) -> bool:
 
 
 def _task_quality_score(case: MealCase, response: dict | None, schema_errors: list[str]) -> dict:
+    if case.task_class in {"adjust_intent", "swap_resolution", "post_workout_analysis"}:
+        return _structured_quality_score(case, response, schema_errors)
     if case.task_class in {"food_photo_nutrition", "meal_text_nutrition"}:
         return _quality_score(case, response, schema_errors)
     if not response or schema_errors:
@@ -915,6 +1366,160 @@ def _task_quality_score(case: MealCase, response: dict | None, schema_errors: li
     }
     checks["passed"] = all(checks.values())
     return checks
+
+
+def _normalized_tokens(value: object) -> set[str]:
+    return {
+        token
+        for token in "".join(ch if ch.isalnum() else " " for ch in str(value or "").lower()).split()
+        if token
+    }
+
+
+def _normalized_text(value: object) -> str:
+    return " ".join(sorted(_normalized_tokens(value)))
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str)]
+
+
+def _joint_key(value: object) -> tuple[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    side, joint = value.get("side"), value.get("joint")
+    if not isinstance(side, str) or not isinstance(joint, str):
+        return None
+    return (_normalized_text(side), _normalized_text(joint))
+
+
+def _swap_key(value: object) -> tuple[str, str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    values = [value.get(key) for key in ("replace_exercise", "target_muscle", "target_exercise")]
+    if not isinstance(values[0], str) or not isinstance(values[1], str):
+        return None
+    target = "" if values[2] is None else _normalized_text(values[2])
+    return (_normalized_text(values[0]), _normalized_text(values[1]), target)
+
+
+def _number_equal(observed: object, expected: object, tolerance: float = 0.05) -> bool:
+    if isinstance(observed, bool) or not isinstance(observed, (int, float)):
+        return False
+    if isinstance(expected, bool) or not isinstance(expected, (int, float)):
+        return False
+    return math.isfinite(float(observed)) and abs(float(observed) - float(expected)) <= tolerance
+
+
+def _forbidden_action_free(response: dict) -> bool:
+    text = " ".join(_string_values(response)).lower()
+    if any(token in text for token in ("prescribe", "prescription")):
+        return False
+    return not re.search(
+        r"\b\d+(?:\.\d+)?\s*(?:sets?|reps?|lbs?|pounds?|kg)\b",
+        text,
+    )
+
+
+def _structured_quality_score(case: MealCase, response: dict | None, schema_errors: list[str]) -> dict:
+    expected = case.expected or {}
+    if not response or schema_errors:
+        return {"score": 0.0, "verdict": "FAIL", "failure_reasons": ["schema_invalid"], "passed": False}
+    if case.task_class == "adjust_intent":
+        intent = response.get("intent")
+        if not isinstance(intent, dict):
+            return {"score": 0.0, "verdict": "FAIL", "failure_reasons": ["schema_invalid"], "passed": False}
+        checks: dict[str, bool] = {}
+        checks["avoid_muscles"] = {
+            _normalized_text(item) for item in _string_list(intent.get("avoid_muscles"))
+        } == {_normalized_text(item) for item in expected.get("avoid_muscles", [])}
+        checks["avoid_joints"] = {
+            key for key in (_joint_key(item) for item in intent.get("avoid_joints", [])) if key
+        } == {
+            key for key in (_joint_key(item) for item in expected.get("avoid_joints", [])) if key
+        }
+        checks["swap"] = {
+            key for key in (_swap_key(item) for item in intent.get("swap", [])) if key
+        } == {
+            key for key in (_swap_key(item) for item in expected.get("swap", [])) if key
+        }
+        checks["swap_reasons"] = all(
+            isinstance(item, dict) and isinstance(item.get("reason"), str) and bool(item["reason"].strip())
+            for item in intent.get("swap", [])
+        )
+        for key in ("rpe_delta", "sets_delta_pct", "duration_cap_min"):
+            checks[key] = _number_equal(intent.get(key), expected.get(key, 0), tolerance=0.05)
+        checks["rpe_delta_bounds"] = (
+            isinstance(intent.get("rpe_delta"), (int, float))
+            and not isinstance(intent.get("rpe_delta"), bool)
+            and -1 <= float(intent.get("rpe_delta")) <= 1
+        )
+        checks["sets_delta_pct_bounds"] = (
+            isinstance(intent.get("sets_delta_pct"), (int, float))
+            and not isinstance(intent.get("sets_delta_pct"), bool)
+            and -20 <= float(intent.get("sets_delta_pct")) <= 20
+        )
+        checks["duration_cap_bounds"] = (
+            isinstance(intent.get("duration_cap_min"), (int, float))
+            and not isinstance(intent.get("duration_cap_min"), bool)
+            and float(intent.get("duration_cap_min")) >= 0
+        )
+        checks["drop_cardio"] = intent.get("drop_cardio") is expected.get("drop_cardio", False)
+        checks["summary"] = isinstance(response.get("summary"), str) and bool(response["summary"].strip())
+        checks["forbidden_actions"] = _forbidden_action_free(response)
+        failures = [key for key, passed in checks.items() if not passed]
+    elif case.task_class == "swap_resolution":
+        expected_name = case.expected.get("canonical_name")
+        observed_name = response.get("canonical_name")
+        checks = {
+            "canonical_name": (
+                observed_name is None
+                if expected_name is None
+                else isinstance(observed_name, str)
+                and _normalized_text(observed_name) == _normalized_text(expected_name)
+            ),
+            "confidence": (
+                not isinstance(response.get("confidence"), bool)
+                and isinstance(response.get("confidence"), (int, float))
+                and math.isfinite(float(response.get("confidence")))
+                and 0 <= float(response.get("confidence")) <= 1
+            ),
+            "reason": isinstance(response.get("reason"), str) and bool(response["reason"].strip()),
+            "forbidden_actions": _forbidden_action_free(response),
+        }
+        failures = [key for key, passed in checks.items() if not passed]
+    else:
+        checks = {}
+        empty_fields = set(expected.get("empty_fields", ()))
+        for field_name in ("summary", "wins", "concerns", "comparison", "next_session_cue"):
+            observed_text = " ".join(_string_values(response.get(field_name)))
+            groups = expected.get(field_name, ())
+            if field_name in empty_fields:
+                checks[field_name] = response.get(field_name) == []
+            else:
+                observed_tokens = _normalized_tokens(observed_text)
+                checks[field_name] = all(
+                    bool(set(group) & observed_tokens)
+                    for group in groups
+                ) if groups else bool(observed_text.strip())
+        response_text = " ".join(_string_values(response)).lower()
+        checks["forbidden_actions"] = not any(
+            token in response_text for token in ("prescribe", "prescription", "diagnose")
+        ) and not re.search(
+            r"\b(?:do|perform|complete|add|use|target|aim for)\s+\d+(?:\.\d+)?\s*(?:sets?|reps?|lbs?|pounds?)\b",
+            response_text,
+        )
+        failures = [key for key, passed in checks.items() if not passed]
+    score = round(sum(checks.values()) / len(checks), 3) if checks else 0.0
+    return {
+        "score": score,
+        "verdict": "PASS" if not failures else "FAIL",
+        "failure_reasons": failures,
+        "passed": not failures,
+        **checks,
+    }
 
 
 def _quality_score(case: MealCase, estimate: dict | None, schema_errors: list[str]) -> dict:
@@ -1117,6 +1722,7 @@ def run_model_benchmark(
             model=case_model,
             lm_studio_url=lm_studio_url,
             image_path=image_path,
+            timeout=STRUCTURED_TASK_TIMEOUT_SEC.get(case.task_class, 60.0),
         )
         result.setdefault("task_class", case.task_class)
         results.append(result)
@@ -1155,7 +1761,7 @@ def run_model_benchmark(
             "latency_passed": route_avg is not None and route_avg <= limit,
         }
     task_latency_gates: dict[str, dict] = {}
-    for task_class, limit in TASK_LATENCY_PASS_MS.items():
+    for task_class, limit in ALL_TASK_LATENCY_PASS_MS.items():
         task_results = [result for result in results if result.get("task_class") == task_class]
         if not task_results:
             continue
@@ -1167,8 +1773,12 @@ def run_model_benchmark(
         task_avg = round(sum(task_latencies) / len(task_latencies), 1) if task_latencies else None
         task_latency_gates[task_class] = {
             "latency_ms_avg": task_avg,
+            "latency_ms_max": max(task_latencies) if task_latencies else None,
             "latency_limit_ms": limit,
-            "latency_passed": task_avg is not None and task_avg <= limit,
+            "latency_passed": (
+                len(task_latencies) == len(task_results)
+                and all(latency <= limit for latency in task_latencies)
+            ),
         }
     task_summary = {}
     for task_class in sorted({case.task_class for case in cases} | set(TASK_LATENCY_PASS_MS)):
@@ -1190,6 +1800,7 @@ def run_model_benchmark(
         if len(latency_gates) == 1
         else None
     )
+    report_results = [_public_case_result(case, result) for case, result in zip(cases, results)]
     return {
         "model": model or "per-task",
         "text_model": text_model,
@@ -1216,8 +1827,39 @@ def run_model_benchmark(
             and latency_passed
             and task_latency_passed
         ),
-        "results": results,
+        # Keep the public result rows strictly raw-free.  The local ``results``
+        # variable above never leaves this function.
+        "report": report_results,
+        "results": report_results,
     }
+
+
+def _public_case_result(case: MealCase, result: dict) -> dict:
+    quality = result.get("quality") or {}
+    failure_reasons = []
+    schema_errors = result.get("schema_errors") or []
+    if schema_errors:
+        if any(str(error).startswith("request_failed:") for error in schema_errors):
+            failure_reasons.append("request_failed")
+        elif any(str(error).startswith("missing_image_mapping") for error in schema_errors):
+            failure_reasons.append("missing_image_mapping")
+        else:
+            failure_reasons.append("schema_invalid")
+    if not quality.get("passed", False) and not schema_errors:
+        failure_reasons.extend(
+            key for key, value in quality.items()
+            if key not in {"passed", "score", "verdict", "failure_reasons"} and value is False
+        )
+    row = {
+        "case_id": case.case_id,
+        "task": case.task_class,
+        "score": quality.get("score", 1.0 if quality.get("passed") else 0.0),
+        "verdict": quality.get("verdict", "PASS" if quality.get("passed") else "FAIL"),
+        "failure_reasons": list(dict.fromkeys(failure_reasons)),
+    }
+    if "missing_image_mapping" in schema_errors:
+        row["skipped_reason"] = "missing_image_mapping"
+    return row
 
 
 def _model_for_case(
@@ -1246,6 +1888,168 @@ def _load_image_map(path: str | None) -> dict[str, str]:
     return {str(key): str(value) for key, value in payload.items()}
 
 
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _sha256_utf8(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def prompt_hashes() -> dict[str, str]:
+    return {
+        "adjust_intent": _sha256_utf8(_ADJUST_SYSTEM),
+        "swap_resolution": _sha256_utf8(_SWAP_RESOLVE_SYSTEM),
+        "post_workout_analysis": _sha256_utf8(_ANALYZE_SYSTEM),
+    }
+
+
+def schema_hashes() -> dict[str, str]:
+    return {
+        task: _sha256_utf8(_canonical_json(TASK_SCHEMAS[task]))
+        for task in ("adjust_intent", "swap_resolution", "post_workout_analysis")
+    }
+
+
+def corpus_hash(cases: list[MealCase] | None = None) -> str:
+    selected = cases or all_cases()
+    corpus = [
+        {
+            "case_id": case.case_id,
+            "input_type": case.input_type,
+            "task": case.task_class,
+            "prompt": case.prompt,
+            "expected_item_hint": case.expected_item_hint,
+            "ambiguity": case.ambiguity,
+            "notes": case.notes,
+            "coverage": list(case.coverage),
+            "request": case.request,
+            "expected": case.expected,
+        }
+        for case in sorted(selected, key=lambda item: item.case_id)
+    ]
+    return _sha256_utf8(_canonical_json(corpus))
+
+
+def _surface_summary(report: list[dict]) -> dict[str, dict]:
+    surfaces = {}
+    for task in sorted({row["task"] for row in report}):
+        rows = [row for row in report if row["task"] == task]
+        skipped = sum(1 for row in rows if row.get("skipped_reason"))
+        passed = sum(1 for row in rows if row.get("verdict") == "PASS")
+        failed = len(rows) - passed - skipped
+        surfaces[task] = {
+            "selected": len(rows),
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+            "mean_score": round(sum(float(row.get("score", 0)) for row in rows) / len(rows), 3),
+            "verdict": "PASS" if passed == len(rows) else "FAIL",
+        }
+    return surfaces
+
+
+def _baseline_from_summary(
+    summary: dict,
+    *,
+    cases: list[MealCase],
+    model_ids: dict[str, str | None],
+    source_ref: str,
+) -> dict:
+    report = summary.get("report") or summary.get("results") or []
+    return {
+        "format": "fitness-dashboard-meal-model-baseline-v1",
+        "source_ref": source_ref,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "models": {key: value for key, value in model_ids.items() if value},
+        "generation_command": (
+            "python3 support/meal_model_benchmark.py --lm-studio-url <configured-endpoint> "
+            "--text-model <configured-text-model> --vision-model <configured-vision-model> "
+            "--case-set all --image-map <redacted:image-map> --output-file <transient-report> "
+            "--baseline-out docs/model_benchmark_baseline_gx10_2026-07.json"
+        ),
+        "case_count": len(cases),
+        "task_class_counts": task_class_counts(cases),
+        "candidate_passed": bool(summary.get("candidate_passed")),
+        "surfaces": _surface_summary(report),
+        "results": report,
+        "scores": {row["case_id"]: row.get("score", 0) for row in report},
+        "verdicts": {row["case_id"]: row.get("verdict") for row in report},
+        "hashes": {
+            "prompts_sha256": prompt_hashes(),
+            "schemas_sha256": schema_hashes(),
+            "corpus_sha256": corpus_hash(cases),
+        },
+    }
+
+
+build_baseline = _baseline_from_summary
+
+
+def _clean_source_ref(repo_root: Path = _REPO_ROOT) -> str:
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout.strip():
+        raise ValueError("baseline preflight failed; git worktree must be clean")
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if not head:
+        raise ValueError("baseline preflight failed; source HEAD is unavailable")
+    return head
+
+
+def _preflight_complete_image_map(cases: list[MealCase], image_map: dict[str, str]) -> None:
+    missing = [case.case_id for case in cases if requires_image(case) and not image_map.get(case.case_id)]
+    unreadable = [
+        case.case_id
+        for case in cases
+        if requires_image(case) and image_map.get(case.case_id) and not os.path.isfile(image_map[case.case_id])
+    ]
+    if missing or unreadable:
+        detail = []
+        if missing:
+            detail.append(f"missing image mappings: {', '.join(missing)}")
+        if unreadable:
+            detail.append(f"unreadable image files: {', '.join(unreadable)}")
+        raise ValueError("baseline preflight failed; " + "; ".join(detail))
+
+
+def _public_benchmark_summary(summary: dict) -> dict:
+    public = {key: value for key, value in summary.items() if key not in {"results", "report"}}
+    public["results"] = summary.get("report") or summary.get("results", [])
+    return public
+
+
+def _safe_probe(probe: dict) -> dict:
+    return {
+        "reachable": bool(probe.get("reachable")),
+        "latency_ms": probe.get("latency_ms"),
+        "models": list(probe.get("models") or []),
+    }
+
+
+def _safe_case_listing(cases: list[MealCase]) -> list[dict]:
+    return [
+        {
+            "case_id": case.case_id,
+            "task": case.task_class,
+            "input_type": case.input_type,
+            "coverage": list(case.coverage),
+        }
+        for case in cases
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lm-studio-url", default=LM_STUDIO_URL)
@@ -1265,12 +2069,22 @@ def main() -> int:
             "workout",
             "daily_brief",
             "branded_food",
+            "adjust_intent",
+            "swap_resolution",
+            "post_workout_analysis",
         ),
         default="all",
         help="Case subset used with --run-model",
     )
     parser.add_argument("--image-map", help="Optional JSON mapping case_id to private local image path")
+    parser.add_argument("--output-file", help="Write the raw-free benchmark report JSON to this file")
+    parser.add_argument("--baseline-out", help="Write a successful all-suite raw-free baseline JSON to this file")
     args = parser.parse_args()
+
+    if args.baseline_out and not (args.run_model or args.text_model or args.vision_model):
+        parser.error("--baseline-out requires --run-model or both task-specific model flags")
+    if args.baseline_out and args.case_set != "all":
+        parser.error("--baseline-out requires --case-set all")
 
     probe = probe_lm_studio(args.lm_studio_url)
     cases = all_cases()
@@ -1288,9 +2102,15 @@ def main() -> int:
         cases = DAILY_BRIEF_CASES
     elif args.case_set == "branded_food":
         cases = BRANDED_FOOD_CASES
+    elif args.case_set == "adjust_intent":
+        cases = ADJUST_INTENT_CASES
+    elif args.case_set == "swap_resolution":
+        cases = SWAP_RESOLUTION_CASES
+    elif args.case_set == "post_workout_analysis":
+        cases = POST_WORKOUT_ANALYSIS_CASES
     output = {
         "hardware": mac_hardware_summary(),
-        "lm_studio": probe,
+        "lm_studio": _safe_probe(probe),
         "case_counts": {
             "text": len(TEXT_CASES),
             "photo": len(PHOTO_CASES),
@@ -1299,27 +2119,39 @@ def main() -> int:
             "workout": len(WORKOUT_CASES),
             "daily_brief": len(DAILY_BRIEF_CASES),
             "branded_food": len(BRANDED_FOOD_CASES),
+            "adjust_intent": len(ADJUST_INTENT_CASES),
+            "swap_resolution": len(SWAP_RESOLUTION_CASES),
+            "post_workout_analysis": len(POST_WORKOUT_ANALYSIS_CASES),
             "image_capable": len(image_capable_cases()),
             "nutrition_total": len(nutrition_cases()),
             "total": len(all_cases()),
         },
         "task_class_counts": task_class_counts(),
-        "latency_targets_ms": TASK_LATENCY_PASS_MS,
+        "latency_targets_ms": ALL_TASK_LATENCY_PASS_MS,
         "routing_recommendation": routing_recommendation(probe.get("models") or []),
     }
     if args.list_cases:
-        output["cases"] = [asdict(case) for case in all_cases()]
+        output["cases"] = _safe_case_listing(all_cases())
     if args.probe_only:
-        print(json.dumps(output, indent=2, sort_keys=True))
+        serialized = json.dumps(output, indent=2, sort_keys=True)
+        if args.output_file:
+            with open(args.output_file, "w", encoding="utf-8") as handle:
+                handle.write(serialized + "\n")
+        print(serialized)
         return 0
     if args.run_model or args.text_model or args.vision_model:
         image_map = _load_image_map(args.image_map)
+        if args.baseline_out and args.case_set == "all":
+            try:
+                _preflight_complete_image_map(cases, image_map)
+            except ValueError as exc:
+                parser.error(str(exc))
         if not args.run_model:
             if args.vision_model and any(not requires_image(case) for case in cases) and not args.text_model:
                 parser.error("--text-model is required for selected non-image cases when --run-model is not provided")
             if args.text_model and not args.vision_model and any(case.case_id in image_map for case in cases if requires_image(case)):
                 parser.error("--vision-model is required for selected image cases with image-map entries when --run-model is not provided")
-        output["benchmark"] = run_model_benchmark(
+        benchmark = run_model_benchmark(
             cases,
             model=args.run_model,
             text_model=args.text_model,
@@ -1327,7 +2159,31 @@ def main() -> int:
             lm_studio_url=args.lm_studio_url,
             image_map=image_map,
         )
-    print(json.dumps(output, indent=2, sort_keys=True))
+        output["benchmark"] = _public_benchmark_summary(benchmark)
+        if args.baseline_out:
+            if benchmark.get("case_count") != len(cases) or len(benchmark.get("report") or []) != len(cases):
+                parser.error("--baseline-out requires one verdict for every selected case")
+            try:
+                source_ref = _clean_source_ref()
+            except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                parser.error(str(exc))
+            baseline = _baseline_from_summary(
+                benchmark,
+                cases=cases,
+                model_ids={
+                    "common": args.run_model,
+                    "text": args.text_model,
+                    "vision": args.vision_model,
+                },
+                source_ref=source_ref,
+            )
+            with open(args.baseline_out, "w", encoding="utf-8") as handle:
+                json.dump(baseline, handle, indent=2, sort_keys=True)
+    serialized = json.dumps(output, indent=2, sort_keys=True)
+    if args.output_file:
+        with open(args.output_file, "w", encoding="utf-8") as handle:
+            handle.write(serialized + "\n")
+    print(serialized)
     return 0
 
 
