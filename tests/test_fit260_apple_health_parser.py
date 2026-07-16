@@ -226,6 +226,142 @@ def test_merge_workouts_uses_stable_tiebreaker_for_equal_timed_records(order):
 
 
 @pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_merge_workouts_prefers_canonical_metrics_over_sync_aliases_and_zero_defaults(order):
+    rich_file_workout = {
+        "date": "2026-07-09",
+        "activity": "Running",
+        "start": "2026-07-09T11:00:00Z",
+        "end": "2026-07-09T11:30:00Z",
+        "duration_min": 30,
+        "energy_kcal": 500,
+        "distance_m": 5000,
+        "source": "healthkit_file",
+    }
+    normalized_sync_workout = parser._normalize_sync_workout({
+        "workoutActivityType": "Running",
+        "startDate": "2026-07-09T11:00:00+00:00",
+        "duration_minutes": 30,
+        "total_energy_kcal": 0,
+        "distance_m": 0,
+        "sourceName": "Health Auto Export",
+    })
+    workouts = [rich_file_workout, normalized_sync_workout]
+
+    merged = parser._merge_workouts([workouts[order[0]]], [workouts[order[1]]])
+
+    assert merged == [rich_file_workout]
+
+
+@pytest.mark.parametrize("order", [(0, 1, 2), (2, 0, 1), (1, 2, 0)])
+def test_merge_workouts_prefers_canonical_metrics_across_duplicate_chain(order):
+    rich_file_workout = {
+        "date": "2026-07-09",
+        "activity": "Running",
+        "start": "2026-07-09T11:00:00Z",
+        "duration_min": 30,
+        "energy_kcal": 500,
+        "distance_m": 5000,
+    }
+    workouts = [
+        rich_file_workout,
+        parser._normalize_sync_workout({
+            "workoutActivityType": "Running",
+            "startDate": "2026-07-09T11:00:00+00:00",
+            "duration_minutes": 34,
+            "total_energy_kcal": 0,
+            "distance_m": 0,
+        }),
+        parser._normalize_sync_workout({
+            "workoutActivityType": "Running",
+            "startDate": "2026-07-09T11:00:00+00:00",
+            "duration_minutes": 38,
+            "total_energy_kcal": 0,
+            "distance_m": 0,
+        }),
+    ]
+
+    merged = parser._merge_workouts([workouts[index] for index in order], [])
+
+    assert merged == [rich_file_workout]
+
+
+def test_workout_quality_key_counts_measurements_before_metadata():
+    assert parser._workout_quality_key({
+        "activity": "Running",
+        "date": "2026-07-09",
+        "start": "2026-07-09T11:00:00Z",
+        "end": "2026-07-09T11:30:00Z",
+        "source": "HealthKit",
+        "duration_min": 30,
+        "energy_kcal": 500,
+        "distance_m": 5000,
+        "avg_heart_rate": 150,
+    }) == (4, 5)
+    assert parser._workout_quality_key({
+        "activity_type": "Running",
+        "startDate": "2026-07-09T11:00:00Z",
+        "sourceName": "Health Auto Export",
+        "activity": None,
+        "date": [],
+        "start": {},
+        "end": False,
+        "source": "  ",
+        "duration_min": 0,
+        "energy_kcal": 0,
+        "distance_m": 0,
+        "avg_heart_rate": None,
+    }) == (0, 0)
+
+
+def test_merge_workouts_prefers_positive_metrics_over_extra_metadata():
+    metadata_rich_file_workout = {
+        "activity": "Running",
+        "date": "2026-07-09",
+        "start": "2026-07-09T11:00:00Z",
+        "end": "2026-07-09T11:30:00Z",
+        "source": "HealthKit",
+        "duration_min": 30,
+        "energy_kcal": 0,
+        "distance_m": 0,
+    }
+    metric_rich_sync_workout = parser._normalize_sync_workout({
+        "workoutActivityType": "Running",
+        "startDate": "2026-07-09T11:00:00+00:00",
+        "duration_minutes": 30,
+        "total_energy_kcal": 500,
+        "distance_m": 5000,
+    })
+
+    merged = parser._merge_workouts([metadata_rich_file_workout], [metric_rich_sync_workout])
+
+    assert merged == [metric_rich_sync_workout]
+
+
+def test_merge_workouts_uses_metadata_then_canonical_json_for_equal_measurement_quality():
+    metadata_rich = {
+        "activity": "Running",
+        "date": "2026-07-09",
+        "start": "2026-07-09T11:00:00Z",
+        "end": "2026-07-09T11:30:00Z",
+        "duration_min": 30,
+        "source_record_id": "z",
+    }
+    metadata_sparse = {
+        "activity": "Running",
+        "date": "2026-07-09",
+        "start": "2026-07-09T11:00:00Z",
+        "duration_min": 30,
+        "source_record_id": "a",
+    }
+
+    assert parser._merge_workouts([metadata_sparse], [metadata_rich]) == [metadata_rich]
+
+    canonical_first = dict(metadata_sparse, source_record_id="a")
+    canonical_second = dict(metadata_sparse, source_record_id="b")
+    assert parser._merge_workouts([canonical_second], [canonical_first]) == [canonical_first]
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
 def test_merge_workouts_uses_stable_tiebreaker_for_startless_records(order):
     workouts = [
         {

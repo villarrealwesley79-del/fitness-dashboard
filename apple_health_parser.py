@@ -406,9 +406,27 @@ def _same_workout(left: dict, right: dict) -> bool:
     )
 
 
+def _workout_quality_key(workout: dict) -> tuple[int, int]:
+    """Rank real measurements before canonical identity and timing metadata."""
+    identity_fields = ("activity", "date", "start", "end", "source")
+    metric_fields = ("energy_kcal", "distance_m", "avg_heart_rate")
+    metadata_count = sum(
+        isinstance(workout.get(field), str) and bool(workout[field].strip())
+        for field in identity_fields
+    )
+
+    measurement_count = 0
+    for field in ("duration_min", *metric_fields):
+        try:
+            measurement_count += float(workout.get(field) or 0) > 0
+        except (TypeError, ValueError):
+            pass
+    return measurement_count, metadata_count
+
+
 def _workout_representative_key(workout: dict) -> tuple:
-    """Prefer earliest, richer, then canonically ordered duplicate payloads."""
-    populated_fields = sum(value not in (None, "", [], {}) for value in workout.values())
+    """Prefer earliest, higher-quality, then canonically ordered duplicates."""
+    measurement_count, metadata_count = _workout_quality_key(workout)
     canonical_payload = json.dumps(
         workout,
         sort_keys=True,
@@ -418,7 +436,8 @@ def _workout_representative_key(workout: dict) -> tuple:
     return (
         _workout_start_datetime(workout)
         or datetime.max.replace(tzinfo=timezone.utc),
-        -populated_fields,
+        -measurement_count,
+        -metadata_count,
         canonical_payload,
     )
 
