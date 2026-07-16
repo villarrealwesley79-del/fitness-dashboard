@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import fcntl
 import io
+from datetime import datetime
 
 import pytest
 
@@ -50,6 +51,43 @@ def test_whoop_csv_import_projects_facts_and_lists_history(fitness_app):
     imports = fitness_app.app.test_client().get("/api/whoop/imports")
     assert imports.status_code == 200
     assert imports.get_json()["imports"][0]["reason"] == "csv_import"
+
+
+def test_whoop_csv_import_reports_mixed_row_outcomes(fitness_app):
+    csv_text = "\n".join(
+        [
+            "record_type,id,local_date,recovery_score,sleep_performance_pct,strain,nap",
+            "recovery,recovery-1,2026-06-25,42,,,",
+            "recovery,recovery-1,2026-06-25,43,,,",
+            "unsupported,ignored-1,2026-06-25,not-a-number,,,",
+            "sleep,nap-1,2026-06-25,,30,,true",
+            "cycle,cycle-1,2026-06-25,,,18.4,",
+        ]
+    )
+
+    response = fitness_app.app.test_client().post("/api/whoop/import-csv", json={"csv": csv_text})
+
+    assert response.status_code == 200
+    assert response.get_json()["import"] == {
+        "run_id": response.get_json()["import"]["run_id"],
+        "parsed_rows": 5,
+        "imported_rows": 2,
+        "skipped_unsupported_rows": 1,
+        "ignored_nap_rows": 1,
+        "duplicate_or_upserted_rows": 1,
+        "records_upserted": 3,
+    }
+    fact = whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE, local_date="2026-06-25")
+    assert fact["recovery_score"] == 43
+    assert fact["sleep_performance_pct"] is None
+    assert fact["strain"] == 18.4
+
+    retry = fitness_app.app.test_client().post("/api/whoop/import-csv", json={"csv": csv_text})
+
+    assert retry.status_code == 200
+    assert retry.get_json()["import"]["imported_rows"] == 0
+    assert retry.get_json()["import"]["duplicate_or_upserted_rows"] == 3
+    assert retry.get_json()["import"]["records_upserted"] == 3
 
 
 def test_whoop_csv_import_rejects_cross_process_lock(fitness_app, tmp_path):
@@ -224,6 +262,24 @@ def test_whoop_api_normalization_marks_calibrating_recovery_display_only(fitness
     assert row["score_state"] == "CALIBRATING"
 
 
+@pytest.mark.parametrize("user_calibrating", ["1", "true", "TRUE"])
+def test_whoop_csv_normalization_marks_truthy_calibrating_rows_display_only(
+    fitness_app, user_calibrating
+):
+    csv_text = "\n".join(
+        [
+            "record_type,local_date,recovery_score,user_calibrating",
+            f"recovery,2026-06-25,75,{user_calibrating}",
+        ]
+    )
+
+    records, _outcomes = fitness_app._parse_whoop_csv_rows(csv_text)
+    [(record_type, row)] = records
+
+    assert record_type == "recovery"
+    assert row["score_state"] == "CALIBRATING"
+
+
 def test_whoop_api_normalization_imports_official_sleep_needed_components(fitness_app):
     row = fitness_app._normalize_whoop_record(
         "sleep",
@@ -326,6 +382,22 @@ def test_whoop_csv_import_rejects_non_numeric_metric_values(fitness_app):
     assert response.get_json()["error"]["code"] == "invalid_whoop_csv_metric"
 
 
+def test_whoop_csv_import_rejects_supported_rows_without_a_date_before_mutation(fitness_app):
+    csv_text = "\n".join(
+        [
+            "record_type,id,local_date,recovery_score",
+            "recovery,valid-1,2026-06-25,42",
+            "recovery,missing-date,,43",
+        ]
+    )
+
+    response = fitness_app.app.test_client().post("/api/whoop/import-csv", json={"csv": csv_text})
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_whoop_csv_metric"
+    assert whoop_store.get_daily_fact(fitness_app.WHOOP_DB_FILE, local_date="2026-06-25") is None
+
+
 def test_whoop_csv_import_rejects_future_dates(fitness_app):
     csv_text = "\n".join(
         [
@@ -338,6 +410,20 @@ def test_whoop_csv_import_rejects_future_dates(fitness_app):
 
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "invalid_whoop_csv_metric"
+
+
+def test_whoop_csv_date_tolerance_accepts_today_and_tomorrow(fitness_app):
+    boundary = datetime(2026, 7, 12, 23, 59, 59)
+
+    assert fitness_app._validate_imported_whoop_local_date("2026-07-12", now=boundary) == "2026-07-12"
+    assert fitness_app._validate_imported_whoop_local_date("2026-07-13", now=boundary) == "2026-07-13"
+
+
+def test_whoop_csv_date_tolerance_rejects_dates_after_tomorrow(fitness_app):
+    boundary = datetime(2026, 7, 12, 23, 59, 59)
+
+    with pytest.raises(ValueError, match="more than one day ahead"):
+        fitness_app._validate_imported_whoop_local_date("2026-07-14", now=boundary)
 
 
 def test_whoop_sync_window_uses_utc_aware_datetimes(fitness_app):

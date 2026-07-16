@@ -4719,6 +4719,51 @@ def test_meal_intake_image_provider_failure_uses_text_fallback(monkeypatch):
     assert body["vision_error"] == "vision_estimator_failed"
 
 
+def test_meal_intake_vision_contention_logs_distinct_tag(monkeypatch, caplog):
+    module = _client(monkeypatch)
+    monkeypatch.setattr(
+        module.vision_estimator,
+        "describe",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            module.vision_estimator.VisionEstimatorError(
+                "busy: LM Studio vision inference already running"
+            )
+        ),
+    )
+    _stub_parser(monkeypatch, module, estimate={
+        "item_name": "Protein shake",
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 30,
+        "carbs_g": 14,
+        "fat_g": 4,
+        "sodium_mg": 180,
+        "fiber_g": 2,
+        "confidence": 0.86,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+    })
+    monkeypatch.setattr(module, "add_food_log", lambda _u, r: {"client_id": r["client_id"], **r})
+    caplog.set_level("WARNING")
+
+    response = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "text": "protein shake",
+            "client_id": "meal-vision-contention-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    assert any(
+        record.message == "vision_busy_contention"
+        and getattr(record, "event", None) == "vision_busy_contention"
+        for record in caplog.records
+    )
+
+
 def test_meal_intake_image_merge_exception_uses_text_fallback(monkeypatch):
     module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _stub_vision(

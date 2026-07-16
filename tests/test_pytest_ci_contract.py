@@ -75,3 +75,27 @@ def test_hook_installer_copies_all_committed_hooks() -> None:
 
     assert 'for hook in "${ROOT}/.githooks/"*' in installer
     assert '$(basename "${hook}")' in installer
+
+
+def test_shell_static_check_covers_operational_scripts() -> None:
+    checker = ROOT / "scripts" / "check-shell-scripts.sh"
+
+    completed = subprocess.run(
+        ["bash", str(checker)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == [
+        "bash -n: scripts/install-launchd-agents.sh",
+        "bash -n: scripts/check-apple-health-staleness.sh",
+        "bash -n: scripts/worktree-server-guard.sh",
+        "bash -n: scripts/install-worktree-guard.sh",
+        "bash -n: .githooks/pre-push",
+        "bash -n: .githooks/post-checkout",
+        "bash -n: support/self_test.sh",
+        "Shell static checks passed (7 files).",
+    ]
