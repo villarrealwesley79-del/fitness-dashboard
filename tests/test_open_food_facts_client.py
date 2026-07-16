@@ -63,6 +63,13 @@ def test_open_food_facts_client_searches_keyless_endpoint(monkeypatch):
     assert captured["ua"] == open_food_facts_client.USER_AGENT
 
 
+def test_open_food_facts_user_agent_names_public_contact_channel():
+    assert open_food_facts_client.USER_AGENT == (
+        "FitnessDashboard/1.0 "
+        "(https://github.com/villarrealwesley79-del/fitness-dashboard/issues)"
+    )
+
+
 def test_open_food_facts_client_retries_without_locale_word(monkeypatch):
     seen_terms = []
 

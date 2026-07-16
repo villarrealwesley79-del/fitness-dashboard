@@ -1720,6 +1720,48 @@ def test_lookup_barcode_off_cache_replay_derives_verified_source_url(monkeypatch
     assert estimate["source"] == "local_cache"
     assert estimate["underlying_source"] == "open_food_facts_barcode"
     assert estimate["verified_source_url"] == "https://world.openfoodfacts.org/product/500032837010"
+    assert estimate["off_attribution"] == (
+        "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)"
+    )
+
+
+def test_text_lookup_off_cache_replay_restores_attribution(monkeypatch):
+    cached = {
+        "item_name": "Cached OFF food",
+        "portion_description": "100 g",
+        "meal_type": "snack",
+        "calories": 210,
+        "protein_g": 3,
+        "carbs_g": 25,
+        "fat_g": 11,
+        "sodium_mg": 280,
+        "fiber_g": 2,
+        "confidence": 0.88,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "source": "open_food_facts",
+        "external_food_id": "500032837010",
+    }
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "get_branded_lookup_cache",
+        lambda normalized, **kwargs: {
+            "normalized_query": normalized,
+            "source": "open_food_facts",
+            "source_tier": "open_food_facts",
+            "response_json": cached,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+
+    estimate = branded_food_lookup._cache_lookup("cached off food", user_id=7)
+
+    assert estimate["source"] == "local_cache"
+    assert estimate["underlying_source"] == "open_food_facts"
+    assert estimate["verified_source_url"] == "https://world.openfoodfacts.org/product/500032837010"
+    assert estimate["off_attribution"] == (
+        "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)"
+    )
 
 
 def test_lookup_barcode_off_cache_replay_falls_back_to_homepage_without_external_id(monkeypatch):

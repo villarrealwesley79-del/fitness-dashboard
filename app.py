@@ -6892,6 +6892,22 @@ def _review_source_from_estimate(estimate: dict, *, default_kind: str = "estimat
         return {"kind": default_kind, "label": None, "link": None}
     if source_text in {"manual_review_estimate", "manual_text_review", "user"}:
         return {"kind": "user", "label": None, "link": None}
+    underlying_source = _review_safe_str(estimate.get("underlying_source"), max_len=80)
+    is_open_food_facts = (
+        source_text in {"open_food_facts", "open_food_facts_barcode"}
+        or underlying_source in {"open_food_facts", "open_food_facts_barcode"}
+        or bool(estimate.get("off_attribution"))
+    )
+    if is_open_food_facts:
+        external_id = _review_safe_str(estimate.get("external_food_id"), max_len=120)
+        link = "https://world.openfoodfacts.org/"
+        if external_id:
+            link = f"{link}product/{urllib.parse.quote(external_id, safe='')}"
+        return {
+            "kind": source_text,
+            "label": "Open Food Facts · ODbL/DbCL",
+            "link": link,
+        }
     return {"kind": source_text, "label": source_text, "link": None}
 
 

@@ -6388,6 +6388,60 @@ def test_meal_intake_pending_endpoint_lists_visible_rows_and_cleans_stale(monkey
     assert body["pending"][0]["policy"]["reasons"], "pending payload should include review rationale"
 
 
+def test_pending_review_projects_open_food_facts_cache_attribution(monkeypatch):
+    module = _client(monkeypatch)
+    today = module._today_str()
+    cached_off = _accepted_estimate(
+        item_name="Cached OFF crisps",
+        calories=210,
+        source="local_cache",
+    )
+    cached_off.update({
+        "underlying_source": "open_food_facts_barcode",
+        "external_food_id": "500032837010",
+        "off_attribution": "Source: Open Food Facts (ODbL/DbCL data; product images CC BY-SA)",
+        "verified_source_url": "https://world.openfoodfacts.org/product/500032837010",
+    })
+    food_log = {
+        "client_id": "meal-cached-off",
+        "date": today,
+        "logged_at": f"{today}T12:30:00",
+        "context_note": "cached crisps",
+        "correction_state": "pending_review",
+        "original_estimate": cached_off,
+    }
+    snapshot_payload = module._review_payload_from_estimate(
+        meal_id="meal-cached-off",
+        estimate=cached_off,
+        food_log=food_log,
+        has_image=False,
+        local_timestamp=None,
+        local_date=today,
+        local_iso=None,
+        response_extras={},
+        text_hint="cached crisps",
+    )
+    monkeypatch.setattr(module, "get_food_logs", lambda *_a, **_kw: [food_log])
+    monkeypatch.setattr(
+        module,
+        "get_meal_review_snapshot",
+        lambda *_a, **_kw: {"payload": snapshot_payload},
+    )
+    monkeypatch.setattr(module, "delete_food_log_by_client_id", lambda *_a, **_kw: False)
+
+    response = module.app.test_client().get("/api/meal-intake/pending")
+
+    assert response.status_code == 200
+    item = response.get_json()["pending"][0]["items"][0]
+    assert item["source"] == {
+        "kind": "local_cache",
+        "label": "Open Food Facts · ODbL/DbCL",
+        "link": "https://world.openfoodfacts.org/product/500032837010",
+    }
+    assert "ODbL/DbCL" in item["estimate"]["off_attribution"]
+    assert "verified_source_url" not in item["estimate"]
+
+
 def test_meal_intake_pending_endpoint_restores_photo_origin_marker(monkeypatch):
     module = _client(monkeypatch)
     today = module.datetime.now().date().isoformat()

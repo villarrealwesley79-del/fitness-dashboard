@@ -85,10 +85,12 @@ def test_source_viewer_opens_in_app_iframe_not_target_blank():
     # The V2 source chip never carries target=_blank.
     v2_chip_section = block.split("meal-review-v2-source-chip", 2)[1]
     assert "target=\"_blank\"" not in v2_chip_section[:600]
-    # Sanitizer rejects cross-origin URLs and non-http schemes by checking
-    # against window.location.origin.
+    # Sanitizer accepts same-origin routes and the exact HTTPS Open Food Facts
+    # product/home origin; every other external origin remains rejected.
     assert "sanitizeMealV2SourceLink" in block
-    assert "u.origin !== window.location.origin" in block
+    assert "u.origin === window.location.origin" in block
+    assert "https://world.openfoodfacts.org" in block
+    assert "u.pathname === '/' || u.pathname.startsWith('/product/')" in block
     # Defense-in-depth: protocol-relative URLs ("//evil.example.com/x")
     # would otherwise resolve to an attacker-controlled origin once placed
     # in an iframe src. The sanitizer rejects them explicitly before the
