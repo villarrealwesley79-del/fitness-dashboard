@@ -99,6 +99,8 @@ def test_vitals_renderer_blocks_inconsistent_sleep_values():
     assert "dashboardSleepInconsistent || sleepQualityWarning" in source
     assert "last.rem_sleep_min != null ? `${Math.round(last.rem_sleep_min)}m REM` : 'REM unknown'" in source
     assert "last.deep_sleep_min != null ? `${Math.round(last.deep_sleep_min)}m Deep` : 'Deep unknown'" in source
+    assert source.count("sleep.last_night && sleep.last_night.total_sleep_min != null ? fmtDur(sleep.last_night.total_sleep_min) : '--'") == 2
+    assert "oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min)" not in source
 
 
 def test_sleep_summary_flags_duration_stage_conflict(monkeypatch):
@@ -387,6 +389,38 @@ def test_sleep_summary_does_not_promote_nap_to_last_night(monkeypatch):
     assert payload["last_night"]["date"] == "2026-06-03"
     assert payload["last_night"]["total_sleep_min"] == 480
     assert payload["data_quality"] == {"status": "ok"}
+
+
+def test_sleep_summary_treats_scored_nap_conflict_as_historical(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "fit234-secret")
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    long_sleep = {
+        "day": "2026-06-03",
+        "total_sleep_min": 480,
+        "deep_sleep_min": 90,
+        "rem_sleep_min": 100,
+        "light_sleep_min": 290,
+        "sleep_score": 88,
+    }
+    scored_nap = {
+        "day": "9999-01-01",
+        "sleep_type": "nap",
+        "sleep_duration_min": 30,
+        "sleep_score": 88,
+    }
+    monkeypatch.setattr(oura_sleep_sync, "get_latest_sleep", lambda *_a, **_kw: [long_sleep])
+    monkeypatch.setattr(oura_sleep_sync, "get_sleep_range", lambda *_a, **_kw: [long_sleep])
+    monkeypatch.setattr(module, "get_oura_daily", lambda *_a, **_kw: scored_nap)
+    monkeypatch.setattr(module, "get_oura_daily_range", lambda *_a, **_kw: [scored_nap])
+
+    payload = module.app.test_client().get("/api/oura/sleep-summary").get_json()
+
+    assert payload["last_night"]["date"] == "2026-06-03"
+    assert payload["last_night"]["total_sleep_min"] == 480
+    assert payload["data_quality"]["status"] == "partial"
+    assert payload["data_quality"]["reason"] == "historical_inconsistency"
+    assert payload["data_quality"]["excluded_dates"] == ["9999-01-01"]
 
 
 def test_oura_daily_migrates_and_preserves_nullable_sleep_type(tmp_path):

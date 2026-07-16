@@ -14984,7 +14984,11 @@ def oura_sleep_summary():
         quality_rows = list(week_data) + daily_quality_rows
         if daily_row:
             quality_rows.append(daily_row)
-        quality_current = daily_row if _sleep_row_inconsistency_reason(daily_row) else last_night
+        quality_current = (
+            daily_row
+            if not daily_row_is_nap and _sleep_row_inconsistency_reason(daily_row)
+            else last_night
+        )
         data_quality = _sleep_summary_data_quality(quality_current, quality_rows)
         excluded_dates = set(data_quality.get("excluded_dates") or [])
         week_data = [row for row in week_data if row.get("day") not in excluded_dates]

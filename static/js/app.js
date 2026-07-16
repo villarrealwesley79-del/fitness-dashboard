@@ -3007,7 +3007,7 @@
         if ($('dash-hrv')) $('dash-hrv').textContent = oura && oura.hrv != null ? `${oura.hrv} ms` : '--';
         if ($('dash-rhr')) $('dash-rhr').textContent = oura && oura.resting_hr != null ? `${oura.resting_hr} bpm` : '--';
         if ($('dash-sleep')) $('dash-sleep').textContent = !dashboardSleepQualityKnown || dashboardSleepInconsistent ? '--'
-            : (oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--');
+            : (sleep && sleep.last_night && sleep.last_night.total_sleep_min != null ? fmtDur(sleep.last_night.total_sleep_min) : '--');
 
         // Recommendation card — FIT-1 brief + FIT-2 honest freshness
         const nw = dash && dash.next_workout ? dash.next_workout : null;
@@ -3216,7 +3216,7 @@
         if ($('glance-cal')) $('glance-cal').textContent = fmtInt(oura && oura.active_calories);
         if ($('glance-cal-goal')) $('glance-cal-goal').textContent = oura && oura.active_calories != null ? `${Math.round((oura.active_calories / 800) * 100)}% of 800` : '';
         if ($('glance-sleep')) $('glance-sleep').textContent = !dashboardSleepQualityKnown || dashboardSleepInconsistent ? '--'
-            : (oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min) : '--');
+            : (sleep && sleep.last_night && sleep.last_night.total_sleep_min != null ? fmtDur(sleep.last_night.total_sleep_min) : '--');
         if ($('glance-sleep-quality')) {
             const score = oura && oura.sleep_score;
             $('glance-sleep-quality').textContent = dashboardSleepInconsistent || sleepQualityWarning ? sleepQualityAction
