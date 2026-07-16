@@ -17,6 +17,7 @@ from data_store import (
     enqueue_workout_adaptation_pending,
     list_due_workout_adaptation_pending,
     save_workout_adaptation_event,
+    workout_adaptation_source_fingerprint,
 )
 
 COALESCING_WINDOW_SECONDS = 180
@@ -237,7 +238,27 @@ def apply_due_adaptations(
             event["_plan_fingerprint"] = plan_fingerprint
             event["_target_plan_date"] = plan_date
             event["_source_plan_version"] = source_plan_version
-        saved = save_workout_adaptation_event(user_id, pending["id"], event)
+        trigger = event.setdefault("trigger", {})
+        trigger["food_log_client_ids"] = sorted(
+            {
+                row.get("client_id")
+                for row in day_logs
+                if row.get("client_id")
+            }
+        )
+        trigger["meal_ids"] = sorted(
+            {
+                row.get("meal_id")
+                for row in day_logs
+                if row.get("meal_id")
+            }
+        )
+        saved = save_workout_adaptation_event(
+            user_id,
+            pending["id"],
+            event,
+            source_fingerprint=workout_adaptation_source_fingerprint(day_logs),
+        )
         if saved:
             events.append(saved)
             if saved.get("_claim_created") and saved.get("status") == "applied":

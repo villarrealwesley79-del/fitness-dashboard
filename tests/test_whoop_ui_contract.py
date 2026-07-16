@@ -52,6 +52,12 @@ def test_whoop_release_assets_bust_cached_fit238_runtime():
     assert "fitness-dashboard-v20260713-fit233-adaptation-polling" in service_worker
 
 
+def test_whoop_import_explains_timezone_date_tolerance():
+    html = INDEX_HTML.read_text()
+
+    assert "Dates up to one day ahead may be accepted for timezone differences; farther-ahead dates are rejected." in html
+
+
 def test_whoop_secret_patterns_are_excluded_from_docker_context():
     dockerignore = (ROOT / ".dockerignore").read_text()
 
@@ -119,6 +125,48 @@ def test_whoop_frontend_calls_expected_status_sync_and_disconnect_endpoints():
     assert "missingConfig && !connectUrl ? 'Import'" in app_js
     assert "clearWhoopImportInput();" in app_js
     assert "if (modal.id === 'modal-whoop-intake') clearWhoopImportInput();" in app_js
+
+
+def test_whoop_no_data_states_keep_manual_import_row_reachable():
+    app_js = APP_JS.read_text()
+    renderer = app_js.split("function renderWhoopFreshnessDetail", 1)[1].split(
+        "function renderOpenWearablesDetail", 1
+    )[0]
+
+    assert "!dataThrough" in renderer
+    assert "uiState === WHOOP_UI_STATES.missing_config" in renderer
+    assert "uiState === WHOOP_UI_STATES.disconnected" in renderer
+    assert "if (row) row.hidden = false;" in renderer
+    assert "if (detailPanel) detailPanel.hidden = hideDirectFallback;" in renderer
+    assert "if (hideDirectFallback) return;" not in renderer
+    assert "uiState === WHOOP_UI_STATES.disconnected || uiState === WHOOP_UI_STATES.missing_config" in renderer
+    assert renderer.index("if (detailPanel) detailPanel.hidden = hideDirectFallback;") < renderer.index(
+        "setWhoopActionButtons(whoop, uiState);"
+    )
+
+
+def test_whoop_connected_or_data_present_states_keep_existing_renderer_path():
+    app_js = APP_JS.read_text()
+    renderer = app_js.split("function renderWhoopFreshnessDetail", 1)[1].split(
+        "function renderOpenWearablesDetail", 1
+    )[0]
+
+    assert "const dataThrough =" in renderer
+    assert "const hideDirectFallback = Boolean(" in renderer
+    assert "if (dot) dot.className = uiState === WHOOP_UI_STATES.disconnected" in renderer
+    assert "setWhoopActionButtons(whoop, uiState);" in renderer
+
+
+def test_whoop_import_success_banner_summarizes_all_row_outcomes():
+    app_js = APP_JS.read_text()
+
+    assert "function formatWhoopImportSummary(importResult)" in app_js
+    assert "importResult.parsed_rows" in app_js
+    assert "importResult.imported_rows" in app_js
+    assert "importResult.skipped_unsupported_rows" in app_js
+    assert "importResult.ignored_nap_rows" in app_js
+    assert "importResult.duplicate_or_upserted_rows" in app_js
+    assert "Parsed ${parsed} · Imported ${imported} · Unsupported ${unsupported} · Naps ${naps} · Duplicates/updates ${duplicates}" in app_js
 
 
 def test_whoop_missing_config_modal_disables_dead_live_connect_path():

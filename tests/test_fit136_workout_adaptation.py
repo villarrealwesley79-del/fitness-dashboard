@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
+import threading
 from datetime import datetime, timedelta
+
+import pytest
 
 import data_store
 import workout_adaptation
@@ -209,6 +213,209 @@ def test_under_fueled_adaptation_reduces_and_clamps_to_available_time(monkeypatc
     assert coverage["target_fraction"] == 1.0
     assert coverage["effective_calorie_pct_threshold"] == 60.0
     assert coverage["effective_protein_pct_threshold"] == 80.0
+
+
+@pytest.mark.parametrize("mutation", ["correction", "deletion", "context_correction"])
+def test_late_source_mutation_rejects_stale_adaptation_snapshot(monkeypatch, tmp_path, mutation):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    earlier_row = _food_log(
+        "late-source-earlier",
+        meal_id="meal-late-source-earlier",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        logged_at="2026-05-24T08:00:00",
+    )
+    source_row = _food_log(
+        "late-source",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        logged_at="2026-05-24T18:00:00",
+    )
+    pending = workout_adaptation.enqueue_accepted_food_logs(1, [source_row], clock=start)
+    recommendation = _recommendation()
+    real_save = workout_adaptation.save_workout_adaptation_event
+
+    def save_after_source_mutation(user_id, pending_id, event, **kwargs):
+        if mutation == "context_correction":
+            _food_log(
+                "late-source-earlier",
+                meal_id="meal-late-source-earlier",
+                calories=850,
+                protein_g=40,
+                confidence=0.9,
+                logged_at="2026-05-24T08:00:00",
+                correction_state="corrected",
+            )
+        elif mutation == "correction":
+            _food_log(
+                "late-source",
+                calories=650,
+                protein_g=20,
+                confidence=0.9,
+                logged_at="2026-05-24T18:00:00",
+                correction_state="corrected",
+            )
+        else:
+            assert data_store.delete_food_log_by_client_id(1, "late-source") is True
+        return real_save(user_id, pending_id, event, **kwargs)
+
+    monkeypatch.setattr(workout_adaptation, "save_workout_adaptation_event", save_after_source_mutation)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        recommendation,
+        food_log_entries=[earlier_row, source_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 35},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    assert patched == recommendation
+    assert events == []
+    assert data_store.list_workout_adaptation_events(1, unacknowledged=False) == []
+    pending_ids = [row["id"] for row in data_store.list_pending_workout_adaptation_windows(1)]
+    assert pending_ids == ([] if mutation == "deletion" else [pending["id"]])
+
+
+def test_source_snapshot_validation_is_user_scoped_and_accepts_unchanged_rows(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    earlier_row = _food_log(
+        "scoped-source-earlier",
+        meal_id="meal-scoped-source-earlier",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        logged_at="2026-05-24T08:00:00",
+    )
+    source_row = _food_log(
+        "scoped-source",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        logged_at="2026-05-24T18:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [source_row], clock=start)
+    recommendation = _recommendation()
+    real_save = workout_adaptation.save_workout_adaptation_event
+
+    def save_after_other_user_mutation(user_id, pending_id, event, **kwargs):
+        _food_log(
+            "scoped-source",
+            user_id=2,
+            calories=900,
+            protein_g=10,
+            confidence=0.9,
+            logged_at="2026-05-24T18:00:00",
+            correction_state="corrected",
+        )
+        return real_save(user_id, pending_id, event, **kwargs)
+
+    monkeypatch.setattr(workout_adaptation, "save_workout_adaptation_event", save_after_other_user_mutation)
+
+    patched, events = workout_adaptation.apply_due_adaptations(
+        1,
+        recommendation,
+        food_log_entries=[earlier_row, source_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 35},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    assert len(events) == 1
+    assert workout_adaptation.project_event(events[0])["status"] == "applied"
+    assert patched != recommendation
+
+
+def test_concurrent_source_correction_cannot_leave_new_event_applied(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    earlier_row = _food_log(
+        "concurrent-source-earlier",
+        meal_id="meal-concurrent-source-earlier",
+        calories=690,
+        protein_g=29.5,
+        confidence=0.9,
+        logged_at="2026-05-24T08:00:00",
+    )
+    source_row = _food_log(
+        "concurrent-source",
+        calories=300,
+        protein_g=8,
+        confidence=0.9,
+        logged_at="2026-05-24T18:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [source_row], clock=start)
+    real_current_rows = data_store._current_workout_adaptation_source_rows
+    mutation_done = threading.Event()
+    mutation_errors = []
+    mutation_thread = None
+
+    def correct_source():
+        try:
+            _food_log(
+                "concurrent-source-earlier",
+                meal_id="meal-concurrent-source-earlier",
+                calories=650,
+                protein_g=20,
+                confidence=0.9,
+                logged_at="2026-05-24T08:00:00",
+                correction_state="corrected",
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            mutation_errors.append(exc)
+        finally:
+            mutation_done.set()
+
+    def current_rows_then_start_correction(conn, user_id, pending):
+        nonlocal mutation_thread
+        rows = real_current_rows(conn, user_id, pending)
+        mutation_thread = threading.Thread(target=correct_source)
+        mutation_thread.start()
+        mutation_done.wait(0.5)
+        return rows
+
+    monkeypatch.setattr(
+        data_store,
+        "_current_workout_adaptation_source_rows",
+        current_rows_then_start_correction,
+    )
+
+    workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[earlier_row, source_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 35},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+
+    assert mutation_thread is not None
+    mutation_thread.join(timeout=2)
+    assert not mutation_thread.is_alive()
+    assert mutation_errors == []
+    stored = data_store.list_workout_adaptation_events(1, unacknowledged=False)
+    assert len(stored) == 1
+    assert stored[0]["status"] == "stale"
+
+
+def test_deleting_one_item_keeps_multi_item_pending_window(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    first = _food_log("meal-item-one", meal_id="shared-meal")
+    second = _food_log("meal-item-two", meal_id="shared-meal")
+    pending = workout_adaptation.enqueue_accepted_food_logs(1, [first, second], clock=start)
+
+    assert data_store.delete_food_log_by_client_id(1, "meal-item-one") is True
+
+    pending_ids = [row["id"] for row in data_store.list_pending_workout_adaptation_windows(1)]
+    assert pending_ids == [pending["id"]]
 
 
 def test_late_day_single_partial_meal_skips_volume_reduction(monkeypatch, tmp_path):
@@ -1048,7 +1255,7 @@ def test_losing_pending_claim_does_not_adopt_independently_patched_plan(monkeypa
     )
     candidate_events = []
 
-    def lose_claim(_user_id, _pending_id, event):
+    def lose_claim(_user_id, _pending_id, event, **_kwargs):
         candidate_events.append(event)
         return {**applied_event, "_claim_created": False}
 
@@ -1071,8 +1278,537 @@ def test_losing_pending_claim_does_not_adopt_independently_patched_plan(monkeypa
         "id": "loser-patched-plan"
     }
     assert candidate_events[0]["_target_plan_date"] == "2026-05-24"
+def _saved_adaptation_event(user_id: int, *, client_id: str, created_at: str, status: str = "applied"):
+    pending = data_store.enqueue_workout_adaptation_pending(
+        user_id,
+        date="2026-05-24",
+        meal_id="meal-1",
+        food_log_client_ids=[client_id],
+        window_started_at="2026-05-24T12:00:00",
+        window_closes_at="2026-05-24T12:03:00",
+    )
+    event = data_store.save_workout_adaptation_event(
+        user_id,
+        pending["id"],
+        {
+            "date": "2026-05-24",
+            "status": status,
+            "silent": status != "applied",
+            "change_type": "reduce_volume" if status == "applied" else "none",
+            "applies_to": "today",
+            "reason": "Adjusted the workout." if status == "applied" else "Preserved the workout.",
+            "trigger": {"meal_ids": ["meal-1"], "food_log_client_ids": [client_id]},
+            "created_at": created_at,
+        },
+    )
+    if status == "applied":
+        assert data_store.save_current_workout_plan(
+            user_id,
+            "test-published-adaptation",
+            {"id": "test-plan"},
+            publish_adaptation_event_ids=[event["id"]],
+        ) is not None
+    return event
 
 
+def test_init_data_db_adds_stale_at_to_existing_workout_event_table(monkeypatch, tmp_path):
+    db_path = tmp_path / "fitness_data.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE workout_adaptation_events (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                acknowledged_at TEXT
+            )
+            """
+        )
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+
+    data_store.init_data_db()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(workout_adaptation_events)")}
+    assert "stale_at" in columns
+
+
+def test_unacknowledged_feed_prioritizes_applied_events_over_newer_silent_rows(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    applied = _saved_adaptation_event(
+        1,
+        client_id="applied-source",
+        created_at="2026-05-24T12:03:01",
+    )
+    for index in range(11):
+        _saved_adaptation_event(
+            1,
+            client_id=f"silent-source-{index}",
+            created_at=f"2026-05-24T13:{index:02d}:00",
+            status="no_change",
+        )
+
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=True, limit=10)
+
+    assert applied["id"] in {event["id"] for event in events}
+    assert events[0]["id"] == applied["id"]
+
+
+def test_unacknowledged_feed_prioritizes_stale_transition_over_applied_rows(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("stale-source", meal_id="meal-stale")
+    stale = _saved_adaptation_event(
+        1,
+        client_id="stale-source",
+        created_at="2026-05-24T12:03:01",
+    )
+    _food_log(
+        "stale-source",
+        meal_id="meal-stale",
+        correction_state="corrected",
+        calories=650,
+    )
+    for index in range(10):
+        _saved_adaptation_event(
+            1,
+            client_id=f"applied-source-{index}",
+            created_at=f"2026-05-24T13:{index:02d}:00",
+        )
+
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=True, limit=10)
+
+    assert events[0]["id"] == stale["id"]
+    assert events[0]["status"] == "stale"
+
+
+def test_unacknowledged_feed_keeps_newly_stale_historical_event_visible(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("old-source", meal_id="old-meal")
+    historical = _saved_adaptation_event(
+        1,
+        client_id="old-source",
+        created_at="2026-05-24T12:00:00",
+    )
+    newer_sources = []
+    for index in range(10):
+        client_id = f"newer-stale-source-{index}"
+        meal_id = f"newer-stale-meal-{index}"
+        newer_sources.append((client_id, meal_id))
+        _food_log(client_id, meal_id=meal_id)
+        _saved_adaptation_event(
+            1,
+            client_id=client_id,
+            created_at=f"2026-05-24T13:{index:02d}:00",
+        )
+
+    class FrozenDateTime:
+        value = datetime(2026, 5, 24, 14, 0, 0)
+
+        @classmethod
+        def now(cls):
+            return cls.value
+
+    monkeypatch.setattr(data_store, "datetime", FrozenDateTime)
+    for index, (client_id, meal_id) in enumerate(newer_sources):
+        FrozenDateTime.value = datetime(2026, 5, 24, 14, index, 0)
+        _food_log(
+            client_id,
+            meal_id=meal_id,
+            correction_state="corrected",
+            calories=650 + index,
+        )
+    FrozenDateTime.value = datetime(2026, 5, 24, 15, 0, 0)
+    _food_log(
+        "old-source",
+        meal_id="old-meal",
+        correction_state="corrected",
+        calories=700,
+    )
+
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=True, limit=10)
+
+    assert events[0]["id"] == historical["id"]
+    assert events[0]["status"] == "stale"
+    assert events[0]["created_at"] == "2026-05-24T12:00:00"
+    assert events[0]["stale_at"] == "2026-05-24T15:00:00"
+
+
+def test_unacknowledged_feed_keeps_applied_event_visible_with_many_stale_rows(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    applied = _saved_adaptation_event(
+        1,
+        client_id="current-applied-source",
+        created_at="2026-05-24T13:00:00",
+    )
+    for index in range(10):
+        client_id = f"stale-source-{index}"
+        meal_id = f"meal-stale-{index}"
+        _food_log(client_id, meal_id=meal_id)
+        _saved_adaptation_event(
+            1,
+            client_id=client_id,
+            created_at=f"2026-05-24T12:{index:02d}:00",
+        )
+        _food_log(
+            client_id,
+            meal_id=meal_id,
+            correction_state="corrected",
+            calories=650 + index,
+        )
+
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=True, limit=10)
+
+    assert applied["id"] in {event["id"] for event in events}
+
+
+def test_full_adaptation_audit_feed_remains_newest_first(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    older_applied = _saved_adaptation_event(
+        1,
+        client_id="older-applied-source",
+        created_at="2026-05-24T12:03:01",
+    )
+    newer_silent = _saved_adaptation_event(
+        1,
+        client_id="newer-silent-source",
+        created_at="2026-05-24T13:03:01",
+        status="no_change",
+    )
+
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=False, limit=10)
+
+    assert [event["id"] for event in events[:2]] == [newer_silent["id"], older_applied["id"]]
+
+
+def test_correcting_source_food_log_marks_unacknowledged_adaptation_stale(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    _food_log(
+        "source-meal",
+        meal_id="meal-1",
+        correction_state="corrected",
+        calories=650,
+    )
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "stale"
+    assert stored["reason"] == "Source meal changed; this workout update is no longer current."
+
+
+def test_changed_accepted_source_food_log_marks_unacknowledged_adaptation_stale(
+    monkeypatch,
+    tmp_path,
+):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    _food_log(
+        "source-meal",
+        meal_id="meal-1",
+        correction_state="accepted",
+        calories=650,
+    )
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "stale"
+
+
+def test_changed_manual_source_food_log_marks_unacknowledged_adaptation_stale(
+    monkeypatch,
+    tmp_path,
+):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    _food_log(
+        "source-meal",
+        meal_id="meal-1",
+        correction_state="manual",
+        calories=650,
+    )
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "stale"
+
+
+@pytest.mark.parametrize("acknowledged", [False, True])
+def test_new_accepted_source_invalidates_applied_snapshot_and_restores_base(
+    monkeypatch,
+    tmp_path,
+    acknowledged,
+):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 18, 0, 0)
+    earlier_row = _food_log(
+        "snapshot-earlier",
+        meal_id="meal-snapshot-earlier",
+        calories=690,
+        protein_g=29.5,
+        logged_at="2026-05-24T08:00:00",
+    )
+    source_row = _food_log(
+        "snapshot-source",
+        meal_id="meal-snapshot-source",
+        calories=300,
+        protein_g=8,
+        logged_at="2026-05-24T18:00:00",
+    )
+    workout_adaptation.enqueue_accepted_food_logs(1, [source_row], clock=start)
+    base_plan = _recommendation()
+    adapted_plan, events = workout_adaptation.apply_due_adaptations(
+        1,
+        base_plan,
+        food_log_entries=[earlier_row, source_row],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25, entries_count=2),
+        settings={"available_time_minutes": 35},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+    assert events[0]["status"] == "applied"
+    persisted_adapted_plan = {
+        **adapted_plan,
+        "_fit136_base_recommendation": base_plan,
+        "_fit136_last_adapted_plan": adapted_plan,
+        "_fit136_adaptation_event_id": events[0]["id"],
+    }
+    data_store.save_current_workout_plan(1, "snapshot-fingerprint", persisted_adapted_plan)
+    if acknowledged:
+        assert data_store.acknowledge_workout_adaptation_event(1, events[0]["id"]) is True
+
+    _food_log(
+        "snapshot-added",
+        meal_id="meal-snapshot-added",
+        calories=1200,
+        protein_g=80,
+        logged_at="2026-05-24T20:00:00",
+    )
+
+    stored_event = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=False)
+        if item["id"] == events[0]["id"]
+    )
+    assert stored_event["status"] == "stale"
+    assert data_store.get_current_workout_plan(1)["plan"] == base_plan
+
+
+def test_rejected_pending_source_update_keeps_adaptation_applied(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    _food_log(
+        "source-meal",
+        meal_id="meal-1",
+        correction_state="pending_review",
+        calories=650,
+    )
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "applied"
+
+
+def test_manual_source_transition_to_pending_marks_adaptation_stale(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1", correction_state="manual")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    persisted = _food_log(
+        "source-meal",
+        meal_id="meal-1",
+        correction_state="pending_review",
+    )
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert persisted["correction_state"] == "pending_review"
+    assert stored["status"] == "stale"
+
+
+def test_identical_corrected_food_log_replay_keeps_adaptation_applied(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    original = _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    replay = {
+        key: original.get(key)
+        for key in (
+            "client_id", "date", "logged_at", "meal_id", "item_name",
+            "portion_description", "meal_type", "calories", "protein_g",
+            "carbs_g", "fat_g", "sodium_mg", "fiber_g", "confidence", "source",
+        )
+    }
+    replay["correction_state"] = "corrected"
+    data_store.add_food_log(1, replay)
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "applied"
+
+
+def test_blank_and_null_optional_meal_fields_are_same_adaptation_source(
+    monkeypatch,
+    tmp_path,
+):
+    _isolated_db(monkeypatch, tmp_path)
+    original = _food_log("source-meal", meal_id="meal-1", portion_description="")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    replay = {
+        key: original.get(key)
+        for key in (
+            "client_id", "date", "logged_at", "meal_id", "item_name", "meal_type",
+            "calories", "protein_g", "carbs_g", "fat_g", "sodium_mg", "fiber_g",
+            "confidence", "source",
+        )
+    }
+    replay.update(meal_type="", portion_description=None, correction_state="corrected")
+    data_store.add_food_log(1, replay)
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "applied"
+
+
+def test_corrected_food_log_meal_reassignment_marks_adaptation_stale(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    original = _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    replay = {
+        key: original.get(key)
+        for key in (
+            "client_id", "date", "logged_at", "item_name", "portion_description",
+            "meal_type", "calories", "protein_g", "carbs_g", "fat_g",
+            "sodium_mg", "fiber_g", "confidence", "source",
+        )
+    }
+    replay.update(meal_id="meal-2", correction_state="corrected")
+    data_store.add_food_log(1, replay)
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "stale"
+
+
+def test_deleting_source_food_log_marks_unacknowledged_adaptation_stale(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    _food_log("source-meal", meal_id="meal-1")
+    event = _saved_adaptation_event(
+        1,
+        client_id="source-meal",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    assert data_store.delete_food_log_by_client_id(1, "source-meal") is True
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "stale"
+    assert stored["reason"] == "Source meal was deleted; this workout update is no longer current."
+
+
+def test_retried_missing_client_delete_does_not_stale_adaptation(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    event = _saved_adaptation_event(
+        1,
+        client_id="already-deleted",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    assert data_store.delete_food_log_by_client_id(1, "already-deleted") is False
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "applied"
+
+
+def test_retried_missing_meal_delete_does_not_stale_adaptation(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    event = _saved_adaptation_event(
+        1,
+        client_id="missing-meal-client",
+        created_at="2026-05-24T12:03:01",
+    )
+
+    assert data_store.delete_food_logs_by_meal_id(1, "meal-1") == 0
+
+    stored = next(
+        item
+        for item in data_store.list_workout_adaptation_events(1, unacknowledged=True)
+        if item["id"] == event["id"]
+    )
+    assert stored["status"] == "applied"
 def test_processed_food_log_client_id_cannot_schedule_duplicate_window(monkeypatch, tmp_path):
     _isolated_db(monkeypatch, tmp_path)
     start = datetime(2026, 5, 24, 12, 0, 0)
@@ -1096,6 +1832,94 @@ def test_processed_food_log_client_id_cannot_schedule_duplicate_window(monkeypat
 
     assert retried["id"] == first_pending["id"]
     assert data_store.list_pending_workout_adaptation_windows(1) == []
+
+
+def test_legacy_processed_window_without_fingerprint_remains_idempotent(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 12, 0, 0)
+    row = _food_log("legacy-retry-client", calories=300, protein_g=8, confidence=0.9)
+    pending = workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
+    data_store.save_workout_adaptation_event(
+        1,
+        pending["id"],
+        {
+            "date": "2026-05-24",
+            "status": "no_change",
+            "silent": True,
+            "change_type": "none",
+            "applies_to": "today",
+            "created_at": "2026-05-24T12:03:01",
+        },
+    )
+
+    retried = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [row],
+        clock=start + timedelta(minutes=5),
+    )
+
+    assert retried["id"] == pending["id"]
+
+
+def test_unrelated_same_day_food_does_not_requeue_processed_trigger(monkeypatch, tmp_path):
+    _isolated_db(monkeypatch, tmp_path)
+    start = datetime(2026, 5, 24, 12, 0, 0)
+    trigger = _food_log("stable-trigger", calories=300, protein_g=8, confidence=0.9)
+    pending = workout_adaptation.enqueue_accepted_food_logs(1, [trigger], clock=start)
+    workout_adaptation.apply_due_adaptations(
+        1,
+        _recommendation(),
+        food_log_entries=[trigger],
+        nutrition_context=_nutrition_context(calories_pct=45, protein_pct=25),
+        settings={"available_time_minutes": 60},
+        plan_date="2026-05-24",
+        clock=start + timedelta(minutes=3, seconds=1),
+    )
+    _food_log(
+        "unrelated-later-meal",
+        meal_id="unrelated-meal",
+        calories=500,
+        protein_g=30,
+        logged_at="2026-05-24T18:00:00",
+    )
+
+    retried = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [trigger],
+        clock=start + timedelta(hours=7),
+    )
+
+    assert retried["id"] == pending["id"]
+
+
+def test_stale_adaptation_revert_matches_reordered_exercises_by_identity():
+    base = {
+        "exercises": [
+            {"machine": "Chest Press", "target_sets": 5},
+            {"machine": "Lat Pulldown", "target_sets": 6},
+        ]
+    }
+    adapted = {
+        "exercises": [
+            {"machine": "Chest Press", "target_sets": 3},
+            {"machine": "Lat Pulldown", "target_sets": 4},
+        ]
+    }
+    reordered = {
+        "exercises": [
+            {"machine": "Lat Pulldown", "target_sets": 4},
+            {"machine": "Chest Press", "target_sets": 3},
+        ]
+    }
+
+    restored = data_store._revert_adaptation_changes(reordered, base, adapted)
+
+    assert restored == {
+        "exercises": [
+            {"machine": "Lat Pulldown", "target_sets": 6},
+            {"machine": "Chest Press", "target_sets": 5},
+        ]
+    }
 
 
 def test_multiple_due_windows_do_not_stack_volume_reductions_in_one_poll(monkeypatch, tmp_path):
@@ -1189,7 +2013,7 @@ def test_stale_pending_window_expires_instead_of_adapting_later_plan(monkeypatch
         item_name="Wine with dinner",
         confidence=0.92,
     )
-    workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
+    pending = workout_adaptation.enqueue_accepted_food_logs(1, [row], clock=start)
 
     patched, events = workout_adaptation.apply_due_adaptations(
         1,
@@ -1206,6 +2030,12 @@ def test_stale_pending_window_expires_instead_of_adapting_later_plan(monkeypatch
     assert event["applies_to"] == "expired"
     assert event["confidence"]["no_change_reason"] == "stale_window"
     assert patched.get("training_recommendation") != "recovery"
+    retried = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [row],
+        clock=start + timedelta(days=3, minutes=1),
+    )
+    assert retried["id"] == pending["id"]
 
 
 def test_previous_day_ordinary_meal_does_not_use_today_underfuel_for_volume_cut(monkeypatch, tmp_path):

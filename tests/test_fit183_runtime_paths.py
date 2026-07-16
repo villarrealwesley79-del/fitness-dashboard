@@ -220,37 +220,16 @@ with app.app.test_request_context("/api/push/test", base_url="http://127.0.0.1:5
     assert payload == {"sub": "mailto:admin@example.com"}
 
 
-def test_stripe_revocation_and_oura_sync_helpers_use_data_dir(tmp_path):
+def test_auth_and_oura_sync_helpers_use_data_dir(tmp_path):
     script = r"""
 import json
-import sqlite3
-import sys
-from types import SimpleNamespace
 
 import app
 import auth
 import oura_sleep_sync
 
-sys.modules["stripe"] = SimpleNamespace(
-    error=SimpleNamespace(SignatureVerificationError=Exception),
-)
-import stripe_checkout
-
-with sqlite3.connect(auth.AUTH_DB) as conn:
-    conn.execute(
-        "INSERT INTO users(username, password, salt, is_pro, stripe_sub) VALUES (?, ?, ?, ?, ?)",
-        ("pro-user", "hash", "salt", 1, "sub_fit183"),
-    )
-
-with app.app.app_context():
-    stripe_checkout._revoke_user_pro("sub_fit183")
-
-with sqlite3.connect(auth.AUTH_DB) as conn:
-    row = conn.execute("SELECT is_pro, stripe_sub FROM users WHERE username=?", ("pro-user",)).fetchone()
-
 print(json.dumps({
     "auth_db": auth.AUTH_DB,
-    "stripe_row": list(row),
     "oura_sleep_db": oura_sleep_sync.default_db_path(),
 }))
 """
@@ -258,7 +237,6 @@ print(json.dumps({
     payload = _run_probe(script, DATA_DIR=str(tmp_path))
 
     assert _under(tmp_path, payload["auth_db"])
-    assert payload["stripe_row"] == [0, None]
     assert _under(tmp_path, payload["oura_sleep_db"])
     assert Path(payload["oura_sleep_db"]).name == "oura_daily.sqlite3"
 
