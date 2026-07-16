@@ -359,6 +359,36 @@ def test_oura_client_reports_normalized_fallback_sleep_type(monkeypatch):
     assert metrics["sleep_duration_min"] == 30
 
 
+def test_sleep_summary_does_not_promote_nap_to_last_night(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "fit234-secret")
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    long_sleep = {
+        "day": "2026-06-03",
+        "total_sleep_min": 480,
+        "deep_sleep_min": 90,
+        "rem_sleep_min": 100,
+        "light_sleep_min": 290,
+        "sleep_score": 88,
+    }
+    nap = {
+        "day": "9999-01-01",
+        "sleep_type": "nap",
+        "sleep_duration_min": 30,
+        "sleep_score": None,
+    }
+    monkeypatch.setattr(oura_sleep_sync, "get_latest_sleep", lambda *_a, **_kw: [long_sleep])
+    monkeypatch.setattr(oura_sleep_sync, "get_sleep_range", lambda *_a, **_kw: [long_sleep])
+    monkeypatch.setattr(module, "get_oura_daily", lambda *_a, **_kw: nap)
+    monkeypatch.setattr(module, "get_oura_daily_range", lambda *_a, **_kw: [nap])
+
+    payload = module.app.test_client().get("/api/oura/sleep-summary").get_json()
+
+    assert payload["last_night"]["date"] == "2026-06-03"
+    assert payload["last_night"]["total_sleep_min"] == 480
+    assert payload["data_quality"] == {"status": "ok"}
+
+
 def test_oura_daily_migrates_and_preserves_nullable_sleep_type(tmp_path):
     db_path = tmp_path / "oura.db"
     legacy_columns = [

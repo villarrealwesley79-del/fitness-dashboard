@@ -14957,7 +14957,8 @@ def oura_sleep_summary():
 
         daily_row = _daily_to_row(daily_today)
         ln_day = (last_night or {}).get("day")
-        if daily_row and (not last_night or (ln_day or "") < daily_row["day"]
+        daily_row_is_nap = (daily_row or {}).get("sleep_type") in {"nap", "rest", "late_nap"}
+        if daily_row and not daily_row_is_nap and (not last_night or (ln_day or "") < daily_row["day"]
                          or (last_night.get("sleep_score") in (None, 0) and daily_row.get("sleep_score"))):
             last_night = daily_row
 
