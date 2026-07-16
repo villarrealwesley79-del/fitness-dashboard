@@ -847,6 +847,39 @@ def save_current_workout_plan(
     event_ids = list(dict.fromkeys(publish_adaptation_event_ids or []))
     with _get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        if event_ids:
+            placeholders = ", ".join(["?"] * len(event_ids))
+            event_rows = conn.execute(
+                f"""
+                SELECT id, status, published_at, source_plan_version
+                  FROM workout_adaptation_events
+                 WHERE user_id = ?
+                   AND id IN ({placeholders})
+                """,
+                [user_id, *event_ids],
+            ).fetchall()
+            source_plan_version = event_rows[0]["source_plan_version"] if event_rows else None
+            if (
+                len(event_rows) != len(event_ids)
+                or any(
+                    row["status"] != "applied" or row["published_at"] is not None
+                    for row in event_rows
+                )
+                or any(
+                    row["source_plan_version"] != source_plan_version
+                    for row in event_rows
+                )
+            ):
+                conn.rollback()
+                return None
+            current_plan_row = conn.execute(
+                "SELECT plan_version FROM current_workout_plans WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            current_plan_version = current_plan_row["plan_version"] if current_plan_row else None
+            if source_plan_version != current_plan_version:
+                conn.rollback()
+                return None
         plan_to_save = plan
         adaptation_event_id = plan.get("_fit136_adaptation_event_id")
         if adaptation_event_id:
