@@ -121,7 +121,7 @@ Navy body-fat calculation: a client posts tape measurements to `/api/body/navy-c
 
 Manual sleep import: a client posts either `entries[]` or `csv` text to `/api/sleep/import`. Rows without a `date` or `day` are skipped. Rows are normalized into one record per date and merged by date over existing `SLEEP_DATA`; later imported rows replace earlier rows for the same date. The API writes `data_sleep.json` and returns the number of parsed/imported entries, including entries that may replace existing dates.
 
-Sleep analytics: `/api/sleep/analytics` first attempts to read all Oura `long_sleep` rows from `oura_daily.sqlite3` table `oura_sleep`. If any Oura rows exist, manual `SLEEP_DATA` rows are not merged. If no Oura rows exist or the SQLite read yields no rows, it falls back to manual sleep JSON. It deduplicates by date, preferring `apple_watch` among duplicates in the chosen set, calculates bedtime consistency when at least four parseable sleep-start times exist, and calculates next-day sleep-duration to average-e1RM correlation when at least three paired sleep/workout data points exist.
+Sleep analytics: `/api/sleep/analytics` reads Oura `long_sleep` rows from `oura_daily.sqlite3` table `oura_sleep` and merges them with manual `SLEEP_DATA` by date. Manual duplicates prefer `apple_watch`; an Oura row replaces a manual row only for the same date, while manual-only dates remain visible. Every returned row includes source provenance. The route calculates bedtime consistency when at least four parseable sleep-start times exist and next-day sleep-duration to average-e1RM correlation when at least three paired sleep/workout data points exist.
 
 Stats render: opening Stats loads `/api/history-all` and Apple Health workouts for the chosen range, merges strength history sources client-side, computes visible totals and deltas client-side, then calls `/api/muscle-fatigue` and `/api/insights`. Muscle recovery cells are clickable; clicking toggles a details row with recovery label, readiness, weekly sets, last trained, soreness note, and recommendation.
 
@@ -221,7 +221,7 @@ Markdown export integrates only workout history. It does not include body, sleep
 
 ## 9. Permissions & Security
 
-All routes in this PRD are owner-session protected by the global auth guard. Public exceptions are limited elsewhere to login/register/static, Stripe webhook, and Apple Health sync. API callers without a session receive `401`; non-owner sessions receive `403`.
+All routes in this PRD are owner-session protected by the global auth guard. Public exceptions are limited elsewhere to login/register/static and Apple Health sync. API callers without a session receive `401`; non-owner sessions receive `403`.
 
 Mutating routes in this PRD (`/api/add-body-measurement`, `/api/body/navy-calc`, `/api/sleep/import`) are protected by the global CSRF/same-origin guard. The frontend API helper always sends `X-Requested-With: XMLHttpRequest` and `credentials: same-origin`.
 
@@ -237,7 +237,7 @@ Body-history trend mutates the in-memory row objects by adding `weight_change` b
 
 Recomp ETA uses the first weight from roughly the last 14 entries and divides the change by `2.0` to estimate weekly velocity. This assumes 14 entries roughly equals two weeks; it does not check actual date spacing.
 
-Manual sleep analytics does not merge manual and Oura data. Any nonempty Oura long-sleep table fully wins over `SLEEP_DATA`; manual sleep only appears when no Oura long-sleep rows are available.
+Manual sleep analytics merges manual and Oura data per date. Oura wins on overlapping dates; manual-only dates remain visible, and manual rows without an explicit source use `manual`.
 
 Sleep performance correlation compares a sleep row's duration to the next calendar day's average e1RM from logged workout sets. It requires at least three paired dates and ignores workouts without calculable set e1RM.
 

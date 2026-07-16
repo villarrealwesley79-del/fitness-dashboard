@@ -28,10 +28,6 @@ These are the reachable HTML pages in this checkout:
 - `/` after owner sign-in
 - `/gym-now` after owner sign-in
 
-The checkout also contains billing templates, but `/pricing`, `/success`, and
-`/cancel` are not currently registered Flask routes in this app, so they are not
-counted as reachable pages for FIT-237.
-
 ## Baseline
 
 Baseline run used the same viewport, browser, service-worker, sample-data, and

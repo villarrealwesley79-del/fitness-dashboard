@@ -1,6 +1,6 @@
 # Enum Dictionary
 
-> **Sources:** `app.py`, `auth.py`, `meal_log_policy.py`, `meal_estimate_schema.py`, `meal_text_parser.py`, `branded_food_lookup.py`, `data_store.py`, `workout_adaptation.py`, `whoop_recommendations.py`, `whoop_store.py`, `whoop_client.py`, `wearable_fact_store.py`, `recommendation_sources.py`, `local_vision_adapter.py`, `lm_studio_adapter.py`, `open_wearables_adapter.py`, `apple_health_parser.py`, `health_ingest.py`, `runtime_config.py`, `stripe_checkout.py`, `static/js/app.js`, `static/js/sw.js`
+> **Sources:** `app.py`, `auth.py`, `meal_log_policy.py`, `meal_estimate_schema.py`, `meal_text_parser.py`, `branded_food_lookup.py`, `data_store.py`, `workout_adaptation.py`, `whoop_recommendations.py`, `whoop_store.py`, `whoop_client.py`, `wearable_fact_store.py`, `recommendation_sources.py`, `local_vision_adapter.py`, `lm_studio_adapter.py`, `open_wearables_adapter.py`, `apple_health_parser.py`, `health_ingest.py`, `runtime_config.py`, `static/js/app.js`, `static/js/sw.js`
 > **Routes:** Cross-app constants and status vocabulary consumed by multiple routes.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
@@ -284,11 +284,14 @@ Wearable fact store:
 | CSRF header | `X-Requested-With: XMLHttpRequest` | Required for mutating browser API calls unless same-origin/form token path applies. | `auth.py:55` |
 | CSRF form field | `csrf_token` | Form-based CSRF token name. | `auth.py:57` |
 | CSRF mutating methods | `POST`, `PUT`, `PATCH`, `DELETE` | Methods checked by CSRF guard. | `auth.py:59` |
-| CSRF exempt paths | `/api/apple-health/sync`, `/webhook` | External token/signed webhook paths. | `auth.py:60` |
+| CSRF exempt paths | `/api/apple-health/sync` | External token-authenticated path. | `auth.py:60` |
 | Password hash method | `scrypt:32768:8:1` | Current password hash method; legacy SHA-256 hashes are upgraded after successful login. | `auth.py:66` |
-| Public prefixes | `/login`, `/register`, `/logout`, `/landing`, `/pricing`, `/manifest.json`, `/sw.js`, `/static/`, `/robots.txt`, `/sitemap.xml`, `/webhook`, `/success`, `/cancel`, `/api/apple-health/sync` | Paths exempt from login guard. | `auth.py:342` |
+| Public prefixes | `/login`, `/register`, `/logout`, `/manifest.json`, `/sw.js`, `/static/`, `/robots.txt`, `/sitemap.xml`, `/api/apple-health/sync` | Paths exempt from login guard. | `auth.py:342` |
 | `FITNESS_DASHBOARD_SINGLE_USER` | Defaults true; when true, only owner user id can access protected routes. | `auth.py:228` |
 | `FITNESS_DASHBOARD_OWNER_USER_ID` | Optional explicit owner id. | `auth.py:238` |
+| `FITNESS_DASHBOARD_LOCAL_QA_ENABLED` | Exact `true` opts into one shared agent QA login for local testing only; unset/false removes the designated QA account on restart. Never production. | `auth.py` |
+| `FITNESS_DASHBOARD_LOCAL_QA_USERNAME` | Runtime-only shared QA username required while local QA is enabled. | `auth.py` |
+| `FITNESS_DASHBOARD_LOCAL_QA_PASSWORD` | Runtime-only shared QA password required while local QA is enabled; minimum 8 characters. | `auth.py` |
 | Session cookie config | `HttpOnly`, `SameSite=Lax`, secure by default unless `SESSION_COOKIE_SECURE=false` | Browser session hardening. | `auth.py:487` |
 
 ## Push, PWA, Offline Queue

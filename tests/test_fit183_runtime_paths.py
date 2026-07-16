@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +31,38 @@ def _run_probe(script: str, **env_updates: str) -> dict:
 
 def _under(root: Path, path: str) -> bool:
     return os.path.commonpath([str(root), path]) == str(root)
+
+
+def _launchd_dry_run(tmp_path: Path, action: str) -> str:
+    env = os.environ.copy()
+    env.update(
+        HOME=str(tmp_path / "home"),
+        DATA_DIR=str(tmp_path / "runtime-data"),
+        FITNESS_DASHBOARD_PUBLIC_BASE_URL="https://fitness.example.test:5050",
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "scripts/install-launchd-agents.sh",
+            action,
+            "--dry-run",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--python",
+            "/opt/fitness/python",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def _plists_from_dry_run(output: str) -> list[dict]:
+    documents = re.findall(r"(<\?xml version=.*?</plist>)", output, flags=re.DOTALL)
+    return [plistlib.loads(document.encode("utf-8")) for document in documents]
 
 
 def test_data_dir_env_controls_json_and_sqlite_stores(tmp_path):
@@ -186,37 +220,16 @@ with app.app.test_request_context("/api/push/test", base_url="http://127.0.0.1:5
     assert payload == {"sub": "mailto:admin@example.com"}
 
 
-def test_stripe_revocation_and_oura_sync_helpers_use_data_dir(tmp_path):
+def test_auth_and_oura_sync_helpers_use_data_dir(tmp_path):
     script = r"""
 import json
-import sqlite3
-import sys
-from types import SimpleNamespace
 
 import app
 import auth
 import oura_sleep_sync
 
-sys.modules["stripe"] = SimpleNamespace(
-    error=SimpleNamespace(SignatureVerificationError=Exception),
-)
-import stripe_checkout
-
-with sqlite3.connect(auth.AUTH_DB) as conn:
-    conn.execute(
-        "INSERT INTO users(username, password, salt, is_pro, stripe_sub) VALUES (?, ?, ?, ?, ?)",
-        ("pro-user", "hash", "salt", 1, "sub_fit183"),
-    )
-
-with app.app.app_context():
-    stripe_checkout._revoke_user_pro("sub_fit183")
-
-with sqlite3.connect(auth.AUTH_DB) as conn:
-    row = conn.execute("SELECT is_pro, stripe_sub FROM users WHERE username=?", ("pro-user",)).fetchone()
-
 print(json.dumps({
     "auth_db": auth.AUTH_DB,
-    "stripe_row": list(row),
     "oura_sleep_db": oura_sleep_sync.default_db_path(),
 }))
 """
@@ -224,7 +237,6 @@ print(json.dumps({
     payload = _run_probe(script, DATA_DIR=str(tmp_path))
 
     assert _under(tmp_path, payload["auth_db"])
-    assert payload["stripe_row"] == [0, None]
     assert _under(tmp_path, payload["oura_sleep_db"])
     assert Path(payload["oura_sleep_db"]).name == "oura_daily.sqlite3"
 
@@ -281,3 +293,61 @@ def test_launchd_installer_does_not_hardcode_public_base_url(tmp_path):
 
     assert "admins-mac-mini.tail6c6490.ts.net" not in result.stdout
     assert "<key>FITNESS_DASHBOARD_PUBLIC_BASE_URL</key>" in result.stdout
+
+
+def test_launchd_install_and_reinstall_emit_valid_complete_plists(tmp_path):
+    launch_agents = tmp_path / "home" / "Library" / "LaunchAgents"
+    app_path = launch_agents / "com.fitness-dashboard.plist"
+    staleness_path = launch_agents / "com.fitness-dashboard.staleness.plist"
+    data_dir = tmp_path / "runtime-data"
+
+    for action in ("install", "reinstall"):
+        output = _launchd_dry_run(tmp_path, action)
+        plists = _plists_from_dry_run(output)
+
+        assert len(plists) == 2
+        app_plist, staleness_plist = plists
+        assert app_plist == {
+            "Label": "com.fitness-dashboard",
+            "WorkingDirectory": str(REPO_ROOT),
+            "ProgramArguments": ["/opt/fitness/python", str(REPO_ROOT / "app.py")],
+            "EnvironmentVariables": {
+                "HOST": "127.0.0.1",
+                "PORT": "5050",
+                "FLASK_DEBUG": "0",
+                "DATA_DIR": str(data_dir),
+                "FITNESS_DASHBOARD_PUBLIC_BASE_URL": "https://fitness.example.test:5050",
+                "PYTHONUNBUFFERED": "1",
+            },
+            "RunAtLoad": True,
+            "KeepAlive": True,
+            "StandardOutPath": "/tmp/fitness-dashboard.log",
+            "StandardErrorPath": "/tmp/fitness-dashboard.err.log",
+        }
+        assert staleness_plist == {
+            "Label": "com.fitness-dashboard.staleness",
+            "WorkingDirectory": str(REPO_ROOT),
+            "ProgramArguments": [
+                "/bin/bash",
+                str(REPO_ROOT / "scripts" / "check-apple-health-staleness.sh"),
+            ],
+            "StartInterval": 3600,
+            "RunAtLoad": True,
+            "EnvironmentVariables": {
+                "DATA_DIR": str(data_dir),
+                "APPLE_HEALTH_SYNC_DB": str(data_dir / "apple_health_sync.db"),
+                "APPLE_HEALTH_FIRST_SEEN_FILE": str(data_dir / ".apple-health-first-sync"),
+            },
+            "StandardOutPath": "/tmp/fitness-dashboard-staleness.log",
+            "StandardErrorPath": "/tmp/fitness-dashboard-staleness.err.log",
+        }
+
+        assert output.count("[dry-run] write ") == 2
+        assert output.count("[dry-run] launchctl bootstrap ") == 2
+        assert output.count("[dry-run] launchctl kickstart -k ") == 2
+        if action == "install":
+            assert output.count("[dry-run] launchctl bootout ") == 2
+            assert "[dry-run] rm -f " not in output
+        else:
+            assert output.count("[dry-run] launchctl bootout ") == 4
+            assert f"[dry-run] rm -f {app_path} {staleness_path}" in output

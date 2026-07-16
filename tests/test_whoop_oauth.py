@@ -88,6 +88,93 @@ def test_whoop_connect_start_and_callback_store_connection(fitness_app, monkeypa
     assert "stored-refresh" not in callback.get_data(as_text=True)
 
 
+def test_no_login_mode_allows_state_validated_cross_site_callback(
+    fitness_app, monkeypatch, tmp_path
+):
+    import auth
+
+    auth.AUTH_DB = str(tmp_path / "auth.sqlite3")
+    auth.init_auth_db()
+    auth.User.create("owner", "existing-password")
+    monkeypatch.setenv("FITNESS_DASHBOARD_NO_LOGIN", "true")
+    fitness_app.app.config["LOGIN_DISABLED"] = False
+    monkeypatch.setattr(
+        fitness_app, "_whoop_redirect_uri", lambda: "http://localhost/api/whoop/callback"
+    )
+    monkeypatch.setattr(fitness_app, "_whoop_config_for_redirect", lambda redirect_uri: _config())
+    monkeypatch.setattr(
+        fitness_app,
+        "exchange_whoop_code",
+        lambda config, code: {
+            "access_token": "stored-access",
+            "refresh_token": "stored-refresh",
+            "expires_in": 3600,
+            "scope": "offline read:recovery",
+        },
+    )
+    client = fitness_app.app.test_client()
+
+    start = client.post(
+        "/api/whoop/connect/start",
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    state = urllib.parse.parse_qs(
+        urllib.parse.urlparse(start.get_json()["authorization_url"]).query
+    )["state"][0]
+    assert "Set-Cookie" not in start.headers
+    callback = client.get(
+        f"/api/whoop/callback?state={state}&code=server-code",
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+
+    assert start.status_code == 200
+    assert callback.status_code == 200
+    assert callback.get_json()["connection"]["status"] == "connected"
+
+    monkeypatch.setattr(
+        fitness_app,
+        "_acquire_whoop_mutation_guard",
+        lambda: pytest.fail("reused callback state reached the mutation guard"),
+    )
+    reused = client.get(
+        f"/api/whoop/callback?state={state}&code=server-code",
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+
+    assert reused.status_code == 401
+
+
+def test_no_login_mode_rejects_unrecognized_cross_site_callback_before_route_work(
+    fitness_app, monkeypatch, tmp_path
+):
+    import auth
+
+    auth.AUTH_DB = str(tmp_path / "auth.sqlite3")
+    auth.init_auth_db()
+    auth.User.create("owner", "existing-password")
+    monkeypatch.setenv("FITNESS_DASHBOARD_NO_LOGIN", "true")
+    fitness_app.app.config["LOGIN_DISABLED"] = False
+    monkeypatch.setattr(
+        fitness_app,
+        "_acquire_whoop_mutation_guard",
+        lambda: pytest.fail("invalid cross-site state reached the mutation guard"),
+    )
+    monkeypatch.setattr(
+        fitness_app,
+        "_open_wearables_complete_oauth_callback",
+        lambda provider, code, state: pytest.fail(
+            "invalid cross-site state reached Open Wearables"
+        ),
+    )
+
+    response = fitness_app.app.test_client().get(
+        "/api/whoop/callback?state=attacker-state&code=server-code",
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+
+    assert response.status_code == 401
+
+
 def test_whoop_callback_redirects_browser_navigation_after_success(fitness_app, monkeypatch):
     monkeypatch.setattr(fitness_app, "_whoop_redirect_uri", lambda: "http://localhost/api/whoop/callback")
     monkeypatch.setattr(fitness_app, "_whoop_config_for_redirect", lambda redirect_uri: _config())

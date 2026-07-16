@@ -168,7 +168,15 @@
         await handleUnauthorizedResponse(res);
         if (!res.ok) {
             const text = await res.text().catch(() => '');
-            throw new Error(`${res.status} ${path}: ${text.slice(0, 120)}`);
+            const requestError = new Error(`${res.status} ${path}: ${text.slice(0, 120)}`);
+            try {
+                const parsed = JSON.parse(text);
+                if (parsed && parsed.error) {
+                    requestError.apiErrorCode = parsed.error.code || null;
+                    requestError.apiErrorMessage = parsed.error.message || null;
+                }
+            } catch {}
+            throw requestError;
         }
         const ct = res.headers.get('content-type') || '';
         return ct.includes('application/json') ? res.json() : res.text();
@@ -5353,6 +5361,40 @@
         cell.parentNode.appendChild(detail);
     }
 
+    function progressInsightVisual(ins) {
+        const kind = String(ins && ins.type || 'info').toLowerCase();
+        const iconName = String(ins && ins.icon || '').toLowerCase();
+        const toneByType = {
+            positive: 'pos',
+            success: 'pos',
+            warning: 'warn',
+            negative: 'neg',
+            danger: 'neg',
+            info: 'info',
+        };
+        const glyphByIcon = {
+            trending_up: '↑',
+            trending_down: '↓',
+            pause: '‖',
+            schedule: '◷',
+            balance: '↔',
+            warning: '!',
+            emoji_events: '★',
+        };
+        const fallbackGlyphByType = {
+            positive: '↑',
+            success: '↑',
+            warning: '!',
+            negative: '!',
+            danger: '▲',
+            info: 'i',
+        };
+        return {
+            iconClass: toneByType[kind] || 'info',
+            iconChar: glyphByIcon[iconName] || fallbackGlyphByType[kind] || 'i',
+        };
+    }
+
     async function renderStats() {
         const days = state.ranges.stats;
         const [hist, appleWorkouts] = await Promise.all([
@@ -5434,10 +5476,7 @@
             items.forEach((ins) => {
                 const card = document.createElement('div');
                 card.className = 'in-card';
-                const kind = (ins.type || 'info').toLowerCase();
-                const map = { success: 'pos', warning: 'warn', danger: 'neg', info: 'info' };
-                const iconClass = map[kind] || 'info';
-                const iconChar = kind === 'success' ? '↑' : kind === 'warning' ? '!' : kind === 'danger' ? '▲' : 'i';
+                const { iconClass, iconChar } = progressInsightVisual(ins);
                 card.innerHTML = `
                     <div class="in-icon ${iconClass}">${iconChar}</div>
                     <div>
@@ -6206,7 +6245,7 @@
     const PUSH_STATE_DETAIL = {
         unsupported: 'This browser does not support web push notifications.',
         needs_install: 'Install the app to the Home Screen before enabling push on iOS.',
-        prompt: 'Low-stakes nudges only: stale wearable data and pending food review.',
+        prompt: 'Preview coaching alerts and verify push delivery. This does not schedule reminders.',
         granted_active: 'Subscribed, no scheduled reminders yet. Send a test notification to verify delivery.',
         granted_inactive: 'Permission is granted, but no browser push subscription is active yet.',
         revoked: 'Browser permission was reset. Re-enable to create a fresh subscription, or disable to clean up.',
@@ -7091,11 +7130,26 @@
         } catch (e) { console.error(e); toast('Log failed', 'err'); }
     }
 
+    function syncBodyLogValidation() {
+        const weightInput = $('body-log-weight');
+        const bodyFatInput = $('body-log-bf');
+        const saveButton = $('btn-log-body');
+        const error = $('body-log-error');
+        const weightPresent = Number(weightInput.value) > 0;
+        const bodyFatPresent = bodyFatInput.value.trim() !== '';
+
+        saveButton.disabled = bodyFatPresent && !weightPresent;
+        weightInput.setAttribute('aria-invalid', saveButton.disabled ? 'true' : 'false');
+        error.hidden = !saveButton.disabled;
+        return !saveButton.disabled;
+    }
+
     async function logBody() {
         const payload = {
             weight_lbs: Number($('body-log-weight').value) || null,
             body_fat_pct: Number($('body-log-bf').value) || null,
         };
+        if (!syncBodyLogValidation()) return;
         if (!payload.weight_lbs && !payload.body_fat_pct) return toast('Enter a value', 'err');
         try {
             await api('/api/add-body-measurement', {
@@ -7109,14 +7163,61 @@
         } catch (e) { console.error(e); toast('Save failed', 'err'); }
     }
 
+    function _ouraSyncErrorDetails(err) {
+        if (err && (err.apiErrorCode || err.apiErrorMessage)) {
+            return {
+                code: String(err.apiErrorCode || 'oura_sync_failed'),
+                message: String(err.apiErrorMessage || 'Oura sync failed'),
+            };
+        }
+        const raw = String((err && err.message) || err || '');
+        const jsonStart = raw.indexOf('{');
+        if (jsonStart >= 0) {
+            try {
+                const parsed = JSON.parse(raw.slice(jsonStart));
+                const serverError = parsed && parsed.error;
+                if (serverError) {
+                    return {
+                        code: String(serverError.code || 'oura_sync_failed'),
+                        message: String(serverError.message || 'Oura sync failed'),
+                    };
+                }
+            } catch {}
+        }
+        return { code: 'oura_sync_failed', message: 'Oura sync failed' };
+    }
+
+    function renderOuraSyncResult(payload, err = null) {
+        const row = $('oura-detail-sync-row');
+        const value = $('oura-detail-sync-result');
+        if (!row || !value) return;
+        row.hidden = false;
+        if (err) {
+            const detail = _ouraSyncErrorDetails(err);
+            value.textContent = `${detail.code} · ${detail.message}`;
+            return;
+        }
+        const latestDays = Array.isArray(payload && payload.latest_days)
+            ? payload.latest_days.filter(Boolean)
+            : [];
+        const rangeEnd = payload && payload.synced_through || 'unknown end';
+        const count = Number(payload && payload.latest_records || 0);
+        value.textContent = `Success · ${payload.synced_from || 'unknown start'} → ${rangeEnd} · ${count} latest saved record${count === 1 ? '' : 's'} · saved days ${latestDays.join(', ') || 'none'}`;
+    }
+
     async function syncOura() {
         toast('Syncing Oura…');
         try {
-            await api('/api/oura/sync-sleep', { method: 'POST' });
+            const result = await api('/api/oura/sync-sleep', { method: 'POST' });
+            renderOuraSyncResult(result);
             invalidateCaches();
             toast('Oura synced');
             loadTab(state.currentTab);
-        } catch (e) { console.error(e); toast(apiErrorMessage(e, 'Oura sync failed'), 'err'); }
+        } catch (e) {
+            console.error(e);
+            renderOuraSyncResult(null, e);
+            toast(apiErrorMessage(e, 'Oura sync failed'), 'err');
+        }
     }
 
     function downloadExport() {
@@ -9592,6 +9693,10 @@
         $('btn-log-strength') && $('btn-log-strength').addEventListener('click', logStrength);
         $('btn-log-cardio') && $('btn-log-cardio').addEventListener('click', logCardio);
         $('btn-log-recovery') && $('btn-log-recovery').addEventListener('click', logRecovery);
+        const bodyWeightInput = $('body-log-weight');
+        const bodyFatInput = $('body-log-bf');
+        bodyWeightInput && bodyWeightInput.addEventListener('input', syncBodyLogValidation);
+        bodyFatInput && bodyFatInput.addEventListener('input', syncBodyLogValidation);
         $('btn-log-body') && $('btn-log-body').addEventListener('click', logBody);
 
         // Actions
