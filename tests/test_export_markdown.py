@@ -1,0 +1,420 @@
+import importlib
+
+
+def _fitness_app(monkeypatch, workouts):
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    monkeypatch.setattr(module, "WORKOUTS", workouts)
+    return module.app
+
+
+def test_markdown_export_formats_complete_strength_rows(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {
+                "date": "2026-07-12",
+                "exercises": [
+                    {
+                        "machine": "Chest Press",
+                        "sets": [{"set_number": 1, "reps": 8, "weight_lbs": 100, "notes": "steady"}],
+                    },
+                    {"exercise": "Legacy Curl", "sets": [{"reps": 10, "weight_lbs": 20}]},
+                    {"name": "Named Row", "sets": [{"reps": 5, "weight_lbs": 30}]},
+                ],
+            }
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| 2026-07-12 | Chest Press | 1 | 8 | 100 | 800 | steady |" in body
+    assert "| 2026-07-12 | Legacy Curl | 1 | 10 | 20 | 200 |  |" in body
+    assert "| 2026-07-12 | Named Row | 1 | 5 | 30 | 150 |  |" in body
+    assert "- **Total Sets:** 3" in body
+
+
+def test_markdown_export_calculates_volume_from_numeric_string_sets(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {
+                "date": "2026-07-12",
+                "exercises": [
+                    {
+                        "machine": "Chest Press",
+                        "sets": [{"reps": "8", "weight_lbs": "100"}],
+                    }
+                ],
+            }
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| 2026-07-12 | Chest Press | 1 | 8 | 100 | 800 |  |" in body
+    assert "- **Total Volume:** 800 lbs" in body
+
+
+def test_markdown_export_rejects_malformed_and_negative_strength_numbers(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {
+                "date": "2026-07-12",
+                "exercises": [
+                    {
+                        "machine": "Chest Press",
+                        "sets": [
+                            {"reps": "abc", "weight_lbs": "NaN"},
+                            {"reps": "Infinity", "weight_lbs": "1e309"},
+                            {"reps": -5, "weight_lbs": 100},
+                            {"reps": 5, "weight_lbs": -100},
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert body.count("| 2026-07-12 | Chest Press | 1 | N/A | N/A | N/A |  |") == 1
+    assert body.count("| 2026-07-12 | Chest Press | 2 | N/A | N/A | N/A |  |") == 1
+    assert "| 2026-07-12 | Chest Press | 3 | N/A | 100 | N/A |  |" in body
+    assert "| 2026-07-12 | Chest Press | 4 | 5 | N/A | N/A |  |" in body
+    assert "- **Total Volume:** N/A" in body
+
+
+def test_markdown_export_labels_partial_and_watch_only_rows(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {
+                "date": "2026-07-12",
+                "source": "Apple Health",
+                "exercises": [
+                    {"sets": [{"reps": 10}, {"weight_lbs": 20}]},
+                    {"machine": "Apple Watch Import", "sets": None},
+                    {"machine": "Legacy Import"},
+                ],
+            },
+            {
+                "date": "2026-07-13",
+                "session_type": "Walking",
+                "source": "watch",
+                "exercises": None,
+            },
+            {"date": "2026-07-14", "session_type": "strength", "exercises": []},
+            {
+                "date": "2026-07-15",
+                "session_type": "strength",
+                "source": "lifted",
+                "exercises": [{"machine": "Chest Press"}],
+            },
+            {
+                "date": "2026-07-16",
+                "session_type": {"invalid": "metadata"},
+                "source": "lifted",
+                "exercises": [],
+            },
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| 2026-07-12 | N/A | 1 | 10 | N/A | N/A |  |" in body
+    assert "| 2026-07-12 | N/A | 2 | N/A | 20 | N/A |  |" in body
+    assert "| 2026-07-12 | Apple Watch Import | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "| 2026-07-12 | Legacy Import | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "| 2026-07-13 | Walking | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "| 2026-07-14 | strength | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "| 2026-07-15 | Chest Press | N/A | N/A | N/A | N/A | No set data |" in body
+    assert "| 2026-07-16 | Strength - Logged | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "*Total Sessions: 5*" in body
+    assert "- **Total Volume:** N/A" in body
+
+
+def test_markdown_export_treats_non_watch_cardio_as_valid_zero_strength_data(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {
+                "date": "2026-07-13",
+                "source": "fitness_dashboard",
+                "session_type": "cardio",
+                "exercises": [],
+            }
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| 2026-07-13 | cardio | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "- **Total Sets:** 0" in body
+    assert "- **Total Volume:** 0 lbs" in body
+
+
+def test_markdown_export_labels_malformed_nested_rows(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            None,
+            7,
+            {
+                "date": "2026-07-15",
+                "exercises": [None, {"machine": "Partial", "sets": [None]}],
+            },
+            {"date": "2026-07-16", "exercises": 1},
+            {"date": "2026-07-17", "exercises": [{"machine": "Partial", "sets": 1}]},
+            {
+                "date": "2026-07-18",
+                "exercises": [
+                    {
+                        "machine": {"invalid": "label"},
+                        "sets": [{"reps": 2, "weight_lbs": 5, "notes": "left\\|right\nnext"}],
+                    },
+                    {
+                        "machine": "Nonfinite",
+                        "sets": [
+                            {
+                                "set_number": {"invalid": 1},
+                                "reps": float("nan"),
+                                "weight_lbs": float("inf"),
+                                "notes": ["invalid"],
+                            },
+                            {"reps": 1e308, "weight_lbs": 1e308},
+                            {"reps": 1, "weight_lbs": 1e308},
+                            {"reps": 1, "weight_lbs": 1e308},
+                            {"set_number": " ", "reps": "", "weight_lbs": " ", "notes": ""},
+                        ],
+                    },
+                ],
+            },
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    invalid_workout_row = "| N/A | N/A | N/A | N/A | N/A | N/A | Invalid workout data |"
+    assert body.count(invalid_workout_row) == 2
+    assert "| 2026-07-15 | N/A | N/A | N/A | N/A | N/A | Invalid exercise data |" in body
+    assert "| 2026-07-15 | Partial | 1 | N/A | N/A | N/A | Invalid set data |" in body
+    assert "| 2026-07-16 | N/A | N/A | N/A | N/A | N/A | Invalid exercise collection |" in body
+    assert "| 2026-07-17 | Partial | N/A | N/A | N/A | N/A | Invalid set collection |" in body
+    escaped_note = "left" + "\\" * 3 + "|right next"
+    assert f"| 2026-07-18 | N/A | 1 | 2 | 5 | 10 | {escaped_note} |" in body
+    assert "| 2026-07-18 | Nonfinite | N/A | N/A | N/A | N/A | N/A |" in body
+    assert "| 2026-07-18 | Nonfinite | 2 | 1e+308 | 1e+308 | N/A |  |" in body
+    assert "| 2026-07-18 | Nonfinite | 3 | 1 | 1e+308 | 1e+308 |  |" in body
+    assert "| 2026-07-18 | Nonfinite | 4 | 1 | 1e+308 | 1e+308 |  |" in body
+    assert "| 2026-07-18 | Nonfinite | N/A | N/A | N/A | N/A |  |" in body
+    assert "- **Total Volume:** N/A" in body
+
+
+def test_markdown_export_handles_empty_history(monkeypatch):
+    app = _fitness_app(monkeypatch, [])
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "*Total Sessions: 0*" in body
+    assert "## Workout Log" in body
+
+
+def test_markdown_export_preserves_non_list_history(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        {"date": "2026-07-19", "source": "lifted", "exercises": []},
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "*Total Sessions: 1*" in body
+    assert "| 2026-07-19 | Strength - Logged | N/A | N/A | N/A | N/A | No exercise data |" in body
+
+    module = importlib.import_module("app")
+    monkeypatch.setattr(module, "WORKOUTS", 7)
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "*Total Sessions: 1*" in body
+    assert "| N/A | N/A | N/A | N/A | N/A | N/A | Invalid workout data |" in body
+    assert "## Summary" in body
+    assert "- **Total Sets:** N/A" in body
+    assert "- **Total Volume:** N/A" in body
+
+
+def test_markdown_export_marks_partial_strength_volume_unknown(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [{"source": "lifted", "exercises": [{"machine": "Chest Press"}]}],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Chest Press | N/A | N/A | N/A | N/A | No set data |" in body
+    assert "- **Total Sets:** N/A" in body
+    assert "- **Total Volume:** N/A" in body
+
+    module = importlib.import_module("app")
+    monkeypatch.setattr(module, "WORKOUTS", [{"source": "lifted"}])
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Strength - Logged | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "- **Total Volume:** N/A" in body
+
+    monkeypatch.setattr(
+        module,
+        "WORKOUTS",
+        [
+            {
+                "source": "watch",
+                "activity_type": {"invalid": "metadata"},
+                "session_type": "strength",
+                "exercises": [],
+            }
+        ],
+    )
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | strength | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "- **Total Volume:** N/A" in body
+
+    monkeypatch.setattr(
+        module,
+        "WORKOUTS",
+        [{"source": "lifted", "exercises": [{"machine": "Chest Press", "sets": []}]}],
+    )
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Chest Press | N/A | N/A | N/A | N/A | No set data |" in body
+    assert "- **Total Volume:** N/A" in body
+
+
+def test_markdown_export_escapes_summary_date_range(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {"date": "2026-07-20\nbad|date", "source": "watch", "exercises": []},
+            {"date": "   ", "source": "watch", "exercises": []},
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "- **Date Range:** N/A" in body
+    assert "| N/A | Watch | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+
+
+def test_markdown_export_marks_incomplete_date_range_unknown(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {"date": "2026-07-20", "source": "watch", "exercises": []},
+            {"source": "watch", "exercises": []},
+            None,
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "- **Date Range:** N/A" in body
+    assert "2026-07-20 to 2026-07-20" not in body
+
+
+def test_markdown_export_normalizes_legacy_apple_watch_source(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [{"source": "apple_watch", "activity": "Walking", "exercises": []}],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Walking | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "- **Total Sets:** 0" in body
+    assert "- **Total Volume:** 0 lbs" in body
+
+    module = importlib.import_module("app")
+    monkeypatch.setattr(
+        module,
+        "WORKOUTS",
+        [{"source": "apple_watch", "activity": "Strength Training", "exercises": []}],
+    )
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Strength Training | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "- **Total Sets:** N/A" in body
+    assert "- **Total Volume:** N/A" in body
+
+
+def test_markdown_export_uses_watch_activity_precedence_for_display(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {
+                "source": "apple_watch",
+                "session_type": "strength",
+                "activity": "Walking",
+                "exercises": [],
+            }
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Walking | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "| N/A | strength |" not in body
+
+
+def test_markdown_export_normalizes_legacy_watch_activity_aliases(monkeypatch):
+    app = _fitness_app(
+        monkeypatch,
+        [
+            {"source": "apple_health", "type": "Walking", "exercises": []},
+            {"source": "apple_health", "workoutActivityType": 6, "exercises": []},
+        ],
+    )
+
+    response = app.test_client().get("/api/export-md")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "| N/A | Walking | N/A | N/A | N/A | N/A | Non-strength/watch-only row |" in body
+    assert "| N/A | Traditional Strength Training | N/A | N/A | N/A | N/A | No exercise data |" in body
+    assert "- **Total Sets:** N/A" in body
+    assert "- **Total Volume:** N/A" in body

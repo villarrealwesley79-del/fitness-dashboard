@@ -101,7 +101,7 @@ from whoop_store import (
     project_whoop_daily_facts,
 )
 from ai_fact_query import answer_fact_question, build_ai_fact_context, create_pending_suggestion
-from history_normalization import canonical_training_category, normalize_history_item
+from history_normalization import canonical_training_category, history_source_label, normalize_history_item
 from open_wearables_adapter import (
     build_open_wearables_status,
     providers_from_payload,
@@ -4305,26 +4305,171 @@ def calculate_injury_risk(workouts: list, soreness_data: list) -> dict:
     }
 
 
+def _finite_workout_number(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        if not value.strip():
+            return None
+        try:
+            value = float(value)
+        except (ValueError, OverflowError):
+            return None
+    elif not isinstance(value, (int, float)):
+        return None
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:
+        return None
+
+
+def _is_finite_workout_number(value) -> bool:
+    return _finite_workout_number(value) is not None
+
+
+def _nonnegative_workout_number(value):
+    number = _finite_workout_number(value)
+    return number if number is not None and number >= 0 else None
+
+
+def _workout_export_date(value):
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return value if parsed.strftime("%Y-%m-%d") == value else None
+
+
+def _workout_export_source_label(workout: dict) -> str:
+    normalized = dict(workout)
+    source = normalized.get("source")
+    if isinstance(source, str) and source.strip().lower().replace("_", " ") == "apple watch":
+        normalized["source"] = "watch"
+    activity = _workout_export_activity_label(normalized)
+    if activity:
+        normalized["activity_type"] = activity
+    else:
+        normalized.pop("activity_type", None)
+    return history_source_label(normalized)
+
+
+def _workout_export_activity_label(workout: dict):
+    for key in (
+        "activity_type",
+        "activity",
+        "type",
+        "workoutActivityType",
+        "name",
+        "session_type",
+    ):
+        value = workout.get(key)
+        if value is None or isinstance(value, (dict, list, bool)):
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        label = _apple_health_activity({"activity_type": value})
+        return label or None
+    return None
+
+
+def _workout_export_category(workout: dict) -> str:
+    source = workout.get("source")
+    category = canonical_training_category(_workout_export_activity_label(workout), source)
+    source_label = str(source or "").strip().lower().replace("_", " ")
+    if category == "unknown" and source_label in {"watch", "apple watch", "apple health"}:
+        return "watch"
+    return category
+
+
+def _workout_export_exercise_name(exercise: dict):
+    for key in ("machine", "exercise", "name"):
+        value = exercise.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
 def calculate_workout_summary_stats(workouts: list) -> dict:
     """Calculate comprehensive workout statistics."""
+    workouts = [workout for workout in workouts if isinstance(workout, dict)]
     if not workouts:
         return {}
 
     total_sessions = len(workouts)
-    total_sets = sum(len(e.get("sets", [])) for w in workouts for e in w.get("exercises", []))
-    total_volume = sum(
-        s["weight_lbs"] * s["reps"]
-        for w in workouts
-        for e in w.get("exercises", [])
-        for s in e.get("sets", [])
-    )
-
-    # Exercise frequency
+    total_sets = 0
+    total_sets_valid = True
+    total_volume = 0
+    total_volume_valid = True
     exercise_freq = {}
     for w in workouts:
-        for e in w.get("exercises", []):
-            machine = e["machine"]
+        is_non_strength_workout = _workout_export_category(w) not in {
+            "strength_training",
+            "unknown",
+        }
+        exercises = w.get("exercises")
+        if exercises is None:
+            if not is_non_strength_workout:
+                total_sets_valid = False
+                total_volume_valid = False
+            continue
+        if exercises is not None and not isinstance(exercises, list):
+            total_sets_valid = False
+            total_volume_valid = False
+            continue
+        if not isinstance(exercises, list):
+            continue
+        if not exercises:
+            if not is_non_strength_workout:
+                total_sets_valid = False
+                total_volume_valid = False
+            continue
+        for e in exercises:
+            if not isinstance(e, dict):
+                total_sets_valid = False
+                total_volume_valid = False
+                continue
+            machine = _workout_export_exercise_name(e) or "N/A"
             exercise_freq[machine] = exercise_freq.get(machine, 0) + 1
+            sets = e.get("sets")
+            if sets is None:
+                if not is_non_strength_workout:
+                    total_sets_valid = False
+                    total_volume_valid = False
+                continue
+            if sets is not None and not isinstance(sets, list):
+                total_sets_valid = False
+                total_volume_valid = False
+                continue
+            if not isinstance(sets, list):
+                continue
+            if not sets:
+                if not is_non_strength_workout:
+                    total_sets_valid = False
+                    total_volume_valid = False
+                continue
+            for s in sets:
+                if not isinstance(s, dict):
+                    total_sets_valid = False
+                    total_volume_valid = False
+                    continue
+                total_sets += 1
+                weight = _nonnegative_workout_number(s.get("weight_lbs"))
+                reps = _nonnegative_workout_number(s.get("reps"))
+                if weight is not None and reps is not None:
+                    set_volume = weight * reps
+                    if _is_finite_workout_number(set_volume):
+                        candidate_total = total_volume + set_volume
+                        if _is_finite_workout_number(candidate_total):
+                            total_volume = candidate_total
+                        else:
+                            total_volume_valid = False
+                    else:
+                        total_volume_valid = False
+                else:
+                    total_volume_valid = False
 
     top_exercises = sorted(exercise_freq.items(), key=lambda x: -x[1])[:5]
 
@@ -4332,17 +4477,28 @@ def calculate_workout_summary_stats(workouts: list) -> dict:
     session_types = {}
     for w in workouts:
         st = w.get("session_type", "other")
+        if not isinstance(st, str) or not st:
+            st = "other"
         session_types[st] = session_types.get(st, 0) + 1
 
     # Date range
-    dates = [w["date"] for w in workouts]
+    dates = [_workout_export_date(w.get("date")) for w in workouts]
+    date_range_valid = all(date is not None for date in dates)
 
     return {
         "total_sessions": total_sessions,
-        "total_sets": total_sets,
-        "total_volume": round(total_volume),
-        "avg_sets_per_session": round(total_sets / total_sessions, 1) if total_sessions else 0,
-        "date_range": f"{min(dates)} to {max(dates)}" if dates else "N/A",
+        "total_sets": total_sets if total_sets_valid else None,
+        "total_volume": round(total_volume) if total_volume_valid else None,
+        "avg_sets_per_session": (
+            round(total_sets / total_sessions, 1)
+            if total_sets_valid and total_sessions
+            else None
+        ),
+        "date_range": (
+            f"{min(dates)} to {max(dates)}"
+            if dates and date_range_valid
+            else "N/A"
+        ),
         "top_exercises": [{"exercise": e, "count": c} for e, c in top_exercises],
         "session_types": session_types
     }
@@ -16881,21 +17037,51 @@ def import_backup():
         return jsonify({"status": "error", "message": str(e)}), 400
 
 
+def _markdown_export_cell(value, default="N/A") -> str:
+    if value is None or isinstance(value, (dict, list)):
+        return default
+    if isinstance(value, str) and not value.strip():
+        return default
+    if isinstance(value, (int, float)) and not _is_finite_workout_number(value):
+        return default
+    if isinstance(value, float):
+        value = f"{value:g}"
+    return str(value).replace("\\", "\\\\").replace("\r", " ").replace("\n", " ").replace("|", "\\|")
+
+
+def _markdown_export_number_cell(value) -> str:
+    return _markdown_export_cell(value) if _nonnegative_workout_number(value) is not None else "N/A"
+
+
 @app.route('/api/export-md')
 def export_markdown():
     """Export all workouts to markdown format."""
+    workout_rows = WORKOUTS if isinstance(WORKOUTS, list) else [WORKOUTS]
+    workouts = [workout for workout in workout_rows if isinstance(workout, dict)]
+    invalid_workout_count = len(workout_rows) - len(workouts)
     lines = ["# Workout History Export", ""]
     lines.append(f"*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}*")
-    lines.append(f"*Total Sessions: {len(WORKOUTS)}*")
+    lines.append(f"*Total Sessions: {len(workout_rows)}*")
     lines.append("")
 
     # Summary stats
-    summary = calculate_workout_summary_stats(WORKOUTS)
-    if summary:
+    summary = calculate_workout_summary_stats(workouts)
+    if summary or invalid_workout_count:
         lines.append("## Summary")
-        lines.append(f"- **Date Range:** {summary.get('date_range', 'N/A')}")
-        lines.append(f"- **Total Sets:** {summary.get('total_sets', 0)}")
-        lines.append(f"- **Total Volume:** {summary.get('total_volume', 0):,} lbs")
+        summary_date_range = None if invalid_workout_count else summary.get("date_range")
+        lines.append(f"- **Date Range:** {_markdown_export_cell(summary_date_range)}")
+        summary_sets = None if invalid_workout_count else summary.get("total_sets")
+        lines.append(
+            f"- **Total Sets:** {summary_sets}"
+            if _is_finite_workout_number(summary_sets)
+            else "- **Total Sets:** N/A"
+        )
+        summary_volume = None if invalid_workout_count else summary.get("total_volume")
+        lines.append(
+            f"- **Total Volume:** {summary_volume:,} lbs"
+            if _is_finite_workout_number(summary_volume)
+            else "- **Total Volume:** N/A"
+        )
         lines.append("")
 
     lines.append("## Workout Log")
@@ -16903,14 +17089,83 @@ def export_markdown():
     lines.append("| Date | Machine | Set | Reps | Weight | Volume | Notes |")
     lines.append("|------|---------|-----|------|--------|--------|-------|")
 
-    for workout in sorted(WORKOUTS, key=lambda x: x["date"]):
-        for exercise in workout.get("exercises", []):
-            machine = exercise["machine"]
-            for idx, s in enumerate(exercise.get("sets", [])):
-                volume = s["weight_lbs"] * s["reps"]
-                notes = s.get("notes", "")
-                set_number = s.get("set_number") or idx + 1
-                lines.append(f"| {workout['date']} | {machine} | {set_number} | {s['reps']} | {s['weight_lbs']} | {volume} | {notes} |")
+    for workout in sorted(workouts, key=lambda x: str(x.get("date") or "")):
+        workout_date_value = workout.get("date")
+        workout_date = _markdown_export_cell(
+            workout_date_value if isinstance(workout_date_value, str) and workout_date_value else None
+        )
+        source_label = _workout_export_source_label(workout)
+        is_non_strength_row = _workout_export_category(workout) not in {
+            "strength_training",
+            "unknown",
+        }
+        exercises = workout.get("exercises")
+        if exercises is not None and not isinstance(exercises, list):
+            lines.append(
+                f"| {workout_date} | N/A | N/A | N/A | N/A | N/A | Invalid exercise collection |"
+            )
+            continue
+        exercises = exercises or []
+        if not exercises:
+            row_name_value = _workout_export_activity_label(workout) or source_label
+            row_name = _markdown_export_cell(row_name_value)
+            row_note = (
+                "Non-strength/watch-only row"
+                if is_non_strength_row
+                else "No exercise data"
+            )
+            lines.append(
+                f"| {workout_date} | {row_name} | N/A | N/A | N/A | N/A | {row_note} |"
+            )
+            continue
+        for exercise in exercises:
+            if not isinstance(exercise, dict):
+                lines.append(
+                    f"| {workout_date} | N/A | N/A | N/A | N/A | N/A | Invalid exercise data |"
+                )
+                continue
+            machine = _markdown_export_cell(_workout_export_exercise_name(exercise))
+            sets = exercise.get("sets")
+            if sets is not None and not isinstance(sets, list):
+                lines.append(
+                    f"| {workout_date} | {machine} | N/A | N/A | N/A | N/A | Invalid set collection |"
+                )
+                continue
+            sets = sets or []
+            if not sets:
+                row_note = "Non-strength/watch-only row" if is_non_strength_row else "No set data"
+                lines.append(
+                    f"| {workout_date} | {machine} | N/A | N/A | N/A | N/A | {row_note} |"
+                )
+                continue
+            for idx, s in enumerate(sets):
+                if not isinstance(s, dict):
+                    lines.append(
+                        f"| {workout_date} | {machine} | {idx + 1} | N/A | N/A | N/A | Invalid set data |"
+                    )
+                    continue
+                reps = s.get("reps")
+                weight = s.get("weight_lbs")
+                volume = "N/A"
+                weight_number = _nonnegative_workout_number(weight)
+                reps_number = _nonnegative_workout_number(reps)
+                if weight_number is not None and reps_number is not None:
+                    set_volume = weight_number * reps_number
+                    if _is_finite_workout_number(set_volume):
+                        volume = set_volume
+                notes_value = s.get("notes", "")
+                notes_default = "" if notes_value is None or notes_value == "" else "N/A"
+                notes = _markdown_export_cell(notes_value, notes_default)
+                set_number_value = s.get("set_number")
+                set_number = idx + 1 if set_number_value is None else _markdown_export_cell(set_number_value)
+                lines.append(
+                    f"| {workout_date} | {machine} | {set_number} | "
+                    f"{_markdown_export_number_cell(reps)} | "
+                    f"{_markdown_export_number_cell(weight)} | {_markdown_export_cell(volume)} | {notes} |"
+                )
+
+    for _ in range(invalid_workout_count):
+        lines.append("| N/A | N/A | N/A | N/A | N/A | N/A | Invalid workout data |")
 
     lines.append("")
     lines.append("---")
