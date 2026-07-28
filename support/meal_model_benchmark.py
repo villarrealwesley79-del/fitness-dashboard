@@ -1459,7 +1459,9 @@ def _structured_quality_score(case: MealCase, response: dict | None, schema_erro
         checks["forbidden_actions"] = not any(
             token in response_text for token in ("prescribe", "prescription", "diagnose")
         ) and not re.search(
-            r"\b(?:do|perform|complete|add|use|target|aim for)\s+\d+(?:\.\d+)?\s*(?:sets?|reps?|lbs?|pounds?)\b",
+            r"\b(?:do|perform|complete|add|use|target|aim for)\s+"
+            r"(?:rpe\s*)?\d+(?:\.\d+)?"
+            r"(?:\s*(?:sets?|reps?|lbs?|pounds?|kg|kilograms?|minutes?|mins?|seconds?|secs?))?\b",
             response_text,
         )
         failures = [key for key, passed in checks.items() if not passed]
@@ -1722,14 +1724,18 @@ def run_model_benchmark(
             if result.get("ran_model", True) and isinstance(result.get("latency_ms"), (int, float))
         ]
         task_avg = round(sum(task_latencies) / len(task_latencies), 1) if task_latencies else None
+        if task_class in STRUCTURED_TASK_LATENCY_PASS_MS:
+            latency_passed = (
+                len(task_latencies) == len(task_results)
+                and all(latency <= limit for latency in task_latencies)
+            )
+        else:
+            latency_passed = task_avg is not None and task_avg <= limit
         task_latency_gates[task_class] = {
             "latency_ms_avg": task_avg,
             "latency_ms_max": max(task_latencies) if task_latencies else None,
             "latency_limit_ms": limit,
-            "latency_passed": (
-                len(task_latencies) == len(task_results)
-                and all(latency <= limit for latency in task_latencies)
-            ),
+            "latency_passed": latency_passed,
         }
     task_summary = {}
     for task_class in sorted({case.task_class for case in cases} | set(TASK_LATENCY_PASS_MS)):

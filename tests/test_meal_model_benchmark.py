@@ -466,6 +466,41 @@ def test_model_benchmark_reports_per_task_latency_gates(monkeypatch):
     assert summary["candidate_passed"] is False
 
 
+def test_legacy_food_task_latency_gate_preserves_average_semantics(monkeypatch):
+    module = _load_module()
+    latencies = iter(
+        [
+            module.MEAL_TEXT_LATENCY_PASS_MS - 100,
+            module.MEAL_TEXT_LATENCY_PASS_MS + 100,
+        ]
+    )
+
+    def mixed_latency_case(case, *, model, lm_studio_url, image_path=None, timeout=60.0):
+        return {
+            "case_id": case.case_id,
+            "input_type": case.input_type,
+            "task_class": case.task_class,
+            "model": model,
+            "has_image": False,
+            "ran_model": True,
+            "latency_ms": next(latencies),
+            "schema_valid": True,
+            "schema_errors": [],
+            "quality": {"passed": True},
+            "estimate": {},
+            "confidence": 0.8,
+            "ambiguous": False,
+            "expected_item_hint": case.expected_item_hint,
+        }
+
+    monkeypatch.setattr(module, "run_model_case", mixed_latency_case)
+
+    summary = module.run_model_benchmark(module.TEXT_CASES[:2], text_model="text-model")
+
+    assert summary["task_latency_gates"]["meal_text_nutrition"]["latency_passed"] is True
+    assert summary["candidate_passed"] is True
+
+
 def test_non_nutrition_task_latency_does_not_fail_legacy_text_route(monkeypatch):
     module = _load_module()
 
@@ -1179,6 +1214,29 @@ def test_analysis_no_concern_case_accepts_contract_compliant_empty_array():
     }
 
     assert module._task_quality_score(case, response, [])["passed"] is True
+
+
+def test_analysis_rejects_numeric_next_session_prescriptions():
+    module = _load_module()
+    case = module.POST_WORKOUT_ANALYSIS_CASES[0]
+
+    for cue in (
+        "Aim for RPE 8 while keeping form consistent.",
+        "Use 50 kg while keeping form consistent.",
+        "Add 20 minutes while keeping form consistent.",
+    ):
+        response = {
+            "summary": "Bench press session was steady.",
+            "wins": ["Bench press had clean reps."],
+            "concerns": [],
+            "comparison": "Steady versus recent sessions.",
+            "next_session_cue": cue,
+        }
+
+        score = module._task_quality_score(case, response, [])
+
+        assert score["forbidden_actions"] is False
+        assert score["passed"] is False
 
 
 def test_adjust_explanation_rejects_numeric_set_prescription():
