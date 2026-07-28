@@ -4446,6 +4446,45 @@ def test_meal_intake_image_lookup_confidence_is_capped_by_vision(monkeypatch):
     assert accepted_estimate["vision_confidence"] == 0.62
 
 
+def test_meal_intake_image_response_exposes_safe_candidate_role_without_private_trace(monkeypatch):
+    module = _client(monkeypatch)
+    _stub_vision(
+        monkeypatch,
+        module,
+        vision={
+            "provider": "lm_studio",
+            "candidate_role": "fallback",
+            "item_description": "protein shake",
+            "portion_hint": "1 shake",
+            "confidence": 0.62,
+            "ambiguous": False,
+            "uncertainty_notes": [],
+        },
+    )
+    monkeypatch.setattr(module, "add_food_log", lambda _u, record: {"client_id": record["client_id"], **record})
+
+    response = module.app.test_client().post(
+        "/api/meal-intake",
+        data={
+            "client_id": "meal-img-fallback-role-1",
+            "image": (io.BytesIO(b"\x89PNG\r\n\x1a\n"), "plate.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    body = response.get_json()
+    assert body["vision"] == {
+        "provider": "lm_studio",
+        "confidence": 0.62,
+        "candidate_role": "fallback",
+    }
+    assert body["estimate"]["vision_candidate_role"] == "fallback"
+    serialized = response.get_data(as_text=True)
+    for forbidden in ("_meta", "private-host", "private-model", "prompt", "image_bytes"):
+        assert forbidden not in serialized
+
+
 def test_meal_intake_image_invalid_macro_estimate_falls_to_manual_review(monkeypatch):
     module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     persisted = []

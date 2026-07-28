@@ -10610,6 +10610,7 @@
             ? `Confidence ${Math.round(conf * 100)}% (band: ${escapeHtml(policy.confidence_band || 'unknown')})`
             : 'Confidence unknown';
         const sourceLabel = mealSourceLabel(est.source);
+        const providerDetail = visionFallbackDetail(est.vision_candidate_role);
         // FIT-6 AC2: surface the stable policy reason codes as chips so
         // the user sees *why* this estimate needs explicit review (rather
         // than only the merged uncertainty_notes paragraph).
@@ -10639,6 +10640,7 @@
         row.innerHTML = `
             <div class="meal-pending-head">
                 <span class="meal-pending-title">Review estimate</span>
+                ${providerDetail ? `<span class="meal-pending-provider-detail">${escapeHtml(providerDetail)}</span>` : ''}
                 <span class="meal-pending-source-chip" title="Source of this estimate">${escapeHtml(sourceLabel)}</span>
                 <span class="meal-pending-conf" aria-label="${confTitle}" title="${confTitle}">${escapeHtml(confLabel)}${Number.isFinite(conf) && policy.confidence_band ? `<span class="meal-pending-conf-band"> · ${escapeHtml(policy.confidence_band)}</span>` : ''}</span>
             </div>
@@ -11645,6 +11647,18 @@
     const MEAL_V2_ITEM_STATUSES = ['included', 'skipped', 'deleted'];
     const MEAL_V2_SOURCE_KINDS = ['vision', 'text', 'branded', 'vocab', 'manual'];
 
+    function normalizeVisionCandidateRole(value) {
+        const role = typeof value === 'string' ? value.trim().toLowerCase() : '';
+        const allowed = ['primary', 'low_memory', 'fallback'];
+        return allowed.includes(role) ? role : null;
+    }
+
+    function visionFallbackDetail(value) {
+        const role = normalizeVisionCandidateRole(value);
+        if (!role || role === 'primary') return '';
+        return `local vision: ${role}`.replace(/_/g, ' ');
+    }
+
     function mealV2GenerateRequestId() {
         if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
         return 'meal-v2-req-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
@@ -11679,6 +11693,10 @@
             expandedItems,
             pendingRefresh: false,
             lastFollowupAnswered,
+            vision_candidate_role: normalizeVisionCandidateRole(
+                (payload.vision && payload.vision.candidate_role)
+                || (existing && existing.vision_candidate_role)
+            ),
             text_hint: (existing && existing.text_hint) || ctx.textValue || '',
             imageFile: (existing && existing.imageFile) || ctx.imageFile || null,
             local_timestamp: payload.local_timestamp || (existing && existing.local_timestamp) || null,
@@ -11781,6 +11799,7 @@
         row.setAttribute('role', 'group');
         row.setAttribute('aria-label', 'Meal to review before saving');
         if (entry.pendingRefresh) row.classList.add('meal-review-v2--refreshing');
+        const providerDetail = visionFallbackDetail(entry.vision_candidate_role);
 
         // FIT-210: a barcode lookup with no verified nutrition source comes back
         // as a manual-review meal (item source kind "barcode_pending_source").
@@ -11878,6 +11897,7 @@
             <div class="meal-review-v2-collapsed">
                 <div class="meal-pending-head">
                     <span class="meal-pending-title">Review meal</span>
+                    ${providerDetail ? `<span class="meal-review-v2-provider-detail">${escapeHtml(providerDetail)}</span>` : ''}
                     ${reviewBadgeHtml}
                     ${mealTypeChip}
                 </div>

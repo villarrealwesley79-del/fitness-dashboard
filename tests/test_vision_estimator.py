@@ -149,6 +149,48 @@ def test_vision_estimator_defaults_to_local_lm_studio(monkeypatch):
     assert captured["provider"] == "lm_studio"
 
 
+@pytest.mark.parametrize("role", ["primary", "low_memory", "fallback"])
+def test_vision_estimator_exposes_only_safe_local_candidate_role(monkeypatch, role):
+    monkeypatch.delenv("VISION_ESTIMATOR_PROVIDER", raising=False)
+    monkeypatch.setattr(vision_estimator.local_vision_adapter, "describe_food_photo", lambda *_a, **_kw: {
+        "item_description": "breakfast taco",
+        "portion_hint": "1 taco",
+        "confidence": 0.9,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "_meta": {
+            "role": role,
+            "model": "private-model-name",
+            "url": "http://private-host.test",
+            "prompt": "private prompt",
+        },
+    })
+
+    result = vision_estimator.describe(b"fake-image")
+
+    assert result["candidate_role"] == role
+    assert "_meta" not in result
+    assert "private-model-name" not in json.dumps(result)
+    assert "private-host" not in json.dumps(result)
+    assert "private prompt" not in json.dumps(result)
+
+
+def test_vision_estimator_drops_unknown_local_candidate_role(monkeypatch):
+    monkeypatch.delenv("VISION_ESTIMATOR_PROVIDER", raising=False)
+    monkeypatch.setattr(vision_estimator.local_vision_adapter, "describe_food_photo", lambda *_a, **_kw: {
+        "item_description": "breakfast taco",
+        "confidence": 0.9,
+        "ambiguous": False,
+        "uncertainty_notes": [],
+        "_meta": {"role": "http://private-host.test/model"},
+    })
+
+    result = vision_estimator.describe(b"fake-image")
+
+    assert "candidate_role" not in result
+    assert "private-host" not in json.dumps(result)
+
+
 def test_vision_estimator_cleans_claude_response(monkeypatch):
     monkeypatch.setenv("VISION_ESTIMATOR_PROVIDER", "claude")
     monkeypatch.setattr(vision_estimator.claude_vision_adapter, "describe_food_photo", lambda *_a, **_kw: {

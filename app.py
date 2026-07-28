@@ -5795,6 +5795,7 @@ _MEAL_ESTIMATE_SAFE_METADATA_FIELDS = (
     "vision_description",
     "vision_provider",
     "vision_confidence",
+    "vision_candidate_role",
     "fallback_reason",
 )
 _FOOD_PHOTO_RETENTION = {
@@ -5868,6 +5869,8 @@ def _safe_estimate_metadata_value(key: str, value):
         return safe if len(safe) == len(value) else None
     if key == "fallback_reason":
         return value if isinstance(value, str) and value in FALLBACK_REASON_VALUES else None
+    if key == "vision_candidate_role":
+        return value if isinstance(value, str) and value in vision_estimator.SAFE_CANDIDATE_ROLES else None
     if key == "off_attribution":
         if isinstance(value, dict):
             safe = {}
@@ -6236,6 +6239,7 @@ def _meal_intake_vision_estimate(
             except Exception:
                 lookup = None
     provider = vision.get("provider") or vision_estimator.configured_provider()
+    candidate_role = _safe_estimate_metadata_value("vision_candidate_role", vision.get("candidate_role"))
     if lookup:
         estimate = dict(lookup)
         estimate.setdefault("underlying_source", lookup.get("source"))
@@ -6243,6 +6247,8 @@ def _meal_intake_vision_estimate(
         estimate["vision_description"] = description
         estimate["vision_provider"] = provider
         estimate["vision_confidence"] = vision.get("confidence")
+        if candidate_role:
+            estimate["vision_candidate_role"] = candidate_role
         estimate["confidence"] = min(float(estimate.get("confidence") or 0), float(vision.get("confidence") or 0))
         if vision.get("portion_hint") and not estimate.get("portion_description"):
             estimate["portion_description"] = vision.get("portion_hint")
@@ -6294,6 +6300,8 @@ def _meal_intake_vision_estimate(
     estimate["vision_description"] = description
     estimate["vision_provider"] = provider
     estimate["vision_confidence"] = vision.get("confidence")
+    if candidate_role:
+        estimate["vision_candidate_role"] = candidate_role
     return estimate
 
 
@@ -6326,6 +6334,7 @@ _MEAL_ESTIMATE_PROVENANCE_FIELDS = (
     "vision_description",
     "vision_provider",
     "vision_confidence",
+    "vision_candidate_role",
     "from_image",
 )
 
@@ -6932,6 +6941,7 @@ def _review_sanitize_estimate(raw: dict, *, source: str | None = None) -> dict:
         "vision_description",
         "vision_provider",
         "vision_confidence",
+        "vision_candidate_role",
         "fallback_reason",
     ):
         safe_value = _safe_estimate_metadata_value(key, raw.get(key))
@@ -7426,6 +7436,7 @@ def _review_aggregate_estimate(payload: dict) -> dict:
             "vision_description",
             "vision_provider",
             "vision_confidence",
+            "vision_candidate_role",
         ):
             if key in original:
                 estimate[key] = original[key]
@@ -8287,6 +8298,12 @@ def meal_intake():
                 "provider": estimate.get("vision_provider") or vision_estimator.configured_provider(),
                 "confidence": estimate.get("vision_confidence"),
             }
+            candidate_role = _safe_estimate_metadata_value(
+                "vision_candidate_role",
+                estimate.get("vision_candidate_role"),
+            )
+            if candidate_role:
+                response_extras["vision"]["candidate_role"] = candidate_role
         except Exception as exc:
             if _meal_intake_vision_contention(exc):
                 app.logger.warning(

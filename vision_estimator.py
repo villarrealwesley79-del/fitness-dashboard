@@ -11,6 +11,7 @@ import local_vision_adapter
 
 DEFAULT_PROVIDER = "lm_studio"
 SUPPORTED_PROVIDERS = {"claude", "lm_studio", "ollama"}
+SAFE_CANDIDATE_ROLES = {"primary", "low_memory", "fallback"}
 
 
 class VisionEstimatorError(RuntimeError):
@@ -87,6 +88,10 @@ def _clean_description(result: dict[str, Any], *, provider: str) -> dict[str, An
         "ambiguous": bool(result.get("ambiguous", confidence < 0.65)),
         "uncertainty_notes": [str(note).strip() for note in notes if str(note).strip()],
     }
+    raw_meta = result.get("_meta")
+    candidate_role = raw_meta.get("role") if isinstance(raw_meta, dict) else None
+    if provider == "lm_studio" and candidate_role in SAFE_CANDIDATE_ROLES:
+        cleaned["candidate_role"] = candidate_role
     macro_estimate = result.get("macro_estimate")
     if isinstance(macro_estimate, dict):
         cleaned["macro_estimate"] = dict(macro_estimate)
