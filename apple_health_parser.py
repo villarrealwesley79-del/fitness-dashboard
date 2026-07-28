@@ -44,6 +44,8 @@ ACTIVITY_MAP = {
 
 
 def _ms_to_iso(ms: float) -> str:
+    # Deployment invariant: the single-user host timezone must match the
+    # timezone used by Health Auto Export for local-day bucketing.
     try:
         return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
     except (ValueError, TypeError, OSError):
@@ -404,14 +406,93 @@ def _same_workout(left: dict, right: dict) -> bool:
     )
 
 
+def _workout_quality_key(workout: dict) -> tuple[int, int]:
+    """Rank real measurements before canonical identity and timing metadata."""
+    identity_fields = ("activity", "date", "start", "end", "source")
+    metric_fields = ("energy_kcal", "distance_m", "avg_heart_rate")
+    metadata_count = sum(
+        isinstance(workout.get(field), str) and bool(workout[field].strip())
+        for field in identity_fields
+    )
+
+    measurement_count = 0
+    for field in ("duration_min", *metric_fields):
+        try:
+            measurement_count += float(workout.get(field) or 0) > 0
+        except (TypeError, ValueError):
+            pass
+    return measurement_count, metadata_count
+
+
+def _workout_representative_key(workout: dict) -> tuple:
+    """Prefer earliest, higher-quality, then canonically ordered duplicates."""
+    measurement_count, metadata_count = _workout_quality_key(workout)
+    canonical_payload = json.dumps(
+        workout,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return (
+        -measurement_count,
+        _workout_start_datetime(workout)
+        or datetime.max.replace(tzinfo=timezone.utc),
+        -metadata_count,
+        canonical_payload,
+    )
+
+
 def _merge_workouts(file_workouts: list, sync_workouts: list) -> list:
     """Merge file-based and sync-based workouts by start instant or fallback tuple."""
-    merged = []
-    for w in file_workouts + sync_workouts:
-        if _ignore_workout(w):
-            continue
-        if not any(_same_workout(w, existing) for existing in merged):
-            merged.append(w)
+    candidates = [
+        workout
+        for workout in file_workouts + sync_workouts
+        if not _ignore_workout(workout)
+    ]
+    def components(workouts):
+        remaining = list(workouts)
+        groups = []
+        while remaining:
+            group = [remaining.pop(0)]
+            changed = True
+            while changed:
+                changed = False
+                for workout in list(remaining):
+                    if any(_same_workout(workout, member) for member in group):
+                        group.append(workout)
+                        remaining.remove(workout)
+                        changed = True
+            groups.append(group)
+        return groups
+
+    timed_components = components(
+        workout for workout in candidates if _workout_start_datetime(workout)
+    )
+    startless_components = components(
+        workout for workout in candidates if not _workout_start_datetime(workout)
+    )
+    unattached_startless_components = []
+    for component in startless_components:
+        matching_timed_components = [
+            timed_component
+            for timed_component in timed_components
+            if any(
+                _same_workout(startless, timed)
+                for startless in component
+                for timed in timed_component
+            )
+        ]
+        if len(matching_timed_components) == 1:
+            matching_timed_components[0].extend(component)
+        else:
+            unattached_startless_components.append(component)
+
+    merged = [
+        min(component, key=_workout_representative_key)
+        for component in timed_components
+    ]
+    for component in unattached_startless_components:
+        merged.append(min(component, key=_workout_representative_key))
     return sorted(merged, key=lambda x: x.get("date", ""), reverse=True)
 
 
