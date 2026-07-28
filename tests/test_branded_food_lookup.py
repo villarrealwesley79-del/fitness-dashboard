@@ -283,7 +283,7 @@ def test_lookup_rejects_off_substring_brand_for_heb_private_label(monkeypatch):
     ) is None
 
 
-def test_lookup_uses_official_heb_product_page_for_plain_california_roll(monkeypatch):
+def test_lookup_uses_curated_heb_reference_for_plain_california_roll(monkeypatch):
     saved = {}
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(
@@ -306,7 +306,7 @@ def test_lookup_uses_official_heb_product_page_for_plain_california_roll(monkeyp
 
     estimate = branded_food_lookup.lookup("HEB California Roll", user_id=42)
 
-    assert estimate["source"] == "heb_product_page"
+    assert estimate["source"] == "heb_curated_reference"
     assert estimate["item_name"] == "H-E-B Sushiya California Sushi Roll"
     assert estimate["portion_description"] == "10 pieces (224 g)"
     assert estimate["calories"] == 240
@@ -318,21 +318,59 @@ def test_lookup_uses_official_heb_product_page_for_plain_california_roll(monkeyp
     assert estimate["confidence"] >= 0.8
     assert estimate["verified_source_url"] == "https://www.heb.com/product-detail/h-e-b-sushiya-california-roll/2038218"
     assert saved["normalized"] == "heb california roll"
-    assert saved["source"] == "heb_product_page"
+    assert saved["source"] == "heb_curated_reference"
     assert saved["user_id"] == 42
 
 
-def test_official_heb_product_page_does_not_match_quantified_roll_input(monkeypatch):
+def test_curated_heb_registry_requires_source_evidence():
+    references = branded_food_lookup.heb_product_lookup.CURATED_REFERENCES
+
+    assert references
+    for reference in references.values():
+        assert reference["verified_source_url"].startswith("https://www.heb.com/product-detail/")
+        assert reference["evidence_note"]
+
+
+def test_curated_heb_lookup_fails_closed_without_source_evidence(monkeypatch):
+    reference = branded_food_lookup.heb_product_lookup.CURATED_REFERENCES["2038218"]
+    monkeypatch.setitem(reference, "evidence_note", "")
+
+    assert branded_food_lookup.heb_product_lookup.lookup("HEB California Roll") is None
+
+
+def test_legacy_heb_cache_source_is_replayed_as_curated(monkeypatch):
+    response = branded_food_lookup.heb_product_lookup.lookup("HEB California Roll")
+    response["source"] = "heb_product_page"
+    monkeypatch.setattr(
+        branded_food_lookup.data_store,
+        "get_branded_lookup_cache",
+        lambda *_a, **_kw: {
+            "source": "heb_product_page",
+            "response_json": response,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+
+    estimate = branded_food_lookup.lookup(
+        "HEB California Roll",
+        source_priority=("cache",),
+    )
+
+    assert estimate["source"] == "local_cache"
+    assert estimate["underlying_source"] == "heb_curated_reference"
+
+
+def test_curated_heb_reference_does_not_match_quantified_roll_input(monkeypatch):
     monkeypatch.setattr(branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_branded_lookup_cache", lambda *_a, **_kw: None)
 
     assert branded_food_lookup.lookup(
         "2 HEB California Rolls",
-        source_priority=("heb_product_page",),
+        source_priority=("heb_curated_reference",),
     ) is None
     assert branded_food_lookup.lookup(
         "HEB California Roll 12 pieces",
-        source_priority=("heb_product_page",),
+        source_priority=("heb_curated_reference",),
     ) is None
 
 
@@ -931,7 +969,7 @@ def test_heb_private_label_bypasses_cache_without_verified_brand(monkeypatch):
 
     estimate = branded_food_lookup.lookup("HEB California Roll")
 
-    assert estimate["source"] == "heb_product_page"
+    assert estimate["source"] == "heb_curated_reference"
     assert estimate["external_food_id"] == "2038218"
     assert estimate["brand_id"] == "h-e-b"
 
@@ -1585,9 +1623,9 @@ def test_normalize_barcode_accepts_supported_digit_lengths():
     assert branded_food_lookup.normalize_barcode("1234567") is None
 
 
-def test_lookup_barcode_does_not_route_to_heb_product_page(monkeypatch):
-    assert "heb_product_page" in branded_food_lookup.SOURCE_PRIORITY
-    assert "heb_product_page" not in branded_food_lookup.BARCODE_SOURCE_PRIORITY
+def test_lookup_barcode_does_not_route_to_heb_curated_reference(monkeypatch):
+    assert "heb_curated_reference" in branded_food_lookup.SOURCE_PRIORITY
+    assert "heb_curated_reference" not in branded_food_lookup.BARCODE_SOURCE_PRIORITY
     monkeypatch.setattr(branded_food_lookup.data_store, "get_barcode_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(branded_food_lookup.data_store, "save_barcode_lookup_cache", lambda *_a, **_kw: None)
     monkeypatch.setattr(

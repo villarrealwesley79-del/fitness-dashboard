@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import sys
+
 import scripts.smoke_branded_lookup_coverage as smoke
 
 
@@ -50,6 +53,46 @@ def _query(category="required", expected_chain="bill miller"):
 
 def _direct_lookup_query(category="required"):
     return (smoke.CoverageQuery("chipotle chicken burrito", category, "test query"),)
+
+
+def _curated_query():
+    return (smoke.CoverageQuery("HEB California Roll", "curated", "test curated query", "h-e-b"),)
+
+
+def test_smoke_report_separates_curated_references_from_live_provider_results(monkeypatch):
+    monkeypatch.setattr(smoke.branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+
+    results = smoke.run_coverage(_curated_query() + _direct_lookup_query(), env=CONFIGURED_ENV)
+    report = smoke.coverage_report(results)
+
+    assert [row["outcome"] for row in report["curated_reference_results"]] == ["heb_curated_reference"]
+    assert report["curated_reference_results"][0]["source_kind"] == "curated_reference"
+    assert report["live_provider_results"] == []
+    assert [row["query"] for row in report["unmatched_results"]] == ["chipotle chicken burrito"]
+
+
+def test_default_smoke_report_includes_the_curated_heb_reference(monkeypatch):
+    monkeypatch.setattr(smoke.branded_food_lookup.data_store, "get_branded_lookup_cache", lambda *_a, **_kw: None)
+
+    report = smoke.coverage_report(smoke.run_coverage(env={}))
+
+    assert [row["outcome"] for row in report["curated_reference_results"]] == ["heb_curated_reference"]
+
+
+def test_json_cli_preserves_results_while_adding_source_buckets(monkeypatch, capsys):
+    result = smoke._coverage_result(
+        _curated_query()[0],
+        smoke.branded_food_lookup.heb_product_lookup.lookup("HEB California Roll"),
+    )
+    monkeypatch.setattr(smoke, "run_coverage", lambda **_kw: [result])
+    monkeypatch.setattr(smoke, "provider_status", lambda **_kw: {})
+    monkeypatch.setattr(sys, "argv", ["smoke_branded_lookup_coverage.py", "--json"])
+
+    assert smoke.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["results"] == [vars(result)]
+    assert payload["curated_reference_results"] == [vars(result)]
 
 
 def test_coverage_records_nutritionix_hit(monkeypatch):

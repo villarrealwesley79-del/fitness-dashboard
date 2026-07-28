@@ -38,6 +38,7 @@ class CoverageResult:
     calories: str
     source_url: str
     confidence: str
+    source_kind: str
     notes: str
 
 
@@ -83,7 +84,19 @@ PROXY_REGIONAL_QUERIES: tuple[CoverageQuery, ...] = (
     ),
 )
 
-DEFAULT_QUERIES: tuple[CoverageQuery, ...] = REQUIRED_BILL_MILLER_QUERIES + PROXY_REGIONAL_QUERIES
+CURATED_REFERENCE_QUERIES: tuple[CoverageQuery, ...] = (
+    CoverageQuery(
+        "HEB California Roll",
+        "curated",
+        "Curated H-E-B product-page reference; not a live provider result",
+        "h-e-b",
+    ),
+)
+DEFAULT_QUERIES: tuple[CoverageQuery, ...] = (
+    CURATED_REFERENCE_QUERIES + REQUIRED_BILL_MILLER_QUERIES + PROXY_REGIONAL_QUERIES
+)
+CURATED_REFERENCE_SOURCES = {"heb_curated_reference"}
+LIVE_PROVIDER_SOURCES = {"nutritionix", "usda_fdc", "open_food_facts"}
 
 
 def provider_status(
@@ -218,6 +231,7 @@ def _coverage_result(
             calories="",
             source_url="",
             confidence="",
+            source_kind="unmatched",
             notes="; ".join(notes),
         )
 
@@ -232,6 +246,7 @@ def _coverage_result(
     if underlying and underlying != estimate.get("source"):
         notes.append(f"underlying source: {underlying}")
 
+    effective_source = str(estimate.get("underlying_source") or estimate.get("source") or "unknown")
     return CoverageResult(
         category=case.category,
         query=case.query,
@@ -240,8 +255,17 @@ def _coverage_result(
         calories=_format_value(estimate.get("calories")),
         source_url=_source_url(estimate),
         confidence=_format_confidence(estimate.get("confidence")),
+        source_kind=_source_kind(effective_source),
         notes="; ".join(notes),
     )
+
+
+def _source_kind(source: str) -> str:
+    if source in CURATED_REFERENCE_SOURCES:
+        return "curated_reference"
+    if source in LIVE_PROVIDER_SOURCES:
+        return "live_provider"
+    return "unmatched"
 
 
 def _unavailable_sources(env: dict[str, str] | None = None) -> dict[str, str]:
@@ -318,12 +342,23 @@ def _format_confidence(value: Any) -> str:
 
 
 def markdown_table(results: list[CoverageResult]) -> str:
-    headers = ("Category", "Query", "Outcome", "Matched item", "Calories", "Source URL", "Confidence", "Notes")
+    headers = (
+        "Category",
+        "Query",
+        "Outcome",
+        "Source kind",
+        "Matched item",
+        "Calories",
+        "Source URL",
+        "Confidence",
+        "Notes",
+    )
     rows = [
         (
             result.category,
             result.query,
             result.outcome,
+            result.source_kind,
             result.matched_item,
             result.calories,
             result.source_url,
@@ -339,6 +374,23 @@ def markdown_table(results: list[CoverageResult]) -> str:
     for row in rows:
         lines.append("| " + " | ".join(_escape_markdown_cell(value) for value in row) + " |")
     return "\n".join(lines)
+
+
+def coverage_report(results: list[CoverageResult]) -> dict[str, list[dict[str, Any]]]:
+    report = {
+        "curated_reference_results": [],
+        "live_provider_results": [],
+        "unmatched_results": [],
+    }
+    for result in results:
+        row = asdict(result)
+        if result.source_kind == "curated_reference":
+            report["curated_reference_results"].append(row)
+        elif result.source_kind == "live_provider":
+            report["live_provider_results"].append(row)
+        else:
+            report["unmatched_results"].append(row)
+    return report
 
 
 def _escape_markdown_cell(value: object) -> str:
@@ -369,14 +421,34 @@ def main() -> int:
         include_cache=include_cache,
         respect_direct_lookup_gate=respect_direct_lookup_gate,
     )
+    report = coverage_report(results)
     if args.json:
-        print(json.dumps({"provider_status": status, "results": [asdict(result) for result in results]}, indent=2))
+        print(json.dumps({
+            "provider_status": status,
+            "results": [asdict(result) for result in results],
+            **report,
+        }, indent=2))
     else:
         print("Provider status:")
         for provider, value in status.items():
             print(f"- {provider}: {value}")
         print()
-        print(markdown_table(results))
+        print("Curated references (static evidence; not live providers):")
+        print(markdown_table([
+            result for result in results if result.source_kind == "curated_reference"
+        ]))
+        print()
+        print("Live provider results:")
+        print(markdown_table([
+            result for result in results if result.source_kind == "live_provider"
+        ]))
+        print()
+        print("Unmatched or unavailable results:")
+        print(markdown_table([
+            result
+            for result in results
+            if result.source_kind == "unmatched"
+        ]))
     return 0
 
 

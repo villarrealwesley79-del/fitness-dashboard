@@ -91,7 +91,13 @@ FOOD_ESTIMATE_FIELDS = {
     "vision_confidence",
     "_imported_pending_untrusted",
 }
-_ACCEPTED_NUTRITION_SOURCES = {"nutritionix", "usda_fdc", "open_food_facts", "heb_product_page"}
+_ACCEPTED_NUTRITION_SOURCES = {
+    "nutritionix",
+    "usda_fdc",
+    "open_food_facts",
+    "heb_curated_reference",
+    "heb_product_page",  # Legacy persisted rows; new lookups use heb_curated_reference.
+}
 _ACCEPTED_NUTRITION_WRAPPERS = {
     "vision_claude",
     "vision_lm_studio",

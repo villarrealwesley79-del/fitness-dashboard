@@ -7078,7 +7078,8 @@ _SOURCE_BACKED_NUTRITION_SOURCES = {
     "nutritionix",
     "usda_fdc",
     "open_food_facts",
-    "heb_product_page",
+    "heb_curated_reference",
+    "heb_product_page",  # Legacy persisted rows; new lookups use heb_curated_reference.
 }
 
 
