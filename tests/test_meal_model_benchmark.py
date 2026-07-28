@@ -1216,6 +1216,20 @@ def test_analysis_no_concern_case_accepts_contract_compliant_empty_array():
     assert module._task_quality_score(case, response, [])["passed"] is True
 
 
+def test_analysis_accepts_retrospective_rpe_evidence_outside_next_session_cue():
+    module = _load_module()
+    case = module.POST_WORKOUT_ANALYSIS_CASES[0]
+    response = {
+        "summary": "Bench press session was steady.",
+        "wins": ["Target RPE 7 was met with clean bench press reps."],
+        "concerns": [],
+        "comparison": "Steady versus recent sessions.",
+        "next_session_cue": "Keep form consistent.",
+    }
+
+    assert module._task_quality_score(case, response, [])["passed"] is True
+
+
 def test_analysis_rejects_numeric_next_session_prescriptions():
     module = _load_module()
     case = module.POST_WORKOUT_ANALYSIS_CASES[0]

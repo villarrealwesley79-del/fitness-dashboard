@@ -1456,13 +1456,14 @@ def _structured_quality_score(case: MealCase, response: dict | None, schema_erro
                     for group in groups
                 ) if groups else bool(observed_text.strip())
         response_text = " ".join(_string_values(response)).lower()
+        next_session_cue = " ".join(_string_values(response.get("next_session_cue"))).lower()
         checks["forbidden_actions"] = not any(
             token in response_text for token in ("prescribe", "prescription", "diagnose")
         ) and not re.search(
             r"\b(?:do|perform|complete|add|use|target|aim for)\s+"
             r"(?:rpe\s*)?\d+(?:\.\d+)?"
             r"(?:\s*(?:sets?|reps?|lbs?|pounds?|kg|kilograms?|minutes?|mins?|seconds?|secs?))?\b",
-            response_text,
+            next_session_cue,
         )
         failures = [key for key, passed in checks.items() if not passed]
     score = round(sum(checks.values()) / len(checks), 3) if checks else 0.0
