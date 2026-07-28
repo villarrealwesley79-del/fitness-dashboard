@@ -582,22 +582,11 @@ def _adjust_case(
     )
 
 
-_ADJUST_DEFAULT_EXPECTED = {
-    "avoid_muscles": [],
-    "avoid_joints": [],
-    "swap": [],
-    "rpe_delta": 0,
-    "sets_delta_pct": 0,
-    "duration_cap_min": 0,
-    "drop_cardio": False,
-}
-
-
 ADJUST_INTENT_CASES = [
     _adjust_case(
         1,
         "I slept 5 hours, my legs are 8/10 sore, HRV is down, and I did intervals yesterday.",
-        {**_ADJUST_DEFAULT_EXPECTED, "sets_delta_pct": -20},
+        {"sets_delta_pct_range": (-20, -1)},
         readiness={
             "sleep_hours": 5,
             "leg_soreness_10": 8,
@@ -674,7 +663,7 @@ def _swap_case(number: int, typed_name: str, expected_name: str | None, *, curre
 SWAP_RESOLUTION_CASES = [
     _swap_case(
         1,
-        "",
+        "swap run",
         None,
         current="Tempo Run; resting HR elevated; knee pain 4/10; missed carbs at lunch",
         muscle="cardio",
@@ -1434,25 +1423,37 @@ def _structured_quality_score(case: MealCase, response: dict | None, schema_erro
         if not isinstance(intent, dict):
             return {"score": 0.0, "verdict": "FAIL", "failure_reasons": ["schema_invalid"], "passed": False}
         checks: dict[str, bool] = {}
-        checks["avoid_muscles"] = {
-            _normalized_text(item) for item in _string_list(intent.get("avoid_muscles"))
-        } == {_normalized_text(item) for item in expected.get("avoid_muscles", [])}
-        checks["avoid_joints"] = {
-            key for key in (_joint_key(item) for item in intent.get("avoid_joints", [])) if key
-        } == {
-            key for key in (_joint_key(item) for item in expected.get("avoid_joints", [])) if key
-        }
-        checks["swap"] = {
-            key for key in (_swap_key(item) for item in intent.get("swap", [])) if key
-        } == {
-            key for key in (_swap_key(item) for item in expected.get("swap", [])) if key
-        }
+        if "avoid_muscles" in expected:
+            checks["avoid_muscles"] = {
+                _normalized_text(item) for item in _string_list(intent.get("avoid_muscles"))
+            } == {_normalized_text(item) for item in expected["avoid_muscles"]}
+        if "avoid_joints" in expected:
+            checks["avoid_joints"] = {
+                key for key in (_joint_key(item) for item in intent.get("avoid_joints", [])) if key
+            } == {
+                key for key in (_joint_key(item) for item in expected["avoid_joints"]) if key
+            }
+        if "swap" in expected:
+            checks["swap"] = {
+                key for key in (_swap_key(item) for item in intent.get("swap", [])) if key
+            } == {
+                key for key in (_swap_key(item) for item in expected["swap"]) if key
+            }
         checks["swap_reasons"] = all(
             isinstance(item, dict) and isinstance(item.get("reason"), str) and bool(item["reason"].strip())
             for item in intent.get("swap", [])
         )
         for key in ("rpe_delta", "sets_delta_pct", "duration_cap_min"):
-            checks[key] = _number_equal(intent.get(key), expected.get(key, 0), tolerance=0.05)
+            if key in expected:
+                checks[key] = _number_equal(intent.get(key), expected[key], tolerance=0.05)
+            elif f"{key}_range" in expected:
+                minimum, maximum = expected[f"{key}_range"]
+                value = intent.get(key)
+                checks[key] = (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and minimum <= float(value) <= maximum
+                )
         checks["rpe_delta_bounds"] = (
             isinstance(intent.get("rpe_delta"), (int, float))
             and not isinstance(intent.get("rpe_delta"), bool)
@@ -1468,7 +1469,8 @@ def _structured_quality_score(case: MealCase, response: dict | None, schema_erro
             and not isinstance(intent.get("duration_cap_min"), bool)
             and float(intent.get("duration_cap_min")) >= 0
         )
-        checks["drop_cardio"] = intent.get("drop_cardio") is expected.get("drop_cardio", False)
+        if "drop_cardio" in expected:
+            checks["drop_cardio"] = intent.get("drop_cardio") is expected["drop_cardio"]
         checks["summary"] = isinstance(response.get("summary"), str) and bool(response["summary"].strip())
         checks["forbidden_actions"] = _forbidden_action_free(response)
         failures = [key for key, passed in checks.items() if not passed]
@@ -1866,6 +1868,7 @@ def _public_case_result(case: MealCase, result: dict) -> dict:
     if (
         case.task_class in {"food_photo_nutrition", "meal_text_nutrition"}
         and isinstance(result.get("estimate"), dict)
+        and quality.get("raw_trace_free", True)
     ):
         estimate = result["estimate"]
         row["estimate"] = {

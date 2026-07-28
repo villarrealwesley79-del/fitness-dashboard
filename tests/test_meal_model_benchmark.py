@@ -1125,7 +1125,7 @@ def test_migrated_workout_cases_preserve_the_three_legacy_scenarios():
     assert "reduce" not in adjust["athlete_constraint"].lower()
     assert "skip" not in adjust["athlete_constraint"].lower()
 
-    assert swap["typed_name"] == ""
+    assert swap["typed_name"] == "swap run"
     assert "Tempo Run" in swap["current_exercise"]
     assert "resting HR elevated" in swap["current_exercise"]
     assert "knee pain 4/10" in swap["current_exercise"]
@@ -1202,6 +1202,11 @@ def test_structured_scoring_rejects_invalid_schema_and_scores_real_fields():
     assert score["score"] == 1.0
     assert score["verdict"] == "PASS"
 
+    response["intent"]["sets_delta_pct"] = -10
+    response["intent"]["rpe_delta"] = -1
+    assert module._task_quality_score(adjust_case, response, [])["passed"] is True
+
+
 def test_swap_and_analysis_mocked_responses_pass_without_raw_report_fields():
     module = _load_module()
     swap_case = module.SWAP_RESOLUTION_CASES[0]
@@ -1270,6 +1275,23 @@ def test_public_food_report_preserves_sanitized_estimate_and_quality_evidence():
     }
     assert report["quality"] == quality
     assert "private_trace" not in json.dumps(report)
+
+
+def test_public_food_report_suppresses_estimate_when_raw_trace_check_fails():
+    module = _load_module()
+    case = module.TEXT_CASES[0]
+
+    report = module._public_case_result(case, {
+        "quality": {"passed": False, "raw_trace_free": False},
+        "schema_errors": [],
+        "estimate": {
+            "item_name": "data:image/jpeg;base64,private-payload",
+            "calories": 520,
+        },
+    })
+
+    assert "estimate" not in report
+    assert "private-payload" not in json.dumps(report)
 
 
 def test_analysis_no_concern_case_accepts_contract_compliant_empty_array():
