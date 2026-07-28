@@ -1858,6 +1858,17 @@ def _public_case_result(case: MealCase, result: dict) -> dict:
     }
     if "missing_image_mapping" in schema_errors:
         row["skipped_reason"] = "missing_image_mapping"
+    if (
+        case.task_class in {"food_photo_nutrition", "meal_text_nutrition"}
+        and isinstance(result.get("estimate"), dict)
+    ):
+        estimate = result["estimate"]
+        row["estimate"] = {
+            key: estimate[key]
+            for key in PUBLIC_ESTIMATE_FIELDS
+            if key in estimate
+        }
+        row["quality"] = quality
     return row
 
 

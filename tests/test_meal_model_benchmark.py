@@ -1237,6 +1237,37 @@ def test_public_report_distinguishes_request_failure_without_leaking_error_text(
     assert "private endpoint" not in json.dumps(report)
 
 
+def test_public_food_report_preserves_sanitized_estimate_and_quality_evidence():
+    module = _load_module()
+    case = module.TEXT_CASES[0]
+    quality = {
+        "passed": True,
+        "schema_valid": True,
+        "calories_plausible": True,
+    }
+
+    report = module._public_case_result(case, {
+        "quality": quality,
+        "schema_errors": [],
+        "estimate": {
+            "item_name": "Burger",
+            "calories": 520,
+            "protein_g": 28,
+            "source": "local_model_benchmark",
+            "private_trace": "/private/input/photo.jpg",
+        },
+    })
+
+    assert report["estimate"] == {
+        "item_name": "Burger",
+        "calories": 520,
+        "protein_g": 28,
+        "source": "local_model_benchmark",
+    }
+    assert report["quality"] == quality
+    assert "private_trace" not in json.dumps(report)
+
+
 def test_analysis_no_concern_case_accepts_contract_compliant_empty_array():
     module = _load_module()
     case = module.POST_WORKOUT_ANALYSIS_CASES[0]
