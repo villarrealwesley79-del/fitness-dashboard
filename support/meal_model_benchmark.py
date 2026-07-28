@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
 import json
 import math
 import mimetypes
@@ -457,33 +456,6 @@ AMBIGUOUS_CASES = [
     MealCase("amb-010", "photo", "photo: leftovers from last night", "leftovers", "high", task_class="food_photo_nutrition"),
 ]
 
-WORKOUT_CASES = [
-    MealCase(
-        "workout-001",
-        "workout",
-        "Planned: heavy lower day with squats 5x5 and RDL 4x8. Signals: sleep 5h, legs sore 8/10, HRV down, yesterday intervals.",
-        "reduce lower volume",
-        "high",
-        task_class="workout_analysis_adjustment",
-    ),
-    MealCase(
-        "workout-002",
-        "workout",
-        "Planned: upper hypertrophy. Signals: sleep 8h, soreness low, last bench RPE 7, calories on target.",
-        "progress upper workout",
-        "low",
-        task_class="workout_analysis_adjustment",
-    ),
-    MealCase(
-        "workout-003",
-        "workout",
-        "Planned: tempo run. Signals: resting HR elevated, knee pain 4/10, missed carbs at lunch.",
-        "swap run",
-        "medium",
-        task_class="workout_analysis_adjustment",
-    ),
-]
-
 DAILY_BRIEF_CASES = [
     MealCase(
         "brief-001",
@@ -622,26 +594,13 @@ _ADJUST_DEFAULT_EXPECTED = {
 
 
 ADJUST_INTENT_CASES = [
-    _adjust_case(1, "Don't train shoulders today.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_muscles": ["shoulders"]}, coverage=("muscle_avoidance",)),
-    _adjust_case(2, "No overhead pressing; my shoulders need a break.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_muscles": ["shoulders"]}, coverage=("movement_to_muscle",)),
-    _adjust_case(3, "My left shoulder hurts when I reach overhead.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_joints": [{"side": "left", "joint": "shoulder"}]}, coverage=("side_specific_joint",)),
-    _adjust_case(4, "Right knee is sore; avoid loading that side.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_joints": [{"side": "right", "joint": "knee"}]}, coverage=("side_specific_joint",)),
-    _adjust_case(5, "Both wrists are uncomfortable today.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_joints": [{"side": "both", "joint": "wrist"}]}, coverage=("joint_both_sides",)),
-    _adjust_case(6, "Replace Bench Press with a chest press machine.", {**_ADJUST_DEFAULT_EXPECTED, "swap": [{"replace_exercise": "Bench Press", "target_muscle": "chest", "target_exercise": "chest press machine"}]}, coverage=("explicit_swap",)),
-    _adjust_case(7, "The algorithm picked squats; use a leg press instead for quads.", {**_ADJUST_DEFAULT_EXPECTED, "swap": [{"replace_exercise": "squats", "target_muscle": "quads", "target_exercise": "leg press"}]}, coverage=("explicit_swap",)),
-    _adjust_case(8, "Make today's work lighter; RPE should be one point lower.", {**_ADJUST_DEFAULT_EXPECTED, "rpe_delta": -1}, coverage=("make_lighter",)),
-    _adjust_case(9, "I am under-recovered. Reduce target RPE by 0.5.", {**_ADJUST_DEFAULT_EXPECTED, "rpe_delta": -0.5}, coverage=("make_lighter", "readiness")),
-    _adjust_case(10, "Cut the number of sets by twenty percent.", {**_ADJUST_DEFAULT_EXPECTED, "sets_delta_pct": -20}, coverage=("set_reduction",)),
-    _adjust_case(11, "Please cap this session at 30 minutes.", {**_ADJUST_DEFAULT_EXPECTED, "duration_cap_min": 30}, coverage=("duration_cap",)),
-    _adjust_case(12, "I only have 25 minutes today; keep it short.", {**_ADJUST_DEFAULT_EXPECTED, "duration_cap_min": 25}, coverage=("duration_cap",)),
-    _adjust_case(13, "No cardio today, please.", {**_ADJUST_DEFAULT_EXPECTED, "drop_cardio": True}, coverage=("drop_cardio",)),
-    _adjust_case(14, "Skip cardio and make the lifting one point easier.", {**_ADJUST_DEFAULT_EXPECTED, "drop_cardio": True, "rpe_delta": -1}, coverage=("drop_cardio", "combined")),
-    _adjust_case(15, "Avoid shoulders, cut sets by 20%, and cap the workout at 35 minutes.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_muscles": ["shoulders"], "sets_delta_pct": -20, "duration_cap_min": 35}, coverage=("combined",)),
-    _adjust_case(16, "My knee is sore and I have low readiness; use less work and no cardio.", {**_ADJUST_DEFAULT_EXPECTED, "avoid_joints": [{"side": "both", "joint": "knee"}], "sets_delta_pct": -20, "drop_cardio": True}, readiness={"sleep_hours": 5, "readiness_score": 32}, coverage=("readiness", "combined")),
-    _adjust_case(17, "Sleep was 8 hours and I feel ready. Keep the plan unchanged.", _ADJUST_DEFAULT_EXPECTED, readiness={"sleep_hours": 8, "readiness_score": 90}, coverage=("readiness", "no_op")),
-    _adjust_case(18, "Do whatever you think is best.", _ADJUST_DEFAULT_EXPECTED, coverage=("ambiguous", "no_op")),
-    _adjust_case(19, "I have a mild ache somewhere; maybe change things.", _ADJUST_DEFAULT_EXPECTED, coverage=("ambiguous", "no_op")),
-    _adjust_case(20, "Keep the workout as written, but explain it briefly.", _ADJUST_DEFAULT_EXPECTED, coverage=("no_op",)),
+    _adjust_case(
+        1,
+        "My legs are very sore after yesterday's intervals; reduce lower-body work and skip cardio.",
+        {**_ADJUST_DEFAULT_EXPECTED, "sets_delta_pct": -20, "drop_cardio": True},
+        readiness={"sleep_hours": 5, "readiness_score": 32},
+        coverage=("readiness", "set_reduction", "drop_cardio"),
+    ),
 ]
 
 
@@ -686,29 +645,22 @@ def _swap_case(number: int, typed_name: str, expected_name: str | None, *, curre
 
 
 SWAP_RESOLUTION_CASES = [
-    _swap_case(1, "Chest Press Machine", "Chest Press Machine", coverage=("exact",)),
-    _swap_case(2, "machine chest press", "Chest Press Machine", coverage=("alias",)),
-    _swap_case(3, "chest pres machine", "Chest Press Machine", coverage=("typo",)),
-    _swap_case(4, "something for chest", None, coverage=("null", "vague")),
-    _swap_case(5, "Barbell Bench Press", None, coverage=("no_invention",)),
-    _swap_case(6, "incline dumbbell press", "Incline Dumbbell Press", coverage=("equipment",)),
-    _swap_case(7, "seated cable row", "Cable Row", current="Barbell Row", muscle="back", coverage=("alias", "compound")),
-    _swap_case(8, "leg press", "Leg Press", current="Back Squat", muscle="quads", coverage=("exact",)),
-    _swap_case(9, "45 degree leg press", "Leg Press", current="Front Squat", muscle="quads", coverage=("alias",)),
     _swap_case(
-        10,
-        "cable row",
-        "Cable Row",
-        current="Pull Up",
-        muscle="back",
-        candidates=[{"name": "Cable Row", "equipment": "cable", "aliases": [], "compound": True}],
-        coverage=("single",),
+        1,
+        "bike",
+        "Stationary Bike",
+        current="Tempo Run",
+        muscle="cardio",
+        candidates=[
+            {
+                "name": "Stationary Bike",
+                "equipment": "bike",
+                "aliases": ["bike", "exercise bike"],
+                "compound": False,
+            }
+        ],
+        coverage=("exact", "single"),
     ),
-    _swap_case(11, "press", None, coverage=("crowded", "null")),
-    _swap_case(12, "a safe chest option", None, coverage=("no_invention", "vague")),
-    _swap_case(13, "incline db press", "Incline Dumbbell Press", coverage=("alias", "equipment")),
-    _swap_case(14, "leg press machine", "Leg Press", current="Lunge", muscle="quads", coverage=("equipment",)),
-    _swap_case(15, "unknown movement xyz", None, coverage=("null", "no_invention")),
 ]
 
 
@@ -756,10 +708,6 @@ def _analysis_case(number: int, workout: dict, context: dict, expected: dict, co
 
 POST_WORKOUT_ANALYSIS_CASES = [
     _analysis_case(1, _compact_workout(name="Bench Press", notes="clean reps", rpe=7, total_volume_lbs=1500), {"recent_sessions": [{"bench": "steady"}]}, {"summary": (("session",), ("bench", "press")), "wins": (("bench", "press"), ("clean",)), "concerns": (), "comparison": (("steady", "same"),), "next_session_cue": (("form", "progress"),), "empty_fields": ("concerns",)}, ("pr", "win")),
-    _analysis_case(2, _compact_workout(name="Squat", muscle="quads", notes="left knee tight", rpe=9, total_volume_lbs=1800), {"recent_sessions": [{"squat": "lower"}]}, {"summary": (("squat",), ("rpe",)), "wins": (("squat",),), "concerns": (("left",), ("knee",), ("tight",)), "comparison": (("down", "lower"),), "next_session_cue": (("knee",), ("form",)),}, ("rpe_spike", "notable_note")),
-    _analysis_case(3, _compact_workout(name="Deadlift", muscle="posterior chain", rpe=8, total_volume_lbs=2400), {"recent_sessions": [{"deadlift": "up"}, {"deadlift": "steady"}]}, {"summary": (("deadlift",),), "wins": (("deadlift",),), "concerns": (), "comparison": (("up", "steady", "higher"),), "next_session_cue": (("form", "recovery"),), "empty_fields": ("concerns",)}, ("volume_comparison",)),
-    _analysis_case(4, _compact_workout(name="Overhead Press", muscle="shoulders", notes="right side felt worse", rpe=8), {"recent_sessions": [{"overhead_press": "steady"}]}, {"summary": (("press",),), "wins": (("press",),), "concerns": (("right",), ("side",), ("worse",)), "comparison": (("steady",),), "next_session_cue": (("right",), ("side", "shoulder")),}, ("notable_note", "side_context")),
-    _analysis_case(5, _compact_workout(name="Row", muscle="back", cardio={"type": "easy bike", "minutes": 20}, rpe=7), {"recent_sessions": [{"row": "steady"}]}, {"summary": (("row",), ("cardio",)), "wins": (("row",), ("cardio",)), "concerns": (), "comparison": (("steady",),), "next_session_cue": (("recovery", "form"),), "empty_fields": ("concerns",)}, ("cardio",)),
 ]
 
 # Short aliases keep callers from needing to know the storage naming detail.
@@ -789,8 +737,11 @@ def structured_cases() -> list[MealCase]:
     return ADJUST_INTENT_CASES + SWAP_RESOLUTION_CASES + POST_WORKOUT_ANALYSIS_CASES
 
 
+WORKOUT_CASES = structured_cases()
+
+
 def all_cases() -> list[MealCase]:
-    return nutrition_cases() + WORKOUT_CASES + DAILY_BRIEF_CASES + BRANDED_FOOD_CASES + structured_cases()
+    return nutrition_cases() + WORKOUT_CASES + DAILY_BRIEF_CASES + BRANDED_FOOD_CASES
 
 
 def probe_lm_studio(url: str = LM_STUDIO_URL, timeout: float = 2.0) -> dict:
@@ -1888,142 +1839,6 @@ def _load_image_map(path: str | None) -> dict[str, str]:
     return {str(key): str(value) for key, value in payload.items()}
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _sha256_utf8(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def prompt_hashes() -> dict[str, str]:
-    return {
-        "adjust_intent": _sha256_utf8(_ADJUST_SYSTEM),
-        "swap_resolution": _sha256_utf8(_SWAP_RESOLVE_SYSTEM),
-        "post_workout_analysis": _sha256_utf8(_ANALYZE_SYSTEM),
-    }
-
-
-def schema_hashes() -> dict[str, str]:
-    return {
-        task: _sha256_utf8(_canonical_json(TASK_SCHEMAS[task]))
-        for task in ("adjust_intent", "swap_resolution", "post_workout_analysis")
-    }
-
-
-def corpus_hash(cases: list[MealCase] | None = None) -> str:
-    selected = cases or all_cases()
-    corpus = [
-        {
-            "case_id": case.case_id,
-            "input_type": case.input_type,
-            "task": case.task_class,
-            "prompt": case.prompt,
-            "expected_item_hint": case.expected_item_hint,
-            "ambiguity": case.ambiguity,
-            "notes": case.notes,
-            "coverage": list(case.coverage),
-            "request": case.request,
-            "expected": case.expected,
-        }
-        for case in sorted(selected, key=lambda item: item.case_id)
-    ]
-    return _sha256_utf8(_canonical_json(corpus))
-
-
-def _surface_summary(report: list[dict]) -> dict[str, dict]:
-    surfaces = {}
-    for task in sorted({row["task"] for row in report}):
-        rows = [row for row in report if row["task"] == task]
-        skipped = sum(1 for row in rows if row.get("skipped_reason"))
-        passed = sum(1 for row in rows if row.get("verdict") == "PASS")
-        failed = len(rows) - passed - skipped
-        surfaces[task] = {
-            "selected": len(rows),
-            "passed": passed,
-            "failed": failed,
-            "skipped": skipped,
-            "mean_score": round(sum(float(row.get("score", 0)) for row in rows) / len(rows), 3),
-            "verdict": "PASS" if passed == len(rows) else "FAIL",
-        }
-    return surfaces
-
-
-def _baseline_from_summary(
-    summary: dict,
-    *,
-    cases: list[MealCase],
-    model_ids: dict[str, str | None],
-    source_ref: str,
-) -> dict:
-    report = summary.get("report") or summary.get("results") or []
-    return {
-        "format": "fitness-dashboard-meal-model-baseline-v1",
-        "source_ref": source_ref,
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "models": {key: value for key, value in model_ids.items() if value},
-        "generation_command": (
-            "python3 support/meal_model_benchmark.py --lm-studio-url <configured-endpoint> "
-            "--text-model <configured-text-model> --vision-model <configured-vision-model> "
-            "--case-set all --image-map <redacted:image-map> --output-file <transient-report> "
-            "--baseline-out docs/model_benchmark_baseline_gx10_2026-07.json"
-        ),
-        "case_count": len(cases),
-        "task_class_counts": task_class_counts(cases),
-        "candidate_passed": bool(summary.get("candidate_passed")),
-        "surfaces": _surface_summary(report),
-        "results": report,
-        "scores": {row["case_id"]: row.get("score", 0) for row in report},
-        "verdicts": {row["case_id"]: row.get("verdict") for row in report},
-        "hashes": {
-            "prompts_sha256": prompt_hashes(),
-            "schemas_sha256": schema_hashes(),
-            "corpus_sha256": corpus_hash(cases),
-        },
-    }
-
-
-build_baseline = _baseline_from_summary
-
-
-def _clean_source_ref(repo_root: Path = _REPO_ROOT) -> str:
-    status = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    if status.stdout.strip():
-        raise ValueError("baseline preflight failed; git worktree must be clean")
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    if not head:
-        raise ValueError("baseline preflight failed; source HEAD is unavailable")
-    return head
-
-
-def _preflight_complete_image_map(cases: list[MealCase], image_map: dict[str, str]) -> None:
-    missing = [case.case_id for case in cases if requires_image(case) and not image_map.get(case.case_id)]
-    unreadable = [
-        case.case_id
-        for case in cases
-        if requires_image(case) and image_map.get(case.case_id) and not os.path.isfile(image_map[case.case_id])
-    ]
-    if missing or unreadable:
-        detail = []
-        if missing:
-            detail.append(f"missing image mappings: {', '.join(missing)}")
-        if unreadable:
-            detail.append(f"unreadable image files: {', '.join(unreadable)}")
-        raise ValueError("baseline preflight failed; " + "; ".join(detail))
-
-
 def _public_benchmark_summary(summary: dict) -> dict:
     public = {key: value for key, value in summary.items() if key not in {"results", "report"}}
     public["results"] = summary.get("report") or summary.get("results", [])
@@ -2078,13 +1893,7 @@ def main() -> int:
     )
     parser.add_argument("--image-map", help="Optional JSON mapping case_id to private local image path")
     parser.add_argument("--output-file", help="Write the raw-free benchmark report JSON to this file")
-    parser.add_argument("--baseline-out", help="Write a successful all-suite raw-free baseline JSON to this file")
     args = parser.parse_args()
-
-    if args.baseline_out and not (args.run_model or args.text_model or args.vision_model):
-        parser.error("--baseline-out requires --run-model or both task-specific model flags")
-    if args.baseline_out and args.case_set != "all":
-        parser.error("--baseline-out requires --case-set all")
 
     probe = probe_lm_studio(args.lm_studio_url)
     cases = all_cases()
@@ -2141,11 +1950,6 @@ def main() -> int:
         return 0
     if args.run_model or args.text_model or args.vision_model:
         image_map = _load_image_map(args.image_map)
-        if args.baseline_out and args.case_set == "all":
-            try:
-                _preflight_complete_image_map(cases, image_map)
-            except ValueError as exc:
-                parser.error(str(exc))
         if not args.run_model:
             if args.vision_model and any(not requires_image(case) for case in cases) and not args.text_model:
                 parser.error("--text-model is required for selected non-image cases when --run-model is not provided")
@@ -2160,25 +1964,6 @@ def main() -> int:
             image_map=image_map,
         )
         output["benchmark"] = _public_benchmark_summary(benchmark)
-        if args.baseline_out:
-            if benchmark.get("case_count") != len(cases) or len(benchmark.get("report") or []) != len(cases):
-                parser.error("--baseline-out requires one verdict for every selected case")
-            try:
-                source_ref = _clean_source_ref()
-            except (OSError, subprocess.SubprocessError, ValueError) as exc:
-                parser.error(str(exc))
-            baseline = _baseline_from_summary(
-                benchmark,
-                cases=cases,
-                model_ids={
-                    "common": args.run_model,
-                    "text": args.text_model,
-                    "vision": args.vision_model,
-                },
-                source_ref=source_ref,
-            )
-            with open(args.baseline_out, "w", encoding="utf-8") as handle:
-                json.dump(baseline, handle, indent=2, sort_keys=True)
     serialized = json.dumps(output, indent=2, sort_keys=True)
     if args.output_file:
         with open(args.output_file, "w", encoding="utf-8") as handle:

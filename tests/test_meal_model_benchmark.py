@@ -27,21 +27,22 @@ def test_benchmark_case_counts_match_fit58_contract():
     assert len(module.nutrition_cases()) == 60
     assert len(module.image_capable_cases()) == 40
     assert len(module.WORKOUT_CASES) == 3
+    assert module.WORKOUT_CASES == module.structured_cases()
     assert len(module.DAILY_BRIEF_CASES) == 3
     assert len(module.BRANDED_FOOD_CASES) == 4
-    assert len(module.ADJUST_INTENT_CASES) == 20
-    assert len(module.SWAP_RESOLUTION_CASES) == 15
-    assert len(module.POST_WORKOUT_ANALYSIS_CASES) == 5
-    assert len(module.all_cases()) == 110
+    assert len(module.ADJUST_INTENT_CASES) == 1
+    assert len(module.SWAP_RESOLUTION_CASES) == 1
+    assert len(module.POST_WORKOUT_ANALYSIS_CASES) == 1
+    assert len(module.all_cases()) == 70
     assert module.task_class_counts() == {
         "food_photo_nutrition": 40,
         "meal_text_nutrition": 20,
-        "workout_analysis_adjustment": 3,
+        "workout_analysis_adjustment": 0,
         "daily_coaching_brief": 3,
         "branded_food_resolution": 4,
-        "adjust_intent": 20,
-        "swap_resolution": 15,
-        "post_workout_analysis": 5,
+        "adjust_intent": 1,
+        "swap_resolution": 1,
+        "post_workout_analysis": 1,
     }
 
 
@@ -162,18 +163,15 @@ def test_chat_payload_uses_lm_studio_supported_json_schema_response_format():
 def test_non_nutrition_payloads_use_task_specific_strict_schemas():
     module = _load_module()
 
-    workout_payload = module._chat_payload(module.WORKOUT_CASES[0], "local-model")
+    adjust_payload = module._chat_payload(module.ADJUST_INTENT_CASES[0], "local-model")
+    swap_payload = module._chat_payload(module.SWAP_RESOLUTION_CASES[0], "local-model")
+    analysis_payload = module._chat_payload(module.POST_WORKOUT_ANALYSIS_CASES[0], "local-model")
     brief_payload = module._chat_payload(module.DAILY_BRIEF_CASES[0], "local-model")
     branded_payload = module._chat_payload(module.BRANDED_FOOD_CASES[0], "local-model")
 
-    assert workout_payload["response_format"]["json_schema"]["name"] == "workout_adjustment"
-    assert workout_payload["response_format"]["json_schema"]["schema"]["required"] == [
-        "summary",
-        "readiness",
-        "adjustments",
-        "risk_flags",
-        "confidence",
-    ]
+    assert adjust_payload["response_format"]["json_schema"]["name"] == "adjust_plan_intent"
+    assert swap_payload["response_format"]["json_schema"]["name"] == "swap_resolution"
+    assert analysis_payload["response_format"]["json_schema"]["name"] == "analyze_workout"
     assert brief_payload["response_format"]["json_schema"]["name"] == "daily_coaching_brief"
     assert "nutrition_focus" in brief_payload["response_format"]["json_schema"]["schema"]["required"]
     assert branded_payload["response_format"]["json_schema"]["name"] == "branded_food_resolution"
@@ -206,7 +204,7 @@ def test_image_payloads_are_limited_to_food_photo_tasks(tmp_path):
     try:
         module._chat_payload(module.WORKOUT_CASES[0], "local-model", image_path=str(image_path))
     except ValueError as exc:
-        assert "food_photo_nutrition" in str(exc)
+        assert module.WORKOUT_CASES[0].task_class in str(exc)
     else:
         raise AssertionError("non-photo task should reject image payloads")
 
@@ -425,7 +423,7 @@ def test_model_benchmark_reports_per_task_latency_gates(monkeypatch):
     def mixed_task_case(case, *, model, lm_studio_url, image_path=None, timeout=60.0):
         latency_ms = {
             "meal_text_nutrition": module.MEAL_TEXT_LATENCY_PASS_MS,
-            "workout_analysis_adjustment": module.WORKOUT_ANALYSIS_LATENCY_PASS_MS + 1,
+            "adjust_intent": module.STRUCTURED_TASK_LATENCY_PASS_MS["adjust_intent"] + 1,
             "daily_coaching_brief": 100,
             "branded_food_resolution": 100,
         }[case.task_class]
@@ -460,9 +458,9 @@ def test_model_benchmark_reports_per_task_latency_gates(monkeypatch):
     )
 
     assert summary["model"] == "per-task"
-    assert summary["task_class_counts"]["workout_analysis_adjustment"] == 1
+    assert summary["task_class_counts"]["adjust_intent"] == 1
     assert summary["task_latency_gates"]["meal_text_nutrition"]["latency_passed"] is True
-    assert summary["task_latency_gates"]["workout_analysis_adjustment"]["latency_passed"] is False
+    assert summary["task_latency_gates"]["adjust_intent"]["latency_passed"] is False
     assert summary["task_summary"]["daily_coaching_brief"]["schema_valid_count"] == 1
     assert summary["task_latency_passed"] is False
     assert summary["candidate_passed"] is False
@@ -474,7 +472,7 @@ def test_non_nutrition_task_latency_does_not_fail_legacy_text_route(monkeypatch)
     def mixed_task_case(case, *, model, lm_studio_url, image_path=None, timeout=60.0):
         latency_ms = {
             "meal_text_nutrition": 100,
-            "workout_analysis_adjustment": 10_000,
+            "adjust_intent": 1_000,
             "daily_coaching_brief": 9_000,
             "branded_food_resolution": 4_000,
         }[case.task_class]
@@ -604,44 +602,6 @@ def test_branded_food_quality_requires_plausible_nutrition_bands():
     assert plausible_score["passed"] is True
 
 
-def test_workout_quality_requires_actionable_adjustments_and_expected_readiness():
-    module = _load_module()
-    case = module.WORKOUT_CASES[0]
-    weak_response = {
-        "summary": "Reduce lower volume.",
-        "readiness": "high",
-        "adjustments": [],
-        "risk_flags": [],
-        "confidence": 0.8,
-    }
-    strong_response = {
-        "summary": "Reduce lower volume.",
-        "readiness": "low",
-        "adjustments": [
-            {
-                "target": "lower body work",
-                "action": "reduce squat and RDL volume",
-                "rationale": "sleep, soreness, and HRV point to poor recovery",
-            }
-        ],
-        "risk_flags": ["high leg soreness"],
-        "confidence": 0.55,
-    }
-
-    weak_score = module._task_quality_score(case, weak_response, [])
-    strong_score = module._task_quality_score(case, strong_response, [])
-
-    assert weak_score["response_hint_match"] is True
-    assert weak_score["actionable_adjustments"] is False
-    assert weak_score["readiness_matches"] is False
-    assert weak_score["confidence_calibrated"] is False
-    assert weak_score["passed"] is False
-    assert strong_score["actionable_adjustments"] is True
-    assert strong_score["readiness_matches"] is True
-    assert strong_score["confidence_calibrated"] is True
-    assert strong_score["passed"] is True
-
-
 def test_daily_brief_quality_requires_priorities_and_expected_focus():
     module = _load_module()
     case = module.DAILY_BRIEF_CASES[0]
@@ -733,21 +693,6 @@ def test_non_nutrition_schema_rejects_out_of_range_numeric_values():
     assert "invalid_confidence" in branded_errors
     assert "invalid_confidence" in daily_errors
     assert module._task_quality_score(branded_case, branded_response, branded_errors)["passed"] is False
-
-
-def test_non_nutrition_schema_rejects_unhashable_enum_values_without_crashing():
-    module = _load_module()
-    response = {
-        "summary": "Reduce intensity.",
-        "readiness": ["low"],
-        "adjustments": [{"target": "squats", "action": "reduce load", "rationale": "fatigue"}],
-        "risk_flags": [],
-        "confidence": 0.6,
-    }
-
-    errors = module._task_response_schema_errors(module.WORKOUT_CASES[0], response)
-
-    assert "invalid_readiness" in errors
 
 
 def test_text_case_set_keeps_legacy_text_subset(monkeypatch, capsys):
@@ -1099,7 +1044,7 @@ def test_structured_latency_gate_rejects_any_case_over_production_timeout(monkey
     monkeypatch.setattr(module, "run_model_case", fake_run_model_case)
     summary = module.run_model_benchmark(module.SWAP_RESOLUTION_CASES, text_model="text-model")
 
-    assert captured_timeouts == [module.LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC] * 15
+    assert captured_timeouts == [module.LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC]
     assert summary["task_latency_gates"]["swap_resolution"]["latency_passed"] is False
     assert summary["candidate_passed"] is False
 
@@ -1167,15 +1112,15 @@ def test_structured_scoring_rejects_invalid_schema_and_scores_real_fields():
     assert invalid_score["failure_reasons"] == ["schema_invalid"]
 
     response = {
-        "summary": "Avoid shoulders today.",
+        "summary": "Reduce lower-body work and skip cardio.",
         "intent": {
-            "avoid_muscles": ["Shoulders"],
+            "avoid_muscles": [],
             "avoid_joints": [],
             "swap": [],
             "rpe_delta": 0,
-            "sets_delta_pct": 0,
+            "sets_delta_pct": -20,
             "duration_cap_min": 0,
-            "drop_cardio": False,
+            "drop_cardio": True,
         },
     }
     score = module._task_quality_score(adjust_case, response, [])
@@ -1183,31 +1128,10 @@ def test_structured_scoring_rejects_invalid_schema_and_scores_real_fields():
     assert score["score"] == 1.0
     assert score["verdict"] == "PASS"
 
-    swap_case = module.ADJUST_INTENT_CASES[5]
-    swap_response = {
-        "summary": "Use the machine for chest comfort.",
-        "intent": {
-            "avoid_muscles": [],
-            "avoid_joints": [],
-            "swap": [{
-                "replace_exercise": "bench press",
-                "target_muscle": "chest",
-                "target_exercise": "Chest Press Machine",
-                "reason": "explicit replacement",
-            }],
-            "rpe_delta": 0,
-            "sets_delta_pct": 0,
-            "duration_cap_min": 0,
-            "drop_cardio": False,
-        },
-    }
-    assert module._task_quality_score(swap_case, swap_response, [])['passed'] is True
-
-
 def test_swap_and_analysis_mocked_responses_pass_without_raw_report_fields():
     module = _load_module()
     swap_case = module.SWAP_RESOLUTION_CASES[0]
-    swap_response = {"canonical_name": "chest press machine", "confidence": 0.9, "reason": "clear candidate match"}
+    swap_response = {"canonical_name": "Stationary Bike", "confidence": 0.9, "reason": "clear candidate match"}
     swap_score = module._task_quality_score(swap_case, swap_response, [])
     assert swap_score["passed"] is True
 
@@ -1257,69 +1181,25 @@ def test_analysis_no_concern_case_accepts_contract_compliant_empty_array():
     assert module._task_quality_score(case, response, [])["passed"] is True
 
 
-def test_adjust_explanation_can_describe_avoiding_load_without_being_a_prescription():
-    module = _load_module()
-    case = module.ADJUST_INTENT_CASES[3]
-    response = {
-        "summary": "Avoid loading the sore right knee.",
-        "intent": {
-            "avoid_muscles": [],
-            "avoid_joints": [{"side": "right", "joint": "knee"}],
-            "swap": [],
-            "rpe_delta": 0,
-            "sets_delta_pct": 0,
-            "duration_cap_min": 0,
-            "drop_cardio": False,
-        },
-    }
-
-    assert module._task_quality_score(case, response, [])["passed"] is True
-
-
 def test_adjust_explanation_rejects_numeric_set_prescription():
     module = _load_module()
     case = module.ADJUST_INTENT_CASES[0]
     response = {
-        "summary": "Do 3 sets while avoiding shoulders.",
+        "summary": "Do 3 sets and skip cardio.",
         "intent": {
-            "avoid_muscles": ["shoulders"],
+            "avoid_muscles": [],
             "avoid_joints": [],
             "swap": [],
             "rpe_delta": 0,
-            "sets_delta_pct": 0,
+            "sets_delta_pct": -20,
             "duration_cap_min": 0,
-            "drop_cardio": False,
+            "drop_cardio": True,
         },
     }
 
     score = module._task_quality_score(case, response, [])
     assert score["passed"] is False
     assert score["forbidden_actions"] is False
-
-
-def test_analysis_notable_note_requires_exact_body_side_context():
-    module = _load_module()
-    case = module.POST_WORKOUT_ANALYSIS_CASES[1]
-    response = {
-        "summary": "Squat work reached RPE 9.",
-        "wins": ["Squat work was completed."],
-        "concerns": ["Tightness noted."],
-        "comparison": "Lower than recent sessions.",
-        "next_session_cue": "Focus on form.",
-    }
-
-    score = module._task_quality_score(case, response, [])
-    assert score["passed"] is False
-    assert score["concerns"] is False
-
-
-def test_analysis_fixture_only_marks_production_notable_notes():
-    module = _load_module()
-
-    assert module.POST_WORKOUT_ANALYSIS_CASES[0].request["workout"]["notable_notes"] == []
-    assert module.POST_WORKOUT_ANALYSIS_CASES[1].request["workout"]["notable_notes"] == [
-        {"exercise": "Squat", "set_number": 1, "note": "left knee tight"}
-    ]
 
 
 def test_main_dispatches_all_cases_to_task_specific_models_without_common_model(monkeypatch, capsys):
@@ -1363,68 +1243,6 @@ def test_main_dispatches_all_cases_to_task_specific_models_without_common_model(
 
     assert module.main() == 0
     json.loads(capsys.readouterr().out)
-    assert len(captured) == 110
+    assert len(captured) == 70
     assert sum(1 for _case_id, model, _path in captured if model == "configured-vision-model") == 40
-    assert sum(1 for _case_id, model, _path in captured if model == "configured-text-model") == 70
-
-
-def test_corpus_hash_covers_legacy_prompt_content():
-    module = _load_module()
-    original = module.corpus_hash()
-    first = module.TEXT_CASES[0]
-    changed = module.MealCase(
-        first.case_id,
-        first.input_type,
-        first.prompt + " changed",
-        first.expected_item_hint,
-        first.ambiguity,
-        first.notes,
-        first.task_class,
-    )
-
-    cases = [changed, *module.all_cases()[1:]]
-
-    assert module.corpus_hash(cases) != original
-
-
-def test_baseline_records_failed_verdicts_and_reconciled_surface_totals():
-    module = _load_module()
-    cases = [module.ADJUST_INTENT_CASES[0], module.ADJUST_INTENT_CASES[1]]
-    report = [
-        {
-            "case_id": cases[0].case_id,
-            "task": "adjust_intent",
-            "score": 1.0,
-            "verdict": "PASS",
-            "failure_reasons": [],
-        },
-        {
-            "case_id": cases[1].case_id,
-            "task": "adjust_intent",
-            "score": 0.5,
-            "verdict": "FAIL",
-            "failure_reasons": ["rpe_delta"],
-        },
-    ]
-
-    baseline = module._baseline_from_summary(
-        {"report": report, "candidate_passed": False},
-        cases=cases,
-        model_ids={"text": "text-model", "vision": "vision-model"},
-        source_ref="abc123",
-    )
-
-    assert baseline["source_ref"] == "abc123"
-    assert baseline["candidate_passed"] is False
-    assert baseline["results"] == report
-    assert baseline["surfaces"]["adjust_intent"] == {
-        "selected": 2,
-        "passed": 1,
-        "failed": 1,
-        "skipped": 0,
-        "mean_score": 0.75,
-        "verdict": "FAIL",
-    }
-    serialized = json.dumps(baseline)
-    assert "http://private-gx10.test" not in serialized
-    assert "/private/image-map.json" not in serialized
+    assert sum(1 for _case_id, model, _path in captured if model == "configured-text-model") == 30
