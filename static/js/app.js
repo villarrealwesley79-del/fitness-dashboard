@@ -7138,17 +7138,123 @@
         const error = $('body-log-error');
         const weightPresent = Number(weightInput.value) > 0;
         const bodyFatPresent = bodyFatInput.value.trim() !== '';
+        const missingWeight = bodyFatPresent && !weightPresent;
 
         saveButton.disabled = bodyFatPresent && !weightPresent;
-        weightInput.setAttribute('aria-invalid', saveButton.disabled ? 'true' : 'false');
-        error.hidden = !saveButton.disabled;
+        if (bodyNavyCalculationPending) saveButton.disabled = true;
+        weightInput.setAttribute('aria-invalid', missingWeight ? 'true' : 'false');
+        error.hidden = !missingWeight;
         return !saveButton.disabled;
     }
 
+    let bodyNavyDerivedValue = null;
+    let bodyNavyInputVersion = 0;
+    let bodyNavyCalculationPending = false;
+
+    function navyInputValue(id) {
+        const value = $(id).value.trim();
+        return value === '' ? null : Number(value);
+    }
+
+    function bodyNavyContextPayload() {
+        const values = {
+            height_in: navyInputValue('body-navy-height'),
+            neck_in: navyInputValue('body-navy-neck'),
+            waist_in: navyInputValue('body-navy-waist'),
+            hip_in: navyInputValue('body-navy-hip'),
+        };
+        if (!Object.values(values).some((value) => value !== null)) return {};
+        return {
+            sex: $('body-navy-sex').value,
+            ...values,
+        };
+    }
+
+    function syncBodyNavySex() {
+        const hipField = $('body-navy-hip-field');
+        const hipInput = $('body-navy-hip');
+        const isFemale = $('body-navy-sex').value === 'female';
+        hipField.hidden = !isFemale;
+        hipInput.required = isFemale;
+        if (!isFemale) hipInput.value = '';
+    }
+
+    function setBodyNavyFeedback(id, message) {
+        const feedback = $(id);
+        feedback.textContent = message;
+        feedback.hidden = !message;
+    }
+
+    function setBodyNavyError(message) {
+        setBodyNavyFeedback('body-navy-error', message);
+        qsa('#body-navy-sex, #body-navy-height, #body-navy-neck, #body-navy-waist, #body-navy-hip')
+            .forEach((input) => input.setAttribute('aria-invalid', message ? 'true' : 'false'));
+    }
+
+    function setBodyNavyCalculationPending(pending) {
+        bodyNavyCalculationPending = pending;
+        $('btn-calc-navy').disabled = pending;
+        syncBodyLogValidation();
+    }
+
+    function invalidateBodyNavyEstimate() {
+        if (bodyNavyDerivedValue === null) return;
+        const bodyFatInput = $('body-log-bf');
+        if (bodyFatInput.value === bodyNavyDerivedValue) bodyFatInput.value = String();
+        bodyNavyDerivedValue = null;
+        setBodyNavyFeedback('body-navy-result', '');
+        syncBodyLogValidation();
+    }
+
+    function detachManualBodyFatFromNavyEstimate() {
+        bodyNavyInputVersion += 1;
+        setBodyNavyCalculationPending(false);
+        if (bodyNavyDerivedValue === null) return;
+        bodyNavyDerivedValue = null;
+        setBodyNavyFeedback('body-navy-result', '');
+    }
+
+    function noteBodyNavyInputChange() {
+        bodyNavyInputVersion += 1;
+        setBodyNavyCalculationPending(false);
+        setBodyNavyError('');
+        invalidateBodyNavyEstimate();
+    }
+
+    async function calculateNavyEstimate() {
+        const bodyFatInput = $('body-log-bf');
+        const requestVersion = bodyNavyInputVersion;
+        const requestPayload = bodyNavyContextPayload();
+        setBodyNavyFeedback('body-navy-result', '');
+        setBodyNavyError('');
+        setBodyNavyCalculationPending(true);
+        try {
+            const result = await api('/api/body/navy-calc', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestPayload),
+            });
+            if (requestVersion !== bodyNavyInputVersion) return;
+            bodyFatInput.value = String(result.body_fat_pct);
+            bodyNavyDerivedValue = bodyFatInput.value;
+            setBodyNavyFeedback('body-navy-result', `Navy estimate ${result.body_fat_pct}% — review before saving.`);
+            syncBodyLogValidation();
+        } catch (e) {
+            if (requestVersion !== bodyNavyInputVersion) return;
+            console.error(e);
+            setBodyNavyError(apiErrorMessage(e, 'Could not calculate Navy estimate'));
+        } finally {
+            if (requestVersion === bodyNavyInputVersion) setBodyNavyCalculationPending(false);
+        }
+    }
+
     async function logBody() {
+        if (bodyNavyCalculationPending) return;
+        const navyContext = bodyNavyContextPayload();
         const payload = {
             weight_lbs: Number($('body-log-weight').value) || null,
             body_fat_pct: Number($('body-log-bf').value) || null,
+            ...navyContext,
         };
         if (!syncBodyLogValidation()) return;
         if (!payload.weight_lbs && !payload.body_fat_pct) return toast('Enter a value', 'err');
@@ -7161,7 +7267,12 @@
             toast('Measurement saved');
             state.body = null; state.dashboard = null;
             renderBody();
-        } catch (e) { console.error(e); toast('Save failed', 'err'); }
+        } catch (e) {
+            console.error(e);
+            const message = apiErrorMessage(e, 'Save failed');
+            if (Object.keys(navyContext).length) setBodyNavyError(message);
+            toast(message, 'err');
+        }
     }
 
     function _ouraSyncErrorDetails(err) {
@@ -9696,8 +9807,18 @@
         $('btn-log-recovery') && $('btn-log-recovery').addEventListener('click', logRecovery);
         const bodyWeightInput = $('body-log-weight');
         const bodyFatInput = $('body-log-bf');
+        const bodyNavySex = $('body-navy-sex');
         bodyWeightInput && bodyWeightInput.addEventListener('input', syncBodyLogValidation);
         bodyFatInput && bodyFatInput.addEventListener('input', syncBodyLogValidation);
+        bodyFatInput && bodyFatInput.addEventListener('input', detachManualBodyFatFromNavyEstimate);
+        bodyNavySex && bodyNavySex.addEventListener('change', () => {
+            noteBodyNavyInputChange();
+            syncBodyNavySex();
+        });
+        qsa('#body-navy-height, #body-navy-neck, #body-navy-waist, #body-navy-hip').forEach((input) => {
+            input.addEventListener('input', noteBodyNavyInputChange);
+        });
+        $('btn-calc-navy') && $('btn-calc-navy').addEventListener('click', calculateNavyEstimate);
         $('btn-log-body') && $('btn-log-body').addEventListener('click', logBody);
 
         // Actions

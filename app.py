@@ -9852,20 +9852,29 @@ def add_body_measurement():
     notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
     if err2:
         return err2
+    tape_context, err2 = _validate_navy_tape_context(data)
+    if err2:
+        return err2
+    legacy_tape_context = None
+    if not tape_context:
+        legacy_tape_context, err2 = _validate_legacy_body_tape_context(data)
+        if err2:
+            return err2
 
     entry = {
         "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
         "weight_lbs": weight_lbs,
         "body_fat_pct": body_fat_pct,
-        "neck_in": data.get("neck_in"),
-        "waist_in": data.get("waist_in"),
         "chest_in": data.get("chest_in"),
-        "hips_in": data.get("hips_in"),
         "arms": data.get("arms"),
         "legs": data.get("legs"),
         "notes": notes,
         "created_at": datetime.now().isoformat(),
     }
+    if tape_context:
+        entry.update(tape_context)
+    else:
+        entry.update(legacy_tape_context)
 
     BODY_DATA.append(entry)
     save_json(BODY_FILE, BODY_DATA)
@@ -17271,26 +17280,120 @@ def body_recomp():
         "summary": {"latest": latest, "target_weight_lbs": tw, "target_body_fat_pct": USER_SETTINGS.get('target_body_fat_pct'), "eta_weeks": eta_weeks}
     })
 
+def _coerce_body_tape_float(value, field_name, *, min_v, max_v, allow_none=False):
+    normalized, err = _coerce_float(
+        value,
+        field_name,
+        min_v=min_v,
+        max_v=max_v,
+        allow_none=allow_none,
+    )
+    if err:
+        return None, err
+    if normalized is not None and not math.isfinite(normalized):
+        return None, api_error(f"{field_name} must be a finite number", 400, code="invalid_field")
+    return normalized, None
+
+
+def _validate_legacy_body_tape_context(data):
+    """Preserve the pre-Navy body tape payload with numeric inch validation."""
+    normalized = {}
+    for field_name, min_v, max_v in (
+        ("neck_in", 8, 30),
+        ("waist_in", 18, 80),
+        ("hips_in", 20, 80),
+    ):
+        value, err = _coerce_body_tape_float(
+            data.get(field_name),
+            field_name,
+            min_v=min_v,
+            max_v=max_v,
+            allow_none=True,
+        )
+        if err:
+            return None, err
+        normalized[field_name] = value
+    return normalized, None
+
+
+def _validate_navy_tape_context(data, *, default_sex=None):
+    """Return normalized Navy tape inputs when the request supplies any."""
+    tape_fields = ("sex", "height_in", "hip_in")
+    if not any(data.get(field) not in (None, "") for field in tape_fields):
+        return None, None
+
+    raw_sex = data.get("sex")
+    if raw_sex is None or (default_sex is not None and isinstance(raw_sex, str) and not raw_sex.strip()):
+        if default_sex is None:
+            return None, api_error("Missing field: sex", 400, code="missing_field")
+        raw_sex = default_sex
+    if not isinstance(raw_sex, str):
+        return None, api_error("sex must be male or female", 400, code="invalid_field")
+    sex = raw_sex.strip().lower()
+    if sex not in {"male", "female"}:
+        return None, api_error("sex must be male or female", 400, code="invalid_field")
+
+    height_in, err = _coerce_body_tape_float(data.get("height_in"), "height_in", min_v=48, max_v=96)
+    if err:
+        return None, err
+    neck_in, err = _coerce_body_tape_float(data.get("neck_in"), "neck_in", min_v=8, max_v=30)
+    if err:
+        return None, err
+    waist_in, err = _coerce_body_tape_float(data.get("waist_in"), "waist_in", min_v=18, max_v=80)
+    if err:
+        return None, err
+
+    if sex == "male":
+        if data.get("hip_in") not in (None, ""):
+            return None, api_error("hip_in is only supported for female measurements", 400, code="invalid_field")
+        if waist_in <= neck_in:
+            return None, api_error("waist_in must be greater than neck_in", 400, code="invalid_field")
+        return {
+            "sex": sex,
+            "height_in": height_in,
+            "neck_in": neck_in,
+            "waist_in": waist_in,
+            "hip_in": None,
+        }, None
+
+    hip_in, err = _coerce_body_tape_float(data.get("hip_in"), "hip_in", min_v=20, max_v=80)
+    if err:
+        return None, err
+    if waist_in + hip_in <= neck_in:
+        return None, api_error("waist_in plus hip_in must be greater than neck_in", 400, code="invalid_field")
+    return {
+        "sex": sex,
+        "height_in": height_in,
+        "neck_in": neck_in,
+        "waist_in": waist_in,
+        "hip_in": hip_in,
+    }, None
+
+
 @app.route('/api/body/navy-calc', methods=['POST'])
 def navy_calc():
-    data,err=get_json_body(required=True)
-    if err: return err
-    sex=(data.get('sex') or 'male').lower()
-    h,err2=_coerce_float(data.get('height_in'), 'height_in', min_v=48, max_v=96)
-    if err2:return err2
-    neck,err2=_coerce_float(data.get('neck_in'), 'neck_in', min_v=8, max_v=30)
-    if err2:return err2
-    waist,err2=_coerce_float(data.get('waist_in'), 'waist_in', min_v=18, max_v=80)
-    if err2:return err2
-    import math
-    if sex=='female':
-        hip,err2=_coerce_float(data.get('hip_in'), 'hip_in', min_v=20, max_v=80)
-        if err2:return err2
-        bf=163.205*math.log10(waist+hip-neck)-97.684*math.log10(h)-78.387
+    data, err = get_json_body(required=True)
+    if err:
+        return err
+    tape_context, err = _validate_navy_tape_context(data, default_sex="male")
+    if err:
+        return err
+    if not tape_context:
+        return api_error("Missing Navy tape measurements", 400, code="missing_field")
+
+    if tape_context["sex"] == "female":
+        bf = (
+            163.205 * math.log10(tape_context["waist_in"] + tape_context["hip_in"] - tape_context["neck_in"])
+            - 97.684 * math.log10(tape_context["height_in"])
+            - 78.387
+        )
     else:
-        bf=86.010*math.log10(max(waist-neck,0.1))-70.041*math.log10(h)+36.76
-    bf=max(3.0,min(60.0,round(bf,2)))
-    return jsonify({"body_fat_pct": bf})
+        bf = (
+            86.010 * math.log10(tape_context["waist_in"] - tape_context["neck_in"])
+            - 70.041 * math.log10(tape_context["height_in"])
+            + 36.76
+        )
+    return jsonify({"body_fat_pct": max(3.0, min(60.0, round(bf, 2)))})
 
 @app.route('/api/sleep/import', methods=['POST'])
 def sleep_import():
