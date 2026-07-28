@@ -52,6 +52,7 @@ PUBLIC_PROVENANCE_FIELDS = (
 CALORIE_MAX = 5000
 MACRO_GRAM_MAX = 500
 SODIUM_MG_MAX = 12000
+SODIUM_UNKNOWN_NOTE = "Sodium is unknown; 0 is a compatibility placeholder."
 
 
 class MealEstimateValidationError(ValueError):
@@ -130,6 +131,7 @@ def sanitize_meal_estimate(
         notes = []
     if not isinstance(notes, list) or any(not isinstance(note, str) for note in notes):
         raise MealEstimateValidationError("uncertainty_notes must be strings")
+    notes = [note.strip() for note in notes if note.strip()]
     if not isinstance(raw.get("ambiguous"), bool):
         raise MealEstimateValidationError("ambiguous must be boolean")
 
@@ -137,6 +139,17 @@ def sanitize_meal_estimate(
     estimate_source = source or raw.get("source")
     if not isinstance(estimate_source, str) or not estimate_source.strip():
         raise MealEstimateValidationError("source is required")
+
+    sodium_value = raw.get("sodium_mg")
+    sodium_unknown = sodium_value is None
+    if sodium_unknown:
+        sodium_mg = 0
+        if SODIUM_UNKNOWN_NOTE not in notes:
+            notes = [*notes, SODIUM_UNKNOWN_NOTE]
+    else:
+        sodium_mg = int(round(_number(
+            sodium_value, "sodium_mg", maximum=SODIUM_MG_MAX if plausible_ranges else None
+        )))
 
     estimate = {
         "item_name": item_name.strip(),
@@ -154,25 +167,18 @@ def sanitize_meal_estimate(
         "fat_g": round(_number(
             raw.get("fat_g"), "fat_g", maximum=MACRO_GRAM_MAX if plausible_ranges else None
         ), 1),
-        "sodium_mg": int(round(_number(
-            raw.get("sodium_mg"), "sodium_mg", maximum=SODIUM_MG_MAX if plausible_ranges else None
-        ))),
+        "sodium_mg": sodium_mg,
         "fiber_g": round(_number(
             raw.get("fiber_g"), "fiber_g", maximum=MACRO_GRAM_MAX if plausible_ranges else None
         ), 1),
         "confidence": round(confidence, 2),
-        "ambiguous": raw["ambiguous"],
-        "uncertainty_notes": [note.strip() for note in notes if note.strip()],
+        "ambiguous": raw["ambiguous"] or sodium_unknown,
+        "uncertainty_notes": notes,
         "source": estimate_source.strip(),
     }
-    for key in (
-        "external_food_id",
-        "verified_source_url",
-        "data_fetched_at",
-        "portion_basis",
-        "brand_id",
-        "underlying_source",
-    ):
+    for key in PUBLIC_PROVENANCE_FIELDS:
+        if key in {"off_attribution", "personal_vocab_phrase"}:
+            continue
         value = _string_or_none(raw.get(key), key)
         if value is not None:
             estimate[key] = value

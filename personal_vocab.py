@@ -7,7 +7,7 @@ from typing import Any
 
 import branded_food_lookup
 import data_store
-from meal_estimate_schema import sanitize_meal_estimate
+from meal_estimate_schema import PUBLIC_PROVENANCE_FIELDS, sanitize_meal_estimate
 
 
 MIN_ACCEPTS_FOR_EXACT = 3
@@ -108,15 +108,8 @@ def _canonical_estimate(estimate: dict[str, Any]) -> dict | None:
         canonical = sanitize_meal_estimate(estimate, plausible_ranges=True)
     except Exception:
         return None
-    for key in (
-        "external_food_id",
-        "verified_source_url",
-        "data_fetched_at",
-        "portion_basis",
-        "brand_id",
-        "underlying_source",
-    ):
-        if estimate.get(key) is not None:
+    for key in PUBLIC_PROVENANCE_FIELDS:
+        if key not in canonical and estimate.get(key) is not None:
             canonical[key] = estimate[key]
     return canonical
 

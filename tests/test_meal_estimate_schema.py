@@ -86,7 +86,6 @@ def test_sanitize_meal_estimate_preserves_lookup_provenance():
     [
         ("calories", -1),
         ("protein_g", True),
-        ("sodium_mg", None),
         ("confidence", 1.2),
         ("ambiguous", "no"),
         ("uncertainty_notes", ["ok", 5]),
@@ -95,6 +94,29 @@ def test_sanitize_meal_estimate_preserves_lookup_provenance():
 def test_sanitize_meal_estimate_rejects_invalid_schema(field, value):
     with pytest.raises(MealEstimateValidationError):
         sanitize_meal_estimate(_valid_estimate(**{field: value}))
+
+
+def test_sanitize_unknown_sodium_uses_zero_compatibility_placeholder_once():
+    raw = _valid_estimate(
+        sodium_mg=None,
+        uncertainty_notes=["Sodium is unknown; 0 is a compatibility placeholder."],
+    )
+
+    estimate = sanitize_meal_estimate(raw)
+
+    assert estimate["sodium_mg"] == 0
+    assert estimate["ambiguous"] is True
+    assert estimate["uncertainty_notes"].count(
+        "Sodium is unknown; 0 is a compatibility placeholder."
+    ) == 1
+
+
+def test_sanitize_verified_zero_sodium_does_not_add_unknown_note():
+    estimate = sanitize_meal_estimate(_valid_estimate(sodium_mg=0))
+
+    assert estimate["sodium_mg"] == 0
+    assert estimate["ambiguous"] is False
+    assert not any("sodium is unknown" in note.lower() for note in estimate["uncertainty_notes"])
 
 
 def test_manual_review_estimate_is_always_pending_review_safe():

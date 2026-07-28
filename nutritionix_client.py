@@ -3,14 +3,26 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 from urllib import error, request
+
+import food_provider_transport
 
 
 NUTRITIONIX_URL = "https://trackapi.nutritionix.com/v2/natural/nutrients"
 NUTRITIONIX_ITEM_URL = "https://trackapi.nutritionix.com/v2/search/item"
 TIMEOUT_SECONDS = 1.5
+logger = logging.getLogger(__name__)
+
+
+def _effective_timeout(timeout: float) -> float:
+    return food_provider_transport.clamp_timeout(timeout)
+
+
+def _warn(reason: str) -> None:
+    logger.warning("Nutritionix provider warning: %s", reason)
 
 
 def natural_nutrients(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[str, Any] | None:
@@ -38,9 +50,23 @@ def natural_nutrients(query: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[s
         },
     )
     try:
-        with request.urlopen(req, timeout=timeout) as resp:
+        with request.urlopen(req, timeout=_effective_timeout(timeout)) as resp:
+            status = getattr(resp, "status", None)
+            if status is not None and not 200 <= int(status) < 300:
+                _warn("non-2xx response")
+                return None
             return json.loads(resp.read().decode("utf-8"))
-    except (OSError, error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError):
+    except error.HTTPError:
+        _warn("non-2xx response")
+        return None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        _warn("malformed JSON")
+        return None
+    except TimeoutError:
+        _warn("timeout")
+        return None
+    except (OSError, error.URLError):
+        _warn("network failure")
         return None
 
 
@@ -61,8 +87,8 @@ def search_item_by_upc(upc: str, *, timeout: float = TIMEOUT_SECONDS) -> dict[st
             "x-app-key": app_key,
         },
     )
-    try:
-        with request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except (OSError, error.URLError, error.HTTPError, TimeoutError, json.JSONDecodeError):
-        return None
+    return food_provider_transport.get_json(
+        req,
+        timeout=_effective_timeout(timeout),
+        provider="nutritionix_barcode",
+    )
