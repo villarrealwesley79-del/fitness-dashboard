@@ -6940,11 +6940,36 @@
         _setDetail('oura-detail-source', sourceText);
     }
 
+    function renderAppleHealthWatchdogStatus(watchdog) {
+        const chip = $('apple-watchdog-state');
+        const detail = $('apple-watchdog-detail');
+        if (!chip || !detail) return;
+
+        const state = watchdog && watchdog.state;
+        const toneByState = {
+            quiet: 'unknown',
+            ok: 'ok',
+            stale: 'stale',
+            parse_error: 'stale',
+        };
+        chip.textContent = (watchdog && watchdog.label) || 'Unavailable';
+        chip.className = `state-chip state-chip-sm ${toneByState[state] || 'unknown'}`;
+
+        const parts = [
+            (watchdog && watchdog.detail) || 'Watchdog status is unavailable.',
+        ];
+        if (watchdog && watchdog.checked_at) {
+            parts.push(`Checked ${fmtDateTime(watchdog.checked_at)}`);
+        }
+        detail.textContent = parts.join(' · ');
+    }
+
     function renderAppleHealthFreshnessDetail(ah, freshness) {
         const detail = $('apple-detail');
         if (!detail) return;
         const staleRow = $('apple-detail-stale-row');
         const attemptRow = $('apple-detail-attempt-row');
+        renderAppleHealthWatchdogStatus(ah && ah.watchdog);
 
         if (!ah) {
             _setDetail('apple-detail-last-sync', 'Status endpoint unavailable');

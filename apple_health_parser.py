@@ -29,6 +29,9 @@ HEALTH_DIR = os.path.expanduser("~/Documents/Health")
 PUBLIC_BASE_URL_ENV = "FITNESS_DASHBOARD_PUBLIC_BASE_URL"
 APPLE_HEALTH_WEBHOOK_URL_ENV = "APPLE_HEALTH_WEBHOOK_URL"
 APPLE_HEALTH_SYNC_DB_ENV = "APPLE_HEALTH_SYNC_DB"
+APPLE_HEALTH_STALENESS_LOG_ENV = "APPLE_HEALTH_STALENESS_LOG_FILE"
+APPLE_HEALTH_STALENESS_LOG_DEFAULT = "/tmp/apple-health-staleness.log"
+APPLE_HEALTH_STALENESS_LOG_TAIL_BYTES = 64 * 1024
 
 ACTIVITY_MAP = {
     1: "Walking", 2: "Running", 3: "Cycling", 4: "Hiking",
@@ -88,6 +91,88 @@ def _apple_health_sync_db_path() -> str:
         os.environ.get(APPLE_HEALTH_SYNC_DB_ENV)
         or data_path("apple_health_sync.db")
     )
+
+
+def _watchdog_quiet_status(checked_at=None) -> dict:
+    return {
+        "state": "quiet",
+        "label": "Quiet",
+        "detail": "No first sync yet. Watchdog is waiting for data.",
+        "checked_at": checked_at,
+    }
+
+
+def _watchdog_parse_error_status(checked_at=None) -> dict:
+    return {
+        "state": "parse_error",
+        "label": "Parse error",
+        "detail": "Latest watchdog result could not be parsed.",
+        "checked_at": checked_at,
+    }
+
+
+def _apple_health_watchdog_status() -> dict:
+    """Return a bounded, normalized summary of the latest watchdog log line."""
+    log_path = os.environ.get(
+        APPLE_HEALTH_STALENESS_LOG_ENV,
+        APPLE_HEALTH_STALENESS_LOG_DEFAULT,
+    )
+    try:
+        with open(log_path, "rb") as log_file:
+            log_file.seek(0, os.SEEK_END)
+            size = log_file.tell()
+            log_file.seek(max(0, size - APPLE_HEALTH_STALENESS_LOG_TAIL_BYTES))
+            text = log_file.read(APPLE_HEALTH_STALENESS_LOG_TAIL_BYTES).decode(
+                "utf-8", errors="replace"
+            )
+    except FileNotFoundError:
+        return _watchdog_quiet_status()
+    except OSError:
+        return _watchdog_parse_error_status()
+
+    latest = next((line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
+    match = re.fullmatch(r"\[([^\]]+)\]\s+(.+)", latest)
+    if not match:
+        return _watchdog_parse_error_status()
+
+    checked_at, message = match.groups()
+    try:
+        datetime.strptime(checked_at, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return _watchdog_parse_error_status()
+
+    if message.startswith("INFO:"):
+        return _watchdog_quiet_status(checked_at)
+
+    ok_match = re.fullmatch(
+        r"OK: last Apple Health sync ([0-9]+(?:\.[0-9]+)?)h ago",
+        message,
+    )
+    if ok_match:
+        return {
+            "state": "ok",
+            "label": "OK",
+            "detail": f"Last sync {ok_match.group(1)}h ago.",
+            "checked_at": checked_at,
+        }
+
+    stale_match = re.fullmatch(
+        r"STALE: last Apple Health sync ([0-9]+(?:\.[0-9]+)?)h ago "
+        r"\(threshold ([0-9]+(?:\.[0-9]+)?)h\)",
+        message,
+    )
+    if stale_match:
+        return {
+            "state": "stale",
+            "label": "Stale",
+            "detail": (
+                f"No Apple Health sync for {stale_match.group(1)}h "
+                f"({stale_match.group(2)}h threshold)."
+            ),
+            "checked_at": checked_at,
+        }
+
+    return _watchdog_parse_error_status(checked_at)
 
 
 @lru_cache(maxsize=8)
@@ -1007,6 +1092,7 @@ def register_apple_health_routes(flask_app):
             "setup_configured": token_configured,
             "has_token": token_configured,
             "public_url_configured": public_url_configured,
+            "watchdog": _apple_health_watchdog_status(),
         })
 
     @flask_app.route("/api/apple-health/sync/setup-url")
