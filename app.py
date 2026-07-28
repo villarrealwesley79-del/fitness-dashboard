@@ -3410,9 +3410,80 @@ def _build_deterministic_adjust_swap(constraint, recommendation, equipment_pref)
 
 def _merge_deterministic_adjust_swap(intent, deterministic_swap):
     merged = dict(intent or {})
-    if deterministic_swap:
-        merged["swap"] = [deterministic_swap]
+    if not deterministic_swap:
+        return merged
+
+    existing_swaps = merged.get("swap") or []
+    if not isinstance(existing_swaps, list):
+        existing_swaps = []
+
+    deterministic_index = deterministic_swap.get("replace_index")
+    deterministic_name = str(deterministic_swap.get("replace_exercise") or "").strip().lower()
+    deterministic_definition = (
+        _resolve_exercise_definition(deterministic_name) if deterministic_name else None
+    )
+
+    def _same_source_slot(candidate):
+        if not isinstance(candidate, dict):
+            return False
+        candidate_index = candidate.get("replace_index")
+        candidate_name = str(candidate.get("replace_exercise") or "").strip().lower()
+        candidate_definition = (
+            _resolve_exercise_definition(candidate_name) if candidate_name else None
+        )
+
+        def _same_source_name():
+            if deterministic_definition and candidate_definition:
+                return _same_exercise_definition(
+                    deterministic_definition, candidate_definition
+                )
+            return bool(deterministic_name and candidate_name == deterministic_name)
+
+        if isinstance(deterministic_index, int) and isinstance(candidate_index, int):
+            if deterministic_index != candidate_index:
+                return False
+            if deterministic_name:
+                return _same_source_name()
+            return not candidate_name
+        if deterministic_name and candidate_name:
+            return _same_source_name()
+        return False
+
+    swaps = []
+    deterministic_inserted = False
+    replaced_model_swap = False
+    for swap in existing_swaps:
+        if _same_source_slot(swap):
+            if isinstance(swap, dict) and not swap.get("_deterministic"):
+                replaced_model_swap = True
+            if not deterministic_inserted:
+                swaps.append(deterministic_swap)
+                deterministic_inserted = True
+            continue
+        swaps.append(swap)
+    if not deterministic_inserted:
+        swaps.append(deterministic_swap)
+    merged["swap"] = swaps
+    if replaced_model_swap:
+        merged["_deterministic_swap_replaced_model_swap"] = True
     return merged
+
+
+def _adjust_outcome_summary(
+    result_kind,
+    applied_notes,
+    skipped_notes,
+    model_summary,
+    *,
+    trust_model_summary=True,
+):
+    if result_kind == "unchanged":
+        return "The requested adjustment could not be applied to the current plan."
+    if result_kind == "changed" and applied_notes and skipped_notes:
+        return "Applied some requested changes; other requested changes were skipped."
+    if result_kind == "changed" and applied_notes and not trust_model_summary:
+        return f"Applied validated changes: {'; '.join(applied_notes)}"
+    return model_summary
 
 
 def _deterministic_adjust_payload(
@@ -3428,16 +3499,23 @@ def _deterministic_adjust_payload(
 ):
     patched = json.loads(json.dumps(recommendation, default=str))
     intent = _merge_deterministic_adjust_swap({}, deterministic_swap)
-    patched, applied_notes = _apply_intent_patch(
+    patched, applied_notes, skipped_notes = _apply_intent_patch(
         patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
     )
     result_kind = "changed" if applied_notes else "unchanged"
+    summary = _adjust_outcome_summary(
+        result_kind,
+        applied_notes,
+        skipped_notes,
+        "Applied the recognized exercise request without the local coach model.",
+    )
     return {
         "status": "ok",
         "result_kind": result_kind,
         "recommendation": patched,
-        "summary": "Applied the recognized exercise request without the local coach model.",
+        "summary": summary,
         "applied_notes": applied_notes,
+        "skipped_notes": skipped_notes,
         "constraint": constraint,
         "meta": {"mode": "deterministic_fallback", "reason": reason},
         "cache_hit": False,
@@ -10266,7 +10344,7 @@ def swap_workout_exercise():
 # - Cache by workout_id + constraint + readiness_date + model_version + schema/library hash.
 
 _ADJUST_CACHE_DB = os.path.join(DATA_DIR, "ai_coach_cache.sqlite3")
-_ADJUST_CACHE_VERSION = "fit179-movement-resolution-v1"
+_ADJUST_CACHE_VERSION = "fit265-honest-adjust-v2"
 
 
 def _ai_cache_init():
@@ -10412,10 +10490,11 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     """Apply the LLM's intent patch to the deterministic recommendation.
 
     Every mutation is clamped/validated here. The LLM cannot override safety.
-    Returns (patched_recommendation, applied_notes) where applied_notes is a
-    list of human-readable strings describing what actually changed.
+    Returns (patched_recommendation, applied_notes, skipped_notes). Applied
+    notes describe actual mutations; skipped notes describe rejected no-ops.
     """
-    notes = []
+    applied_notes = []
+    skipped_notes = []
     exercises = list(recommendation.get("exercises") or [])
 
     def _normalize_avoid_joints(raw_items):
@@ -10452,18 +10531,28 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     # ── 2) Clamp rpe_delta to ±1.0; disallow upward on poor readiness.
     rpe_delta_raw = float(intent.get("rpe_delta") or 0)
     rpe_delta = max(-1.0, min(1.0, rpe_delta_raw))
+    if rpe_delta != rpe_delta_raw:
+        skipped_notes.append(
+            f"Clamped: RPE adjustment {rpe_delta_raw:+.1f} to {rpe_delta:+.1f}"
+        )
     if deload_active and rpe_delta_raw > 0:
         rpe_delta = min(0.0, rpe_delta)  # deload can only reduce
-        notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — deload week")
+        skipped_notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — deload week")
     if oura_readiness is not None and oura_readiness < 60 and rpe_delta_raw > 0:
         rpe_delta = min(0.0, rpe_delta)
-        notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — readiness {oura_readiness}/100")
+        skipped_notes.append(f"Ignored: RPE increase (+{rpe_delta_raw:+.1f}) — readiness {oura_readiness}/100")
 
     # ── 3) Clamp sets_delta_pct to ±20; no upward on deload/low readiness.
     sets_delta_raw = float(intent.get("sets_delta_pct") or 0)
     sets_delta = max(-20.0, min(20.0, sets_delta_raw))
+    if sets_delta != sets_delta_raw:
+        skipped_notes.append(
+            f"Clamped: sets adjustment {sets_delta_raw:+.0f}% to {sets_delta:+.0f}%"
+        )
     if deload_active or (oura_readiness is not None and oura_readiness < 60):
         sets_delta = min(0.0, sets_delta)
+        if sets_delta_raw > 0:
+            skipped_notes.append("Ignored: sets increase — deload or low readiness")
 
     # ── 4) Hard blacklist avoid_muscles / avoid_joints using current soreness data.
     avoid_muscles = {m.strip().lower() for m in (intent.get("avoid_muscles") or []) if isinstance(m, str)}
@@ -10493,7 +10582,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                 reason_bits = [f"{muscle} avoided"]
                 if sore_map.get(muscle, 0) >= 7:
                     reason_bits.append(f"soreness {sore_map[muscle]}/10")
-                notes.append(f"Removed: {ex_name} — {', '.join(reason_bits)}")
+                applied_notes.append(f"Removed: {ex_name} — {', '.join(reason_bits)}")
             else:
                 kept.append(ex)
         exercises = kept
@@ -10514,7 +10603,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                 if any(src in ex_name.lower() for src in joint_swap_sources):
                     kept.append(ex)
                     continue
-                notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
+                applied_notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
             else:
                 kept.append(ex)
         exercises = kept
@@ -10536,15 +10625,16 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         replace_index = sw.get("replace_index")
         target_muscle = (sw.get("target_muscle") or "").strip().lower()
         if not target_muscle or (not src_name and not isinstance(replace_index, int)):
+            skipped_notes.append("Ignored: swap requires a target muscle and source exercise or index")
             continue
         if target_muscle in avoid_muscles:
-            notes.append(f"Ignored: swap to {target_muscle} — muscle is avoided")
+            skipped_notes.append(f"Ignored: swap to {target_muscle} — muscle is avoided")
             continue
 
         # Find the exercise to replace by name (case-insensitive, contains).
         def _source_matches_plan_exercise(plan_ex):
             if not src_name:
-                return True
+                return False
             if src_definition and _same_exercise_definition(_plan_exercise_definition(plan_ex), src_definition):
                 return True
             plan_name = plan_ex.get("exercise") or plan_ex.get("machine") or plan_ex.get("name") or ""
@@ -10560,13 +10650,13 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
                     idx = i
                     break
         if idx is None:
-            notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
+            skipped_notes.append(f"could not locate '{sw.get('replace_exercise')}' in current plan")
             continue
 
         target_exercise_name = (sw.get("target_exercise") or "").strip()
         requested_exercise = _resolve_exercise_definition(target_exercise_name)
         if target_exercise_name and not requested_exercise:
-            notes.append(f"Ignored: unknown target exercise '{target_exercise_name}'")
+            skipped_notes.append(f"Ignored: unknown target exercise '{target_exercise_name}'")
             continue
 
         # Pick a new exercise for target_muscle from the equipment-filtered library,
@@ -10577,7 +10667,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             and not _exercise_loads_avoided_joint(ex.get("name"), avoid_joints)
         ]
         if not library:
-            notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment/joint constraints")
+            skipped_notes.append(f"no exercises available for muscle '{target_muscle}' under current equipment/joint constraints")
             continue
         # _filtered_exercise_library already applies brand, compound, and name ranking.
         # Avoid picking something already in the plan, including aliases.
@@ -10589,8 +10679,14 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
 
         if requested_exercise:
             if requested_exercise not in library:
+                skipped_notes.append(
+                    f"Ignored: target exercise '{target_exercise_name}' is unavailable under current equipment/joint constraints"
+                )
                 continue
             if _plan_already_contains(requested_exercise):
+                skipped_notes.append(
+                    f"Ignored: target exercise '{target_exercise_name}' is already in the current plan"
+                )
                 continue
             picked = requested_exercise
         else:
@@ -10615,7 +10711,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         new_entry["rationale"] = f"{new_entry.get('rationale', '')} · Swapped from {old_name} ({reason})".strip(" ·")
         exercises[idx] = new_entry
         reason_suffix = f" — {reason}" if reason else ""
-        notes.append(f"Swapped: {old_name} → {picked['name']}{reason_suffix}")
+        applied_notes.append(f"Swapped: {old_name} → {picked['name']}{reason_suffix}")
 
     if avoid_joints:
         kept = []
@@ -10623,28 +10719,65 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             ex_name = ex.get("exercise") or ex.get("name") or ex.get("machine") or "exercise"
             avoided = _exercise_loads_avoided_joint(ex_name, avoid_joints)
             if avoided:
-                notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
+                applied_notes.append(f"Removed: {ex_name} — loads {avoided['side']} {avoided['joint']}")
             else:
                 kept.append(ex)
         exercises = kept
 
     # ── 6) Apply rpe_delta and sets_delta_pct to each exercise, enforcing caps.
+    rpe_changed_count = 0
+    rpe_unchanged_count = 0
+    sets_changed_count = 0
+    sets_unchanged_count = 0
     if rpe_delta != 0 or sets_delta != 0:
         for ex in exercises:
             if rpe_delta:
                 cur = float(ex.get("rpe_target") or goal_params.get("rpe_target") or 7)
-                ex["rpe_target"] = max(1.0, min(10.0, cur + rpe_delta))
+                new_rpe = max(1.0, min(10.0, cur + rpe_delta))
+                if new_rpe != cur:
+                    ex["rpe_target"] = new_rpe
+                    rpe_changed_count += 1
+                else:
+                    rpe_unchanged_count += 1
             if sets_delta:
                 cur = int(ex.get("target_sets") or goal_params.get("sets_per_exercise") or 3)
                 new_sets = max(1, round(cur * (1 + sets_delta / 100.0)))
                 # Never add sets on deload
                 if deload_active:
                     new_sets = min(cur, new_sets)
-                ex["target_sets"] = new_sets
-        if rpe_delta:
-            notes.append(f"RPE adjusted {rpe_delta:+.1f} across all exercises")
-        if sets_delta:
-            notes.append(f"Sets adjusted {sets_delta:+.0f}% across all exercises")
+                if new_sets != cur:
+                    ex["target_sets"] = new_sets
+                    sets_changed_count += 1
+                else:
+                    sets_unchanged_count += 1
+        if rpe_changed_count:
+            suffix = "exercise" if rpe_changed_count == 1 else "exercises"
+            applied_notes.append(
+                f"RPE adjusted {rpe_delta:+.1f} for {rpe_changed_count} {suffix}"
+            )
+        if rpe_delta and not rpe_changed_count:
+            skipped_notes.append("Ignored: RPE adjustment produced no exercise changes")
+        elif rpe_unchanged_count:
+            suffix = "exercise" if rpe_unchanged_count == 1 else "exercises"
+            limit_phrase = "at its limit" if rpe_unchanged_count == 1 else "at their limits"
+            skipped_notes.append(
+                f"RPE adjustment skipped for {rpe_unchanged_count} {suffix} {limit_phrase}"
+            )
+        if sets_changed_count:
+            suffix = "exercise" if sets_changed_count == 1 else "exercises"
+            applied_notes.append(
+                f"Sets adjusted {sets_delta:+.0f}% for {sets_changed_count} {suffix}"
+            )
+        if sets_delta and not sets_changed_count:
+            skipped_notes.append("Ignored: sets adjustment produced no exercise changes")
+        elif sets_unchanged_count:
+            suffix = "exercise" if sets_unchanged_count == 1 else "exercises"
+            rounding_phrase = (
+                "kept it unchanged" if sets_unchanged_count == 1 else "kept them unchanged"
+            )
+            skipped_notes.append(
+                f"Sets adjustment skipped for {sets_unchanged_count} {suffix} because rounding {rounding_phrase}"
+            )
 
     # ── 7) Weight guard: cap every exercise at +10% of its recent e1RM-derived load.
     for ex in exercises:
@@ -10655,8 +10788,10 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             target_w = float(ex.get("target_weight") or 0)
             cap = e1rm * 1.10
             if target_w > cap:
-                ex["target_weight"] = round(cap, 1)
-                notes.append(f"Capped: {ex_name} weight → {round(cap, 1)} lb (10% above e1RM ceiling)")
+                capped_weight = round(cap, 1)
+                if capped_weight != target_w:
+                    ex["target_weight"] = capped_weight
+                    applied_notes.append(f"Capped: {ex_name} weight → {capped_weight} lb (10% above e1RM ceiling)")
 
     # ── 8) Duration cap — if user gave a tight time box, trim tail exercises.
     duration_cap = float(intent.get("duration_cap_min") or 0)
@@ -10672,17 +10807,23 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             kept.append(ex)
         if len(kept) < len(exercises):
             dropped = [ex.get("exercise") or ex.get("name") or "exercise" for ex in exercises[len(kept):]]
-            notes.append(f"Trimmed: {', '.join(dropped)} — fits {int(duration_cap)} min window")
+            applied_notes.append(f"Trimmed: {', '.join(dropped)} — fits {int(duration_cap)} min window")
             exercises = kept
-        recommendation["estimated_minutes"] = int(minutes_used + 10)
+        old_estimated_minutes = recommendation.get("estimated_minutes")
+        new_estimated_minutes = int(minutes_used + 10)
+        recommendation["estimated_minutes"] = new_estimated_minutes
+        if old_estimated_minutes != new_estimated_minutes:
+            applied_notes.append(
+                f"Duration adjusted: {old_estimated_minutes} → {new_estimated_minutes} min"
+            )
 
     # ── 9) Drop cardio if requested.
-    if intent.get("drop_cardio"):
+    if intent.get("drop_cardio") and recommendation.get("cardio") is not None:
         recommendation["cardio"] = None
-        notes.append("Removed: Cardio finisher — per your request")
+        applied_notes.append("Removed: Cardio finisher — per your request")
 
     recommendation["exercises"] = exercises
-    return recommendation, notes
+    return recommendation, applied_notes, skipped_notes
 
 
 @app.route('/api/workout/adjust', methods=['POST'])
@@ -10742,6 +10883,7 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     readiness_date = _today_str()
@@ -10802,6 +10944,7 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     # Send readiness context the LLM can reason about.
@@ -10852,9 +10995,13 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     intent = _merge_deterministic_adjust_swap(raw_patch.get("intent") or {}, deterministic_swap)
+    trust_model_summary = not bool(
+        intent.pop("_deterministic_swap_replaced_model_swap", False)
+    )
     summary = raw_patch.get("summary") or ""
     raw_meta = raw_patch.get("_meta") or {}
     actual_model_version = raw_meta.get("model_version") or route_model_version
@@ -10863,7 +11010,7 @@ def adjust_workout():
     # if the user re-opens without applying.
     patched = json.loads(json.dumps(recommendation, default=str))
     try:
-        patched, applied_notes = _apply_intent_patch(
+        patched, applied_notes, skipped_notes = _apply_intent_patch(
             patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
         )
     except Exception as exc:
@@ -10883,6 +11030,7 @@ def adjust_workout():
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
+            "skipped_notes": [],
         })
 
     intent_is_empty = (
@@ -10900,6 +11048,13 @@ def adjust_workout():
         result_kind = "refused"
     else:
         result_kind = "unchanged"
+    summary = _adjust_outcome_summary(
+        result_kind,
+        applied_notes,
+        skipped_notes,
+        summary,
+        trust_model_summary=trust_model_summary,
+    )
 
     payload = {
         "status": "ok",
@@ -10907,6 +11062,7 @@ def adjust_workout():
         "recommendation": patched,
         "summary": summary,
         "applied_notes": applied_notes,
+        "skipped_notes": skipped_notes,
         "constraint": constraint,
         "meta": raw_meta,
         "cache_hit": False,

@@ -673,7 +673,7 @@ def test_ai_adjust_swap_preserves_preferred_brand_order(fitness_app):
         ]
     }
 
-    patched, _notes = fitness_app._apply_intent_patch(
+    patched, _notes, _skipped_notes = fitness_app._apply_intent_patch(
         recommendation,
         intent,
         fitness_app.GOAL_PARAMETERS[fitness_app.TrainingGoal.HYPERTROPHY.value],
@@ -717,7 +717,7 @@ def test_ai_adjust_removes_exercises_loading_side_specific_avoided_joint(fitness
         "swap": [],
     }
 
-    patched, notes = fitness_app._apply_intent_patch(
+    patched, notes, _skipped_notes = fitness_app._apply_intent_patch(
         recommendation,
         intent,
         fitness_app.GOAL_PARAMETERS[fitness_app.TrainingGoal.HYPERTROPHY.value],
@@ -745,7 +745,7 @@ def test_ai_adjust_swap_respects_avoided_joint_when_picking_replacement(fitness_
         "swap": [{"replace_exercise": "Shoulder Press", "target_muscle": "quads", "reason": "test"}],
     }
 
-    patched, notes = fitness_app._apply_intent_patch(
+    patched, _applied_notes, skipped_notes = fitness_app._apply_intent_patch(
         recommendation,
         intent,
         fitness_app.GOAL_PARAMETERS[fitness_app.TrainingGoal.HYPERTROPHY.value],
@@ -756,7 +756,7 @@ def test_ai_adjust_swap_respects_avoided_joint_when_picking_replacement(fitness_
     )
 
     assert patched["exercises"][0]["exercise"] == "Shoulder Press"
-    assert any("joint constraints" in note for note in notes)
+    assert any("joint constraints" in note for note in skipped_notes)
 
 
 def test_ai_adjust_swap_runs_before_joint_removal_for_same_source(fitness_app):
@@ -774,7 +774,7 @@ def test_ai_adjust_swap_runs_before_joint_removal_for_same_source(fitness_app):
         "swap": [{"replace_exercise": "Chest Press", "target_muscle": "biceps", "reason": "left shoulder sore"}],
     }
 
-    patched, notes = fitness_app._apply_intent_patch(
+    patched, notes, _skipped_notes = fitness_app._apply_intent_patch(
         recommendation,
         intent,
         fitness_app.GOAL_PARAMETERS[fitness_app.TrainingGoal.HYPERTROPHY.value],
