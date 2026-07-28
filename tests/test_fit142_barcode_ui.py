@@ -1,173 +1,319 @@
-"""FIT-142 barcode scan UI wiring tests."""
+"""FIT-142 barcode scan UI contracts."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from js_runtime import run_app_js
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_JS = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
 APP_CSS = (ROOT / "static" / "css" / "style.css").read_text(encoding="utf-8")
 INDEX = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
 
 
-def _barcode_block() -> str:
-    start = APP_JS.find("function normalizeMealBarcode(value)")
-    end = APP_JS.find("\n    async function submitMealComposer", start)
-    assert start != -1 and end != -1, "FIT-142 barcode block markers not found"
-    return APP_JS[start:end]
-
-
 def test_barcode_controls_are_in_meal_composer_without_nested_form():
-    assert 'id="meal-composer-scan"' in INDEX
-    assert 'id="meal-composer-barcode"' in INDEX
-    assert 'id="meal-composer-barcode-video"' in INDEX
-    assert 'id="meal-composer-barcode-input"' in INDEX
-    assert 'id="meal-composer-barcode-submit"' in INDEX
+    for element_id in (
+        'id="meal-composer-scan"', 'id="meal-composer-barcode"',
+        'id="meal-composer-barcode-video"', 'id="meal-composer-barcode-input"',
+        'id="meal-composer-barcode-submit"',
+    ):
+        assert element_id in INDEX
     composer = INDEX.split('<form class="meal-composer"', 1)[1].split("</form>", 1)[0]
     assert '<form ' not in composer
 
 
-def test_barcode_detector_sends_only_decoded_barcode_json():
-    block = _barcode_block()
-    assert "new window.BarcodeDetector" in block
-    assert "navigator.mediaDevices.getUserMedia" in block
-    assert "results[0] && results[0].rawValue" in block
-    assert "submitMealBarcode(barcode)" in block
-    assert "fetch('/api/meal-intake/barcode'" in block
-    assert "'Content-Type': 'application/json'" in block
-    assert "JSON.stringify({" in block
-    assert "barcode," in block
-    assert "FormData" not in block
-    assert "images" not in block
-    assert "srcObject" not in block.split("body: JSON.stringify", 1)[1]
-
-
 def test_barcode_normalizer_matches_backend_separator_contract():
-    block = _barcode_block()
-    normalize_section = block.split("function normalizeMealBarcode", 1)[1].split("\n    }", 1)[0]
-    assert "replace(/[\\s_.-]+/g, '')" in normalize_section
-    assert "/^\\d+$/.test(digits)" in normalize_section
-    assert "replace(/\\D+/g" not in normalize_section
+    output = run_app_js(
+        ["normalizeMealBarcode"],
+        """
+process.stdout.write(JSON.stringify([
+  e.normalizeMealBarcode('0 123-4567'),
+  e.normalizeMealBarcode('0123.4567'),
+  e.normalizeMealBarcode('123456789012'),
+  e.normalizeMealBarcode('12345abc'),
+  e.normalizeMealBarcode('123456789'),
+]));
+""",
+    )
+    assert output == ["01234567", "01234567", "123456789012", "", ""]
 
 
-def test_barcode_camera_start_cancels_if_panel_closes_mid_permission():
-    block = _barcode_block()
-    assert "barcodeScanToken" in APP_JS
-    assert "function mealBarcodeScanCancelled(scanToken)" in block
-    assert "stream.getTracks().forEach((track) => track.stop())" in block
-    get_user_media_idx = block.find("navigator.mediaDevices.getUserMedia")
-    cancel_idx = block.find("if (mealBarcodeScanCancelled(scanToken))", get_user_media_idx)
-    assign_idx = block.find("mealComposerState.barcodeStream = stream", get_user_media_idx)
-    assert get_user_media_idx != -1 and cancel_idx != -1 and assign_idx != -1
-    assert cancel_idx < assign_idx
-    play_idx = block.find("await barcodeVideo.play()", assign_idx)
-    post_play_cancel_idx = block.find("if (mealBarcodeScanCancelled(scanToken))", play_idx)
-    assert play_idx != -1 and post_play_cancel_idx != -1
+def test_barcode_lookup_posts_json_with_local_time_fields():
+    output = run_app_js(
+        ["postMealBarcodeLookup"],
+        """
+let captured;
+sandbox.fetch = async (path, options) => {
+  captured = { path, options };
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+await e.postMealBarcodeLookup({ barcode: '01234567', clientId: 'barcode-client', localTime: {
+  local_timestamp: '2026-07-16T12:00:00', local_date: '2026-07-16', local_iso: '2026-07-16T12:00:00-05:00',
+}, allowPending: true });
+process.stdout.write(JSON.stringify({ path: captured.path, method: captured.options.method, credentials: captured.options.credentials, headers: captured.options.headers, body: JSON.parse(captured.options.body) }));
+""",
+    )
+    assert output == {
+        "path": "/api/meal-intake/barcode",
+        "method": "POST",
+        "credentials": "same-origin",
+        "headers": {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+        },
+        "body": {
+            "client_id": "barcode-client", "barcode": "01234567", "allow_pending": True,
+            "local_timestamp": "2026-07-16T12:00:00", "local_date": "2026-07-16",
+            "local_iso": "2026-07-16T12:00:00-05:00",
+        },
+    }
 
 
-def test_barcode_detection_rechecks_cancellation_before_submit():
-    block = _barcode_block()
-    frame_section = block.split("async function scanMealBarcodeFrame", 1)[1].split("\n    function openMealBarcodePanel", 1)[0]
-    assert "const scanToken = mealComposerState.barcodeScanToken;" in frame_section
-    detect_idx = frame_section.find("await detector.detect(barcodeVideo)")
-    cancel_idx = frame_section.find("if (mealBarcodeScanCancelled(scanToken)) return;", detect_idx)
-    submit_idx = frame_section.find("submitMealBarcode(barcode)", detect_idx)
-    assert detect_idx != -1 and cancel_idx != -1 and submit_idx != -1
-    assert detect_idx < cancel_idx < submit_idx
+def test_camera_permission_cancellation_stops_stream_before_assignment():
+    output = run_app_js(
+        ["startMealBarcodeScanner", "mealComposerState"],
+        """
+const tracks = [{ stopped: false, stop() { this.stopped = true; } }];
+const stream = { getTracks: () => tracks };
+sandbox.elements['meal-composer-barcode'] = { hidden: true };
+sandbox.elements['meal-composer-barcode-video'] = { hidden: true, srcObject: null, play: async () => {}, pause: () => {} };
+sandbox.BarcodeDetector = class {};
+sandbox.navigator.mediaDevices = { getUserMedia: async () => stream };
+await e.startMealBarcodeScanner();
+process.stdout.write(JSON.stringify({ stopped: tracks[0].stopped, stream: e.mealComposerState.barcodeStream }));
+""",
+    )
+    assert output == {"stopped": True, "stream": None}
 
 
-def test_repeated_scan_click_does_not_start_parallel_camera_streams():
-    block = _barcode_block()
-    start_section = block.split("async function startMealBarcodeScanner", 1)[1].split("\n    function openMealBarcodePanel", 1)[0]
-    assert "mealComposerState.barcodeStream || mealComposerState.barcodeScanRaf" in start_section
-    assert "stopMealBarcodeScanner()" in start_section
-    open_section = block.split("function openMealBarcodePanel", 1)[1].split("\n    async function postMealBarcodeLookup", 1)[0]
-    assert "if (!barcodePanel.hidden)" in open_section
-    assert "return;" in open_section.split("if (!barcodePanel.hidden)", 1)[1].split("barcodePanel.hidden = false", 1)[0]
+def _composer_elements_script():
+    return """
+const ids = ['meal-composer-text', 'meal-composer-barcode-status', 'meal-composer-error', 'meal-composer-barcode', 'meal-composer-submit', 'meal-composer-scan'];
+ids.forEach((id) => { sandbox.elements[id] = { value: '', textContent: '', hidden: false, disabled: false, classList: { add() {}, remove() {} }, dataset: {} }; });
+"""
 
 
-def test_barcode_success_preserves_unsent_composer_draft():
-    block = _barcode_block()
-    assert "const preserveComposerDraft = !!textValue || mealComposerState.imageFiles.length > 0;" in block
-    assert "preserveComposerDraft," in block
-    pending_section = APP_JS.split("if (status === 'pending_review')", 1)[1].split("setMealComposerError", 1)[0]
-    assert "if (!ctx.fromQueue && !ctx.preserveComposerDraft)" in pending_section
-    v2_section = APP_JS.split("function handleMealIntakeV2Response", 1)[1].split("\n    function applyMealV2Refresh", 1)[0]
-    assert "if (!ctx.preserveComposerDraft)" in v2_section
+def test_barcode_success_preserves_unsent_composer_draft_and_clears_retry_state():
+    output = run_app_js(
+        ["submitMealBarcode", "mealComposerState"],
+        _composer_elements_script().replace("value: ''", "value: 'leftover bowl'", 1)
+        + """
+const calls = [];
+sandbox.__fitSet.postMealBarcodeLookup(async (payload) => { calls.push(payload); return { res: { status: 200, ok: true }, payload: { status: 'pending_review' } }; });
+sandbox.__fitSet.handleMealIntakeResponse((payload, ctx) => calls.push({ payload, ctx }));
+sandbox.__fitSet.closeMealBarcodePanel(() => {});
+sandbox.__fitSet.toast(() => {});
+await e.submitMealBarcode('0 123-4567');
+process.stdout.write(JSON.stringify({ ctx: calls[1].ctx, clientId: e.mealComposerState.barcodeDraftClientId, draftValue: e.mealComposerState.barcodeDraftValue }));
+""",
+        mocks=["postMealBarcodeLookup", "handleMealIntakeResponse", "closeMealBarcodePanel", "toast"],
+    )
+    assert output["ctx"]["barcode"] == "01234567"
+    assert output["ctx"]["preserveComposerDraft"] is True
+    assert output["clientId"] is None and output["draftValue"] == ""
 
 
-def test_missing_barcode_endpoint_does_not_disable_text_photo_composer():
-    # FIT-208: only a true 501 (feature disabled) flips into the "unavailable"
-    # state that disables the barcode controls. A residual 404 must NOT.
-    block = _barcode_block()
-    assert "barcodeUnavailable" in APP_JS
-    assert "function setMealBarcodeUnavailable(message)" in APP_JS
-    unavailable_section = block.split("if (res.status === 501)", 1)[1].split("return;", 1)[0]
-    assert "setMealBarcodeUnavailable" in unavailable_section
-    assert "setMealBackendUnavailable" not in unavailable_section
-    refresh_section = APP_JS.split("function refreshMealSubmitState", 1)[1].split("\n    function saveMealDraft", 1)[0]
-    assert "scan.disabled = blocked || mealComposerState.barcodeUnavailable" in refresh_section
-    assert "const enabled = (hasText || hasImage) && !blocked;" in refresh_section
+def test_transient_barcode_failure_reuses_idempotency_key_until_success():
+    output = run_app_js(
+        ["submitMealBarcode", "mealComposerState"],
+        _composer_elements_script()
+        + """
+const calls = [];
+let attempt = 0;
+sandbox.__fitSet.postMealBarcodeLookup(async ({ clientId }) => { calls.push(clientId); attempt += 1; return attempt === 1 ? { res: { status: 503, ok: false }, payload: { error: { message: 'offline' } } } : { res: { status: 200, ok: true }, payload: {} }; });
+sandbox.__fitSet.handleMealIntakeResponse(() => {});
+sandbox.__fitSet.closeMealBarcodePanel(() => {});
+sandbox.__fitSet.toast(() => {});
+await e.submitMealBarcode('01234567');
+await e.submitMealBarcode('01234567');
+process.stdout.write(JSON.stringify({ calls, state: { clientId: e.mealComposerState.barcodeDraftClientId, value: e.mealComposerState.barcodeDraftValue } }));
+""",
+        mocks=["postMealBarcodeLookup", "handleMealIntakeResponse", "closeMealBarcodePanel", "toast"],
+    )
+    assert output["calls"][0] == output["calls"][1]
+    assert output["state"] == {"clientId": None, "value": ""}
 
 
-def test_residual_404_keeps_barcode_controls_enabled():
-    # FIT-208: a residual 404 (feature enabled, barcode just didn't resolve)
-    # surfaces a retryable message and leaves scan/input/submit ENABLED. Only a
-    # true 501 disables the barcode controls.
-    block = _barcode_block()
-    gate = "res.status === 404 && payload && payload.error && payload.error.code === 'barcode_not_found'"
-    # The not-found gate appears twice: once to trigger the allow_pending retry,
-    # and once on the recoverable branch so an unexpected 404 is not silently
-    # treated as "barcode not found".
-    assert block.count(gate) >= 2
-    recoverable = block.split("find that barcode. Double-check the digits", 1)[1].split("return;", 1)[0]
-    assert "setMealComposerError" in recoverable
-    assert "setMealBarcodeStatus" in recoverable
-    # Recoverable path must never disable the controls.
-    assert "setMealBarcodeUnavailable" not in recoverable
-    assert "barcodeUnavailable = true" not in recoverable
+def test_barcode_not_found_falls_back_to_pending_review_without_disabling_composer():
+    output = run_app_js(
+        ["submitMealBarcode", "mealComposerState"],
+        _composer_elements_script().replace("value: ''", "value: 'leftover bowl'", 1)
+        + """
+const lookups = [];
+let handled = null;
+sandbox.__fitSet.postMealBarcodeLookup(async (payload) => {
+  lookups.push(payload);
+  return lookups.length === 1
+    ? { res: { status: 404, ok: false }, payload: { error: { code: 'barcode_not_found' } } }
+    : { res: { status: 200, ok: true }, payload: { status: 'pending_review' } };
+});
+sandbox.__fitSet.handleMealIntakeResponse((payload, ctx) => { handled = { payload, ctx }; });
+sandbox.__fitSet.closeMealBarcodePanel(() => {});
+sandbox.__fitSet.toast(() => {});
+await e.submitMealBarcode('0 123-4567');
+process.stdout.write(JSON.stringify({
+  lookups: lookups.map(({ barcode, clientId, allowPending }) => ({ barcode, clientId, allowPending })),
+  handled: !!handled,
+  scanDisabled: sandbox.elements['meal-composer-scan'].disabled,
+  submitDisabled: sandbox.elements['meal-composer-submit'].disabled,
+  textValue: sandbox.elements['meal-composer-text'].value,
+  draft: { clientId: e.mealComposerState.barcodeDraftClientId, value: e.mealComposerState.barcodeDraftValue },
+}));
+""",
+        mocks=["postMealBarcodeLookup", "handleMealIntakeResponse", "closeMealBarcodePanel", "toast"],
+    )
+    assert output["lookups"][0]["allowPending"] is False
+    assert output["lookups"][1]["allowPending"] is True
+    assert output["lookups"][0]["barcode"] == output["lookups"][1]["barcode"] == "01234567"
+    assert output["lookups"][0]["clientId"] == output["lookups"][1]["clientId"]
+    assert output["handled"] is True
+    assert output["scanDisabled"] is False and output["submitDisabled"] is False
+    assert output["textValue"] == "leftover bowl"
+    assert output["draft"] == {"clientId": None, "value": ""}
 
 
-def test_barcode_lookup_preserves_idempotency_key_across_transient_retry():
-    block = _barcode_block()
-    assert "barcodeDraftClientId" in APP_JS
-    assert "barcodeDraftValue" in APP_JS
-    assert "mealComposerState.barcodeDraftClientId = newMealClientId()" in block
-    assert "const clientId = mealComposerState.barcodeDraftClientId" in block
-    assert "if (res.status < 500)" in block
-    assert "mealComposerState.barcodeDraftClientId = null" in block
+def test_barcode_feature_disabled_disables_barcode_only_and_preserves_text_composer():
+    output = run_app_js(
+        ["submitMealBarcode", "mealComposerState"],
+        _composer_elements_script().replace("value: ''", "value: 'meal draft'", 1)
+        + """
+sandbox.__fitSet.postMealBarcodeLookup(async () => ({
+  res: { status: 501, ok: false },
+  payload: { error: { message: 'feature disabled' } },
+}));
+sandbox.__fitSet.closeMealBarcodePanel(() => {});
+sandbox.__fitSet.toast(() => {});
+await e.submitMealBarcode('01234567');
+process.stdout.write(JSON.stringify({
+  barcodeUnavailable: e.mealComposerState.barcodeUnavailable,
+  scanDisabled: sandbox.elements['meal-composer-scan'].disabled,
+  submitDisabled: sandbox.elements['meal-composer-submit'].disabled,
+  textValue: sandbox.elements['meal-composer-text'].value,
+  draft: { clientId: e.mealComposerState.barcodeDraftClientId, value: e.mealComposerState.barcodeDraftValue },
+}));
+""",
+        mocks=["postMealBarcodeLookup", "closeMealBarcodePanel", "toast"],
+    )
+    assert output["barcodeUnavailable"] is True
+    assert output["scanDisabled"] is True
+    assert output["submitDisabled"] is False
+    assert output["textValue"] == "meal draft"
+    assert output["draft"] == {"clientId": None, "value": ""}
 
 
-def test_manual_barcode_lookup_stops_camera_before_network_request():
-    block = _barcode_block()
-    submit_section = block.split("async function submitMealBarcode", 1)[1]
-    assert submit_section.find("stopMealBarcodeScanner()") < submit_section.find("await postMealBarcodeLookup")
+def test_barcode_detection_cancellation_after_detect_resolves_does_not_submit():
+    output = run_app_js(
+        ["scanMealBarcodeFrame", "closeMealBarcodePanel", "mealComposerState"],
+        _composer_elements_script()
+        + """
+sandbox.elements['meal-composer-barcode'] = { hidden: false };
+sandbox.elements['meal-composer-barcode-video'] = { hidden: false, srcObject: null, pause() {} };
+sandbox.elements['meal-composer-barcode-input'] = { value: '' };
+const track = { stopped: false, stop() { this.stopped = true; } };
+e.mealComposerState.barcodeStream = { getTracks: () => [track] };
+let resolveDetect;
+e.mealComposerState.barcodeDetector = { detect: () => new Promise((resolve) => { resolveDetect = resolve; }) };
+let submits = 0;
+sandbox.__fitSet.submitMealBarcode(() => { submits += 1; });
+const frame = e.scanMealBarcodeFrame(500);
+await Promise.resolve();
+e.closeMealBarcodePanel();
+resolveDetect([{ rawValue: '01234567' }]);
+await frame;
+process.stdout.write(JSON.stringify({ submits, stopped: track.stopped, stream: e.mealComposerState.barcodeStream, panelHidden: sandbox.elements['meal-composer-barcode'].hidden }));
+""",
+        mocks=["submitMealBarcode"],
+    )
+    assert output == {"submits": 0, "stopped": True, "stream": None, "panelHidden": True}
 
 
-def test_unknown_barcode_404_creates_manual_pending_review():
-    block = _barcode_block()
-    assert "payload.error.code === 'barcode_not_found'" in block
-    assert "allowPending: false" in block
-    assert "allowPending: true" in block
-    assert "Creating a manual review card" in block
-    assert "handleMealIntakeResponse(payload" in block
+def test_repeated_barcode_panel_open_clicks_and_reopen_have_one_scanner_per_open():
+    output = run_app_js(
+        ["openMealBarcodePanel", "closeMealBarcodePanel", "mealComposerState"],
+        _composer_elements_script()
+        + """
+const panel = { hidden: true };
+const input = { value: '', focusCalls: 0, focus() { this.focusCalls += 1; } };
+sandbox.elements['meal-composer-barcode'] = panel;
+sandbox.elements['meal-composer-barcode-input'] = input;
+let starts = 0;
+sandbox.__fitSet.startMealBarcodeScanner(async () => { starts += 1; });
+e.openMealBarcodePanel();
+e.openMealBarcodePanel();
+e.closeMealBarcodePanel();
+e.openMealBarcodePanel();
+process.stdout.write(JSON.stringify({ starts, hidden: panel.hidden, focusCalls: input.focusCalls, scanToken: e.mealComposerState.barcodeScanToken }));
+""",
+        mocks=["startMealBarcodeScanner"],
+    )
+    assert output["starts"] == 2
+    assert output["hidden"] is False
+    assert output["focusCalls"] == 3
+    assert output["scanToken"] >= 1
 
 
-def test_barcode_offline_path_does_not_call_lookup_endpoint():
-    block = _barcode_block()
-    offline_section = block.split("if (!online) {", 1)[1].split("const { text }", 1)[0]
-    assert "Barcode lookup needs the server" in offline_section
-    assert "fetch(" not in offline_section
+def test_manual_barcode_submission_stops_active_camera_before_lookup_request():
+    output = run_app_js(
+        ["submitMealBarcode", "mealComposerState"],
+        _composer_elements_script()
+        + """
+sandbox.elements['meal-composer-barcode-video'] = { hidden: false, srcObject: 'camera', pause() {} };
+const order = [];
+const track = { stopped: false, stop() { this.stopped = true; order.push('stop'); } };
+e.mealComposerState.barcodeStream = { getTracks: () => [track] };
+sandbox.__fitSet.postMealBarcodeLookup(async () => {
+  order.push('request');
+  return { res: { status: 200, ok: true }, payload: {} };
+});
+sandbox.__fitSet.handleMealIntakeResponse(() => {});
+sandbox.__fitSet.toast(() => {});
+await e.submitMealBarcode('01234567');
+process.stdout.write(JSON.stringify({ order, stopped: track.stopped, stream: e.mealComposerState.barcodeStream }));
+""",
+        mocks=["postMealBarcodeLookup", "handleMealIntakeResponse", "toast"],
+    )
+    assert output["order"][:2] == ["stop", "request"]
+    assert output["stopped"] is True
+    assert output["stream"] is None
+
+
+def test_offline_barcode_path_does_not_call_lookup_endpoint():
+    output = run_app_js(
+        ["submitMealBarcode"],
+        """
+sandbox.elements['meal-composer-barcode-status'] = { textContent: '' };
+sandbox.navigator.onLine = false;
+let calls = 0;
+sandbox.__fitSet.postMealBarcodeLookup(async () => { calls += 1; });
+await e.submitMealBarcode('01234567');
+process.stdout.write(JSON.stringify({ calls, status: sandbox.elements['meal-composer-barcode-status'].textContent }));
+""",
+        mocks=["postMealBarcodeLookup"],
+    )
+    assert output["calls"] == 0
+    assert "needs the server" in output["status"]
+
+
+def test_refresh_submit_state_keeps_text_submit_available_when_barcode_unavailable():
+    output = run_app_js(
+        ["refreshMealSubmitState", "mealComposerState"],
+        """
+sandbox.elements['meal-composer-text'] = { value: 'meal' };
+sandbox.elements['meal-composer-submit'] = { disabled: false, textContent: '' };
+sandbox.elements['meal-composer-scan'] = { disabled: false };
+e.mealComposerState.barcodeUnavailable = true;
+e.refreshMealSubmitState();
+process.stdout.write(JSON.stringify({ submit: sandbox.elements['meal-composer-submit'].disabled, scan: sandbox.elements['meal-composer-scan'].disabled }));
+""",
+    )
+    assert output == {"submit": False, "scan": True}
 
 
 def test_barcode_styles_ship_with_composer():
     expected = [
-        ".meal-composer-scan",
-        ".meal-composer-barcode",
-        ".meal-composer-barcode-video",
-        ".meal-composer-barcode-manual",
-        ".meal-composer-barcode-status",
+        ".meal-composer-scan", ".meal-composer-barcode", ".meal-composer-barcode-video",
+        ".meal-composer-barcode-manual", ".meal-composer-barcode-status",
     ]
     missing = [selector for selector in expected if selector not in APP_CSS]
     assert not missing, f"FIT-142 barcode styles missing from style.css: {missing}"

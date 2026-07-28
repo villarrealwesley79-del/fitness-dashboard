@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import importlib
-import json
-import shutil
-import subprocess
-from pathlib import Path
 
 import pytest
 
-
-APP_JS = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text()
+from js_runtime import run_app_js
 
 
 GOAL_PARAMS = {
@@ -104,30 +99,54 @@ def test_non_bodyweight_target_still_uses_minimum_load_clamp(module, monkeypatch
 
 
 def test_bodyweight_target_display_uses_bw_for_active_and_preview_cards():
-    if not shutil.which("node"):
-        pytest.skip("FIT-346 display regression requires node to execute app.js")
+    result = run_app_js(
+        ["exerciseTargetText"],
+        """
+process.stdout.write(JSON.stringify({
+  bodyweight: e.exerciseTargetText({ target_sets: 3, target_reps: 10, target_weight: 0, bodyweight: true, rpe_target: 7 }),
+  weighted: e.exerciseTargetText({ target_sets: 3, target_reps: 10, target_weight: 85, rpe_target: 7 }),
+}));
+""",
+    )
 
-    active_workout_block = APP_JS.split("function renderActiveWorkout()", 1)[1]
-    assert "const target = exerciseTargetText(ex);" in active_workout_block
-
-    helper_source = APP_JS.split("function exerciseTargetText(ex)", 1)[1].split("// FIT-105", 1)[0]
-    node_script = f"""
-const vm = require('node:vm');
-const helperSource = {json.dumps(helper_source)};
-const sandbox = {{ module: {{ exports: {{}} }} }};
-vm.runInNewContext(`
-function exerciseTargetText(ex) {{${{helperSource}}}}
-module.exports = {{ exerciseTargetText }};
-`, sandbox);
-process.stdout.write(JSON.stringify({{
-  bodyweight: sandbox.module.exports.exerciseTargetText({{ target_sets: 3, target_reps: 10, target_weight: 0, bodyweight: true, rpe_target: 7 }}),
-  weighted: sandbox.module.exports.exerciseTargetText({{ target_sets: 3, target_reps: 10, target_weight: 85, rpe_target: 7 }}),
-}}));
-"""
-    result = subprocess.run(["node", "-e", node_script], capture_output=True, text=True, check=False)
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {
+    assert result == {
         "bodyweight": "3 × 10 · BW · RPE 7",
         "weighted": "3 × 10 · 85 lb · RPE 7",
     }
+
+
+def test_actual_active_and_preview_renderers_emit_bodyweight_and_weighted_targets():
+    result = run_app_js(
+        ["renderActiveWorkout", "renderAdjustedPlanPreview", "state"],
+        """
+function fakeNode() {
+  return { className: '', innerHTML: '', textContent: '', hidden: false, children: [], handlers: {},
+    appendChild(child) { this.children.push(child); },
+    querySelector(selector) { return { addEventListener: (name, fn) => { this.handlers[selector] = fn; } }; },
+    querySelectorAll() { return []; },
+    addEventListener(name, fn) { this.handlers[name] = fn; },
+  };
+}
+sandbox.elements['active-workout-title'] = fakeNode();
+sandbox.elements['active-workout-body'] = fakeNode();
+sandbox.elements['active-workout-status'] = fakeNode();
+sandbox.elements['modal-active'] = Object.assign(fakeNode(), { querySelector: () => null, removeEventListener() {} });
+sandbox.elements['adjust-plan-preview'] = fakeNode();
+sandbox.document.createElement = () => fakeNode();
+e.state.activeWorkout = {
+  focus: 'strength',
+  exercises: [
+    { exercise: 'Dips', bodyweight: true, target_sets: 3, target_reps: 10, logged_sets: [{ weight: '', reps: '', done: false, notes: '' }] },
+    { exercise: 'Bench Press', target_weight: 85, target_sets: 3, target_reps: 8, logged_sets: [{ weight: '', reps: '', done: false, notes: '' }] },
+  ],
+};
+e.renderActiveWorkout();
+const activeHtml = e.state.activeWorkout.exercises.map((_, index) => sandbox.elements['active-workout-body'].children[index + 1].innerHTML);
+e.renderAdjustedPlanPreview(e.state.activeWorkout);
+process.stdout.write(JSON.stringify({ activeHtml, previewHtml: sandbox.elements['adjust-plan-preview'].innerHTML }));
+""",
+    )
+    assert any("BW" in html for html in result["activeHtml"])
+    assert any("85 lb" in html for html in result["activeHtml"])
+    assert "BW" in result["previewHtml"]
+    assert "85 lb" in result["previewHtml"]
