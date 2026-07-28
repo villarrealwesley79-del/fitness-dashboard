@@ -596,8 +596,8 @@ _ADJUST_DEFAULT_EXPECTED = {
 ADJUST_INTENT_CASES = [
     _adjust_case(
         1,
-        "I slept 5 hours, my legs are 8/10 sore, HRV is down, and I did intervals yesterday; reduce lower-body work and skip cardio.",
-        {**_ADJUST_DEFAULT_EXPECTED, "sets_delta_pct": -20, "drop_cardio": True},
+        "I slept 5 hours, my legs are 8/10 sore, HRV is down, and I did intervals yesterday.",
+        {**_ADJUST_DEFAULT_EXPECTED, "sets_delta_pct": -20},
         readiness={
             "sleep_hours": 5,
             "leg_soreness_10": 8,
@@ -626,7 +626,7 @@ ADJUST_INTENT_CASES = [
             ],
             cardio="intervals",
         ),
-        coverage=("legacy-workout-001", "readiness", "set_reduction", "drop_cardio"),
+        coverage=("legacy-workout-001", "readiness", "set_reduction"),
     ),
 ]
 
@@ -674,8 +674,8 @@ def _swap_case(number: int, typed_name: str, expected_name: str | None, *, curre
 SWAP_RESOLUTION_CASES = [
     _swap_case(
         1,
-        "bike",
-        "Stationary Bike",
+        "",
+        None,
         current="Tempo Run; resting HR elevated; knee pain 4/10; missed carbs at lunch",
         muscle="cardio",
         candidates=[
@@ -743,7 +743,12 @@ POST_WORKOUT_ANALYSIS_CASES = [
             session_type="upper hypertrophy",
             total_volume_lbs=1500,
         ),
-        {"sleep_hours": 8, "soreness": "low", "calories": "on target"},
+        {
+            "sleep_hours": 8,
+            "soreness": "low",
+            "calories": "on target",
+            "recent_sessions": [{"exercise": "Bench Press", "rpe": 7}],
+        },
         {
             "summary": (("session",), ("bench", "press")),
             "wins": (("bench", "press"), ("clean",)),

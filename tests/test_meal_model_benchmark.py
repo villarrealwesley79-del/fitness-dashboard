@@ -1122,7 +1122,10 @@ def test_migrated_workout_cases_preserve_the_three_legacy_scenarios():
         "hrv_status": "down",
         "previous_session": "intervals",
     }
+    assert "reduce" not in adjust["athlete_constraint"].lower()
+    assert "skip" not in adjust["athlete_constraint"].lower()
 
+    assert swap["typed_name"] == ""
     assert "Tempo Run" in swap["current_exercise"]
     assert "resting HR elevated" in swap["current_exercise"]
     assert "knee pain 4/10" in swap["current_exercise"]
@@ -1135,6 +1138,7 @@ def test_migrated_workout_cases_preserve_the_three_legacy_scenarios():
         "sleep_hours": 8,
         "soreness": "low",
         "calories": "on target",
+        "recent_sessions": [{"exercise": "Bench Press", "rpe": 7}],
     }
 
 
@@ -1182,7 +1186,7 @@ def test_structured_scoring_rejects_invalid_schema_and_scores_real_fields():
     assert invalid_score["failure_reasons"] == ["schema_invalid"]
 
     response = {
-        "summary": "Reduce lower-body work and skip cardio.",
+        "summary": "Reduce lower-body volume.",
         "intent": {
             "avoid_muscles": [],
             "avoid_joints": [],
@@ -1190,7 +1194,7 @@ def test_structured_scoring_rejects_invalid_schema_and_scores_real_fields():
             "rpe_delta": 0,
             "sets_delta_pct": -20,
             "duration_cap_min": 0,
-            "drop_cardio": True,
+            "drop_cardio": False,
         },
     }
     score = module._task_quality_score(adjust_case, response, [])
@@ -1201,7 +1205,7 @@ def test_structured_scoring_rejects_invalid_schema_and_scores_real_fields():
 def test_swap_and_analysis_mocked_responses_pass_without_raw_report_fields():
     module = _load_module()
     swap_case = module.SWAP_RESOLUTION_CASES[0]
-    swap_response = {"canonical_name": "Stationary Bike", "confidence": 0.9, "reason": "clear candidate match"}
+    swap_response = {"canonical_name": None, "confidence": 0.2, "reason": "no replacement name supplied"}
     swap_score = module._task_quality_score(swap_case, swap_response, [])
     assert swap_score["passed"] is True
 
@@ -1332,7 +1336,7 @@ def test_adjust_explanation_rejects_numeric_set_prescription():
             "rpe_delta": 0,
             "sets_delta_pct": -20,
             "duration_cap_min": 0,
-            "drop_cardio": True,
+            "drop_cardio": False,
         },
     }
 
