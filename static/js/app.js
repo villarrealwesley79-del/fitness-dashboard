@@ -9133,7 +9133,10 @@
     }
 
     async function openSwap(exIdx, muscle, currentName, source = 'plan') {
-        state.swapContext = { exIdx, muscle, currentName, source };
+        const recommendationId = source === 'active'
+            ? (state.activeWorkout && state.activeWorkout.recommendation_id)
+            : (state.nextWorkout && state.nextWorkout.id);
+        state.swapContext = { exIdx, muscle, currentName, source, recommendationId };
         const modal = $('modal-swap');
         const host = $('swap-alternatives');
         const title = $('swap-modal-title');
@@ -9227,12 +9230,16 @@
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workout_index: 0, exercise_index: exIdx, new_exercise_name: newName }),
+                body: JSON.stringify({ recommendation_id: state.swapContext && state.swapContext.recommendationId, exercise_index: exIdx, new_exercise_name: newName }),
             });
             _finalizeSwap(resp, oldName, newName);
         } catch (e) {
             console.error(e);
-            host.innerHTML = `<div class="empty">Swap failed — ${escapeHtml(String(e.message || e))}</div>`;
+            if (e && e.apiErrorCode === 'plan_changed') {
+                host.innerHTML = '<div class="empty">Workout plan changed — refresh the workout and try again.</div>';
+            } else {
+                host.innerHTML = `<div class="empty">Swap failed — ${escapeHtml(String(e.message || e))}</div>`;
+            }
         }
     }
 
@@ -9279,12 +9286,17 @@
             const resp = await api('/api/workout/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ workout_index: 0, exercise_index: ctx.exIdx, new_exercise_name: raw }),
+                body: JSON.stringify({ recommendation_id: ctx.recommendationId, exercise_index: ctx.exIdx, new_exercise_name: raw }),
             });
             _finalizeSwap(resp, ctx.currentName, raw);
             input.value = '';
         } catch (e) {
             console.error('applyCustomSwap', e);
+            if (e && e.apiErrorCode === 'plan_changed') {
+                errEl.textContent = 'Workout plan changed — refresh the workout and try again.';
+                errEl.hidden = false;
+                return;
+            }
             const msg = String((e && e.message) || e || '').toLowerCase();
             let friendly = `Couldn't swap to "${raw}".`;
             if (msg.includes('unknown exercise')) {

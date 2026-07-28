@@ -4,6 +4,13 @@ import copy
 import importlib
 
 import pytest
+import data_store
+
+
+@pytest.fixture(autouse=True)
+def _isolated_data_db(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
 
 
 def _module(monkeypatch):
@@ -23,6 +30,8 @@ def _module(monkeypatch):
     monkeypatch.setattr(module, "COMPLETED_WORKOUTS", [])
     monkeypatch.setattr(module, "WORKOUT_RECOMMENDATIONS", [])
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT", None)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", None)
     monkeypatch.setattr(module, "_get_oura_readiness_today", lambda: None)
     monkeypatch.setattr(module, "_notify_workout_logged", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
@@ -108,11 +117,13 @@ def test_swap_to_no_history_machine_infers_from_similar_history(monkeypatch):
             _workout("2026-05-08", "Lateral Raise", 25),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    plan = _recommendation(module)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", plan)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", {"user_id": 1, "fingerprint": None, "plan_id": id(plan)})
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -135,11 +146,13 @@ def test_direct_history_wins_over_similar_machine_inference(monkeypatch):
             _workout("2026-05-10", "Machine Deltoid Raise", 20),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    plan = _recommendation(module)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", plan)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", {"user_id": 1, "fingerprint": None, "plan_id": id(plan)})
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -160,11 +173,13 @@ def test_alias_named_history_counts_as_direct_progression(monkeypatch):
             _workout("2026-05-10", "Lateral Raise", 35),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    plan = _recommendation(module)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", plan)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", {"user_id": 1, "fingerprint": None, "plan_id": id(plan)})
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -178,11 +193,13 @@ def test_alias_named_history_counts_as_direct_progression(monkeypatch):
 def test_no_similar_history_falls_back_to_hardcoded_baseline(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    plan = _recommendation(module)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", plan)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", {"user_id": 1, "fingerprint": None, "plan_id": id(plan)})
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -202,11 +219,13 @@ def test_loose_same_muscle_history_does_not_infer_starter_load(monkeypatch):
             _workout("2026-05-08", "Shoulder Press", 75),
         ],
     )
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation(module))
+    plan = _recommendation(module)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", plan)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", {"user_id": 1, "fingerprint": None, "plan_id": id(plan)})
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "Machine Deltoid Raise"},
     )
 
     assert response.status_code == 200
@@ -803,11 +822,13 @@ def test_ai_adjust_rejects_unknown_dragon_press_target(monkeypatch):
 def test_swap_endpoint_rejects_single_generic_press_token(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+    plan = _chest_recommendation(module)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", plan)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", {"user_id": 1, "fingerprint": None, "plan_id": id(plan)})
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "press"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "press"},
     )
 
     assert response.status_code == 404
@@ -817,11 +838,13 @@ def test_swap_endpoint_rejects_single_generic_press_token(monkeypatch):
 def test_swap_endpoint_allows_distinctive_single_token_incline(monkeypatch):
     module = _module(monkeypatch)
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+    plan = _chest_recommendation(module)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", plan)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", {"user_id": 1, "fingerprint": None, "plan_id": id(plan)})
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "incline"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "incline"},
     )
 
     assert response.status_code == 200
@@ -832,11 +855,13 @@ def test_swap_endpoint_allows_singular_one_word_plural_dip(monkeypatch):
     module = _module(monkeypatch)
     module.USER_SETTINGS["equipment_preference"] = "all"
     monkeypatch.setattr(module, "WORKOUTS", [])
-    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _chest_recommendation(module))
+    plan = _chest_recommendation(module)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", plan)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", {"user_id": 1, "fingerprint": None, "plan_id": id(plan)})
 
     response = module.app.test_client().post(
         "/api/workout/swap",
-        json={"workout_index": 0, "exercise_index": 0, "new_exercise_name": "dip"},
+        json={"recommendation_id": "fit-103-rec", "workout_index": 0, "exercise_index": 0, "new_exercise_name": "dip"},
     )
 
     assert response.status_code == 200
