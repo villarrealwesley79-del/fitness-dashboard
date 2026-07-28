@@ -47,7 +47,7 @@ Success response:
 
 ```json
 {
-  "status": "logged",
+  "status": "pending_review",
   "estimate": {},
   "food_log": {},
   "policy": {
@@ -57,10 +57,17 @@ Success response:
 }
 ```
 
-`status` is either:
+Auto-log is currently disabled for fresh meal submissions. Text, photo, and
+barcode capture always return `pending_review`, including high-confidence,
+unambiguous estimates. The policy result is advisory for these capture routes:
+it still supplies confidence bands and reason codes, but it does not bypass
+review. Auto-log is neither feature-flagged nor available on the fresh-capture
+routes today.
 
-- `logged`: the estimate was accepted immediately and persisted through the canonical `food_logs` path.
-- `pending_review`: the estimate was returned for user review and must not affect coaching totals until explicitly accepted.
+`logged` remains a legacy response for an idempotent replay after that meal was
+already confirmed. It is not a possible first response for a fresh submission.
+`pending_review` means the estimate was returned for user review and must not
+affect coaching totals until explicitly accepted.
 
 When `status` is `pending_review`, `food_log` is persisted with `correction_state: "pending_review"` and remains excluded from nutrition totals. The client can hydrate unresolved estimates with `GET /api/meal-intake/pending`, accept later with `POST /api/meal-intake/{client_id}/accept`, or discard with `DELETE /api/meal-intake/{client_id}`. Pending review rows older than 7 days are removed during pending-list hydration.
 
@@ -139,12 +146,16 @@ Errors:
 
 ## Auto-Log Policy
 
-The backend policy is the source of truth:
+`meal_log_policy.evaluate_meal_log` defines the theoretical auto-log policy:
 
 - Auto-log requires `confidence >= 0.75`, no ambiguity flag, and plausible nutrition values.
 - Confidence from `0.55` to `< 0.75` is pending review with a `medium_confidence` policy reason.
 - Confidence below `0.55`, ambiguous input, missing calories, impossible calories/macros, or impossible sodium is pending review.
-- Pending review estimates are excluded from dashboard nutrition totals and future coaching changes until accepted.
+
+The text/photo and barcode routes currently override that theoretical status and
+force every fresh estimate to `pending_review`. The policy's confidence band and
+reasons remain response metadata. Pending review estimates are excluded from
+dashboard nutrition totals and future coaching changes until accepted.
 
 ## Persistence and Idempotency
 

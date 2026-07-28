@@ -11824,6 +11824,7 @@
                 <span class="meal-review-v2-kcal">${escapeHtml(formatMealV2Kcal(totals.calories))}</span>
                 <span class="meal-review-v2-macros">${escapeHtml(formatMealV2Macros(totals))}</span>
             </div>
+            <div class="meal-pending-note">Estimate only — not added to today’s totals until you confirm.</div>
         `;
 
         const actionsHtml = allRemoved ? `
@@ -11877,7 +11878,7 @@
         row.innerHTML = `
             <div class="meal-review-v2-collapsed">
                 <div class="meal-pending-head">
-                    <span class="meal-pending-title">Review meal</span>
+                    <span class="meal-pending-title">Pending review</span>
                     ${reviewBadgeHtml}
                     ${mealTypeChip}
                 </div>
