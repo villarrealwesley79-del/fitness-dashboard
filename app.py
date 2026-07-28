@@ -6,6 +6,7 @@ Evidence-based resistance training optimization for iOS/Android.
 
 from flask import Flask, has_request_context, render_template, jsonify, request, Response, redirect
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from contextlib import closing
@@ -12636,36 +12637,103 @@ def _open_wearables_complete_oauth_callback(provider, code, state):
         return False
 
 
+def _system_local_zone():
+    zone_name = str(os.environ.get("TZ") or "").lstrip(":")
+    zoneinfo_marker = "/zoneinfo/"
+    if zone_name and os.path.isabs(zone_name):
+        resolved_zone_path = os.path.realpath(zone_name)
+        zone_name = (
+            resolved_zone_path.split(zoneinfo_marker, 1)[1]
+            if zoneinfo_marker in resolved_zone_path
+            else ""
+        )
+    if not zone_name:
+        localtime_path = os.path.realpath("/etc/localtime")
+        if zoneinfo_marker in localtime_path:
+            zone_name = localtime_path.split(zoneinfo_marker, 1)[1]
+    if zone_name:
+        try:
+            return ZoneInfo(zone_name)
+        except (ValueError, ZoneInfoNotFoundError):
+            pass
+    return None
+
+
+def _open_wearables_window_bounds(*, now=None, local_zone=None):
+    zone = local_zone or _system_local_zone()
+    if zone is None and now is not None and isinstance(now.tzinfo, ZoneInfo):
+        zone = now.tzinfo
+    local_now = (now or datetime.now(zone)).astimezone(zone)
+    start_day = local_now.date() - timedelta(days=6)
+    end_day = local_now.date() + timedelta(days=1)
+    if zone is None:
+        # Naive astimezone() asks the operating system for each target instant,
+        # preserving DST rules even when /etc/localtime is a copied tzfile.
+        window_start = datetime(start_day.year, start_day.month, start_day.day).astimezone()
+        window_end = datetime(end_day.year, end_day.month, end_day.day).astimezone()
+    else:
+        window_start = datetime(start_day.year, start_day.month, start_day.day, tzinfo=zone)
+        window_end = datetime(end_day.year, end_day.month, end_day.day, tzinfo=zone)
+    return window_start.isoformat(), window_end.isoformat()
+
+
 def fetch_open_wearables_data():
-    """Fetch sleep, workouts, and activity summaries from local Open Wearables bridge (best-effort)."""
+    """Fetch coaching-safe wearable domains from the Open Wearables bridge (best-effort)."""
     missing = _missing_open_wearables_config()
     if missing:
         return {
             "sleep": None,
+            "sleep_summary": None,
             "workouts": None,
             "activity_summary": None,
-            "fetched_at": datetime.now().isoformat(),
+            "recovery_summary": None,
+            "body_summary": None,
+            "_sleep_summary_snapshot_complete": False,
+            "_workout_snapshot_complete": False,
+            "fetched_at": datetime.now().astimezone().isoformat(),
             "errors": {"config": f"missing:{','.join(missing)}"},
         }
 
     token = _get_ow_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-    today = datetime.now().date()
-    start_date = (today - timedelta(days=6)).strftime("%Y-%m-%d")
-    end_date = today.strftime("%Y-%m-%d")
+    start_at, end_at = _open_wearables_window_bounds()
+    event_range_query = urllib.parse.urlencode(
+        {"start_date": start_at, "end_date": end_at, "limit": 100}
+    )
+    summary_range_query = urllib.parse.urlencode({
+        "start_date": datetime.fromisoformat(start_at).date().isoformat(),
+        "end_date": datetime.fromisoformat(end_at).date().isoformat(),
+        "limit": 100,
+    })
 
     endpoints = {
-        "sleep": f"{_open_wearables_user_base()}/events/sleep?start_date={start_date}&end_date={end_date}",
-        "workouts": f"{_open_wearables_user_base()}/events/workouts?start_date={start_date}&end_date={end_date}",
-        "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?start_date={start_date}&end_date={end_date}",
+        "sleep": f"{_open_wearables_user_base()}/events/sleep?{event_range_query}",
+        "sleep_summary": f"{_open_wearables_user_base()}/summaries/sleep?{summary_range_query}",
+        "workouts": f"{_open_wearables_user_base()}/events/workouts?{event_range_query}",
+        "activity_summary": f"{_open_wearables_user_base()}/summaries/activity?{summary_range_query}",
+        "recovery_summary": f"{_open_wearables_user_base()}/summaries/recovery?{summary_range_query}",
+        "body_summary": f"{_open_wearables_user_base()}/summaries/body",
     }
 
     result = {
         "sleep": None,
+        "sleep_summary": None,
         "workouts": None,
         "activity_summary": None,
-        "fetched_at": datetime.now().isoformat(),
+        "recovery_summary": None,
+        "body_summary": None,
+        "_sleep_summary_snapshot_complete": False,
+        "_sleep_summary_query": {
+            "start_date": datetime.fromisoformat(start_at).date().isoformat(),
+            "end_date": datetime.fromisoformat(end_at).date().isoformat(),
+        },
+        "_workout_snapshot_complete": False,
+        "_workout_query": {
+            "start_at": start_at,
+            "end_at": end_at,
+        },
+        "fetched_at": datetime.now().astimezone().isoformat(),
         "errors": {},
     }
 
@@ -12673,9 +12741,60 @@ def fetch_open_wearables_data():
         result["errors"]["auth"] = "missing_token"
         return result
 
+    def fetch_paginated_pages(url, domain):
+        combined = []
+        current_url = url
+        first_payload = None
+        for _ in range(5):
+            payload = _ow_request(current_url, headers=headers)
+            if first_payload is None:
+                first_payload = payload
+            if not isinstance(payload, dict):
+                raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+            row_key = next((key for key in ("data", "events", "items") if key in payload), None)
+            if row_key is None or not isinstance(payload.get(row_key), list):
+                raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+            combined.extend(payload[row_key])
+            raw_pagination = payload.get("pagination")
+            if raw_pagination is None:
+                pagination_complete = False
+                terminal_page = True
+                cursor = None
+            elif not isinstance(raw_pagination, dict):
+                raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+            else:
+                has_more = raw_pagination.get("has_more")
+                cursor = raw_pagination.get("next_cursor")
+                if has_more is True and (cursor is None or not str(cursor).strip()):
+                    raise RuntimeError(f"open_wearables_{domain}_pagination_cursor_missing")
+                if has_more not in {True, False}:
+                    raise RuntimeError(f"open_wearables_{domain}_pagination_payload_invalid")
+                pagination_complete = has_more is False
+                terminal_page = not has_more
+            if terminal_page:
+                result_payload = dict(first_payload)
+                for row_key in ("events", "items"):
+                    result_payload.pop(row_key, None)
+                result_payload["data"] = combined
+                result_payload["_pagination_complete"] = pagination_complete
+                return result_payload
+            current_url = f"{url}&cursor={urllib.parse.quote(str(cursor), safe='')}"
+        raise RuntimeError(f"open_wearables_{domain}_pagination_limit")
+
     for key, url in endpoints.items():
         try:
-            result[key] = _ow_request(url, headers=headers)
+            payload = (
+                _ow_request(url, headers=headers)
+                if key == "body_summary"
+                else fetch_paginated_pages(url, key)
+            )
+            if isinstance(payload, dict):
+                pagination_complete = payload.pop("_pagination_complete", False)
+                if key == "workouts":
+                    result["_workout_snapshot_complete"] = pagination_complete is True
+                elif key == "sleep_summary":
+                    result["_sleep_summary_snapshot_complete"] = pagination_complete is True
+            result[key] = payload
         except Exception as e:
             result["errors"][key] = str(e)
             result[key] = None
@@ -12689,7 +12808,10 @@ def _extract_open_wearables_sleep(payload):
     if not events:
         return None
 
-    best = max(events, key=lambda e: e.get("event_time") or datetime.min)
+    main_sleep_events = [event for event in events if event.get("is_nap") is not True]
+    if not main_sleep_events:
+        return None
+    best = max(main_sleep_events, key=lambda e: e.get("event_time") or datetime.min)
     best_time = best.get("event_time")
     duration = best.get("duration_min")
     avg_hr = best.get("avg_hr")
@@ -12702,8 +12824,12 @@ def _extract_open_wearables_sleep(payload):
         "duration_min": int(round(duration)) if duration is not None else None,
         "avg_hr": int(round(avg_hr)) if avg_hr is not None else None,
         "event_time": best_time.isoformat() if best_time else None,
+        "observed_at": best.get("observed_at"),
         "recent": recent,
         "raw": best.get("raw"),
+        "stages_min": best.get("stages_min") or {},
+        "efficiency_percent": best.get("efficiency_percent"),
+        "is_nap": best.get("is_nap"),
     }
 
 
@@ -12729,6 +12855,13 @@ def _extract_open_wearables_sleep_events(payload):
                 return dt
         return None
 
+    def _observed_at(ev):
+        for key in ("end_time", "endTime", "end", "timestamp", "created_at", "start_time", "startTime", "start", "date"):
+            value = ev.get(key)
+            if value is not None:
+                return str(value)
+        return None
+
     parsed = []
     for ev in events:
         if not isinstance(ev, dict):
@@ -12736,20 +12869,23 @@ def _extract_open_wearables_sleep_events(payload):
         dt = _event_time(ev)
         if dt is None:
             continue
-        duration = (
-            ev.get("duration_min")
-            or ev.get("duration_minutes")
-            or ev.get("sleep_duration_min")
-            or ev.get("total_sleep_min")
-            or ev.get("duration")
-            or ev.get("sleep_duration")
-            or ev.get("duration_seconds")
-        )
+        duration = ev.get("sleep_duration_seconds")
+        duration_is_seconds = duration is not None
+        if duration is None:
+            for key in ("duration_min", "duration_minutes", "sleep_duration_min", "total_sleep_min", "duration", "sleep_duration"):
+                if ev.get(key) is not None:
+                    duration = ev.get(key)
+                    break
+        if duration is None and ev.get("duration_seconds") is not None:
+            duration = ev.get("duration_seconds")
+            duration_is_seconds = True
         try:
             duration = float(duration) if duration is not None else None
         except Exception:
             duration = None
-        if duration is not None and duration > 1000:
+        if duration is not None and not math.isfinite(duration):
+            duration = None
+        if duration is not None and (duration_is_seconds or duration > 1000):
             duration = duration / 60.0
 
         stages = ev.get("stages") or {}
@@ -12757,9 +12893,13 @@ def _extract_open_wearables_sleep_events(payload):
         if isinstance(stages, dict):
             for key in ("deep", "rem", "light", "awake"):
                 val = stages.get(key)
+                if val is None:
+                    val = stages.get(f"{key}_minutes")
                 try:
                     val = float(val) if val is not None else None
                 except Exception:
+                    val = None
+                if val is not None and not math.isfinite(val):
                     val = None
                 if val is not None and val > 1000:
                     val = val / 60.0
@@ -12776,12 +12916,25 @@ def _extract_open_wearables_sleep_events(payload):
             avg_hr = float(avg_hr) if avg_hr is not None else None
         except Exception:
             avg_hr = None
+        if avg_hr is not None and not math.isfinite(avg_hr):
+            avg_hr = None
+
+        efficiency = ev.get("efficiency_percent")
+        try:
+            efficiency = float(efficiency) if efficiency is not None else None
+        except Exception:
+            efficiency = None
+        if efficiency is not None and not math.isfinite(efficiency):
+            efficiency = None
 
         parsed.append({
             "event_time": dt,
+            "observed_at": _observed_at(ev),
             "duration_min": duration,
             "stages_min": stage_minutes,
             "avg_hr": avg_hr,
+            "efficiency_percent": efficiency,
+            "is_nap": ev.get("is_nap") if isinstance(ev.get("is_nap"), bool) else None,
             "raw": ev,
         })
 
@@ -12821,20 +12974,35 @@ def _extract_open_wearables_activity_summaries(payload):
             average = None
 
         steps = item.get("steps")
-        active_calories = item.get("active_calories") or item.get("calories_active")
-        active_minutes = item.get("active_minutes") or item.get("active_min") or item.get("active_duration_min")
+        active_calories = item.get("active_calories_kcal")
+        if active_calories is None:
+            active_calories = item.get("active_calories")
+        if active_calories is None:
+            active_calories = item.get("calories_active")
+        active_minutes = item.get("active_minutes")
+        if active_minutes is None:
+            active_minutes = item.get("active_min")
+        if active_minutes is None:
+            active_minutes = item.get("active_duration_min")
+        distance = item.get("distance_meters")
+        if distance is None:
+            distance = item.get("distance")
         try:
             steps = int(float(steps)) if steps is not None else None
         except Exception:
             steps = None
         try:
-            active_calories = int(float(active_calories)) if active_calories is not None else None
+            active_calories = float(active_calories) if active_calories is not None else None
         except Exception:
             active_calories = None
         try:
             active_minutes = int(float(active_minutes)) if active_minutes is not None else None
         except Exception:
             active_minutes = None
+        try:
+            distance = float(distance) if distance is not None else None
+        except Exception:
+            distance = None
 
         summaries.append({
             "date": dt.date(),
@@ -12843,6 +13011,7 @@ def _extract_open_wearables_activity_summaries(payload):
             "steps": steps,
             "active_calories": active_calories,
             "active_minutes": active_minutes,
+            "distance": distance,
             "raw": item,
         })
     return summaries
@@ -12886,9 +13055,10 @@ def _trend_change(trend: list):
 
 
 def _sleep_metrics_from_events(events: list):
-    if not events:
+    main_sleep_events = [event for event in events or [] if event.get("is_nap") is not True]
+    if not main_sleep_events:
         return None, None
-    events_sorted = sorted(events, key=lambda e: e.get("event_time") or datetime.min)
+    events_sorted = sorted(main_sleep_events, key=lambda e: e.get("event_time") or datetime.min)
     most_recent = events_sorted[-1]
 
     stages = most_recent.get("stages_min") or {}
@@ -13145,6 +13315,10 @@ def _open_wearables_replacement_source_dates(now=None):
     except Exception:
         return {}
     now_dt = now or datetime.now()
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.astimezone()
+    local_now_date = now_dt.date()
+    now_dt = now_dt.astimezone(timezone.utc)
     for source in stored_sources:
         if source.get("provider_id") != "open_wearables":
             continue
@@ -13153,6 +13327,9 @@ def _open_wearables_replacement_source_dates(now=None):
         sync_dt = _parse_iso_date_or_datetime(source.get("last_sync_attempt"))
         if not sync_dt:
             return {}
+        if sync_dt.tzinfo is None:
+            sync_dt = sync_dt.astimezone()
+        sync_dt = sync_dt.astimezone(timezone.utc)
         age_days = (now_dt - sync_dt).total_seconds() / 86400.0
         if age_days < 0 or age_days > 2:
             return {}
@@ -13169,7 +13346,7 @@ def _open_wearables_replacement_source_dates(now=None):
             data_dt = _parse_iso_date_or_datetime(str(date_value or ""))
             if not data_dt:
                 continue
-            data_age_days = (now_dt.date() - data_dt.date()).days
+            data_age_days = (local_now_date - data_dt.date()).days
             if 0 <= data_age_days <= 2:
                 replacement_source_dates[source_key] = data_dt.date().isoformat()
         return replacement_source_dates
