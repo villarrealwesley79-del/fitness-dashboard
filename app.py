@@ -140,6 +140,7 @@ from data_store import (
     delete_food_logs_by_meal_id,
     acknowledge_food_log_refresh_event,
     acknowledge_workout_adaptation_event,
+    has_due_workout_adaptation_pending,
     delete_current_workout_plan,
     get_current_workout_plan,
     get_push_subscription_for_delivery,
@@ -4655,6 +4656,7 @@ def _persist_current_workout_plan(recommendation: dict, fingerprint: str) -> dic
             "user_id": user_id,
             "fingerprint": fingerprint,
             "plan_id": id(authoritative_plan),
+            "day": _today_str(),
         }
     return authoritative_plan
 
@@ -4775,6 +4777,7 @@ def _current_workout_plan_for_fingerprint(fingerprint: str, *, allow_stale_unsav
                                     "user_id": _current_data_user_id(),
                                     "fingerprint": fingerprint,
                                     "plan_id": id(LAST_WORKOUT_RECOMMENDATION),
+                                    "day": _today_str(),
                                 }
                         return LAST_WORKOUT_RECOMMENDATION
                     if allow_stale_unsaved:
@@ -4794,6 +4797,7 @@ def _current_workout_plan_for_fingerprint(fingerprint: str, *, allow_stale_unsav
                 "user_id": _current_data_user_id(),
                 "fingerprint": fingerprint,
                 "plan_id": id(LAST_WORKOUT_RECOMMENDATION),
+                "day": _today_str(),
             }
             return LAST_WORKOUT_RECOMMENDATION
         if (
@@ -4952,12 +4956,54 @@ def _workout_recommendation_fingerprint():
     )
 
 
+def _owned_current_workout_plan_for_zero_due_fast_path() -> dict | None:
+    """Return the resident plan only when its in-process ownership is intact."""
+    recommendation = LAST_WORKOUT_RECOMMENDATION
+    if not recommendation or _is_lightweight_current_workout_plan(recommendation):
+        return None
+    owner = LAST_WORKOUT_RECOMMENDATION_OWNER or {}
+    if owner.get("plan_id") != id(recommendation):
+        return None
+    if owner.get("user_id") != _current_data_user_id():
+        return None
+    if owner.get("day") != _today_str():
+        return None
+    return recommendation
+
+
 @app.route('/api/next-workout')
 def api_next_workout():
     """Return only the active workout prescription for gym execution."""
     global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
-    fingerprint = _workout_recommendation_fingerprint()
-    current_plan = _current_workout_plan_for_fingerprint(fingerprint)
+    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
+    active_open_requested = active_open_raw in {"1", "true", "yes"}
+    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
+    can_evaluate_active = not active_open_requested or bool(completed_sets_by_exercise)
+
+    fast_path_plan = None
+    due_adaptation_pending = False
+    if can_evaluate_active:
+        due_adaptation_pending = has_due_workout_adaptation_pending(
+            _current_data_user_id(),
+            now_iso=datetime.now().isoformat(timespec="seconds"),
+        )
+        if not due_adaptation_pending:
+            fast_path_plan = _owned_current_workout_plan_for_zero_due_fast_path()
+
+    fingerprint = None
+    fingerprint_ready = False
+
+    def request_fingerprint() -> str:
+        nonlocal fingerprint, fingerprint_ready
+        if not fingerprint_ready:
+            fingerprint = _workout_recommendation_fingerprint()
+            fingerprint_ready = True
+        return fingerprint
+
+    if fast_path_plan is not None:
+        current_plan = fast_path_plan
+    else:
+        current_plan = _current_workout_plan_for_fingerprint(request_fingerprint())
     training_recommendation = _current_workout_training_recommendation()
     open_wearables_facts = _open_wearables_recommendation_facts()
     guarded_training_recommendation, open_wearables_modifier = _apply_open_wearables_recommendation_guard(
@@ -4971,11 +5017,7 @@ def api_next_workout():
             training_recommendation=guarded_training_recommendation,
             consume_cardio_rotation=False,
         )
-        current_plan = _persist_current_workout_plan(current_plan, fingerprint)
-    active_open_raw = str(request.args.get("active_workout_open", "false")).strip().lower()
-    active_open_requested = active_open_raw in {"1", "true", "yes"}
-    completed_sets_by_exercise = _completed_sets_query_param(request.args.get("completed_sets"))
-    can_evaluate_active = not active_open_requested or bool(completed_sets_by_exercise)
+        current_plan = _persist_current_workout_plan(current_plan, request_fingerprint())
     today_s = _today_str()
     adaptation_food_entries = _food_log_entries_for_workout_adaptation(today_s)
     food_log_entries = adaptation_food_entries
@@ -4985,7 +5027,7 @@ def api_next_workout():
         food_log_entries=food_log_entries,
     )
     workout_adaptation_events = []
-    if can_evaluate_active:
+    if can_evaluate_active and fast_path_plan is None:
         current_plan, workout_adaptation_events = _apply_due_workout_adaptations_for_plan(
             current_plan or {},
             date_s=today_s,
@@ -4994,7 +5036,7 @@ def api_next_workout():
             active_workout_open=active_open_requested,
             completed_sets_by_exercise=completed_sets_by_exercise,
         )
-        current_plan = _persist_current_workout_plan(current_plan, fingerprint)
+        current_plan = _persist_current_workout_plan(current_plan, request_fingerprint())
     today_oura = get_oura_daily(OURA_DB_FILE, today_s) or {}
     freshness = _compute_data_freshness()
     whoop_context = _whoop_recommendation_context(today_oura.get("readiness_score"))
