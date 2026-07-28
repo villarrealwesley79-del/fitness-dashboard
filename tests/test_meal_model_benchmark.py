@@ -1134,6 +1134,11 @@ def test_migrated_workout_cases_preserve_the_three_legacy_scenarios():
     assert analysis["workout"]["session_type"] == "upper hypertrophy"
     assert analysis["workout"]["exercises"][0]["name"] == "Bench Press"
     assert analysis["workout"]["exercises"][0]["sets"][0]["rpe"] == 7
+    assert len(analysis["workout"]["exercises"][0]["sets"]) == analysis["workout"]["total_sets"] == 3
+    assert sum(
+        current_set["reps"] * current_set["weight_lbs"]
+        for current_set in analysis["workout"]["exercises"][0]["sets"]
+    ) == analysis["workout"]["total_volume_lbs"] == 1500
     assert analysis["context"] == {
         "sleep_hours": 8,
         "soreness": "low",

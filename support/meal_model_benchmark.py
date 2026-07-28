@@ -686,17 +686,21 @@ ANALYSIS_NOTABLE_TERMS = (
 )
 
 
-def _compact_workout(*, name: str = "Bench Press", muscle: str = "chest", notes: str = "", rpe: float = 7, cardio: object = None, date: str = "2026-07-15", session_type: str = "upper", duration_minutes: int = 45, total_sets: int = 3, total_volume_lbs: int = 300) -> dict:
+def _compact_workout(*, name: str = "Bench Press", muscle: str = "chest", notes: str = "", rpe: float = 7, cardio: object = None, date: str = "2026-07-15", session_type: str = "upper", duration_minutes: int = 45, total_sets: int = 3, total_volume_lbs: int | None = None) -> dict:
+    sets = [
+        {"reps": 5, "weight_lbs": 100, "rpe": rpe, "notes": notes}
+        for _ in range(total_sets)
+    ]
     return {
         "date": date,
         "session_type": session_type,
         "duration_minutes": duration_minutes,
         "total_sets": total_sets,
-        "total_volume_lbs": total_volume_lbs,
+        "total_volume_lbs": total_volume_lbs if total_volume_lbs is not None else total_sets * 500,
         "exercises": [{
             "name": name,
             "muscle": muscle,
-            "sets": [{"reps": 5, "weight_lbs": 100, "rpe": rpe, "notes": notes}],
+            "sets": sets,
         }],
         "cardio": cardio,
         "notes": "",
