@@ -596,10 +596,37 @@ _ADJUST_DEFAULT_EXPECTED = {
 ADJUST_INTENT_CASES = [
     _adjust_case(
         1,
-        "My legs are very sore after yesterday's intervals; reduce lower-body work and skip cardio.",
+        "I slept 5 hours, my legs are 8/10 sore, HRV is down, and I did intervals yesterday; reduce lower-body work and skip cardio.",
         {**_ADJUST_DEFAULT_EXPECTED, "sets_delta_pct": -20, "drop_cardio": True},
-        readiness={"sleep_hours": 5, "readiness_score": 32},
-        coverage=("readiness", "set_reduction", "drop_cardio"),
+        readiness={
+            "sleep_hours": 5,
+            "leg_soreness_10": 8,
+            "hrv_status": "down",
+            "previous_session": "intervals",
+        },
+        plan=_compact_plan(
+            focus="heavy lower",
+            exercises=[
+                {
+                    "exercise": "Back Squat",
+                    "muscle": "quadriceps",
+                    "is_compound": True,
+                    "target_sets": 5,
+                    "target_reps": 5,
+                    "rpe_target": 8,
+                },
+                {
+                    "exercise": "Romanian Deadlift",
+                    "muscle": "hamstrings",
+                    "is_compound": True,
+                    "target_sets": 4,
+                    "target_reps": 8,
+                    "rpe_target": 8,
+                },
+            ],
+            cardio="intervals",
+        ),
+        coverage=("legacy-workout-001", "readiness", "set_reduction", "drop_cardio"),
     ),
 ]
 
@@ -649,7 +676,7 @@ SWAP_RESOLUTION_CASES = [
         1,
         "bike",
         "Stationary Bike",
-        current="Tempo Run",
+        current="Tempo Run; resting HR elevated; knee pain 4/10; missed carbs at lunch",
         muscle="cardio",
         candidates=[
             {
@@ -659,7 +686,7 @@ SWAP_RESOLUTION_CASES = [
                 "compound": False,
             }
         ],
-        coverage=("exact", "single"),
+        coverage=("legacy-workout-003", "exact", "single"),
     ),
 ]
 
@@ -707,7 +734,26 @@ def _analysis_case(number: int, workout: dict, context: dict, expected: dict, co
 
 
 POST_WORKOUT_ANALYSIS_CASES = [
-    _analysis_case(1, _compact_workout(name="Bench Press", notes="clean reps", rpe=7, total_volume_lbs=1500), {"recent_sessions": [{"bench": "steady"}]}, {"summary": (("session",), ("bench", "press")), "wins": (("bench", "press"), ("clean",)), "concerns": (), "comparison": (("steady", "same"),), "next_session_cue": (("form", "progress"),), "empty_fields": ("concerns",)}, ("pr", "win")),
+    _analysis_case(
+        1,
+        _compact_workout(
+            name="Bench Press",
+            notes="clean reps",
+            rpe=7,
+            session_type="upper hypertrophy",
+            total_volume_lbs=1500,
+        ),
+        {"sleep_hours": 8, "soreness": "low", "calories": "on target"},
+        {
+            "summary": (("session",), ("bench", "press")),
+            "wins": (("bench", "press"), ("clean",)),
+            "concerns": (),
+            "comparison": (("steady", "same"),),
+            "next_session_cue": (("form", "progress"),),
+            "empty_fields": ("concerns",),
+        },
+        ("legacy-workout-002", "progress", "win"),
+    ),
 ]
 
 # Short aliases keep callers from needing to know the storage naming detail.
@@ -1459,12 +1505,7 @@ def _structured_quality_score(case: MealCase, response: dict | None, schema_erro
         next_session_cue = " ".join(_string_values(response.get("next_session_cue"))).lower()
         checks["forbidden_actions"] = not any(
             token in response_text for token in ("prescribe", "prescription", "diagnose")
-        ) and not re.search(
-            r"\b(?:do|perform|complete|add|use|target|aim for)\s+"
-            r"(?:rpe\s*)?\d+(?:\.\d+)?"
-            r"(?:\s*(?:sets?|reps?|lbs?|pounds?|kg|kilograms?|minutes?|mins?|seconds?|secs?))?\b",
-            next_session_cue,
-        )
+        ) and not re.search(r"\d", next_session_cue)
         failures = [key for key, passed in checks.items() if not passed]
     score = round(sum(checks.values()) / len(checks), 3) if checks else 0.0
     return {

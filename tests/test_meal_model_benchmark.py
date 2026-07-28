@@ -1103,6 +1103,41 @@ def test_structured_payloads_use_exact_production_keys_and_schemas():
     assert analysis["response_format"]["json_schema"]["schema"] is module.ANALYZE_SCHEMA
 
 
+def test_migrated_workout_cases_preserve_the_three_legacy_scenarios():
+    module = _load_module()
+
+    adjust = json.loads(module._chat_payload(module.ADJUST_INTENT_CASES[0], "local-model")["messages"][1]["content"])
+    swap = json.loads(module._chat_payload(module.SWAP_RESOLUTION_CASES[0], "local-model")["messages"][1]["content"])
+    analysis = json.loads(module._chat_payload(module.POST_WORKOUT_ANALYSIS_CASES[0], "local-model")["messages"][1]["content"])
+
+    assert [exercise["exercise"] for exercise in adjust["current_plan"]["exercises"]] == [
+        "Back Squat",
+        "Romanian Deadlift",
+    ]
+    assert adjust["current_plan"]["exercises"][0]["target_sets"] == 5
+    assert adjust["current_plan"]["exercises"][1]["target_reps"] == 8
+    assert adjust["readiness"] == {
+        "sleep_hours": 5,
+        "leg_soreness_10": 8,
+        "hrv_status": "down",
+        "previous_session": "intervals",
+    }
+
+    assert "Tempo Run" in swap["current_exercise"]
+    assert "resting HR elevated" in swap["current_exercise"]
+    assert "knee pain 4/10" in swap["current_exercise"]
+    assert "missed carbs at lunch" in swap["current_exercise"]
+
+    assert analysis["workout"]["session_type"] == "upper hypertrophy"
+    assert analysis["workout"]["exercises"][0]["name"] == "Bench Press"
+    assert analysis["workout"]["exercises"][0]["sets"][0]["rpe"] == 7
+    assert analysis["context"] == {
+        "sleep_hours": 8,
+        "soreness": "low",
+        "calories": "on target",
+    }
+
+
 def test_analyze_payload_matches_production_compaction_and_request(monkeypatch):
     module = _load_module()
     import lm_studio_adapter as adapter
@@ -1238,6 +1273,7 @@ def test_analysis_rejects_numeric_next_session_prescriptions():
         "Aim for RPE 8 while keeping form consistent.",
         "Use 50 kg while keeping form consistent.",
         "Add 20 minutes while keeping form consistent.",
+        "Keep form and stay at 3 sets next time.",
     ):
         response = {
             "summary": "Bench press session was steady.",
