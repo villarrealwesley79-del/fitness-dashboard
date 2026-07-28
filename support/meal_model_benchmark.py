@@ -42,6 +42,7 @@ from lm_studio_adapter import (  # noqa: E402
     _ADJUST_SYSTEM,
     _ANALYZE_SYSTEM,
     _SWAP_RESOLVE_SYSTEM,
+    _clean_analyze_result,
 )
 
 # Underscored aliases mirror the production names used in the issue contract;
@@ -1645,6 +1646,8 @@ def run_model_case(
         message = first_choice.get("message") or {}
         content = message.get("content") or message.get("reasoning_content") or ""
         estimate = _extract_json_object(content)
+        if case.task_class == "post_workout_analysis":
+            _clean_analyze_result(estimate)
         errors = _task_response_schema_errors(case, estimate)
         public_estimate = None
         if estimate:

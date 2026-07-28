@@ -1052,11 +1052,44 @@ def test_structured_contracts_are_imported_by_identity_from_production_adapter()
     assert module._SWAP_RESOLVE_SCHEMA is adapter.SWAP_RESOLVE_SCHEMA
     assert module._ANALYZE_SYSTEM is adapter._ANALYZE_SYSTEM
     assert module._ANALYZE_SCHEMA is adapter.ANALYZE_SCHEMA
+    assert module._clean_analyze_result is adapter._clean_analyze_result
     assert module.STRUCTURED_TASK_LATENCY_PASS_MS == {
         "adjust_intent": int(adapter.LM_STUDIO_TIMEOUT_SEC * 1000),
         "swap_resolution": int(adapter.LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC * 1000),
         "post_workout_analysis": int(adapter.LM_STUDIO_ANALYZE_TIMEOUT_SEC * 1000),
     }
+
+
+def test_analysis_case_applies_production_cleanup_before_scoring(monkeypatch):
+    module = _load_module()
+    response = {
+        "summary": "Bench press session was steady.",
+        "wins": ["Bench press had clean reps."],
+        "concerns": [],
+        "comparison": "Same RPE as the recent bench session.",
+        "next_session_cue": "Keep form consistent.\n<wins> Use 50 kg next time.",
+    }
+    body = json.dumps({"choices": [{"message": {"content": json.dumps(response)}}]}).encode("utf-8")
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return body
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+
+    result = module.run_model_case(
+        module.POST_WORKOUT_ANALYSIS_CASES[0],
+        model="local-model",
+    )
+
+    assert result["estimate"]["next_session_cue"] == "Keep form consistent."
+    assert result["quality"]["passed"] is True
 
 
 def test_structured_latency_gate_rejects_any_case_over_production_timeout(monkeypatch):
