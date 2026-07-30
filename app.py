@@ -15995,17 +15995,20 @@ def smart_recommendation_api():
     })
 
 
+PROGRESSIVE_OVERLOAD_EXERCISES = [
+    "Chest Press",
+    "Lat Pulldown",
+    "Mid Row",
+    "Leg Press",
+    "Leg Curl",
+    "Seated Dip",
+    "Shoulder Press",
+    "Biceps Curl",
+]
+
+
 def _calculate_progressive_overload(workouts):
-    exercises = [
-        "Chest Press",
-        "Lat Pulldown",
-        "Mid Row",
-        "Leg Press",
-        "Leg Curl",
-        "Seated Dip",
-        "Shoulder Press",
-        "Biceps Curl",
-    ]
+    exercises = PROGRESSIVE_OVERLOAD_EXERCISES
     history_by_ex = {ex: {} for ex in exercises}
 
     for w in workouts or []:
@@ -16062,8 +16065,15 @@ def _calculate_progressive_overload(workouts):
 
 @app.route('/api/progressive-overload')
 def progressive_overload():
-    """Return progressive overload data per major exercise."""
-    return jsonify({"exercises": _calculate_progressive_overload(WORKOUTS)})
+    """Return API-only top-set trends for the documented fixed exercise list."""
+    return jsonify({
+        "scope": {
+            "visibility": "api_only",
+            "exercise_source": "fixed_list",
+            "tracked_exercises": PROGRESSIVE_OVERLOAD_EXERCISES,
+        },
+        "exercises": _calculate_progressive_overload(WORKOUTS),
+    })
 
 
 @app.route('/api/history')
