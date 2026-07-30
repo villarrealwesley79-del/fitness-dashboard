@@ -52,6 +52,7 @@ if os.path.exists(_env_path):
                 os.environ.setdefault(_k.strip(), _v.strip())
 from data_loader import parse_workout_log, get_workout_summary
 from runtime_config import DATA_DIR, data_path, public_base_url as _runtime_public_base_url
+from settings_contract import DEFAULT_SETTINGS
 from oura_client import (
     OuraClient,
     init_oura_db,
@@ -480,27 +481,6 @@ GOAL_PARAMETERS = {
         "time_per_set_minutes": 2
     }
 }
-
-# Default user settings
-DEFAULT_SETTINGS = {
-    "training_goal": TrainingGoal.HYBRID_STRENGTH_HYPERTROPHY.value,
-    "date_of_birth": "",
-    "sex": "",
-    "sessions_per_week_target": 3,
-    "available_time_minutes": 75,
-    "target_weight_lbs": 175,
-    "target_body_fat_pct": 18,
-    "daily_calorie_target": 2200,
-    "daily_protein_target_g": 148,
-    "fatigue_threshold": 72,
-    "equipment_preference": "machines_only",
-    "preferred_equipment_brands": ["Hoist", "Nautilus"],
-    "excluded_exercises": ["Preacher Curl"],
-    "volume_landmarks": {
-        "default": {"mv": 6, "mev": 9, "mav_min": 12, "mav_max": 18, "mrv": 22}
-    }
-}
-
 
 def _settings_with_defaults(settings):
     merged = copy.deepcopy(DEFAULT_SETTINGS)

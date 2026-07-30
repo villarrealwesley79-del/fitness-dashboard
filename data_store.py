@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Iterator, Optional
 import uuid
 from runtime_config import data_path
+from settings_contract import SQL_SETTINGS_DEFAULTS
 
 # ── Config ────────────────────────────────────────────────────────────────────
 DATA_DB = data_path("fitness_data.db")
@@ -2962,13 +2963,7 @@ def add_recovery_record(user_id: int, record: dict) -> None:
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
-DEFAULT_SETTINGS = {
-    "training_goal": "body_recomp",
-    "sessions_per_week_target": 4,
-    "available_time_minutes": 60,
-    "target_weight_lbs": 175.0,
-    "target_body_fat_pct": 12.0,
-}
+DEFAULT_SETTINGS = SQL_SETTINGS_DEFAULTS
 
 
 def get_settings(user_id: int) -> dict:
