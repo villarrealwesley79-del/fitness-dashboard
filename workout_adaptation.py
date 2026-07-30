@@ -195,6 +195,9 @@ def apply_due_adaptations(
     active_workout_open: bool = False,
     completed_sets_by_exercise: dict[str, int] | None = None,
     clock: Callable[[], datetime] | datetime | None = None,
+    plan_fingerprint: str | None = None,
+    source_plan_generation: int | None = None,
+    source_plan_version: int | None = None,
 ) -> tuple[dict, list[dict]]:
     """Evaluate closed coalescing windows and return a patched recommendation."""
     now = _clock_now(clock)
@@ -226,14 +229,26 @@ def apply_due_adaptations(
             completed_sets_by_exercise=completed_sets_by_exercise or {},
             evaluated_at=now,
         )
-        event["trigger"]["food_log_client_ids"] = sorted(
+        if event.get("status") == "applied":
+            recovery_plan = copy.deepcopy(event_patched)
+            recovery_plan["_fit136_base_recommendation"] = copy.deepcopy(
+                base_recommendation
+            )
+            recovery_plan["_fit136_last_adapted_plan"] = copy.deepcopy(event_patched)
+            event["_adapted_plan"] = recovery_plan
+            event["_plan_fingerprint"] = plan_fingerprint
+            event["_target_plan_date"] = plan_date
+            event["_source_plan_generation"] = source_plan_generation
+            event["_source_plan_version"] = source_plan_version
+        trigger = event.setdefault("trigger", {})
+        trigger["food_log_client_ids"] = sorted(
             {
                 row.get("client_id")
                 for row in day_logs
                 if row.get("client_id")
             }
         )
-        event["trigger"]["meal_ids"] = sorted(
+        trigger["meal_ids"] = sorted(
             {
                 row.get("meal_id")
                 for row in day_logs
@@ -248,7 +263,7 @@ def apply_due_adaptations(
         )
         if saved:
             events.append(saved)
-            if event.get("status") == "applied":
+            if saved.get("_claim_created") and saved.get("status") == "applied":
                 patched = event_patched
     return patched, events
 

@@ -36,7 +36,10 @@ sandbox.elements['workout-adaptation-host'] = host;
 const shown = [];
 sandbox.__fitSet.showWorkoutAdaptationNotice((event) => { shown.push(event.status); host.appendChild(card(event.id)); });
 let poll = 0;
-sandbox.__fitSet.api(async () => ({ events: [{ id: 'event-1', status: ++poll === 1 ? 'applied' : 'stale', change_type: 'changed' }] }));
+sandbox.__fitSet.api(async (path) => {
+  if (path.includes('/evaluate')) return { evaluated_count: 0, retry_after_ms: null };
+  return { events: [{ id: 'event-1', status: ++poll === 1 ? 'applied' : 'stale', change_type: 'changed' }] };
+});
 await e.fetchWorkoutAdaptationNotices();
 await e.fetchWorkoutAdaptationNotices();
 process.stdout.write(JSON.stringify({ shown, removed: cards[0].removed, active: host.querySelectorAll().length }));
@@ -59,12 +62,13 @@ e.state.activeWorkout = {
 const paths = [];
 sandbox.__fitSet.api(async (path) => {
   paths.push(path);
+  if (path.includes('/evaluate')) return { evaluated_count: 0, retry_after_ms: null };
   return path.includes('/api/next-workout') ? { next_workout: { id: 'next' } } : { events: [] };
 });
 await e.fetchWorkoutAdaptationNotices();
 e.state.nextWorkout = null;
 await e.getNextWorkout(true);
-const parsed = paths.map((path) => {
+const parsed = paths.filter((path) => !path.includes('/evaluate')).map((path) => {
   const url = new URL(path, 'https://fitness.local');
   return {
     pathname: url.pathname,
@@ -74,13 +78,13 @@ const parsed = paths.map((path) => {
 });
 process.stdout.write(JSON.stringify(parsed));
 """,
-        mocks=["api"],
+        mocks=["api", "getDashboard", "paintDashboardFromState", "getNextWorkout", "renderNextWorkout"],
     )
     assert output == [
         {
             "pathname": "/api/workout-adaptation-events",
-            "activeWorkoutOpen": "true",
-            "completedSets": {"Chest Press": 2, "Squat": 1},
+            "activeWorkoutOpen": None,
+            "completedSets": None,
         },
         {
             "pathname": "/api/next-workout",
@@ -255,9 +259,10 @@ sandbox.document.createElement = node;
 sandbox.elements['workout-adaptation-host'] = host;
 let feedCalls = 0;
 const paths = [];
-sandbox.__fitSet.api(async (path) => {
-  paths.push(path);
-  if (path.includes('/ack')) return { ok: true };
+    sandbox.__fitSet.api(async (path) => {
+      paths.push(path);
+      if (path.includes('/evaluate')) return { evaluated_count: 0, retry_after_ms: null };
+      if (path.includes('/ack')) return { ok: true };
   feedCalls += 1;
   return feedCalls === 1
     ? { events: [{ id: 'event-1', status: 'applied', change_type: 'changed', reason: 'Nutrition changed' }] }
@@ -306,9 +311,10 @@ let ackAttempts = 0;
 let resolvePoll;
 const poll = new Promise((resolve) => { resolvePoll = resolve; });
 const paths = [];
-sandbox.__fitSet.api(async (path) => {
-  paths.push(path);
-  if (path.includes('/ack')) {
+    sandbox.__fitSet.api(async (path) => {
+      paths.push(path);
+      if (path.includes('/evaluate')) return { evaluated_count: 0, retry_after_ms: null };
+      if (path.includes('/ack')) {
     ackAttempts += 1;
     if (ackAttempts === 1) throw new Error('ack failed');
     return { ok: true };
@@ -372,9 +378,10 @@ let feedCalls = 0;
 let resolveOldPoll;
 const oldPoll = new Promise((resolve) => { resolveOldPoll = resolve; });
 const paths = [];
-sandbox.__fitSet.api(async (path) => {
-  paths.push(path);
-  if (path.includes('/ack')) return { ok: true };
+    sandbox.__fitSet.api(async (path) => {
+      paths.push(path);
+      if (path.includes('/evaluate')) return { evaluated_count: 0, retry_after_ms: null };
+      if (path.includes('/ack')) return { ok: true };
   feedCalls += 1;
   if (feedCalls === 1) return { events: [{ id: 'event-1', status: 'applied', change_type: 'changed' }] };
   if (feedCalls === 2) return oldPoll;
@@ -488,3 +495,245 @@ def test_adaptation_styles_present_and_calm():
     assert ".workout-adaptation-details {" in block
     assert ".workout-adaptation-chip {" in block
     assert "overflow-wrap: anywhere" in block
+
+
+def test_fit233_rollout_invalidates_cached_get_only_clients():
+    version = "20260713-fit233-adaptation-polling"
+    html = INDEX_HTML
+    loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
+    service_worker = (ROOT / "static" / "js" / "sw.js").read_text()
+    assert f"/static/js/app-loader.js?v={version}" in html
+    assert f"/static/js/app.js?v={version}" in loader
+    assert f"fitness-dashboard-v{version}" in service_worker
+
+
+def test_applied_evaluation_refreshes_visible_workout_state():
+    output = run_app_js(
+        ["fetchWorkoutAdaptationNotices"],
+        """
+const calls = [];
+sandbox.__fitSet.api(async (path) => {
+  calls.push(path);
+  return path.includes('/evaluate')
+    ? { evaluated_count: 1, retry_after_ms: null }
+    : { events: [] };
+});
+sandbox.__fitSet.getDashboard(async () => { calls.push('dashboard'); return {}; });
+sandbox.__fitSet.paintDashboardFromState(() => calls.push('paint'));
+sandbox.__fitSet.getNextWorkout(async () => { calls.push('next-workout'); return { id: 'adapted' }; });
+sandbox.__fitSet.renderNextWorkout(async () => { calls.push('render-next-workout'); });
+await e.fetchWorkoutAdaptationNotices();
+process.stdout.write(JSON.stringify(calls));
+""",
+        mocks=["api", "getDashboard", "paintDashboardFromState", "getNextWorkout", "renderNextWorkout"],
+    )
+    assert output == [
+        "/api/workout-adaptation-events/evaluate",
+        "dashboard",
+        "paint",
+        "next-workout",
+        "render-next-workout",
+        "/api/workout-adaptation-events?unacknowledged=true&limit=10",
+    ]
+
+
+def test_future_adaptation_window_retries_after_clock_advance():
+    output = run_app_js(
+        ["fetchWorkoutAdaptationNotices", "workoutAdaptationNoticeState"],
+        """
+const timers = [];
+const clearedTimers = [];
+const calls = [];
+let failEvaluation = false;
+sandbox.setTimeout = (callback, delay) => { timers.push({ callback, delay }); return timers.length; };
+sandbox.clearTimeout = (timer) => { clearedTimers.push(timer); };
+sandbox.__fitSet.api(async (path) => {
+  calls.push(path);
+  if (path.startsWith('/api/workout-adaptation-events/evaluate')) {
+    if (failEvaluation) throw new Error('temporary evaluation failure');
+    return { evaluated_count: 0, retry_after_ms: 180000 };
+  }
+  return { events: [] };
+});
+sandbox.__fitSet.getDashboard(async () => ({}));
+sandbox.__fitSet.paintDashboardFromState(() => {});
+sandbox.__fitSet.getNextWorkout(async () => ({ id: 'adapted-plan' }));
+sandbox.__fitSet.renderNextWorkout(async () => {});
+await e.fetchWorkoutAdaptationNotices();
+const initialDelay = timers[0] && timers[0].delay;
+failEvaluation = true;
+await e.fetchWorkoutAdaptationNotices();
+const failureReplacementDelay = timers[1] && timers[1].delay;
+failEvaluation = false;
+e.workoutAdaptationNoticeState.fetching = true;
+await timers[1].callback();
+const inFlightRetryDelay = timers[2] && timers[2].delay;
+e.workoutAdaptationNoticeState.fetching = false;
+await timers[2].callback();
+process.stdout.write(JSON.stringify({
+  initialDelay, failureReplacementDelay, clearedTimers, inFlightRetryDelay,
+  evaluationCalls: calls.filter((path) => path.startsWith('/api/workout-adaptation-events/evaluate')).length,
+  feedCalls: calls.filter((path) => path.startsWith('/api/workout-adaptation-events?')).length,
+}));
+""",
+        mocks=["api", "getDashboard", "paintDashboardFromState", "getNextWorkout", "renderNextWorkout"],
+    )
+    assert output == {
+        "initialDelay": 180000,
+        "failureReplacementDelay": 60000,
+        "clearedTimers": [1],
+        "inFlightRetryDelay": 1000,
+        "evaluationCalls": 3,
+        "feedCalls": 3,
+    }
+
+
+def test_failed_adapted_workout_refresh_retries_before_reading_feed():
+    output = run_app_js(
+        ["fetchWorkoutAdaptationNotices"],
+        """
+const timers = [];
+const calls = [];
+let evaluationCount = 1;
+let failRefresh = true;
+let dashboardCalls = 0;
+let nextWorkoutCalls = 0;
+sandbox.setTimeout = (callback, delay) => { timers.push({ callback, delay }); return timers.length; };
+sandbox.clearTimeout = () => {};
+sandbox.__fitSet.api(async (path) => {
+  calls.push(path);
+  if (path.startsWith('/api/workout-adaptation-events/evaluate')) {
+    const evaluated_count = evaluationCount;
+    evaluationCount = 0;
+    return { evaluated_count, retry_after_ms: null };
+  }
+  return { events: [] };
+});
+sandbox.__fitSet.getDashboard(async () => { dashboardCalls += 1; return {}; });
+sandbox.__fitSet.paintDashboardFromState(() => {});
+sandbox.__fitSet.getNextWorkout(async () => {
+  nextWorkoutCalls += 1;
+  if (failRefresh) throw new Error('next workout unavailable');
+  return { id: 'adapted-plan' };
+});
+sandbox.__fitSet.renderNextWorkout(async () => { nextWorkoutCalls += 1; });
+await e.fetchWorkoutAdaptationNotices();
+const feedCallsAfterFailure = calls.filter((path) => path.startsWith('/api/workout-adaptation-events?')).length;
+const refreshRetryDelay = timers[0] && timers[0].delay;
+failRefresh = false;
+await timers[0].callback();
+process.stdout.write(JSON.stringify({
+  feedCallsAfterFailure,
+  refreshRetryDelay,
+  finalFeedCalls: calls.filter((path) => path.startsWith('/api/workout-adaptation-events?')).length,
+  dashboardCalls,
+  nextWorkoutCalls,
+}));
+""",
+        mocks=["api", "getDashboard", "paintDashboardFromState", "getNextWorkout", "renderNextWorkout"],
+    )
+    assert output == {
+        "feedCallsAfterFailure": 0,
+        "refreshRetryDelay": 60000,
+        "finalFeedCalls": 1,
+        "dashboardCalls": 2,
+        "nextWorkoutCalls": 3,
+    }
+
+
+def test_ambiguous_evaluation_and_feed_failures_keep_retrying():
+    output = run_app_js(
+        ["fetchWorkoutAdaptationNotices", "workoutAdaptationNoticeState"],
+        """
+const timers = [];
+const calls = [];
+let failEvaluation = true;
+let failFeed = false;
+let feedRevision = null;
+let feedEvents = [];
+let dashboardCalls = 0;
+sandbox.setTimeout = (callback, delay) => { timers.push({ callback, delay }); return timers.length; };
+sandbox.clearTimeout = () => {};
+sandbox.__fitSet.api(async (path) => {
+  calls.push(path);
+  if (path.startsWith('/api/workout-adaptation-events/evaluate')) {
+    if (failEvaluation) throw new Error('response lost after commit');
+    return { evaluated_count: 0, retry_after_ms: null };
+  }
+  if (failFeed) throw new Error('feed temporarily unavailable');
+  return { events: feedEvents, applied_plan_revision: feedRevision };
+});
+sandbox.__fitSet.getDashboard(async () => { dashboardCalls += 1; return {}; });
+sandbox.__fitSet.paintDashboardFromState(() => {});
+sandbox.__fitSet.getNextWorkout(async () => ({ id: 'adapted-plan' }));
+sandbox.__fitSet.renderNextWorkout(async () => {});
+await e.fetchWorkoutAdaptationNotices();
+const ambiguousFailure = {
+  dashboardCalls,
+  feedCalls: calls.filter((path) => path.startsWith('/api/workout-adaptation-events?')).length,
+  retryDelay: timers[0] && timers[0].delay,
+};
+failEvaluation = false;
+failFeed = true;
+await e.fetchWorkoutAdaptationNotices();
+failFeed = false;
+feedRevision = 1;
+feedEvents = [{ id: 'between-event', status: 'applied' }];
+await e.fetchWorkoutAdaptationNotices();
+process.stdout.write(JSON.stringify({
+  ambiguousFailure,
+  feedFailureRetryDelay: timers[timers.length - 1] && timers[timers.length - 1].delay,
+  dashboardCallsAfterBetweenEvent: dashboardCalls,
+  seenCount: e.workoutAdaptationNoticeState.seen.size,
+}));
+""",
+        mocks=["api", "getDashboard", "paintDashboardFromState", "getNextWorkout", "renderNextWorkout"],
+    )
+    assert output["ambiguousFailure"] == {"dashboardCalls": 1, "feedCalls": 1, "retryDelay": 60000}
+    assert output["feedFailureRetryDelay"] == 60000
+    assert output["dashboardCallsAfterBetweenEvent"] == 2
+    assert output["seenCount"] == 1
+
+
+def test_overlapping_adaptation_polls_collapse_to_one_follow_up():
+    output = run_app_js(
+        ["fetchWorkoutAdaptationNotices", "workoutAdaptationNoticeState"],
+        """
+const timers = [];
+const calls = [];
+let releaseFirstEvaluation;
+const firstEvaluation = new Promise((resolve) => { releaseFirstEvaluation = resolve; });
+sandbox.setTimeout = (callback, delay) => { timers.push({ callback, delay }); return timers.length; };
+sandbox.clearTimeout = () => {};
+sandbox.__fitSet.api(async (path) => {
+  calls.push(path);
+  if (path.startsWith('/api/workout-adaptation-events/evaluate')) {
+    const evaluationIndex = calls.filter((item) => item.startsWith('/api/workout-adaptation-events/evaluate')).length;
+    if (evaluationIndex === 1) return firstEvaluation;
+    return { evaluated_count: 0, retry_after_ms: 180000 };
+  }
+  return { events: [] };
+});
+const first = e.fetchWorkoutAdaptationNotices();
+await Promise.resolve();
+await Promise.resolve();
+await Promise.all([e.fetchWorkoutAdaptationNotices(), e.fetchWorkoutAdaptationNotices(), e.fetchWorkoutAdaptationNotices()]);
+releaseFirstEvaluation({ evaluated_count: 0, retry_after_ms: null });
+await first;
+process.stdout.write(JSON.stringify({
+  evaluationCalls: calls.filter((item) => item.startsWith('/api/workout-adaptation-events/evaluate')).length,
+  feedCalls: calls.filter((item) => item.startsWith('/api/workout-adaptation-events?')).length,
+  timerDelays: timers.map((timer) => timer.delay),
+  fetching: e.workoutAdaptationNoticeState.fetching,
+  refillRequested: e.workoutAdaptationNoticeState.refillRequested,
+}));
+""",
+        mocks=["api"],
+    )
+    assert output == {
+        "evaluationCalls": 2,
+        "feedCalls": 2,
+        "timerDelays": [180000],
+        "fetching": False,
+        "refillRequested": False,
+    }

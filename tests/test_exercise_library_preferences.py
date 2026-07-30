@@ -5,11 +5,23 @@ import importlib
 from pathlib import Path
 
 import pytest
+import data_store
 import lm_studio_adapter
 
 
+def _set_last_workout_recommendation(module, monkeypatch, recommendation):
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    monkeypatch.setattr(
+        module,
+        "LAST_WORKOUT_RECOMMENDATION_OWNER",
+        {"user_id": 1, "plan_id": id(recommendation)},
+    )
+
+
 @pytest.fixture()
-def fitness_app(monkeypatch):
+def fitness_app(monkeypatch, tmp_path):
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
     module = importlib.import_module("app")
     settings = copy.deepcopy(module.DEFAULT_SETTINGS)
     settings.update(
@@ -27,6 +39,7 @@ def fitness_app(monkeypatch):
     monkeypatch.setattr(module, "CARDIO_DATA", [])
     monkeypatch.setattr(module, "WORKOUT_RECOMMENDATIONS", [])
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", None)
     monkeypatch.setattr(module, "_get_oura_readiness_today", lambda: None)
     monkeypatch.setattr(module, "save_json", lambda *_args, **_kwargs: None)
     return module
@@ -214,7 +227,7 @@ def test_swap_returns_structured_not_found_for_unknown_custom_exercise_name(fitn
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
@@ -251,7 +264,7 @@ def test_swap_returns_structured_muscle_mismatch_for_cross_group_custom_exercise
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
@@ -287,7 +300,7 @@ def test_swap_accepts_custom_typed_same_muscle_exercise_name(fitness_app, monkey
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     # Lat Pulldown is back/machine, allowed by the fixture's machines_only
     # equipment preference. Cable / bodyweight back alternatives are
@@ -323,7 +336,7 @@ def test_swap_resolves_semantic_triceps_extension_and_uses_backend_load(fitness_
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
@@ -357,7 +370,7 @@ def test_swap_resolves_plural_triceps_extension_deterministically(fitness_app, m
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("plural triceps extension should resolve before LLM fallback")
@@ -392,7 +405,7 @@ def test_swap_uses_adapter_fallback_for_inconclusive_free_text(fitness_app, monk
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
     calls = {}
 
     def fake_resolve(typed_name, *, current_exercise, target_muscle, candidates, **_kwargs):
@@ -438,7 +451,7 @@ def test_swap_adapter_failure_preserves_structured_not_found(fitness_app, monkey
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     def fail_resolve(*_args, **_kwargs):
         raise fitness_app._lm_studio.LmStudioError("timeout")
@@ -473,7 +486,7 @@ def test_swap_adapter_candidate_outside_prefilter_is_rejected(fitness_app, monke
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     def bad_resolve(*_args, **_kwargs):
         return {"canonical_name": "Lateral Raise", "confidence": 0.9, "reason": "wrong muscle"}
@@ -535,7 +548,7 @@ def test_swap_prefilters_equipment_before_adapter_resolution(fitness_app, monkey
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
     seen = {}
 
     def fake_resolve(*_args, candidates, **_kwargs):
@@ -573,7 +586,7 @@ def test_swap_rejects_current_exercise_no_op(fitness_app, monkeypatch):
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
@@ -604,7 +617,7 @@ def test_swap_rejects_excluded_preacher_curl(fitness_app, monkeypatch):
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",
@@ -633,7 +646,7 @@ def test_swap_accepts_biceps_curl_alias_as_canonical_machine_curl(fitness_app, m
             }
         ],
     }
-    monkeypatch.setattr(fitness_app, "LAST_WORKOUT_RECOMMENDATION", recommendation)
+    _set_last_workout_recommendation(fitness_app, monkeypatch, recommendation)
 
     response = fitness_app.app.test_client().post(
         "/api/workout/swap",

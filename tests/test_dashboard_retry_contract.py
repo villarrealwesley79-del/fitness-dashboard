@@ -301,7 +301,6 @@ process.stdout.write(JSON.stringify(started));
     )
     assert output == {"focus": "strength", "exercises": [{"exercise": "Squat"}]}
 
-
 def test_next_workout_renders_plan_when_optional_copy_fetches_fail():
     output = run_app_js(
         ["renderNextWorkout", "state"],
@@ -432,6 +431,49 @@ process.stdout.write(JSON.stringify({ first, second, reloaded: Boolean(sandbox._
     assert output["toasts"] == [{"message": "Update ready after workout. Refresh when finished.", "tone": "warn"}]
 
 
+def test_fit233_adaptation_release_assets_and_reload_contract():
+    template = (ROOT / "templates" / "index.html").read_text()
+    loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
+    sw = (ROOT / "static" / "js" / "sw.js").read_text()
+    app_py = (ROOT / "app.py").read_text()
+    auth_py = (ROOT / "auth.py").read_text()
+
+    assert "app-loader.js?v=20260713-fit233-adaptation-polling" in template
+    assert "app.js?v=20260713-fit233-adaptation-polling" in loader
+    assert "fitness-dashboard-v20260713-fit233-adaptation-polling" in sw
+    assert "const STATIC_ASSETS" not in sw
+    assert "cache.addAll" not in sw
+    assert "caches.keys()" in sw
+    assert "keys.map(key => caches.delete(key))" in sw
+    assert "client.navigate(client.url)" not in sw
+    assert 'APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"' in app_py
+    assert 'APP_SHELL_RELOAD_VERSION = "20260525-fit181-controller-reload-r2"' in app_py
+    assert "APP_SHELL_RELOAD_COOKIE_MAX_AGE_S = 365 * 24 * 60 * 60" in app_py
+    assert '"reload_required"' in app_py
+    assert "response.status_code = 401" in app_py
+    assert "response.set_cookie(" in app_py
+    assert 'request.cookies.get("session")' in app_py
+    assert "current_user.is_authenticated" in auth_py
+    assert 'request.args.get("next")' in auth_py
+    assert 'next_page.startswith("//")' in auth_py
+    assert 'fd_shell_reload=20260525-fit181-controller-reload-r2' in auth_py
+    assert "@app.route('/gym-now')" in app_py
+    assert "Cache-Control\": \"no-store\"" in app_py
+    assert "\"Cache-Control\": \"no-store, max-age=0\"" in app_py
+    assert "event.request.mode === 'navigate'" in sw
+    assert "url.pathname.endsWith('.js')" in sw
+
+
+def test_fit233_dashboard_shell_defers_heavy_bundle():
+    template = (ROOT / "templates" / "index.html").read_text()
+    loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "app-loader.js?v=20260713-fit233-adaptation-polling" in template
+    assert '<script src="/static/js/app.js' not in template
+    assert "window.addEventListener('load', loadAppBundle, { once: true });" in loader
+    assert "script.src = '/static/js/app.js?v=20260713-fit233-adaptation-polling';" in loader
+    assert "script.async = true;" in loader
+
+
 def test_next_workout_endpoint_does_not_fetch_open_wearables(monkeypatch):
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
@@ -494,7 +536,6 @@ def test_dashboard_release_assets_and_reload_contract_remain_stable():
     assert "@app.route('/api/next-workout')" in app_py
     assert "def _current_workout_training_recommendation():" in app_py
     assert "def _workout_recommendation_fingerprint():" in app_py
-    assert "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT != fingerprint" in app_py
     assert "workout_recommendation_fingerprint.build_fingerprint(" in app_py
     assert "day=today_s" in app_py
     assert "get_oura_daily_range(OURA_DB_FILE" in app_py
@@ -510,9 +551,9 @@ def test_dashboard_release_assets_and_reload_contract_remain_stable():
     assert '"day": day' in fingerprint_py
     assert '"oura": {' in fingerprint_py and '"weather": {' in fingerprint_py
     assert '"open_wearables": {' in fingerprint_py and '"apple_health": {' in fingerprint_py
-    assert "app-loader.js?v=20260713-fit270-oura-detail" in template
-    assert "app.js?v=20260713-fit270-oura-detail" in loader
-    assert "fitness-dashboard-v20260713-fit270-oura-detail" in sw
+    assert "app-loader.js?v=20260713-fit233-adaptation-polling" in template
+    assert "app.js?v=20260713-fit233-adaptation-polling" in loader
+    assert "fitness-dashboard-v20260713-fit233-adaptation-polling" in sw
     assert "APP_SHELL_RELOAD_COOKIE = \"fd_shell_reload\"" in app_py
     assert "APP_SHELL_RELOAD_VERSION = \"20260525-fit181-controller-reload-r2\"" in app_py
     assert '"reload_required"' in app_py
@@ -587,8 +628,8 @@ process.stdout.write(JSON.stringify(calls));
 def test_dashboard_shell_defers_heavy_app_bundle_until_after_load():
     template = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "app-loader.js?v=20260713-fit270-oura-detail" in template
+    assert "app-loader.js?v=20260713-fit233-adaptation-polling" in template
     assert '<script src="/static/js/app.js' not in template
     assert "window.addEventListener('load', loadAppBundle, { once: true });" in loader
-    assert "script.src = '/static/js/app.js?v=20260713-fit270-oura-detail';" in loader
+    assert "script.src = '/static/js/app.js?v=20260713-fit233-adaptation-polling';" in loader
     assert "script.async = true;" in loader

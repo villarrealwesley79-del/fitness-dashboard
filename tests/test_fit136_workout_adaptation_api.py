@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 import importlib
+import inspect
 import json
 from urllib.parse import quote
 
-import data_store
 import pytest
+
+import data_store
 import workout_adaptation
 
 
@@ -209,6 +211,12 @@ def test_ui_shaped_correction_preserves_omitted_source_metadata(
             "created_at": "2026-05-24T12:03:01",
         },
     )
+    assert data_store.save_current_workout_plan(
+        1,
+        "ui-correction-fingerprint",
+        {"id": "ui-correction-plan"},
+        publish_adaptation_event_ids=[event["id"]],
+    ) is not None
 
     ui_payload = {
         "client_id": original["client_id"],
@@ -353,7 +361,12 @@ def test_source_correction_restores_base_plan_and_requeues_adaptation(
         expected_plan = json.loads(json.dumps(base))
         expected_plan["exercises"][0]["machine"] = "Incline Press"
         expected_plan["exercises"][0]["target_sets"] = 5
-    data_store.save_current_workout_plan(1, "restore-fingerprint", adapted)
+    data_store.save_current_workout_plan(
+        1,
+        "restore-fingerprint",
+        adapted,
+        publish_adaptation_event_ids=[event["id"]],
+    )
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", adapted)
     monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_FINGERPRINT", "restore-fingerprint")
     monkeypatch.setattr(
@@ -416,6 +429,90 @@ def test_source_correction_restores_base_plan_and_requeues_adaptation(
     )
     assert second_replacement["id"] != replacement["id"]
     assert second_replacement["status"] == "pending"
+
+
+def test_stale_restore_increments_plan_version_and_rejects_stale_cas(monkeypatch, tmp_path):
+    _module, _client_instance = _client(monkeypatch, tmp_path)
+    source = data_store.add_food_log(
+        1,
+        {
+            "client_id": "restore-version-source",
+            "date": "2026-05-24",
+            "logged_at": "2026-05-24T18:00:00",
+            "meal_id": "restore-version-meal",
+            "item_name": "Small snack",
+            "calories": 250,
+            "protein_g": 5,
+            "confidence": 0.9,
+            "correction_state": "accepted",
+        },
+    )
+    pending = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [source],
+        clock=datetime(2026, 5, 24, 18, 0, 0),
+    )
+    event = data_store.save_workout_adaptation_event(
+        1,
+        pending["id"],
+        {
+            "date": "2026-05-24",
+            "status": "applied",
+            "silent": False,
+            "change_type": "reduce_volume",
+            "applies_to": "today",
+            "trigger": {
+                "meal_ids": ["restore-version-meal"],
+                "food_log_client_ids": ["restore-version-source"],
+            },
+            "created_at": "2026-05-24T18:03:01",
+            "_source_plan_generation": 0,
+            "_source_plan_version": None,
+        },
+    )
+    base = _recommendation()
+    adapted = json.loads(json.dumps(base))
+    adapted["estimated_minutes"] = 35
+    adapted["_fit136_base_recommendation"] = base
+    adapted["_fit136_last_adapted_plan"] = json.loads(
+        json.dumps(
+            {
+                key: value
+                for key, value in adapted.items()
+                if not key.startswith("_fit136_")
+            }
+        )
+    )
+    adapted["_fit136_adaptation_event_id"] = event["id"]
+    data_store.save_current_workout_plan(
+        1,
+        "restore-version-fingerprint",
+        adapted,
+        publish_adaptation_event_ids=[event["id"]],
+    )
+    before = data_store.get_current_workout_plan(1)
+    assert before["plan_version"] == 1
+
+    data_store.add_food_log(
+        1,
+        {**source, "calories": 650, "correction_state": "corrected"},
+    )
+
+    restored = data_store.get_current_workout_plan(1)
+    assert restored["plan"] == base
+    assert restored["plan_generation"] == before["plan_generation"]
+    assert restored["plan_version"] == before["plan_version"] + 1
+    stale = data_store.save_current_workout_plan(
+        1,
+        "stale-restore-cas",
+        {"id": "stale-restore-cas"},
+        expected_plan_generation=before["plan_generation"],
+        expected_plan_version=before["plan_version"],
+    )
+    assert stale is None
+    durable = data_store.get_current_workout_plan(1)
+    assert durable["plan"] == base
+    assert durable["plan_version"] == restored["plan_version"]
 
 
 def test_staling_old_event_does_not_restore_newer_adapted_plan(monkeypatch, tmp_path):
@@ -493,7 +590,12 @@ def test_staling_old_event_does_not_restore_newer_adapted_plan(monkeypatch, tmp_
     adapted["_fit136_last_adapted_plan"] = json.loads(json.dumps({
         key: value for key, value in adapted.items() if not key.startswith("_fit136_")
     }))
-    data_store.save_current_workout_plan(1, "current-plan-fingerprint", adapted)
+    data_store.save_current_workout_plan(
+        1,
+        "current-plan-fingerprint",
+        adapted,
+        publish_adaptation_event_ids=[old_event["id"], current_event["id"]],
+    )
 
     data_store.add_food_log(1, {**old_source, "calories": 700, "correction_state": "corrected"})
 
@@ -545,7 +647,12 @@ def test_acknowledged_source_delete_restore_and_readd_requeues(monkeypatch, tmp_
         key: value for key, value in adapted.items() if not key.startswith("_fit136_")
     }))
     adapted["_fit136_adaptation_event_id"] = event["id"]
-    data_store.save_current_workout_plan(1, "delete-readd-fingerprint", adapted)
+    data_store.save_current_workout_plan(
+        1,
+        "delete-readd-fingerprint",
+        adapted,
+        publish_adaptation_event_ids=[event["id"]],
+    )
     assert data_store.acknowledge_workout_adaptation_event(1, event["id"]) is True
 
     assert data_store.delete_food_log_by_client_id(1, source["client_id"]) is True
@@ -579,7 +686,7 @@ def test_pending_manual_nutrition_does_not_schedule_workout_adaptation(monkeypat
     assert data_store.list_pending_workout_adaptation_windows(1) == []
 
 
-def test_workout_adaptation_events_endpoint_exposes_incomplete_coverage_contract(monkeypatch, tmp_path):
+def test_workout_adaptation_events_endpoint_is_read_only(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
     monkeypatch.setattr(module, "USER_SETTINGS", {"available_time_minutes": 35, "daily_calorie_target": 2200, "daily_protein_target_g": 150})
@@ -622,29 +729,728 @@ def test_workout_adaptation_events_endpoint_exposes_incomplete_coverage_contract
         clock=datetime(2026, 5, 24, 12, 0, 0),
     )
 
-    completed_sets = quote(json.dumps({"Chest Press": 1}))
-    response = client.get(
-        f"/api/workout-adaptation-events?active_workout_open=true&completed_sets={completed_sets}"
-    )
+    before_events = data_store.list_workout_adaptation_events(1, unacknowledged=False)
+    before_pending = data_store.list_pending_workout_adaptation_windows(1)
+    response = client.get("/api/workout-adaptation-events?unacknowledged=true")
+    repeated = client.get("/api/workout-adaptation-events?unacknowledged=true")
 
     assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["count"] == 1
-    event = payload["events"][0]
-    assert event["status"] == "no_change"
-    assert event["silent"] is True
-    assert event["change_type"] == "none"
-    assert event["active_workout"]["updated_live"] is False
-    assert event["patch"]["estimated_minutes"] == 60
-    assert event["confidence"]["no_change_reason"] == "incomplete_day_coverage"
-    assert event["reason_metadata"]["fit137_contract"]["endpoint"] == "/api/workout-adaptation-events"
-    assert "incomplete_day_coverage" in event["reason_metadata"]["fit137_contract"]["no_change_signal"]["confidence.no_change_reason"]
-    assert generate_calls[0]["consume_cardio_rotation"] is False
-    assert "include_open_wearables_readiness" not in generate_calls[0]
-    assert "training_recommendation" in generate_calls[0]
+    assert repeated.status_code == 200
+    assert response.get_json() == {
+        "count": 0,
+        "events": [],
+        "applied_plan_revision": 0,
+    }
+    assert repeated.get_json() == response.get_json()
+    assert data_store.list_workout_adaptation_events(1, unacknowledged=False) == before_events
+    assert data_store.list_pending_workout_adaptation_windows(1) == before_pending
+    assert generate_calls == []
 
 
-def test_next_workout_route_replays_due_adaptation_even_with_cached_plan(monkeypatch, tmp_path):
+def test_dashboard_reads_leave_adaptation_evaluation_to_post_handler():
+    module = importlib.import_module("app")
+
+    for handler in (
+        module.api_dashboard,
+        module.api_next_workout,
+        module.smart_recommendation_api,
+    ):
+        assert "_apply_due_workout_adaptations_for_plan" not in inspect.getsource(handler)
+
+    assert "CURRENT_WORKOUT_PLAN_LOCK" in inspect.getsource(
+        module.evaluate_workout_adaptation_events
+    )
+    assert "_apply_due_workout_adaptations_for_plan" in inspect.getsource(
+        module._evaluate_workout_adaptation_events_locked
+    )
+
+
+def test_workout_adaptation_evaluation_endpoint_processes_due_windows_idempotently(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(module, "USER_SETTINGS", {"available_time_minutes": 35, "daily_calorie_target": 2200, "daily_protein_target_g": 150})
+    generate_calls = []
+
+    def fake_generate_next_workout(*_args, **kwargs):
+        generate_calls.append(kwargs)
+        return _recommendation()
+
+    monkeypatch.setattr(module, "generate_next_workout", fake_generate_next_workout)
+    monkeypatch.setattr(module, "_current_workout_training_recommendation", lambda: "train")
+    monkeypatch.setattr(module, "_open_wearables_recommendation_facts", lambda: {"risk": "high"})
+    monkeypatch.setattr(
+        module,
+        "_apply_open_wearables_recommendation_guard",
+        lambda recommendation, facts: ("recovery", {"detail": "guarded"}),
+    )
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    monkeypatch.setattr(module, "SORENESS_DATA", [])
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+
+    row = data_store.add_food_log(
+        1,
+        {
+            "client_id": "fit233-explicit-evaluate",
+            "date": "2026-05-24",
+            "logged_at": "2026-05-24T12:00:00",
+            "meal_id": "meal-explicit-evaluate",
+            "item_name": "Small snack",
+            "calories": 250,
+            "protein_g": 5,
+            "carbs_g": 40,
+            "fat_g": 4,
+            "sodium_mg": 200,
+            "confidence": 0.9,
+            "correction_state": "accepted",
+        },
+    )
+    workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [row],
+        clock=datetime(2026, 5, 24, 12, 0, 0),
+    )
+
+    first = client.post("/api/workout-adaptation-events/evaluate")
+    repeated = client.post("/api/workout-adaptation-events/evaluate")
+    feed = client.get("/api/workout-adaptation-events?unacknowledged=true")
+
+    assert first.status_code == 200
+    assert repeated.status_code == 200
+    assert first.get_json()["evaluated_count"] == 1
+    assert repeated.get_json()["evaluated_count"] == 0
+    assert feed.get_json()["count"] == 1
+    assert len(data_store.list_workout_adaptation_events(1, unacknowledged=False)) == 1
+    assert data_store.list_pending_workout_adaptation_windows(1) == []
+    assert generate_calls[0]["training_recommendation"] == "recovery"
+
+
+def test_absent_source_adaptation_expires_after_create_delete_aba(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(
+        module,
+        "USER_SETTINGS",
+        {"available_time_minutes": 35, "daily_calorie_target": 2200, "daily_protein_target_g": 150},
+    )
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    monkeypatch.setattr(module, "SORENESS_DATA", [])
+    monkeypatch.setattr(module, "_current_workout_training_recommendation", lambda: "train")
+    monkeypatch.setattr(module, "_open_wearables_recommendation_facts", lambda: {})
+    monkeypatch.setattr(
+        module,
+        "_apply_open_wearables_recommendation_guard",
+        lambda recommendation, _facts: (recommendation, {}),
+    )
+    monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: _recommendation())
+
+    row = data_store.add_food_log(
+        1,
+        {
+            "client_id": "fit136-absent-aba",
+            "date": "2026-05-24",
+            "logged_at": "2026-05-24T12:00:00",
+            "meal_id": "meal-fit136-absent-aba",
+            "item_name": "Small snack",
+            "calories": 250,
+            "protein_g": 5,
+            "carbs_g": 40,
+            "fat_g": 4,
+            "sodium_mg": 200,
+            "confidence": 0.9,
+            "correction_state": "accepted",
+        },
+    )
+    pending = workout_adaptation.enqueue_accepted_food_logs(
+        1,
+        [row],
+        clock=datetime(2026, 5, 24, 12, 0, 0),
+    )
+    captured_source_identity = {}
+
+    def apply_absent_source(plan, **kwargs):
+        captured_source_identity.update(kwargs)
+        adapted_plan = {**plan, "id": "adapted-absent-plan"}
+        event = data_store.save_workout_adaptation_event(
+            1,
+            pending["id"],
+            {
+                "date": "2026-05-24",
+                "status": "applied",
+                "silent": False,
+                "change_type": "reduce_volume",
+                "applies_to": "today",
+                "created_at": "2026-05-24T12:03:01",
+                "_adapted_plan": adapted_plan,
+                "_plan_fingerprint": kwargs.get("recovery_fingerprint"),
+                "_target_plan_date": "2026-05-24",
+                "_source_plan_generation": kwargs.get("recovery_source_plan_generation"),
+                "_source_plan_version": kwargs.get("recovery_source_plan_version"),
+            },
+        )
+        return adapted_plan, [event]
+
+    monkeypatch.setattr(module, "_apply_due_workout_adaptations_for_plan", apply_absent_source)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", None)
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION_OWNER", None)
+    original_save = module.save_current_workout_plan
+    interleaved = {"done": False}
+
+    def save_with_create_delete(user_id, fingerprint, plan, **kwargs):
+        if kwargs.get("publish_adaptation_event_ids") and not interleaved["done"]:
+            interleaved["done"] = True
+            data_store.save_current_workout_plan(
+                user_id,
+                "temporary-adaptation-plan",
+                {"id": "temporary-adaptation-plan"},
+            )
+            data_store.delete_current_workout_plan(user_id)
+        return original_save(user_id, fingerprint, plan, **kwargs)
+
+    monkeypatch.setattr(module, "save_current_workout_plan", save_with_create_delete)
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert response.get_json()["evaluated_count"] == 1
+    assert captured_source_identity["recovery_source_plan_generation"] == 0
+    assert captured_source_identity["recovery_source_plan_version"] is None
+    events = data_store.list_workout_adaptation_events(1, unacknowledged=False)
+    assert len(events) == 1
+    assert events[0]["status"] == "no_change"
+    assert events[0]["applies_to"] == "expired"
+    assert events[0]["published_at"] is not None
+    assert events[0]["source_plan_generation"] == 0
+    assert events[0]["source_plan_version"] is None
+    assert data_store.get_current_workout_plan(1) is None
+    assert data_store.get_workout_plan_generation(1) == 1
+
+
+def test_workout_adaptation_evaluation_reports_next_pending_window(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(
+        workout_adaptation,
+        "_clock_now",
+        lambda *_args, **_kwargs: datetime(2099, 5, 24, 12, 0, 0),
+    )
+    monkeypatch.setattr(
+        module,
+        "_current_workout_plan_for_fingerprint",
+        lambda _fingerprint: _recommendation(),
+    )
+    window_closes_at = "2099-05-24T12:03:00"
+    data_store.enqueue_workout_adaptation_pending(
+        1,
+        date="2026-05-24",
+        meal_id="meal-future-window",
+        food_log_client_ids=["fit233-future-window"],
+        window_started_at="2099-05-24T12:00:00",
+        window_closes_at=window_closes_at,
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert response.get_json()["evaluated_count"] == 0
+    assert response.get_json()["retry_after_ms"] == 180_000
+
+
+def test_workout_adaptation_noop_evaluation_does_not_persist_stale_plan(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    plan = _recommendation()
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(
+        module,
+        "_current_workout_plan_for_fingerprint",
+        lambda _fingerprint: plan,
+    )
+    monkeypatch.setattr(
+        module,
+        "_apply_due_workout_adaptations_for_plan",
+        lambda current_plan, **_kwargs: (current_plan, []),
+    )
+    persist_calls = []
+    monkeypatch.setattr(
+        module,
+        "_persist_current_workout_plan",
+        lambda *args, **kwargs: persist_calls.append((args, kwargs)),
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert response.get_json()["evaluated_count"] == 0
+    assert persist_calls == []
+
+
+def test_workout_adaptation_generated_noop_does_not_overwrite_peer_plan(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    generated_plan = {**_recommendation(), "id": "generated-baseline"}
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(
+        module,
+        "_current_workout_plan_for_fingerprint",
+        lambda _fingerprint: None,
+    )
+    monkeypatch.setattr(module, "get_current_workout_plan", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "generate_next_workout", lambda *_args, **_kwargs: generated_plan)
+    monkeypatch.setattr(
+        module,
+        "_apply_due_workout_adaptations_for_plan",
+        lambda current_plan, **_kwargs: (current_plan, []),
+    )
+    persist_calls = []
+    monkeypatch.setattr(
+        module,
+        "_persist_current_workout_plan",
+        lambda *args, **kwargs: persist_calls.append((args, kwargs)),
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert response.get_json()["evaluated_count"] == 0
+    assert persist_calls == []
+
+
+def test_workout_adaptation_non_applied_event_does_not_persist_stale_plan(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    plan = _recommendation()
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(
+        module,
+        "_current_workout_plan_for_fingerprint",
+        lambda _fingerprint: plan,
+    )
+    monkeypatch.setattr(
+        module,
+        "_apply_due_workout_adaptations_for_plan",
+        lambda current_plan, **_kwargs: (current_plan, [{"status": "no_change"}]),
+    )
+    persist_calls = []
+    monkeypatch.setattr(
+        module,
+        "_persist_current_workout_plan",
+        lambda *args, **kwargs: persist_calls.append((args, kwargs)),
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert response.get_json()["evaluated_count"] == 1
+    assert persist_calls == []
+
+
+def test_workout_adaptation_losing_applied_claim_does_not_persist(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    plan = _recommendation()
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(
+        module,
+        "_current_workout_plan_for_fingerprint",
+        lambda _fingerprint: plan,
+    )
+    monkeypatch.setattr(
+        module,
+        "_apply_due_workout_adaptations_for_plan",
+        lambda current_plan, **_kwargs: (
+            current_plan,
+            [{"id": "peer-event", "status": "applied", "_claim_created": False}],
+        ),
+    )
+    persist_calls = []
+    monkeypatch.setattr(
+        module,
+        "_persist_current_workout_plan",
+        lambda *args, **kwargs: persist_calls.append((args, kwargs)),
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert persist_calls == []
+
+
+def test_workout_adaptation_publishes_winning_event_with_plan(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    plan = _recommendation()
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(
+        module,
+        "_current_workout_plan_for_fingerprint",
+        lambda _fingerprint: plan,
+    )
+    monkeypatch.setattr(
+        module,
+        "_apply_due_workout_adaptations_for_plan",
+        lambda current_plan, **_kwargs: (
+            current_plan,
+            [{"id": "winning-event", "status": "applied", "_claim_created": True}],
+        ),
+    )
+    persist_calls = []
+    monkeypatch.setattr(
+        module,
+        "_persist_current_workout_plan",
+        lambda *args, **kwargs: persist_calls.append((args, kwargs)),
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert persist_calls[0][1]["publish_adaptation_event_ids"] == ["winning-event"]
+
+
+def test_workout_adaptation_recovers_unpublished_applied_plan(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    recovered_plan = {**_recommendation(), "id": "recovered-adapted-plan"}
+    unpublished = [
+        {
+            "id": "stranded-event",
+            "date": "2026-05-24",
+            "status": "applied",
+            "plan_fingerprint": "recovery-fingerprint",
+            "target_plan_date": "2026-05-24",
+            "source_plan_generation": 4,
+            "source_plan_version": 7,
+            "_adapted_plan": recovered_plan,
+        }
+    ]
+    monkeypatch.setattr(
+        module,
+        "list_unpublished_applied_workout_adaptation_events",
+        lambda _user_id: list(unpublished),
+    )
+    persist_calls = []
+
+    def persist(*args, **kwargs):
+        persist_calls.append((args, kwargs))
+        unpublished.clear()
+
+    monkeypatch.setattr(module, "_persist_current_workout_plan", persist)
+    monkeypatch.setattr(
+        module,
+        "get_current_workout_plan_snapshot",
+        lambda _user_id: {
+            "current_plan": {
+                "plan": recovered_plan,
+                "plan_generation": 4,
+                "plan_version": 7,
+                "updated_at": "2026-05-24T12:00:00",
+            },
+            "plan_generation": 4,
+        },
+    )
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(
+        module,
+        "_workout_recommendation_fingerprint",
+        lambda: "recovery-fingerprint",
+    )
+    monkeypatch.setattr(
+        module,
+        "_current_workout_plan_for_fingerprint",
+        lambda _fingerprint: recovered_plan,
+    )
+    monkeypatch.setattr(
+        module,
+        "_apply_due_workout_adaptations_for_plan",
+        lambda current_plan, **_kwargs: (current_plan, []),
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert persist_calls[0][0][0] == recovered_plan
+    assert persist_calls[0][1]["publish_adaptation_event_ids"] == ["stranded-event"]
+
+
+def test_workout_adaptation_recovers_unpublished_initial_plan(monkeypatch, tmp_path):
+    module, _client_instance = _client(monkeypatch, tmp_path)
+    recovered_plan = {**_recommendation(), "id": "recovered-initial-plan"}
+    unpublished = [
+        {
+            "id": "stranded-initial-event",
+            "status": "applied",
+            "plan_fingerprint": "recovery-fingerprint",
+            "target_plan_date": "2026-05-24",
+            "source_plan_generation": None,
+            "source_plan_version": None,
+            "_adapted_plan": recovered_plan,
+        }
+    ]
+    monkeypatch.setattr(
+        module,
+        "list_unpublished_applied_workout_adaptation_events",
+        lambda _user_id: list(unpublished),
+    )
+    monkeypatch.setattr(
+        module,
+        "get_current_workout_plan_snapshot",
+        lambda _user_id: {"current_plan": None, "plan_generation": 0},
+    )
+    expired = []
+
+    def expire(_user_id, event_ids):
+        expired.extend(event_ids)
+        unpublished.clear()
+
+    monkeypatch.setattr(module, "expire_unpublished_workout_adaptation_events", expire)
+    persist_calls = []
+
+    def persist(*args, **kwargs):
+        persist_calls.append((args, kwargs))
+        unpublished.clear()
+        return recovered_plan
+
+    monkeypatch.setattr(module, "_persist_current_workout_plan", persist)
+
+    published = module._publish_unpublished_workout_adaptations(
+        1,
+        "recovery-fingerprint",
+        "2026-05-24",
+    )
+    repeated = module._publish_unpublished_workout_adaptations(
+        1,
+        "recovery-fingerprint",
+        "2026-05-24",
+    )
+
+    assert published == ["stranded-initial-event"]
+    assert repeated == []
+    assert expired == []
+    assert persist_calls[0][0][0] == recovered_plan
+    assert persist_calls[0][1]["publish_adaptation_event_ids"] == [
+        "stranded-initial-event"
+    ]
+
+
+def test_workout_adaptation_does_not_overwrite_plan_that_appeared(monkeypatch, tmp_path):
+    module, _client_instance = _client(monkeypatch, tmp_path)
+    unpublished = [
+        {
+            "id": "obsolete-initial-event",
+            "status": "applied",
+            "plan_fingerprint": "recovery-fingerprint",
+            "target_plan_date": "2026-05-24",
+            "source_plan_generation": None,
+            "source_plan_version": None,
+            "_adapted_plan": {**_recommendation(), "id": "obsolete-plan"},
+        }
+    ]
+    monkeypatch.setattr(
+        module,
+        "list_unpublished_applied_workout_adaptation_events",
+        lambda _user_id: list(unpublished),
+    )
+    monkeypatch.setattr(
+        module,
+        "get_current_workout_plan_snapshot",
+        lambda _user_id: {
+            "current_plan": {
+                "plan_generation": 1,
+                "plan_version": 1,
+                "fingerprint": "recovery-fingerprint",
+            },
+            "plan_generation": 1,
+        },
+    )
+    expired = []
+
+    def expire(_user_id, event_ids):
+        expired.extend(event_ids)
+        unpublished.clear()
+
+    monkeypatch.setattr(module, "expire_unpublished_workout_adaptation_events", expire)
+    monkeypatch.setattr(
+        module,
+        "_persist_current_workout_plan",
+        lambda *_args, **_kwargs: pytest.fail("recovery must not overwrite a current plan"),
+    )
+
+    published = module._publish_unpublished_workout_adaptations(
+        1,
+        "recovery-fingerprint",
+        "2026-05-24",
+    )
+
+    assert published == []
+    assert expired == ["obsolete-initial-event"]
+
+
+def test_failed_plan_publication_does_not_advance_in_memory_plan(monkeypatch, tmp_path):
+    module, _client_instance = _client(monkeypatch, tmp_path)
+    previous_plan = {**_recommendation(), "id": "previous-plan"}
+    module.LAST_WORKOUT_RECOMMENDATION = previous_plan
+    module.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT = "previous-fingerprint"
+    module.LAST_WORKOUT_RECOMMENDATION_OWNER = {
+        "user_id": 1,
+        "fingerprint": "previous-fingerprint",
+        "plan_id": id(previous_plan),
+    }
+    monkeypatch.setattr(
+        module,
+        "save_current_workout_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("sqlite failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="sqlite failed"):
+        module._persist_current_workout_plan(
+            {**_recommendation(), "id": "uncommitted-plan"},
+            "new-fingerprint",
+            publish_adaptation_event_ids=["event-1"],
+        )
+
+    assert module.LAST_WORKOUT_RECOMMENDATION is previous_plan
+    assert module.LAST_WORKOUT_RECOMMENDATION_FINGERPRINT == "previous-fingerprint"
+    assert module.LAST_WORKOUT_RECOMMENDATION_OWNER["plan_id"] == id(previous_plan)
+
+
+def test_workout_adaptation_evaluation_reports_peer_applied_revision(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(
+        module,
+        "_current_workout_plan_for_fingerprint",
+        lambda _fingerprint: _recommendation(),
+    )
+    monkeypatch.setattr(
+        module,
+        "_apply_due_workout_adaptations_for_plan",
+        lambda current_plan, **_kwargs: (current_plan, []),
+    )
+    monkeypatch.setattr(
+        module,
+        "list_workout_adaptation_events",
+        lambda *_args, **_kwargs: [
+            {"id": "peer-applied", "status": "applied"},
+            {"id": "silent-event", "status": "no_change"},
+        ],
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert response.get_json()["evaluated_count"] == 0
+    assert response.get_json()["applied_event_revision"] == "peer-applied"
+
+
+def test_workout_adaptation_evaluation_regenerates_for_changed_fingerprint(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "new-fingerprint")
+    monkeypatch.setattr(module, "_current_workout_plan_for_fingerprint", lambda _fingerprint: None)
+    stale_plan = {**_recommendation(), "id": "stale-plan"}
+    source_row = {
+        "plan": stale_plan,
+        "fingerprint": "old-fingerprint",
+        "plan_generation": 4,
+        "plan_version": 7,
+        "updated_at": "2026-05-24T18:30:00",
+    }
+    snapshot_reads = []
+
+    def get_snapshot(_user_id):
+        snapshot_reads.append(True)
+        return {"current_plan": source_row, "plan_generation": 4}
+
+    monkeypatch.setattr(module, "get_current_workout_plan_snapshot", get_snapshot)
+    generated_plan = {**_recommendation(), "id": "fresh-plan"}
+    generate_calls = []
+
+    def generate(*_args, **_kwargs):
+        generate_calls.append(True)
+        return generated_plan
+
+    monkeypatch.setattr(module, "generate_next_workout", generate)
+    evaluated_plans = []
+
+    def capture_evaluated_plan(plan, **kwargs):
+        evaluated_plans.append((plan["id"], kwargs))
+        return plan, []
+
+    monkeypatch.setattr(
+        module,
+        "_apply_due_workout_adaptations_for_plan",
+        capture_evaluated_plan,
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert generate_calls == [True]
+    assert evaluated_plans[0][0] == "fresh-plan"
+    assert evaluated_plans[0][1]["recovery_source_plan_generation"] == 4
+    assert evaluated_plans[0][1]["recovery_source_plan_version"] == 7
+    assert snapshot_reads == [True]
+
+
+def test_workout_adaptation_evaluation_preserves_customized_plan_across_fingerprint_drift(
+    monkeypatch, tmp_path
+):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "new-fingerprint")
+    monkeypatch.setattr(module, "_current_workout_plan_for_fingerprint", lambda _fingerprint: None)
+    customized_plan = {
+        **_recommendation(),
+        "id": "customized-plan",
+        "_user_customized": True,
+    }
+    monkeypatch.setattr(
+        module,
+        "get_current_workout_plan_snapshot",
+        lambda _user_id: {
+            "current_plan": {
+                "plan": customized_plan,
+                "fingerprint": "old-fingerprint",
+                "updated_at": "2026-05-24T18:30:00",
+                "plan_generation": 4,
+                "plan_version": 7,
+            },
+            "plan_generation": 4,
+        },
+    )
+
+    def fail_generate(*_args, **_kwargs):
+        raise AssertionError("explicit user customization must survive fingerprint drift")
+
+    monkeypatch.setattr(module, "generate_next_workout", fail_generate)
+    evaluated_plan_ids = []
+
+    def capture_evaluated_plan(plan, **_kwargs):
+        evaluated_plan_ids.append(plan["id"])
+        return plan, []
+
+    monkeypatch.setattr(
+        module,
+        "_apply_due_workout_adaptations_for_plan",
+        capture_evaluated_plan,
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 200
+    assert evaluated_plan_ids == ["customized-plan"]
+
+
+def test_workout_adaptation_evaluation_reports_engine_failure(monkeypatch, tmp_path):
+    module, client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
+    monkeypatch.setattr(module, "LAST_WORKOUT_RECOMMENDATION", _recommendation())
+    monkeypatch.setattr(
+        workout_adaptation,
+        "apply_due_adaptations",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("evaluation failed")),
+    )
+
+    response = client.post("/api/workout-adaptation-events/evaluate")
+
+    assert response.status_code == 500
+    assert response.get_json()["error"]["code"] == "evaluation_failed"
+
+
+def test_next_workout_route_leaves_due_adaptation_for_explicit_evaluator(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
     monkeypatch.setattr(module, "USER_SETTINGS", {"available_time_minutes": 35, "daily_calorie_target": 2200, "daily_protein_target_g": 150})
@@ -685,12 +1491,18 @@ def test_next_workout_route_replays_due_adaptation_even_with_cached_plan(monkeyp
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["workout_adaptation_events"][0]["status"] == "applied"
-    assert payload["next_workout"]["estimated_minutes"] <= 35
+    assert payload["workout_adaptation_events"] == []
+    assert data_store.list_pending_workout_adaptation_windows(1)
     assert "_fit136_lightweight_no_ow" not in payload["next_workout"]
 
+    evaluated = client.post("/api/workout-adaptation-events/evaluate")
 
-def test_next_workout_uses_one_food_log_snapshot_for_context_and_adaptation(monkeypatch, tmp_path):
+    assert evaluated.status_code == 200
+    assert evaluated.get_json()["evaluated_count"] == 1
+    assert data_store.list_pending_workout_adaptation_windows(1) == []
+
+
+def test_evaluation_uses_one_food_log_snapshot_for_context_and_adaptation(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
     monkeypatch.setattr(module, "WORKOUTS", [])
@@ -717,7 +1529,7 @@ def test_next_workout_uses_one_food_log_snapshot_for_context_and_adaptation(monk
     monkeypatch.setattr(module, "_nutrition_context_for_date", tracked_context)
     monkeypatch.setattr(module, "_apply_due_workout_adaptations_for_plan", tracked_apply)
 
-    response = client.get("/api/next-workout?active_workout_open=false")
+    response = client.post("/api/workout-adaptation-events/evaluate")
 
     assert response.status_code == 200
     apply_index = next(index for index, call in enumerate(snapshot_flow) if call[0] == "apply")
@@ -739,7 +1551,7 @@ def test_adaptation_food_snapshot_is_bounded_to_two_day_eligibility(monkeypatch,
     assert calls == [{"since": "2026-05-23", "limit": None}]
 
 
-def test_active_workout_poll_without_completed_sets_defers_pending_window(monkeypatch, tmp_path):
+def test_active_workout_evaluation_without_completed_sets_defers_pending_window(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
     monkeypatch.setattr(module, "USER_SETTINGS", {"available_time_minutes": 35, "daily_calorie_target": 2200, "daily_protein_target_g": 150})
@@ -772,10 +1584,10 @@ def test_active_workout_poll_without_completed_sets_defers_pending_window(monkey
         clock=datetime(2026, 5, 24, 12, 0, 0),
     )
 
-    response = client.get("/api/workout-adaptation-events?active_workout_open=true")
+    response = client.post("/api/workout-adaptation-events/evaluate?active_workout_open=true")
 
     assert response.status_code == 200
-    assert response.get_json()["count"] == 0
+    assert response.get_json()["evaluated_count"] == 0
     assert len(data_store.list_pending_workout_adaptation_windows(1)) == 1
 
 
@@ -807,6 +1619,7 @@ def test_repeated_adaptation_windows_use_cached_base_plan_not_prior_patch(monkey
         },
     )
     workout_adaptation.enqueue_accepted_food_logs(1, [first], clock=datetime(2026, 5, 24, 18, 0, 0))
+    assert client.post("/api/workout-adaptation-events/evaluate").status_code == 200
     first_response = client.get("/api/next-workout?active_workout_open=false")
     first_sets = first_response.get_json()["next_workout"]["exercises"][0]["target_sets"]
 
@@ -828,6 +1641,7 @@ def test_repeated_adaptation_windows_use_cached_base_plan_not_prior_patch(monkey
         },
     )
     workout_adaptation.enqueue_accepted_food_logs(1, [second], clock=datetime(2026, 5, 24, 19, 0, 0))
+    assert client.post("/api/workout-adaptation-events/evaluate").status_code == 200
     second_response = client.get("/api/next-workout?active_workout_open=false")
     second_sets = second_response.get_json()["next_workout"]["exercises"][0]["target_sets"]
 
@@ -839,7 +1653,7 @@ def test_repeated_adaptation_windows_use_cached_base_plan_not_prior_patch(monkey
     assert third_sets == 3
 
 
-def test_repeated_adaptation_preserves_user_edited_cached_plan(monkeypatch, tmp_path):
+def test_repeated_adaptation_ignores_unpersisted_cached_plan_drift(monkeypatch, tmp_path):
     module, client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_today_str", lambda: "2026-05-24")
     monkeypatch.setattr(module, "USER_SETTINGS", {"available_time_minutes": 60, "daily_calorie_target": 2200, "daily_protein_target_g": 150})
@@ -867,8 +1681,12 @@ def test_repeated_adaptation_preserves_user_edited_cached_plan(monkeypatch, tmp_
         },
     )
     workout_adaptation.enqueue_accepted_food_logs(1, [first], clock=datetime(2026, 5, 24, 18, 0, 0))
+    assert client.post("/api/workout-adaptation-events/evaluate").status_code == 200
     first_response = client.get("/api/next-workout?active_workout_open=false")
     assert first_response.status_code == 200
+    durable_machine = data_store.get_current_workout_plan(1)["plan"]["exercises"][0][
+        "machine"
+    ]
 
     edited_plan = module.LAST_WORKOUT_RECOMMENDATION
     edited_plan["exercises"][0]["machine"] = "Incline Press"
@@ -893,9 +1711,10 @@ def test_repeated_adaptation_preserves_user_edited_cached_plan(monkeypatch, tmp_
         },
     )
     workout_adaptation.enqueue_accepted_food_logs(1, [second], clock=datetime(2026, 5, 24, 19, 0, 0))
+    assert client.post("/api/workout-adaptation-events/evaluate").status_code == 200
     second_response = client.get("/api/next-workout?active_workout_open=false")
 
     assert second_response.status_code == 200
     adapted_plan = second_response.get_json()["next_workout"]
-    assert adapted_plan["exercises"][0]["machine"] == "Incline Press"
-    assert adapted_plan["exercises"][0]["target_sets"] == 4
+    assert adapted_plan["exercises"][0]["machine"] == durable_machine
+    assert adapted_plan["exercises"][0]["target_sets"] != 5
