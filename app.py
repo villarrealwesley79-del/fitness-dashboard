@@ -1016,26 +1016,28 @@ class SorenessEntry:
 
 # Load data from JSON files (persists across restarts)
 WORKOUTS = load_json(WORKOUTS_FILE, [])
-# Backfill stable IDs for legacy workouts (pre-id-tracking). Persist once.
-_id_backfill_needed = False
-if isinstance(WORKOUTS, list):
-    import uuid as _uuid_boot
-    for _w in WORKOUTS:
-        if isinstance(_w, dict) and not _w.get("id"):
-            _w["id"] = _uuid_boot.uuid4().hex[:12]
-            _id_backfill_needed = True
-    if _id_backfill_needed:
-        try:
-            # save_json isn't defined until later in the file, so do it raw.
-            with open(WORKOUTS_FILE, "w") as _fh:
-                json.dump(WORKOUTS, _fh, indent=2, default=str)
-            print(f"INFO: backfilled stable IDs on {sum(1 for w in WORKOUTS if w.get('id'))} workouts")
-        except Exception as _exc:
-            print(f"WARN: workout-id backfill save failed: {_exc}")
-
 SORENESS_DATA = load_json(SORENESS_FILE, [])
 CARDIO_DATA = load_json(CARDIO_FILE, [])
 RECOVERY_DATA = load_json(RECOVERY_FILE, [])
+
+
+def _backfill_history_ids(rows, filepath, entry_type):
+    """Persist stable IDs for history rows created before IDs were required."""
+    changed = False
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict) and not row.get("id"):
+                row["id"] = uuid.uuid4().hex[:12]
+                changed = True
+    if changed:
+        save_json(filepath, rows)
+        logging.info("Backfilled stable IDs for legacy %s history rows", entry_type)
+
+
+_backfill_history_ids(WORKOUTS, WORKOUTS_FILE, "workout")
+_backfill_history_ids(CARDIO_DATA, CARDIO_FILE, "cardio")
+_backfill_history_ids(RECOVERY_DATA, RECOVERY_FILE, "recovery")
+
 BASELINES_DATA = load_json(BASELINES_FILE, {})
 BODY_DATA = load_json(BODY_FILE, [])
 SLEEP_DATA = load_json(SLEEP_FILE, [])
@@ -9752,6 +9754,7 @@ def add_cardio():
         return err2
 
     entry = {
+        "id": uuid.uuid4().hex[:12],
         "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
         "activity_type": activity_type,
         "duration_minutes": duration,
@@ -9790,6 +9793,7 @@ def add_recovery():
         return err2
 
     entry = {
+        "id": uuid.uuid4().hex[:12],
         "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
         "recovery_type": recovery_type,
         "duration_minutes": duration,
@@ -16069,6 +16073,7 @@ def progressive_overload():
 @app.route('/api/history')
 def workout_history():
     """Get past workouts with full details."""
+    _backfill_history_ids(WORKOUTS, WORKOUTS_FILE, "workout")
     workouts_list = []
     for w in sorted(WORKOUTS, key=lambda x: x["date"], reverse=True):
         total_sets = sum(len(e.get("sets", [])) for e in w.get("exercises", []))
@@ -16078,6 +16083,8 @@ def workout_history():
             for s in e.get("sets", [])
         )
         history_row = {
+            "id": w.get("id"),
+            "created_at": w.get("created_at"),
             "date": w["date"],
             "session_type": w.get("session_type", "general"),
             "duration_minutes": w.get("duration_minutes", 0),
@@ -16097,6 +16104,9 @@ def workout_history():
 @app.route('/api/history-all')
 def all_history():
     """Get all history including workouts, cardio, and recovery sessions."""
+    _backfill_history_ids(WORKOUTS, WORKOUTS_FILE, "workout")
+    _backfill_history_ids(CARDIO_DATA, CARDIO_FILE, "cardio")
+    _backfill_history_ids(RECOVERY_DATA, RECOVERY_FILE, "recovery")
     # Process workouts
     workouts_list = []
     for w in sorted(WORKOUTS, key=lambda x: x.get("date", ""), reverse=True):
@@ -16139,7 +16149,7 @@ def all_history():
 
 @app.route('/api/delete-history', methods=['POST'])
 def delete_history():
-    """Delete a history entry by type and index (index is in *sorted* order)."""
+    """Delete a history entry by its stable ID and type."""
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -16147,39 +16157,29 @@ def delete_history():
     entry_type, err2 = _coerce_str(data.get("type"), "type", required=True, max_len=16)
     if err2:
         return err2
-    index, err2 = _coerce_int(data.get("index"), "index", min_v=0, max_v=10_000)
+    entry_id, err2 = _coerce_str(data.get("id"), "id", required=True, max_len=128)
     if err2:
         return err2
 
     try:
         if entry_type == "workout":
-            sorted_workouts = sorted(enumerate(WORKOUTS), key=lambda x: x[1].get("date", ""), reverse=True)
-            if not (0 <= index < len(sorted_workouts)):
-                return api_error("Index out of range", 404, code="not_found")
-            original_index = sorted_workouts[index][0]
-            deleted = WORKOUTS.pop(original_index)
-            save_json(WORKOUTS_FILE, WORKOUTS)
-            return jsonify({"status": "success", "deleted": deleted})
+            rows, filepath = WORKOUTS, WORKOUTS_FILE
+        elif entry_type == "cardio":
+            rows, filepath = CARDIO_DATA, CARDIO_FILE
+        elif entry_type == "recovery":
+            rows, filepath = RECOVERY_DATA, RECOVERY_FILE
+        else:
+            return api_error("Invalid type (expected workout|cardio|recovery)", 400, code="invalid_field")
 
-        if entry_type == "cardio":
-            sorted_cardio = sorted(enumerate(CARDIO_DATA), key=lambda x: x[1].get("date", ""), reverse=True)
-            if not (0 <= index < len(sorted_cardio)):
-                return api_error("Index out of range", 404, code="not_found")
-            original_index = sorted_cardio[index][0]
-            deleted = CARDIO_DATA.pop(original_index)
-            save_json(CARDIO_FILE, CARDIO_DATA)
-            return jsonify({"status": "success", "deleted": deleted})
-
-        if entry_type == "recovery":
-            sorted_recovery = sorted(enumerate(RECOVERY_DATA), key=lambda x: x[1].get("date", ""), reverse=True)
-            if not (0 <= index < len(sorted_recovery)):
-                return api_error("Index out of range", 404, code="not_found")
-            original_index = sorted_recovery[index][0]
-            deleted = RECOVERY_DATA.pop(original_index)
-            save_json(RECOVERY_FILE, RECOVERY_DATA)
-            return jsonify({"status": "success", "deleted": deleted})
-
-        return api_error("Invalid type (expected workout|cardio|recovery)", 400, code="invalid_field")
+        original_index = next(
+            (index for index, row in enumerate(rows) if row.get("id") == entry_id),
+            None,
+        )
+        if original_index is None:
+            return api_error("History entry not found", 404, code="not_found")
+        deleted = rows.pop(original_index)
+        save_json(filepath, rows)
+        return jsonify({"status": "success", "deleted": deleted})
     except Exception as e:
         return api_error("Failed to delete history entry", 500, code="server_error", details=str(e))
 
@@ -16204,21 +16204,25 @@ def restore_history():
         return api_error("entry must be an object", 400, code="invalid_field")
     if not isinstance(entry.get("date"), str) or not entry["date"]:
         return api_error("entry.date is required", 400, code="invalid_field")
+    entry_id, err2 = _coerce_str(entry.get("id"), "entry.id", required=True, max_len=128)
+    if err2:
+        return err2
 
     try:
         if entry_type == "workout":
-            WORKOUTS.append(entry)
-            save_json(WORKOUTS_FILE, WORKOUTS)
-            return jsonify({"status": "success", "restored": entry})
-        if entry_type == "cardio":
-            CARDIO_DATA.append(entry)
-            save_json(CARDIO_FILE, CARDIO_DATA)
-            return jsonify({"status": "success", "restored": entry})
-        if entry_type == "recovery":
-            RECOVERY_DATA.append(entry)
-            save_json(RECOVERY_FILE, RECOVERY_DATA)
-            return jsonify({"status": "success", "restored": entry})
-        return api_error("Invalid type (expected workout|cardio|recovery)", 400, code="invalid_field")
+            rows, filepath = WORKOUTS, WORKOUTS_FILE
+        elif entry_type == "cardio":
+            rows, filepath = CARDIO_DATA, CARDIO_FILE
+        elif entry_type == "recovery":
+            rows, filepath = RECOVERY_DATA, RECOVERY_FILE
+        else:
+            return api_error("Invalid type (expected workout|cardio|recovery)", 400, code="invalid_field")
+
+        if any(row.get("id") == entry_id for row in rows):
+            return api_error("History entry already exists", 409, code="conflict")
+        rows.append(entry)
+        save_json(filepath, rows)
+        return jsonify({"status": "success", "restored": entry})
     except Exception as e:
         return api_error("Failed to restore history entry", 500, code="server_error", details=str(e))
 

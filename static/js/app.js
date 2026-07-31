@@ -3866,7 +3866,7 @@
         cutoff.setDate(cutoff.getDate() - days);
 
         const lifts = allLifts
-            .map((w, i) => ({ ...w, source: 'lifted', canonical_category: w.canonical_category || 'strength_training', original_label: w.original_label || 'Lifted', _origIndex: i }))
+            .map((w) => ({ ...w, source: 'lifted', canonical_category: w.canonical_category || 'strength_training', original_label: w.original_label || 'Lifted' }))
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff);
         const watch = (Array.isArray(aw) ? aw : [])
             .filter((w) => w.date && new Date(w.date + 'T00:00:00') >= cutoff)
@@ -4118,7 +4118,7 @@
         if (!modal || !body || !title || !item) return;
 
         if (foot && deleteBtn) {
-            const deletable = item.source === 'lifted' && Number.isInteger(item._origIndex);
+            const deletable = item.source === 'lifted' && typeof item.id === 'string' && item.id.length > 0;
             foot.hidden = !deletable;
             const fresh = deleteBtn.cloneNode(true);
             deleteBtn.parentNode.replaceChild(fresh, deleteBtn);
@@ -4319,7 +4319,7 @@
     }
 
     async function performDeleteWorkout(workout, button) {
-        if (!workout || !Number.isInteger(workout._origIndex)) return;
+        if (!workout || typeof workout.id !== 'string' || !workout.id) return;
         const confirmModal = $('modal-delete-confirm');
         if (button) {
             button.disabled = true;
@@ -4329,7 +4329,7 @@
             const res = await api('/api/delete-history', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ type: 'workout', index: workout._origIndex }),
+                body: JSON.stringify({ type: 'workout', id: workout.id }),
             });
             const deletedEntry = res && res.deleted;
             const detailModal = $('modal-workout-detail');
