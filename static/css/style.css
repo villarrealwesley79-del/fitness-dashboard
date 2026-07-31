@@ -430,6 +430,12 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
     margin: 4px 0 8px;
 }
 .reco-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.reco-intensity-meta {
+    align-self: center;
+    color: var(--fg-dim);
+    font-size: 12px;
+    font-weight: 600;
+}
 .reco-tag {
     font-size: 12px;
     font-weight: 700;

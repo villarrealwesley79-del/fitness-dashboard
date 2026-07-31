@@ -3088,7 +3088,8 @@
             }
         }
 
-        // Intensity / time / RPE chips
+        // Intensity metadata / time chip. RPE is an exercise-derived range;
+        // `nw.goal` is an id string, not an object carrying an RPE target.
         const focusLabel = nw ? (nw.focus || nw.goal_name || '') : '';
         const intensityWord = reco && reco.recommendation
             ? (reco.recommendation === 'intensity' ? 'High'
@@ -3097,7 +3098,9 @@
                 : reco.recommendation)
             : null;
         if ($('reco-intensity')) {
-            const intensityText = [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ');
+            const rpeLabel = nw && nw.rpe_range && nw.rpe_range.label;
+            const targetIntensity = rpeLabel ? `Target intensity · RPE ${rpeLabel}` : '';
+            const intensityText = targetIntensity || [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ');
             if (intensityText) {
                 $('reco-intensity').textContent = intensityText;
             } else {
@@ -3110,10 +3113,8 @@
             if (timeMin) { $('reco-time').textContent = `${timeMin} min`; $('reco-time').hidden = false; }
             else { $('reco-time').hidden = true; }
         }
-        const rpeTarget = nw && nw.goal && nw.goal.rpe_target;
         if ($('reco-rpe')) {
-            if (rpeTarget) { $('reco-rpe').textContent = `RPE ${rpeTarget}`; $('reco-rpe').hidden = false; }
-            else { $('reco-rpe').hidden = true; }
+            $('reco-rpe').hidden = true;
         }
 
         // FIT-88: last-session badge — one-liner showing how the completion
