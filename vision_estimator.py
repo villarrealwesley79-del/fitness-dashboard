@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from urllib import parse, request
 
 import claude_vision_adapter
 import local_vision_adapter
@@ -20,6 +21,83 @@ class VisionEstimatorError(RuntimeError):
 def configured_provider() -> str:
     provider = os.environ.get("VISION_ESTIMATOR_PROVIDER", DEFAULT_PROVIDER).strip().lower()
     return provider or DEFAULT_PROVIDER
+
+
+def health_status() -> dict[str, Any]:
+    """Return a read-only, public-safe snapshot of photo-analysis readiness."""
+    provider = configured_provider()
+    if provider == "lm_studio":
+        candidates = []
+        for candidate in local_vision_adapter._lm_studio_candidates():
+            item: dict[str, Any] = {"role": candidate["role"], "reachable": False, "model_loaded": False}
+            try:
+                loaded = local_vision_adapter._models_for(candidate)
+            except TimeoutError:
+                item["error"] = "timeout"
+            except Exception:
+                item["error"] = "unreachable"
+            else:
+                item["reachable"] = True
+                item["model_loaded"] = local_vision_adapter._target_loaded(loaded, candidate["model"])
+            candidates.append(item)
+        primary = next((item for item in candidates if item["role"] == "primary"), None)
+        fallback = next((item for item in candidates if item["role"] != "primary" and item["model_loaded"]), None)
+        if primary and primary["model_loaded"]:
+            status = "ready"
+        elif fallback and fallback["model_loaded"]:
+            status = "fallback"
+        elif any(item["reachable"] for item in candidates):
+            status = "warming"
+        else:
+            status = "unavailable"
+        return {"provider": provider, "status": status, "candidates": candidates}
+
+    if provider == "ollama":
+        item: dict[str, Any] = {"role": "primary", "reachable": False, "model_loaded": False}
+        try:
+            req = request.Request(f"{local_vision_adapter.OLLAMA_URL}/api/ps", method="GET")
+            with request.urlopen(req, timeout=local_vision_adapter.LM_STUDIO_PREFLIGHT_TIMEOUT_SEC) as response:
+                import json
+                body = json.loads(response.read().decode("utf-8"))
+            names = [str(model.get("name") or "") for model in body.get("models", []) if isinstance(model, dict)]
+            item["reachable"] = True
+            item["model_loaded"] = local_vision_adapter.OLLAMA_MODEL in names
+        except TimeoutError:
+            item["error"] = "timeout"
+        except Exception:
+            item["error"] = "unreachable"
+        status = "ready" if item["model_loaded"] else ("warming" if item["reachable"] else "unavailable")
+        return {"provider": provider, "status": status, "candidates": [item]}
+
+    if provider == "claude":
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        item: dict[str, Any] = {"role": "primary", "reachable": False, "model_loaded": False}
+        if not api_key:
+            item["error"] = "not_configured"
+        else:
+            req = request.Request(
+                "https://api.anthropic.com/v1/models/"
+                + parse.quote(claude_vision_adapter.DEFAULT_MODEL, safe=""),
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                method="GET",
+            )
+            try:
+                with request.urlopen(req, timeout=local_vision_adapter.LM_STUDIO_PREFLIGHT_TIMEOUT_SEC):
+                    pass
+            except TimeoutError:
+                item["error"] = "timeout"
+            except Exception:
+                item["error"] = "unreachable"
+            else:
+                item["reachable"] = True
+                item["model_loaded"] = True
+        return {"provider": provider, "status": "ready" if item["model_loaded"] else "unavailable", "candidates": [item]}
+
+    return {
+        "provider": "disabled" if provider == "disabled" else "unsupported",
+        "status": "unavailable",
+        "candidates": [{"role": "primary", "reachable": False, "model_loaded": False, "error": "not_configured"}],
+    }
 
 
 def describe(

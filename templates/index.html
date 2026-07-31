@@ -189,6 +189,7 @@
                     <!-- FIT-138: multi-photo thumb strip; each thumb has its own × remove. -->
                     <div class="meal-composer-thumbs" id="meal-composer-thumbs" hidden role="list" aria-label="Attached photos"></div>
                     <div class="meal-composer-retention" id="meal-composer-retention" hidden>Photos are discarded after extraction.</div>
+                    <div class="meal-composer-retention" id="meal-composer-vision-health" aria-live="polite">Photo analysis: checking…</div>
                     <div class="meal-composer-barcode" id="meal-composer-barcode" hidden>
                         <div class="meal-composer-barcode-head">
                             <span>Barcode lookup</span>
@@ -809,6 +810,15 @@
                         </div>
                         <div class="settings-row-control">
                             <span id="ai-coach-warning-pct" class="state-chip warn">—</span>
+                        </div>
+                    </div>
+                    <div class="settings-row" id="vision-health-settings-row">
+                        <div class="settings-row-label settings-row-label-stack">
+                            <span class="settings-row-label-main">Photo analysis</span>
+                            <span id="vision-health-settings-detail" class="settings-row-detail">Checking readiness…</span>
+                        </div>
+                        <div class="settings-row-control">
+                            <span id="vision-health-settings-state">checking</span>
                         </div>
                     </div>
                     <div class="settings-row">

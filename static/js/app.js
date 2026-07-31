@@ -5532,19 +5532,52 @@
         selectGoalOption(options[next]);
     }
 
+    const VISION_HEALTH_STATES = Object.freeze({
+        ready: 'ready',
+        warming: 'warming',
+        fallback: 'fallback',
+        unavailable: 'unavailable',
+    });
+
+    function renderVisionHealth(health) {
+        const rawStatus = health && health.status;
+        const status = VISION_HEALTH_STATES[rawStatus] || VISION_HEALTH_STATES.unavailable;
+        const candidates = health && Array.isArray(health.candidates) ? health.candidates : [];
+        const active = candidates.find((candidate) => candidate && candidate.model_loaded)
+            || candidates.find((candidate) => candidate && candidate.reachable);
+        const role = active && ['primary', 'low_memory', 'fallback'].includes(active.role) ? active.role : '';
+        const detail = role ? `Provider role: ${role.replace('_', ' ')}` : 'No photo-analysis provider is ready.';
+        const settingsState = $('vision-health-settings-state');
+        const settingsDetail = $('vision-health-settings-detail');
+        const mealState = $('meal-composer-vision-health');
+        if (settingsState) settingsState.textContent = status;
+        if (settingsDetail) settingsDetail.textContent = detail;
+        if (mealState) mealState.textContent = `Photo analysis: ${status}`;
+    }
+
+    async function getVisionHealth() {
+        try {
+            return await api('/api/vision/health');
+        } catch {
+            return { status: VISION_HEALTH_STATES.unavailable, candidates: [] };
+        }
+    }
+
     async function renderSettings() {
         // FIT-16: settings + Oura first. Oura refresh upserts today's
         // row, so the dashboard freshness block (which we use below to
         // drive the integration chips + detail panels) must be read
         // AFTER that upsert lands — parallel fetches race and can show
         // "Cached · stale" right after a successful live refresh.
-        const [st, oura, whoop, openWearables, wearableSources] = await Promise.all([
+        const [st, oura, whoop, openWearables, wearableSources, visionHealth] = await Promise.all([
             getSettings(),
             getOuraStatus(true, true),
             getWhoopStatus(true),
             getOpenWearablesStatus(true),
             getWearableSources(true),
+            getVisionHealth(),
         ]);
+        renderVisionHealth(visionHealth);
         // FIT-16: use the side-effect-free /api/freshness endpoint.
         // /api/dashboard would also work but it regenerates
         // next_workout and writes LAST_WORKOUT_RECOMMENDATION server-
@@ -12543,6 +12576,7 @@
         aiStatusTimer = setInterval(refreshAiStatus, 60_000);
         renderSyncBanner();
         wireMealComposer();
+        getVisionHealth().then(renderVisionHealth);
         registerServiceWorker();
         refreshMealQueueAuthScope({ timeoutMs: 2500 })
             .then((scopeResult) => {
