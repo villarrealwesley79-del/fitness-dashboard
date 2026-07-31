@@ -109,7 +109,7 @@ from open_wearables_adapter import (
     redacted_base_url,
     validate_open_wearables_base_url,
 )
-from recommendation_sources import build_open_wearables_recommendation_source
+from recommendation_sources import build_open_wearables_recommendation_source, build_recommendation_source_proof
 from wearable_fact_store import (
     WearableDailyFact,
     delete_provider_data,
@@ -2200,6 +2200,15 @@ def _apply_due_workout_adaptations_for_plan(
         if applied_events:
             patched["_fit136_base_recommendation"] = adaptation_base
             patched["_fit136_last_adapted_plan"] = _fit136_visible_workout_plan(patched)
+            existing_event_ids = (next_workout or {}).get("_fit136_adaptation_event_ids") or []
+            patched["_fit136_adaptation_event_ids"] = list(dict.fromkeys([
+                *existing_event_ids,
+                *[
+                    event.get("id")
+                    for event in applied_events
+                    if event.get("id")
+                ],
+            ]))
             patched["_fit136_adaptation_event_id"] = applied_events[-1]["id"]
         elif events:
             return next_workout, events
@@ -4363,7 +4372,7 @@ def _parse_iso_date_or_datetime(s: str | None):
             return None
 
 
-def calculate_acwr(workouts: list) -> dict:
+def calculate_acwr(workouts: list, *, include_apple_health: bool = True) -> dict:
     """Calculate Acute:Chronic Workload Ratio (ACWR) from logged workouts.
 
     Load definition: sum over all sets of (1 * reps * weight), plus
@@ -4372,7 +4381,8 @@ def calculate_acwr(workouts: list) -> dict:
     Chronic: average 7-day load over the last 28 days (uses available days if < 28).
     """
     today = datetime.now().date()
-    workouts = _recommendation_workouts_with_apple_health(workouts, days=28)
+    if include_apple_health:
+        workouts = _recommendation_workouts_with_apple_health(workouts, days=28)
     if not workouts:
         return {
             "acwr": 0.0,
@@ -4489,6 +4499,7 @@ def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
             "avg_sleep_min": 0.0,
             "status": "good",
             "message": f"Sleep debt unavailable (DB error: {str(e)}).",
+            "sample_count": 0,
         }
 
     if not rows:
@@ -4499,6 +4510,7 @@ def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
             "avg_sleep_min": 0.0,
             "status": "good",
             "message": "No recent sleep-duration data available from Oura cache.",
+            "sample_count": 0,
         }
 
     debt = 0
@@ -4537,6 +4549,7 @@ def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
         "avg_sleep_min": round(avg_sleep, 1),
         "status": status,
         "message": msg,
+        "sample_count": n,
     }
 
 
@@ -13283,7 +13296,8 @@ def _apply_open_wearables_recommendation_guard(recommendation, facts):
     )
 
 
-def _recommendation_sources_payload(freshness, whoop_context, open_wearables_facts, open_wearables_modifier, load_source):
+def _recommendation_sources_payload(freshness, whoop_context, open_wearables_facts, open_wearables_modifier, load_source, source_inputs=None):
+    open_wearables_modifier = open_wearables_modifier or {}
     open_wearables_source = build_open_wearables_recommendation_source(
         freshness.get("open_wearables"),
         facts=open_wearables_facts,
@@ -13299,6 +13313,17 @@ def _recommendation_sources_payload(freshness, whoop_context, open_wearables_fac
         "source_conflict": whoop_context["source_conflict"],
         "load_source": load_source,
     }
+    if source_inputs is not None:
+        payload["source_proof"] = build_recommendation_source_proof(
+            freshness=freshness,
+            open_wearables_source=open_wearables_source,
+            whoop_signals=whoop_signals,
+            source_inputs={
+                "open_wearables_facts": open_wearables_facts,
+                "open_wearables_modifier_applied": bool(open_wearables_modifier.get("applied")),
+                **(source_inputs or {}),
+            },
+        )
     apple_status = (freshness.get("apple_health") or {}).get("status")
     if (
         load_source == "apple_health"
@@ -15681,6 +15706,33 @@ def _training_recommendation_from_factors(
     return recommendation, effective_readiness
 
 
+def _oura_modifier_rule_applied(readiness, recovery_bonus, hrv_trend, sleep_debt):
+    """Whether an Oura-owned rule changed the category at its application step."""
+    effective_readiness = _effective_readiness_from(readiness, recovery_bonus)
+    recommendation = "moderate"
+    if effective_readiness is not None:
+        if effective_readiness < 70:
+            recommendation = "recovery"
+        elif effective_readiness > 85:
+            recommendation = "intensity"
+
+    raw_recommendation = "moderate"
+    if readiness is not None:
+        if readiness < 70:
+            raw_recommendation = "recovery"
+        elif readiness > 85:
+            raw_recommendation = "intensity"
+    applied = recommendation != "moderate" and raw_recommendation == recommendation
+    if hrv_trend == "declining":
+        next_recommendation = _downgrade_training_recommendation_once(recommendation)
+        applied = applied or next_recommendation != recommendation
+        recommendation = next_recommendation
+    if ((sleep_debt or {}).get("debt_minutes") or 0) > 300:
+        next_recommendation = _downgrade_training_recommendation_once(recommendation)
+        applied = applied or next_recommendation != recommendation
+    return applied
+
+
 @app.route('/api/recommendation/smart')
 def smart_recommendation_api():
     """Smart recommendation factoring Oura readiness + HRV trend + recent soreness."""
@@ -15700,7 +15752,16 @@ def smart_recommendation_api():
         pass
 
     # HRV trend (best-effort)
+    hrv_sample_count = 0
     hrv_trend = get_recent_hrv_trend()
+    try:
+        end = datetime.now().date()
+        start = end - timedelta(days=6)
+        rows = get_oura_daily_range(OURA_DB_FILE, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        hrv_values = [r.get("hrv") for r in rows if r.get("hrv") is not None]
+        hrv_sample_count = len(hrv_values)
+    except Exception:
+        pass
 
     recent = filter_recent_soreness(SORENESS_DATA, hours=24)
     avoid_set = {s.get("muscle") for s in recent if (s.get("soreness_level") or 0) >= 6 and s.get("muscle")}
@@ -15727,8 +15788,21 @@ def smart_recommendation_api():
     acwr_data = calculate_acwr(WORKOUTS)
     sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
     recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
+    direct_oura_status, _direct_oura_date, _direct_oura_sync = _latest_oura_freshness()
+    # FIT-271 is provenance-only: preserve the established deterministic
+    # consumption of cached Oura factors and report their direct freshness.
+    oura_usable = any((
+        readiness is not None,
+        (
+            hrv_sample_count >= 4 or hrv_trend == "declining"
+        ) and hrv_trend and hrv_trend != "unknown",
+        (sleep_debt.get("sample_count") or 0) > 0,
+    ))
+    recommendation_readiness = readiness
+    recommendation_hrv_trend = hrv_trend
+    recommendation_sleep_debt = sleep_debt
 
-    effective_readiness = _effective_readiness_from(readiness, recovery_bonus)
+    effective_readiness = _effective_readiness_from(recommendation_readiness, recovery_bonus)
 
     upper = {"chest", "back", "shoulders", "biceps", "triceps"}
     lower = {"quads", "hamstrings", "glutes", "calves", "adductors"}
@@ -15749,15 +15823,15 @@ def smart_recommendation_api():
 
     # Reasoning: mention max soreness
     reason_bits = []
-    if readiness is not None:
-        if effective_readiness is not None and round(float(effective_readiness), 1) != round(float(readiness), 1):
-            reason_bits.append(f"Readiness {readiness} (+{recovery_bonus.get('bonus_points', 0)} recovery bonus → {round(effective_readiness, 1)})")
+    if recommendation_readiness is not None:
+        if effective_readiness is not None and round(float(effective_readiness), 1) != round(float(recommendation_readiness), 1):
+            reason_bits.append(f"Readiness {recommendation_readiness} (+{recovery_bonus.get('bonus_points', 0)} recovery bonus → {round(effective_readiness, 1)})")
         else:
-            reason_bits.append(f"Readiness {readiness}")
-    if hrv_trend and hrv_trend != "unknown":
-        reason_bits.append(f"HRV trend {hrv_trend}")
-    if (sleep_debt.get('debt_minutes') or 0) > 0:
-        reason_bits.append(f"Sleep debt {sleep_debt.get('debt_minutes')} min ({sleep_debt.get('status')})")
+            reason_bits.append(f"Readiness {recommendation_readiness}")
+    if recommendation_hrv_trend and recommendation_hrv_trend != "unknown":
+        reason_bits.append(f"HRV trend {recommendation_hrv_trend}")
+    if (recommendation_sleep_debt.get('debt_minutes') or 0) > 0:
+        reason_bits.append(f"Sleep debt {recommendation_sleep_debt.get('debt_minutes')} min ({recommendation_sleep_debt.get('status')})")
     if acwr_data.get('chronic_load', 0) > 0:
         reason_bits.append(f"ACWR {acwr_data.get('acwr')} ({acwr_data.get('risk')})")
     hr_intensity = _apple_health_hr_intensity_summary(days=7)
@@ -15807,16 +15881,18 @@ def smart_recommendation_api():
         weather = None
 
     recommendation, effective_readiness = _training_recommendation_from_factors(
-        readiness,
+        recommendation_readiness,
         recovery_bonus=recovery_bonus,
-        hrv_trend=hrv_trend,
-        sleep_debt=sleep_debt,
+        hrv_trend=recommendation_hrv_trend,
+        sleep_debt=recommendation_sleep_debt,
         acwr_data=acwr_data,
         last_completed=last_completed,
         last_hours_ago=last_hours_ago,
         weather=weather,
     )
-    whoop_context = _whoop_recommendation_context(readiness)
+    factor_recommendation = recommendation
+    whoop_context = _whoop_recommendation_context(recommendation_readiness)
+    recommendation_before_whoop = recommendation
     whoop_recommendation = apply_wearable_modifiers(
         recommendation,
         None,
@@ -15824,6 +15900,7 @@ def smart_recommendation_api():
         source_conflict=whoop_context["source_conflict"],
     )
     recommendation = whoop_recommendation["recommendation"]
+    whoop_recommendation_changed = recommendation != recommendation_before_whoop
     for explanation in whoop_context["signals"].get("explanations") or []:
         reason_bits.append(explanation)
     if whoop_context["source_conflict"].get("explanation"):
@@ -15943,6 +16020,7 @@ def smart_recommendation_api():
                 hard_training_planned=_workout_looks_hard(next_workout),
                 food_log_entries=food_log_entries,
             )
+    next_workout_before_whoop = copy.deepcopy(next_workout)
     whoop_adjusted = apply_wearable_modifiers(
         recommendation,
         next_workout,
@@ -15950,11 +16028,205 @@ def smart_recommendation_api():
         source_conflict=whoop_context["source_conflict"],
     )
     next_workout = whoop_adjusted["next_workout"]
+    whoop_workout_changed = next_workout != next_workout_before_whoop
+    whoop_modifier_effective = bool(
+        whoop_recommendation_changed
+        or whoop_workout_changed
+        or (
+            whoop_adjusted.get("applied_modifiers")
+            and next_workout.get("_whoop_modifier_signature")
+        )
+    )
     nutrition_context = _nutrition_context_for_date(
         today,
         hard_training_planned=_workout_looks_hard(next_workout),
         food_log_entries=food_log_entries,
     )
+    recommendation_without_weather, _ = _training_recommendation_from_factors(
+        recommendation_readiness,
+        recovery_bonus=recovery_bonus,
+        hrv_trend=recommendation_hrv_trend,
+        sleep_debt=recommendation_sleep_debt,
+        acwr_data=acwr_data,
+        last_completed=last_completed,
+        last_hours_ago=last_hours_ago,
+        weather=None,
+    )
+    acwr_without_apple_health = calculate_acwr(WORKOUTS, include_apple_health=False)
+    recommendation_without_apple_health, _ = _training_recommendation_from_factors(
+        recommendation_readiness,
+        recovery_bonus=recovery_bonus,
+        hrv_trend=recommendation_hrv_trend,
+        sleep_debt=recommendation_sleep_debt,
+        acwr_data=acwr_without_apple_health,
+        last_completed=last_completed,
+        last_hours_ago=last_hours_ago,
+        weather=weather,
+    )
+    oura_fields = [
+        field
+        for field, value in (
+            ("readiness_score", recommendation_readiness),
+            (
+                "hrv_trend",
+                recommendation_hrv_trend
+                if (
+                    hrv_sample_count >= 4 or recommendation_hrv_trend == "declining"
+                ) and recommendation_hrv_trend != "unknown"
+                else None,
+            ),
+            (
+                "sleep_debt_minutes",
+                recommendation_sleep_debt.get("debt_minutes")
+                if oura_usable and (recommendation_sleep_debt.get("sample_count") or 0) > 0
+                else None,
+            ),
+        )
+        if value is not None
+    ]
+    whoop_fact = whoop_context.get("fact") or {}
+    whoop_fields = [
+        field
+        for field in ("recovery_score", "strain", "sleep_performance_pct", "sleep_need_gap_min")
+        if whoop_fact.get(field) is not None
+    ]
+    apple_health_fields = []
+    try:
+        recommendation_workouts = _recommendation_workouts_with_apple_health(WORKOUTS, days=28)
+    except Exception:
+        recommendation_workouts = list(WORKOUTS or [])
+    apple_health_workouts_used = [
+        workout
+        for workout in recommendation_workouts
+        if isinstance(workout, dict)
+        and workout.get("source") == "apple_health"
+        and (workout_date := _parse_iso_date_or_datetime(workout.get("date"))) is not None
+        and datetime.now().date() - timedelta(days=27)
+        <= workout_date.date()
+        <= datetime.now().date()
+    ]
+    if apple_health_workouts_used:
+        apple_health_fields.append("recent_workout_load")
+    apple_health_hr_used = any(
+        isinstance(workout.get("apple_health"), dict)
+        and workout["apple_health"].get("hr_intensity_applied")
+        for workout in apple_health_workouts_used
+    )
+    if apple_health_hr_used:
+        apple_health_fields.append("workout_avg_heart_rate")
+    food_totals = nutrition_context.get("totals") or {}
+    canonical_adaptation_event_ids = set(
+        next_workout_before_whoop.get("_fit136_adaptation_event_ids") or []
+    )
+    legacy_adapted_plan = next_workout_before_whoop.get("_fit136_last_adapted_plan")
+    legacy_adaptation_marker = bool(
+        not canonical_adaptation_event_ids
+        and next_workout_before_whoop.get("_fit136_base_recommendation")
+        and legacy_adapted_plan
+    )
+    try:
+        persisted_adaptation_events = list_workout_adaptation_events(
+            _current_data_user_id(),
+            unacknowledged=False,
+            since=f"{today}T00:00:00",
+            limit=50,
+        )
+    except Exception:
+        persisted_adaptation_events = []
+    food_adaptation_events = [
+        event
+        for event in [*workout_adaptation_events, *persisted_adaptation_events]
+        if isinstance(event, dict)
+        and event.get("status") == "applied"
+        and (
+            event.get("id") in canonical_adaptation_event_ids
+            or (
+                legacy_adaptation_marker
+                and (event.get("after_remaining_plan") or {}) == legacy_adapted_plan
+            )
+        )
+    ]
+    food_adaptation_events = list({
+        event.get("id") or id(event): event
+        for event in food_adaptation_events
+    }.values())
+    food_adaptation_applied = bool(food_adaptation_events)
+    food_modifier_effective = any(
+        (event.get("before_remaining_plan") or {})
+        != (event.get("after_remaining_plan") or {})
+        for event in food_adaptation_events
+    )
+    food_fields = []
+    if food_adaptation_applied:
+        food_signal_codes = {
+            signal.get("code")
+            for event in food_adaptation_events
+            for signal in (event.get("nutrition_context") or {}).get("signals") or []
+            if isinstance(signal, dict) and signal.get("code")
+        }
+        food_field_by_signal = {
+            "under_fueled": {"calories"},
+            "low_protein": {"protein_g"},
+            "high_sodium": {"sodium_mg"},
+            "late_meal": {"meal_timing"},
+            "alcohol": {"alcohol_presence"},
+            "heavy_meal": {"calories"},
+            "mostly_carbs": {"calories", "carbs_g", "protein_g", "fat_g"},
+        }
+        food_fields = sorted({
+            field
+            for code in food_signal_codes
+            for field in food_field_by_signal.get(code, set())
+        })
+        food_fields.append("confidence")
+        if any(
+            (event.get("reason_metadata") or {}).get("same_day_fueling_coverage")
+            for event in food_adaptation_events
+        ):
+            food_fields.extend(["entry_count", "meal_timing", "meal_window_count"])
+        food_fields = sorted(set(food_fields))
+    weather_fields = []
+    if weather and weather.get("available"):
+        temperature_field = "feelslike_f" if weather.get("feelslike_f") is not None else "temp_f"
+        if weather.get(temperature_field) is not None:
+            weather_temperature = float(weather.get(temperature_field))
+            weather_fields.append(temperature_field)
+            if (
+                weather.get("humidity_pct") is not None
+                and 90 <= weather_temperature < 95
+            ):
+                weather_fields.append("humidity_pct")
+    source_inputs = {
+        "open_wearables_modifier_applied": bool(open_wearables_modifier.get("applied")),
+        "oura_fields": oura_fields,
+        "oura_status": direct_oura_status,
+        "oura_used_override": bool(oura_fields),
+        "oura_modifier_applied": _oura_modifier_rule_applied(
+            recommendation_readiness,
+            recovery_bonus,
+            recommendation_hrv_trend,
+            recommendation_sleep_debt,
+        ),
+        "whoop_fields": whoop_fields,
+        "whoop_modifier_applied": whoop_modifier_effective,
+        "apple_health_fields": apple_health_fields,
+        "apple_health_modifier_applied": (
+            apple_health_hr_used
+            or recommendation_without_apple_health != factor_recommendation
+        ),
+        "apple_health_used_override": bool(apple_health_fields),
+        "food_fields": food_fields,
+        "food_modifier_applied": food_modifier_effective,
+        "food_used_override": food_adaptation_applied,
+        "food_ignored_reason": (
+            "no_workout_adaptation"
+            if not food_adaptation_applied and any(value not in (None, 0) for value in food_totals.values())
+            else None
+        ),
+        "weather_fields": weather_fields,
+        "weather_status": "fresh" if weather_fields else "missing",
+        "weather_modifier_applied": recommendation_without_weather != factor_recommendation,
+    }
     confidence_level = _confidence_level_from(effective_readiness, freshness)
     return jsonify({
         "recommendation": recommendation,
@@ -15985,6 +16257,7 @@ def smart_recommendation_api():
                 open_wearables_facts,
                 open_wearables_modifier,
                 whoop_adjusted["load_source"],
+                source_inputs,
             ),
             "wearable_sources": _wearable_sources_payload(freshness, whoop_context),
         },
