@@ -12624,4 +12624,14 @@
 
     // Expose for console debugging (read-only) + macro card refresh hook (FIT-23)
     window.__aicoach = { state, switchTab, loadTab, invalidateCaches, refreshMacroCard };
+    // FIT-306: browser QA drives the shipped renderer and handlers with local
+    // fixture data. The mutation surface is absent during ordinary app use.
+    if (new URLSearchParams(window.location.search).get('fit306_qa') === '1') {
+        window.__aicoach.fit306Qa = {
+            showWorkout(workout) {
+                state.activeWorkout = workout;
+                renderActiveWorkout();
+            },
+        };
+    }
 })();
