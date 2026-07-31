@@ -1811,10 +1811,10 @@ def _current_data_user_id():
 
 
 def _get_latest_weight():
-    if not BODY_DATA:
-        return None
-    sorted_body = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
-    return sorted_body[0].get("weight_lbs")
+    for entry in _safe_dated_body_entries():
+        if entry.get("weight_lbs") is not None:
+            return entry["weight_lbs"]
+    return None
 
 
 def _get_nutrition_targets():
@@ -5151,22 +5151,30 @@ def api_dashboard():
     # Body stats
     body_stats = {}
     if BODY_DATA:
-        sorted_body = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
-        latest = sorted_body[0]
-        body_stats["latest_weight"] = latest.get("weight_lbs")
-        body_stats["latest_body_fat"] = latest.get("body_fat_pct")
+        sorted_body = _safe_dated_body_entries()
+        latest_weight = next(
+            (entry["weight_lbs"] for entry in sorted_body if entry.get("weight_lbs") is not None),
+            None,
+        )
+        latest_body_fat = next(
+            (entry["body_fat_pct"] for entry in sorted_body if entry.get("body_fat_pct") is not None),
+            None,
+        )
+        body_stats["latest_weight"] = latest_weight
+        body_stats["latest_body_fat"] = latest_body_fat
 
         # 30-day weight change
         today = datetime.now().date()
         thirty_days_ago = today - timedelta(days=30)
         old_entries = [
-            e for e in BODY_DATA
-            if e.get("date") and datetime.strptime(e["date"], "%Y-%m-%d").date() <= thirty_days_ago
+            entry for entry in sorted_body
+            if entry.get("weight_lbs") is not None
+            and datetime.strptime(entry["date"], "%Y-%m-%d").date() <= thirty_days_ago
         ]
         if old_entries:
             oldest_in_range = sorted(old_entries, key=lambda x: x.get("date") or "")[-1]
             old_weight = oldest_in_range.get("weight_lbs")
-            if old_weight and body_stats["latest_weight"]:
+            if old_weight is not None and body_stats["latest_weight"] is not None:
                 body_stats["weight_change_30d"] = round(body_stats["latest_weight"] - old_weight, 1)
 
         # Trend direction
@@ -5179,9 +5187,9 @@ def api_dashboard():
             else:
                 body_stats["trend"] = "stable"
         else:
-            recent_7 = sorted_body[:7]
+            recent_7 = [entry for entry in sorted_body if entry.get("weight_lbs") is not None][:7]
             if len(recent_7) >= 3:
-                weights = [e.get("weight_lbs") for e in recent_7 if e.get("weight_lbs")]
+                weights = [entry["weight_lbs"] for entry in recent_7]
                 if len(weights) >= 3:
                     x = list(range(len(weights)))
                     n = len(weights)
@@ -5347,16 +5355,15 @@ def api_vitals():
     current_weight = None
     body_fat = None
     if BODY_DATA:
-        sorted_body = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
-        latest = sorted_body[0]
-        try:
-            current_weight = float(latest.get("weight_lbs")) if latest.get("weight_lbs") is not None else None
-        except Exception:
-            current_weight = None
-        try:
-            body_fat = float(latest.get("body_fat_pct")) if latest.get("body_fat_pct") is not None else None
-        except Exception:
-            body_fat = None
+        sorted_body = _safe_dated_body_entries()
+        current_weight = next(
+            (entry["weight_lbs"] for entry in sorted_body if entry.get("weight_lbs") is not None),
+            None,
+        )
+        body_fat = next(
+            (entry["body_fat_pct"] for entry in sorted_body if entry.get("body_fat_pct") is not None),
+            None,
+        )
 
     trend_7d = _body_trend(7)
     trend_30d = _body_trend(30)
@@ -9836,6 +9843,54 @@ def api_exercises():
     return jsonify({"exercises": options})
 
 
+BODY_TAPE_RANGES = {
+    "neck_in": (8.0, 30.0),
+    "waist_in": (18.0, 80.0),
+    "chest_in": (18.0, 80.0),
+    "hips_in": (18.0, 80.0),
+    "arms": (5.0, 30.0),
+    "legs": (10.0, 50.0),
+}
+
+
+def _body_measurement_date_or_none(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return None
+
+
+def _body_measurement_number_or_none(value, min_v, max_v):
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < min_v or number > max_v:
+        return None
+    return number
+
+
+def _safe_body_history_entry(raw):
+    entry = dict(raw)
+    entry["date"] = _body_measurement_date_or_none(entry.get("date"))
+    entry["weight_lbs"] = _body_measurement_number_or_none(entry.get("weight_lbs"), 50.0, 1000.0)
+    entry["body_fat_pct"] = _body_measurement_number_or_none(entry.get("body_fat_pct"), 1.0, 60.0)
+    for field, (min_v, max_v) in BODY_TAPE_RANGES.items():
+        entry[field] = _body_measurement_number_or_none(entry.get(field), min_v, max_v)
+    return entry
+
+
+def _safe_dated_body_entries():
+    entries = [_safe_body_history_entry(raw) for raw in BODY_DATA if isinstance(raw, dict)]
+    return sorted(
+        (entry for entry in entries if entry.get("date") is not None),
+        key=lambda entry: entry["date"],
+        reverse=True,
+    )
+
+
 @app.route('/api/add-body-measurement', methods=['POST'])
 def add_body_measurement():
     """Add body composition measurement (weight, body fat %)."""
@@ -9846,23 +9901,34 @@ def add_body_measurement():
     weight_lbs, err2 = _coerce_float(data.get("weight_lbs"), "weight_lbs", min_v=50.0, max_v=1000.0)
     if err2:
         return err2
+    if not math.isfinite(weight_lbs):
+        return api_error("weight_lbs must be a finite number", 400, code="invalid_field")
     body_fat_pct, err2 = _coerce_float(data.get("body_fat_pct"), "body_fat_pct", min_v=1.0, max_v=60.0, allow_none=True)
     if err2:
         return err2
+    if body_fat_pct is not None and not math.isfinite(body_fat_pct):
+        return api_error("body_fat_pct must be a finite number", 400, code="invalid_field")
     notes, err2 = _coerce_str(data.get("notes", ""), "notes", required=False, max_len=2000)
     if err2:
         return err2
+    raw_date = data.get("date")
+    date_s = datetime.now().strftime("%Y-%m-%d") if raw_date is None else raw_date
+    if _body_measurement_date_or_none(date_s) is None:
+        return api_error("date must be a valid YYYY-MM-DD date", 400, code="invalid_field")
+    tape_values = {}
+    for field, (min_v, max_v) in BODY_TAPE_RANGES.items():
+        value, err2 = _coerce_float(data.get(field), field, min_v=min_v, max_v=max_v, allow_none=True)
+        if err2:
+            return err2
+        if value is not None and not math.isfinite(value):
+            return api_error(f"{field} must be a finite number", 400, code="invalid_field")
+        tape_values[field] = value
 
     entry = {
-        "date": data.get("date") or datetime.now().strftime("%Y-%m-%d"),
+        "date": date_s,
         "weight_lbs": weight_lbs,
         "body_fat_pct": body_fat_pct,
-        "neck_in": data.get("neck_in"),
-        "waist_in": data.get("waist_in"),
-        "chest_in": data.get("chest_in"),
-        "hips_in": data.get("hips_in"),
-        "arms": data.get("arms"),
-        "legs": data.get("legs"),
+        **tape_values,
         "notes": notes,
         "created_at": datetime.now().isoformat(),
     }
@@ -9875,22 +9941,24 @@ def add_body_measurement():
 @app.route('/api/body-history')
 def body_history():
     """Return body measurement history with calculated fields."""
-    sorted_data = sorted(BODY_DATA, key=lambda x: x.get("date") or "", reverse=True)
+    sorted_data = sorted(
+        (_safe_body_history_entry(entry) for entry in BODY_DATA if isinstance(entry, dict)),
+        key=lambda x: x.get("date") or "",
+        reverse=True,
+    )
+    dated_data = [entry for entry in sorted_data if entry.get("date") is not None]
 
     # Calculate weight changes and trend
-    for i, entry in enumerate(sorted_data):
-        if i < len(sorted_data) - 1:
-            prev_weight = sorted_data[i + 1].get("weight_lbs")
-            curr_weight = entry.get("weight_lbs")
-            if prev_weight and curr_weight:
-                entry["weight_change"] = round(curr_weight - prev_weight, 1)
-            else:
-                entry["weight_change"] = None
-        else:
-            entry["weight_change"] = None
+    for entry in sorted_data:
+        entry["weight_change"] = None
+    for i, entry in enumerate(dated_data[:-1]):
+        prev_weight = dated_data[i + 1].get("weight_lbs")
+        curr_weight = entry.get("weight_lbs")
+        if prev_weight is not None and curr_weight is not None:
+            entry["weight_change"] = round(curr_weight - prev_weight, 1)
 
     # Calculate trend (last 7 entries linear regression)
-    recent_7 = sorted_data[:7]
+    recent_7 = dated_data[:7]
     if len(recent_7) >= 3:
         weights = [e.get("weight_lbs") for e in recent_7 if e.get("weight_lbs")]
         if len(weights) >= 3:
@@ -12854,10 +12922,8 @@ def _body_trend(days: int):
     today = datetime.now().date()
     start = today - timedelta(days=days - 1)
     entries = []
-    for e in BODY_DATA:
-        date_s = e.get("date")
-        if not date_s:
-            continue
+    for e in _safe_dated_body_entries():
+        date_s = e["date"]
         dt = _parse_iso_date_or_datetime(date_s)
         if not dt:
             continue
@@ -12865,10 +12931,6 @@ def _body_trend(days: int):
         if d < start or d > today:
             continue
         weight = e.get("weight_lbs")
-        try:
-            weight = float(weight) if weight is not None else None
-        except Exception:
-            weight = None
         if weight is None:
             continue
         entries.append({"date": d, "weight_lbs": weight})
@@ -17243,12 +17305,16 @@ def _last_n_sessions_rpe(n=3):
 
 @app.route('/api/body-recomp')
 def body_recomp():
-    hist = sorted(BODY_DATA, key=lambda x: x.get('date') or '')
+    hist = sorted(
+        (_safe_body_history_entry(entry) for entry in BODY_DATA if isinstance(entry, dict)),
+        key=lambda x: x.get('date') or '',
+    )
     if not hist:
         return jsonify({"history": [], "summary": {}})
-    dates=[h.get('date') for h in hist]
-    weights=[h.get('weight_lbs') for h in hist]
-    bf=[h.get('body_fat_pct') for h in hist]
+    dated_hist = [entry for entry in hist if entry.get('date') is not None]
+    dates=[h.get('date') for h in dated_hist]
+    weights=[h.get('weight_lbs') for h in dated_hist]
+    bf=[h.get('body_fat_pct') for h in dated_hist]
     roll=_rolling_avg(weights,7)
     lean=[]; fat=[]
     for w,b in zip(weights,bf):
@@ -17256,12 +17322,13 @@ def body_recomp():
         else:
             fm = w*(b/100.0); lm=w-fm
             lean.append(round(lm,2)); fat.append(round(fm,2))
-    latest=hist[-1]
+    latest=dated_hist[-1] if dated_hist else None
     tw=USER_SETTINGS.get('target_weight_lbs')
-    curr=latest.get('weight_lbs')
+    curr=latest.get('weight_lbs') if latest else None
     eta_weeks=None
-    if tw and curr and len(weights)>=14:
-        first=weights[max(0,len(weights)-14)]
+    recent_weights = weights[-14:]
+    if tw and curr and len(recent_weights) == 14 and all(weight is not None for weight in recent_weights):
+        first=recent_weights[0]
         weekly=(curr-first)/2.0
         if weekly!=0:
             eta_weeks=round((tw-curr)/weekly,1)

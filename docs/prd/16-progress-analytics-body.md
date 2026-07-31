@@ -34,13 +34,13 @@ The Markdown export route is intended for workout history export. The current UI
 |---|---:|---:|---|---|---|
 | `weight_lbs` | number | Yes by API | none | 50.0 to 1000.0 inclusive | Scale weight in pounds. The visible UI sends `null` when blank, but the API rejects missing/null because weight is not `allow_none`. |
 | `body_fat_pct` | number or null | No | `null` | 1.0 to 60.0 inclusive when present | Body-fat estimate, from manual entry or another calculator. |
-| `date` | string | No | server-local `YYYY-MM-DD` | No explicit date validation in this route | Measurement day. Server defaults to current local day. |
-| `neck_in` | any | No | `null` | No validation in add route | Neck tape measurement in inches when supplied by a non-UI client. |
-| `waist_in` | any | No | `null` | No validation in add route | Waist tape measurement in inches. |
-| `chest_in` | any | No | `null` | No validation in add route | Chest tape measurement in inches. |
-| `hips_in` | any | No | `null` | No validation in add route | Hip tape measurement in inches. |
-| `arms` | any | No | `null` | No validation in add route | Arm measurement payload; exact shape [TBC] because the API stores passthrough. |
-| `legs` | any | No | `null` | No validation in add route | Leg measurement payload; exact shape [TBC] because the API stores passthrough. |
+| `date` | string | No | server-local `YYYY-MM-DD` | Valid calendar date in exact `YYYY-MM-DD` form | Measurement day. Server defaults to current local day. |
+| `neck_in` | number or null | No | `null` | 8 to 30 inches inclusive | Neck circumference in inches when supplied by a non-UI client. |
+| `waist_in` | number or null | No | `null` | 18 to 80 inches inclusive | Waist circumference in inches. |
+| `chest_in` | number or null | No | `null` | 18 to 80 inches inclusive | Chest circumference in inches. |
+| `hips_in` | number or null | No | `null` | 18 to 80 inches inclusive | Hip circumference in inches. |
+| `arms` | number or null | No | `null` | 5 to 30 inches inclusive | Arm circumference in inches. |
+| `legs` | number or null | No | `null` | 10 to 50 inches inclusive | Leg circumference in inches. |
 | `notes` | string | No | empty string | max 2000 chars | Freeform context for the measurement. Not exposed in the visible form. |
 | `created_at` | ISO datetime | System | server time | generated | Audit timestamp for when the row was saved. |
 
@@ -72,6 +72,11 @@ The Markdown export route is intended for workout history export. The current UI
 | `summary.target_weight_lbs` | number | Response | default 175 | From settings | Target body weight. |
 | `summary.target_body_fat_pct` | number | Response | default 18 | From settings | Target body-fat percentage. |
 | `summary.eta_weeks` | number or null | Response | `null` | Requires target, current weight, and at least 14 weight rows | Weeks to target at current 14-entry velocity. Negative values mean trend is moving away from target; UI renders "Not on track." |
+
+The history/recomposition routes do not rewrite legacy JSON rows. They project
+malformed, non-finite, overflowed, or out-of-range dates/numbers to `null`
+before sorting, trend, and ETA math so older passthrough data cannot crash a
+response or render `NaN`.
 
 ### Manual Sleep Import Payload
 
