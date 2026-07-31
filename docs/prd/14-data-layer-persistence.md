@@ -26,7 +26,7 @@ The data layer has few direct screens, but it powers nearly every surface:
 | AI coach surfaces | Persist adjust/analyze cache and metrics in SQLite; rely on local history and wearable fact stores for context. |
 | Admin/debug smoke tests | Depend on `DATA_DIR` isolation, authenticated session cookies, and route-level persistence paths. |
 
-Backend-only consumers include recommendation generation, AI fact context, Apple Health sync, WHOOP sync/import, Open Wearables fact sync, and push alerts. `delete_user_data` exists as an unwired helper used by tests; no user-facing account-data deletion flow currently exists.
+Backend-only consumers include recommendation generation, AI fact context, Apple Health sync, WHOOP sync/import, Open Wearables fact sync, and push alerts. `delete_user_data` exists as an unwired helper used by tests; it deletes only the documented user-scoped rows in `fitness_data.db`, not an account or all local data. No user-facing account-data deletion flow currently exists. The full boundary, manual owner procedure, and read-only inventory are in [Local data deletion boundaries](../LOCAL_DATA_DELETION.md).
 
 ## 3. Field Inventory
 
@@ -339,7 +339,7 @@ WHOOP access/refresh token values are stored in a protected material file outsid
 
 Wearable facts are public coaching facts only. The store rejects raw provider payloads, records/samples, secrets, token fields, and `user_id`. Profile scoping uses `profile_key` rather than raw user id.
 
-Known security/privacy risks remain: Open Wearables/Apple Health token and URL handling is covered by existing FIT-261; `delete_user_data` is unwired and omits push subscriptions; backup export includes food and health-derived data in plain JSON by design. Flask auth persists `.flask-secret` in the project directory rather than `DATA_DIR`.
+Known security/privacy risks remain: Open Wearables/Apple Health token and URL handling is covered by existing FIT-261; `delete_user_data` is unwired and deletes push-subscription rows but not browser subscription state; backup export includes food and health-derived data in plain JSON by design. Flask auth persists `.flask-secret` in the project directory rather than `DATA_DIR`.
 
 ## 10. Business Rules
 
@@ -353,7 +353,7 @@ Backups are user-data exports, not full runtime clones. They do not include auth
 
 Import is not all-or-nothing across JSON, food SQLite, and WHOOP stores. WHOOP facts are validated before mutation, and JSON stores are restored under one lock, but later SQLite imports can still partially apply if a later row fails [TBC: exact rollback behavior per import helper varies].
 
-Account data deletion is table-based in `fitness_data.db` and does not touch JSON history files, wearable integration DBs, auth users, WHOOP protected material, Open Wearables config, Apple Health sync DB, Oura cache, or push subscriptions. Treat it as partial structured-data deletion, not full local-data erasure.
+Account data deletion is table-based in `fitness_data.db`, including push-subscription rows. It does not touch JSON history files, wearable integration DBs, auth users, WHOOP protected material, Open Wearables config, Apple Health sync DB, Oura cache, or browser subscription state. Treat it as partial structured-data deletion, not full local-data erasure.
 
 ## 11. Config & Environment
 
