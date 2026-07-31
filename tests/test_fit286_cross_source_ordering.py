@@ -1,0 +1,177 @@
+import copy
+import importlib
+
+from test_freshness import _freshness_payload, _stub_smart_recommendation_dependencies
+
+
+def test_smart_recommendation_applies_cross_source_modifiers_once_in_order(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "fit286-test-secret")
+    monkeypatch.setenv("HEALTH_SYNC_TOKEN", "fit286-health-token")
+    module = importlib.import_module("app")
+    monkeypatch.setitem(module.app.config, "TESTING", True)
+    monkeypatch.setitem(module.app.config, "LOGIN_DISABLED", True)
+    _stub_smart_recommendation_dependencies(
+        monkeypatch,
+        module,
+        oura_row={"readiness_score": 88, "sleep_score": 82, "hrv": 44},
+    )
+    monkeypatch.setattr(module, "_compute_data_freshness", lambda: {
+        **_freshness_payload(),
+        "open_wearables": {"status": "fresh"},
+    })
+    monkeypatch.setattr(module, "_cached_wttr", lambda *_args, **_kwargs: {"available": False})
+    monkeypatch.setattr(module, "_apple_health_hr_intensity_summary", lambda **_kwargs: {})
+    monkeypatch.setattr(module, "_current_workout_plan_for_fingerprint", lambda _fingerprint: None)
+    monkeypatch.setattr(module, "get_current_workout_plan", lambda _user_id: None)
+    monkeypatch.setattr(module, "_workout_recommendation_fingerprint", lambda: "fit286-fingerprint")
+    monkeypatch.setattr(module, "_workout_with_auth_scope", lambda workout: workout)
+    monkeypatch.setattr(module.workout_adaptation, "project_event", lambda event: event)
+    persisted_plans = []
+
+    def persist_plan(plan, _fingerprint):
+        persisted_plans.append(copy.deepcopy(plan))
+        return plan
+
+    monkeypatch.setattr(module, "_persist_current_workout_plan", persist_plan)
+    generated_recommendations = []
+    modifier_sequence = []
+
+    def generate_workout(*_args, training_recommendation=None, **_kwargs):
+        modifier_sequence.append("generate")
+        generated_recommendations.append(training_recommendation)
+        return {
+            "title": "Cross-source fixture",
+            "estimated_minutes": 60,
+            "estimated_duration": "60 min",
+            "mesocycle": {"volume_multiplier": 1.0},
+            "exercises": [{
+                "exercise": "Fixture Press",
+                "target_sets": 5,
+                "rpe_target": 8,
+                "rationale": "Base plan",
+            }],
+        }
+
+    monkeypatch.setattr(module, "generate_next_workout", generate_workout)
+
+    whoop_explanation = "WHOOP recovery 34 triggered one deload modifier"
+    conflict_explanation = "Oura readiness and WHOOP recovery disagree; WHOOP stays conservative"
+    monkeypatch.setattr(
+        module,
+        "_whoop_recommendation_context",
+        lambda _readiness: {
+            "signals": {
+                "display_only": False,
+                "applied_modifiers": ["deload"],
+                "explanations": [whoop_explanation],
+                "freshness": {"status": "fresh"},
+            },
+            "source_conflict": {
+                "has_conflict": True,
+                "conservative_source": "whoop",
+                "explanation": conflict_explanation,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_open_wearables_recommendation_facts",
+        lambda: [{
+            "provider_id": "open_wearables",
+            "provider_label": "Open Wearables",
+            "metric": "sleep_duration",
+            "value": 330,
+            "unit": "min",
+            "freshness": "fresh",
+            "used_for_recommendation": True,
+        }],
+    )
+    original_open_wearables_guard = module._apply_open_wearables_recommendation_guard
+    open_wearables_guard_calls = []
+
+    def track_open_wearables_guard(recommendation, facts):
+        modifier_sequence.append("open_wearables")
+        result = original_open_wearables_guard(recommendation, facts)
+        open_wearables_guard_calls.append({
+            "input": recommendation,
+            "output": result[0],
+            "modifier": result[1],
+        })
+        return result
+
+    monkeypatch.setattr(
+        module,
+        "_apply_open_wearables_recommendation_guard",
+        track_open_wearables_guard,
+    )
+
+    accepted_food = [{
+        "id": 286,
+        "status": "accepted",
+        "date": module._today_str(),
+        "calories": 900,
+        "protein_g": 20,
+    }]
+    monkeypatch.setattr(module, "_food_log_entries_for_context", lambda *_args, **_kwargs: accepted_food)
+    adaptation_calls = []
+
+    def apply_food_adaptation(plan, *, food_log_entries, **_kwargs):
+        adaptation_calls.append([entry["id"] for entry in food_log_entries])
+        adapted = copy.deepcopy(plan)
+        adapted["exercises"][0]["target_sets"] = 3
+        adapted["exercises"][0]["rationale"] += " · Food adaptation applied"
+        return adapted, [{
+            "status": "applied",
+            "reason": "Accepted food signal reduced volume once",
+        }]
+
+    monkeypatch.setattr(module, "_apply_due_workout_adaptations_for_plan", apply_food_adaptation)
+
+    response = module.app.test_client().get("/api/recommendation/smart")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    exercise = payload["next_workout"]["exercises"][0]
+    assert adaptation_calls == [[286]]
+    assert len(persisted_plans) == 1
+    persisted_exercise = persisted_plans[0]["exercises"][0]
+    assert persisted_exercise["target_sets"] == 3
+    assert persisted_exercise["rationale"].count("Food adaptation applied") == 1
+    assert "WHOOP modifier applied" not in persisted_exercise["rationale"]
+    assert "_whoop_modifier_signature" not in persisted_plans[0]
+    assert exercise["target_sets"] == 2  # food sets 3 first; WHOOP's 0.8 clamp runs afterward
+    assert exercise["rationale"].count("Food adaptation applied") == 1
+    assert exercise["rationale"].count("WHOOP modifier applied") == 1
+    assert payload["workout_adaptation_events"] == [{
+        "status": "applied",
+        "reason": "Accepted food signal reduced volume once",
+    }]
+
+    open_wearables_detail = payload["recommendation_sources"]["open_wearables"]["detail"]
+    assert payload["recommendation_sources"]["open_wearables"]["applied_modifiers"] == [
+        "sleep_caution"
+    ]
+    assert len(open_wearables_guard_calls) == 1
+    assert open_wearables_guard_calls[0]["modifier"]["applied_modifiers"] == [
+        "sleep_caution"
+    ]
+    assert generated_recommendations == [open_wearables_guard_calls[0]["output"]]
+    assert modifier_sequence.index("open_wearables") < modifier_sequence.index("generate")
+    assert "330 min" in open_wearables_detail
+    reasoning = payload["reasoning"]
+    assert reasoning.count(whoop_explanation) == 1
+    assert reasoning.count(conflict_explanation) == 1
+    assert reasoning.count(open_wearables_detail) == 1
+    assert reasoning.index("Readiness 88") < reasoning.index(whoop_explanation)
+    assert reasoning.index(whoop_explanation) < reasoning.index(conflict_explanation)
+    assert reasoning.index(conflict_explanation) < reasoning.index(open_wearables_detail)
+    assert list(payload["recommendation_sources"]) == [
+        "load_source",
+        "load_source_summary_hidden",
+        "open_wearables",
+        "source_conflict",
+        "wearable_sources",
+        "whoop",
+    ]
+    assert payload["recommendation_sources"]["open_wearables"]["used_for_recommendation"] is True
+    assert payload["recommendation_sources"]["whoop"]["applied_modifiers"] == ["deload"]
