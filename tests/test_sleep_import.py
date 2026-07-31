@@ -452,3 +452,50 @@ def test_sleep_import_skips_missing_date_rows(sleep_api):
     assert response.status_code == 200
     assert response.get_json() == {"status": "success", "imported": 1}
     assert [entry["date"] for entry in module.SLEEP_DATA] == ["2026-07-01", "2026-07-02"]
+
+
+def test_sleep_import_json_replaces_existing_date_and_sorts_history(sleep_api):
+    module, client, sleep_file, _baseline = sleep_api
+
+    response = _post(
+        client,
+        {
+            "entries": [
+                _row(date="2026-06-30", sleep_duration_min=390),
+                _row(date="2026-07-01", sleep_duration_min=440),
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "success", "imported": 2}
+    assert [entry["date"] for entry in module.SLEEP_DATA] == ["2026-06-30", "2026-07-01"]
+    assert module.SLEEP_DATA[-1]["sleep_duration_min"] == 440
+    assert json.loads(sleep_file.read_text(encoding="utf-8")) == module.SLEEP_DATA
+
+
+def test_sleep_import_csv_replaces_existing_date_and_persists(sleep_api):
+    module, client, sleep_file, _baseline = sleep_api
+
+    response = _post(
+        client,
+        {"csv": "date,sleep_duration_min,time_in_bed_min\n2026-07-01,430,460\n"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "success", "imported": 1}
+    assert module.SLEEP_DATA == [
+        {
+            "date": "2026-07-01",
+            "source": "apple_watch",
+            "sleep_duration_min": 430,
+            "time_in_bed_min": 460,
+            "deep_min": 0,
+            "rem_min": 0,
+            "light_min": 0,
+            "awake_min": 0,
+            "sleep_start": None,
+            "sleep_end": None,
+        }
+    ]
+    assert json.loads(sleep_file.read_text(encoding="utf-8")) == module.SLEEP_DATA
