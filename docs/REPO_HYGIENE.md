@@ -82,6 +82,11 @@ diagnostics.
 
 ## Current Ignored Coverage
 
+The machine-readable source for required artifact classes and their Git,
+Docker, and documentation coverage is
+`support/runtime_artifact_policy.json`. Its test must stay green when any
+ignore rule or documented class changes.
+
 The repo already ignores the main private/runtime classes:
 
 - environment files and local secrets

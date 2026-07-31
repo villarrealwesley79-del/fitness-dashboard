@@ -137,6 +137,11 @@ def test_dockerignore_excludes_known_secret_and_token_files() -> None:
         assert _is_dockerignored(path), f"{path} must be excluded from Docker context"
 
 
+def test_dockerignore_excludes_json_stores_at_any_depth() -> None:
+    for path in ("data_workouts.json", "runtime/data_workouts.json"):
+        assert _is_dockerignored(path), f"{path} must be excluded from Docker context"
+
+
 def test_gitignore_excludes_protected_fallback_files() -> None:
     rules = {
         line.strip()

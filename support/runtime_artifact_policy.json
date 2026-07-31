@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "default_policy": "keep_local_and_ignored",
+  "deletion_policy": "explicit_approval_and_backup_restore_note_required",
+  "artifact_classes": [
+    {
+      "id": "whoop_database",
+      "examples": ["whoop.sqlite3"],
+      "gitignore_rule": "*.sqlite3",
+      "dockerignore_rule": "*.sqlite3",
+      "documentation_marker": "whoop.sqlite3"
+    },
+    {
+      "id": "whoop_protected_material",
+      "examples": [".whoop-protected-material-owner.json"],
+      "gitignore_rule": ".whoop-protected-material*",
+      "dockerignore_rule": ".whoop-protected-material*",
+      "documentation_marker": ".whoop-protected-material-*.json"
+    },
+    {
+      "id": "apple_health_database",
+      "examples": ["apple_health_sync.db"],
+      "gitignore_rule": "*.db",
+      "dockerignore_rule": "*.db",
+      "documentation_marker": "apple_health_sync.db"
+    },
+    {
+      "id": "authentication_database",
+      "examples": ["auth.db", "auth.db-wal"],
+      "gitignore_rule": "auth.db*",
+      "dockerignore_rule": "auth.db*",
+      "documentation_marker": "auth.db*"
+    },
+    {
+      "id": "ai_cache",
+      "examples": ["ai_coach_cache.sqlite3"],
+      "gitignore_rule": "*.sqlite3",
+      "dockerignore_rule": "*.sqlite3",
+      "documentation_marker": "ai_coach_cache.sqlite3"
+    },
+    {
+      "id": "backup_bundles",
+      "examples": ["backup-bundles/owner-backup.zip"],
+      "gitignore_rule": "backup-bundles/",
+      "dockerignore_rule": "backup-bundles/",
+      "documentation_marker": "backup bundles"
+    },
+    {
+      "id": "audit_bundles",
+      "examples": ["audit-bundles/local-audit.json"],
+      "gitignore_rule": "audit-bundles/",
+      "dockerignore_rule": "audit-bundles/",
+      "documentation_marker": "audit bundles"
+    },
+    {
+      "id": "json_stores",
+      "examples": ["data_workouts.json", "data_nutrition.json"],
+      "gitignore_rule": "data_*.json",
+      "dockerignore_rule": "**/data_*.json",
+      "documentation_marker": "data_*.json"
+    }
+  ]
+}
