@@ -134,6 +134,48 @@ Phone health sources such as Apple Health, Samsung Health, and Google Health Con
 
 The sync routes remain metadata-only. `/api/health/sync` and `/api/open-wearables/sync` return source, fetch timestamp, counts, stored fact counts, and stable error codes. Raw upstream health payloads, token names, hub secrets, and exception text must not be exposed in normal responses.
 
+### Recovering the local account owner
+
+If a local `auth.db` has multiple rows and the wrong account is selected as the
+owner, first inspect the loaded job and copy its exact `DATA_DIR` value. Then
+run the diagnostic against that database without modifying it:
+
+```bash
+launchctl print gui/$(id -u)/com.fitness-dashboard
+DATA_DIR=/exact/value/from/the/loaded/job
+venv/bin/python support/owner_diagnostic.py --db "$DATA_DIR/auth.db"
+```
+
+The diagnostic opens `auth.db` read-only and reports only account IDs,
+usernames, the selected owner, and the selection status. It never selects or
+prints password hashes, salts, email addresses, or subscription fields. Status
+`invalid_configuration` means `FITNESS_DASHBOARD_OWNER_USER_ID` is not an
+integer; `configured_user_missing` means that integer does not match a local
+account.
+
+To recover the launchd runtime for the current login session, choose the ID for
+the intended username from the diagnostic output, then set and verify the
+override before restarting the app:
+
+```bash
+launchctl setenv FITNESS_DASHBOARD_OWNER_USER_ID 8
+OWNER_ID="$(launchctl getenv FITNESS_DASHBOARD_OWNER_USER_ID)"
+FITNESS_DASHBOARD_OWNER_USER_ID="$OWNER_ID" venv/bin/python support/owner_diagnostic.py --db "$DATA_DIR/auth.db"
+launchctl kickstart -k gui/$(id -u)/com.fitness-dashboard
+```
+
+Replace `8` with the intended account ID. Sign in as that account and verify an
+owner-only page before considering recovery complete. Do not delete, reorder,
+or edit rows in `auth.db`; the override changes owner selection without
+changing credentials or local data. Do not restart if the second diagnostic
+does not report `status: selected` for the intended account and the launchd
+read-back `OWNER_ID`. `launchctl setenv`
+applies to the current login session, so reapply it after logout/reboot or put
+the same variable in the managed service environment through the normal
+deployment process. To return to minimum-ID selection, run `launchctl unsetenv
+FITNESS_DASHBOARD_OWNER_USER_ID`, restart the app, and rerun the diagnostic
+against the same exact `--db` path.
+
 ### LM Studio
 
 The repo supports primary and fallback LM Studio routes. Authenticated AI health checks require a valid session. The route exists at `/api/ai/health`.
