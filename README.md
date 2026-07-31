@@ -124,6 +124,12 @@ FITNESS_SMOKE_PASSWORD=<owner-password> \
 bash support/self_test.sh
 ```
 
+Use `bash support/self_test.sh --route-only` for non-mutating diagnosis when AI
+hardware is intentionally degraded. This mode still authenticates, checks all
+GET routes for 2xx responses and sensitive output, and runs the read-only FD
+check. It downgrades strict AI model-routing validation and skips the rejected
+workout POST. The default remains the strict release smoke.
+
 Run the same smoke against a Tailscale/public URL by changing `BASE_URL`. If you
 already have a session cookie and do not want the script to log in, pass
 `COOKIE=<session-cookie-value>` instead of the username/password pair. The smoke
