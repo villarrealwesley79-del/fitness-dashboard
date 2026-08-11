@@ -67,6 +67,35 @@ def test_food_log_preserves_final_values_and_sanitized_original_estimate(isolate
     assert rows[0]["original_estimate"] == saved["original_estimate"]
 
 
+def test_snapshot_store_does_not_reopen_logged_event_with_missing_rows(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+    meal_id = "logged-event-with-missing-rows"
+    payload = {
+        "status": "pending_review",
+        "meal_id": meal_id,
+        "items": [{"item_id": "item-1", "status": "included"}],
+    }
+    store.save_meal_acceptance_event(
+        1,
+        meal_id=meal_id,
+        status="logged",
+        included_client_ids=["missing-accepted-child"],
+        skipped_count=0,
+        deleted_count=0,
+    )
+
+    saved = store.save_meal_review_snapshot(
+        1,
+        meal_id=meal_id,
+        payload=payload,
+        next_item_seq=2,
+    )
+
+    assert saved["payload"] == payload
+    assert store.get_meal_review_snapshot(1, meal_id) is None
+
+
 def test_food_log_read_derives_photo_provenance_from_original_estimate(isolated_store):
     store, _ = isolated_store
     store.init_data_db()
@@ -227,6 +256,51 @@ def test_food_log_client_id_is_idempotent(isolated_store):
     assert len(rows) == 1
     assert rows[0]["calories"] == 550
     assert rows[0]["protein_g"] == 35
+
+
+def test_imported_acceptance_event_cannot_assert_image_provenance(isolated_store):
+    store, _ = isolated_store
+    store.init_data_db()
+
+    for meal_id, asserted in (
+        ("imported-image-boolean", True),
+        ("imported-image-string", "false"),
+    ):
+        event = store.import_meal_acceptance_event(
+            1,
+            {
+                "meal_id": meal_id,
+                "status": "logged",
+                "included_client_ids": [f"{meal_id}-item"],
+                "skipped_count": 0,
+                "deleted_count": 0,
+                "has_image": asserted,
+            },
+        )
+        assert event["has_image"] is False
+        assert store.get_meal_acceptance_event(1, meal_id)["has_image"] is False
+
+    store.save_meal_acceptance_event(
+        1,
+        meal_id="trusted-image-before-import",
+        status="discarded",
+        included_client_ids=[],
+        skipped_count=1,
+        deleted_count=0,
+        has_image=True,
+    )
+    restored = store.import_meal_acceptance_event(
+        1,
+        {
+            "meal_id": "trusted-image-before-import",
+            "status": "discarded",
+            "included_client_ids": [],
+            "skipped_count": 1,
+            "deleted_count": 0,
+            "has_image": False,
+        },
+    )
+    assert restored["has_image"] is True
 
 
 def test_food_log_parallel_client_id_retries_upsert_single_row(isolated_store):

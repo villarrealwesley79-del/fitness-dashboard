@@ -238,7 +238,7 @@ def test_accept_endpoint_records_personal_vocab(monkeypatch, tmp_path):
     assert entry["canonical_resolution"]["item_name"] == "Chipotle chicken burrito"
 
 
-def test_accept_endpoint_records_edited_pending_estimate_as_correction(monkeypatch, tmp_path):
+def test_accept_endpoint_does_not_trust_client_original_as_correction(monkeypatch, tmp_path):
     import app
     import data_store
 
@@ -262,9 +262,9 @@ def test_accept_endpoint_records_edited_pending_estimate_as_correction(monkeypat
     )
 
     assert res.status_code == 200
-    assert calls == {"accept": 0, "correct": 1}
-    assert captured["correction_state"] == "corrected"
-    assert captured["original_estimate"]["calories"] == 1075
+    assert calls == {"accept": 1, "correct": 0}
+    assert captured["correction_state"] == "accepted"
+    assert captured["original_estimate"]["calories"] == 900
     assert captured["calories"] == 900
 
 
@@ -288,7 +288,7 @@ def test_accept_endpoint_vocab_learning_is_idempotent_by_client_id(monkeypatch, 
     assert entry["accept_count"] == 1
 
 
-def test_repeated_edited_accepts_keep_personal_vocab_untrusted(monkeypatch, tmp_path):
+def test_repeated_accepts_ignore_client_original_for_vocab_classification(monkeypatch, tmp_path):
     import app
     import data_store
 
@@ -308,10 +308,12 @@ def test_repeated_edited_accepts_keep_personal_vocab_untrusted(monkeypatch, tmp_
         )
         assert res.status_code == 200
 
-    assert personal_vocab.lookup("chip ckn bur", user_id=1) is None
+    learned = personal_vocab.lookup("chip ckn bur", user_id=1)
+    assert learned is not None
+    assert learned["item_name"] == "Chipotle chicken burrito"
     entry = data_store.get_personal_vocab_entry(1, "chip ckn bur")
-    assert entry["accept_count"] == 0
-    assert entry["correct_count"] == 3
+    assert entry["accept_count"] == 3
+    assert entry["correct_count"] == 0
 
 
 def test_meal_intake_preserves_personal_vocab_provenance(monkeypatch, tmp_path):
