@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 import oura_client
 import oura_sleep_sync
+from js_runtime import run_app_js
 
 
 def test_sleep_summary_flags_near_zero_duration_with_high_score(monkeypatch):
@@ -78,29 +79,92 @@ def test_sleep_summary_does_not_treat_missing_daily_stages_as_zero(monkeypatch):
 
 
 def test_vitals_renderer_blocks_inconsistent_sleep_values():
-    source = open("static/js/app.js", encoding="utf-8").read()
+    output = run_app_js(
+        ["paintDashboardFromState", "renderVitals", "state"],
+        """
+const element = () => ({
+  textContent: 'stale', innerHTML: '', hidden: false, firstChild: null, className: '',
+  classList: { toggle() {}, remove() {} },
+});
+[
+  'dash-sleep', 'glance-sleep', 'glance-sleep-quality', 'insight-title',
+  'insight-body', 'insight-sparkline', 'v-rhr', 'v-hrv', 'v-hr-zone',
+  'v-hr-zone-sub', 'v-temp', 'v-temp-delta', 'v-steps', 'v-steps-goal',
+  'v-active-cal', 'v-active-cal-goal', 'v-total-cal', 'v-total-cal-goal',
+  'v-active-min', 'v-active-min-goal', 'spark-steps', 'spark-active-min',
+  'spark-sleep', 'v-sleep-dur', 'v-sleep-dur-sub', 'v-sleep-score',
+  'v-sleep-score-sub', 'v-weight', 'v-bf', 'v-weight-delta', 'v-bf-delta',
+  'v-rhr-delta', 'v-hrv-delta',
+].forEach((id) => { sandbox.elements[id] = element(); });
 
-    assert "sleep.data_quality.status === 'inconsistent'" in source
-    assert "Sleep data inconsistent" in source
-    assert "const dashboardSleepInconsistent = sleep && sleep.data_quality" in source
-    assert "const dashboardSleepQualityKnown = sleep && sleep.data_quality" in source
-    assert source.count("!dashboardSleepQualityKnown || dashboardSleepInconsistent ? '--'") == 2
-    assert "sleep.data_quality.source, sleep.data_quality.observed_at, 'Check sync'" in source
-    assert "d.date !== sleep.data_quality.observed_at" in source
-    assert "s.day !== sleep.data_quality.observed_at" in source
-    assert "excludedSleepDates.has(d.date)" in source
-    assert "excludedSleepDates.has(s.day)" in source
-    assert "s.sleep_duration_min != null" in source
-    assert "d.score != null" in source
-    assert "const sleepQualityWarning = sleep && sleep.data_quality" in source
-    assert "if (dashboardSleepInconsistent || sleepQualityWarning)" in source
-    assert "sleepQualityWarning ? sleepQualityAction" in source
-    assert "Sleep data needs review" in source
-    assert "dashboardSleepInconsistent || sleepQualityWarning" in source
-    assert "last.rem_sleep_min != null ? `${Math.round(last.rem_sleep_min)}m REM` : 'REM unknown'" in source
-    assert "last.deep_sleep_min != null ? `${Math.round(last.deep_sleep_min)}m Deep` : 'Deep unknown'" in source
-    assert source.count("sleep.last_night && sleep.last_night.total_sleep_min != null ? fmtDur(sleep.last_night.total_sleep_min) : '--'") == 2
-    assert "oura && oura.sleep_duration_min != null ? fmtDur(oura.sleep_duration_min)" not in source
+const sleep = {
+  last_night: { total_sleep_min: 1, rem_sleep_min: 0, deep_sleep_min: 0 },
+  trend_data: [{ date: '2026-06-04', duration_min: 1, score: 88 }],
+  data_quality: {
+    status: 'inconsistent', source: 'oura', observed_at: '2026-06-04',
+    excluded_dates: ['2026-06-04'],
+  },
+};
+const sparklines = [];
+e.state.dashboard = null;
+e.state.oura = null;
+e.state.reco = null;
+e.state.ouraSleep = sleep;
+sandbox.__fitSet.renderFreshnessChips(() => {});
+sandbox.__fitSet.renderRecommendationSourceSummary(() => {});
+sandbox.__fitSet.renderMacroCard(() => {});
+sandbox.__fitSet.sparkline((_container, values) => sparklines.push(values));
+sandbox.__fitSet.getVitals(async () => ({}));
+sandbox.__fitSet.getOuraStatus(async () => ({ sleep_score: 88 }));
+sandbox.__fitSet.getOuraSleep(async () => sleep);
+sandbox.__fitSet.getBody(async () => ({ history: [] }));
+sandbox.__fitSet.getOuraTrends(async () => ({ series: [
+  { day: '2026-06-03', sleep_duration_min: 480, nightly_sleep: true },
+  { day: '2026-06-04', sleep_duration_min: 1, nightly_sleep: false },
+] }));
+
+e.paintDashboardFromState();
+await e.renderVitals();
+process.stdout.write(JSON.stringify({
+  dashboard: {
+    sleep: sandbox.elements['dash-sleep'].textContent,
+    glanceSleep: sandbox.elements['glance-sleep'].textContent,
+    glanceQuality: sandbox.elements['glance-sleep-quality'].textContent,
+    insightTitle: sandbox.elements['insight-title'].textContent,
+    insightBody: sandbox.elements['insight-body'].textContent,
+  },
+  vitals: {
+    duration: sandbox.elements['v-sleep-dur'].textContent,
+    subtitle: sandbox.elements['v-sleep-dur-sub'].textContent,
+    score: sandbox.elements['v-sleep-score'].textContent,
+    scoreSubtitle: sandbox.elements['v-sleep-score-sub'].textContent,
+  },
+  sleepSparklines: sparklines.slice(-1)[0],
+}));
+""",
+        mocks=[
+            "renderFreshnessChips", "renderRecommendationSourceSummary", "renderMacroCard",
+            "sparkline", "getVitals", "getOuraStatus", "getOuraSleep", "getBody",
+            "getOuraTrends",
+        ],
+    )
+
+    assert output == {
+        "dashboard": {
+            "sleep": "--",
+            "glanceSleep": "--",
+            "glanceQuality": "oura · 2026-06-04 · Check sync",
+            "insightTitle": "Sleep data needs review",
+            "insightBody": "oura · 2026-06-04 · Check sync",
+        },
+        "vitals": {
+            "duration": "--",
+            "subtitle": "Sleep data inconsistent · Check Oura sync",
+            "score": "--",
+            "scoreSubtitle": "2026-06-04",
+        },
+        "sleepSparklines": [8],
+    }
 
 
 def test_sleep_summary_flags_duration_stage_conflict(monkeypatch):
@@ -554,10 +618,45 @@ def test_sleep_summary_excludes_non_nightly_daily_rows_from_weekly_aggregates(
 
 
 def test_vitals_renderer_filters_sleep_plot_to_shared_nightly_contract():
-    source = open("static/js/app.js", encoding="utf-8").read()
+    output = run_app_js(
+        ["renderVitals"],
+        """
+const element = () => ({ textContent: '', className: '', classList: { toggle() {}, remove() {} } });
+[
+  'v-rhr', 'v-hrv', 'v-hr-zone', 'v-hr-zone-sub', 'v-temp', 'v-temp-delta',
+  'v-steps', 'v-steps-goal', 'v-active-cal', 'v-active-cal-goal', 'v-total-cal',
+  'v-total-cal-goal', 'v-active-min', 'v-active-min-goal', 'spark-steps',
+  'spark-active-min', 'spark-sleep', 'v-sleep-dur', 'v-sleep-dur-sub',
+  'v-sleep-score', 'v-sleep-score-sub', 'v-weight', 'v-bf', 'v-weight-delta',
+  'v-bf-delta', 'v-rhr-delta', 'v-hrv-delta',
+].forEach((id) => { sandbox.elements[id] = element(); });
+const sparklines = [];
+sandbox.__fitSet.getVitals(async () => ({}));
+sandbox.__fitSet.getOuraStatus(async () => ({ sleep_score: 88 }));
+sandbox.__fitSet.getOuraSleep(async () => ({
+  last_night: { total_sleep_min: 480, rem_sleep_min: 100, deep_sleep_min: 90 },
+  data_quality: { status: 'ok', excluded_dates: ['2026-06-02'] },
+}));
+sandbox.__fitSet.getBody(async () => ({ history: [] }));
+sandbox.__fitSet.getOuraTrends(async () => ({ series: [
+  { day: '2026-06-01', sleep_duration_min: 480, nightly_sleep: true },
+  { day: '2026-06-02', sleep_duration_min: 400, nightly_sleep: true },
+  { day: '2026-06-03', sleep_duration_min: 30, sleep_type: 'nap', nightly_sleep: false },
+  { day: '2026-06-04', sleep_duration_min: 30, sleep_type: 'rest', nightly_sleep: false },
+  { day: '2026-06-05', sleep_duration_min: 30, sleep_type: 'late_nap', nightly_sleep: false },
+  { day: '2026-06-06', sleep_duration_min: 420, nightly_sleep: true },
+] }));
+sandbox.__fitSet.sparkline((_container, values) => sparklines.push(values));
+await e.renderVitals();
+process.stdout.write(JSON.stringify(sparklines.slice(-1)[0]));
+""",
+        mocks=[
+            "getVitals", "getOuraStatus", "getOuraSleep", "getBody", "getOuraTrends",
+            "sparkline",
+        ],
+    )
 
-    assert "nightly_sleep" in source
-    assert "s.nightly_sleep === true" in source
+    assert output == [8, 7]
 
 
 def test_oura_daily_migrates_and_preserves_nullable_sleep_type(tmp_path):
