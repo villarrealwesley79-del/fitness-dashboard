@@ -423,6 +423,143 @@ def test_sleep_summary_treats_scored_nap_conflict_as_historical(monkeypatch):
     assert payload["data_quality"]["excluded_dates"] == ["9999-01-01"]
 
 
+def test_smart_recommendation_excludes_inconsistent_sleep_from_debt_and_reasoning(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("SECRET_KEY", "fit234-secret")
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+
+    db_path = tmp_path / "oura.db"
+    oura_client.init_oura_db(str(db_path))
+    oura_client.upsert_oura_daily(
+        str(db_path),
+        "2026-06-04",
+        80,
+        88,
+        55,
+        None,
+        sleep_duration_min=1,
+        sleep_deep_min=0,
+        sleep_rem_min=0,
+        sleep_light_min=1,
+    )
+
+    monkeypatch.setattr(module, "OURA_DB_FILE", str(db_path))
+    monkeypatch.setattr(
+        module,
+        "get_oura_daily",
+        lambda *_a, **_kw: {"readiness_score": 80, "sleep_score": 88, "hrv": 55},
+    )
+    monkeypatch.setattr(module, "WORKOUTS", [])
+    monkeypatch.setattr(module, "SORENESS_DATA", [])
+    monkeypatch.setattr(module, "RECOVERY_DATA", [])
+    monkeypatch.setattr(module, "get_recent_hrv_trend", lambda *_a, **_kw: "unknown")
+    monkeypatch.setattr(module, "filter_recent_soreness", lambda *_a, **_kw: [])
+    monkeypatch.setattr(module, "summarize_recent_completion", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        module,
+        "calculate_acwr",
+        lambda *_a, **_kw: {
+            "acute_load": 0,
+            "chronic_load": 0,
+            "acwr": 0,
+            "risk": "low",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "calculate_recovery_bonus",
+        lambda *_a, **_kw: {"bonus_points": 0},
+    )
+    monkeypatch.setattr(
+        module,
+        "_apple_health_hr_intensity_summary",
+        lambda *_a, **_kw: {"applied_count": 0},
+    )
+    monkeypatch.setattr(module, "_cached_wttr", lambda *_a, **_kw: {"available": False})
+    monkeypatch.setattr(
+        module,
+        "_whoop_recommendation_context",
+        lambda *_a, **_kw: {"signals": {}, "source_conflict": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "apply_wearable_modifiers",
+        lambda recommendation, next_workout, **_kw: {
+            "recommendation": recommendation,
+            "next_workout": next_workout,
+            "load_source": "deterministic",
+        },
+    )
+    monkeypatch.setattr(module, "_open_wearables_recommendation_facts", lambda: {})
+    monkeypatch.setattr(
+        module,
+        "_apply_open_wearables_recommendation_guard",
+        lambda recommendation, _facts: (recommendation, {}),
+    )
+    monkeypatch.setattr(module, "_compute_data_freshness", lambda: {})
+    monkeypatch.setattr(module, "_confidence_level_from", lambda *_a, **_kw: "low")
+    monkeypatch.setattr(module, "get_current_workout_plan", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "_current_workout_plan_for_fingerprint", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "_food_log_entries_for_context", lambda *_a, **_kw: [])
+    monkeypatch.setattr(module, "_nutrition_context_for_date", lambda *_a, **_kw: {"warnings": []})
+    monkeypatch.setattr(module, "_workout_looks_hard", lambda *_a, **_kw: False)
+    monkeypatch.setattr(
+        module,
+        "generate_next_workout",
+        lambda *_a, **_kw: {"name": "Test workout", "focus": "full_body", "exercises": []},
+    )
+
+    response = module.app.test_client().get("/api/recommendation/smart")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["readiness_factors"]["sleep_debt"]["debt_minutes"] == 0
+    assert "Sleep debt" not in payload["reasoning"]
+
+
+@pytest.mark.parametrize("sleep_type", ["nap", "rest", "late_nap"])
+def test_sleep_summary_excludes_non_nightly_daily_rows_from_weekly_aggregates(
+    monkeypatch, sleep_type
+):
+    monkeypatch.setenv("SECRET_KEY", "fit234-secret")
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    night = {
+        "day": "2026-06-03",
+        "total_sleep_min": 480,
+        "deep_sleep_min": 90,
+        "rem_sleep_min": 100,
+        "light_sleep_min": 290,
+        "sleep_score": 88,
+    }
+    non_night = {
+        "day": "2026-06-04",
+        "sleep_type": sleep_type,
+        "sleep_duration_min": 30,
+        "sleep_score": None,
+    }
+    monkeypatch.setattr(oura_sleep_sync, "get_latest_sleep", lambda *_a, **_kw: [night])
+    monkeypatch.setattr(oura_sleep_sync, "get_sleep_range", lambda *_a, **_kw: [night])
+    monkeypatch.setattr(module, "get_oura_daily", lambda *_a, **_kw: non_night)
+    monkeypatch.setattr(module, "get_oura_daily_range", lambda *_a, **_kw: [non_night])
+
+    payload = module.app.test_client().get("/api/oura/sleep-summary").get_json()
+
+    assert payload["week_average"]["duration_min"] == 480
+    assert payload["trend_data"] == [
+        {"date": "2026-06-03", "duration_min": 480, "score": 88}
+    ]
+
+
+def test_vitals_renderer_filters_sleep_plot_to_shared_nightly_contract():
+    source = open("static/js/app.js", encoding="utf-8").read()
+
+    assert "nightly_sleep" in source
+    assert "s.nightly_sleep === true" in source
+
+
 def test_oura_daily_migrates_and_preserves_nullable_sleep_type(tmp_path):
     db_path = tmp_path / "oura.db"
     legacy_columns = [

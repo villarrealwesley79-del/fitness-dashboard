@@ -3422,7 +3422,8 @@
                 ? sleep.data_quality.excluded_dates
                 : []
         );
-        const safeSleepSeries = series.filter((s) => s.sleep_duration_min != null && !excludedSleepDates.has(s.day)
+        const safeSleepSeries = series.filter((s) => s.sleep_duration_min != null && s.nightly_sleep === true
+            && !excludedSleepDates.has(s.day)
             && (!sleepInconsistent || s.day !== sleep.data_quality.observed_at));
         sparkline($('spark-steps'), series.map((s) => s.steps), { color: '#22c55e' });
         sparkline($('spark-active-min'), series.map((s) => s.activity_score), { color: '#fbbf24' });
