@@ -1,0 +1,1741 @@
+{
+  "benchmark": {
+    "candidate_passed": false,
+    "case_count": 107,
+    "latency_gates": {
+      "text": {
+        "latency_limit_ms": 5000,
+        "latency_ms_avg": 2995.2,
+        "latency_passed": true
+      },
+      "vision": {
+        "latency_limit_ms": 15000,
+        "latency_ms_avg": null,
+        "latency_passed": false
+      }
+    },
+    "latency_limit_ms": null,
+    "latency_ms_avg": 2414.6,
+    "latency_passed": false,
+    "missing_image_count": 40,
+    "model": "per-task",
+    "model_run_count": 66,
+    "quality_pass_count": 42,
+    "quality_pass_rate": 0.393,
+    "results": [
+      {
+        "case_id": "txt-001",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 150,
+          "carbs_g": 3,
+          "confidence": 0.6,
+          "fat_g": 1,
+          "fiber_g": 0,
+          "item_name": "Protein Shake",
+          "meal_type": "snack",
+          "portion_description": "Approximately 12-16 oz (350-470 ml) prepared with water or milk, containing one scoop of standard whey protein powder",
+          "protein_g": 25,
+          "sodium_mg": 120,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is estimated as 'standard' but actual volume varies significantly by preparation.",
+            "Nutritional values are based on a typical whey protein isolate powder; brand, type (whey vs. casein vs. plant), and added ingredients (milk, fruit, sweeteners) are unknown and would drastically alter macros."
+          ]
+        },
+        "failure_reasons": [
+          "confidence_calibrated"
+        ],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 0.0,
+        "task": "meal_text_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "txt-002",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 350,
+          "carbs_g": 20,
+          "confidence": 0.6,
+          "fat_g": 18,
+          "fiber_g": 1,
+          "item_name": "2 eggs and toast",
+          "meal_type": "breakfast",
+          "portion_description": "Two large eggs (scrambled, fried, or boiled) with one slice of toasted bread (type unspecified, e.g., white, whole wheat, or sourdough)",
+          "protein_g": 18,
+          "sodium_mg": 300,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Egg preparation method (scrambled, fried, boiled) affects fat and calorie content",
+            "Toast type (white, whole wheat, sourdough) and butter/oil usage are unspecified",
+            "Portion size of toast (one slice vs. two) is not clearly defined",
+            "Sodium content varies significantly based on added salt or butter type"
+          ]
+        },
+        "failure_reasons": [
+          "confidence_calibrated"
+        ],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 0.0,
+        "task": "meal_text_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "txt-003",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 900,
+          "carbs_g": 85,
+          "confidence": 0.6,
+          "fat_g": 35,
+          "fiber_g": 12,
+          "item_name": "Chipotle Bowl with Chicken and White Rice",
+          "meal_type": "lunch",
+          "portion_description": "Standard-sized bowl with chicken, white rice, and typical toppings (beans, salsa, guacamole, cheese, sour cream)",
+          "protein_g": 45,
+          "sodium_mg": 1800,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size not specified (standard vs. large)",
+            "Toppings and quantities unknown",
+            "Sodium and fat content highly variable based on added ingredients"
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "txt-004",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 450,
+          "carbs_g": 55,
+          "confidence": 0.6,
+          "fat_g": 22,
+          "fiber_g": 3,
+          "item_name": "Movie Theater Popcorn",
+          "meal_type": "snack",
+          "portion_description": "Medium-sized serving of buttered popcorn",
+          "protein_g": 6,
+          "sodium_mg": 250,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size varies significantly by theater and size ordered (small/medium/large)",
+            "Butter/oil content and type are not specified",
+            "Sodium levels can vary widely based on seasoning and preparation method"
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "txt-005",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 105,
+          "carbs_g": 27,
+          "confidence": 0.6,
+          "fat_g": 0.4,
+          "fiber_g": 3.1,
+          "item_name": "banana",
+          "meal_type": "snack",
+          "portion_description": "1 medium banana (approximately 7 inches long, peeled)",
+          "protein_g": 1.3,
+          "sodium_mg": 1,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is estimated as a medium banana; actual size may vary.",
+            "Nutritional values are approximate and can vary based on ripeness and specific variety."
+          ]
+        },
+        "failure_reasons": [
+          "confidence_calibrated"
+        ],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 0.0,
+        "task": "meal_text_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "txt-006",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 250,
+          "carbs_g": 25,
+          "confidence": 0.6,
+          "fat_g": 5,
+          "fiber_g": 4,
+          "item_name": "Greek yogurt with berries",
+          "meal_type": "snack",
+          "portion_description": "Approximately 1 cup (245g) of plain Greek yogurt topped with 1/2 cup (75g) of mixed fresh berries",
+          "protein_g": 20,
+          "sodium_mg": 80,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size of yogurt is estimated as 1 cup, but could vary significantly.",
+            "Type of yogurt (plain, flavored, fat content) is unspecified.",
+            "Type and quantity of berries are estimated.",
+            "Added sweeteners or toppings are not mentioned."
+          ]
+        },
+        "failure_reasons": [
+          "confidence_calibrated"
+        ],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 0.0,
+        "task": "meal_text_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "txt-007",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 450,
+          "carbs_g": 45,
+          "confidence": 0.6,
+          "fat_g": 8,
+          "fiber_g": 1,
+          "item_name": "Chicken and Rice",
+          "meal_type": "dinner",
+          "portion_description": "Approximately 1 cup of cooked white rice with 4-6 oz of grilled or roasted chicken breast, served with minimal sauce or seasoning",
+          "protein_g": 35,
+          "sodium_mg": 300,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion sizes are not specified (e.g., cup vs. plate, chicken weight)",
+            "Cooking method and added ingredients (oil, sauces, seasoning) are unknown",
+            "Type of rice (white, brown, jasmine) is unspecified",
+            "Sodium content varies significantly based on preparation"
+          ]
+        },
+        "failure_reasons": [
+          "confidence_calibrated"
+        ],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 0.0,
+        "task": "meal_text_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "txt-008",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 350,
+          "carbs_g": 55,
+          "confidence": 0.4,
+          "fat_g": 8,
+          "fiber_g": 3,
+          "item_name": "Pasta Leftovers",
+          "meal_type": "lunch",
+          "portion_description": "Half a standard serving of pasta with sauce",
+          "protein_g": 12,
+          "sodium_mg": 400,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is vague ('half' of what?)",
+            "Type of pasta and sauce unknown",
+            "Nutritional values are highly variable based on ingredients"
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "txt-009",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 400,
+          "carbs_g": 35,
+          "confidence": 0.6,
+          "fat_g": 15,
+          "fiber_g": 3,
+          "item_name": "Turkey Sandwich",
+          "meal_type": "lunch",
+          "portion_description": "Approximately 1 standard sandwich made with two slices of white or whole wheat bread, 2-3 oz of sliced turkey breast, and typical condiments (mayonnaise or mustard) and optional lettuce/tomato",
+          "protein_g": 25,
+          "sodium_mg": 800,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is not specified (e.g., club sandwich vs. simple sandwich)",
+            "Type of bread is unknown (white, whole wheat, sourdough, etc.)",
+            "Condiments and additional ingredients (cheese, avocado, etc.) are not specified",
+            "Sodium content can vary significantly based on processed turkey and condiments used"
+          ]
+        },
+        "failure_reasons": [
+          "portion_reasonable"
+        ],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": false,
+          "raw_trace_free": true
+        },
+        "score": 0.0,
+        "task": "meal_text_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "txt-010",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 350,
+          "carbs_g": 45,
+          "confidence": 0.6,
+          "fat_g": 14,
+          "fiber_g": 6,
+          "item_name": "Oatmeal with Peanut Butter",
+          "meal_type": "breakfast",
+          "portion_description": "Approximately 1 cup of cooked oatmeal topped with 1 tablespoon of peanut butter",
+          "protein_g": 10,
+          "sodium_mg": 150,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size of oatmeal is estimated as 1 cup cooked, but could vary.",
+            "Amount of peanut butter is estimated as 1 tablespoon, but could be more or less.",
+            "Preparation method (e.g., water vs. milk) and additional ingredients (e.g., sugar, salt) are not specified, affecting nutritional values."
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "txt-011",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 50,
+          "carbs_g": 0.5,
+          "confidence": 0.6,
+          "fat_g": 5,
+          "fiber_g": 0,
+          "item_name": "Coffee with Cream",
+          "meal_type": "breakfast",
+          "portion_description": "One 8-ounce cup of brewed coffee with 1 tablespoon of heavy cream",
+          "protein_g": 0.5,
+          "sodium_mg": 5,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size of cream is estimated as 1 tablespoon, but could vary significantly.",
+            "Type of cream (e.g., half-and-half, light cream, heavy cream) is unspecified, affecting calorie and fat content.",
+            "Coffee preparation (e.g., black, with sugar) is not detailed, though assumed black for this estimate."
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "txt-012",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 450,
+          "carbs_g": 15,
+          "confidence": 0.6,
+          "fat_g": 25,
+          "fiber_g": 5,
+          "item_name": "Salad with Grilled Chicken",
+          "meal_type": "lunch",
+          "portion_description": "Approximately 1 large bowl (about 300-400g total), containing mixed greens, a serving of grilled chicken breast (approx. 150g), and typical salad toppings/dressing (e.g., vinaigrette, cheese, croutons).",
+          "protein_g": 35,
+          "sodium_mg": 600,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is highly variable and not specified.",
+            "Type and amount of dressing significantly impact calorie and fat content.",
+            "Specific toppings (cheese, croutons, nuts, etc.) are unknown.",
+            "Size of the chicken portion is estimated."
+          ]
+        },
+        "failure_reasons": [
+          "portion_reasonable"
+        ],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": false,
+          "raw_trace_free": true
+        },
+        "score": 0.0,
+        "task": "meal_text_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "txt-013",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 900,
+          "carbs_g": 70,
+          "confidence": 0.6,
+          "fat_g": 50,
+          "fiber_g": 4,
+          "item_name": "Burger and Fries",
+          "meal_type": "lunch",
+          "portion_description": "One standard beef burger (approx. 4-6 oz patty with bun and typical toppings) and one medium serving of french fries (approx. 4-6 oz)",
+          "protein_g": 30,
+          "sodium_mg": 1200,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion sizes are highly variable; 'burger' can range from 4oz to 12oz+ patties",
+            "Fries portion size is unspecified (small/medium/large)",
+            "Toppings and cooking methods (fried vs baked) significantly impact nutritional values",
+            "Bun type (white, whole wheat, brioche) affects carb and calorie counts"
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "txt-014",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 520,
+          "carbs_g": 40,
+          "confidence": 0.6,
+          "fat_g": 27,
+          "fiber_g": 2,
+          "item_name": "McDonald's Quarter Pounder",
+          "meal_type": "lunch",
+          "portion_description": "One standard Quarter Pounder with cheese (beef patty, cheese, ketchup, mustard, onions, pickles, lettuce on a sesame seed bun)",
+          "protein_g": 30,
+          "sodium_mg": 1080,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is standard but may vary by region",
+            "Cheese content and condiments may differ",
+            "No specific cheese type or additional toppings specified"
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "txt-015",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 200,
+          "carbs_g": 20,
+          "confidence": 0.6,
+          "fat_g": 8,
+          "fiber_g": 5,
+          "item_name": "Protein Bar",
+          "meal_type": "snack",
+          "portion_description": "One standard-sized protein bar (approximately 50-60 grams)",
+          "protein_g": 20,
+          "sodium_mg": 150,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size varies significantly by brand and type (e.g., 1 bar could range from 40g to 70g).",
+            "Nutritional values (calories, macros, sodium) depend heavily on specific brand and flavor (e.g., chocolate vs. peanut butter).",
+            "No specific brand or size provided in the input."
+          ]
+        },
+        "failure_reasons": [
+          "confidence_calibrated"
+        ],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": false,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": false,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 0.0,
+        "task": "meal_text_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "txt-016",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 350,
+          "carbs_g": 45,
+          "confidence": 0.6,
+          "fat_g": 12,
+          "fiber_g": 2,
+          "item_name": "Sushi Roll",
+          "meal_type": "lunch",
+          "portion_description": "Standard 6-8 piece sushi roll (e.g., California roll or similar)",
+          "protein_g": 12,
+          "sodium_mg": 600,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size varies significantly (6-12 pieces)",
+            "Fillings and ingredients (e.g., tempura, avocado, fish type) greatly affect nutritional values",
+            "Sodium content depends on soy sauce and seasoning",
+            "No specific roll type provided"
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "txt-017",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 450,
+          "carbs_g": 32,
+          "confidence": 0.6,
+          "fat_g": 22,
+          "fiber_g": 4,
+          "item_name": "Steak Tacos",
+          "meal_type": "lunch",
+          "portion_description": "Two medium-sized corn tortilla tacos filled with grilled steak, onions, cilantro, and salsa",
+          "protein_g": 28,
+          "sodium_mg": 650,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size is estimated as two tacos, but actual count may vary",
+            "Tortilla type (corn vs. flour) and size not specified",
+            "Amount of toppings and added fats (oil, cheese, sour cream) unknown",
+            "Steak cut and preparation method (grilled, fried, etc.) not specified"
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "txt-018",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 285,
+          "carbs_g": 36,
+          "confidence": 0.6,
+          "fat_g": 10,
+          "fiber_g": 2.5,
+          "item_name": "Pizza Slice",
+          "meal_type": "lunch",
+          "portion_description": "One standard slice of cheese pizza, approximately 1/8 of a 14-inch pizza",
+          "protein_g": 12,
+          "sodium_mg": 640,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size varies significantly based on pizza type (thin crust vs. thick crust), toppings, and slice size.",
+            "Nutritional values are estimates for a standard cheese pizza slice; actual values depend on specific ingredients and preparation."
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "txt-019",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 450,
+          "carbs_g": 65,
+          "confidence": 0.6,
+          "fat_g": 12,
+          "fiber_g": 8,
+          "item_name": "Smoothie Bowl",
+          "meal_type": "breakfast",
+          "portion_description": "Approximately 1 standard bowl (around 12-16 oz or 350-450g), typically containing blended fruits, yogurt or milk, and toppings like granola, seeds, or nuts",
+          "protein_g": 15,
+          "sodium_mg": 120,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "Portion size can vary significantly based on bowl size and ingredients",
+            "Caloric content highly dependent on specific fruits, sweeteners, and toppings used",
+            "Protein content varies greatly with base ingredients (yogurt, milk, protein powder)",
+            "Toppings like granola, nuts, and seeds can drastically alter macronutrient profile"
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "txt-020",
+        "estimate": {
+          "ambiguous": true,
+          "calories": 300,
+          "carbs_g": 40,
+          "confidence": 0.3,
+          "fat_g": 15,
+          "fiber_g": 3,
+          "item_name": "Snacks",
+          "meal_type": "snack",
+          "portion_description": "Unspecified quantity of mixed snacks",
+          "protein_g": 5,
+          "sodium_mg": 400,
+          "source": "local_model_benchmark",
+          "uncertainty_notes": [
+            "The term 'some snacks' is highly ambiguous and does not specify the type, quantity, or brand of the snacks.",
+            "Nutritional values are estimated based on an average mixed snack profile (e.g., chips, crackers, or cookies) and are likely to vary significantly depending on the actual items consumed."
+          ]
+        },
+        "failure_reasons": [],
+        "quality": {
+          "calories_within_band": true,
+          "confidence_calibrated": true,
+          "item_hint_match": true,
+          "macro_energy_consistent": true,
+          "nutrition_fields_within_bands": true,
+          "passed": true,
+          "portion_reasonable": true,
+          "raw_trace_free": true
+        },
+        "score": 1.0,
+        "task": "meal_text_nutrition",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "photo-001",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-002",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-003",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-004",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-005",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-006",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-007",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-008",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-009",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-010",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-011",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-012",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-013",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-014",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-015",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-016",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-017",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-018",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-019",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "photo-020",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "pkg-001",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "pkg-002",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "pkg-003",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "pkg-004",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "pkg-005",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "pkg-006",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "pkg-007",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "pkg-008",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "pkg-009",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "pkg-010",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "amb-001",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "amb-002",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "amb-003",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "amb-004",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "amb-005",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "amb-006",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "amb-007",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "amb-008",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "amb-009",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "amb-010",
+        "failure_reasons": [
+          "missing_image_mapping"
+        ],
+        "score": 0.0,
+        "skipped_reason": "missing_image_mapping",
+        "task": "food_photo_nutrition",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "adjust-001",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "adjust-002",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "adjust-003",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "adjust-004",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "adjust-005",
+        "failure_reasons": [
+          "avoid_joints"
+        ],
+        "score": 0.857,
+        "task": "adjust_intent",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "adjust-006",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "adjust-007",
+        "failure_reasons": [
+          "sets_delta_pct"
+        ],
+        "score": 0.875,
+        "task": "adjust_intent",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "adjust-008",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "adjust-009",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "adjust-010",
+        "failure_reasons": [
+          "swap"
+        ],
+        "score": 0.857,
+        "task": "adjust_intent",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "adjust-011",
+        "failure_reasons": [
+          "sets_delta_pct_bounds"
+        ],
+        "score": 0.857,
+        "task": "adjust_intent",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "adjust-012",
+        "failure_reasons": [
+          "avoid_joints"
+        ],
+        "score": 0.857,
+        "task": "adjust_intent",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "adjust-013",
+        "failure_reasons": [
+          "avoid_joints"
+        ],
+        "score": 0.857,
+        "task": "adjust_intent",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "adjust-014",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "adjust-015",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "adjust-016",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "adjust-017",
+        "failure_reasons": [
+          "rpe_delta",
+          "sets_delta_pct",
+          "rpe_delta_bounds",
+          "sets_delta_pct_bounds"
+        ],
+        "score": 0.5,
+        "task": "adjust_intent",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "adjust-018",
+        "failure_reasons": [
+          "avoid_muscles"
+        ],
+        "score": 0.857,
+        "task": "adjust_intent",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "adjust-019",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "adjust-020",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "adjust_intent",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-001",
+        "failure_reasons": [
+          "canonical_name"
+        ],
+        "score": 0.75,
+        "task": "swap_resolution",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "swap-002",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-003",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-004",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-005",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-006",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-007",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-008",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-009",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-010",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-011",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-012",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-013",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "swap_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "swap-014",
+        "failure_reasons": [
+          "canonical_name"
+        ],
+        "score": 0.75,
+        "task": "swap_resolution",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "swap-015",
+        "failure_reasons": [
+          "request_failed"
+        ],
+        "score": 0.0,
+        "task": "swap_resolution",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "analysis-001",
+        "failure_reasons": [
+          "wins",
+          "concerns",
+          "next_session_cue"
+        ],
+        "score": 0.5,
+        "task": "post_workout_analysis",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "analysis-002",
+        "failure_reasons": [
+          "summary",
+          "wins",
+          "next_session_cue"
+        ],
+        "score": 0.5,
+        "task": "post_workout_analysis",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "analysis-003",
+        "failure_reasons": [
+          "wins",
+          "next_session_cue"
+        ],
+        "score": 0.667,
+        "task": "post_workout_analysis",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "analysis-004",
+        "failure_reasons": [
+          "wins"
+        ],
+        "score": 0.833,
+        "task": "post_workout_analysis",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "analysis-005",
+        "failure_reasons": [
+          "summary",
+          "comparison",
+          "next_session_cue"
+        ],
+        "score": 0.5,
+        "task": "post_workout_analysis",
+        "verdict": "FAIL"
+      },
+      {
+        "case_id": "brief-001",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "daily_coaching_brief",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "brief-002",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "daily_coaching_brief",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "brief-003",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "daily_coaching_brief",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "brand-001",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "branded_food_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "brand-002",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "branded_food_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "brand-003",
+        "failure_reasons": [],
+        "score": 1.0,
+        "task": "branded_food_resolution",
+        "verdict": "PASS"
+      },
+      {
+        "case_id": "brand-004",
+        "failure_reasons": [
+          "confidence_calibrated"
+        ],
+        "score": 0.0,
+        "task": "branded_food_resolution",
+        "verdict": "FAIL"
+      }
+    ],
+    "schema_valid_count": 66,
+    "schema_valid_rate": 0.617,
+    "task_class_counts": {
+      "adjust_intent": 20,
+      "branded_food_resolution": 4,
+      "daily_coaching_brief": 3,
+      "food_photo_nutrition": 40,
+      "meal_text_nutrition": 20,
+      "post_workout_analysis": 5,
+      "swap_resolution": 15,
+      "workout_analysis_adjustment": 0
+    },
+    "task_latency_gates": {
+      "adjust_intent": {
+        "latency_limit_ms": 8000,
+        "latency_ms_avg": 1996.5,
+        "latency_ms_max": 3286,
+        "latency_passed": true
+      },
+      "branded_food_resolution": {
+        "latency_limit_ms": 5000,
+        "latency_ms_avg": 2927.8,
+        "latency_ms_max": 3639,
+        "latency_passed": true
+      },
+      "daily_coaching_brief": {
+        "latency_limit_ms": 30000,
+        "latency_ms_avg": 2413.3,
+        "latency_ms_max": 2661,
+        "latency_passed": true
+      },
+      "food_photo_nutrition": {
+        "latency_limit_ms": 15000,
+        "latency_ms_avg": null,
+        "latency_ms_max": null,
+        "latency_passed": false
+      },
+      "meal_text_nutrition": {
+        "latency_limit_ms": 5000,
+        "latency_ms_avg": 2995.2,
+        "latency_ms_max": 9711,
+        "latency_passed": true
+      },
+      "post_workout_analysis": {
+        "latency_limit_ms": 25000,
+        "latency_ms_avg": 4300.4,
+        "latency_ms_max": 5574,
+        "latency_passed": true
+      },
+      "swap_resolution": {
+        "latency_limit_ms": 2500,
+        "latency_ms_avg": 1362.4,
+        "latency_ms_max": 1995,
+        "latency_passed": false
+      }
+    },
+    "task_latency_passed": false,
+    "task_summary": {
+      "adjust_intent": {
+        "case_count": 20,
+        "latency": {
+          "latency_limit_ms": 8000,
+          "latency_ms_avg": 1996.5,
+          "latency_ms_max": 3286,
+          "latency_passed": true
+        },
+        "quality_pass_count": 12,
+        "schema_valid_count": 20
+      },
+      "branded_food_resolution": {
+        "case_count": 4,
+        "latency": {
+          "latency_limit_ms": 5000,
+          "latency_ms_avg": 2927.8,
+          "latency_ms_max": 3639,
+          "latency_passed": true
+        },
+        "quality_pass_count": 3,
+        "schema_valid_count": 4
+      },
+      "daily_coaching_brief": {
+        "case_count": 3,
+        "latency": {
+          "latency_limit_ms": 30000,
+          "latency_ms_avg": 2413.3,
+          "latency_ms_max": 2661,
+          "latency_passed": true
+        },
+        "quality_pass_count": 3,
+        "schema_valid_count": 3
+      },
+      "food_photo_nutrition": {
+        "case_count": 40,
+        "latency": {
+          "latency_limit_ms": 15000,
+          "latency_ms_avg": null,
+          "latency_ms_max": null,
+          "latency_passed": false
+        },
+        "quality_pass_count": 0,
+        "schema_valid_count": 0
+      },
+      "meal_text_nutrition": {
+        "case_count": 20,
+        "latency": {
+          "latency_limit_ms": 5000,
+          "latency_ms_avg": 2995.2,
+          "latency_ms_max": 9711,
+          "latency_passed": true
+        },
+        "quality_pass_count": 12,
+        "schema_valid_count": 20
+      },
+      "post_workout_analysis": {
+        "case_count": 5,
+        "latency": {
+          "latency_limit_ms": 25000,
+          "latency_ms_avg": 4300.4,
+          "latency_ms_max": 5574,
+          "latency_passed": true
+        },
+        "quality_pass_count": 0,
+        "schema_valid_count": 5
+      },
+      "swap_resolution": {
+        "case_count": 15,
+        "latency": {
+          "latency_limit_ms": 2500,
+          "latency_ms_avg": 1362.4,
+          "latency_ms_max": 1995,
+          "latency_passed": false
+        },
+        "quality_pass_count": 12,
+        "schema_valid_count": 14
+      }
+    },
+    "text_model": "qwen/qwen3.6-35b-a3b",
+    "vision_model": "qwen3-vl-30b-a3b-instruct"
+  },
+  "case_counts": {
+    "adjust_intent": 20,
+    "ambiguous": 10,
+    "branded_food": 4,
+    "daily_brief": 3,
+    "image_capable": 40,
+    "nutrition_total": 60,
+    "packaged_photo": 10,
+    "photo": 20,
+    "post_workout_analysis": 5,
+    "swap_resolution": 15,
+    "text": 20,
+    "total": 107,
+    "workout": 40
+  },
+  "hardware": {
+    "machine": "arm64",
+    "platform": "macOS-26.6.1-arm64-arm-64bit-Mach-O",
+    "system_profiler": "Model Name: Mac mini\nChip: Apple M4 Pro\nTotal Number of Cores: 12 (8 Performance and 4 Efficiency)\nMemory: 48 GB"
+  },
+  "latency_targets_ms": {
+    "adjust_intent": 8000,
+    "branded_food_resolution": 5000,
+    "daily_coaching_brief": 30000,
+    "food_photo_nutrition": 15000,
+    "meal_text_nutrition": 5000,
+    "post_workout_analysis": 25000,
+    "swap_resolution": 2500,
+    "workout_analysis_adjustment": 30000
+  },
+  "lm_studio": {
+    "latency_ms": 25,
+    "models": [
+      "gx10-worker",
+      "qwen3-vl-30b-a3b-instruct",
+      "google/gemma-4-26b-a4b",
+      "qwen/qwen3.6-35b-a3b",
+      "qwen/qwen3-30b-a3b-2507",
+      "text-embedding-nomic-embed-text-v1.5"
+    ],
+    "reachable": true
+  },
+  "routing_recommendation": {
+    "auto_log_threshold": "confidence >= 0.75, unambiguous, plausible macros",
+    "candidate_text_model": "qwen/qwen3.6-35b-a3b",
+    "candidate_vision_model": "Qwen2.5-VL 7B on ASUS GX10 first; Qwen2.5-VL 32B only if latency and memory fit",
+    "fallback": "deterministic parser fallback with pending_review; cloud disabled by default",
+    "pending_review_threshold": "confidence < 0.75 or ambiguous/impossible nutrition",
+    "production_text_route": "deterministic parser fallback with pending_review until a benchmark passes",
+    "production_vision_route": "manual pending-review fallback until a local VLM benchmark passes"
+  },
+  "task_class_counts": {
+    "adjust_intent": 20,
+    "branded_food_resolution": 4,
+    "daily_coaching_brief": 3,
+    "food_photo_nutrition": 40,
+    "meal_text_nutrition": 20,
+    "post_workout_analysis": 5,
+    "swap_resolution": 15,
+    "workout_analysis_adjustment": 0
+  }
+}
