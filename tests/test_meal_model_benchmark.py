@@ -26,24 +26,68 @@ def test_benchmark_case_counts_match_fit58_contract():
     assert len(module.AMBIGUOUS_CASES) == 10
     assert len(module.nutrition_cases()) == 60
     assert len(module.image_capable_cases()) == 40
-    assert len(module.WORKOUT_CASES) == 3
+    assert len(module.WORKOUT_CASES) == 40
     assert module.WORKOUT_CASES == module.structured_cases()
     assert len(module.DAILY_BRIEF_CASES) == 3
     assert len(module.BRANDED_FOOD_CASES) == 4
-    assert len(module.ADJUST_INTENT_CASES) == 1
-    assert len(module.SWAP_RESOLUTION_CASES) == 1
-    assert len(module.POST_WORKOUT_ANALYSIS_CASES) == 1
-    assert len(module.all_cases()) == 70
+    assert len(module.ADJUST_INTENT_CASES) == 20
+    assert len(module.SWAP_RESOLUTION_CASES) == 15
+    assert len(module.POST_WORKOUT_ANALYSIS_CASES) == 5
+    assert len(module.all_cases()) == 107
+    assert module.task_class_counts()["adjust_intent"] == 20
+    assert module.task_class_counts()["swap_resolution"] == 15
+    assert module.task_class_counts()["post_workout_analysis"] == 5
     assert module.task_class_counts() == {
         "food_photo_nutrition": 40,
         "meal_text_nutrition": 20,
         "workout_analysis_adjustment": 0,
         "daily_coaching_brief": 3,
         "branded_food_resolution": 4,
-        "adjust_intent": 1,
-        "swap_resolution": 1,
-        "post_workout_analysis": 1,
+        "adjust_intent": 20,
+        "swap_resolution": 15,
+        "post_workout_analysis": 5,
     }
+
+
+def test_fit396_workout_cases_are_unique_and_use_production_contracts():
+    module = _load_module()
+
+    cases = module.WORKOUT_CASES
+    assert len({case.case_id for case in cases}) == 40
+
+    for case in module.ADJUST_INTENT_CASES:
+        assert set(case.request) == {"athlete_constraint", "current_plan", "readiness"}
+        assert case.request["athlete_constraint"]
+        assert case.request["current_plan"]
+        assert case.request["readiness"]
+        assert case.expected
+
+    for case in module.SWAP_RESOLUTION_CASES:
+        assert set(case.request) == {
+            "typed_name", "current_exercise", "target_muscle", "candidate_names", "candidates",
+        }
+        assert case.request["typed_name"] is not None
+        assert case.request["current_exercise"]
+        assert case.request["target_muscle"]
+        assert case.request["candidate_names"]
+        assert case.request["candidates"]
+        assert "canonical_name" in case.expected
+        assert case.expected["canonical_name"] is None or case.expected["canonical_name"] in case.request["candidate_names"]
+
+    for case in module.POST_WORKOUT_ANALYSIS_CASES:
+        assert set(case.request) == {"workout", "context"}
+        assert case.request["workout"]
+        assert case.request["context"]
+        assert case.expected
+
+    schemas = {
+        "adjust_intent": module.ADJUST_SCHEMA,
+        "swap_resolution": module.SWAP_RESOLVE_SCHEMA,
+        "post_workout_analysis": module.ANALYZE_SCHEMA,
+    }
+    for case in cases:
+        payload = module._chat_payload(case, "local-model")
+        assert payload["response_format"]["json_schema"]["schema"] is schemas[case.task_class]
 
 
 def test_routing_recommendation_lists_loaded_qwen_as_candidate_not_primary():
@@ -1112,7 +1156,9 @@ def test_structured_latency_gate_rejects_any_case_over_production_timeout(monkey
     monkeypatch.setattr(module, "run_model_case", fake_run_model_case)
     summary = module.run_model_benchmark(module.SWAP_RESOLUTION_CASES, text_model="text-model")
 
-    assert captured_timeouts == [module.LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC]
+    assert captured_timeouts == [
+        module.LM_STUDIO_SWAP_RESOLVE_TIMEOUT_SEC
+    ] * len(module.SWAP_RESOLUTION_CASES)
     assert summary["task_latency_gates"]["swap_resolution"]["latency_passed"] is False
     assert summary["candidate_passed"] is False
 
@@ -1445,7 +1491,10 @@ def test_main_dispatches_all_cases_to_task_specific_models_without_common_model(
     )
 
     assert module.main() == 0
-    json.loads(capsys.readouterr().out)
-    assert len(captured) == 70
+    output = json.loads(capsys.readouterr().out)
+    assert len(captured) == 107
     assert sum(1 for _case_id, model, _path in captured if model == "configured-vision-model") == 40
-    assert sum(1 for _case_id, model, _path in captured if model == "configured-text-model") == 30
+    assert sum(1 for _case_id, model, _path in captured if model == "configured-text-model") == 67
+    assert output["benchmark"]["case_count"] == 107
+    assert output["benchmark"]["schema_valid_count"] == 107
+    assert all(not row["failure_reasons"] for row in output["benchmark"]["results"])
