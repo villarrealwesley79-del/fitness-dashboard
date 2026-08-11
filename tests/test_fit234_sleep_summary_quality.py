@@ -54,6 +54,37 @@ def test_sleep_summary_flags_near_zero_duration_with_high_score(monkeypatch):
     }
 
 
+def test_sleep_debt_bounds_recent_window_before_filtering_invalid_rows(tmp_path):
+    module = importlib.import_module("app")
+    db_path = tmp_path / "oura.db"
+    oura_client.init_oura_db(str(db_path))
+
+    def store(day, duration, deep, rem, light, score=88):
+        oura_client.upsert_oura_daily(
+            str(db_path),
+            day,
+            None,
+            score,
+            None,
+            None,
+            sleep_duration_min=duration,
+            sleep_deep_min=deep,
+            sleep_rem_min=rem,
+            sleep_light_min=light,
+        )
+
+    store("2026-06-08", 1, 0, 0, 1)
+    for day in ["2026-06-07", "2026-06-06", "2026-06-05", "2026-06-04", "2026-06-03", "2026-06-02"]:
+        store(day, 420, 90, 100, 230)
+    store("2026-06-01", 300, 60, 60, 180)
+
+    result = module.calculate_sleep_debt(str(db_path), days=7)
+
+    assert result["debt_minutes"] == 0
+    assert result["nights_under"] == 0
+    assert result["avg_sleep_min"] == 420.0
+
+
 def test_sleep_summary_does_not_treat_missing_daily_stages_as_zero(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit234-secret")
     module = importlib.import_module("app")

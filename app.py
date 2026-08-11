@@ -4506,7 +4506,8 @@ def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
             "message": "No recent sleep-duration data available from Oura cache.",
         }
 
-    rows = [r for r in rows if _is_valid_nightly_sleep_row(r)][:days]
+    rows = rows[:days]
+    rows = [r for r in rows if _is_valid_nightly_sleep_row(r)]
 
     debt = 0
     nights_under = 0
