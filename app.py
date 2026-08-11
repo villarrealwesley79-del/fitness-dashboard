@@ -4475,8 +4475,13 @@ def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
         conn.row_factory = sqlite3.Row
         try:
             cur = conn.execute(
-                "SELECT day, sleep_duration_min FROM oura_daily WHERE sleep_duration_min IS NOT NULL ORDER BY day DESC LIMIT ?",
-                (days,),
+                """
+                SELECT day, sleep_type, sleep_duration_min, sleep_score,
+                       sleep_deep_min, sleep_rem_min, sleep_light_min
+                FROM oura_daily
+                WHERE sleep_duration_min IS NOT NULL
+                ORDER BY day DESC
+                """
             )
             rows = [dict(r) for r in cur.fetchall()]
         finally:
@@ -4491,6 +4496,8 @@ def calculate_sleep_debt(oura_db_file: str, days: int = 7) -> dict:
             "message": f"Sleep debt unavailable (DB error: {str(e)}).",
         }
 
+    rows = rows[:days]
+    rows = [r for r in rows if _is_valid_nightly_sleep_row(r)]
     if not rows:
         return {
             "debt_minutes": 0,
@@ -5416,9 +5423,10 @@ def api_vitals():
         start_s = start.strftime("%Y-%m-%d")
         oura_today = get_oura_daily(OURA_DB_FILE, today_s)
         oura_week = get_oura_daily_range(OURA_DB_FILE, start_s, today_s) or []
+        nightly_oura_week = [r for r in oura_week if _is_valid_nightly_sleep_row(r)]
 
-        def _latest_with(field):
-            for r in reversed(oura_week):
+        def _latest_with(field, rows=oura_week):
+            for r in reversed(rows):
                 if r.get(field) is not None:
                     return r
             return None
@@ -5468,8 +5476,13 @@ def api_vitals():
                 steps_avg_7d = int(round(sum(step_vals) / len(step_vals)))
 
         if not last_night:
-            row = (oura_today if oura_today and oura_today.get("sleep_duration_min") is not None
-                   else _latest_with("sleep_duration_min"))
+            row = (
+                oura_today
+                if oura_today
+                and oura_today.get("sleep_duration_min") is not None
+                and _is_valid_nightly_sleep_row(oura_today)
+                else _latest_with("sleep_duration_min", nightly_oura_week)
+            )
             if row:
                 dur_min = row.get("sleep_duration_min") or 0
                 last_night = {
@@ -5487,11 +5500,20 @@ def api_vitals():
                 sources["sleep"] = "oura"
 
         if avg_7d_hours is None:
-            dur_vals = [r.get("sleep_duration_min") for r in oura_week if r.get("sleep_duration_min") is not None]
+            dur_vals = [
+                r.get("sleep_duration_min")
+                for r in nightly_oura_week
+                if r.get("sleep_duration_min") is not None
+            ]
             if dur_vals:
                 avg_7d_hours = round((sum(dur_vals) / len(dur_vals)) / 60.0, 2)
 
-        if quality_score is None and oura_today and oura_today.get("sleep_score") is not None:
+        if (
+            quality_score is None
+            and oura_today
+            and _is_valid_nightly_sleep_row(oura_today)
+            and oura_today.get("sleep_score") is not None
+        ):
             quality_score = oura_today.get("sleep_score")
     except Exception:
         pass
@@ -14739,6 +14761,7 @@ def oura_status():
             activity_score=metrics.get("activity_score") if activity_day == today else None,
             resting_hr=metrics.get("resting_hr"),
             temperature_deviation=metrics.get("temperature_deviation"),
+            sleep_type=metrics.get("sleep_type"),
             sleep_duration_min=metrics.get("sleep_duration_min"),
             sleep_deep_min=metrics.get("sleep_deep_min"),
             sleep_rem_min=metrics.get("sleep_rem_min"),
@@ -14823,6 +14846,7 @@ def oura_trends():
         for row in items or []:
             public = dict(row)
             public.pop("raw_json", None)
+            public["nightly_sleep"] = _is_valid_nightly_sleep_row(row)
             cleaned.append(public)
         return cleaned
 
@@ -14846,6 +14870,7 @@ def oura_trends():
                     active_calories=d.get("active_calories"),
                     resting_hr=d.get("resting_hr"),
                     temperature_deviation=d.get("temperature_deviation"),
+                    sleep_type=d.get("sleep_type"),
                     sleep_duration_min=d.get("sleep_duration_min"),
                     sleep_deep_min=d.get("sleep_deep_min"),
                     sleep_rem_min=d.get("sleep_rem_min"),
@@ -14925,15 +14950,116 @@ def sync_oura_sleep():
         return api_error("Oura sync failed.", 500, code="oura_sync_failed")
 
 
+def _sleep_row_inconsistency_reason(row):
+    total_sleep_min = (row or {}).get("total_sleep_min")
+    sleep_score = (row or {}).get("sleep_score")
+    sleep_type = str((row or {}).get("sleep_type") or "").strip().lower()
+    is_nap = sleep_type in {"nap", "rest", "late_nap"}
+    if total_sleep_min is not None and total_sleep_min < 60:
+        if sleep_score is not None and sleep_score >= 70:
+            return "duration_score_conflict"
+        if not is_nap:
+            return "implausible_duration"
+    stage_values = [
+        (row or {}).get("deep_sleep_min"),
+        (row or {}).get("rem_sleep_min"),
+        (row or {}).get("light_sleep_min"),
+    ]
+    if total_sleep_min is not None and total_sleep_min >= 60 and all(value is not None for value in stage_values):
+        if abs(total_sleep_min - sum(stage_values)) > 30:
+            return "duration_stage_conflict"
+    return None
+
+
+def _sleep_row_is_non_nightly(row):
+    sleep_type = str((row or {}).get("sleep_type") or "").strip().lower()
+    return sleep_type in {"nap", "rest", "late_nap"}
+
+
+def _is_valid_nightly_sleep_row(row):
+    row = dict(row or {})
+    if _sleep_row_is_non_nightly(row):
+        return False
+    if "total_sleep_min" not in row:
+        row["total_sleep_min"] = row.get("sleep_duration_min")
+    if "deep_sleep_min" not in row:
+        row["deep_sleep_min"] = row.get("sleep_deep_min")
+    if "rem_sleep_min" not in row:
+        row["rem_sleep_min"] = row.get("sleep_rem_min")
+    if "light_sleep_min" not in row:
+        row["light_sleep_min"] = row.get("sleep_light_min")
+    return _sleep_row_inconsistency_reason(row) is None
+
+
+def _sleep_summary_data_quality(last_night, week_data=None):
+    excluded_dates = {
+        row.get("day")
+        for row in (week_data or [])
+        if row.get("day") and _sleep_row_inconsistency_reason(row)
+    }
+    reason = _sleep_row_inconsistency_reason(last_night)
+    if reason:
+        if last_night.get("day"):
+            excluded_dates.add(last_night["day"])
+        return {
+            "status": "inconsistent",
+            "reason": reason,
+            "source": "oura",
+            "observed_at": last_night.get("day"),
+            "excluded_dates": sorted(excluded_dates),
+            "message": "Sleep data is inconsistent. Check Oura sync.",
+        }
+    if excluded_dates:
+        excluded_dates = sorted(excluded_dates)
+        return {
+            "status": "partial",
+            "reason": "historical_inconsistency",
+            "source": "oura",
+            "observed_at": excluded_dates[-1],
+            "excluded_dates": excluded_dates,
+            "message": "Some sleep history is inconsistent. Check Oura sync.",
+        }
+    return {"status": "ok"}
+
+
+def _bedtime_variance_from_rows(rows):
+    bedtimes = []
+    for row in rows or []:
+        if row.get("total_sleep_min") is None and row.get("sleep_score") is None:
+            continue
+        bedtime_start = row.get("bedtime_start")
+        if not bedtime_start:
+            continue
+        try:
+            parsed = datetime.fromisoformat(bedtime_start.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        bedtimes.append(parsed.hour * 60 + parsed.minute)
+    if len(bedtimes) < 2:
+        return None
+    angles = [2 * math.pi * value / (24 * 60) for value in bedtimes]
+    mean_angle = math.atan2(
+        sum(math.sin(angle) for angle in angles),
+        sum(math.cos(angle) for angle in angles),
+    )
+    mean_minutes = (mean_angle % (2 * math.pi)) * (24 * 60) / (2 * math.pi)
+    deviations = [((value - mean_minutes + 12 * 60) % (24 * 60)) - 12 * 60 for value in bedtimes]
+    variance = sum(value ** 2 for value in deviations) / len(deviations)
+    return int(round(variance ** 0.5))
+
+
 @app.route('/api/oura/sleep-summary')
 def oura_sleep_summary():
     """Get sleep summary for dashboard (last night + 7-day trends)."""
-    from oura_sleep_sync import get_latest_sleep, get_sleep_range, calculate_bedtime_variance
+    from oura_sleep_sync import get_latest_sleep, get_sleep_range
 
     try:
         # Get last night's sleep
         latest = get_latest_sleep(OURA_DB_FILE, days=1, long_sleep_only=True)
-        last_night = latest[0] if latest else None
+        last_night = next(
+            (row for row in (latest or []) if not _sleep_row_is_non_nightly(row)),
+            None,
+        )
 
         # Get 7-day data
         end = datetime.now().date()
@@ -14954,15 +15080,16 @@ def oura_sleep_summary():
             if not d:
                 return None
             dur = d.get("sleep_duration_min")
-            if not dur and not d.get("sleep_score"):
+            if dur is None and d.get("sleep_score") is None:
                 return None
             return {
                 "day": d.get("day"),
-                "total_sleep_min": dur or 0,
-                "deep_sleep_min": d.get("sleep_deep_min") or 0,
-                "rem_sleep_min": d.get("sleep_rem_min") or 0,
-                "light_sleep_min": d.get("sleep_light_min") or 0,
-                "awake_time_min": d.get("sleep_awake_min") or 0,
+                "sleep_type": d.get("sleep_type"),
+                "total_sleep_min": dur,
+                "deep_sleep_min": d.get("sleep_deep_min"),
+                "rem_sleep_min": d.get("sleep_rem_min"),
+                "light_sleep_min": d.get("sleep_light_min"),
+                "awake_time_min": d.get("sleep_awake_min"),
                 "sleep_score": d.get("sleep_score"),
                 "avg_heart_rate": None,
                 "efficiency": None,
@@ -14970,13 +15097,15 @@ def oura_sleep_summary():
 
         daily_row = _daily_to_row(daily_today)
         ln_day = (last_night or {}).get("day")
-        if daily_row and (not last_night or (ln_day or "") < daily_row["day"]
+        daily_row_is_non_nightly = _sleep_row_is_non_nightly(daily_row)
+        if daily_row and not daily_row_is_non_nightly and (not last_night or (ln_day or "") < daily_row["day"]
                          or (last_night.get("sleep_score") in (None, 0) and daily_row.get("sleep_score"))):
             last_night = daily_row
 
         # Augment week_data from oura_daily range where a day is missing.
         # oura_sleep can lag behind oura_daily, so we fall back to the daily
         # cache to keep the 7-day averages meaningful.
+        daily_quality_rows = []
         try:
             if week_data is None:
                 week_data = []
@@ -14984,34 +15113,51 @@ def oura_sleep_summary():
             existing_days = {r.get("day") for r in week_data}
             for d in daily_range:
                 row = _daily_to_row(d)
+                if row:
+                    daily_quality_rows.append(row)
                 if row and row["day"] not in existing_days:
                     week_data.append(row)
                     existing_days.add(row["day"])
         except Exception:
             pass
 
+        quality_rows = list(week_data) + list(latest or []) + daily_quality_rows
+        if daily_row:
+            quality_rows.append(daily_row)
+        quality_current = (
+            daily_row
+            if not daily_row_is_non_nightly and _sleep_row_inconsistency_reason(daily_row)
+            else last_night
+        )
+        data_quality = _sleep_summary_data_quality(quality_current, quality_rows)
+        excluded_dates = set(data_quality.get("excluded_dates") or [])
+        week_data = [
+            row for row in week_data
+            if row.get("day") not in excluded_dates and _is_valid_nightly_sleep_row(row)
+        ]
+
         # Calculate 7-day averages
-        avg_duration = 0
-        avg_score = 0
-        avg_deep = 0
-        avg_rem = 0
+        avg_duration = None
+        avg_score = None
+        avg_deep = None
+        avg_rem = None
         avg_hr = 0
 
         if week_data:
-            durations = [r.get("total_sleep_min") or 0 for r in week_data]
+            durations = [r.get("total_sleep_min") for r in week_data if r.get("total_sleep_min") is not None]
             scores = [r.get("sleep_score") or 0 for r in week_data if r.get("sleep_score")]
-            deeps = [r.get("deep_sleep_min") or 0 for r in week_data]
-            rems = [r.get("rem_sleep_min") or 0 for r in week_data]
+            deeps = [r.get("deep_sleep_min") for r in week_data if r.get("deep_sleep_min") is not None]
+            rems = [r.get("rem_sleep_min") for r in week_data if r.get("rem_sleep_min") is not None]
             hrs = [r.get("avg_heart_rate") or 0 for r in week_data if r.get("avg_heart_rate")]
 
-            avg_duration = int(sum(durations) / len(durations)) if durations else 0
-            avg_score = int(sum(scores) / len(scores)) if scores else 0
-            avg_deep = int(sum(deeps) / len(deeps)) if deeps else 0
-            avg_rem = int(sum(rems) / len(rems)) if rems else 0
+            avg_duration = int(sum(durations) / len(durations)) if durations else None
+            avg_score = int(sum(scores) / len(scores)) if scores else None
+            avg_deep = int(sum(deeps) / len(deeps)) if deeps else None
+            avg_rem = int(sum(rems) / len(rems)) if rems else None
             avg_hr = round(sum(hrs) / len(hrs), 1) if hrs else 0
 
         # Bedtime consistency
-        bedtime_variance = calculate_bedtime_variance(OURA_DB_FILE, days=7)
+        bedtime_variance = _bedtime_variance_from_rows(week_data)
 
         # Consistency status
         if bedtime_variance is None:
@@ -15028,12 +15174,12 @@ def oura_sleep_summary():
         return jsonify({
             "last_night": {
                 "date": last_night.get("day") if last_night else None,
-                "total_sleep_min": last_night.get("total_sleep_min") if last_night else 0,
-                "deep_sleep_min": last_night.get("deep_sleep_min") if last_night else 0,
-                "rem_sleep_min": last_night.get("rem_sleep_min") if last_night else 0,
-                "light_sleep_min": last_night.get("light_sleep_min") if last_night else 0,
-                "awake_time_min": last_night.get("awake_time_min") if last_night else 0,
-                "sleep_score": last_night.get("sleep_score") if last_night else 0,
+                "total_sleep_min": last_night.get("total_sleep_min") if last_night else None,
+                "deep_sleep_min": last_night.get("deep_sleep_min") if last_night else None,
+                "rem_sleep_min": last_night.get("rem_sleep_min") if last_night else None,
+                "light_sleep_min": last_night.get("light_sleep_min") if last_night else None,
+                "awake_time_min": last_night.get("awake_time_min") if last_night else None,
+                "sleep_score": last_night.get("sleep_score") if last_night else None,
                 "avg_heart_rate": last_night.get("avg_heart_rate") if last_night else 0,
                 "efficiency": last_night.get("efficiency") if last_night else 0,
             },
@@ -15048,11 +15194,12 @@ def oura_sleep_summary():
                 "bedtime_variance_min": bedtime_variance,
                 "status": consistency_status,
             },
+            "data_quality": data_quality,
             "trend_data": [
                 {
                     "date": r.get("day"),
-                    "duration_min": r.get("total_sleep_min") or 0,
-                    "score": r.get("sleep_score") or 0,
+                    "duration_min": r.get("total_sleep_min"),
+                    "score": r.get("sleep_score"),
                 }
                 for r in week_data
             ]
