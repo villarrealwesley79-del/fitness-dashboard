@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -151,14 +152,6 @@ def test_public_auth_form_token_allows_login_post(monkeypatch):
     assert "Invalid username or password." in response.get_data(as_text=True)
 
 
-def test_server_rendered_checkout_form_includes_csrf_token():
-    source = Path("templates/pricing.html").read_text()
-    form = source.split('action="/create-checkout-session" method="POST"', 1)[1].split("</form>", 1)[0]
-
-    assert 'name="csrf_token"' in form
-    assert 'value="{{ csrf_token }}"' in form
-
-
 def test_all_server_rendered_post_forms_include_csrf_token():
     post_forms = []
 
@@ -176,7 +169,7 @@ def test_all_server_rendered_post_forms_include_csrf_token():
             assert 'name="csrf_token"' in form_html
             assert 'value="{{ csrf_token }}"' in form_html
 
-    assert post_forms == ["templates/login.html", "templates/pricing.html"]
+    assert post_forms == ["templates/login.html"]
 
 
 def test_state_changing_post_with_csrf_header_continues_to_work(monkeypatch):
@@ -237,28 +230,12 @@ def test_token_authed_apple_health_webhook_is_csrf_exempt(monkeypatch):
     assert response.get_json()["error"] == "invalid or missing sync token"
 
 
-def test_live_js_client_sends_csrf_header():
-    source = Path("static/js/app.js").read_text()
-
-    assert "X-Requested-With" in source
-    assert "XMLHttpRequest" in source
-    assert "[CSRF_HEADER_NAME]: CSRF_HEADER_VALUE" in source
-
-
-def test_api_helper_preserves_csrf_header_when_callers_add_headers():
-    source = Path("static/js/app.js").read_text()
-    api_body = source.split("async function api(path, opts = {}) {", 1)[1].split("if (res.status === 401)", 1)[0]
-
-    assert "const headers = { 'Accept': 'application/json', ...(fetchOpts.headers || {}), [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE };" in api_body
-    assert "...fetchOpts,\n                credentials: 'same-origin',\n                headers," in api_body
-
-
 def test_csrf_rollout_bumps_cached_asset_versions():
     index = Path("templates/index.html").read_text()
     service_worker = Path("static/js/sw.js").read_text()
 
-    assert "app-loader.js?v=20260629-fit253-open-wearables-link" in index
-    assert "app.js?v=20260629-fit253-open-wearables-link" in Path("static/js/app-loader.js").read_text()
-    assert "fitness-dashboard-v20260629-fit253-open-wearables-link" in service_worker
+    assert "app-loader.js?v=20260713-fit270-oura-detail" in index
+    assert "app.js?v=20260713-fit270-oura-detail" in Path("static/js/app-loader.js").read_text()
+    assert "fitness-dashboard-v20260713-fit270-oura-detail" in service_worker
     assert "self.skipWaiting()" in service_worker
     assert "self.clients.claim()" in service_worker

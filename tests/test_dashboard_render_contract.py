@@ -1,327 +1,215 @@
 from pathlib import Path
 
+from js_runtime import run_app_js
 
 ROOT = Path(__file__).resolve().parents[1]
+INDEX_HTML = (ROOT / "templates" / "index.html").read_text()
 
 
-def _paint_body() -> str:
-    """Return the body of paintDashboardFromState() so individual painter
-    guards can be inspected without false positives from elsewhere in app.js.
-    """
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-    marker = "function paintDashboardFromState()"
-    assert marker in app_js, "paintDashboardFromState not found"
-    return app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
-
-
-def _render_stats_body() -> str:
-    """Return the body of renderStats() for Stats-tab contract checks."""
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-    marker = "async function renderStats()"
-    assert marker in app_js, "renderStats not found"
-    return app_js.split(marker, 1)[1].split("\n    }\n", 1)[0]
-
-
-def test_render_dashboard_preserves_fit125_repaint_chains():
-    """FIT-127 + FIT-129 must not regress FIT-125: each primary endpoint
-    still gets its own .then chain in renderDashboard so a slow endpoint
-    can't block the others. FIT-129 replaced the bare `.then(repaint, () =>
-    repaint())` shape with gen-guarded settle calls, but the per-slice
-    fan-out (one .then per fetcher) is still the contract."""
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-    assert "async function renderDashboard()" in app_js
-    body = app_js.split("async function renderDashboard()", 1)[1].split("\n    }\n", 1)[0]
-
-    # Each of the four primary fetchers must have its own .then chain in
-    # renderDashboard. We assert this by checking that each fetcher's
-    # invocation inside renderDashboard is immediately followed by `.then(`.
-    for fetcher in ("getDashboard", "getOuraStatus", "getReco", "getOuraSleep"):
-        assert f"{fetcher}().then(" in body, (
-            f"FIT-125 per-slice fan-out must remain — {fetcher} must have its "
-            f"own .then chain inside renderDashboard so a slow endpoint can't "
-            f"block the others"
-        )
-
-
-def test_readiness_gauge_paint_is_guarded_on_missing_data():
-    """FIT-127 AC: the readiness gauge must NOT paint a 0%/"Low" reading when
-    neither oura.readiness nor dash.recomp_command.readiness is hydrated.
-
-    Also (P1 follow-up): when readiness is null AFTER a prior paint (e.g.
-    invalidateCaches() + slow/failed refetch), the SVG must be cleared so the
-    prior session's ring/value doesn't linger as stale guidance — gaugeChart
-    is the only writer to #readiness-gauge-svg.
-    """
-    body = _paint_body()
-    assert "gaugeChart($('readiness-gauge-svg')" in body, "gauge call missing"
-
-    # The gauge call must sit inside an `if (readiness != null)` (or equivalent
-    # truthiness-respecting non-zero check) so the painter skips on empty
-    # state instead of falling through to `|| 0`.
-    assert "if (readiness != null) {" in body, (
-        "readiness gauge must be guarded by `if (readiness != null)` — a real "
-        "Oura reading of 0 should still paint, but undefined/missing must skip"
+def test_dashboard_painter_keeps_cold_open_placeholders_and_clears_gauge():
+    output = run_app_js(
+        ["paintDashboardFromState", "state"],
+        """
+const element = (classes = []) => {
+  const values = new Set(classes);
+  return {
+    textContent: 'stale', innerHTML: '<svg/>', hidden: false, firstChild: null,
+    classList: { toggle(name, enabled) { if (enabled) values.add(name); else values.delete(name); }, remove(name) { values.delete(name); }, has(name) { return values.has(name); } },
+    removeChild() {}, _classes: values,
+  };
+};
+['readiness-gauge-svg', 'dash-hrv', 'dash-rhr', 'dash-sleep', 'reco-title', 'reco-intensity'].forEach((id) => { sandbox.elements[id] = element(); });
+sandbox.elements['reco-why'] = element(['lower-confidence']);
+sandbox.elements['reco-confidence-pct'] = element();
+sandbox.elements['insight-title'] = element();
+sandbox.elements['insight-body'] = element();
+e.state.dashboard = null; e.state.oura = null; e.state.reco = null; e.state.ouraSleep = null;
+sandbox.__fitSet.gaugeChart(() => { throw new Error('gauge must not paint without readiness'); });
+e.paintDashboardFromState();
+process.stdout.write(JSON.stringify({
+  gauge: sandbox.elements['readiness-gauge-svg'].innerHTML,
+  title: sandbox.elements['reco-title'].textContent,
+  intensity: sandbox.elements['reco-intensity'].textContent,
+  hrv: sandbox.elements['dash-hrv'].textContent,
+  why: sandbox.elements['reco-why'].textContent,
+  whyLowerConfidence: sandbox.elements['reco-why'].classList.has('lower-confidence'),
+  confidence: sandbox.elements['reco-confidence-pct'].textContent,
+  insightTitle: sandbox.elements['insight-title'].textContent,
+  insightBody: sandbox.elements['insight-body'].textContent,
+}));
+""",
+        mocks=["gaugeChart"],
     )
+    assert output == {
+        "gauge": "", "title": "—", "intensity": "—", "hrv": "--",
+        "why": "Analyzing your readiness, sleep, and training load…",
+        "whyLowerConfidence": False, "confidence": "--%",
+        "insightTitle": "Gathering data…", "insightBody": "",
+    }
 
-    # And the old unconditional `|| 0` collapse to a literal zero is gone.
-    assert "readiness = (oura && oura.readiness) || (dash && dash.recomp_command && dash.recomp_command.readiness) || 0;" not in body, (
-        "the old `|| 0` fallback in `readiness` is the regression source — "
-        "use null sentinels per readiness source and gate the paint"
+
+def test_dashboard_render_fans_out_independent_fetches():
+    output = run_app_js(
+        ["renderDashboard", "state"],
+        """
+const calls = [];
+let resolveSlowOura;
+const slowOura = new Promise((resolve) => { resolveSlowOura = resolve; });
+sandbox.__fitSet.getDashboard(async () => { calls.push('getDashboard'); return {}; });
+sandbox.__fitSet.getOuraStatus(async () => { calls.push('getOuraStatus'); return slowOura; });
+sandbox.__fitSet.getReco(async () => { calls.push('getReco'); return null; });
+sandbox.__fitSet.getOuraSleep(async () => { calls.push('getOuraSleep'); return null; });
+sandbox.__fitSet.getOuraTrends(async () => { calls.push('getOuraTrends'); return null; });
+sandbox.__fitSet.getHistory(async () => { calls.push('getHistory'); return null; });
+sandbox.__fitSet.paintDashboardFromState(() => calls.push('paint'));
+sandbox.__fitSet.paintReadinessTrendChart(() => {});
+sandbox.__fitSet.paintVolumeChart(() => {});
+const render = e.renderDashboard();
+await Promise.resolve();
+await Promise.resolve();
+const beforeResolve = { calls: calls.slice(), paints: calls.filter((name) => name === 'paint').length };
+resolveSlowOura(null);
+await render;
+process.stdout.write(JSON.stringify({ beforeResolve, calls }));
+""",
+        mocks=["getDashboard", "getOuraStatus", "getReco", "getOuraSleep", "getOuraTrends", "getHistory", "paintDashboardFromState", "paintReadinessTrendChart", "paintVolumeChart"],
     )
+    assert all(name in output["beforeResolve"]["calls"] for name in ("getDashboard", "getOuraStatus", "getReco", "getOuraSleep", "getOuraTrends", "getHistory"))
+    assert output["beforeResolve"]["paints"] >= 2
+    assert output["calls"].count("paint") >= output["beforeResolve"]["paints"]
 
-    # Clear-on-null else branch must reset the gauge container so a prior
-    # session's ring doesn't linger after invalidate + slow/failed refetch.
-    assert "gaugeEl.innerHTML = ''" in body, (
-        "readiness gauge must clear #readiness-gauge-svg to empty when "
-        "readiness is null — gaugeChart is the only other writer to the "
-        "container, so skipping leaves stale SVG on screen"
+
+def test_progress_insight_visuals_preserve_semantic_icon_and_tone():
+    output = run_app_js(
+        ["progressInsightVisual"],
+        """
+process.stdout.write(JSON.stringify([
+  e.progressInsightVisual({ type: 'positive', icon: 'trending_up' }),
+  e.progressInsightVisual({ type: 'warning', icon: 'pause' }),
+  e.progressInsightVisual({ type: 'negative', icon: 'trending_down' }),
+  e.progressInsightVisual({ type: 'info', icon: 'fitness_center' }),
+  e.progressInsightVisual({ type: 'negative', icon: 'warning' }),
+  e.progressInsightVisual({ type: 'danger' }),
+]));
+""",
     )
+    assert output == [
+        {"iconClass": "pos", "iconChar": "↑"}, {"iconClass": "warn", "iconChar": "‖"},
+        {"iconClass": "neg", "iconChar": "↓"}, {"iconClass": "info", "iconChar": "i"},
+        {"iconClass": "neg", "iconChar": "!"}, {"iconClass": "neg", "iconChar": "▲"},
+    ]
 
 
-def test_reco_title_assignment_is_guarded():
-    """FIT-127 AC: the reco-title textContent must NOT receive the literal
-    "Rest Day" fallback when neither reco nor dash.next_workout is hydrated.
+def test_dashboard_whoop_source_markup_is_present():
+    for token in ('id="reco-fresh-whoop"', 'id="btn-reco-sources"', 'id="modal-reco-sources"'):
+        assert token in INDEX_HTML
 
-    Also (P1 follow-up): when recoTitle resolves to null AFTER a prior paint,
-    the chip must reset to the '—' HTML placeholder so a prior session's
-    title doesn't linger after invalidate + slow/failed refetch.
-    """
-    body = _paint_body()
 
-    # The literal "Rest Day" must no longer terminate the recoTitle fallback
-    # chain — it should fall through to null instead.
-    assert "|| 'Rest Day';" not in body, (
-        "literal 'Rest Day' fallback must be replaced with null so the "
-        "reco-title HTML placeholder ('—') stays put on cold open"
+def test_dashboard_whoop_state_resolver_covers_every_supported_state():
+    output = run_app_js(
+        ["resolveWhoopUiState"],
+        """
+process.stdout.write(JSON.stringify([
+  e.resolveWhoopUiState({ error: 'sync failed' }),
+  e.resolveWhoopUiState({ syncing: true }),
+  e.resolveWhoopUiState({ reauth_required: true }),
+  e.resolveWhoopUiState({ source_kind: 'csv_only' }),
+  e.resolveWhoopUiState({ status: 'missing_config' }),
+  e.resolveWhoopUiState({ connected: false }),
+  e.resolveWhoopUiState({ source_conflict: true }),
+  e.resolveWhoopUiState({ calibrating: true }),
+  e.resolveWhoopUiState({ pending_score: true }),
+  e.resolveWhoopUiState({ unscorable: true }),
+  e.resolveWhoopUiState({ status: 'fresh', connected: true }),
+  e.resolveWhoopUiState({ status: 'aging', connected: true }),
+  e.resolveWhoopUiState({ status: 'stale', connected: true }),
+  e.resolveWhoopUiState({ has_data: false, connected: true }),
+  e.resolveWhoopUiState({ connected_at: '2026-07-16T00:00:00Z' }),
+  e.resolveWhoopUiState(null),
+]));
+""",
     )
+    assert output == [
+        "error", "syncing", "reauth_required", "csv_only", "missing_config",
+        "disconnected", "source_conflict", "calibrating", "pending_score", "unscorable",
+        "fresh", "aging", "stale", "missing", "connected", "disconnected",
+    ]
 
-    # And the textContent assignment must be guarded on a truthy recoTitle.
-    assert "if (recoTitle) {" in body, (
-        "reco-title assignment must be wrapped in `if (recoTitle)` so the "
-        "HTML placeholder is preserved when recoTitle resolves to null"
+
+def test_dashboard_painter_merges_whoop_status_into_recommendation_sources():
+    output = run_app_js(
+        ["paintDashboardFromState", "state"],
+        """
+const captured = [];
+e.state.dashboard = {
+  freshness: {
+    whoop: { status: 'stale', score_state: 'pending_score', last_data_point: '2026-07-10' },
+    oura: { status: 'fresh' },
+  },
+};
+e.state.reco = { suggested_workout: 'strength' };
+e.state.whoopStatus = {
+  connected: true,
+  status: 'connected',
+  last_successful_sync_at: '2026-07-16T12:00:00Z',
+};
+sandbox.__fitSet.renderFreshnessChips(() => {});
+sandbox.__fitSet.renderRecommendationSourceSummary((dash, reco, freshness) => {
+  captured.push({
+    sameDash: dash === e.state.dashboard,
+    sameReco: reco === e.state.reco,
+    whoop: freshness.whoop,
+  });
+});
+sandbox.__fitSet.renderMacroCard(() => {});
+sandbox.__fitSet.sparkline(() => {});
+sandbox.__fitSet.paintRetryChip(() => {});
+e.paintDashboardFromState();
+process.stdout.write(JSON.stringify(captured));
+""",
+        mocks=[
+            "renderFreshnessChips", "renderRecommendationSourceSummary",
+            "renderMacroCard", "sparkline", "paintRetryChip",
+        ],
     )
+    assert output == [{
+        "sameDash": True,
+        "sameReco": True,
+        "whoop": {
+            "status": "stale",
+            "score_state": "pending_score",
+            "last_data_point": "2026-07-10",
+            "connected": True,
+            "last_successful_sync_at": "2026-07-16T12:00:00Z",
+            "ui_state": "pending_score",
+        },
+    }]
 
-    # Clear-on-null else branch must reset the chip to the '—' HTML placeholder.
-    assert "$('reco-title').textContent = '—';" in body, (
-        "reco-title must reset to '—' HTML placeholder when recoTitle is "
-        "null — skipping would leave a prior session's title on screen"
+
+def test_render_stats_clears_stale_insights_for_empty_and_malformed_responses():
+    output = run_app_js(
+        ["renderStats"],
+        """
+function element() { return { textContent: '', innerHTML: '', appendChild() {} }; }
+['stats-workouts', 'stats-workouts-delta', 'stats-volume', 'stats-volume-delta', 'stats-avg-vol', 'stats-avg-vol-delta', 'stats-rpe', 'stats-rpe-sub', 'stats-sets', 'stats-sets-delta', 'stats-time', 'stats-time-delta', 'chart-muscle-donut', 'muscle-legend'].forEach((id) => { sandbox.elements[id] = element(); });
+sandbox.elements['insights-list'] = element();
+let insightCall = 0;
+sandbox.__fitSet.getHistory(async () => ({ workouts: [] }));
+sandbox.__fitSet.getAppleHealthWorkouts(async () => []);
+sandbox.__fitSet.renderMuscleRecovery(async () => {});
+sandbox.__fitSet.donutChart(() => {});
+sandbox.__fitSet.getInsights(async () => (++insightCall === 1 ? { insights: [] } : { insights: { malformed: true } }));
+sandbox.elements['insights-list'].innerHTML = '<div class="in-card">stale</div>';
+await e.renderStats();
+const empty = sandbox.elements['insights-list'].innerHTML;
+sandbox.elements['insights-list'].innerHTML = '<div class="in-card">stale again</div>';
+await e.renderStats();
+const malformed = sandbox.elements['insights-list'].innerHTML;
+process.stdout.write(JSON.stringify({ empty, malformed }));
+""",
+        mocks=["getHistory", "getAppleHealthWorkouts", "renderMuscleRecovery", "donutChart", "getInsights"],
     )
-
-
-def test_reco_intensity_assignment_is_guarded():
-    """FIT-127 AC: the reco-intensity chip must NOT receive the literal
-    "Moderate" fallback when reco.recommendation is absent.
-
-    Also (P1 follow-up): when neither focus nor reco.recommendation is
-    available AFTER a prior paint, the chip must reset to the '—' HTML
-    placeholder.
-    """
-    body = _paint_body()
-
-    # The `: 'Moderate'` ternary fallback must be gone.
-    assert ": 'Moderate';" not in body, (
-        "literal 'Moderate' fallback in intensityWord must be replaced with "
-        "null so the intensity chip placeholder stays put on cold open"
-    )
-
-    # And the `|| 'Moderate'` collapse on the final textContent must be gone.
-    assert "].filter(Boolean).join(' · ') || 'Moderate';" not in body, (
-        "the `|| 'Moderate'` collapse on the joined intensity text must be "
-        "replaced with a truthy guard around the assignment"
-    )
-
-    # Clear-on-null else branch must reset the chip to '—' HTML placeholder.
-    assert "$('reco-intensity').textContent = '—';" in body, (
-        "reco-intensity must reset to '—' HTML placeholder when intensityText "
-        "is empty — skipping would leave a prior session's chip on screen"
-    )
-
-
-def test_reco_why_assignment_is_guarded():
-    """FIT-127 AC: the reco-why textContent must NOT receive the canned
-    'Based on your readiness, sleep, and training load.' fallback when there's
-    no reco.reasoning AND no wearable-stale/missing signal.
-
-    Also (P1 follow-up): when whyText resolves to null AFTER a prior paint,
-    the textContent must reset to the 'Analyzing your readiness…' HTML
-    placeholder AND the .lower-confidence class must be cleared so a prior
-    session's reasoning doesn't linger.
-    """
-    body = _paint_body()
-
-    # The canned fallback must NOT be unconditionally assigned. It can still
-    # appear elsewhere if the painter is rewritten, so check for the specific
-    # `|| 'Based on…'` collapse that caused the regression.
-    assert "|| 'Based on your readiness, sleep, and training load.';" not in body, (
-        "the `|| 'Based on your readiness…'` fallback in whyText must be "
-        "replaced with null so the reco-why placeholder stays put on cold open"
-    )
-
-    # And the textContent assignment + class toggle must be inside a truthy
-    # guard on whyText.
-    assert "if (whyText) {" in body, (
-        "the whyEl.textContent assignment must be wrapped in `if (whyText)` "
-        "so it skips painting when there's no real reasoning to show"
-    )
-
-    # Clear-on-null else branch must reset the textContent to the HTML
-    # placeholder AND clear the lower-confidence class.
-    assert "whyEl.textContent = 'Analyzing your readiness, sleep, and training load…';" in body, (
-        "reco-why must reset to the 'Analyzing your readiness…' HTML "
-        "placeholder when whyText is null — skipping would leave a prior "
-        "session's reasoning on screen"
-    )
-    assert "whyEl.classList.remove('lower-confidence');" in body, (
-        "reco-why must clear the .lower-confidence class when resetting to "
-        "the placeholder so a prior session's degraded styling doesn't linger"
-    )
-
-
-def test_reco_confidence_pct_assignment_is_guarded():
-    """FIT-127 AC: the reco-confidence-pct chip must NOT receive the legacy
-    '45%' worst-bucket fallback when readiness is null (cold open). The HTML
-    placeholder is '--%' (templates/index.html:65).
-
-    Also (P1 follow-up): when confLabel resolves to null AFTER a prior paint,
-    the chip must reset to the '--%' HTML placeholder so a prior session's
-    confidence value doesn't linger.
-    """
-    body = _paint_body()
-
-    # The legacy readiness-based ladder must be gated on `readiness != null`
-    # so cold-open with no readiness data doesn't fall through to '45%'.
-    assert "readiness != null ? (readiness >= 80 ?" in body, (
-        "confidence ladder must be gated on `readiness != null` so cold-open "
-        "doesn't paint the '45%' worst-bucket fallback"
-    )
-
-    # The textContent assignment must be wrapped in a truthy guard on confLabel.
-    assert "if (confLabel) {" in body, (
-        "reco-confidence-pct assignment must be wrapped in `if (confLabel)` "
-        "so the '--%' HTML placeholder is preserved when confLabel is null"
-    )
-
-    # Clear-on-null else branch must reset the chip to '--%' HTML placeholder.
-    assert "$('reco-confidence-pct').textContent = '--%';" in body, (
-        "reco-confidence-pct must reset to '--%' HTML placeholder when "
-        "confLabel is null — skipping would leave a prior session's % on screen"
-    )
-
-
-def test_insight_card_paint_is_guarded_on_missing_reco():
-    """FIT-127 AC: the insight card must NOT receive the canned 'Recovery is
-    on track' / 'Keep your sleep consistent…' text when reco hasn't resolved.
-    The HTML placeholder is 'Gathering data…' (templates/index.html:193).
-
-    Also (P1 follow-up): when state.reco is null AFTER a prior paint (e.g.
-    the getReco catch path or a post-invalidate refetch that's slow/fails),
-    the title must reset to 'Gathering data…' and the body must clear, so a
-    prior session's insight doesn't linger as stale guidance.
-    """
-    body = _paint_body()
-
-    assert "// Insight card" in body, "insight card section comment missing"
-
-    # Carve out the insight-card region: from the `// Insight card` comment
-    # to the next major sub-section header (Sparkline). Both textContent
-    # assignments AND a `if (reco) {` guard must appear in that region, and
-    # the guard must precede the assignments — otherwise the canned strings
-    # paint unguarded on cold open.
-    insight_section = body.split("// Insight card", 1)[1].split("// Sparkline:", 1)[0]
-
-    title_idx = insight_section.find("$('insight-title').textContent")
-    body_idx = insight_section.find("$('insight-body').textContent")
-    guard_idx = insight_section.find("if (reco) {")
-
-    assert title_idx != -1, "insight-title textContent assignment missing"
-    assert body_idx != -1, "insight-body textContent assignment missing"
-    assert guard_idx != -1, (
-        "`if (reco) {` guard missing from the insight-card section — the "
-        "canned 'Recovery is on track' / 'Keep your sleep consistent…' text "
-        "would paint over the 'Gathering data…' placeholder on cold open"
-    )
-    assert guard_idx < title_idx and guard_idx < body_idx, (
-        "`if (reco) {` guard must precede the insight-title / insight-body "
-        "textContent assignments"
-    )
-
-    # And the canned defaults must NOT sit outside the guard block. We detect
-    # this by asserting the literal strings only appear AFTER the guard.
-    canned_title_idx = insight_section.find("'Recovery is on track'")
-    canned_body_idx = insight_section.find("'Keep your sleep consistent")
-    assert canned_title_idx == -1 or canned_title_idx > guard_idx, (
-        "literal 'Recovery is on track' must sit inside the `if (reco)` guard"
-    )
-    assert canned_body_idx == -1 or canned_body_idx > guard_idx, (
-        "literal 'Keep your sleep consistent…' must sit inside the "
-        "`if (reco)` guard"
-    )
-
-    # Clear-on-null else branch must reset title to 'Gathering data…' and
-    # clear body so a prior session's insight doesn't linger.
-    assert "$('insight-title').textContent = 'Gathering data…';" in insight_section, (
-        "insight-title must reset to 'Gathering data…' HTML placeholder when "
-        "reco is null — skipping would leave a prior session's insight title "
-        "on screen as stale guidance"
-    )
-    assert "$('insight-body').textContent = '';" in insight_section, (
-        "insight-body must clear to empty when reco is null — skipping would "
-        "leave a prior session's reasoning visible"
-    )
-
-
-def test_stats_insights_empty_state_resets_to_placeholder():
-    """FIT-148 AC: Stats Progress Insights must reset to the empty-state
-    placeholder when /api/insights returns no usable insight rows.
-    """
-    body = _render_stats_body()
-    section = body.split("// Insights list", 1)[1]
-
-    clear_idx = section.find("list.innerHTML = '';")
-    items_idx = section.find("const items = Array.isArray")
-    empty_idx = section.find("Log a few workouts to start tracking progress.")
-    append_idx = section.find("list.appendChild(card);")
-
-    assert clear_idx != -1, "Stats insights list must clear before repainting"
-    assert items_idx != -1, "Stats insights must guard null/non-array payloads with Array.isArray"
-    assert empty_idx != -1, "Stats insights empty-state copy must match FIT-148"
-    assert append_idx != -1, "Stats insight card append path missing"
-    assert clear_idx < items_idx < empty_idx < append_idx, (
-        "Stats insights must clear stale cards, normalize items, then render the "
-        "empty placeholder before the card-append branch"
-    )
-
-
-def test_dashboard_whoop_source_contract_is_wired_into_reco_card():
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-    html = (ROOT / "templates" / "index.html").read_text()
-
-    assert "reco-fresh-whoop" in html
-    assert "btn-reco-sources" in html
-    assert "modal-reco-sources" in html
-    assert "function formatWhoopChip(whoop, ago)" in app_js
-    assert "key: 'whoop'" in app_js
-    assert "renderRecommendationSourceSummary(dash, reco, freshnessWithWhoop);" in app_js
-    assert "mergeWhoopFreshnessNode(" in app_js
-
-
-def test_dashboard_whoop_state_matrix_is_explicit_in_frontend_contract():
-    app_js = (ROOT / "static" / "js" / "app.js").read_text()
-
-    for token in [
-        "connected",
-        "disconnected",
-        "syncing",
-        "fresh",
-        "aging",
-        "stale",
-        "pending_score",
-        "unscorable",
-        "calibrating",
-        "reauth_required",
-        "csv_only",
-        "source_conflict",
-        "error",
-        "WHOOP · no data",
-    ]:
-        assert token in app_js, f"WHOOP UI state token {token!r} missing from app.js"
+    assert output == {
+        "empty": '<div class="empty">Log a few workouts to start tracking progress.</div>',
+        "malformed": '<div class="empty">Log a few workouts to start tracking progress.</div>',
+    }

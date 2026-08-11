@@ -101,7 +101,6 @@ def test_owner_correct_password_authenticates(tmp_path, monkeypatch):
 
     assert user is not None
     assert user.username == "Wesley1226"
-    assert user.is_pro is False
 
 
 def test_wrong_password_returns_none_and_records_rate_limit_on_login(tmp_path, monkeypatch):

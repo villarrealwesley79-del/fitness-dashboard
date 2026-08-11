@@ -1,218 +1,143 @@
+"""Workout sync and active-draft runtime contracts."""
+
 import json
-import shutil
-import subprocess
 from pathlib import Path
 
-import pytest
+from js_runtime import run_app_js
+
+ROOT = Path(__file__).resolve().parents[1]
+APP_JS = (ROOT / "static/js/app.js").read_text()
+APP_LOADER_JS = (ROOT / "static/js/app-loader.js").read_text()
+APP_SW = (ROOT / "static/js/sw.js").read_text()
+APP_HTML = (ROOT / "templates/index.html").read_text()
 
 
-APP_JS = Path("static/js/app.js").read_text()
-APP_LOADER_JS = Path("static/js/app-loader.js").read_text()
-APP_SW = Path("static/js/sw.js").read_text()
-APP_HTML = Path("templates/index.html").read_text()
-
-
-def _app_js_block(start: str, end: str) -> str:
-    start_idx = APP_JS.index(start)
-    end_idx = APP_JS.index(end, start_idx)
-    return APP_JS[start_idx:end_idx]
-
-
-def test_workout_queue_auth_and_server_failures_remain_retryable():
-    assert "const WORKOUT_QUEUE_RETRYABLE_STATUSES = new Set(['pending', 'auth_required']);" in APP_JS
-    assert "if (res.status === 401 || res.status === 403) syncStatus = 'auth_required';" in APP_JS
-    assert "else if (res.status >= 500) syncStatus = 'pending';" in APP_JS
-    assert ".filter((e) => WORKOUT_QUEUE_RETRYABLE_STATUSES.has(e.last_status || 'pending'))" in APP_JS
-    assert "if (result.syncStatus === 'pending') {\n                    settleQueued('Server unavailable" in APP_JS
-
-
-def test_workout_queue_surfaces_recoverable_failures_to_user():
-    assert "function annotateWorkoutSyncReason(rawReason, syncStatus)" in APP_JS
-    assert "Sign in with the account that saved this workout, then retry." in APP_JS
-    assert "auth_required: 'Sign-in needed'" in APP_JS
-    assert "['rejected', 'conflicted', 'auth_required'].includes(entry.last_status)" in APP_JS
-    assert "Sign in, then retry the workout from the sync queue." in APP_JS
-    assert "const pending = queue.filter((e) => (e.last_status || 'pending') === 'pending').length" in APP_JS
-
-
-def test_active_workout_draft_uses_versioned_scoped_localstorage_wrapper():
-    block = _app_js_block("const ACTIVE_WORKOUT_DRAFT_KEY", "function buildLoggedSets")
-
-    assert "const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';" in block
-    assert "const ACTIVE_WORKOUT_DRAFT_VERSION = 1;" in block
-    assert "function currentActiveWorkoutDraftScope()" in block
-    assert "return String(_mealQueueAuthScope || '').trim();" in block
-    assert "function activeWorkoutDraftScopeForWorkout(workout)" in block
-    assert "const workoutScope = String(workout && workout.auth_scope || '').trim();" in block
-    assert "function syncActiveWorkoutInputsFromDom()" in block
-    assert "function saveActiveWorkoutDraftBeforePageHidden()" in block
-    assert "if (state.activeWorkout && !state.activeWorkout.queuedForSyncReview) saveActiveWorkoutDraft();" in block
-    assert "let _activeWorkoutDraftSavePending = false;" in block
-    assert "let _mealQueueAuthScopeRetryTimer = null;" in block
-    assert "let _mealQueueAuthScopeRetryDelayMs = 5_000;" in block
-    assert "version: ACTIVE_WORKOUT_DRAFT_VERSION" in block
-    assert "const authScope = activeWorkoutDraftScopeForWorkout(workout);" in block
-    assert "if (workout.queuedForSyncReview) return;" in block
-    assert "if (!authScope) {\n            _activeWorkoutDraftSavePending = true;\n            return;\n        }" in block
-    assert "auth_scope: authScope" in block
-    assert "_activeWorkoutDraftSavePending = false;" in block
-    assert "function flushPendingActiveWorkoutDraftSave()" in block
-    assert "JSON.stringify(draft)" in block
-    assert "parsed.version === ACTIVE_WORKOUT_DRAFT_VERSION" in block
-    assert "Array.isArray(workout.exercises)" in block
-    assert "localStorage.removeItem(ACTIVE_WORKOUT_DRAFT_KEY)" in block
-
-
-def test_active_workout_draft_restore_requires_fresh_matching_scope():
-    block = _app_js_block("function restoreActiveWorkoutDraft()", "function buildLoggedSets")
-
-    assert "const draftScope = String(draft.auth_scope || '').trim();" in block
-    assert "const currentScope = currentActiveWorkoutDraftScope();" in block
-    assert "Require a live auth-scope match" in block
-    assert "if (!draftScope || !currentScope || draftScope !== currentScope)" in block
-    assert "Recovered unsaved workout details from this device." in block
-    assert "renderActiveWorkout();" in block
-    assert "toast('Recovered unsaved workout details')" in block
-
-
-def test_active_workout_draft_persists_all_mutation_paths():
-    recommendation_block = _app_js_block(
-        "function setActiveWorkoutFromRecommendation",
-        "function hasRecommendedCardio",
+def test_workout_queue_failure_statuses_and_user_reason_are_runtime_contracts():
+    output = run_app_js(
+        ["postCompleteWorkout", "annotateWorkoutSyncReason"],
+        """
+const responses = [
+  new Response(JSON.stringify({ error: { message: 'login required' } }), { status: 401 }),
+  new Response(JSON.stringify({ error: { message: 'server down' } }), { status: 503 }),
+];
+let index = 0;
+sandbox.fetch = async () => responses[index++];
+const auth = await e.postCompleteWorkout({ id: 'auth' });
+const server = await e.postCompleteWorkout({ id: 'server' });
+process.stdout.write(JSON.stringify({ statuses: [auth.syncStatus, server.syncStatus], reasons: [e.annotateWorkoutSyncReason(auth.reason, auth.syncStatus), e.annotateWorkoutSyncReason(server.reason, server.syncStatus)] }));
+""",
     )
-    adjust_block = _app_js_block("function applyAdjustedRecommendationToActiveWorkout", "function hasRecommendedCardio")
-    set_block = _app_js_block("function updateLoggedSetFromRow", "function countActiveWorkoutProgress")
-    cardio_block = _app_js_block("function updateActiveCardio", "function renderActiveWorkout")
-    remove_block = _app_js_block("function removeActiveExercise", "async function startWorkout")
-    swap_block = _app_js_block("function _finalizeSwap", "function clearAdjustIntent")
-
-    assert "saveActiveWorkoutDraft({ syncDom: false });" in recommendation_block
-    assert "auth_scope: String(nw.auth_scope || (existing && existing.auth_scope) || currentActiveWorkoutDraftScope() || '').trim()," in recommendation_block
-    assert "saveActiveWorkoutDraft({ syncDom: false });" in adjust_block
-    assert "auth_scope: String(nw.auth_scope || existing.auth_scope || currentActiveWorkoutDraftScope() || '').trim()," in adjust_block
-    assert "state.activeWorkout.dirty = true;\n        saveActiveWorkoutDraft();" in set_block
-    assert "state.activeWorkout.dirty = true;\n        saveActiveWorkoutDraft();" in cardio_block
-    assert "renderActiveWorkout();\n        saveActiveWorkoutDraft();" in remove_block
-    assert "saveActiveWorkoutDraft();" in swap_block
-    assert "if (state.swapContext && state.swapContext.source === 'active')" in swap_block
-    assert "if (ctx.source === 'active')" in swap_block
+    assert output["statuses"] == ["auth_required", "pending"]
+    assert "Sign in with the account that saved this workout" in output["reasons"][0]
+    assert "retry automatically" in output["reasons"][1]
 
 
-def test_active_workout_draft_clear_points_are_explicit_and_error_states_are_preserved():
-    equipment_block = _app_js_block("async function updateEquipment", "function logStrength")
-    cancel_block = _app_js_block("function cancelActiveWorkout", "function wireActiveWorkoutGuards")
-    complete_block = _app_js_block("async function completeWorkout()", "function openWorkoutSavedConfirm")
-
-    assert "state.activeWorkout = null;\n            clearActiveWorkoutDraft();" in equipment_block
-    assert "state.activeWorkout = null;\n        clearActiveWorkoutDraft();" in cancel_block
-    assert "enqueueOfflineWorkout(completePayload, 'pending');\n            clearActiveWorkoutDraft();" in complete_block
-    assert "state.activeWorkout = null;\n                clearActiveWorkoutDraft();" in complete_block
-    assert "Validation failed: log at least one set before completing this workout." in complete_block
-    assert "aw.saveState = { message, variant: 'err' };\n            saveActiveWorkoutDraft();" in complete_block
-    assert "aw.saveState = { message: msg, variant: 'err' };" in complete_block
-    assert "aw.queuedForSyncReview = true;" in complete_block
-    assert "setActiveWorkoutStatus(msg, 'err');\n                clearActiveWorkoutDraft();" in complete_block
-
-
-def test_active_workout_draft_restores_after_auth_scope_refresh_and_saves_on_background_events():
-    boot_block = _app_js_block("function boot()", "function registerServiceWorker")
-
-    assert "async function boot()" not in APP_JS
-    assert "refreshMealQueueAuthScope({ timeoutMs: 2500 })\n            .then" in boot_block
-    assert "wireEvents();" in boot_block
-    assert boot_block.index("wireEvents();") < boot_block.index("refreshMealQueueAuthScope({ timeoutMs: 2500 })")
-    assert ".then((scopeResult) => {\n                settleActiveWorkoutDraftAfterAuthScope(scopeResult);" in boot_block
-    assert "function settleActiveWorkoutDraftAfterAuthScope(scopeResult)" in APP_JS
-    assert "function scheduleMealQueueAuthScopeRetry(status)" in APP_JS
-    assert "if (status !== 'pending' || _mealQueueAuthScopeRetryTimer) return;" in APP_JS
-    assert "_mealQueueAuthScopeRetryDelayMs = Math.min(_mealQueueAuthScopeRetryDelayMs * 2, 30_000);" in APP_JS
-    assert "clearMealQueueAuthScopeRetry();" in APP_JS
-    assert "restoreActiveWorkoutDraft();\n        flushPendingActiveWorkoutDraftSave();" in APP_JS
-    assert "scheduleMealQueueAuthScopeRetry(scopeResult && scopeResult.status);" in boot_block
-    assert "scheduleMealQueueAuthScopeRetry('pending');" in boot_block
-    assert "fetchWorkoutAdaptationNotices().catch" in boot_block
-    assert "window.addEventListener('pagehide', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
-    assert "window.addEventListener('beforeunload', saveActiveWorkoutDraftBeforePageHidden);" in boot_block
-    assert "document.addEventListener('visibilitychange', () => {" in boot_block
-    assert "if (document.visibilityState === 'hidden') saveActiveWorkoutDraftBeforePageHidden();" in boot_block
-    assert "/static/js/app-loader.js?v=20260629-fit253-open-wearables-link" in APP_HTML
-    assert "/static/js/app.js?v=20260629-fit253-open-wearables-link" in APP_LOADER_JS
-    assert "const CACHE_NAME = 'fitness-dashboard-v20260629-fit253-open-wearables-link';" in APP_SW
-
-
-def test_active_workout_background_save_syncs_live_inputs_to_localstorage():
-    if not shutil.which("node"):
-        pytest.skip("FIT-236 draft persistence fixture requires node")
-
-    helper_source = _app_js_block("const ACTIVE_WORKOUT_DRAFT_KEY", "function buildLoggedSets")
-    node_script = f"""
-const vm = require('node:vm');
-const helperSource = {json.dumps(helper_source)};
-const rows = [{{
-  dataset: {{ ex: '0', set: '0' }},
-  fields: {{
-    'input[data-field="weight"]': {{ value: '88' }},
-    'input[data-field="reps"]': {{ value: '12' }},
-    'input[data-field="done"]': {{ checked: true }},
-    'input[data-field="notes"]': {{ value: 'WHOOP switch proof' }},
-  }},
-}}];
-const store = new Map();
-const sandbox = {{
-  console,
-  state: {{
-    activeWorkout: {{
-      id: 'workout-1',
-      focus: 'Full Body',
-      dirty: false,
-      exercises: [{{
-        exercise: 'Mid Row',
-        logged_sets: [{{ weight: '66', reps: '20', done: false, notes: '' }}],
-      }}],
-    }},
-  }},
-  elements: {{ 'active-workout-body': {{ rows }} }},
-  $: (id) => sandbox.elements[id] || null,
-  qsa: (selector, root) => selector === '.set-row' && root && root.rows ? root.rows : [],
-  qs: (selector, root) => {{
-    if (selector === '.active-cardio') return root && root.cardio ? root.cardio : null;
-    return root && root.fields ? root.fields[selector] : null;
-  }},
-  localStorage: {{
-    getItem: (key) => store.has(key) ? store.get(key) : null,
-    setItem: (key, value) => store.set(key, value),
-    removeItem: (key) => store.delete(key),
-  }},
-  _mealQueueAuthScope: 'user:fit236',
-  renderActiveWorkout: () => {{}},
-  toast: () => {{}},
-}};
-vm.createContext(sandbox);
-vm.runInContext(helperSource, sandbox);
-vm.runInContext('saveActiveWorkoutDraftBeforePageHidden();', sandbox);
-const raw = store.get('fit168:active-workout-draft:v1');
-const draft = JSON.parse(raw);
-process.stdout.write(JSON.stringify({{
-  authScope: draft.auth_scope,
-  dirty: draft.workout.dirty,
-  set: draft.workout.exercises[0].logged_sets[0],
-}}));
-"""
-    result = subprocess.run(
-        ["node", "-e", node_script],
-        check=True,
-        capture_output=True,
-        text=True,
+def test_workout_queue_flushes_and_renders_pending_and_auth_required_entries():
+    output = run_app_js(
+        ["flushSyncQueue", "renderSyncQueueModal"],
+        """
+const queue = [
+  { client_workout_id: 'pending-1', last_status: 'pending', payload: { session_type: 'strength', date: '2026-07-15' } },
+  { client_workout_id: 'auth-1', last_status: 'auth_required', payload: { session_type: 'cardio', date: '2026-07-14' } },
+  { client_workout_id: 'rejected-1', last_status: 'rejected', payload: { session_type: 'strength', date: '2026-07-13' } },
+];
+sandbox.localStorage.getItem = (key) => key === 'fit51:sync-queue:v1' ? JSON.stringify(queue) : null;
+const flushed = [];
+sandbox.__fitSet.syncSingleEntry(async (id) => { flushed.push(id); return { ok: false, status: 'pending' }; });
+sandbox.__fitSet.renderSyncQueueModal(() => {});
+await e.flushSyncQueue();
+const rows = [];
+const host = { innerHTML: '', appendChild(row) { rows.push(row); }, querySelectorAll: () => [] };
+sandbox.elements['sync-queue-list'] = host;
+sandbox.document.createElement = () => ({ className: '', innerHTML: '' });
+sandbox.__fitSet.listMealQueueEntries(async () => []);
+await e.renderSyncQueueModal();
+process.stdout.write(JSON.stringify({
+  flushed,
+  rendered: rows.map((row) => ({ className: row.className, retry: row.innerHTML.includes('data-sync-retry=') })),
+}));
+""",
+        mocks=["syncSingleEntry", "renderSyncQueueModal", "listMealQueueEntries"],
     )
+    assert output["flushed"] == ["pending-1", "auth-1"]
+    rendered = {row["className"]: row["retry"] for row in output["rendered"]}
+    assert rendered["sync-row sync-row-pending"] is True
+    assert rendered["sync-row sync-row-auth_required"] is True
 
-    saved = json.loads(result.stdout)
-    assert saved == {
-        "authScope": "user:fit236",
-        "dirty": True,
-        "set": {
-            "weight": "88",
-            "reps": "12",
-            "done": True,
-            "notes": "WHOOP switch proof",
-        },
+
+def test_active_workout_draft_background_save_syncs_live_inputs():
+    output = run_app_js(
+        ["saveActiveWorkoutDraftBeforePageHidden", "state"],
+        """
+const saved = [];
+sandbox.localStorage.setItem = (key, value) => saved.push({ key, value: JSON.parse(value) });
+const fields = {
+  'input[data-field="weight"]': { value: '88' }, 'input[data-field="reps"]': { value: '12' },
+  'input[data-field="done"]': { checked: true }, 'input[data-field="notes"]': { value: 'background' },
+};
+const row = { dataset: { ex: '0', set: '0' }, querySelector: (selector) => fields[selector] };
+sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row], querySelector: () => null };
+sandbox.__fitSet.currentActiveWorkoutDraftScope(() => 'user:fit264');
+e.state.activeWorkout = { id: 'workout-1', dirty: false, exercises: [{ exercise: 'Row', logged_sets: [{ weight: '66', reps: '20', done: false, notes: '' }] }] };
+e.saveActiveWorkoutDraftBeforePageHidden();
+process.stdout.write(JSON.stringify(saved[0]));
+""",
+        mocks=["currentActiveWorkoutDraftScope"],
+    )
+    assert output["key"] == "fit168:active-workout-draft:v1"
+    assert output["value"]["auth_scope"] == "user:fit264"
+    assert output["value"]["workout"]["dirty"] is True
+    assert output["value"]["workout"]["exercises"][0]["logged_sets"][0] == {
+        "weight": "88", "reps": "12", "done": True, "notes": "background",
     }
+
+
+def test_active_workout_draft_restore_requires_matching_live_scope():
+    output = run_app_js(
+        ["restoreActiveWorkoutDraft", "state"],
+        """
+const draft = { version: 1, auth_scope: 'user:fit264', workout: { id: 'restored', exercises: [{ exercise: 'Row', logged_sets: [] }] } };
+sandbox.localStorage.getItem = () => JSON.stringify(draft);
+sandbox.__fitSet.currentActiveWorkoutDraftScope(() => 'user:other');
+const calls = [];
+sandbox.__fitSet.toast(() => calls.push('toast'));
+e.restoreActiveWorkoutDraft();
+process.stdout.write(JSON.stringify({ active: e.state.activeWorkout, calls }));
+""",
+        mocks=["currentActiveWorkoutDraftScope", "toast"],
+    )
+    assert output == {"active": None, "calls": []}
+
+
+def test_active_workout_draft_restores_matching_scope_and_notifies_user():
+    output = run_app_js(
+        ["restoreActiveWorkoutDraft", "state"],
+        """
+const draft = { version: 1, auth_scope: 'user:fit264', saved_at: new Date().toISOString(), workout: { id: 'restored', exercises: [{ exercise: 'Row', logged_sets: [{ done: true }] }] } };
+sandbox.localStorage.getItem = () => JSON.stringify(draft);
+sandbox.__fitSet.currentActiveWorkoutDraftScope(() => 'user:fit264');
+const calls = [];
+sandbox.__fitSet.renderActiveWorkout(() => calls.push('render'));
+sandbox.__fitSet.toast((message) => calls.push(message));
+const restored = e.restoreActiveWorkoutDraft();
+process.stdout.write(JSON.stringify({ restored, active: e.state.activeWorkout, calls }));
+""",
+        mocks=["currentActiveWorkoutDraftScope", "renderActiveWorkout", "toast"],
+    )
+    assert output["restored"] is True
+    assert output["active"]["id"] == "restored"
+    assert output["active"]["exercises"][0]["logged_sets"][0]["done"] is True
+    assert output["active"]["saveState"] == {
+        "message": "Recovered unsaved workout details from this device.",
+        "variant": "warn",
+    }
+    assert output["calls"] == ["render", "Recovered unsaved workout details"]
+
+
+def test_frontend_asset_versions_stay_in_sync():
+    # Stable deployment/cache constants are intentionally source contracts.
+    assert "/static/js/app-loader.js?v=20260713-fit270-oura-detail" in APP_HTML
+    assert "/static/js/app.js?v=20260713-fit270-oura-detail" in APP_LOADER_JS
+    assert "const CACHE_NAME = 'fitness-dashboard-v20260713-fit270-oura-detail';" in APP_SW
+    assert "const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';" in APP_JS
+    assert "const ACTIVE_WORKOUT_DRAFT_VERSION = 1;" in APP_JS

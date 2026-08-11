@@ -378,7 +378,7 @@ Recent hide-stale behavior: when the plan's load source is Apple Health, Open We
 
 ## 9. Permissions & Security
 
-All documented routes are session-authenticated through the global auth guard except public/static/webhook allowlist paths outside this feature. Mutating browser routes rely on same-origin browser metadata or `X-Requested-With: XMLHttpRequest`; Apple Health token sync and Stripe webhook are the explicit CSRF-exempt external paths, not these coach routes.
+All documented routes are session-authenticated through the global auth guard except public/static paths outside this feature. Mutating browser routes rely on same-origin browser metadata or `X-Requested-With: XMLHttpRequest`; Apple Health token sync is the explicit CSRF-exempt external path, not these coach routes.
 
 The AI fact context is deliberately sanitized. It includes source metadata, public facts, and normalized history; it does not include raw Open Wearables/WHOOP/Oura/Apple payloads, access tokens, refresh tokens, passwords, or secrets. `wearable_fact_store.py` rejects forbidden field names such as `authorization`, `access_token`, `refresh_token`, `token`, `password`, `secret`, `raw`, `payload`, `samples`, `records`, and `user_id`.
 

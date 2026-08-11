@@ -1,7 +1,7 @@
 # API Inventory
 
-> **Sources:** `app.py`, `auth.py`, `apple_health_parser.py`, `health_ingest.py`, `stripe_checkout.py`, route inventory at `/private/tmp/claude-501/-Users-admin-fitness-dashboard--claude-worktrees-dazzling-golick-7cd594/2a68f015-a5ff-4689-823e-ec2c0ee13b04/scratchpad/routes.txt`
-> **Routes:** All `app.py` routes plus registered auth/Apple Health/legacy HealthKit routes and declared Stripe routes.
+> **Sources:** `app.py`, `auth.py`, `apple_health_parser.py`, `health_ingest.py`, route inventory at `/private/tmp/claude-501/-Users-admin-fitness-dashboard--claude-worktrees-dazzling-golick-7cd594/2a68f015-a5ff-4689-823e-ec2c0ee13b04/scratchpad/routes.txt`
+> **Routes:** All `app.py` routes plus registered auth/Apple Health/legacy HealthKit routes.
 > **Generated:** 2026-07-08 (reverse-engineered from code, FIT-268)
 
 Auth values used below:
@@ -9,8 +9,7 @@ Auth values used below:
 - `session/owner`: Requires Flask session and owner user in default single-owner mode.
 - `public`: Allowlisted before login.
 - `token`: External caller authenticated by a shared token instead of browser session.
-- `webhook`: External signed webhook. Stripe route is declared in `stripe_checkout.py` but its blueprint is never registered, so the route 404s in the running app.
-- Mutating requests (`POST`/`PUT`/`PATCH`/`DELETE`) require `X-Requested-With: XMLHttpRequest`, a valid form CSRF token, or same-origin browser headers; cross-origin browser posts are rejected. `/webhook` and `/api/apple-health/sync` are exempt.
+- Mutating requests (`POST`/`PUT`/`PATCH`/`DELETE`) require `X-Requested-With: XMLHttpRequest`, a valid form CSRF token, or same-origin browser headers; cross-origin browser posts are rejected. `/api/apple-health/sync` is exempt.
 - `dead/legacy`: Route or page exists in code/templates but appears dev-only, legacy, or not wired.
 
 ## App Shell, Auth, Account, Public, PWA
@@ -24,12 +23,6 @@ Auth values used below:
 | GET | `/logout` | session | End session and return to login; owner check bypassed by public allowlist, while `@login_required` still requires any authenticated user. | [../01-auth-and-account.md](../01-auth-and-account.md) |
 | GET | `/manifest.json` | public | Return PWA manifest metadata. | [../15-ops-deployment.md](../15-ops-deployment.md) |
 | GET | `/sw.js` | public | Serve service worker with no-cache/network-first app policy. | [../15-ops-deployment.md](../15-ops-deployment.md) |
-| GET | `/pricing` | public/dead | Stripe pricing template route declared in `stripe_checkout.py`; blueprint defined but never registered, routes 404. | [../13-billing-stripe-landing.md](../13-billing-stripe-landing.md) |
-| POST | `/create-checkout-session` | session/owner/dead | Start Stripe Checkout session; blueprint defined but never registered, routes 404. | [../13-billing-stripe-landing.md](../13-billing-stripe-landing.md) |
-| GET | `/success` | public/dead | Checkout success page; blueprint defined but never registered, routes 404. | [../13-billing-stripe-landing.md](../13-billing-stripe-landing.md) |
-| GET | `/cancel` | public/dead | Checkout cancel page; blueprint defined but never registered, routes 404. | [../13-billing-stripe-landing.md](../13-billing-stripe-landing.md) |
-| POST | `/webhook` | webhook/dead | Stripe webhook updates Pro status; blueprint defined but never registered, routes 404. | [../13-billing-stripe-landing.md](../13-billing-stripe-landing.md) |
-
 ## Daily Brief, Vitals, Freshness, Weather
 
 | Method(s) | Path | Auth | Purpose | Owning PRD |

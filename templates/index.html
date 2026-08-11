@@ -9,7 +9,7 @@
     <title>AI Coach Feed</title>
     <link rel="manifest" href="/manifest.json">
     <link rel="stylesheet" href="/static/css/style.css?v=20260626-fit238-qol">
-    <link rel="stylesheet" href="/static/css/app.css?v=20260629-fit253-open-wearables-link">
+    <link rel="stylesheet" href="/static/css/app.css?v=20260713-fit270-oura-detail">
 </head>
 <body>
     <div class="app-shell">
@@ -637,7 +637,11 @@
                 <div class="card-head"><div class="card-label">LOG MEASUREMENT</div></div>
                 <form id="form-body" class="form-grid" onsubmit="return false;">
                     <div class="form-row-2">
-                        <div class="form-field"><label>Weight (lbs)</label><input type="number" id="body-log-weight" step="0.1" placeholder="185.5"></div>
+                        <div class="form-field">
+                            <label for="body-log-weight">Weight (lbs) <span class="field-hint">required</span></label>
+                            <input type="number" id="body-log-weight" step="0.1" placeholder="185.5" required aria-describedby="body-log-error">
+                            <span id="body-log-error" class="field-hint" role="alert" hidden>Enter weight to save a body measurement.</span>
+                        </div>
                         <div class="form-field"><label>Body Fat %</label><input type="number" id="body-log-bf" step="0.1" placeholder="18.5"></div>
                     </div>
                     <button id="btn-log-body" class="btn btn-primary btn-block" type="button">Save Measurement</button>
@@ -1244,6 +1248,7 @@
                     </div>
                     <label class="whoop-import-label" for="whoop-import-csv-text">Paste WHOOP CSV/export data</label>
                     <textarea id="whoop-import-csv-text" class="whoop-import-textarea" rows="8" spellcheck="false" autocomplete="off" placeholder="date,recovery_score,recovery_band,strain,sleep_performance_pct"></textarea>
+                    <p class="settings-row-detail">Dates up to one day ahead may be accepted for timezone differences; farther-ahead dates are rejected.</p>
                     <div class="whoop-import-file-row">
                         <input id="whoop-import-file" type="file" accept=".csv,text/csv" hidden>
                         <button id="btn-whoop-import-file" class="btn btn-ghost btn-sm" type="button">Choose file</button>
@@ -1681,6 +1686,6 @@
 
     <div id="toast-host" class="toast-host"></div>
 
-    <script src="/static/js/app-loader.js?v=20260629-fit253-open-wearables-link"></script>
+    <script src="/static/js/app-loader.js?v=20260713-fit270-oura-detail"></script>
 </body>
 </html>

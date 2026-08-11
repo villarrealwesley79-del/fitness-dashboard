@@ -3,6 +3,8 @@ from __future__ import annotations
 from html.parser import HTMLParser
 from pathlib import Path
 
+from js_runtime import run_app_js
+
 
 ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = ROOT / "templates" / "index.html"
@@ -70,12 +72,44 @@ def test_tab_markup_has_complete_aria_relationships():
 
 
 def test_switch_tab_keeps_aria_selected_and_panel_hidden_state_in_sync():
-    source = APP_JS.read_text()
-    assert "el.setAttribute('aria-hidden', active ? 'false' : 'true');" in source
-    assert "b.setAttribute('aria-selected', active ? 'true' : 'false');" in source
-    assert "b.tabIndex = active ? 0 : -1;" in source
-    assert "btn.addEventListener('keydown', handleTabKeydown);" in source
-    assert "['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)" in source
+    output = run_app_js(
+        ["switchTab", "wireEvents", "state"],
+        """
+const makePanel = (id) => ({ id, attrs: {}, classList: { toggle: () => {} }, setAttribute(key, value) { this.attrs[key] = value; } });
+const makeTab = (tab) => ({ attrs: { 'data-tab': tab }, handlers: {}, classList: { toggle: () => {} }, tabIndex: -1, getAttribute(key) { return this.attrs[key]; }, setAttribute(key, value) { this.attrs[key] = value; }, addEventListener(name, fn) { this.handlers[name] = fn; }, focus() { this.focused = true; } });
+const panels = [makePanel('tab-dashboard'), makePanel('tab-settings')];
+const tabs = [makeTab('tab-dashboard'), makeTab('tab-settings')];
+sandbox.document.querySelectorAll = (selector) => selector === '.tab-content' ? panels : selector === '.tab-btn' ? tabs : [];
+sandbox.scrollTo = () => {};
+sandbox.addEventListener = () => {};
+const loadCalls = [];
+sandbox.__fitSet.loadTab(() => loadCalls.push('load'));
+e.wireEvents();
+e.switchTab('tab-settings');
+const switchState = {
+  panelHidden: panels.map((panel) => panel.attrs['aria-hidden']),
+  buttonSelected: tabs.map((tab) => tab.attrs['aria-selected']),
+  tabIndex: tabs.map((tab) => tab.tabIndex),
+  currentTab: e.state.currentTab,
+};
+let prevented = false;
+sandbox.__fitSet.switchTab((tab) => { tabs[1].selectedByKey = tab; });
+tabs[0].handlers.keydown({ key: 'ArrowRight', currentTarget: tabs[0], preventDefault: () => { prevented = true; } });
+process.stdout.write(JSON.stringify({ switchState, loadCalls, keydownBound: typeof tabs[0].handlers.keydown === 'function', keydown: { prevented, focused: tabs[1].focused, selected: tabs[1].selectedByKey } }));
+""",
+        mocks=["loadTab", "switchTab"],
+    )
+    assert output == {
+        "switchState": {
+            "panelHidden": ["true", "false"],
+            "buttonSelected": ["false", "true"],
+            "tabIndex": [-1, 0],
+            "currentTab": "tab-settings",
+        },
+        "loadCalls": ["load"],
+        "keydownBound": True,
+        "keydown": {"prevented": True, "focused": True, "selected": "tab-settings"},
+    }
 
 
 def test_mobile_tab_bar_does_not_force_horizontal_overflow():
@@ -89,19 +123,68 @@ def test_mobile_tab_bar_does_not_force_horizontal_overflow():
 
 def test_training_goal_picker_exposes_single_selection_state():
     html = INDEX_HTML.read_text()
-    source = APP_JS.read_text()
     assert 'id="settings-goals"' in html
     assert 'role="radiogroup"' in html
     assert 'aria-label="Training goal"' in html
-    assert "function handleGoalOptionKeydown(e)" in source
-    assert "['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' ', 'Enter'].includes(key)" in source
-    assert "let selectedGoalToRestoreFocus = null;" in source
-    assert "btn.addEventListener('click', () => selectGoalOption(btn));" in source
-    assert "btn.setAttribute('role', 'radio');" in source
-    assert "btn.setAttribute('aria-checked', selected ? 'true' : 'false');" in source
-    assert "btn.tabIndex = selected ? 0 : -1;" in source
-    assert "btn.addEventListener('keydown', handleGoalOptionKeydown);" in source
-    assert 'class="goal-check" aria-hidden="true"' in source
+    output = run_app_js(
+        ["renderSettings"],
+        """
+const all = {};
+function node(tag = 'div') {
+  return { tag, value: '', textContent: '', innerHTML: '', className: '', hidden: false, disabled: false, selected: false,
+    dataset: {}, attrs: {}, handlers: {}, children: [], classList: { add() {}, remove() {}, toggle() {} },
+    setAttribute(name, value) { this.attrs[name] = value; }, getAttribute(name) { return this.attrs[name]; },
+    addEventListener(name, fn) { this.handlers[name] = fn; }, appendChild(child) { this.children.push(child); },
+    querySelectorAll(selector) { return selector === '[role="radio"]' ? this.children.filter((child) => child.attrs.role === 'radio') : []; },
+    focus() { this.focused = true; },
+  };
+}
+sandbox.document.getElementById = (id) => all[id] || (all[id] = node());
+sandbox.document.createElement = (tag) => node(tag);
+sandbox.document.querySelectorAll = () => [];
+const host = sandbox.document.getElementById('settings-goals');
+const selected = [];
+sandbox.__fitSet.getSettings(async () => ({
+  training_goal: 'strength', available_goals: [
+    { value: 'strength', name: 'Strength', description: 'Lift heavier' },
+    { value: 'hypertrophy', name: 'Hypertrophy', description: 'Build muscle' },
+  ], sex_options: [], time_options: [], equipment_options: [],
+}));
+sandbox.__fitSet.getOuraStatus(async () => ({}));
+sandbox.__fitSet.getWhoopStatus(async () => ({}));
+sandbox.__fitSet.getOpenWearablesStatus(async () => ({}));
+sandbox.__fitSet.getWearableSources(async () => ([]));
+sandbox.__fitSet.api(async (path) => path === '/api/freshness' ? { freshness: {} } : {});
+sandbox.__fitSet.updateSetting((value) => selected.push(value.training_goal));
+['renderOpenWearablesDetail', 'renderFreshnessChips', 'renderWhoopFreshnessDetail', 'renderOuraFreshnessDetail', 'renderSettingsGroupSummaries', 'renderAppleHealthFreshnessDetail', 'renderAiCoachHealth', 'startAiCoachHealthRefresh', 'renderPushSection'].forEach((name) => sandbox.__fitSet[name](() => {}));
+await e.renderSettings();
+const options = host.children;
+let prevented = false;
+options[0].handlers.keydown({ key: 'ArrowRight', currentTarget: options[0], preventDefault: () => { prevented = true; } });
+options[1].handlers.click();
+process.stdout.write(JSON.stringify({
+  roles: options.map((option) => option.attrs.role),
+  checked: options.map((option) => option.attrs['aria-checked']),
+  tabIndex: options.map((option) => option.tabIndex),
+  bindings: options.map((option) => [typeof option.handlers.click, typeof option.handlers.keydown]),
+  prevented, focused: options[1].focused, selected,
+}));
+""",
+        mocks=[
+            "getSettings", "getOuraStatus", "getWhoopStatus", "getOpenWearablesStatus", "getWearableSources", "api", "updateSetting",
+            "renderOpenWearablesDetail", "renderFreshnessChips", "renderWhoopFreshnessDetail", "renderOuraFreshnessDetail",
+            "renderSettingsGroupSummaries", "renderAppleHealthFreshnessDetail", "renderAiCoachHealth", "startAiCoachHealthRefresh", "renderPushSection",
+        ],
+    )
+    assert output == {
+        "roles": ["radio", "radio"],
+        "checked": ["true", "false"],
+        "tabIndex": [0, -1],
+        "bindings": [["function", "function"], ["function", "function"]],
+        "prevented": True,
+        "focused": True,
+        "selected": ["hypertrophy", "hypertrophy"],
+    }
 
 
 def test_viewport_allows_browser_zoom():
@@ -155,37 +238,70 @@ def test_core_log_and_settings_controls_have_programmatic_labels():
 
 
 def test_modal_escape_and_focus_helpers_are_delegated_and_guard_active_workout():
-    source = APP_JS.read_text()
-    assert "document.addEventListener('keydown', handleModalEscape);" in source
-    assert "document.addEventListener('keydown', handleModalTabKeydown);" in source
-    assert "document.addEventListener('focusin', handleModalFocusin);" in source
-    assert "document.addEventListener('focusout', handleModalFocusout);" in source
-    assert "window.addEventListener('focus', handleModalWindowFocus);" in source
-    assert "'iframe'," in source
-    assert "function bindModalIframeFocusGuards(modal)" in source
-    assert 'data-action="focus-source-close"' in source
-    assert "function getTopmostModalForFocus()" in source
-    assert "const modal = getTopmostModalForFocus();" in source
-    assert "function handleModalTabKeydown(e)" in source
-    assert "function handleModalFocusin(e)" in source
-    assert "function handleModalFocusout()" in source
-    assert "function handleModalWindowFocus()" in source
-    assert "if (e.key !== 'Tab') return;" in source
-    assert "const modal = getTopmostOpenModal();" in source
-    assert "if (e.key !== 'Escape') return;" in source
-    assert "modal.id !== 'modal-active'" in source
-    assert ".sort((a, b) => (a.__fit192OpenedAt || 0) - (b.__fit192OpenedAt || 0))" in source
-    assert "closeModal(modal);" in source
-    assert "freshDismiss.addEventListener('click', () => closeModal(modal));" in source
-    assert "freshClose.addEventListener('click', () => closeModal(modal));" in source
-    assert "el.addEventListener('click', () => closeModal(modal))" in source
-    assert "closeModal($('modal-swap'));" in source
-    assert "$('modal-swap').hidden = true;" not in source
-    assert "focusOpenModal(modal);" in source
-    assert "focusOpenModal" in source
-    assert "record.target" in source
-    assert "!modal.classList || !modal.classList.contains('modal')" in source
-    assert "document.addEventListener('keydown', function onEsc" not in source
+    output = run_app_js(
+        [
+            "watchModalFocus", "handleModalEscape", "handleModalTabKeydown",
+            "handleModalFocusin", "handleModalFocusout", "handleModalWindowFocus",
+        ],
+        """
+const documentEvents = [];
+const windowEvents = [];
+sandbox.document.addEventListener = (name) => documentEvents.push(name);
+sandbox.addEventListener = (name) => windowEvents.push(name);
+const handlerCalls = [];
+const activeModal = {
+  id: 'modal-active', hidden: false, isConnected: true,
+  classList: { contains: (name) => name === 'modal' },
+  querySelector: () => null, querySelectorAll: () => [], contains: () => false,
+};
+const ordinaryModal = {
+  id: 'modal-settings', hidden: false, isConnected: true,
+  classList: { contains: (name) => name === 'modal' },
+  querySelector: () => null, querySelectorAll: () => [], contains: () => false,
+  __fit192Close: () => { ordinaryModal.hidden = true; handlerCalls.push('close'); },
+};
+let openModals = [activeModal];
+sandbox.document.querySelectorAll = (selector) => selector === '.modal' ? openModals : [];
+e.watchModalFocus();
+let activeEscapePrevented = false;
+e.handleModalEscape({ key: 'Escape', preventDefault: () => { activeEscapePrevented = true; } });
+openModals = [activeModal, ordinaryModal];
+let ordinaryEscapePrevented = false;
+e.handleModalEscape({ key: 'Escape', preventDefault: () => { ordinaryEscapePrevented = true; } });
+const modal = ordinaryModal;
+const focusable = [
+  { focus: () => handlerCalls.push('first') },
+  { focus: () => handlerCalls.push('last') },
+];
+sandbox.__fitSet.getTopmostModalForFocus(() => modal);
+sandbox.__fitSet.getModalFocusableElements(() => focusable);
+sandbox.__fitSet.restoreFocusInsideModal(() => handlerCalls.push('restore'));
+sandbox.document.activeElement = { id: 'outside' };
+let tabPrevented = false;
+e.handleModalTabKeydown({ key: 'Tab', shiftKey: false, preventDefault: () => { tabPrevented = true; } });
+e.handleModalFocusin({ target: { id: 'outside' } });
+e.handleModalFocusout();
+sandbox.__fitSet.refreshWhoopAfterOAuthReturn(() => handlerCalls.push('whoop'));
+e.handleModalWindowFocus();
+await new Promise((resolve) => setTimeout(resolve, 5));
+process.stdout.write(JSON.stringify({
+  documentEvents, windowEvents, activeEscapePrevented, ordinaryEscapePrevented,
+  ordinaryHidden: ordinaryModal.hidden, tabPrevented, handlerCalls,
+}));
+""",
+        mocks=[
+            "getTopmostModalForFocus",
+            "getModalFocusableElements", "restoreFocusInsideModal",
+            "refreshWhoopAfterOAuthReturn",
+        ],
+    )
+    assert output["documentEvents"] == ["keydown", "keydown", "focusin", "focusout"]
+    assert output["windowEvents"] == ["focus"]
+    assert output["activeEscapePrevented"] is False
+    assert output["ordinaryEscapePrevented"] is True
+    assert output["ordinaryHidden"] is True
+    assert output["tabPrevented"] is True
+    assert output["handlerCalls"] == ["close", "first", "restore", "restore", "restore", "whoop"]
 
 
 def test_modal_markup_exposes_dialog_semantics_and_labels():
@@ -218,6 +334,6 @@ def test_app_bundle_and_service_worker_versions_were_bumped_for_rollout():
     html = INDEX_HTML.read_text()
     sw = SW_JS.read_text()
     assert "/static/css/style.css?v=20260626-fit238-qol" in html
-    assert "/static/js/app-loader.js?v=20260629-fit253-open-wearables-link" in html
-    assert "/static/js/app.js?v=20260629-fit253-open-wearables-link" in (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "fitness-dashboard-v20260629-fit253-open-wearables-link" in sw
+    assert "/static/js/app-loader.js?v=20260713-fit270-oura-detail" in html
+    assert "/static/js/app.js?v=20260713-fit270-oura-detail" in (ROOT / "static" / "js" / "app-loader.js").read_text()
+    assert "fitness-dashboard-v20260713-fit270-oura-detail" in sw

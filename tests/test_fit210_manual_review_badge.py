@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from js_runtime import run_app_js
+
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
@@ -19,14 +21,37 @@ APP_CSS = (ROOT / "static" / "css" / "style.css").read_text(encoding="utf-8")
 
 
 def test_manual_review_badge_renders_in_v2_review_card():
-    # The badge is keyed off the per-item barcode_pending_source kind and is
-    # rendered into the live V2 card head (buildMealReviewCardV2), so it
-    # survives the V2 backend refresh rather than being a one-shot toast.
-    assert "buildMealReviewCardV2" in APP_JS
-    assert "source.kind === 'barcode_pending_source'" in APP_JS
-    assert 'class="meal-pending-review-badge"' in APP_JS
-    assert ">Manual review</span>" in APP_JS
-    assert "${reviewBadgeHtml}" in APP_JS
+    output = run_app_js(
+        ["buildMealReviewCardV2"],
+        """
+const makeNode = () => ({
+  className: '', innerHTML: '', attrs: {},
+  classList: { add() {}, remove() {}, toggle() {} },
+  setAttribute(key, value) { this.attrs[key] = value; },
+  querySelector() { return null; }, querySelectorAll() { return []; },
+});
+sandbox.document.createElement = () => makeNode();
+sandbox.__fitSet.wireMealReviewCardV2(() => {});
+const base = {
+  meal_id: 'meal-manual', meal_type: 'lunch', meal_totals: { calories: 500 },
+  followup: null, save_blocked_item_ids: [], expandedItems: new Set(),
+  pendingRefresh: false, lastFollowupAnswered: false,
+  items: [{ item_id: 'item-1', name: 'Unknown barcode', portion: '', status: 'included', confidence: 0.5, source: { kind: 'barcode_pending_source', label: 'Manual' }, candidates: [] }],
+};
+const manual = e.buildMealReviewCardV2(base);
+const verified = e.buildMealReviewCardV2({ ...base, meal_id: 'meal-verified', items: [{ ...base.items[0], source: { kind: 'manual', label: 'Manual' } }] });
+process.stdout.write(JSON.stringify({ manual: { attrs: manual.attrs, html: manual.innerHTML }, verified: verified.innerHTML }));
+""",
+        mocks=["wireMealReviewCardV2"],
+    )
+
+    assert output["manual"]["attrs"]["data-source-kind"] == "barcode_pending"
+    assert 'class="meal-pending-review-badge"' in output["manual"]["html"]
+    assert ">Manual review</span>" in output["manual"]["html"]
+    assert 'role="note"' in output["manual"]["html"]
+    assert 'aria-label="Manual review' in output["manual"]["html"]
+    assert "review and edit the item before saving" in output["manual"]["html"]
+    assert "meal-pending-review-badge" not in output["verified"]
 
 
 def test_manual_review_badge_styles_ship():
@@ -35,13 +60,6 @@ def test_manual_review_badge_styles_ship():
 
 
 def test_manual_review_note_is_accessible_not_title_only():
-    # FIT-210 audit nit: the "review manually" note must reach assistive tech
-    # via an aria-label (not be buried in a title tooltip, which screen-reader
-    # and keyboard users cannot discover).
-    badge = APP_JS.split('class="meal-pending-review-badge"', 1)[1].split("</span>", 1)[0]
-    assert 'role="note"' in badge
-    assert "aria-label=" in badge
-    # Accessible name keeps the visible "Manual review" label (Label in Name)
-    # and carries the manual-entry explanation.
-    assert 'aria-label="Manual review' in badge
-    assert "review and edit the item before saving" in badge
+    # The runtime card assertion above verifies the complete accessible badge;
+    # keep this test as a concise CSS contract for its persistent visual hook.
+    assert ".meal-pending-review-badge" in APP_CSS

@@ -5,7 +5,7 @@
         if (started) return;
         started = true;
         const script = document.createElement('script');
-        script.src = '/static/js/app.js?v=20260629-fit253-open-wearables-link';
+        script.src = '/static/js/app.js?v=20260713-fit270-oura-detail';
         script.async = true;
         document.body.appendChild(script);
     }
