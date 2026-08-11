@@ -4,7 +4,7 @@ Fitness Intelligence System - Mobile Web App
 Evidence-based resistance training optimization for iOS/Android.
 """
 
-from flask import Flask, has_request_context, render_template, jsonify, request, Response, redirect
+from flask import Flask, g, has_request_context, render_template, jsonify, request, Response, redirect
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -1569,6 +1569,14 @@ def _normalise_apple_health_workout(row):
 def _load_apple_health_recommendation_workouts(days=28):
     if not _apple_health_recommendation_enabled():
         return []
+    cache = None
+    if has_request_context():
+        cache = getattr(g, "_apple_health_recommendation_workouts_cache", None)
+        if cache is None:
+            cache = {}
+            g._apple_health_recommendation_workouts_cache = cache
+        if days in cache:
+            return list(cache[days])
     try:
         from apple_health_parser import _get_sync_records, parse_workouts as _parse_ah_file_workouts
     except Exception:
@@ -1587,7 +1595,9 @@ def _load_apple_health_recommendation_workouts(days=28):
         workout = _normalise_apple_health_workout(row)
         if workout:
             normalised.append(workout)
-    return normalised
+    if cache is not None:
+        cache[days] = list(normalised)
+    return list(normalised)
 
 
 def _workout_start_dt(workout):
@@ -5101,12 +5111,16 @@ def api_dashboard():
     improving = sum(1 for d in progression.values() if d["status"] == "On Track")
     total_exercises = len(progression)
 
-    readiness_scores = [get_readiness_score(m, SORENESS_DATA, volume, CARDIO_DATA, WORKOUTS)["score"] for m in volume.keys()]
+    readiness_by_muscle = {
+        muscle: get_readiness_score(muscle, SORENESS_DATA, volume, CARDIO_DATA, WORKOUTS)
+        for muscle in volume
+    }
+    readiness_scores = [readiness["score"] for readiness in readiness_by_muscle.values()]
     avg_readiness = sum(readiness_scores) / len(readiness_scores) if readiness_scores else 7
 
     muscle_data = []
     for muscle, data in volume.items():
-        readiness = get_readiness_score(muscle, SORENESS_DATA, volume, CARDIO_DATA, WORKOUTS)
+        readiness = readiness_by_muscle[muscle]
         muscle_data.append({
             "muscle": muscle.title(),
             "sets": data["sets"],

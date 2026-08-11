@@ -82,6 +82,44 @@ def _today(module) -> str:
     return module._today_str()
 
 
+def test_apple_health_loader_request_cache_is_isolated_and_keyed_by_days(
+    fitness_app, monkeypatch
+):
+    parser = importlib.import_module("apple_health_parser")
+    calls = {"file": 0, "sync": 0}
+
+    def parse_file_workouts():
+        calls["file"] += 1
+        return [{"date": _today(fitness_app), "activity": "Walking", "duration_min": 30}]
+
+    def get_sync_records(record_type, days):
+        assert record_type == "workouts"
+        assert days in {7, 28}
+        calls["sync"] += 1
+        return [{"date": _today(fitness_app), "activity": "Running", "duration_min": 20}]
+
+    monkeypatch.setattr(parser, "parse_workouts", parse_file_workouts)
+    monkeypatch.setattr(parser, "_get_sync_records", get_sync_records)
+
+    fitness_app._load_apple_health_recommendation_workouts(days=28)
+    fitness_app._load_apple_health_recommendation_workouts(days=28)
+    assert calls == {"file": 2, "sync": 2}
+
+    with fitness_app.app.test_request_context("/"):
+        first = fitness_app._load_apple_health_recommendation_workouts(days=28)
+        repeated = fitness_app._load_apple_health_recommendation_workouts(days=28)
+        seven_day = fitness_app._load_apple_health_recommendation_workouts(days=7)
+
+        assert first == repeated
+        assert seven_day == first
+        assert calls == {"file": 4, "sync": 4}
+
+    with fitness_app.app.test_request_context("/"):
+        fitness_app._load_apple_health_recommendation_workouts(days=28)
+
+    assert calls == {"file": 5, "sync": 5}
+
+
 def _sync_apple_health_workout(module, workout: dict) -> None:
     response = module.app.test_client().post(
         "/api/apple-health/sync",
