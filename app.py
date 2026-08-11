@@ -15056,7 +15056,10 @@ def oura_sleep_summary():
     try:
         # Get last night's sleep
         latest = get_latest_sleep(OURA_DB_FILE, days=1, long_sleep_only=True)
-        last_night = latest[0] if latest else None
+        last_night = next(
+            (row for row in (latest or []) if not _sleep_row_is_non_nightly(row)),
+            None,
+        )
 
         # Get 7-day data
         end = datetime.now().date()
@@ -15118,7 +15121,7 @@ def oura_sleep_summary():
         except Exception:
             pass
 
-        quality_rows = list(week_data) + daily_quality_rows
+        quality_rows = list(week_data) + list(latest or []) + daily_quality_rows
         if daily_row:
             quality_rows.append(daily_row)
         quality_current = (

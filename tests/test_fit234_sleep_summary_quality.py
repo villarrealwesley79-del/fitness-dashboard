@@ -523,6 +523,82 @@ def test_sleep_summary_does_not_promote_nap_to_last_night(monkeypatch):
     assert payload["data_quality"] == {"status": "ok"}
 
 
+@pytest.mark.parametrize("sleep_type", ["nap", "rest", "late_nap"])
+def test_sleep_summary_ignores_newer_primary_non_nightly_rows(monkeypatch, sleep_type):
+    monkeypatch.setenv("SECRET_KEY", "fit234-secret")
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    nightly = {
+        "day": "2026-06-03",
+        "sleep_type": "long_sleep",
+        "total_sleep_min": 480,
+        "deep_sleep_min": 90,
+        "rem_sleep_min": 100,
+        "light_sleep_min": 290,
+        "sleep_score": 88,
+    }
+    non_nightly = {
+        "day": "2026-06-04",
+        "sleep_type": sleep_type,
+        "total_sleep_min": 30,
+        "deep_sleep_min": 0,
+        "rem_sleep_min": 0,
+        "light_sleep_min": 30,
+        "sleep_score": None,
+    }
+    primary_rows = [non_nightly, nightly]
+    monkeypatch.setattr(oura_sleep_sync, "get_latest_sleep", lambda *_a, **_kw: primary_rows)
+    monkeypatch.setattr(oura_sleep_sync, "get_sleep_range", lambda *_a, **_kw: primary_rows)
+    monkeypatch.setattr(module, "get_oura_daily", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "get_oura_daily_range", lambda *_a, **_kw: [])
+
+    payload = module.app.test_client().get("/api/oura/sleep-summary").get_json()
+
+    assert payload["last_night"]["date"] == "2026-06-03"
+    assert payload["last_night"]["total_sleep_min"] == 480
+
+
+def test_sleep_summary_retains_primary_inconsistent_nightly_for_quality(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "fit234-secret")
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    inconsistent_nightly = {
+        "day": "2026-06-03",
+        "sleep_type": "long_sleep",
+        "total_sleep_min": 1,
+        "deep_sleep_min": 0,
+        "rem_sleep_min": 0,
+        "light_sleep_min": 1,
+        "sleep_score": 88,
+    }
+    newer_nap = {
+        "day": "2026-06-04",
+        "sleep_type": "nap",
+        "total_sleep_min": 30,
+        "deep_sleep_min": 0,
+        "rem_sleep_min": 0,
+        "light_sleep_min": 30,
+        "sleep_score": None,
+    }
+    primary_rows = [newer_nap, inconsistent_nightly]
+    monkeypatch.setattr(oura_sleep_sync, "get_latest_sleep", lambda *_a, **_kw: primary_rows)
+    monkeypatch.setattr(oura_sleep_sync, "get_sleep_range", lambda *_a, **_kw: primary_rows)
+    monkeypatch.setattr(module, "get_oura_daily", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "get_oura_daily_range", lambda *_a, **_kw: [])
+
+    payload = module.app.test_client().get("/api/oura/sleep-summary").get_json()
+
+    assert payload["last_night"]["date"] == "2026-06-03"
+    assert payload["data_quality"] == {
+        "status": "inconsistent",
+        "reason": "duration_score_conflict",
+        "source": "oura",
+        "observed_at": "2026-06-03",
+        "excluded_dates": ["2026-06-03"],
+        "message": "Sleep data is inconsistent. Check Oura sync.",
+    }
+
+
 def test_sleep_summary_treats_scored_nap_conflict_as_historical(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit234-secret")
     module = importlib.import_module("app")
