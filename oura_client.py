@@ -58,7 +58,7 @@ def _sleep_candidate_priority(row):
 
 
 def _prefer_sleep_candidate(current, candidate):
-    if current is None or _sleep_candidate_priority(candidate) > _sleep_candidate_priority(current):
+    if current is None or _sleep_candidate_priority(candidate) >= _sleep_candidate_priority(current):
         return candidate
     return current
 

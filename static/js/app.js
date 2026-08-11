@@ -3495,7 +3495,7 @@
             $('v-sleep-dur-sub').textContent = '—';
         }
         if (!sleepInconsistent) {
-            $('v-sleep-score').textContent = oura && oura.sleep_score != null ? oura.sleep_score : '--';
+            $('v-sleep-score').textContent = last && last.sleep_score != null ? last.sleep_score : '--';
             const wa = sleep && sleep.week_average;
             $('v-sleep-score-sub').textContent = sleepQualityWarning ? sleepQualityAction
                 : (wa && wa.score ? `avg ${wa.score} · 7d` : '');
