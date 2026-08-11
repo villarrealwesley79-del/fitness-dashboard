@@ -260,6 +260,53 @@ def test_dashboard_high_readiness_surfaces_intensity_cardio(fitness_app, monkeyp
     assert fitness_app.CARDIO_ROTATION_CURSOR == {}
 
 
+def test_dashboard_readiness_computes_each_volume_muscle_once(fitness_app, monkeypatch):
+    volume = {
+        "quads": {
+            "sets": 8,
+            "status": "Minimum Effective",
+            "status_color": "yellow",
+            "last_trained": "2026-08-01",
+        },
+        "back": {
+            "sets": 12,
+            "status": "Optimal",
+            "status_color": "green",
+            "last_trained": "2026-08-02",
+        },
+    }
+    readiness = {
+        "quads": {"score": 8, "color": "green"},
+        "back": {"score": 6, "color": "yellow"},
+    }
+    calls = []
+
+    def fake_readiness(muscle, *_args):
+        calls.append(muscle)
+        return readiness[muscle]
+
+    monkeypatch.setattr(fitness_app, "calculate_volume", lambda *_args, **_kwargs: volume)
+    monkeypatch.setattr(fitness_app, "calculate_progression_status", lambda *_args: {})
+    monkeypatch.setattr(fitness_app, "get_readiness_score", fake_readiness)
+    monkeypatch.setattr(
+        fitness_app,
+        "generate_next_workout",
+        lambda *_args, **_kwargs: {"name": "Test", "focus": "full_body", "exercises": [], "cardio": {}},
+    )
+    monkeypatch.setattr(fitness_app, "_persist_current_workout_plan", lambda plan, *_args: plan)
+
+    response = fitness_app.app.test_client().get("/api/dashboard")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert calls == ["quads", "back"]
+    assert payload["headline"]["avg_readiness"] == 7.0
+    assert [(row["muscle"], row["readiness"]) for row in payload["muscles"]] == [
+        ("Quads", 8),
+        ("Back", 6),
+    ]
+
+
 def test_dashboard_missing_readiness_does_not_force_recovery_cardio(fitness_app, monkeypatch):
     monkeypatch.setattr(fitness_app, "get_oura_daily", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
