@@ -78,6 +78,62 @@ def test_sleep_summary_does_not_treat_missing_daily_stages_as_zero(monkeypatch):
     assert payload["week_average"]["rem_min"] is None
 
 
+@pytest.mark.parametrize("non_nightly_type", ["nap", "REST"])
+@pytest.mark.parametrize("sleep_rows", ["night_then_non_nightly", "non_nightly_then_night"])
+def test_oura_same_day_sleep_selection_prefers_long_sleep(
+    monkeypatch, non_nightly_type, sleep_rows
+):
+    day = "2026-06-04"
+    long_sleep = {
+        "day": day,
+        "type": "long_sleep",
+        "score": 88,
+        "total_sleep_duration": 8 * 60 * 60,
+        "deep_sleep_duration": 90 * 60,
+        "rem_sleep_duration": 100 * 60,
+        "light_sleep_duration": 290 * 60,
+        "awake_time": 30 * 60,
+        "average_hrv": 52,
+        "lowest_heart_rate": 55,
+    }
+    non_nightly = {
+        "day": day,
+        "type": non_nightly_type,
+        "score": 60,
+        "total_sleep_duration": 30 * 60,
+        "deep_sleep_duration": 0,
+        "rem_sleep_duration": 0,
+        "light_sleep_duration": 30 * 60,
+        "awake_time": 0,
+        "average_hrv": 20,
+        "lowest_heart_rate": 70,
+    }
+    sleep = [long_sleep, non_nightly]
+    if sleep_rows == "non_nightly_then_night":
+        sleep.reverse()
+
+    client = oura_client.OuraClient(token="fit234-token")
+
+    def request(endpoint, **_kwargs):
+        return {
+            "daily_readiness": [{"day": day, "score": 80}],
+            "daily_sleep": sleep,
+            "sleep": sleep,
+            "daily_activity": [{"day": day, "steps": 1000, "score": 80}],
+        }[endpoint]
+
+    monkeypatch.setattr(client, "_request", request)
+
+    daily = client.get_daily_range(day, day)
+    metrics = client.get_today_metrics(day)[3]
+
+    assert daily[0]["sleep_type"] == "long_sleep"
+    assert daily[0]["sleep_duration_min"] == 480
+    assert metrics["sleep_type"] == "long_sleep"
+    assert metrics["sleep_duration_min"] == 480
+    assert metrics["hrv"] == 52
+
+
 def test_vitals_renderer_blocks_inconsistent_sleep_values():
     output = run_app_js(
         ["paintDashboardFromState", "renderVitals", "state"],
@@ -293,6 +349,18 @@ def test_bedtime_variance_uses_only_supplied_valid_rows(monkeypatch):
     ])
 
     assert variance == 15
+
+
+def test_bedtime_variance_wraps_across_midnight(monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "fit234-secret")
+    module = importlib.import_module("app")
+
+    variance = module._bedtime_variance_from_rows([
+        {"bedtime_start": "2026-06-03T23:50:00", "total_sleep_min": 480},
+        {"bedtime_start": "2026-06-04T00:10:00", "total_sleep_min": 480},
+    ])
+
+    assert variance == 10
 
 
 def test_sleep_summary_does_not_average_missing_duration_as_zero(monkeypatch):
@@ -657,6 +725,50 @@ process.stdout.write(JSON.stringify(sparklines.slice(-1)[0]));
     )
 
     assert output == [8, 7]
+
+
+def test_vitals_renderer_shows_unavailable_for_nullable_sleep_duration():
+    output = run_app_js(
+        ["renderVitals"],
+        """
+const element = () => ({ textContent: '', className: '', classList: { toggle() {}, remove() {} } });
+[
+  'v-rhr', 'v-hrv', 'v-hr-zone', 'v-hr-zone-sub', 'v-temp', 'v-temp-delta',
+  'v-steps', 'v-steps-goal', 'v-active-cal', 'v-active-cal-goal', 'v-total-cal',
+  'v-total-cal-goal', 'v-active-min', 'v-active-min-goal', 'spark-steps',
+  'spark-active-min', 'spark-sleep', 'v-sleep-dur', 'v-sleep-dur-sub',
+  'v-sleep-score', 'v-sleep-score-sub', 'v-weight', 'v-bf', 'v-weight-delta',
+  'v-bf-delta', 'v-rhr-delta', 'v-hrv-delta',
+].forEach((id) => { sandbox.elements[id] = element(); });
+let sleep = {
+  last_night: { total_sleep_min: null, rem_sleep_min: null, deep_sleep_min: null },
+  data_quality: { status: 'ok', excluded_dates: [] },
+};
+sandbox.__fitSet.getVitals(async () => ({}));
+sandbox.__fitSet.getOuraStatus(async () => ({ sleep_score: 88 }));
+sandbox.__fitSet.getOuraSleep(async () => sleep);
+sandbox.__fitSet.getBody(async () => ({ history: [] }));
+sandbox.__fitSet.getOuraTrends(async () => ({ series: [] }));
+sandbox.__fitSet.sparkline(() => {});
+await e.renderVitals();
+const unavailable = sandbox.elements['v-sleep-dur'].textContent;
+sleep = {
+  last_night: { total_sleep_min: 480, rem_sleep_min: 100, deep_sleep_min: 90 },
+  data_quality: { status: 'ok', excluded_dates: [] },
+};
+await e.renderVitals();
+process.stdout.write(JSON.stringify({
+  unavailable,
+  numeric: sandbox.elements['v-sleep-dur'].textContent,
+}));
+""",
+        mocks=[
+            "getVitals", "getOuraStatus", "getOuraSleep", "getBody", "getOuraTrends",
+            "sparkline",
+        ],
+    )
+
+    assert output == {"unavailable": "--", "numeric": "8h"}
 
 
 def test_oura_daily_migrates_and_preserves_nullable_sleep_type(tmp_path):

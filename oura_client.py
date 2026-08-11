@@ -46,6 +46,21 @@ def _normalize_sleep_type(value):
     return normalized or None
 
 
+def _sleep_candidate_priority(row):
+    sleep_type = _normalize_sleep_type((row or {}).get("type"))
+    if sleep_type in {"late_nap", "nap", "rest"}:
+        return 0
+    if sleep_type == "long_sleep":
+        return 2
+    return 1
+
+
+def _prefer_sleep_candidate(current, candidate):
+    if current is None or _sleep_candidate_priority(candidate) >= _sleep_candidate_priority(current):
+        return candidate
+    return current
+
+
 class OuraClient:
     BASE_URL = "https://api.ouraring.com/v2/usercollection"
 
@@ -102,9 +117,12 @@ class OuraClient:
 
         r_last = readiness[-1] if readiness else {}
         ds_last = daily_sleep[-1] if daily_sleep else {}
-        # sleep endpoint returns detailed breakdown - use last main sleep (type != "late_nap")
-        main_sleeps = [s for s in sleep_detail if s.get("type") not in ("late_nap", "nap", "rest")]
-        sd_last = main_sleeps[-1] if main_sleeps else (sleep_detail[-1] if sleep_detail else {})
+        # Prefer a nightly/long sleep over same-day naps/rest entries regardless
+        # of the upstream iteration order; preserve the last candidate otherwise.
+        sd_last = None
+        for s in sleep_detail:
+            sd_last = _prefer_sleep_candidate(sd_last, s)
+        sd_last = sd_last or {}
         a_last = activity[-1] if activity else {}
 
         readiness_score = _safe_get(r_last, "score")
@@ -176,10 +194,14 @@ class OuraClient:
             d["temperature_deviation"] = r.get("temperature_deviation") if r.get("temperature_deviation") is not None else r.get("temperature_delta")
             d["resting_hr"] = r.get("resting_heart_rate") if r.get("resting_heart_rate") is not None else r.get("resting_hr")
 
+        sleep_by_day: dict[str, dict] = {}
         for s in sleep:
             day = s.get("day")
             if not day:
                 continue
+            sleep_by_day[day] = _prefer_sleep_candidate(sleep_by_day.get(day), s)
+
+        for day, s in sleep_by_day.items():
             d = by_day.setdefault(day, {})
             d["sleep_score"] = s.get("score")
             d["hrv"] = s.get("average_hrv")

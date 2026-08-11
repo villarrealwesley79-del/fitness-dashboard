@@ -3485,7 +3485,8 @@
             $('v-sleep-score').textContent = '--';
             $('v-sleep-score-sub').textContent = sleep.data_quality.observed_at || '';
         } else if (last) {
-            $('v-sleep-dur').textContent = fmtDur(last.total_sleep_min);
+            const totalSleepMin = last.total_sleep_min;
+            $('v-sleep-dur').textContent = totalSleepMin != null ? fmtDur(totalSleepMin) : '--';
             const remLabel = last.rem_sleep_min != null ? `${Math.round(last.rem_sleep_min)}m REM` : 'REM unknown';
             const deepLabel = last.deep_sleep_min != null ? `${Math.round(last.deep_sleep_min)}m Deep` : 'Deep unknown';
             $('v-sleep-dur-sub').textContent = `${remLabel} · ${deepLabel}`;

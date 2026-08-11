@@ -15037,8 +15037,14 @@ def _bedtime_variance_from_rows(rows):
         bedtimes.append(parsed.hour * 60 + parsed.minute)
     if len(bedtimes) < 2:
         return None
-    mean = sum(bedtimes) / len(bedtimes)
-    variance = sum((value - mean) ** 2 for value in bedtimes) / len(bedtimes)
+    angles = [2 * math.pi * value / (24 * 60) for value in bedtimes]
+    mean_angle = math.atan2(
+        sum(math.sin(angle) for angle in angles),
+        sum(math.cos(angle) for angle in angles),
+    )
+    mean_minutes = (mean_angle % (2 * math.pi)) * (24 * 60) / (2 * math.pi)
+    deviations = [((value - mean_minutes + 12 * 60) % (24 * 60)) - 12 * 60 for value in bedtimes]
+    variance = sum(value ** 2 for value in deviations) / len(deviations)
     return int(round(variance ** 0.5))
 
 
