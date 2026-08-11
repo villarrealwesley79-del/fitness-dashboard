@@ -584,11 +584,12 @@ process.stdout.write(JSON.stringify(calls));
     ]
 
 
-def test_dashboard_shell_defers_heavy_app_bundle_until_after_load():
+def test_dashboard_shell_loads_heavy_app_bundle_when_dom_is_ready():
     template = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
     assert "app-loader.js?v=20260713-fit270-oura-detail" in template
     assert '<script src="/static/js/app.js' not in template
-    assert "window.addEventListener('load', loadAppBundle, { once: true });" in loader
+    assert "document.addEventListener('DOMContentLoaded', loadAppBundle, { once: true });" in loader
+    assert "window.addEventListener('load', loadAppBundle" not in loader
     assert "script.src = '/static/js/app.js?v=20260713-fit270-oura-detail';" in loader
     assert "script.async = true;" in loader

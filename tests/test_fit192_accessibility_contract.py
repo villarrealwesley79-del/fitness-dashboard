@@ -75,11 +75,12 @@ def test_switch_tab_keeps_aria_selected_and_panel_hidden_state_in_sync():
     output = run_app_js(
         ["switchTab", "wireEvents", "state"],
         """
-const makePanel = (id) => ({ id, attrs: {}, classList: { toggle: () => {} }, setAttribute(key, value) { this.attrs[key] = value; } });
+const makePanel = (id) => ({ id, attrs: {}, classList: { toggle: () => {}, contains: (name) => name === 'tab-content' }, setAttribute(key, value) { this.attrs[key] = value; } });
 const makeTab = (tab) => ({ attrs: { 'data-tab': tab }, handlers: {}, classList: { toggle: () => {} }, tabIndex: -1, getAttribute(key) { return this.attrs[key]; }, setAttribute(key, value) { this.attrs[key] = value; }, addEventListener(name, fn) { this.handlers[name] = fn; }, focus() { this.focused = true; } });
 const panels = [makePanel('tab-dashboard'), makePanel('tab-settings')];
 const tabs = [makeTab('tab-dashboard'), makeTab('tab-settings')];
 sandbox.document.querySelectorAll = (selector) => selector === '.tab-content' ? panels : selector === '.tab-btn' ? tabs : [];
+sandbox.document.getElementById = (id) => panels.find((panel) => panel.id === id) || null;
 sandbox.scrollTo = () => {};
 sandbox.addEventListener = () => {};
 const loadCalls = [];
