@@ -2906,18 +2906,20 @@ def promote_manual_food_log_to_terminal(
     if stored_row is None:
         return None
     stored = _food_log_row_to_dict(stored_row)
+    manual_estimate = {
+        field: stored[field]
+        for field in _CURRENT_ESTIMATE_PROJECTION_FIELDS
+        if field in stored and stored[field] is not None
+    }
+    manual_estimate["source"] = "manual_review_estimate"
     canonical_estimate = sanitize_accepted_estimate(
-        {
-            field: stored[field]
-            for field in FOOD_ESTIMATE_FIELDS
-            if field in stored and stored[field] is not None
-        }
+        manual_estimate
     )
     now_iso = datetime.now().isoformat(timespec="seconds")
     row = _conn.execute(
         """
         UPDATE food_logs
-           SET correction_state = ?, accepted_estimate_json = ?, updated_at = ?
+           SET correction_state = ?, source = ?, accepted_estimate_json = ?, updated_at = ?
          WHERE user_id = ?
            AND client_id = ?
            AND meal_id = ?
@@ -2927,6 +2929,7 @@ def promote_manual_food_log_to_terminal(
         """,
         (
             correction_state,
+            "manual_review_estimate",
             _json_dumps_or_none(canonical_estimate),
             now_iso,
             user_id,

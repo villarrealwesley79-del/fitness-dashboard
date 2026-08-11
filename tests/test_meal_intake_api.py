@@ -12095,12 +12095,13 @@ def test_add_nutrition_pending_without_source_stays_manual(monkeypatch, tmp_path
     module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
     _isolated_food_log_db(monkeypatch, tmp_path)
     client_id = "manual-pending-without-source"
+    pending_date = module._today_str()
 
     staged = module.app.test_client().post(
         "/api/add-nutrition",
         json={
             "client_id": client_id,
-            "date": "2026-07-14",
+            "date": pending_date,
             "calories": 320,
             "protein_g": 35,
             "correction_state": "pending_review",
@@ -16343,6 +16344,92 @@ def test_multi_accept_promotes_matching_manual_row_before_logged_event(
         manual_client_id,
         sibling_client_id,
     }
+
+
+def test_multi_accept_manual_promotion_strips_client_provenance(
+    monkeypatch,
+    tmp_path,
+):
+    module = _configure_meal_app(_APP_UNDER_TEST, monkeypatch)
+    _isolated_food_log_db(monkeypatch, tmp_path)
+    meal_id = "manual-row-provenance"
+    forged = _accepted_estimate(
+        item_name="Manual canonical",
+        calories=430,
+        source="nutritionix",
+        external_food_id="forged-provider-id",
+        verified_source_url="https://example.invalid/forged",
+        image_url="https://example.invalid/forged-image.jpg",
+        data_fetched_at="2026-05-22T12:00:00",
+        portion_basis="forged portion basis",
+        brand_id="forged-brand",
+        underlying_source="nutritionix",
+        underlying_sources=["nutritionix"],
+        off_attribution="forged attribution",
+        personal_vocab_phrase="forged phrase",
+        from_image=True,
+        vision_description="forged visual evidence",
+        vision_provider="forged-vision-provider",
+        vision_confidence=0.99,
+    )
+    manual_item = {
+        "item_id": "manual-item",
+        "state": "included",
+        "estimate": forged,
+    }
+    sibling_item = {
+        "item_id": "sibling-item",
+        "state": "included",
+        "estimate": _accepted_estimate(item_name="New sibling", calories=220),
+    }
+    manual_client_id = module._meal_item_client_id(meal_id, manual_item, 0)
+    data_store.add_food_log(
+        1,
+        {
+            "client_id": manual_client_id,
+            "meal_id": meal_id,
+            "meal_item_id": manual_item["item_id"],
+            "item_index": 0,
+            "item_state": "included",
+            "date": "2026-05-22",
+            "logged_at": "2026-05-22T12:00:00",
+            **forged,
+            "correction_state": "manual",
+            "accepted_estimate": forged,
+        },
+    )
+
+    response = module.app.test_client().post(
+        f"/api/meal-intake/{meal_id}/accept",
+        json={
+            "meal_id": meal_id,
+            "items": [manual_item, sibling_item],
+        },
+    )
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    row = response.get_json()["food_logs"][0]
+    assert row["correction_state"] == "accepted"
+    assert row["source"] == "manual_review_estimate"
+    assert row["accepted_estimate"]["source"] == "manual_review_estimate"
+    assert row["accepted_estimate"].get("from_image") is not True
+    for field in (
+        "external_food_id",
+        "verified_source_url",
+        "image_url",
+        "data_fetched_at",
+        "portion_basis",
+        "brand_id",
+        "underlying_source",
+        "underlying_sources",
+        "off_attribution",
+        "personal_vocab_phrase",
+        "vision_description",
+        "vision_provider",
+        "vision_confidence",
+    ):
+        assert field not in row["accepted_estimate"]
+    assert response.get_json()["photo_retention"]["image_received"] is False
 
 
 def test_exact_set_multi_accept_promotes_manual_row_before_logged_event(
