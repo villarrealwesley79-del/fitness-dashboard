@@ -85,6 +85,63 @@ def test_sleep_debt_bounds_recent_window_before_filtering_invalid_rows(tmp_path)
     assert result["avg_sleep_min"] == 420.0
 
 
+def test_sleep_debt_returns_unavailable_when_recent_window_has_no_valid_nights(tmp_path):
+    module = importlib.import_module("app")
+    db_path = tmp_path / "oura.db"
+    oura_client.init_oura_db(str(db_path))
+
+    oura_client.upsert_oura_daily(
+        str(db_path),
+        "2026-06-08",
+        None,
+        None,
+        None,
+        None,
+        sleep_type="nap",
+        sleep_duration_min=30,
+        sleep_deep_min=0,
+        sleep_rem_min=0,
+        sleep_light_min=30,
+    )
+    oura_client.upsert_oura_daily(
+        str(db_path),
+        "2026-06-07",
+        None,
+        88,
+        None,
+        None,
+        sleep_type="long_sleep",
+        sleep_duration_min=1,
+        sleep_deep_min=0,
+        sleep_rem_min=0,
+        sleep_light_min=1,
+    )
+    oura_client.upsert_oura_daily(
+        str(db_path),
+        "2026-06-01",
+        None,
+        88,
+        None,
+        None,
+        sleep_type="long_sleep",
+        sleep_duration_min=420,
+        sleep_deep_min=90,
+        sleep_rem_min=100,
+        sleep_light_min=230,
+    )
+
+    result = module.calculate_sleep_debt(str(db_path), days=2)
+
+    assert result == {
+        "debt_minutes": 0,
+        "debt_hours": 0.0,
+        "nights_under": 0,
+        "avg_sleep_min": 0.0,
+        "status": "good",
+        "message": "No recent sleep-duration data available from Oura cache.",
+    }
+
+
 def test_sleep_summary_does_not_treat_missing_daily_stages_as_zero(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "fit234-secret")
     module = importlib.import_module("app")
@@ -163,6 +220,59 @@ def test_oura_same_day_sleep_selection_prefers_long_sleep(
     assert metrics["sleep_type"] == "long_sleep"
     assert metrics["sleep_duration_min"] == 480
     assert metrics["hrv"] == 52
+
+
+@pytest.mark.parametrize("path", ["get_today_metrics", "get_daily_range"])
+def test_oura_same_day_sleep_selection_preserves_explicit_main_over_later_untyped(
+    monkeypatch, path
+):
+    day = "2026-06-04"
+    explicit_main = {
+        "day": day,
+        "type": "main",
+        "score": 88,
+        "total_sleep_duration": 8 * 60 * 60,
+        "deep_sleep_duration": 90 * 60,
+        "rem_sleep_duration": 100 * 60,
+        "light_sleep_duration": 290 * 60,
+        "awake_time": 30 * 60,
+        "average_hrv": 52,
+        "lowest_heart_rate": 55,
+    }
+    later_untyped = {
+        "day": day,
+        "score": 60,
+        "total_sleep_duration": 30 * 60,
+        "deep_sleep_duration": 0,
+        "rem_sleep_duration": 0,
+        "light_sleep_duration": 30 * 60,
+        "awake_time": 0,
+        "average_hrv": 20,
+        "lowest_heart_rate": 70,
+    }
+    sleep = [explicit_main, later_untyped]
+    client = oura_client.OuraClient(token="fit234-token")
+
+    def request(endpoint, **_kwargs):
+        return {
+            "daily_readiness": [{"day": day, "score": 80}],
+            "daily_sleep": sleep,
+            "sleep": sleep,
+            "daily_activity": [{"day": day, "steps": 1000, "score": 80}],
+        }[endpoint]
+
+    monkeypatch.setattr(client, "_request", request)
+
+    if path == "get_today_metrics":
+        metrics = client.get_today_metrics(day)[3]
+        assert metrics["sleep_type"] == "main"
+        assert metrics["sleep_duration_min"] == 480
+        assert metrics["hrv"] == 52
+    else:
+        daily = client.get_daily_range(day, day)
+        assert daily[0]["sleep_type"] == "main"
+        assert daily[0]["sleep_duration_min"] == 480
+        assert daily[0]["hrv"] == 52
 
 
 def test_vitals_renderer_blocks_inconsistent_sleep_values():
