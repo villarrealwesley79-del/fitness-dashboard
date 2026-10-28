@@ -233,12 +233,17 @@ def get_sleep_range(db_path: str, start_date: str, end_date: str, long_sleep_onl
         conn.close()
 
 
-def calculate_bedtime_variance(db_path: str, days: int = 7):
-    """Calculate circular population standard deviation in bedtime minutes."""
-    end = datetime.now().date()
-    start = end - timedelta(days=days - 1)
+def calculate_bedtime_variance(db_path: str, days: int = 7, rows=None):
+    """Calculate circular population standard deviation in bedtime minutes.
 
-    records = get_sleep_range(db_path, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+    Pass `rows` to score caller-vetted rows instead of reading the sleep table.
+    """
+    if rows is None:
+        end = datetime.now().date()
+        start = end - timedelta(days=days - 1)
+        records = get_sleep_range(db_path, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+    else:
+        records = rows
 
     if len(records) < 2:
         return None
