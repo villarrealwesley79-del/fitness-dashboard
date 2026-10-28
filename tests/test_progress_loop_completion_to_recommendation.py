@@ -18,11 +18,22 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import data_store
+
+
+def _set_last_workout_recommendation(module, recommendation):
+    module.LAST_WORKOUT_RECOMMENDATION = recommendation
+    module.LAST_WORKOUT_RECOMMENDATION_OWNER = {
+        "user_id": 1,
+        "plan_id": id(recommendation),
+    }
 
 
 @pytest.fixture()
-def fitness_app(monkeypatch):
+def fitness_app(monkeypatch, tmp_path):
     monkeypatch.setenv("SECRET_KEY", "fit12-progress-loop-secret")
+    monkeypatch.setattr(data_store, "DATA_DB", str(tmp_path / "fitness_data.db"))
+    data_store.init_data_db()
     module = importlib.import_module("app")
     module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
 
@@ -35,6 +46,7 @@ def fitness_app(monkeypatch):
     monkeypatch.setattr(module, "save_json", lambda *_a, **_kw: None)
     monkeypatch.setattr(module, "_notify_workout_logged", lambda *_a, **_kw: None)
     module.LAST_WORKOUT_RECOMMENDATION = None
+    module.LAST_WORKOUT_RECOMMENDATION_OWNER = None
 
     # Neutralize external side-effects on /api/recommendation/smart so we
     # exercise only the post-workout linkage under test.
@@ -294,13 +306,13 @@ def test_complete_workout_resolves_adherence_against_last_recommendation(fitness
     history-only `WORKOUT_RECOMMENDATIONS` list. complete_workout must look
     there too, otherwise every UI-driven completion would store the default
     `followed: True` regardless of what the user actually did."""
-    fitness_app.LAST_WORKOUT_RECOMMENDATION = {
+    _set_last_workout_recommendation(fitness_app, {
         "id": "rec-live-1",
         "exercises": [
             {"exercise": "Chest Press", "target_weight": 100},
             {"exercise": "Tricep Pushdown", "target_weight": 50},
         ],
-    }
+    })
     payload = _workout_payload(recommendation_id="rec-live-1", machine="Chest Press")
     res = fitness_app.app.test_client().post(
         "/api/complete-workout",

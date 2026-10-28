@@ -382,6 +382,7 @@ process.stdout.write(JSON.stringify({ synced, afterSync, requests, eviction, aft
 
 
 def test_meal_flush_has_duplicate_guards_and_online_hooks():
+    assert "const CACHE_NAME = 'fitness-dashboard-v20260713-fit233-adaptation-polling';" in APP_SW
     output = run_app_js(
         ["enqueueMealIntakeOffline", "flushMealSyncQueue", "getQueuedMealWithPhotos"],
         _INDEXED_DB_FAKE
@@ -410,7 +411,6 @@ process.stdout.write(JSON.stringify({ requests, offline: offline.entry && offlin
     assert output["requests"] == ["/api/auth/scope", "/api/meal-intake"]
     assert output["offline"] == "pending"
     assert output["online"] == {"entry": None, "photos": []}
-    assert "const CACHE_NAME = 'fitness-dashboard-v20260713-fit270-oura-detail';" in APP_SW
     assert "cache.addAll" not in APP_SW
     assert "sync" not in APP_SW.lower()
 

@@ -1,6 +1,6 @@
 // Fitness Dashboard Service Worker
 
-const CACHE_NAME = 'fitness-dashboard-v20260713-fit270-oura-detail';
+const CACHE_NAME = 'fitness-dashboard-v20260713-fit233-adaptation-polling';
 
 // Install - take control immediately, but do not precache the app shell.
 // The workout screen is gym-critical, and stale cached HTML/JS can strand the

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_index_exposes_whoop_dashboard_and_settings_surfaces():
     html = (ROOT / "templates" / "index.html").read_text()
     for token in [
-        '/static/css/app.css?v=20260713-fit270-oura-detail', 'id="reco-fresh-whoop"',
+        '/static/css/app.css?v=20260713-fit233-adaptation-polling', 'id="reco-fresh-whoop"',
         'id="btn-reco-sources"', 'id="reco-sources-summary"', 'id="reco-source-conflict"',
         'id="whoop-int-dot"', 'id="whoop-last-sync"', 'id="whoop-connect-state"',
         'id="btn-connect-whoop" class="btn btn-ghost btn-sm" type="button" hidden aria-haspopup="dialog" aria-controls="modal-whoop-intake"',
@@ -28,9 +28,9 @@ def test_whoop_release_assets_and_import_copy_are_stable():
     html = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
     service_worker = (ROOT / "static" / "js" / "sw.js").read_text()
-    assert "/static/js/app-loader.js?v=20260713-fit270-oura-detail" in html
-    assert "/static/js/app.js?v=20260713-fit270-oura-detail" in loader
-    assert "fitness-dashboard-v20260713-fit270-oura-detail" in service_worker
+    assert "/static/js/app-loader.js?v=20260713-fit233-adaptation-polling" in html
+    assert "/static/js/app.js?v=20260713-fit233-adaptation-polling" in loader
+    assert "fitness-dashboard-v20260713-fit233-adaptation-polling" in service_worker
     assert "Dates up to one day ahead may be accepted for timezone differences; farther-ahead dates are rejected." in html
 
 
