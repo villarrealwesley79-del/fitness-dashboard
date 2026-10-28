@@ -355,30 +355,6 @@ process.stdout.write(JSON.stringify(saved));
     assert output[0]["value"]["workout"]["id"] == "deferred-workout"
 
 
-def test_whoop_disconnect_invalidates_dashboard_and_rerenders_settings():
-    output = run_app_js(
-        ["disconnectWhoop", "state"],
-        """
-e.state.dashboard = { cached: true };
-e.state.reco = { cached: true };
-e.state.whoopStatus = { connected: true };
-const calls = [];
-sandbox.__fitSet.api(async () => ({}));
-sandbox.__fitSet.renderWhoopFreshnessDetail(() => {});
-sandbox.__fitSet.toast(() => calls.push('toast'));
-sandbox.__fitSet.renderSettings(async () => calls.push('settings'));
-await e.disconnectWhoop();
-process.stdout.write(JSON.stringify({ state: e.state, calls }));
-""",
-        mocks=["api", "renderWhoopFreshnessDetail", "toast", "renderSettings"],
-    )
-
-    assert output["state"]["dashboard"] is None
-    assert output["state"]["reco"] is None
-    assert output["state"]["whoopStatus"]["connected"] is False
-    assert output["calls"] == ["toast", "settings"]
-
-
 def test_auth_scope_settlement_restores_then_flushes_draft():
     output = run_app_js(
         ["settleActiveWorkoutDraftAfterAuthScope"],

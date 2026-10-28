@@ -22,10 +22,6 @@ def _payload_kwargs(tmp_path, **overrides):
         "cached_oura": {"day": "2026-06-27", "readiness_score": 72},
         "oura_rows": [{"day": "2026-06-27", "readiness_score": 72, "created_at": "2026-06-27T06:00:00"}],
         "oura_db_file": str(tmp_path / "oura.sqlite3"),
-        "whoop_connection": {"status": "disconnected"},
-        "whoop_freshness": {"status": "missing", "score_state": None},
-        "whoop_fact": None,
-        "whoop_db_file": str(tmp_path / "whoop.sqlite3"),
     }
     base.update(overrides)
     return base
@@ -50,7 +46,7 @@ def test_build_payload_keeps_source_shapes_and_file_markers(tmp_path):
         "resting_hr": None,
         "created_at": "2026-06-27T06:00:00",
     }]
-    assert payload["whoop"]["daily_fact"]["recovery_score"] is None
+    assert "whoop" not in payload
     assert payload["open_wearables"] == {
         "configured": False,
         "user_id": "",

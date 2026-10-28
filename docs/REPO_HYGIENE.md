@@ -62,12 +62,10 @@ Native HealthKit work stays behind `docs/APPLE_HEALTH_HELPER_SLA.md`; do not add
 Swift, HealthKit permissions, or native targets unless that trigger is met and
 approved.
 
-Docs should describe the current WHOOP architecture as official WHOOP OAuth/API
-plus manual CSV import, local SQLite projection, protected token material, and
-bounded recommendation modifiers. Any older instruction that says no WHOOP code
-exists, treats Open Wearables as the durable WHOOP source of truth, or suggests
-storing WHOOP tokens/raw payloads in backups should be updated rather than
-copied forward.
+Docs should describe WHOOP data as reaching the app only through Open Wearables
+(facts labelled `provider: whoop, via: open_wearables`). The direct WHOOP
+OAuth/API, CSV import and token store were removed; the legacy `.whoop-*` files
+and `whoop.sqlite3` above may still exist on disk and stay ignored.
 
 Open Wearables docs should describe `/api/health/sync` as a metadata-only local
 bridge response. Do not document it as a raw health export endpoint.

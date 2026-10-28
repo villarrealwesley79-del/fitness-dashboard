@@ -22,6 +22,8 @@ import math
 import re
 from typing import Callable
 
+from recommendation_sources import is_whoop_recovery
+
 from wearable_fact_store import (
     WearableDailyFact,
     canonical_fact_date,
@@ -201,6 +203,8 @@ def _first_value(row: dict, *keys):
 
 def _number(row: dict, *keys):
     value = _first_value(row, *keys)
+    if isinstance(value, bool):
+        return None
     try:
         number = float(value) if value is not None else None
     except (TypeError, ValueError):
@@ -960,6 +964,8 @@ def store_wearable_facts(
             before_count = len(facts)
             for metric, (aliases, unit) in mappings.items():
                 value = _number(row, *aliases)
+                if metric == "recovery_score" and value is not None and not 0 <= value <= 100:
+                    value = None
                 if value is not None:
                     facts.append(WearableDailyFact(
                         date_s, "open_wearables", "Open Wearables", metric, value, unit,
@@ -1331,8 +1337,8 @@ def recommendation_facts(db_file: str, profile_key: str, limit: int = 20) -> lis
     )
     guard_facts = list_recommendation_facts(
         db_file,
-        limit=2,
-        metric_names={"sleep_duration", "active_minutes"},
+        limit=3,
+        metric_names={"sleep_duration", "active_minutes", "recovery_score"},
         **query_args,
     )
     seen = {
@@ -1343,6 +1349,29 @@ def recommendation_facts(db_file: str, profile_key: str, limit: int = 20) -> lis
         fact for fact in guard_facts
         if (fact["metric"], fact["provider_id"], fact["source_system"]) not in seen
     ]
+
+
+RECOVERY_DOWNGRADE_BELOW = 34  # WHOOP "red" band
+RECOVERY_CAUTION_BELOW = 67  # WHOOP "yellow" band: 34..66
+RECOVERY_RPE_CAP = 7.0
+
+
+def _latest_whoop_recovery(facts):
+    scores = []
+    for fact in facts:
+        if not is_whoop_recovery(fact):
+            continue
+        try:
+            value = float(fact.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= value <= 100:  # out-of-range scores are excluded, never clamped
+            scores.append((str(fact.get("date") or ""), value))
+    if not scores:
+        return None
+    latest = max(day for day, _ in scores)
+    # Same-date duplicates (legacy and current provider rows) resolve to the more conservative score.
+    return min(value for day, value in scores if day == latest)
 
 
 def conservative_modifier(facts) -> dict:
@@ -1370,15 +1399,25 @@ def conservative_modifier(facts) -> dict:
         applied.append("activity_caution")
         details.append(f"Open Wearables active minutes {int(round(active_min))}")
 
+    rpe_cap = None
+    recovery = _latest_whoop_recovery(facts)
+    if recovery is not None and recovery < RECOVERY_CAUTION_BELOW:
+        deload = recovery < RECOVERY_DOWNGRADE_BELOW
+        applied.append("recovery_deload" if deload else "recovery_caution")
+        rpe_cap = RECOVERY_RPE_CAP
+        details.append(f"Open Wearables recovery score {int(round(recovery))} (provider: whoop, via: open_wearables)")
+
     return {
         "applied": bool(applied),
         "applied_modifiers": applied,
+        "downgrade": bool(set(applied) - {"recovery_caution"}),
+        "rpe_cap": rpe_cap,
         "detail": "; ".join(details) + " -> recommendation held conservative." if details else None,
     }
 
 
 def apply_recommendation_guard(recommendation, facts, *, downgrade_once: Callable[[str], str]):
     modifier = conservative_modifier(facts)
-    if not modifier.get("applied"):
+    if not modifier["downgrade"]:
         return recommendation, modifier
     return downgrade_once(recommendation), modifier

@@ -113,12 +113,6 @@ def csrf_browser_header_for_test_clients(monkeypatch: pytest.MonkeyPatch) -> Ite
 
 
 @pytest.fixture(autouse=True)
-def isolated_whoop_material_dir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Iterator[None]:
-    monkeypatch.setenv("WHOOP_PROTECTED_MATERIAL_DIR", str(tmp_path / "whoop-material"))
-    yield
-
-
-@pytest.fixture(autouse=True)
 def isolated_open_wearables_password_file(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Iterator[None]:
     monkeypatch.setenv("OPEN_WEARABLES_PASSWORD_FILE", str(tmp_path / "open-wearables-password"))
     yield
