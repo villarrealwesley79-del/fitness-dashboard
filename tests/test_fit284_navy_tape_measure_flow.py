@@ -349,3 +349,15 @@ process.stdout.write(JSON.stringify({ calculated, afterTapeEdit, hipHidden: n['b
 """)
 
     assert out == {"calculated": "17.51", "afterTapeEdit": "", "hipHidden": False, "hipRequired": True}
+
+
+def test_hip_minimum_is_shared_between_navy_calc_and_save(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    tape = {"sex": "female", "height_in": 65, "neck_in": 13, "waist_in": 30}
+
+    for hip, status in ((18, 200), (17.9, 400)):
+        calc = client.post("/api/body/navy-calc", json={**tape, "hip_in": hip})
+        save = client.post("/api/add-body-measurement", json={"weight_lbs": 150, **tape, "hip_in": hip})
+        assert (calc.status_code, save.status_code) == (status, status)
+    legacy = client.post("/api/add-body-measurement", json={"weight_lbs": 150, "hips_in": 17.9})
+    assert legacy.status_code == 400
