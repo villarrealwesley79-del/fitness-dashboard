@@ -607,3 +607,49 @@ def test_client_disconnect_does_not_use_up_the_hourly_error_line(caplog):
             guard.get("/x")
     ours = [r.getMessage() for r in caplog.records if r.name == "fitness_mcp"]
     assert ours == ["unhandled RuntimeError on '/x'"]
+
+
+def test_store_flip_logs_one_line_each_way_not_one_per_request(tmp_path, caplog):
+    async def ok(scope, receive, send):
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    _store(tmp_path, 3)
+    guard = TestClient(LogRejectedRedirects(ok, store=str(tmp_path / "store"), store_max_files=2), base_url="http://127.0.0.1:8765")
+    with caplog.at_level(logging.WARNING, logger="fitness_mcp"):
+        assert [guard.post("/register").status_code for _ in range(5)] == [503] * 5
+        for f in (tmp_path / "store").iterdir():
+            f.unlink()
+        guard.app.store_checked -= 61
+        assert [guard.post("/register").status_code for _ in range(5)] == [200] * 5
+    lines = [r.getMessage() for r in caplog.records if r.name == "fitness_mcp"]
+    assert len(lines) == 2 and "is full" in lines[0] and "below its caps" in lines[1]
+
+
+MAIN_ENV_PROBE = r"""
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import uvicorn, server
+seen = {}
+uvicorn.run = lambda app, **kw: seen.update(kw)
+server.Config.from_env = classmethod(lambda cls, env=None: __import__("types").SimpleNamespace(host="127.0.0.1", port=0))
+server.build_app = lambda cfg: (None, "/mcp")
+server.main()
+print(json.dumps(seen))
+"""
+
+
+def test_main_warns_when_mcp_log_file_is_not_stderrs_file_and_limits_concurrency(tmp_path):
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    other = tmp_path / "other.log"
+    other.write_text("")
+    run = lambda env: subprocess.run(  # noqa: E731
+        [sys.executable, "-c", MAIN_ENV_PROBE, str(Path(__file__).resolve().parents[1])],
+        capture_output=True, text=True, timeout=60, env={**os.environ, **env})
+    quiet, loud = run({}), run({"MCP_LOG_FILE": str(other)})
+    assert "NOT capped" not in quiet.stderr and "NOT capped" in loud.stderr
+    assert json.loads(loud.stdout.strip().splitlines()[-1])["limit_concurrency"] == 100

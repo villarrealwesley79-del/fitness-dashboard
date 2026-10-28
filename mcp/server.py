@@ -155,24 +155,39 @@ def make_storage(directory: str, key: str) -> FernetEncryptionWrapper:
     return FernetEncryptionWrapper(key_value=store, fernet=Fernet(key), raise_on_decryption_error=False)
 
 
+def _is_stderr_file(path: str) -> bool:
+    try:
+        return os.path.samestat(os.fstat(2), os.stat(path))
+    except OSError:
+        return False
+
+
 def rotate_log(path: str, cap: int) -> bool:
     """If the file behind fds 1 and 2 is over `cap` bytes, move it to `<path>.1` and point both at a fresh 0600 file.
 
     The cap holds for whatever writes to stderr (FastMCP, uvicorn, anything added later); disk use stays
-    near 2 x cap plus what one check interval writes. It refuses to rename a path that is not fd 2's file.
+    near 2 x cap plus what one 1 s check interval writes. It refuses to rename a path that is not fd 2's file.
+    The new file is opened first: if that fails (no free fd, disk full) the log is truncated in place, so
+    the cap holds and a later tick can still rotate.
     """
-    info = os.fstat(2)
-    if info.st_size <= cap or os.stat(path).st_ino != info.st_ino:
+    if os.fstat(2).st_size <= cap or not _is_stderr_file(path):
         return False
-    os.replace(path, path + ".1")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    os.dup2(fd, 1)
-    os.dup2(fd, 2)
-    os.close(fd)
+    try:
+        fd = os.open(path + ".new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_APPEND, 0o600)
+    except OSError:
+        os.ftruncate(2, 0)
+        return False
+    try:
+        os.replace(path, path + ".1")
+        os.replace(path + ".new", path)
+        os.dup2(fd, 1)
+        os.dup2(fd, 2)
+    finally:
+        os.close(fd)
     return True
 
 
-def rotate_log_forever(path: str, cap: int, interval: float = 30) -> None:
+def rotate_log_forever(path: str, cap: int, interval: float = 1) -> None:
     while True:
         time.sleep(interval)
         try:
@@ -215,7 +230,11 @@ class LogRejectedRedirects:
                         size += os.stat(os.path.join(directory, name)).st_size
                     except OSError:
                         pass
-            self.store_full = size > self.store_max[0] or files > self.store_max[1]
+            full = size > self.store_max[0] or files > self.store_max[1]
+            if full != self.store_full:  # one line per change, never per request
+                log.warning("OAuth store %s", "is full: /register, /authorize and /consent answer 503" if full
+                            else "is below its caps again")
+            self.store_full = full
         return self.store_full
 
     async def __call__(self, scope, receive, send):
@@ -379,12 +398,15 @@ def main() -> None:
     logging.getLogger("python_multipart").setLevel(logging.ERROR)
     logging.getLogger("uvicorn.error").addFilter(lambda r: not r.getMessage().startswith("ASGI callable returned without"))
     if os.environ.get("MCP_LOG_FILE"):  # must match the plist's StandardErrorPath
+        if not _is_stderr_file(os.environ["MCP_LOG_FILE"]):
+            log.warning("MCP_LOG_FILE %r is not the file stderr writes to: the log is NOT capped", os.environ["MCP_LOG_FILE"])
         threading.Thread(target=rotate_log_forever, daemon=True, args=(
             os.environ["MCP_LOG_FILE"], int(os.environ.get("MCP_LOG_MAX_BYTES", 10 << 20)))).start()
     cfg = Config.from_env()
     app, _ = build_app(cfg)
     # access_log off: /auth/callback?code=... would otherwise be written to the log.
-    uvicorn.run(app, host=cfg.host, port=cfg.port, access_log=False, log_level="error")
+    uvicorn.run(app, host=cfg.host, port=cfg.port, access_log=False, log_level="error",
+                limit_concurrency=100)  # 503 beyond 100 open connections: held slow requests cannot exhaust the fd table
 
 
 if __name__ == "__main__":
