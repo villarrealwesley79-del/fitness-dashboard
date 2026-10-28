@@ -78,7 +78,7 @@ def test_body_history_projects_malformed_legacy_fields_safely(client):
                 "date": "not-a-date",
                 "weight_lbs": 10**1000,
                 "body_fat_pct": float("inf"),
-                "neck_in": 900,
+                "neck_in": "unknown",
                 "waist_in": 900,
                 "chest_in": None,
                 "hips_in": {},
