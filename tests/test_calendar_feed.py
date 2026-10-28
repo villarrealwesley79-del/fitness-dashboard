@@ -471,7 +471,7 @@ def test_spring_forward_window_counts_real_elapsed_minutes():
 
 
 def test_fall_back_repeated_hour_is_compared_in_real_time():
-    ws, we = ny(2026, 11, 1, 0, 30), ny(2026, 11, 1, 3)  # 00:30 EDT -> 03:00 EST, 150 real minutes
+    ws, we = ny(2026, 11, 1, 0, 30), ny(2026, 11, 1, 3)  # 00:30 EDT -> 03:00 EST, 210 real minutes
     start = datetime(2026, 11, 1, 6, 15, tzinfo=UTC).astimezone(NY)  # second 01:15, EST
     end = datetime(2026, 11, 1, 6, 45, tzinfo=UTC).astimezone(NY)
     b = cf.busy_intervals([cf.Event("x", start, end, False)], ws, we)
@@ -496,3 +496,24 @@ def test_rdate_adds_instances_and_exdate_can_remove_them():
 def test_rdate_period_values_are_skipped_not_fatal():
     text = vevent("UID:p", "DTSTART:20261006T090000Z", "DTEND:20261006T100000Z", "RDATE;VALUE=PERIOD:20261007T090000Z/PT1H")
     assert len(parse(text, ny(2026, 10, 6), ny(2026, 10, 7))) == 1
+
+
+# --- PR #355 fix round 2 -----------------------------------------------------------
+
+
+@pytest.mark.parametrize("until", ["20261231", "20261231T235959", "20261006"])
+def test_non_utc_until_on_timed_series_is_not_dropped(until):
+    ics = vevent("UID:u", "DTSTART;TZID=America/New_York:20260105T090000", "DTEND;TZID=America/New_York:20260105T100000",
+                 f"RRULE:FREQ=DAILY;UNTIL={until}")
+    assert len(cf.parse_events(ics, ny(2026, 10, 6), ny(2026, 10, 7))) == 1  # date-only UNTIL includes that whole day
+
+
+def test_non_utc_until_still_ends_the_series():
+    ics = vevent("UID:u", "DTSTART;TZID=America/New_York:20260105T090000", "DTEND;TZID=America/New_York:20260105T100000",
+                 "RRULE:FREQ=DAILY;UNTIL=20261005")
+    assert cf.parse_events(ics, ny(2026, 10, 6), ny(2026, 10, 7)) == []
+
+
+def test_rdate_repeating_an_rrule_instance_yields_one_event():
+    ics = vevent("UID:d", "DTSTART:20261005T090000Z", "DTEND:20261005T100000Z", "RRULE:FREQ=DAILY", "RDATE:20261006T090000Z")
+    assert len(parse(ics, ny(2026, 10, 6), ny(2026, 10, 7))) == 1

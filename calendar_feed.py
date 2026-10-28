@@ -64,6 +64,7 @@ def fetch_ics(url: str, *, timeout: float = 10, max_bytes: int = 5_000_000, open
     """Download the feed. Raises ValueError (bad URL, too big) or OSError (network)."""
     url = validate_ical_url(url)
     opener = opener or urllib.request.build_opener(_NoRedirect)
+    # shortcut: timeout is per socket operation, not a total deadline; W6-wiring adds one.
     try:
         resp = opener.open(urllib.request.Request(url), timeout=timeout)
         try:
@@ -202,9 +203,12 @@ def _instances(uid, rid, props, tz, ws, we, overridden) -> list[Event]:
         if "RRULE" in props:
             starts = []
             if _rule_possible(props["RRULE"][0][1]):
-                rule = rrulestr(props["RRULE"][0][1], dtstart=start)
+                until = lambda m: "UNTIL=" + datetime.strptime(m[1] + (m[2] or "235959"), "%Y%m%d%H%M%S").replace(
+                    tzinfo=start.tzinfo).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")  # dateutil needs UTC UNTIL
+                rule = rrulestr(re.sub(r"UNTIL=(\d{8})(?:T(\d{6}))?(?=;|$)", until, props["RRULE"][0][1], flags=re.I), dtstart=start)
                 starts = list(islice(takewhile(lambda s: u(s) < u(we), rule.xafter(u(ws) - dur, inc=True)), _MAX_INSTANCES))
-        starts = [s for s in starts + dates("RDATE") if u(s) not in ex and (uid, u(s)) not in overridden]
+        starts = [s for s in {u(s): s for s in starts + dates("RDATE")}.values()  # one instance per moment
+                  if u(s) not in ex and (uid, u(s)) not in overridden]
     out = []
     for s in starts:
         e = (u(s) + dur).astimezone(s.tzinfo)
