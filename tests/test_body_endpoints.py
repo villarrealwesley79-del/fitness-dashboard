@@ -181,6 +181,11 @@ def test_navy_calculator_computes_both_formulas_and_clamps_output(body_api):
     male = _post(
         client,
         "/api/body/navy-calc",
+        {"sex": "male", "height_in": 72, "neck_in": 20, "waist_in": 21},
+    )
+    male_waist_equals_neck = _post(
+        client,
+        "/api/body/navy-calc",
         {"sex": "male", "height_in": 72, "neck_in": 20, "waist_in": 20},
     )
     female = _post(
@@ -196,6 +201,8 @@ def test_navy_calculator_computes_both_formulas_and_clamps_output(body_api):
 
     assert male.status_code == 200
     assert male.get_json()["body_fat_pct"] == 3.0
+    # FIT-284: waist <= neck is rejected instead of clamped to 3.0.
+    assert male_waist_equals_neck.status_code == 400
     assert female.status_code == 200
     assert female.get_json()["body_fat_pct"] == 31.09
     assert upper_clamp.status_code == 200

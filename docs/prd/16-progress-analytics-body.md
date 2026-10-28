@@ -39,8 +39,8 @@ The Markdown export route is intended for workout history export. The current UI
 | `waist_in` | number or null | No | `null` | 18 to 80 inches inclusive | Waist circumference in inches. |
 | `chest_in` | number or null | No | `null` | 18 to 80 inches inclusive | Chest circumference in inches. |
 | `hips_in` | number or null | No | `null` | 18 to 80 inches inclusive | Hip circumference in inches. |
-| `arms` | number or null | No | `null` | 5 to 30 inches inclusive | Arm circumference in inches. |
-| `legs` | number or null | No | `null` | 10 to 50 inches inclusive | Leg circumference in inches. |
+| `arms` | number, `"left/right"` string, or null | No | `null` | 5 to 30 inches inclusive (each side for `a/b`) | Arm circumference in inches. Legacy rows may hold left/right text such as `11.37/13.62`; reads return it unchanged. |
+| `legs` | number, `"left/right"` string, or null | No | `null` | 10 to 50 inches inclusive (each side for `a/b`) | Leg circumference in inches. Legacy rows may hold left/right text such as `22.08/23.85`; reads return it unchanged. |
 | `notes` | string | No | empty string | max 2000 chars | Freeform context for the measurement. Not exposed in the visible form. |
 | `created_at` | ISO datetime | System | server time | generated | Audit timestamp for when the row was saved. |
 
@@ -52,7 +52,7 @@ The Markdown export route is intended for workout history export. The current UI
 | `height_in` | number | Yes | none | 48 to 96 | Height in inches. |
 | `neck_in` | number | Yes | none | 8 to 30 | Neck circumference in inches. |
 | `waist_in` | number | Yes | none | 18 to 80 | Waist circumference in inches. |
-| `hip_in` | number | Required only when `sex == "female"` | none | 20 to 80 | Hip circumference for female formula. |
+| `hip_in` | number | Required only when `sex == "female"` | none | 18 to 80 (same range as stored `hips_in`) | Hip circumference for female formula; saved as `hips_in`. |
 | `body_fat_pct` | number | Response | clamped | 3.0 to 60.0 after formula | Estimated Navy body-fat percentage. |
 
 ### Body History and Recomposition Response

@@ -1320,6 +1320,46 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
 .m-sub { display: block; margin-top: 2px; color: var(--fg-dimmer); font-size: 10px; line-height: 1.25; }
 .m-val { color: var(--fg-0); font-weight: 800; white-space: nowrap; }
 
+.body-navy-calculator {
+    border-top: 1px solid var(--border-1);
+    padding-top: 12px;
+}
+.body-navy-calculator summary {
+    color: var(--fg-1);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.4;
+}
+.body-navy-description {
+    color: var(--fg-dim);
+    font-size: 12px;
+    line-height: 1.45;
+    margin: 10px 0 12px;
+}
+.body-navy-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+.body-navy-calculate {
+    margin-top: 12px;
+    min-height: 40px;
+    width: 100%;
+}
+.body-navy-result,
+.body-navy-error {
+    font-size: 12px;
+    line-height: 1.45;
+    margin: 10px 0 0;
+}
+.body-navy-result { color: var(--accent-blue); }
+.body-navy-error { color: var(--accent-red); }
+
+@media (max-width: 480px) {
+    .body-navy-fields { grid-template-columns: 1fr; }
+}
+
 /* ======================= DONUT / STATS ======================= */
 
 .donut-holder {
