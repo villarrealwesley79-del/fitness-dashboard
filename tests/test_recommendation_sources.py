@@ -126,6 +126,15 @@ def test_open_wearables_facts_route_filters_current_profile(monkeypatch, tmp_pat
 
     assert [fact["value"] for fact in profile_two["facts"]] == [120]
     assert {fact["value"] for fact in profile_one["facts"]} == {330, 95}
+    fact = profile_two["facts"][0]
+    assert {
+        "profile_key", "fact_date", "provider_id", "provider_display_name", "source_system",
+        "source_record_id", "source_record_kind", "metric_domain", "metric_name", "score_state",
+        "freshness_state", "capability_state", "source_observed_at", "source_last_synced_at",
+        "imported_at", "canonical_category", "provenance",
+    }.issubset(fact)
+    assert fact["profile_key"] == "2"
+    assert "raw" not in fact and "payload" not in fact
 
 
 def test_open_wearables_modifier_never_hardens_recommendation():
