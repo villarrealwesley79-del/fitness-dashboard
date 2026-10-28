@@ -12,9 +12,10 @@ import httpx2
 import pytest
 from cryptography.fernet import Fernet
 from fastmcp.server.auth.oauth_proxy.models import JTIMapping, UpstreamTokenSet
+from starlette.responses import PlainTextResponse
 from starlette.testclient import TestClient
 
-from server import Config, build_app
+from server import Config, LogRejectedRedirects, build_app
 
 OWNER_ID, OTHER_ID = "424242", "999"
 GH_OWNER, GH_OTHER = "gho_owner_token_value", "gho_other_token_value"
@@ -243,6 +244,23 @@ def test_unlisted_redirect_uri_is_refused_and_logged(client, caplog):
         allowed = client.post("/register", json=body)
     assert (refused.status_code, allowed.status_code) == (400, 201)
     assert "https://grok.example/cb" in caplog.text
+
+
+def test_refused_uri_cannot_forge_log_lines(client, caplog):
+    forged = "https://x.invalid/a\n2026-10-28 10:30:00,000 fitness_mcp WARNING /register refused: grok.evil.example"
+    with caplog.at_level(logging.WARNING, logger="fitness_mcp"):
+        client.get("/authorize", params={"redirect_uri": forged})
+    assert caplog.text.count("\n") <= 1 and "\\n" in caplog.text
+
+
+def test_anonymous_endpoints_are_rate_limited():
+    async def ok(scope, receive, send):
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    limited = TestClient(LogRejectedRedirects(ok, limit=3), base_url="http://127.0.0.1:8765")
+    codes = [limited.post("/register").status_code for _ in range(4)] + [limited.get("/authorize").status_code]
+    assert codes == [200, 200, 200, 429, 429]
+    assert limited.get("/mcp").status_code == 200  # other paths are not counted
 
 
 def test_unknown_host_header_is_refused(client):

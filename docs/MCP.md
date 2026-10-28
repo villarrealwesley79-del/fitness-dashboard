@@ -85,7 +85,7 @@ URL for all of them: `https://frankbox.tail6c6490.ts.net:8443/mcp`
 - **Grok app:** grok.com/connectors > New Connector > Custom > URL > sign in.
 - **Grok Bot:** ask the bot to add a custom MCP server with the URL, then finish OAuth on the connect card.
 - **Bot on the xAI API:** pass the bearer as the tool's `authorization` field, for example `mcp(server_url=URL, server_label="fitness", allowed_tool_names=[...], authorization=os.environ["FITNESS_MCP_TOKEN"])`.
-- **Grok's callback URLs are not documented.** On the first connect an unknown client is refused. Read `~/Library/Logs/fitness-mcp.log` for `/register refused:` or `/authorize refused:` lines, add exactly that `redirect_uri` to `MCP_EXTRA_REDIRECT_URIS`, restart with `launchctl kickstart -k`, and connect again. Allowed by default: Claude (`claude.ai`, `claude.com`), ChatGPT (`chatgpt.com/connector_platform_oauth_redirect`, `chatgpt.com/connector/oauth/*`) and localhost.
+- **Grok's callback URLs are not documented.** On the first connect an unknown client is refused. Read `~/Library/Logs/fitness-mcp.log` for `/register refused:` or `/authorize refused:` lines, add that `redirect_uri` to `MCP_EXTRA_REDIRECT_URIS` only if its host is the vendor's own domain (`grok.com` or `x.ai`) and the line was logged at the moment you clicked Connect. Anyone on the internet can make this log say anything, so never add a URI you don't recognise. Then restart with `launchctl kickstart -k` and connect again. Allowed by default: Claude (`claude.ai`, `claude.com`), ChatGPT (`chatgpt.com/connector_platform_oauth_redirect`, `chatgpt.com/connector/oauth/*`) and localhost.
 
 Tell the assistant to block calendar time with its own calendar connector. This server only reads.
 
@@ -104,8 +104,9 @@ Tell the assistant to block calendar time with its own calendar connector. This 
 - Health data reaches the vendors' clouds. ChatGPT may train on app data unless "Improve the model for everyone" is off. Anthropic's Messages API MCP connector is not eligible for zero data retention.
 - Once Funnel is on the hostname is public (Certificate Transparency logs, scanners).
 - FastMCP [#4265](https://github.com/PrefectHQ/fastmcp/issues/4265): refresh-token rotation has no grace window, so Claude can disconnect on refresh. [#4854](https://github.com/PrefectHQ/fastmcp/issues/4854): a GitHub 5xx can end sessions. Both open; pinned to 4.1.4.
-- The host/origin guard refuses any request carrying an `Origin` header (403), including discovery and `/register`. Vendor back ends don't send one, but a client that does OAuth from the browser would be blocked. If a first connect fails with 403, the fix is `allowed_origins` for that client's origin in `mcp/server.py`; not added speculatively.
+- The host/origin guard refuses any request carrying a cross-origin `Origin` header (403), including discovery and `/register`. Vendor back ends don't send one, but a client that does OAuth from the browser would be blocked. If a first connect fails with 403, the fix is `allowed_origins` for that client's origin in `mcp/server.py`; not added speculatively.
 - Tool output can carry prompt injection; read-only tools limit the damage.
+- `/register` and `/authorize` are anonymous and each call leaves a file in `MCP_STORAGE_DIR` that FastMCP never cleans up. The server answers 429 after 60 calls per hour in total (one global window; behind Funnel every peer looks like 127.0.0.1). A flood can therefore block a new connect for up to an hour, but it cannot fill the disk. Existing connections keep working.
 - Open Wearables' own MCP is deliberately not proxied: it is stdio-only and unauthenticated, and its API key can delete users and workouts.
 
 ## Tests

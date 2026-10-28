@@ -5,6 +5,7 @@ Run: python mcp/server.py   (all settings come from the environment; see docs/MC
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -21,6 +22,7 @@ from key_value.aio.stores.filetree import (
 )
 from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 from starlette.middleware import Middleware
+from starlette.responses import PlainTextResponse
 
 from owner_auth import BotTokenVerifier, OwnerGitHubVerifier
 from tools import Dashboard, register
@@ -104,15 +106,27 @@ def make_storage(directory: str, key: str) -> FernetEncryptionWrapper:
 
 
 class LogRejectedRedirects:
-    """Logs why /authorize or /register refused a client, so the owner can allowlist its redirect_uri."""
+    """Logs why /authorize or /register refused a client, so the owner can allowlist its redirect_uri.
 
-    def __init__(self, app):
-        self.app = app
+    Also caps both anonymous endpoints: each call writes a file that is never cleaned up.
+    shortcut: one global fixed window, not per client (behind Funnel every peer is 127.0.0.1);
+    a flood can lock the owner out of connecting for up to an hour, but cannot fill the disk.
+    """
+
+    def __init__(self, app, limit: int = 60, window: int = 3600):
+        self.app, self.limit, self.window = app, limit, window
+        self.started, self.count = time.monotonic(), 0
 
     async def __call__(self, scope, receive, send):
         path = scope.get("path")
         if scope["type"] != "http" or path not in ("/authorize", "/register"):
             return await self.app(scope, receive, send)
+        if time.monotonic() - self.started >= self.window:
+            self.started, self.count = time.monotonic(), 0
+        self.count += 1
+        if self.count > self.limit:
+            log.warning("%s rate limited: more than %d calls in %d s", path, self.limit, self.window)
+            return await PlainTextResponse("Too many requests", status_code=429)(scope, receive, send)
         refused = False
 
         async def spy(message):
@@ -125,7 +139,7 @@ class LogRejectedRedirects:
                     detail = parse_qs(scope["query_string"].decode("latin-1")).get("redirect_uri", [""])[0]
                 else:  # the registration error names the refused URI
                     detail = message.get("body", b"").decode("utf-8", "replace")
-                log.warning("%s refused: %s", path, detail[:300])
+                log.warning("%s refused: %r", path, detail[:300])  # %r: a client cannot forge log lines with %0A
             await send(message)
 
         await self.app(scope, receive, spy)
@@ -172,6 +186,7 @@ def build_app(cfg: Config, *, github: httpx2.AsyncClient | None = None, dashboar
 def main() -> None:
     import uvicorn
 
+    os.umask(0o077)  # OAuth store subdirectories follow the umask; keep them private
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     cfg = Config.from_env()
     app, _ = build_app(cfg)

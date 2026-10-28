@@ -757,7 +757,7 @@ def _trusted_no_login_owner():
     except sqlite3.Error:
         if not _no_login_owner_error_logged:
             logging.getLogger(__name__).exception(
-                "FITNESS_DASHBOARD_NO_LOGIN=true but the owner account could not be read; "
+                "No-login mode or the MCP read token is on but the owner account could not be read; "
                 "normal authentication remains enabled"
             )
             _no_login_owner_error_logged = True
@@ -767,7 +767,7 @@ def _trusted_no_login_owner():
 
     if not _no_login_owner_error_logged:
         logging.getLogger(__name__).error(
-            "FITNESS_DASHBOARD_NO_LOGIN=true but no valid owner account could be loaded; "
+            "No-login mode or the MCP read token is on but no valid owner account could be loaded; "
             "normal authentication remains enabled"
         )
         _no_login_owner_error_logged = True

@@ -89,7 +89,7 @@ def test_without_token_file_the_feature_is_off(make_client):
 
 
 def test_empty_token_file_is_off(make_client):
-    assert make_client(token="").get(READ_PATHS[0], headers=bearer("")).status_code == 401
+    assert make_client(token="").get(READ_PATHS[0], headers=bearer("anything")).status_code == 401
 
 
 def test_token_file_readable_by_others_is_off(make_client):
