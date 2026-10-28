@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+import data_store
+
 ROOT = Path(__file__).resolve().parents[1]
 FOOD_TERMS = re.compile(
     r"meal|nutrition|food_log|branded_food|nutritionix|usda_fdc|open_food|heb_product"
@@ -67,14 +69,23 @@ def test_next_workout_matches_base_plan_with_no_food_logged(empty_app, monkeypat
     assert [ex["target_sets"] for ex in plan["exercises"]] == [ex["target_sets"] for ex in base["exercises"]]
 
 
-def test_no_food_logged_is_never_under_fueled_and_never_cuts_volume(empty_app):
+def test_legacy_low_calorie_food_rows_never_cut_volume(empty_app, monkeypatch):
+    # A 150 kcal row left in the inert table must not shrink the plan (the retired engine did).
+    base = empty_app.generate_next_workout(
+        [], [], training_recommendation="train", consume_cardio_rotation=False
+    )
+    assert base["exercises"]
+    monkeypatch.setattr(empty_app, "generate_next_workout", lambda *_a, **_kw: json.loads(json.dumps(base)))
+    conn = sqlite3.connect(data_store.DATA_DB)
+    conn.execute("CREATE TABLE IF NOT EXISTS food_logs (user_id INTEGER, date TEXT, calories REAL)")
+    conn.execute("INSERT INTO food_logs VALUES (1, ?, 150)", (empty_app._today_str(),))
+    conn.commit()
+    conn.close()
     client = empty_app.app.test_client()
-    first = client.get("/api/recommendation/smart").get_json()["next_workout"]
-    second = client.get("/api/recommendation/smart").get_json()["next_workout"]
-
-    assert first["estimated_minutes"] == second["estimated_minutes"]
-    assert not any("fuel" in str(key).lower() for key in _walk_keys(first))
-    assert not hasattr(empty_app, "_nutrition_context_for_date")
+    for route in ("/api/dashboard", "/api/recommendation/smart"):
+        plan = client.get(route).get_json()["next_workout"]
+        assert plan["estimated_minutes"] == base["estimated_minutes"], route
+        assert [e["target_sets"] for e in plan["exercises"]] == [e["target_sets"] for e in base["exercises"]], route
 
 
 def test_old_backup_with_food_keys_imports_and_ignores_them(empty_app, tmp_path):

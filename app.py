@@ -1243,7 +1243,7 @@ def _today_str():
 def _parse_iso_to_local_datetime(iso_str):
     """Parse an ISO 8601 timestamp and return a naive server-local datetime.
 
-    The composer sends ``new Date().toISOString()`` (UTC, e.g.
+    Clients send ``new Date().toISOString()`` (UTC, e.g.
     ``2026-05-19T03:00:00.000Z``). Downstream code reads ``.hour``
     directly on the parsed value without TZ conversion, so storing the
     raw UTC string misreports a 10 PM CT entry as hour 3. Converting incoming UTC to the

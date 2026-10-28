@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import copy
 import importlib
+import importlib.util
+import sqlite3
+import subprocess
 import threading
+from pathlib import Path
+
+import pytest
 
 import data_store
+
+ROOT = Path(__file__).resolve().parents[1]
+BASE_SHA = "7689148"  # last commit with the food tables, used only to build a legacy-schema DB
 
 
 def _recommendation(module):
@@ -996,3 +1005,87 @@ def test_current_plan_cache_read_waits_for_owner_metadata(monkeypatch, tmp_path)
     assert not writer_thread.is_alive()
     assert not reader_thread.is_alive()
     assert reader_result["plan"] is None
+
+
+# Kept migration code (plan_version / plan_generation): legacy table upgrades, later boots are write-free.
+def _base_data_store(tmp_path):
+    shown = subprocess.run(
+        ["git", "-C", str(ROOT), "show", f"{BASE_SHA}:data_store.py"],
+        capture_output=True, text=True,
+    )
+    if shown.returncode != 0:
+        pytest.skip("base commit not available")
+    path = tmp_path / "base_data_store_7689148.py"
+    path.write_text(shown.stdout, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("base_data_store_7689148", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _dump(db_path, tables):
+    conn = sqlite3.connect(db_path)
+    try:
+        return {t: conn.execute(f"SELECT * FROM {t} ORDER BY rowid").fetchall() for t in sorted(tables)}
+    finally:
+        conn.close()
+
+
+
+_WRITE_PREFIXES = ("INSERT", "UPDATE", "DELETE", "REPLACE", "ALTER", "DROP")  # same set as base test_review_259
+
+
+def _trace_writes(monkeypatch):
+    writes = []
+    real_connect = sqlite3.connect
+
+    def connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_trace_callback(
+            lambda sql: writes.append(sql) if sql.lstrip().upper().startswith(_WRITE_PREFIXES) else None
+        )
+        return conn
+
+    monkeypatch.setattr(data_store.sqlite3, "connect", connect)
+    return writes
+
+
+
+def test_legacy_plan_table_migrates_and_later_boots_are_write_free(tmp_path, monkeypatch):
+    db_path = tmp_path / "fitness_data.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE current_workout_plans (user_id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL, "
+                 "plan_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
+    conn.execute("INSERT INTO current_workout_plans VALUES (1, 'fp-legacy', '{\"id\": \"legacy\"}', '2026-05-23T09:00:00')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+
+    data_store.init_data_db()
+    data_store.init_data_db()
+
+    plan = data_store.get_current_workout_plan(1)
+    assert plan["plan"] == {"id": "legacy"} and plan["fingerprint"] == "fp-legacy"
+    assert (plan["plan_generation"], plan["plan_version"]) == (1, 0)
+    assert data_store.get_workout_plan_generation(1) == 1
+    writes = _trace_writes(monkeypatch)
+    data_store.init_data_db()
+    assert writes == []
+
+
+def test_init_data_db_issues_no_writes_on_base_schema_db_with_food_rows(tmp_path, monkeypatch):
+    db_path = tmp_path / "fitness_data.db"
+    base = _base_data_store(tmp_path)
+    base.DATA_DB = str(db_path)
+    base.init_data_db()
+    conn = sqlite3.connect(db_path)
+    conn.execute("INSERT INTO food_logs (user_id, client_id, date, logged_at, calories) "
+                 "VALUES (1, 'a', '2026-10-20', '2026-10-20T08:00', 300)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(data_store, "DATA_DB", str(db_path))
+    data_store.init_data_db()  # first head boot may add nothing; must not touch food tables
+
+    writes = _trace_writes(monkeypatch)
+    data_store.init_data_db()
+    assert writes == []

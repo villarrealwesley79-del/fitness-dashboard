@@ -660,7 +660,10 @@ def upsert_settings(user_id: int, settings: dict) -> None:
 
 # ── Account Management ────────────────────────────────────────────────────────
 def delete_user_data(user_id: int) -> None:
-    """Permanently delete all data for a user (GDPR / account deletion)."""
+    """Permanently delete a user's data in the live tables (GDPR / account deletion).
+
+    Inert tables left from the retired food feature are not touched.
+    """
     tables = [
         "body_data",
         "cardio_data",
