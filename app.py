@@ -63,8 +63,10 @@ from open_wearables_adapter import (
 )
 from recommendation_sources import build_open_wearables_recommendation_source, build_recommendation_source_proof, consumed_facts
 from wearable_fact_store import (
+    SOURCE_PREFERENCE,
     WearableDailyFact,
     delete_provider_data,
+    fact_provider,
     init_wearable_fact_db,
     list_recommendation_facts,
     list_wearable_sources,
@@ -2292,19 +2294,14 @@ def _preferred_facts(metrics, days=7):
 
 
 def _readiness_with_basis():
-    """(readiness 0-100, basis) from fresh facts: the preferred recovery score, else a sleep estimate."""
-    days = _preferred_facts({"recovery_score", "sleep_duration", "sleep_avg_heart_rate"}, days=2)
-    for fact_date in sorted(days, reverse=True):
-        fresh = {m: f for m, f in days[fact_date].items() if f["freshness"] == "fresh"}
-        score = fresh.get("recovery_score")
-        if score and 0 <= score["value"] <= 100:
-            return int(round(score["value"])), "recovery_score"
-        if "sleep_duration" in fresh:
-            break
-    else:
+    """(readiness 0-100, basis) from the newest fresh valid night of the preferred sleep provider.
+
+    WHOOP recovery is not read here: the W4a recovery guard applies it, once.
+    """
+    row = next((r for r in _sleep_rows_from_facts(days=2) if r["freshness"] == "fresh" and _is_valid_nightly_sleep_row(r)), None)
+    if not row:
         return None, None
-    duration_min = fresh["sleep_duration"]["value"]
-    avg_hr = (fresh.get("sleep_avg_heart_rate") or {}).get("value")
+    duration_min, avg_hr = row["sleep_duration_min"], row["avg_heart_rate"]
     adjust = -5 if duration_min < 360 else -3 if duration_min < 420 else 3 if duration_min >= 540 else 0
     if avg_hr is not None:
         adjust += -4 if avg_hr >= 75 else -2 if avg_hr >= 70 else 2 if avg_hr <= 55 else 0
@@ -3822,7 +3819,12 @@ def _sleep_rows_from_facts(days=7):
         duration = by_metric.get("sleep_duration")
         if not duration:
             continue
-        value = lambda name: (by_metric.get(name) or {}).get("value")
+        # The whole night comes from the provider whose duration was used, so a conflict
+        # never pairs WHOOP's total with Oura's stages.
+        def value(name):
+            fact = by_metric.get(name)
+            return fact["value"] if fact and fact["provider"] == duration["provider"] else None
+
         end_at = duration.get("observed_at")
         time_in_bed = value("sleep_time_in_bed") or duration["value"]
         rows.append({
@@ -3868,7 +3870,9 @@ def calculate_sleep_debt(days: int = 7) -> dict:
     rows = _sleep_rows_from_facts(days=days)
     rows = rows[:days]
     rows = [r for r in rows if _is_valid_nightly_sleep_row(r)]
-    if not rows:
+    # The fact behind the aggregate (provider, date, freshness) for the source proof.
+    source = {k: rows[0][k] for k in ("provider", "via", "freshness", "conflict_state")} | {"date": rows[0]["day"]} if rows else None
+    if not rows or rows[0]["freshness"] == "stale":  # a stale newest night is excluded, not averaged in
         return {
             "debt_minutes": 0,
             "debt_hours": 0.0,
@@ -3877,6 +3881,7 @@ def calculate_sleep_debt(days: int = 7) -> dict:
             "status": "good",
             "message": "No recent sleep-duration data available from wearable facts.",
             "sample_count": 0,
+            **({"source": source} if source else {}),
         }
 
     debt = 0
@@ -3916,6 +3921,7 @@ def calculate_sleep_debt(days: int = 7) -> dict:
         "status": status,
         "message": msg,
         "sample_count": n,
+        "source": source,
     }
 
 
@@ -4343,14 +4349,25 @@ def compute_hrv_trend(hrv_values):
 _HRV_METRICS = ("heart_rate_variability", "sleep_hrv_rmssd", "sleep_hrv_sdnn")
 
 
-def _hrv_series(days=7):
-    """HRV values oldest first. One metric only, so RMSSD and SDNN are never mixed."""
+def _hrv_facts(days=7):
+    """HRV facts oldest first, from one provider and one metric so RMSSD and SDNN are never mixed.
+
+    The first provider in the recovery preference with at least 4 samples wins; fewer
+    everywhere falls back to the most preferred one. A stale newest fact excludes the series.
+    """
     facts = _preferred_facts(set(_HRV_METRICS), days=days)
-    for metric in _HRV_METRICS:
-        values = [facts[day][metric]["value"] for day in sorted(facts) if metric in facts[day]]
-        if values:
-            return values
-    return []
+    series = {}
+    for day in sorted(facts):
+        for metric, fact in facts[day].items():
+            series.setdefault((fact["provider"], metric), []).append(fact)
+    preference = SOURCE_PREFERENCE["recovery"]
+    ranked = sorted(series, key=lambda k: (preference.index(k[0]) if k[0] in preference else len(preference), _HRV_METRICS.index(k[1])))
+    chosen = next((series[k] for k in ranked if len(series[k]) >= 4), series[ranked[0]] if ranked else [])
+    return [] if chosen and chosen[-1]["freshness"] == "stale" else chosen
+
+
+def _hrv_series(days=7):
+    return [f["value"] for f in _hrv_facts(days)]
 
 
 def get_recent_hrv_trend(days=7, minimum_samples=None):
@@ -8426,7 +8443,7 @@ def _latest_fact_value(facts, metric):
 
 
 def _domain_sources(facts):
-    """Provider, date and freshness behind each domain's newest preferred fact (source proof)."""
+    """Provider, date and freshness of each domain's newest preferred fact: the display line and the proof's fallback."""
     keys = {"sleep": ("sleep_duration",), "recovery": ("recovery_score",) + _HRV_METRICS + ("resting_heart_rate",),
             "activity": ("active_minutes", "steps", "active_calories")}
     sources = {}
@@ -9178,6 +9195,7 @@ def smart_recommendation_api():
     readiness, readiness_basis = _readiness_with_basis()
     sleep_score = None
     hrv_values = _hrv_series(7)
+    hrv_facts = _hrv_facts(7) if hrv_values else []  # the facts behind the series, for the source proof
     hrv = hrv_values[-1] if hrv_values else None
     hrv_trend = get_recent_hrv_trend()
     hrv_sample_count = len(hrv_values)
@@ -9375,17 +9393,37 @@ def smart_recommendation_api():
     )
     hrv_used = (hrv_sample_count >= 4 or recommendation_hrv_trend == "declining") and recommendation_hrv_trend != "unknown"
     domain_fields = {
-        "recovery": (
-            (["readiness_score"] if readiness_basis == "recovery_score" else [])
-            + (["hrv_trend"] if hrv_used else [])
-        ),
+        "recovery": ["hrv_trend"] if hrv_used else [],
         "sleep": (
             (["readiness_estimate"] if readiness_basis == "sleep_estimate" else [])
             + (["sleep_debt_minutes"] if (recommendation_sleep_debt.get("sample_count") or 0) > 0 else [])
         ),
         "activity": ["active_minutes"] if any(f.get("metric") == "active_minutes" for f in consumed_facts(open_wearables_facts)) else [],
     }
+    # Name the fact behind each consumed field; the newest fact of any metric is only the display fallback.
     domain_sources = _domain_sources(_preferred_facts(_PROOF_FACT_METRICS, days=7))
+    fact_node = lambda f: {k: f[k] for k in ("provider", "via", "date", "freshness", "conflict_state")}
+    if sleep_debt.get("source"):
+        domain_sources["sleep"] = sleep_debt["source"]
+    if hrv_used and hrv_facts:
+        domain_sources["recovery"] = fact_node(hrv_facts[-1])
+    # A fact that made the guard fire is what changed the plan, so it takes its domain's provenance slot.
+    guard_applied = set(open_wearables_modifier.get("applied_modifiers") or [])
+    for domain, field, guard_fact, fired in (
+        ("sleep", "sleep_duration", open_wearables_modifier.get("sleep_fact"), "sleep_caution" in guard_applied),
+        ("recovery", "recovery_score", open_wearables_modifier.get("recovery_fact"),
+         bool(guard_applied & {"recovery_caution", "recovery_deload"})),
+        ("activity", "active_minutes", open_wearables_modifier.get("active_fact"), bool(domain_fields["activity"])),
+    ):
+        if fired and guard_fact:
+            if field not in domain_fields[domain]:
+                domain_fields[domain].append(field)
+            guard_provider = fact_provider(guard_fact.get("provider_id"), guard_fact.get("source_provider"))
+            if domain_sources.get(domain, {}).get("provider") != guard_provider:  # same provider: keep its conflict_state
+                domain_sources[domain] = {
+                    "provider": guard_provider, "via": "open_wearables", "date": guard_fact.get("date"),
+                    "freshness": guard_fact.get("freshness"), "conflict_state": guard_fact.get("conflict_state"),
+                }
     apple_health_fields = []
     try:
         recommendation_workouts = _recommendation_workouts_with_apple_health(WORKOUTS, days=28)

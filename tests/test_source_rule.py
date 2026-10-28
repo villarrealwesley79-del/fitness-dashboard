@@ -123,12 +123,13 @@ def test_hrv_trend_reads_one_hrv_metric_from_facts(db, isolated_app):
     assert isolated_app.get_recent_hrv_trend() == "improving"
 
 
-def test_readiness_uses_the_preferred_recovery_score(db, isolated_app):
+def test_recovery_scores_are_not_readiness(db, isolated_app):
+    # WHOOP recovery reaches the plan once, through the W4a guard; readiness is the sleep estimate only.
     upsert_daily_facts(db, [
         _fact(TODAY, "whoop", "recovery_score", 40),
         _fact(TODAY, "oura", "recovery_score", 82),
     ])
-    assert isolated_app._get_oura_readiness_today(include_open_wearables=False) == 82
+    assert isolated_app._get_oura_readiness_today(include_open_wearables=False) is None
 
 
 def test_readiness_without_a_score_is_estimated_from_sleep(db, isolated_app):

@@ -1242,7 +1242,8 @@
                 return `${domain} ${sourceDisplayName(node.provider)}${archive}`;
             });
         if (!parts.length) return '';
-        parts[parts.length - 1] += ' via Open Wearables';
+        const lastLive = parts.map(function (part) { return part.indexOf('(archive)') < 0; }).lastIndexOf(true);
+        if (lastLive >= 0) parts[lastLive] += ' via Open Wearables'; // archive rows were not fetched from Open Wearables
         const when = syncedAt ? new Date(syncedAt) : null;
         if (when && !isNaN(when.getTime())) {
             parts.push(when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
@@ -2299,12 +2300,12 @@
             if ($('insight-body')) $('insight-body').textContent = '';
         }
 
-        // Sparkline: sleep scores from the stored sleep trend
+        // Sparkline: nightly sleep hours from the stored sleep trend
         const sleepTrendRows = sleep && sleep.trend_data ? sleep.trend_data : [];
         // trend_data is already vetted server-side (valid full nights kept), so no excluded_dates filter here.
-        const safeSleepTrendRows = sleepTrendRows.filter((d) => d.score != null
+        const safeSleepTrendRows = sleepTrendRows.filter((d) => d.duration_min != null
             && (!dashboardSleepInconsistent || d.date !== sleep.data_quality.observed_at));
-        const sleepSeries = safeSleepTrendRows.map((d) => d.score);
+        const sleepSeries = safeSleepTrendRows.map((d) => d.duration_min / 60);
         sparkline($('insight-sparkline'), sleepSeries, { color: '#22d3ee', height: 32 });
 
         // FIT-128/129: per-card retry chips. Each chip surfaces when its

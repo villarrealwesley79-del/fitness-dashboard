@@ -1042,7 +1042,10 @@ def preferred_daily_facts(
                 by_provider.setdefault(other_provider, other_value)
             if len(by_provider) > 1 and max(by_provider.values()) - min(by_provider.values()) > tolerance:
                 conflict = "conservative_value_used"
-                value = min(by_provider.values())
+                # The row, provider and label are the provider whose (lower) value is used.
+                provider = min(by_provider, key=by_provider.get)
+                value = by_provider[provider]
+                row = next(c[3] for c in candidates if c[2] == provider)
         result.setdefault(date_s, {})[metric] = {
             "date": date_s,
             "metric": metric,

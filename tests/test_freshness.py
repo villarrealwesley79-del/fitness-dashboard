@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import importlib
 import json
 import logging
@@ -80,7 +80,7 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
             "last_sync_attempt": "2026-05-18T07:00:00",
         },
     }
-    seed_readiness(fitness_app, readiness=82, hrv=41)
+    seed_readiness(fitness_app, monkeypatch, readiness=82, hrv=41)
     monkeypatch.setattr(
         fitness_app, "compute_hrv_trend", lambda *_args, **_kwargs: "stable"
     )
@@ -118,10 +118,10 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
         "via": "open_wearables",
         "date": today,
         "freshness": "fresh",
-        "used_for_recommendation": True,
-        "fields_used": ["readiness_score"],
+        "used_for_recommendation": False,
+        "fields_used": [],
         "modifier_applied": False,
-        "ignored_reason": None,
+        "ignored_reason": "not_used",  # one HRV sample is no trend, and a recovery score is not readiness
         "conflict_state": None,
     }
     # Sleep debt is read, but no sleep fact is stored: the proof says so instead of naming a provider.
@@ -137,28 +137,27 @@ def _freshness_payload():
     }
 
 
-def seed_readiness(module, readiness=None, hrv=None, provider="oura"):
-    """Store today's recovery score (and HRV) as Open Wearables facts for the preferred provider."""
+def seed_readiness(module, monkeypatch, readiness=None, hrv=None, provider="oura"):
+    """Pin readiness (it is a sleep estimate now) and store today's HRV as an Open Wearables fact."""
     from datetime import date
     from wearable_fact_store import WearableDailyFact, upsert_daily_facts
 
+    monkeypatch.setattr(module, "_readiness_with_basis", lambda: (readiness, "sleep_estimate" if readiness is not None else None))
     today = date.today().isoformat()
-    metrics = {"recovery_score": readiness, "heart_rate_variability": hrv}
     upsert_daily_facts(module.WEARABLE_FACTS_DB_FILE, [
         WearableDailyFact(
-            date=today, provider_id=provider, source_label=provider, metric=metric, value=float(value),
+            date=today, provider_id=provider, source_label=provider, metric="heart_rate_variability", value=float(hrv),
             source_provider=provider, source_system="open_wearables", source_id="recovery",
             observed_at=f"{today}T06:00:00Z", used_for_recommendation=True,
         )
-        for metric, value in metrics.items() if value is not None
-    ], profile_key=module._open_wearables_profile_key())
+    ] if hrv is not None else [], profile_key=module._open_wearables_profile_key())
 
 
 def _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, *, readiness=None, hrv=None):
     monkeypatch.setattr(fitness_app, "WORKOUTS", [])
     monkeypatch.setattr(fitness_app, "SORENESS_DATA", [])
     monkeypatch.setattr(fitness_app, "RECOVERY_DATA", [])
-    seed_readiness(fitness_app, readiness, hrv)
+    seed_readiness(fitness_app, monkeypatch, readiness, hrv)
     monkeypatch.setattr(fitness_app, "compute_hrv_trend", lambda *_args, **_kwargs: "unknown")
     monkeypatch.setattr(
         fitness_app,
@@ -168,7 +167,11 @@ def _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, *, readine
     monkeypatch.setattr(
         fitness_app,
         "calculate_sleep_debt",
-        lambda *_args, **_kwargs: {"debt_minutes": 0, "status": "ok"},
+        lambda *_args, **_kwargs: {
+            "debt_minutes": 0, "status": "ok",
+            "source": {"provider": "oura", "via": "open_wearables", "date": date.today().isoformat(),
+                       "freshness": "fresh", "conflict_state": None},
+        },
     )
     monkeypatch.setattr(
         fitness_app,
@@ -209,10 +212,10 @@ def test_recommendation_smart_low_readiness_changes_the_recommendation_and_is_at
     payload = fitness_app.app.test_client().get("/api/recommendation/smart").get_json()
 
     assert payload["recommendation"] == "recovery"
-    recovery = payload["recommendation_sources"]["source_proof"]["recovery"]
-    assert recovery["used_for_recommendation"] is True
-    assert recovery["modifier_applied"] is True
-    assert recovery["fields_used"] == ["readiness_score"]
+    sleep = payload["recommendation_sources"]["source_proof"]["sleep"]
+    assert sleep["used_for_recommendation"] is True
+    assert sleep["modifier_applied"] is True
+    assert sleep["fields_used"] == ["readiness_estimate"]  # readiness is the sleep estimate, from Oura here
 
 
 def test_recommendation_smart_discloses_sparse_hrv_trend_when_it_changes_recommendation(fitness_app, monkeypatch):
@@ -434,7 +437,7 @@ def test_debug_timing_logs_required_endpoint_durations(fitness_app, monkeypatch,
     fitness_app.app.logger.setLevel(logging.WARNING)
     _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, readiness=None)
     monkeypatch.setattr(fitness_app, "_WEATHER_CACHE", {"location": "San_Antonio"})
-    seed_readiness(fitness_app, readiness=78, hrv=42)
+    seed_readiness(fitness_app, monkeypatch, readiness=78, hrv=42)
 
     client = fitness_app.app.test_client()
     for path in (

@@ -30,6 +30,7 @@ from wearable_fact_store import (
     canonical_fact_date,
     SOURCE_PREFERENCE,
     derived_fact_source_id,
+    fact_provider,
     list_recommendation_facts,
     list_workout_events,
     upsert_daily_facts,
@@ -1156,10 +1157,15 @@ def store_wearable_facts(
     return len({(fact.date, fact.provider_id, fact.metric, fact.source_id or "") for fact in facts})
 
 
+def _utc_instant(value) -> datetime | None:
+    parsed = _temporal_value(value)  # offset-less means UTC, as everywhere else
+    return parsed and (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+
 def stored_workouts(db_file: str, profile_key: str, start: str | None = None) -> list[dict]:
     """History rows from stored workout facts: no live fetch, so an outage cannot fail History.
 
-    A workout recorded by two providers (same start minute, same category) is one row
+    A workout recorded by two providers (same category, starts within 5 minutes) is one row
     whose source_label lists both; an archive row never shows next to a live row from
     the same provider and day.
     """
@@ -1167,15 +1173,25 @@ def stored_workouts(db_file: str, profile_key: str, start: str | None = None) ->
     live_days = {(e["provider"], e["date"]) for e in events if e["via"] != "archive"}
     order = SOURCE_PREFERENCE["activity"]
     events.sort(key=lambda e: (order.index(e["provider"]) if e["provider"] in order else len(order), e["via"] == "archive"))
-    groups: dict[tuple, list[dict]] = {}
+    groups: list[tuple[str, object, list[dict]]] = []
     for event in events:
         if event["via"] == "archive" and (event["provider"], event["date"]) in live_days:
             continue
-        label = str(event["original_label"] or "").strip().lower()
-        key = ((event["observed_at"] or event["date"])[:16], event["category"] or label)
-        groups.setdefault(key, []).append(event)
+        category = event["category"] or str(event["original_label"] or "").strip().lower()
+        start = _utc_instant(event["observed_at"]) or event["date"]
+        for group_category, group_start, members in groups:
+            close = (
+                abs(group_start - start) <= timedelta(minutes=5)
+                if isinstance(start, datetime) and isinstance(group_start, datetime)
+                else group_start == start
+            )
+            if group_category == category and close and all(m["provider"] != event["provider"] for m in members):
+                members.append(event)
+                break
+        else:
+            groups.append((category, start, [event]))
     rows = []
-    for members in groups.values():
+    for _category, _start, members in groups:
         first = members[0]
         labels = []
         for member in members:
@@ -1244,16 +1260,18 @@ RECOVERY_RPE_CAP = 7.0
 
 
 def _latest_whoop_recovery(facts):
-    scores = []
-    for fact in facts:
-        value = whoop_recovery_value(fact)
-        if value is not None:
-            scores.append((str(fact.get("date") or ""), value))
-    if not scores:
+    """The valid WHOOP recovery fact the guard reads: latest date, and the lowest score on that date."""
+    scored = [(str(f.get("date") or ""), whoop_recovery_value(f), f) for f in facts]
+    scored = [(day, value, fact) for day, value, fact in scored if value is not None]
+    if not scored:
         return None
-    latest = max(day for day, _ in scores)
+    latest = max(day for day, _, _ in scored)
     # Same-date duplicates (legacy and current provider rows) resolve to the more conservative score.
-    return min(value for day, value in scores if day == latest)
+    return min(((v, f) for day, v, f in scored if day == latest), key=lambda x: x[0])[1]
+
+
+def _provider_of(fact) -> str:
+    return fact_provider(fact.get("provider_id"), fact.get("source_provider"))
 
 
 def conservative_modifier(facts) -> dict:
@@ -1268,21 +1286,24 @@ def conservative_modifier(facts) -> dict:
         except (TypeError, ValueError):
             continue
         if fact.get("metric") == "sleep_duration" and value is not None:
-            sleep_values.append(value)
+            sleep_values.append((value, fact))
         elif fact.get("metric") == "active_minutes" and value is not None:
-            active_values.append(value)
-    sleep_min = min(sleep_values, default=None)
+            active_values.append((value, fact))
+    # The guard reads the lowest sleep and the highest activity across providers; keep the
+    # fact behind each so the source proof can name its provider.
+    sleep_min, sleep_fact = min(sleep_values, key=lambda v: v[0], default=(None, None))
     if sleep_min is not None and sleep_min < 360:
         applied.append("sleep_caution")
-        details.append(f"Open Wearables sleep duration {int(round(sleep_min))} min")
+        details.append(f"Open Wearables sleep duration {int(round(sleep_min))} min ({_provider_of(sleep_fact)})")
 
-    active_min = max(active_values, default=None)
+    active_min, active_fact = max(active_values, key=lambda v: v[0], default=(None, None))
     if active_min is not None and active_min >= 90:
         applied.append("activity_caution")
-        details.append(f"Open Wearables active minutes {int(round(active_min))}")
+        details.append(f"Open Wearables active minutes {int(round(active_min))} ({_provider_of(active_fact)})")
 
     rpe_cap = None
-    recovery = _latest_whoop_recovery(facts)
+    recovery_fact = _latest_whoop_recovery(facts)
+    recovery = whoop_recovery_value(recovery_fact)
     if recovery is not None and recovery < RECOVERY_CAUTION_BELOW:
         deload = recovery < RECOVERY_DOWNGRADE_BELOW
         applied.append("recovery_deload" if deload else "recovery_caution")
@@ -1294,6 +1315,9 @@ def conservative_modifier(facts) -> dict:
         "applied_modifiers": applied,
         "downgrade": bool(set(applied) - {"recovery_caution"}),
         "rpe_cap": rpe_cap,
+        "sleep_fact": sleep_fact,
+        "active_fact": active_fact,
+        "recovery_fact": recovery_fact,
         "detail": "; ".join(details) + " -> recommendation held conservative." if details else None,
     }
 

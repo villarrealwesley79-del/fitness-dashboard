@@ -11,8 +11,10 @@ Open Wearables (OW) is the only wearable hub. WHOOP, Oura and Apple Health reach
 | activity | WHOOP, Oura, Apple | steps, active minutes, active calories |
 
 - One fact per date and metric: provider order first, then a live fact over an archive fact, then summary over event, then the newest write.
-- Two providers more than 60 minutes apart on hours slept are a conflict: the lower value is used and `conflict_state` says so. Recovery scores are never merged.
-- Facts older than two days are `stale`: they do not feed readiness, they show as stale in the source proof, and they lower confidence.
+- Two providers more than 60 minutes apart on hours slept are a conflict: the lower value is used and `conflict_state` says so. The whole night (total and stages) is then that provider's, and the proof names it. Recovery scores are never merged.
+- Readiness is a sleep estimate from the newest fresh night of the preferred sleep provider. A recovery score is not readiness; WHOOP's reaches the plan once, through the guard below.
+- Facts older than two days are `stale`: they do not feed readiness, sleep debt or the HRV trend, they show as stale in the source proof, and they lower confidence.
+- The proof names the provider and date of the fact behind each consumed field (sleep debt row, HRV series, the guard's highest active-minutes fact), not the newest fact of any metric in the domain.
 - A WHOOP recovery score under 34 downgrades the plan once; 34-66 caps displayed RPE at 7.0 (`open_wearables_hub.conservative_modifier`).
 
 ## What the app shows

@@ -142,7 +142,7 @@ def test_wearables_today_carries_daily_and_sleep_rows(monkeypatch, fitness_app):
         "sleep_score", "sleep_duration_min",
     ):
         assert key in payload, f"the dashboard reads {key!r}; must be in payload"
-    assert payload["readiness"] == 78
+    assert payload["readiness"] == 70  # sleep estimate for 452 min; the 78 recovery score is not readiness
     assert payload["hrv"] == 42
     assert payload["sleep_duration_min"] == 452
     assert payload["sleep_breakdown_min"] == {"deep": 80, "rem": 92, "light": 270, "awake": 10}
