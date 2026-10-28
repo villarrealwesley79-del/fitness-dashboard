@@ -3025,11 +3025,6 @@
         const sleepQualityAction = dashboardSleepInconsistent || sleepQualityWarning
             ? [sleep.data_quality.source, sleep.data_quality.observed_at, 'Check sync'].filter(Boolean).join(' · ')
             : null;
-        const excludedSleepDates = new Set(
-            sleep && sleep.data_quality && sleep.data_quality.excluded_dates
-                ? sleep.data_quality.excluded_dates
-                : []
-        );
 
         // FIT-127: per-field guards. paintDashboardFromState runs after every
         // .then(repaint) in renderDashboard AND after invalidateCaches() nulls
@@ -3315,7 +3310,8 @@
 
         // Sparkline: sleep scores from Oura trend
         const sleepTrendRows = sleep && sleep.trend_data ? sleep.trend_data : [];
-        const safeSleepTrendRows = sleepTrendRows.filter((d) => d.score != null && !excludedSleepDates.has(d.date)
+        // trend_data is already vetted server-side (valid full nights kept), so no excluded_dates filter here.
+        const safeSleepTrendRows = sleepTrendRows.filter((d) => d.score != null
             && (!dashboardSleepInconsistent || d.date !== sleep.data_quality.observed_at));
         const sleepSeries = safeSleepTrendRows.map((d) => d.score);
         sparkline($('insight-sparkline'), sleepSeries, { color: '#22d3ee', height: 32 });
@@ -3478,7 +3474,15 @@
         sparkline($('spark-sleep'), safeSleepSeries.map((s) => (s.sleep_duration_min || 0) / 60), { color: '#a78bfa' });
 
         // Sleep details
-        const last = sleep && sleep.last_night;
+        // Sleep summary failed: fall back to the Oura status night.
+        // shortcut: status comes from the unvetted daily cache, so only a >=60 min night is trusted.
+        const statusNight = !sleep && oura && oura.sleep_duration_min >= 60 ? {
+            total_sleep_min: oura.sleep_duration_min,
+            rem_sleep_min: (oura.sleep_breakdown_min || {}).rem,
+            deep_sleep_min: (oura.sleep_breakdown_min || {}).deep,
+            sleep_score: oura.sleep_score,
+        } : null;
+        const last = sleep ? sleep.last_night : statusNight;
         if (sleepInconsistent) {
             $('v-sleep-dur').textContent = '--';
             $('v-sleep-dur-sub').textContent = 'Sleep data inconsistent · Check Oura sync';

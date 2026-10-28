@@ -495,16 +495,18 @@ def test_sleep_summary_checks_historical_daily_row_even_when_sleep_row_wins(monk
     }
     monkeypatch.setattr(oura_sleep_sync, "get_latest_sleep", lambda *_a, **_kw: [valid])
     monkeypatch.setattr(oura_sleep_sync, "get_sleep_range", lambda *_a, **_kw: [valid])
-    monkeypatch.setattr(oura_sleep_sync, "calculate_bedtime_variance", lambda *_a, **_kw: 42)
     monkeypatch.setattr(module, "get_oura_daily", lambda *_a, **_kw: None)
     monkeypatch.setattr(module, "get_oura_daily_range", lambda *_a, **_kw: [invalid_daily])
 
     payload = module.app.test_client().get("/api/oura/sleep-summary").get_json()
 
+    # The bad daily-cache row is still flagged...
     assert payload["data_quality"]["status"] == "partial"
     assert payload["data_quality"]["excluded_dates"] == ["2026-06-03"]
-    assert payload["trend_data"] == []
-    assert payload["consistency"] == {"bedtime_variance_min": None, "status": "unknown"}
+    # ...but the valid full night from the sleep table is used, not dropped.
+    assert payload["trend_data"] == [{"date": "2026-06-03", "duration_min": 480, "score": 88}]
+    assert payload["week_average"]["duration_min"] == 480
+    assert payload["consistency"]["status"] == "unknown"  # one night is not enough for a spread
 
 
 def test_sleep_summary_keeps_missing_current_stages_unknown(monkeypatch):
@@ -1125,3 +1127,95 @@ def test_oura_daily_migrates_and_preserves_nullable_sleep_type(tmp_path):
         sleep_type=None,
     )
     assert oura_client.get_oura_daily(str(db_path), "2026-06-04")["sleep_type"] == "nap"
+
+
+def test_sleep_summary_valid_nights_feed_bedtime_consistency_despite_bad_daily_cache(monkeypatch):
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+
+    def night(day, bedtime):
+        return {
+            "day": day, "bedtime_start": bedtime, "total_sleep_min": 450,
+            "deep_sleep_min": 90, "rem_sleep_min": 100, "light_sleep_min": 260, "sleep_score": 84,
+        }
+
+    nights = [night("2026-06-03", "2026-06-02T22:00:00"), night("2026-06-04", "2026-06-04T00:00:00")]
+    bogus_daily = {
+        "day": "2026-06-04", "sleep_duration_min": 1, "sleep_deep_min": 0,
+        "sleep_rem_min": 0, "sleep_light_min": 1, "sleep_score": 84,
+    }
+    monkeypatch.setattr(oura_sleep_sync, "get_latest_sleep", lambda *_a, **_kw: nights[-1:])
+    monkeypatch.setattr(oura_sleep_sync, "get_sleep_range", lambda *_a, **_kw: nights)
+    monkeypatch.setattr(module, "get_oura_daily", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "get_oura_daily_range", lambda *_a, **_kw: [bogus_daily])
+
+    payload = module.app.test_client().get("/api/oura/sleep-summary").get_json()
+
+    assert [row["date"] for row in payload["trend_data"]] == ["2026-06-03", "2026-06-04"]
+    # 22:00 and 00:00 are 120 min apart; the circular SD is about 60.
+    assert payload["consistency"]["bedtime_circular_std_dev_min"] in range(59, 62)
+
+
+def test_sleep_summary_valid_sleep_night_beats_bad_same_day_daily_row_for_last_night(monkeypatch):
+    module = importlib.import_module("app")
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    today = module.datetime.now().date().strftime("%Y-%m-%d")
+    night = {
+        "day": today, "total_sleep_min": 450, "deep_sleep_min": 90,
+        "rem_sleep_min": 100, "light_sleep_min": 260, "sleep_score": None,
+    }
+    bogus_daily = {
+        "day": today, "sleep_duration_min": 1, "sleep_deep_min": 0,
+        "sleep_rem_min": 0, "sleep_light_min": 1, "sleep_score": 84,
+    }
+    monkeypatch.setattr(oura_sleep_sync, "get_latest_sleep", lambda *_a, **_kw: [night])
+    monkeypatch.setattr(oura_sleep_sync, "get_sleep_range", lambda *_a, **_kw: [night])
+    monkeypatch.setattr(module, "get_oura_daily", lambda *_a, **_kw: bogus_daily)
+    monkeypatch.setattr(module, "get_oura_daily_range", lambda *_a, **_kw: [bogus_daily])
+
+    payload = module.app.test_client().get("/api/oura/sleep-summary").get_json()
+
+    assert payload["last_night"]["total_sleep_min"] == 450
+    assert payload["week_average"]["duration_min"] == 450
+
+
+def test_vitals_renderer_falls_back_to_oura_status_when_sleep_summary_fails():
+    output = run_app_js(
+        ["renderVitals"],
+        """
+const element = () => ({ textContent: '', className: '', classList: { toggle() {}, remove() {} } });
+[
+  'v-rhr', 'v-hrv', 'v-hr-zone', 'v-hr-zone-sub', 'v-temp', 'v-temp-delta',
+  'v-steps', 'v-steps-goal', 'v-active-cal', 'v-active-cal-goal', 'v-total-cal',
+  'v-total-cal-goal', 'v-active-min', 'v-active-min-goal', 'spark-steps',
+  'spark-active-min', 'spark-sleep', 'v-sleep-dur', 'v-sleep-dur-sub',
+  'v-sleep-score', 'v-sleep-score-sub', 'v-weight', 'v-bf', 'v-weight-delta',
+  'v-bf-delta', 'v-rhr-delta', 'v-hrv-delta',
+].forEach((id) => { sandbox.elements[id] = element(); });
+let status = { sleep_duration_min: 450, sleep_score: 84, sleep_breakdown_min: { deep: 90, rem: 100 } };
+sandbox.__fitSet.getVitals(async () => ({}));
+sandbox.__fitSet.getOuraStatus(async () => status);
+sandbox.__fitSet.getOuraSleep(async () => null);
+sandbox.__fitSet.getBody(async () => ({ history: [] }));
+sandbox.__fitSet.getOuraTrends(async () => ({ series: [] }));
+sandbox.__fitSet.sparkline(() => {});
+await e.renderVitals();
+const fallback = {
+  duration: sandbox.elements['v-sleep-dur'].textContent,
+  sub: sandbox.elements['v-sleep-dur-sub'].textContent,
+  score: sandbox.elements['v-sleep-score'].textContent,
+};
+status = { sleep_duration_min: 1, sleep_score: 88 };
+await e.renderVitals();
+process.stdout.write(JSON.stringify({ fallback, implausible: sandbox.elements['v-sleep-dur'].textContent }));
+""",
+        mocks=[
+            "getVitals", "getOuraStatus", "getOuraSleep", "getBody", "getOuraTrends",
+            "sparkline",
+        ],
+    )
+
+    assert output == {
+        "fallback": {"duration": "7h 30m", "sub": "100m REM · 90m Deep", "score": 84},
+        "implausible": "--",
+    }

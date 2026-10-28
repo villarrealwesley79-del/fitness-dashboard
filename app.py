@@ -15089,29 +15089,14 @@ def _sleep_summary_data_quality(last_night, week_data=None):
 
 
 def _bedtime_variance_from_rows(rows):
-    bedtimes = []
-    for row in rows or []:
-        if row.get("total_sleep_min") is None and row.get("sleep_score") is None:
-            continue
-        bedtime_start = row.get("bedtime_start")
-        if not bedtime_start:
-            continue
-        try:
-            parsed = datetime.fromisoformat(bedtime_start.replace("Z", "+00:00"))
-        except (TypeError, ValueError):
-            continue
-        bedtimes.append(parsed.hour * 60 + parsed.minute)
-    if len(bedtimes) < 2:
-        return None
-    angles = [2 * math.pi * value / (24 * 60) for value in bedtimes]
-    mean_angle = math.atan2(
-        sum(math.sin(angle) for angle in angles),
-        sum(math.cos(angle) for angle in angles),
-    )
-    mean_minutes = (mean_angle % (2 * math.pi)) * (24 * 60) / (2 * math.pi)
-    deviations = [((value - mean_minutes + 12 * 60) % (24 * 60)) - 12 * 60 for value in bedtimes]
-    variance = sum(value ** 2 for value in deviations) / len(deviations)
-    return int(round(variance ** 0.5))
+    """Circular bedtime SD (FIT-337) over rows that carry real sleep data."""
+    from oura_sleep_sync import calculate_bedtime_variance
+
+    rows = [
+        row for row in rows or []
+        if not (row.get("total_sleep_min", 0) is None and row.get("sleep_score") is None)
+    ]
+    return calculate_bedtime_variance(OURA_DB_FILE, rows=rows)
 
 
 @app.route('/api/oura/sleep-summary')
@@ -15136,6 +15121,13 @@ def oura_sleep_summary():
             end.strftime("%Y-%m-%d"),
             long_sleep_only=True
         )
+
+        # Days where the sleep table holds a valid full night. A disagreeing
+        # oura_daily cache row is still flagged below but must not hide them.
+        valid_sleep_days = {
+            row.get("day") for row in (week_data or [])
+            if row.get("total_sleep_min") is not None and _is_valid_nightly_sleep_row(row)
+        }
 
         # Prefer oura_daily (today's cached daily sleep fields) when it's newer or fuller
         # than the oura_sleep row. The oura_sleep table can go stale; oura_daily is
@@ -15164,8 +15156,17 @@ def oura_sleep_summary():
         daily_row = _daily_to_row(daily_today)
         ln_day = (last_night or {}).get("day")
         daily_row_is_non_nightly = _sleep_row_is_non_nightly(daily_row)
-        if daily_row and not daily_row_is_non_nightly and (not last_night or (ln_day or "") < daily_row["day"]
-                         or (last_night.get("sleep_score") in (None, 0) and daily_row.get("sleep_score"))):
+        daily_row_loses_to_valid_night = (
+            daily_row
+            and last_night
+            and ln_day == daily_row["day"]
+            and _is_valid_nightly_sleep_row(last_night)
+            and not _is_valid_nightly_sleep_row(daily_row)
+        )
+        if daily_row and not daily_row_is_non_nightly and not daily_row_loses_to_valid_night and (
+            not last_night or (ln_day or "") < daily_row["day"]
+            or (last_night.get("sleep_score") in (None, 0) and daily_row.get("sleep_score"))
+        ):
             last_night = daily_row
 
         # Augment week_data from oura_daily range where a day is missing.
@@ -15199,7 +15200,8 @@ def oura_sleep_summary():
         excluded_dates = set(data_quality.get("excluded_dates") or [])
         week_data = [
             row for row in week_data
-            if row.get("day") not in excluded_dates and _is_valid_nightly_sleep_row(row)
+            if (row.get("day") not in excluded_dates or row.get("day") in valid_sleep_days)
+            and _is_valid_nightly_sleep_row(row)
         ]
 
         # Calculate 7-day averages
