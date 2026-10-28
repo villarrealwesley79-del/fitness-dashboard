@@ -429,3 +429,67 @@ def test_consent_page_is_rate_limited_and_the_store_stops_growing(make, tmp_path
         codes = [c.get(consent).status_code for _ in range(70)]
     assert codes.count(429) >= 10 and codes[:55] == [200] * 55  # register + authorize + 55 renders fit the window
     assert files() - before <= 60
+
+
+def test_unhandled_error_is_a_bare_500_with_one_log_line_and_no_traceback(make, monkeypatch, caplog):
+    from server import VendorCIMDProxy
+
+    async def boom(self, client_id):
+        raise RuntimeError("secret detail\nforged line")
+
+    monkeypatch.setattr(VendorCIMDProxy, "get_client", boom)
+    with caplog.at_level(logging.DEBUG), TestClient(make(), base_url="https://frankbox.example.ts.net:8443") as c:
+        codes = {c.post("/token", data={"grant_type": "authorization_code", "client_id": "x", "code": "c",
+                                        "redirect_uri": "x", "code_verifier": "v" * 43}).status_code for _ in range(50)}
+        body = c.post("/token", data={"grant_type": "authorization_code", "client_id": "x"}).text
+    ours = [r for r in caplog.records if r.name == "fitness_mcp"]
+    assert codes == {500} and body == "Internal Server Error"
+    assert len(ours) == 1 and "RuntimeError" in ours[0].getMessage()
+    assert "Traceback" not in caplog.text and "secret detail" not in caplog.text and "forged" not in caplog.text
+
+
+@pytest.mark.parametrize("client_id", [
+    "https://claude.ai:99999/x", "https://claude.ai:abc/x", "https://a..claude.ai/x", "https://" + "a" * 64 + ".claude.ai/x",
+    "https://claude.ai/x\x00y", "https://claude.ai/x\x7fy", "https://claude.ai:8443/x",
+])
+def test_malformed_vendor_client_ids_are_refused_before_fastmcp_can_crash(make, monkeypatch, caplog, client_id):
+    fetched = _fake_cimd(monkeypatch, "https://claude.ai/api/mcp/auth_callback")
+    with caplog.at_level(logging.DEBUG), TestClient(make(), base_url="https://frankbox.example.ts.net:8443") as c:
+        codes = {c.post("/token", data={"grant_type": "authorization_code", "client_id": client_id, "code": "c",
+                                        "redirect_uri": "x", "code_verifier": "v" * 43}).status_code for _ in range(5)}
+    assert codes == {401} and fetched == [] and not [r for r in caplog.records if r.name == "fitness_mcp"]
+
+
+def test_a_fastmcp_error_while_fetching_a_vendor_document_is_a_refusal(make, monkeypatch, caplog):
+    from fastmcp.server.auth.cimd import CIMDFetcher
+
+    async def fetch(self, url):
+        raise ValueError("crash inside FastMCP")
+
+    monkeypatch.setattr(CIMDFetcher, "fetch", fetch)
+    with caplog.at_level(logging.DEBUG), TestClient(make(), base_url="https://frankbox.example.ts.net:8443") as c:
+        r = c.post("/token", data={"grant_type": "authorization_code", "client_id": "https://claude.ai/c.json",
+                                   "code": "c", "redirect_uri": "x", "code_verifier": "v" * 43})
+    assert r.status_code == 401 and not [x for x in caplog.records if x.name == "fitness_mcp"]
+
+
+def test_days_window_is_inclusive_of_today_only_once(make, monkeypatch):
+    from datetime import date, timedelta
+
+    dates = [(date.today() - timedelta(days=i)).isoformat() for i in range(10)]
+    monkeypatch.setitem(ROUTES, "/api/history-all", {"workouts": [], "recovery": [], "personal_records": {},
+                                                     "cardio": [{"date": d, "activity_type": "walk"} for d in dates]})
+    with TestClient(make(), base_url="http://127.0.0.1:8765") as c:
+        one = call(c, "get_workout_history", BOT_TOKEN, days=1)["cardio"]
+        seven = call(c, "get_workout_history", BOT_TOKEN, days=7)["cardio"]
+    assert [r["date"] for r in one] == dates[:1] and [r["date"] for r in seven] == dates[:7]
+
+
+def test_owner_id_must_be_ascii_digits(make):
+    cfg = Config(
+        public_url="https://frankbox.example.ts.net:8443/mcp", github_client_id="i", github_client_secret="s",
+        owner_github_id="٤٢", jwt_signing_key=SIGNING_KEY, storage_dir="unused",
+        storage_key=Fernet.generate_key().decode(), read_token=READ_TOKEN,
+    )
+    with pytest.raises(SystemExit):
+        build_app(cfg)

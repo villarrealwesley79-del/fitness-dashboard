@@ -57,12 +57,33 @@ class VendorCIMDProxy(OAuthProxy):
         super().__init__(*args, **kwargs)
         self._cimd_hosts = tuple(h.lower() for h in cimd_hosts)
 
+    def _fetchable(self, client_id: str) -> bool:
+        """True only for a plain-ASCII URL on a vendor host and port 443 that IDNA can encode.
+
+        FastMCP's fetcher raises on a bad port, a bad DNS label or a control character, which would be
+        a 500 and a traceback in the log; this refuses them first.
+        """
+        try:
+            if not re.fullmatch(r"[\x21-\x7e]+", client_id):
+                return False
+            parts = urlsplit(client_id)
+            host = (parts.hostname or "").lower()
+            host.encode("idna")
+            if parts.port not in (None, 443):
+                return False
+        except ValueError:  # includes UnicodeError
+            return False
+        return any(host == h or host.endswith("." + h) for h in self._cimd_hosts)
+
     async def get_client(self, client_id: str):
-        if self._cimd_manager is not None and self._cimd_manager.is_cimd_client_id(client_id):
-            host = (urlsplit(client_id).hostname or "").lower()
-            if not any(host == h or host.endswith("." + h) for h in self._cimd_hosts):
-                return None  # refused before any fetch or store read
-        return await super().get_client(client_id)
+        if self._cimd_manager is None or not self._cimd_manager.is_cimd_client_id(client_id):
+            return await super().get_client(client_id)
+        if not self._fetchable(client_id):
+            return None  # refused before any fetch or store read
+        try:
+            return await super().get_client(client_id)
+        except Exception:  # a FastMCP fetch bug must be a refusal, not a 500 plus a traceback in the log
+            return None
 
 
 @dataclass(frozen=True)
@@ -180,9 +201,49 @@ class LogRejectedRedirects:
         await self.app(scope, receive, spy)
 
 
+class CatchUnhandled:
+    """Outermost wrapper: any unhandled error becomes a bare 500 and at most one log line per window.
+
+    Starlette's ServerErrorMiddleware re-raises, and uvicorn then prints a 100-line traceback for each
+    request; on an uncounted anonymous route that would be an unbounded log flood.
+    """
+
+    def __init__(self, app, window: int = 3600):
+        self.app, self.window, self.logged_at = app, window, None
+
+    def __getattr__(self, name):  # app.state, app.routes: tests and callers use the Starlette app
+        return getattr(self.app, name)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        started = done = False
+
+        async def watch(message):
+            nonlocal started, done
+            started = started or message["type"] == "http.response.start"
+            done = done or (message["type"] == "http.response.body" and not message.get("more_body"))
+            await send(message)
+
+        try:
+            await self.app(scope, receive, watch)
+        except Exception as exc:
+            now = time.monotonic()
+            if self.logged_at is None or now - self.logged_at >= self.window:
+                self.logged_at = now  # type and path only: never the message or the request content
+                log.error("unhandled %s on %r", type(exc).__name__, str(scope.get("path"))[:100])
+            try:
+                if not started:
+                    await PlainTextResponse("Internal Server Error", status_code=500)(scope, receive, send)
+                elif not done:
+                    await send({"type": "http.response.body", "body": b"", "more_body": False})
+            except Exception:  # the client is gone
+                pass
+
+
 def build_app(cfg: Config, *, github: httpx2.AsyncClient | None = None, dashboard_transport=None, storage=None):
     """Return (asgi_app, mcp_path). `github` and `dashboard_transport` exist for tests."""
-    if not re.fullmatch(r"\d+", cfg.owner_github_id):
+    if not re.fullmatch(r"[0-9]+", cfg.owner_github_id):
         raise SystemExit("MCP_OWNER_GITHUB_ID must be the numeric GitHub user id")
     if cfg.bot_token_sha256 and not re.fullmatch(r"[0-9a-fA-F]{64}", cfg.bot_token_sha256):
         raise SystemExit("MCP_BOT_TOKEN_SHA256 must be 64 hex characters")
@@ -216,7 +277,7 @@ def build_app(cfg: Config, *, github: httpx2.AsyncClient | None = None, dashboar
         allowed_hosts=[host, f"{host}:*"],
         middleware=[Middleware(LogRejectedRedirects)],
     )
-    return app, mcp_path
+    return CatchUnhandled(app), mcp_path
 
 
 def main() -> None:

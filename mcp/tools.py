@@ -28,7 +28,7 @@ def _rows(src: Any, keys: tuple[str, ...]) -> list[dict]:
 
 
 def _since(rows: list[dict], days: int) -> list[dict]:
-    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    cutoff = (date.today() - timedelta(days=days - 1)).isoformat()  # days=1 is today only
     return [r for r in rows if (r.get("date") or "") >= cutoff]
 
 

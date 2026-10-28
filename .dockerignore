@@ -56,3 +56,5 @@ auth.db*
 audit-bundles/
 backup-bundles/
 docs/audits/
+mcp/.venv*/
+**/.venv*/
