@@ -10404,6 +10404,17 @@ def _body_measurement_number_or_none(value, min_v, max_v):
     return number
 
 
+def _body_measurement_left_right_or_none(value, min_v, max_v):
+    """Return (left, right) for an "a/b" string with both sides in range, else None."""
+    if not isinstance(value, str):
+        return None
+    sides = value.split("/")
+    if len(sides) != 2:
+        return None
+    parsed = [_body_measurement_number_or_none(side, min_v, max_v) for side in sides]
+    return None if None in parsed else tuple(parsed)
+
+
 def _safe_body_history_entry(raw):
     entry = dict(raw)
     entry["date"] = _body_measurement_date_or_none(entry.get("date"))
@@ -10411,12 +10422,9 @@ def _safe_body_history_entry(raw):
     entry["body_fat_pct"] = _body_measurement_number_or_none(entry.get("body_fat_pct"), 1.0, 60.0)
     for field, (min_v, max_v) in BODY_TAPE_RANGES.items():
         value = entry.get(field)
-        # Legacy rows store left/right text such as "11.37/13.62"; keep text, only blank bad numbers.
-        if isinstance(value, str):
-            try:
-                float(value)
-            except ValueError:
-                continue
+        # Legacy arms/legs rows store left/right text such as "11.37/13.62"; keep it only when both sides are in range.
+        if field in BODY_TAPE_SIDED_FIELDS and _body_measurement_left_right_or_none(value, min_v, max_v):
+            continue
         entry[field] = _body_measurement_number_or_none(value, min_v, max_v)
     return entry
 
@@ -10461,9 +10469,8 @@ def add_body_measurement():
     for field, (min_v, max_v) in BODY_TAPE_RANGES.items():
         raw_value = data.get(field)
         if field in BODY_TAPE_SIDED_FIELDS and isinstance(raw_value, str) and "/" in raw_value:
-            sides = raw_value.split("/")
-            parsed = [_body_measurement_number_or_none(side, min_v, max_v) for side in sides] if len(sides) == 2 else [None]
-            if None in parsed:
+            parsed = _body_measurement_left_right_or_none(raw_value, min_v, max_v)
+            if parsed is None:
                 return api_error(f"{field} must be a number or left/right numbers between {min_v} and {max_v}", 400, code="invalid_field")
             tape_values[field] = f"{parsed[0]:g}/{parsed[1]:g}"
             continue

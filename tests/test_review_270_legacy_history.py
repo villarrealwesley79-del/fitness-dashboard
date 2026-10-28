@@ -82,3 +82,22 @@ def test_body_history_still_shows_left_right_tape_strings(legacy_client):
     tape_day = next(row for row in history if row.get("notes") == "tape day")
     assert tape_day["arms"] == "11.37/13.62"
     assert tape_day["legs"] == "22.08/23.85"
+
+
+def test_body_history_blanks_bad_text_but_keeps_valid_left_right(monkeypatch, tmp_path):
+    rows = [
+        {"date": "2026-02-06", "weight_lbs": 185.0, "arms": "11.37/13.62", "legs": "22.08/23.85"},
+        {"date": "2026-02-07", "weight_lbs": 185.0, "waist_in": "abc", "neck_in": "11/13",
+         "arms": "999/999", "legs": "22/abc"},
+        {"date": "2026-02-08", "weight_lbs": 185.0, "arms": "1/2/3", "legs": "nan/20"},
+    ]
+    monkeypatch.setattr(module, "BODY_DATA", rows)
+    module.app.config.update(TESTING=True, LOGIN_DISABLED=True)
+    client = module.app.test_client()
+    for url in ("/api/body-history", "/api/body-recomp"):
+        payload = client.get(url).get_json()["history"]
+        by_date = {row["date"]: row for row in payload}
+        assert len(payload) == 3
+        assert (by_date["2026-02-06"]["arms"], by_date["2026-02-06"]["legs"]) == ("11.37/13.62", "22.08/23.85")
+        for date in ("2026-02-07", "2026-02-08"):
+            assert all(by_date[date].get(f) is None for f in ("waist_in", "neck_in", "arms", "legs"))
