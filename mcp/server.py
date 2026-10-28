@@ -5,11 +5,13 @@ Run: python mcp/server.py   (all settings come from the environment; see docs/MC
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, unquote_plus, urlsplit
 
+import h11
 import httpx2
 from cryptography.fernet import Fernet
 from fastmcp import FastMCP
@@ -22,6 +24,7 @@ from key_value.aio.stores.filetree import (
 )
 from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 from starlette.middleware import Middleware
+from starlette.requests import ClientDisconnect
 from starlette.responses import PlainTextResponse
 
 from owner_auth import BotTokenVerifier, OwnerGitHubVerifier
@@ -102,6 +105,8 @@ class Config:
     extra_cimd_hosts: tuple[str, ...] = ()
     host: str = "127.0.0.1"
     port: int = 8765
+    storage_max_bytes: int = 20 << 20
+    storage_max_files: int = 2000
 
     @classmethod
     def from_env(cls, env=os.environ) -> "Config":
@@ -132,6 +137,8 @@ class Config:
             extra_cimd_hosts=tuple(h.strip() for h in env.get("MCP_EXTRA_CIMD_HOSTS", "").split(",") if h.strip()),
             host=env.get("MCP_LISTEN_HOST", "127.0.0.1").strip(),
             port=int(env.get("MCP_LISTEN_PORT", "8765")),
+            storage_max_bytes=int(env.get("MCP_STORAGE_MAX_BYTES", 20 << 20)),
+            storage_max_files=int(env.get("MCP_STORAGE_MAX_FILES", 2000)),
         )
 
 
@@ -148,24 +155,100 @@ def make_storage(directory: str, key: str) -> FernetEncryptionWrapper:
     return FernetEncryptionWrapper(key_value=store, fernet=Fernet(key), raise_on_decryption_error=False)
 
 
+def rotate_log(path: str, cap: int) -> bool:
+    """If the file behind fds 1 and 2 is over `cap` bytes, move it to `<path>.1` and point both at a fresh 0600 file.
+
+    The cap holds for whatever writes to stderr (FastMCP, uvicorn, anything added later); disk use stays
+    near 2 x cap plus what one check interval writes. It refuses to rename a path that is not fd 2's file.
+    """
+    info = os.fstat(2)
+    if info.st_size <= cap or os.stat(path).st_ino != info.st_ino:
+        return False
+    os.replace(path, path + ".1")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    os.close(fd)
+    return True
+
+
+def rotate_log_forever(path: str, cap: int, interval: float = 30) -> None:
+    while True:
+        time.sleep(interval)
+        try:
+            rotate_log(path, cap)
+        except OSError:  # the log is best effort; never stop the server over it
+            pass
+
+
 class LogRejectedRedirects:
     """Logs why /authorize or /register refused a client, so the owner can allowlist its redirect_uri.
 
     Also caps the four anonymous endpoints: /authorize, /register and every /consent render each leave
     a file that is never cleaned up, and FastMCP logs every failed /auth/callback at ERROR. A real
     callback is ~250 bytes of printable ASCII, so anything else gets a 400 before FastMCP can log it.
+    These caps are the bound: the log file (rotate_log), the OAuth store (503 when full) and anonymous bodies (413).
     shortcut: one global fixed window, not per client (behind Funnel every peer is 127.0.0.1);
     a flood can lock the owner out of connecting for up to an hour. It writes one log line per window.
     """
 
     COUNTED = ("/authorize", "/register", "/auth/callback", "/consent")
     MAX_CALLBACK_QUERY = 1024
+    MAX_BODY = 16 << 10  # anonymous request bodies; /mcp is authenticated and not limited
 
-    def __init__(self, app, limit: int = 60, window: int = 3600):
+    def __init__(self, app, limit: int = 60, window: int = 3600, store: str | None = None,
+                 store_max_bytes: int = 20 << 20, store_max_files: int = 2000):
         self.app, self.limit, self.window = app, limit, window
         self.started, self.count = time.monotonic(), 0
+        self.store, self.store_max = store, (store_max_bytes, store_max_files)
+        self.store_checked, self.store_full = -60.0, False
+
+    def _store_is_full(self) -> bool:
+        """Walk the OAuth store at most once a minute. Existing tokens keep working; only new connects stop."""
+        if self.store and time.monotonic() - self.store_checked >= 60:
+            self.store_checked = time.monotonic()
+            files = size = 0
+            for directory, _, names in os.walk(self.store):
+                for name in names:
+                    files += 1
+                    try:
+                        size += os.stat(os.path.join(directory, name)).st_size
+                    except OSError:
+                        pass
+            self.store_full = size > self.store_max[0] or files > self.store_max[1]
+        return self.store_full
 
     async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") != "POST" or scope.get("path") not in (*self.COUNTED, "/token"):
+            return await self.counted(scope, receive, send)
+        for name, value in scope["headers"]:
+            if name == b"content-length" and value.isdigit() and int(value) > self.MAX_BODY:
+                return await PlainTextResponse("Request body too large", status_code=413)(scope, receive, send)
+        total, over, started = 0, False, False
+
+        async def limited_receive():  # chunked bodies have no Content-Length: count them as they stream in
+            nonlocal total, over
+            message = await receive()
+            if message["type"] == "http.request" and not over:
+                total += len(message.get("body", b""))
+                over = total > self.MAX_BODY
+            return {"type": "http.disconnect"} if over else message
+
+        async def guarded_send(message):
+            nonlocal started
+            if not over:
+                started = started or message["type"] == "http.response.start"
+                await send(message)
+
+        try:
+            await self.counted(scope, limited_receive, guarded_send)
+        except Exception:
+            if not over:
+                raise
+        if over and not started:
+            await PlainTextResponse("Request body too large", status_code=413)(scope, receive, send)
+
+    async def counted(self, scope, receive, send):
         path = scope.get("path")
         if scope["type"] != "http" or path not in self.COUNTED:
             return await self.app(scope, receive, send)
@@ -181,6 +264,8 @@ class LogRejectedRedirects:
             if len(query) > self.MAX_CALLBACK_QUERY or re.search(r"[^\x20-\x7e]", unquote_plus(query.decode("latin-1"))):
                 return await PlainTextResponse("Bad request", status_code=400)(scope, receive, send)
             return await self.app(scope, receive, send)
+        if self._store_is_full():
+            return await PlainTextResponse("Storage full", status_code=503)(scope, receive, send)
         if path == "/consent":
             return await self.app(scope, receive, send)
         refused = False
@@ -229,7 +314,8 @@ class CatchUnhandled:
             await self.app(scope, receive, watch)
         except Exception as exc:
             now = time.monotonic()
-            if self.logged_at is None or now - self.logged_at >= self.window:
+            noise = isinstance(exc, (ClientDisconnect, h11.LocalProtocolError))  # must not use up the hourly line
+            if not noise and (self.logged_at is None or now - self.logged_at >= self.window):
                 self.logged_at = now  # type and path only: never the message or the request content
                 log.error("unhandled %s on %r", type(exc).__name__, str(scope.get("path"))[:100])
             try:
@@ -275,7 +361,8 @@ def build_app(cfg: Config, *, github: httpx2.AsyncClient | None = None, dashboar
         json_response=True,
         host_origin_protection=True,
         allowed_hosts=[host, f"{host}:*"],
-        middleware=[Middleware(LogRejectedRedirects)],
+        middleware=[Middleware(LogRejectedRedirects, store=cfg.storage_dir, store_max_bytes=cfg.storage_max_bytes,
+                               store_max_files=cfg.storage_max_files)],
     )
     return CatchUnhandled(app), mcp_path
 
@@ -288,6 +375,12 @@ def main() -> None:
     # httpx logs every outbound URL at INFO; an anonymous /token with a URL client_id would write it.
     for name in ("httpx2", "httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
+    # Noise reducers, not the bound: the log file cap below is.
+    logging.getLogger("python_multipart").setLevel(logging.ERROR)
+    logging.getLogger("uvicorn.error").addFilter(lambda r: not r.getMessage().startswith("ASGI callable returned without"))
+    if os.environ.get("MCP_LOG_FILE"):  # must match the plist's StandardErrorPath
+        threading.Thread(target=rotate_log_forever, daemon=True, args=(
+            os.environ["MCP_LOG_FILE"], int(os.environ.get("MCP_LOG_MAX_BYTES", 10 << 20)))).start()
     cfg = Config.from_env()
     app, _ = build_app(cfg)
     # access_log off: /auth/callback?code=... would otherwise be written to the log.

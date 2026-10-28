@@ -493,3 +493,117 @@ def test_owner_id_must_be_ascii_digits(make):
     )
     with pytest.raises(SystemExit):
         build_app(cfg)
+
+
+ROTATE_PROBE = r"""
+import logging, os, sys
+sys.path.insert(0, sys.argv[1])
+path, cap = sys.argv[2], int(sys.argv[3])
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+os.dup2(fd, 1); os.dup2(fd, 2); os.close(fd)
+import server
+logging.basicConfig(level=logging.INFO)
+rotations = 0
+for round_ in range(40):
+    for _ in range(20):  # one "interval" of writes through every kind of emitter, well under the cap
+        print("x" * 200, flush=True)
+        logging.getLogger("fastmcp").error("y" * 200)
+        logging.getLogger("uvicorn.error").error("z" * 200)
+        logging.getLogger().error("r" * 200)
+    rotations += server.rotate_log(path, cap)
+    assert os.path.getsize(path) <= 2 * cap and os.path.getsize(path + ".1") <= 2 * cap, round_
+print("rotations", rotations)
+"""
+
+
+def test_log_file_is_capped_whatever_writes_to_it(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    log, cap = tmp_path / "mcp.log", 20_000
+    out = subprocess.run([sys.executable, "-c", ROTATE_PROBE, str(Path(__file__).resolve().parents[1]), str(log), str(cap)],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr[-500:]
+    assert (log.stat().st_mode & 0o777, (tmp_path / "mcp.log.1").exists()) == (0o600, True)
+    assert log.stat().st_size <= 2 * cap and (tmp_path / "mcp.log.1").stat().st_size <= 2 * cap
+
+
+def test_rotate_log_leaves_a_path_that_is_not_the_stderr_file_alone(tmp_path):
+    import server
+
+    other = tmp_path / "other.log"
+    other.write_text("x" * 1000)
+    assert server.rotate_log(str(other), 10) is False and other.exists() and not (tmp_path / "other.log.1").exists()
+
+
+def _store(tmp_path, n):
+    root = tmp_path / "store"
+    root.mkdir(exist_ok=True)
+    for i in range(n):
+        (root / f"f{i}").write_bytes(b"x")
+
+
+CB = "https://claude.ai/api/mcp/auth_callback"
+
+
+def test_full_oauth_store_refuses_new_connects_but_not_existing_tokens(make, tmp_path):
+    _store(tmp_path, 2001)  # over MCP_STORAGE_MAX_FILES (default 2000)
+    with TestClient(make(), base_url="https://frankbox.example.ts.net:8443") as c:
+        register = c.post("/register", json={"redirect_uris": [CB], "token_endpoint_auth_method": "none"})
+        authorize = c.get("/authorize", params={"response_type": "code", "client_id": "x"})
+        consent = c.get("/consent", params={"txn_id": "x"})
+        assert call(c, "get_today_plan", BOT_TOKEN)["recommendation"] == "moderate"  # the bot token still works
+        assert c.get("/.well-known/oauth-authorization-server").status_code == 200
+    assert (register.status_code, authorize.status_code, consent.status_code) == (503, 503, 503)
+
+
+def test_oauth_store_size_cap_and_walk_cache(tmp_path):
+    async def ok(scope, receive, send):
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    _store(tmp_path, 1)
+    (tmp_path / "store" / "big").write_bytes(b"x" * 5000)
+    guard = TestClient(LogRejectedRedirects(ok, store=str(tmp_path / "store"), store_max_bytes=4000), base_url="http://127.0.0.1:8765")
+    assert guard.post("/register").status_code == 503
+    (tmp_path / "store" / "big").unlink()
+    assert guard.post("/register").status_code == 503  # cached for 60 s
+    guard.app.store_checked -= 61
+    assert guard.post("/register").status_code == 200
+
+
+def test_anonymous_bodies_over_16_kb_get_413_on_content_length_and_on_chunked(make, tmp_path):
+    def chunks(total):
+        for _ in range(total // 4096):
+            yield b"a" * 4096
+
+    with TestClient(make(), base_url="https://frankbox.example.ts.net:8443") as c:
+        by_length = c.post("/register", content=b"a" * (1 << 20), headers={"content-type": "application/json"})
+        chunked = [c.post(path, content=chunks(1 << 20), headers={"content-type": kind}).status_code for path, kind in (
+            ("/register", "application/json"), ("/token", "application/x-www-form-urlencoded"),
+            ("/consent", "application/x-www-form-urlencoded"))]
+        small = c.post("/token", data={"grant_type": "authorization_code", "client_id": "nope", "code": "c",
+                                       "redirect_uri": "x", "code_verifier": "v" * 43})
+        mcp = rpc(c, "tools/list", token=BOT_TOKEN)  # /mcp is not limited
+    assert by_length.status_code == 413 and chunked == [413, 413, 413]
+    assert small.status_code == 401 and mcp.status_code == 200
+    assert max((f.stat().st_size for f in (tmp_path / "store").rglob("*") if f.is_file()), default=0) < 16 << 10
+
+
+def test_client_disconnect_does_not_use_up_the_hourly_error_line(caplog):
+    from starlette.requests import ClientDisconnect
+
+    from server import CatchUnhandled
+
+    raising = []
+
+    async def app(scope, receive, send):
+        raise raising.pop(0)
+
+    guard = TestClient(CatchUnhandled(app), base_url="http://127.0.0.1:8765", raise_server_exceptions=False)
+    raising += [ClientDisconnect(), ClientDisconnect(), RuntimeError("real")]
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(3):
+            guard.get("/x")
+    ours = [r.getMessage() for r in caplog.records if r.name == "fitness_mcp"]
+    assert ours == ["unhandled RuntimeError on '/x'"]

@@ -5,6 +5,7 @@ fastmcp==4.1.4
 py-key-value-aio==0.4.6
 cryptography==50.0.2
 uvicorn==0.54.0
+h11==0.16.0
 httpx2==2.16.0
 starlette==1.10.0
 pytest==8.4.2
