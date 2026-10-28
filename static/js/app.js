@@ -3097,16 +3097,18 @@
                 : reco.recommendation === 'recovery' ? 'Low'
                 : reco.recommendation)
             : null;
+        const readinessText = [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ');
+        const rpeLabel = nw && nw.rpe_range && nw.rpe_range.label;
+        const targetIntensity = rpeLabel ? `Target intensity · RPE ${rpeLabel}` : '';
         if ($('reco-intensity')) {
-            const rpeLabel = nw && nw.rpe_range && nw.rpe_range.label;
-            const targetIntensity = rpeLabel ? `Target intensity · RPE ${rpeLabel}` : '';
-            const intensityText = targetIntensity || [focusLabel.replace(/_/g, ' '), intensityWord].filter(Boolean).join(' · ');
-            if (intensityText) {
-                $('reco-intensity').textContent = intensityText;
-            } else {
-                // Reset to HTML placeholder so a prior session's chip doesn't linger.
-                $('reco-intensity').textContent = '—';
-            }
+            // Reset to HTML placeholder so a prior session's chip doesn't linger.
+            $('reco-intensity').textContent = targetIntensity || readinessText || '—';
+        }
+        if ($('reco-readiness')) {
+            // With an RPE range the readiness word moves here, so both show.
+            const readinessShown = targetIntensity && readinessText;
+            $('reco-readiness').textContent = readinessShown ? readinessText : '';
+            $('reco-readiness').hidden = !readinessShown;
         }
         const timeMin = nw && nw.estimated_minutes;
         if ($('reco-time')) {

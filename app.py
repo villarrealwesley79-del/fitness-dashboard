@@ -4656,8 +4656,13 @@ def _workout_with_auth_scope(recommendation: dict | None) -> dict | None:
     scoped = dict(recommendation)
     rpe_targets = []
     for exercise in recommendation.get("exercises") or []:
+        if not isinstance(exercise, dict):
+            continue
+        raw_target = exercise.get("rpe_target")
+        if isinstance(raw_target, bool):
+            continue
         try:
-            target = float(exercise.get("rpe_target"))
+            target = float(raw_target)
         except (TypeError, ValueError):
             continue
         if 1 <= target <= 10:
