@@ -438,9 +438,9 @@ def test_fit233_adaptation_release_assets_and_reload_contract():
     app_py = (ROOT / "app.py").read_text()
     auth_py = (ROOT / "auth.py").read_text()
 
-    assert "app-loader.js?v=20260713-fit233-adaptation-polling" in template
-    assert "app.js?v=20260713-fit233-adaptation-polling" in loader
-    assert "fitness-dashboard-v20260713-fit233-adaptation-polling" in sw
+    assert "app-loader.js?v=20260716-fit392-rpe" in template
+    assert "app.js?v=20260716-fit392-rpe" in loader
+    assert "fitness-dashboard-v20260716-fit392-rpe" in sw
     assert "const STATIC_ASSETS" not in sw
     assert "cache.addAll" not in sw
     assert "caches.keys()" in sw
@@ -467,11 +467,11 @@ def test_fit233_adaptation_release_assets_and_reload_contract():
 def test_fit233_dashboard_shell_defers_heavy_bundle():
     template = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "app-loader.js?v=20260713-fit233-adaptation-polling" in template
+    assert "app-loader.js?v=20260716-fit392-rpe" in template
     assert '<script src="/static/js/app.js' not in template
     assert "document.addEventListener('DOMContentLoaded', loadAppBundle, { once: true });" in loader
     assert "window.addEventListener('load', loadAppBundle" not in loader
-    assert "script.src = '/static/js/app.js?v=20260713-fit233-adaptation-polling';" in loader
+    assert "script.src = '/static/js/app.js?v=20260716-fit392-rpe';" in loader
     assert "script.async = true;" in loader
 
 
@@ -552,9 +552,9 @@ def test_dashboard_release_assets_and_reload_contract_remain_stable():
     assert '"day": day' in fingerprint_py
     assert '"oura": {' in fingerprint_py and '"weather": {' in fingerprint_py
     assert '"open_wearables": {' in fingerprint_py and '"apple_health": {' in fingerprint_py
-    assert "app-loader.js?v=20260713-fit233-adaptation-polling" in template
-    assert "app.js?v=20260713-fit233-adaptation-polling" in loader
-    assert "fitness-dashboard-v20260713-fit233-adaptation-polling" in sw
+    assert "app-loader.js?v=20260716-fit392-rpe" in template
+    assert "app.js?v=20260716-fit392-rpe" in loader
+    assert "fitness-dashboard-v20260716-fit392-rpe" in sw
     assert "APP_SHELL_RELOAD_COOKIE = \"fd_shell_reload\"" in app_py
     assert "APP_SHELL_RELOAD_VERSION = \"20260525-fit181-controller-reload-r2\"" in app_py
     assert '"reload_required"' in app_py
@@ -629,9 +629,9 @@ process.stdout.write(JSON.stringify(calls));
 def test_dashboard_shell_loads_heavy_app_bundle_when_dom_is_ready():
     template = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
-    assert "app-loader.js?v=20260713-fit233-adaptation-polling" in template
+    assert "app-loader.js?v=20260716-fit392-rpe" in template
     assert '<script src="/static/js/app.js' not in template
     assert "document.addEventListener('DOMContentLoaded', loadAppBundle, { once: true });" in loader
     assert "window.addEventListener('load', loadAppBundle" not in loader
-    assert "script.src = '/static/js/app.js?v=20260713-fit233-adaptation-polling';" in loader
+    assert "script.src = '/static/js/app.js?v=20260716-fit392-rpe';" in loader
     assert "script.async = true;" in loader

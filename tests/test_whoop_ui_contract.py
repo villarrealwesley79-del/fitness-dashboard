@@ -28,9 +28,9 @@ def test_whoop_release_assets_and_import_copy_are_stable():
     html = (ROOT / "templates" / "index.html").read_text()
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
     service_worker = (ROOT / "static" / "js" / "sw.js").read_text()
-    assert "/static/js/app-loader.js?v=20260713-fit233-adaptation-polling" in html
-    assert "/static/js/app.js?v=20260713-fit233-adaptation-polling" in loader
-    assert "fitness-dashboard-v20260713-fit233-adaptation-polling" in service_worker
+    assert "/static/js/app-loader.js?v=20260716-fit392-rpe" in html
+    assert "/static/js/app.js?v=20260716-fit392-rpe" in loader
+    assert "fitness-dashboard-v20260716-fit392-rpe" in service_worker
     assert "Dates up to one day ahead may be accepted for timezone differences; farther-ahead dates are rejected." in html
 
 

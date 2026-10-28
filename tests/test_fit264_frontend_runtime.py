@@ -165,6 +165,7 @@ const setFields = {
   'input[data-field="reps"]': { value: '10' },
   'input[data-field="done"]': { checked: true },
   'input[data-field="notes"]': { value: 'clean' },
+  'input[data-field="rpe"]': { value: '' },
 };
 e.updateLoggedSetFromRow({ dataset: { ex: '0', set: '0' }, querySelector: (s) => setFields[s] });
 const cardioFields = {
@@ -203,8 +204,9 @@ const fields = {
   'input[data-field="weight"]': { value: '100' },
   'input[data-field="done"]': { checked: true },
   'input[data-field="notes"]': { value: '' },
+  'input[data-field="rpe"]': { value: '' },
 };
-const row = { querySelector: (s) => fields[s] };
+const row = { dataset: { set: '0' }, querySelector: (s) => fields[s] };
 sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row] };
 sandbox.elements['btn-complete-workout'] = { disabled: false, textContent: '' };
 sandbox.elements['modal-active'] = { hidden: false };
@@ -249,8 +251,9 @@ const fields = {
   'input[data-field="weight"]': { value: '100' },
   'input[data-field="done"]': { checked: true },
   'input[data-field="notes"]': { value: '' },
+  'input[data-field="rpe"]': { value: '' },
 };
-const row = { querySelector: (s) => fields[s] };
+const row = { dataset: { set: '0' }, querySelector: (s) => fields[s] };
 sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row] };
 sandbox.elements['btn-complete-workout'] = { disabled: false, textContent: '' };
 sandbox.elements['modal-active'] = { hidden: false };
@@ -297,8 +300,9 @@ const fields = {
   'input[data-field="weight"]': { value: '100' },
   'input[data-field="done"]': { checked: true },
   'input[data-field="notes"]': { value: '' },
+  'input[data-field="rpe"]': { value: '' },
 };
-const row = { querySelector: (s) => fields[s] };
+const row = { dataset: { set: '0' }, querySelector: (s) => fields[s] };
 sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row] };
 sandbox.elements['btn-complete-workout'] = { disabled: false, textContent: '' };
 e.state.activeWorkout = {

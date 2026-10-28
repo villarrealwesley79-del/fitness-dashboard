@@ -9,7 +9,7 @@ APP_LOADER_JS = Path("static/js/app-loader.js").read_text()
 APP_SW_JS = Path("static/js/sw.js").read_text()
 APP_HTML = Path("templates/index.html").read_text()
 
-ASSET_VERSION = "20260713-fit233-adaptation-polling"
+ASSET_VERSION = "20260716-fit392-rpe"
 
 
 def test_oura_sync_success_renders_status_range_count_and_latest_days():

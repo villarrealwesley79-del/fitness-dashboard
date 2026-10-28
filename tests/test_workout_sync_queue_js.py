@@ -74,6 +74,7 @@ sandbox.localStorage.setItem = (key, value) => saved.push({ key, value: JSON.par
 const fields = {
   'input[data-field="weight"]': { value: '88' }, 'input[data-field="reps"]': { value: '12' },
   'input[data-field="done"]': { checked: true }, 'input[data-field="notes"]': { value: 'WHOOP switch proof' },
+  'input[data-field="rpe"]': { value: '7' },
 };
 const row = { dataset: { ex: '0', set: '0' }, querySelector: (selector) => fields[selector] };
 sandbox.elements['active-workout-body'] = { querySelectorAll: () => [row], querySelector: () => null };
@@ -89,6 +90,7 @@ process.stdout.write(JSON.stringify(saved[0]));
     assert output["value"]["workout"]["dirty"] is True
     assert output["value"]["workout"]["exercises"][0]["logged_sets"][0] == {
         "weight": "88", "reps": "12", "done": True, "notes": "WHOOP switch proof",
+        "rpe": 7, "rpe_observed": False,
     }
 
 
@@ -136,9 +138,9 @@ process.stdout.write(JSON.stringify({ restored, active: e.state.activeWorkout, c
 
 def test_frontend_asset_versions_stay_in_sync():
     # Stable deployment/cache constants are intentionally source contracts.
-    assert "/static/js/app-loader.js?v=20260713-fit233-adaptation-polling" in APP_HTML
-    assert "/static/js/app.js?v=20260713-fit233-adaptation-polling" in APP_LOADER_JS
-    assert "const CACHE_NAME = 'fitness-dashboard-v20260713-fit233-adaptation-polling';" in APP_SW
+    assert "/static/js/app-loader.js?v=20260716-fit392-rpe" in APP_HTML
+    assert "/static/js/app.js?v=20260716-fit392-rpe" in APP_LOADER_JS
+    assert "const CACHE_NAME = 'fitness-dashboard-v20260716-fit392-rpe';" in APP_SW
     assert "const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';" in APP_JS
     assert "const ACTIVE_WORKOUT_DRAFT_VERSION = 1;" in APP_JS
 

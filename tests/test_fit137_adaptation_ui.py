@@ -498,7 +498,7 @@ def test_adaptation_styles_present_and_calm():
 
 
 def test_fit233_rollout_invalidates_cached_get_only_clients():
-    version = "20260713-fit233-adaptation-polling"
+    version = "20260716-fit392-rpe"
     html = INDEX_HTML
     loader = (ROOT / "static" / "js" / "app-loader.js").read_text()
     service_worker = (ROOT / "static" / "js" / "sw.js").read_text()

@@ -2271,7 +2271,7 @@ def _completed_sets_query_param(raw_value: str | None) -> dict[str, int]:
     for key, value in payload.items():
         try:
             count = int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if key and count > 0:
             completed[str(key)] = count
@@ -3757,6 +3757,22 @@ def _calculate_rpe_target(is_compound, readiness_index, oura_readiness, soreness
     return round(target * 2) / 2
 
 
+def _observed_set_rpe(set_row):
+    """A set's RPE as a float, only when it is an observed effort (FIT-392).
+
+    The guided workout saves the prescribed target as ``rpe`` with
+    ``rpe_observed: False`` for sets the user never touched; that target is not
+    evidence of effort. Legacy rows without the flag keep counting, as before.
+    """
+    if not isinstance(set_row, dict) or set_row.get("rpe_observed") is False:
+        return None
+    try:
+        rpe = float(set_row.get("rpe"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return rpe if math.isfinite(rpe) else None
+
+
 def _get_last_exercise_performance(workouts, exercise_name):
     if not workouts:
         return None
@@ -3772,7 +3788,7 @@ def _get_last_exercise_performance(workouts, exercise_name):
             sets = ex.get("sets", []) or []
             if not sets:
                 continue
-            rpes = [s.get("rpe") for s in sets if s.get("rpe") is not None]
+            rpes = [r for r in (_observed_set_rpe(s) for s in sets) if r is not None]
             avg_rpe = round(sum(rpes) / len(rpes), 2) if rpes else None
             min_reps = min((s.get("reps") or 0) for s in sets)
             max_weight = max((s.get("weight_lbs") or 0) for s in sets)
@@ -4371,7 +4387,8 @@ def calculate_injury_risk(workouts: list, soreness_data: list) -> dict:
     for workout in workouts[-4:]:
         for exercise in workout.get("exercises", []):
             for s in exercise.get("sets", []):
-                if s.get("rpe", 7) >= 9:
+                set_rpe = _observed_set_rpe(s)
+                if set_rpe is not None and set_rpe >= 9:
                     high_rpe_count += 1
 
     if high_rpe_count >= 6:
@@ -16880,6 +16897,35 @@ def progressive_overload():
     return jsonify({"exercises": _calculate_progressive_overload(WORKOUTS)})
 
 
+def _normalize_set_rpe(set_row):
+    """Normalize optional per-set RPE without blocking workout completion."""
+    raw_rpe = set_row.get("rpe")
+    rpe = None
+    if not isinstance(raw_rpe, bool):
+        try:
+            candidate = float(raw_rpe)
+        except (TypeError, ValueError, OverflowError):
+            candidate = None
+        if candidate is not None and math.isfinite(candidate) and 1 <= candidate <= 10:
+            rpe = int(candidate) if candidate.is_integer() else candidate
+    set_row["rpe"] = rpe
+    set_row["rpe_observed"] = bool(
+        rpe is not None and set_row.get("rpe_observed") is True
+    )
+
+
+def _history_exercises_with_rpe_provenance(exercises):
+    """Return history-safe copies, treating legacy RPE targets as defaulted."""
+    copied = copy.deepcopy(exercises if isinstance(exercises, list) else [])
+    for exercise in copied:
+        if not isinstance(exercise, dict):
+            continue
+        for set_row in exercise.get("sets") or []:
+            if isinstance(set_row, dict) and "rpe_observed" not in set_row:
+                set_row["rpe_observed"] = False
+    return copied
+
+
 @app.route('/api/history')
 def workout_history():
     """Get past workouts with full details."""
@@ -16898,7 +16944,7 @@ def workout_history():
             "date": w["date"],
             "session_type": w.get("session_type", "general"),
             "duration_minutes": w.get("duration_minutes", 0),
-            "exercises": w.get("exercises", []),
+            "exercises": _history_exercises_with_rpe_provenance(w.get("exercises", [])),
             "total_sets": total_sets,
             "total_volume": round(total_volume),
             "notes": w.get("notes", ""),
@@ -16932,7 +16978,7 @@ def all_history():
             "date": w.get("date", ""),
             "session_type": w.get("session_type", "general"),
             "duration_minutes": w.get("duration_minutes", 0),
-            "exercises": w.get("exercises", []),
+            "exercises": _history_exercises_with_rpe_provenance(w.get("exercises", [])),
             "total_sets": total_sets,
             "total_volume": round(total_volume),
             "notes": w.get("notes", ""),
@@ -17178,6 +17224,7 @@ def complete_workout():
                 set_row["notes"] = set_notes
             else:
                 set_row.pop("notes", None)
+            _normalize_set_rpe(set_row)
             if not set_row.get("set_number"):
                 set_row["set_number"] = set_idx + 1
 
@@ -17428,10 +17475,19 @@ def complete_workout():
         existing_fingerprint = (existing_by_client_id.get("offline_sync") or {}).get("fingerprint")
         existing_fingerprint = existing_fingerprint or _workout_sync_fingerprint(existing_by_client_id)
         accepted_fingerprints = {sync_fingerprint}
+        legacy_rpe_entry = copy.deepcopy(workout_entry)
+        for exercise in legacy_rpe_entry.get("exercises") or []:
+            for set_row in exercise.get("sets") or []:
+                set_row.pop("rpe_observed", None)
+                if set_row.get("rpe") is None:
+                    set_row.pop("rpe", None)
+        accepted_fingerprints.add(_workout_sync_fingerprint(legacy_rpe_entry))
         if not fatigue_provided and existing_by_client_id.get("overall_fatigue") == 5:
-            legacy_entry = dict(workout_entry)
-            legacy_entry["overall_fatigue"] = 5
-            accepted_fingerprints.add(_workout_sync_fingerprint(legacy_entry))
+            legacy_fatigue_entry = copy.deepcopy(workout_entry)
+            legacy_fatigue_entry["overall_fatigue"] = 5
+            accepted_fingerprints.add(_workout_sync_fingerprint(legacy_fatigue_entry))
+            legacy_rpe_entry["overall_fatigue"] = 5
+            accepted_fingerprints.add(_workout_sync_fingerprint(legacy_rpe_entry))
         if existing_fingerprint in accepted_fingerprints:
             return _workout_already_synced_response(
                 existing_by_client_id,
@@ -18049,8 +18105,8 @@ def _last_n_sessions_rpe(n=3):
         r=[]
         for ex in (w.get('exercises') or []):
             for s in (ex.get('sets') or []):
-                try:r.append(float(s.get('rpe')))
-                except Exception:pass
+                observed = _observed_set_rpe(s)
+                if observed is not None: r.append(observed)
         if r: vals.append(sum(r)/len(r))
         if len(vals)>=n: break
     return vals
