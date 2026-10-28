@@ -15045,6 +15045,8 @@ def oura_sleep_summary():
                 "avg_heart_rate": avg_hr,
             },
             "consistency": {
+                "bedtime_circular_std_dev_min": bedtime_variance,
+                # Compatibility alias for clients predating FIT-337.
                 "bedtime_variance_min": bedtime_variance,
                 "status": consistency_status,
             },

@@ -5,6 +5,7 @@ Creates oura_sleep table and syncs all available sleep data from Oura API.
 
 import os
 import json
+import math
 import sqlite3
 import urllib.request
 from datetime import datetime, timedelta
@@ -233,7 +234,7 @@ def get_sleep_range(db_path: str, start_date: str, end_date: str, long_sleep_onl
 
 
 def calculate_bedtime_variance(db_path: str, days: int = 7):
-    """Calculate bedtime consistency (variance in minutes)."""
+    """Calculate circular population standard deviation in bedtime minutes."""
     end = datetime.now().date()
     start = end - timedelta(days=days - 1)
 
@@ -257,10 +258,18 @@ def calculate_bedtime_variance(db_path: str, days: int = 7):
     if len(bedtimes) < 2:
         return None
 
-    # Calculate variance
-    mean = sum(bedtimes) / len(bedtimes)
-    variance = sum((x - mean) ** 2 for x in bedtimes) / len(bedtimes)
-    std_dev = variance ** 0.5
+    angles = [minutes * math.tau / (24 * 60) for minutes in bedtimes]
+    mean_cos = sum(math.cos(angle) for angle in angles) / len(angles)
+    mean_sin = sum(math.sin(angle) for angle in angles) / len(angles)
+    mean_resultant_length = math.hypot(mean_cos, mean_sin)
+
+    # Opposite times have no defined circular mean or finite dispersion.
+    if mean_resultant_length < 1e-12:
+        return None
+
+    mean_resultant_length = min(mean_resultant_length, 1.0)
+    std_dev_radians = math.sqrt(-2 * math.log(mean_resultant_length))
+    std_dev = std_dev_radians * (24 * 60) / math.tau
 
     return int(round(std_dev))
 
@@ -287,7 +296,7 @@ if __name__ == "__main__":
     for record in latest:
         print(f"  {record['day']}: {record['total_sleep_min']}min, score={record['sleep_score']}")
 
-    # Bedtime variance
+    # Bedtime circular standard deviation
     variance = calculate_bedtime_variance(db_path, days=7)
     if variance:
-        print(f"\n⏰ Bedtime consistency: ±{variance} min variance")
+        print(f"\n⏰ Bedtime consistency: {variance} min circular standard deviation")
