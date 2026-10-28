@@ -52,7 +52,7 @@ The Markdown export route is intended for workout history export. The current UI
 | `height_in` | number | Yes | none | 48 to 96 | Height in inches. |
 | `neck_in` | number | Yes | none | 8 to 30 | Neck circumference in inches. |
 | `waist_in` | number | Yes | none | 18 to 80 | Waist circumference in inches. |
-| `hip_in` | number | Required only when `sex == "female"` | none | 20 to 80 | Hip circumference for female formula. |
+| `hip_in` | number | Required only when `sex == "female"` | none | 18 to 80 (same range as stored `hips_in`) | Hip circumference for female formula; saved as `hips_in`. |
 | `body_fat_pct` | number | Response | clamped | 3.0 to 60.0 after formula | Estimated Navy body-fat percentage. |
 
 ### Body History and Recomposition Response
