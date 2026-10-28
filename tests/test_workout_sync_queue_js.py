@@ -141,3 +141,32 @@ def test_frontend_asset_versions_stay_in_sync():
     assert "const CACHE_NAME = 'fitness-dashboard-v20260713-fit233-adaptation-polling';" in APP_SW
     assert "const ACTIVE_WORKOUT_DRAFT_KEY = 'fit168:active-workout-draft:v1';" in APP_JS
     assert "const ACTIVE_WORKOUT_DRAFT_VERSION = 1;" in APP_JS
+
+
+def test_active_workout_draft_storage_failure_keeps_session_and_shows_warning():
+    output = run_app_js(
+        ["saveActiveWorkoutDraft", "state"],
+        """
+const warning = { hidden: true, textContent: '' };
+sandbox.elements['active-workout-persistence-warning'] = warning;
+sandbox.localStorage.setItem = () => { throw new Error('QuotaExceededError'); };
+sandbox.__fitSet.currentActiveWorkoutDraftScope(() => 'user:fit298');
+const activeWorkout = { id: 'workout-fit298', focus: 'Full Body', dirty: true, exercises: [] };
+e.state.activeWorkout = activeWorkout;
+e.saveActiveWorkoutDraft({ syncDom: false });
+process.stdout.write(JSON.stringify({
+  sameWorkout: e.state.activeWorkout === activeWorkout,
+  warningHidden: warning.hidden,
+  warningText: warning.textContent,
+}));
+""",
+        mocks=["currentActiveWorkoutDraftScope"],
+    )
+
+    assert output == {
+        "sameWorkout": True,
+        "warningHidden": False,
+        "warningText": (
+            "This workout still works, but it cannot be recovered after closing or reloading this page."
+        ),
+    }
