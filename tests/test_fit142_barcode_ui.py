@@ -210,6 +210,8 @@ def test_barcode_detection_cancellation_after_detect_resolves_does_not_submit():
 sandbox.elements['meal-composer-barcode'] = { hidden: false };
 sandbox.elements['meal-composer-barcode-video'] = { hidden: false, srcObject: null, pause() {} };
 sandbox.elements['meal-composer-barcode-input'] = { value: '' };
+e.mealComposerState.barcodeVideo = sandbox.elements['meal-composer-barcode-video'];
+e.mealComposerState.barcodeInput = sandbox.elements['meal-composer-barcode-input'];
 const track = { stopped: false, stop() { this.stopped = true; } };
 e.mealComposerState.barcodeStream = { getTracks: () => [track] };
 let resolveDetect;

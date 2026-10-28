@@ -10,9 +10,9 @@
         document.body.appendChild(script);
     }
 
-    if (document.readyState === 'complete') {
+    if (document.readyState !== 'loading') {
         window.setTimeout(loadAppBundle, 0);
     } else {
-        window.addEventListener('load', loadAppBundle, { once: true });
+        document.addEventListener('DOMContentLoaded', loadAppBundle, { once: true });
     }
 })();

@@ -50,7 +50,7 @@ Frontend:
 
 - `templates/index.html` - Main app shell with eight tabs, modal stack, sync banner, and dashboard regions.
 - `templates/login.html` - Login/register form rendered by `auth.py`.
-- `static/js/app-loader.js` - Defers loading `static/js/app.js` until window load with a cache-bust version.
+- `static/js/app-loader.js` - Starts the async app bundle once the DOM is ready: immediately when `document.readyState` is no longer `loading`, otherwise on one-shot `DOMContentLoaded`, with a cache-bust version.
 - `static/js/app.js` - SPA controller: data loading, tab switching, charts, forms, workout modal, offline queues, integration setup, push, AI status, and meal review.
 - `static/js/sw.js` - Service worker: no app-shell cache, network-first fetch, offline JSON/HTML failure responses, and low-stakes push display.
 - `static/css/style.css`, `static/css/app.css` - Mobile-first dark analytical UI and scoped app styling.

@@ -114,7 +114,7 @@ Recommendation-engine internals belong to PRD 11. This PRD documents what the us
 ### Initial Dashboard Load
 
 Trigger -> User opens `/` or switches to Dash tab.  
-Behavior -> Server returns `index.html` with `Cache-Control: no-store`; `app-loader.js` waits for window `load` and appends async `app.js`; `renderDashboard()` paints existing cached state immediately, then starts independent fetches for dashboard, Oura status, smart recommendation, and Oura sleep.  
+Behavior -> Server returns `index.html` with `Cache-Control: no-store`; `app-loader.js` starts the async app bundle once the DOM is ready: immediately when `document.readyState` is no longer `loading`, otherwise on one-shot `DOMContentLoaded`; `renderDashboard()` paints existing cached state immediately, then starts independent fetches for dashboard, Oura status, smart recommendation, and Oura sleep.
 Validation -> Each card keeps placeholders until its own data arrives; stale fetch completions are generation-guarded.  
 API -> `/api/dashboard`, `/api/oura/status`, `/api/recommendation/smart`, `/api/oura/sleep-summary`; trends/history load independently.  
 Success -> Cards repaint as data arrives; quick trends paint separately.  

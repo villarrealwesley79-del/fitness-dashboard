@@ -227,7 +227,7 @@ Non-obvious behavior:
 - Content-Length over 18 MB is rejected before parsing multipart.
 - Raw image bytes are read into memory for the request and not persisted server-side.
 - Fresh capture always returns pending review in current code, regardless of high confidence. The policy is still computed and returned for explanation.
-- The `?fit134=mock` frontend URL parameter can generate synthetic V2 review payloads without the backend. This is a frontend mock harness only; production requests still call the real endpoint.
+- The former frontend mock URL has been retired from the production bundle. Browser QA must use explicit test fixtures with an isolated `DATA_DIR`; meal-composer submissions call the real API and can persist inside the selected data directory.
 
 ## 6. Data Model & Persistence
 
