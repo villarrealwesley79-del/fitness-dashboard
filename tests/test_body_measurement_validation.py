@@ -78,7 +78,7 @@ def test_body_history_projects_malformed_legacy_fields_safely(client):
                 "date": "not-a-date",
                 "weight_lbs": 10**1000,
                 "body_fat_pct": float("inf"),
-                "neck_in": "unknown",
+                "neck_in": 900,
                 "waist_in": 900,
                 "chest_in": None,
                 "hips_in": {},
@@ -229,3 +229,24 @@ def test_body_trend_excludes_non_finite_legacy_weights(client):
     )
 
     assert module._body_trend(7) == [{"date": valid_date, "weight_lbs": 180.0}]
+
+
+def test_add_measurement_accepts_left_right_arms_and_legs(client):
+    response = client.post(
+        "/api/add-body-measurement",
+        json={"weight_lbs": 180, "arms": "11.37/13.62", "legs": "22.08/23.85"},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert response.status_code == 200
+    saved = response.get_json()["body_measurement"]
+    assert (saved["arms"], saved["legs"]) == ("11.37/13.62", "22.08/23.85")
+
+
+@pytest.mark.parametrize("field,value", [("arms", "4/13"), ("arms", "11/abc"), ("arms", "1/2/3"), ("legs", "22/51"), ("legs", "nan/20")])
+def test_add_measurement_rejects_bad_left_right_values(client, field, value):
+    response = client.post(
+        "/api/add-body-measurement",
+        json={"weight_lbs": 180, field: value},
+        headers={"X-Requested-With": "XMLHttpRequest"},
+    )
+    assert response.status_code == 400

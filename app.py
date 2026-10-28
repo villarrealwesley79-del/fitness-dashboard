@@ -9857,6 +9857,9 @@ BODY_TAPE_RANGES = {
 }
 
 
+BODY_TAPE_SIDED_FIELDS = ("arms", "legs")
+
+
 def _body_measurement_date_or_none(value):
     if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         return None
@@ -9882,7 +9885,14 @@ def _safe_body_history_entry(raw):
     entry["weight_lbs"] = _body_measurement_number_or_none(entry.get("weight_lbs"), 50.0, 1000.0)
     entry["body_fat_pct"] = _body_measurement_number_or_none(entry.get("body_fat_pct"), 1.0, 60.0)
     for field, (min_v, max_v) in BODY_TAPE_RANGES.items():
-        entry[field] = _body_measurement_number_or_none(entry.get(field), min_v, max_v)
+        value = entry.get(field)
+        # Legacy rows store left/right text such as "11.37/13.62"; keep text, only blank bad numbers.
+        if isinstance(value, str):
+            try:
+                float(value)
+            except ValueError:
+                continue
+        entry[field] = _body_measurement_number_or_none(value, min_v, max_v)
     return entry
 
 
@@ -9921,7 +9931,15 @@ def add_body_measurement():
         return api_error("date must be a valid YYYY-MM-DD date", 400, code="invalid_field")
     tape_values = {}
     for field, (min_v, max_v) in BODY_TAPE_RANGES.items():
-        value, err2 = _coerce_float(data.get(field), field, min_v=min_v, max_v=max_v, allow_none=True)
+        raw_value = data.get(field)
+        if field in BODY_TAPE_SIDED_FIELDS and isinstance(raw_value, str) and "/" in raw_value:
+            sides = raw_value.split("/")
+            parsed = [_body_measurement_number_or_none(side, min_v, max_v) for side in sides] if len(sides) == 2 else [None]
+            if None in parsed:
+                return api_error(f"{field} must be a number or left/right numbers between {min_v} and {max_v}", 400, code="invalid_field")
+            tape_values[field] = f"{parsed[0]:g}/{parsed[1]:g}"
+            continue
+        value, err2 = _coerce_float(raw_value, field, min_v=min_v, max_v=max_v, allow_none=True)
         if err2:
             return err2
         if value is not None and not math.isfinite(value):
