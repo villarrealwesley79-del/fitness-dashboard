@@ -127,11 +127,6 @@ def test_recommendation_smart_route_shape_without_server_or_cookie(fitness_app, 
     )
     freshness_probe = Mock(return_value=freshness)
     monkeypatch.setattr(fitness_app, "_compute_data_freshness", freshness_probe)
-    monkeypatch.setattr(
-        fitness_app,
-        "_latest_oura_freshness",
-        lambda *_args, **_kwargs: ("fresh", "2026-05-18", "2026-05-18T07:00:00"),
-    )
 
     response = fitness_app.app.test_client().get("/api/recommendation/smart")
 
@@ -192,7 +187,6 @@ def _stub_smart_recommendation_dependencies(monkeypatch, fitness_app, *, oura_ro
         lambda *_args, **_kwargs: {"bonus_points": 0},
     )
     monkeypatch.setattr(fitness_app, "_compute_data_freshness", lambda *_args, **_kwargs: _freshness_payload())
-    monkeypatch.setattr(fitness_app, "_latest_oura_freshness", lambda *_args, **_kwargs: ("missing", None, None))
     monkeypatch.setattr(fitness_app, "_nutrition_context_for_date", lambda *_args, **_kwargs: {"warnings": []})
     monkeypatch.setattr(fitness_app, "_food_log_entries_for_context", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(fitness_app, "_workout_looks_hard", lambda *_args, **_kwargs: False)
@@ -216,11 +210,6 @@ def test_recommendation_smart_reports_stale_oura_inputs_it_still_consumes(fitnes
         "last_sync_attempt": "2026-05-01T07:00:00",
     }
     monkeypatch.setattr(fitness_app, "_compute_data_freshness", lambda *_args, **_kwargs: stale)
-    monkeypatch.setattr(
-        fitness_app,
-        "_latest_oura_freshness",
-        lambda *_args, **_kwargs: ("stale", "2026-05-01", "2026-05-01T07:00:00"),
-    )
 
     payload = fitness_app.app.test_client().get("/api/recommendation/smart").get_json()
 

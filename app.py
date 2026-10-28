@@ -15856,7 +15856,6 @@ def smart_recommendation_api():
     acwr_data = calculate_acwr(WORKOUTS)
     sleep_debt = calculate_sleep_debt(OURA_DB_FILE, days=7)
     recovery_bonus = calculate_recovery_bonus(RECOVERY_DATA, hours=48)
-    direct_oura_status, _direct_oura_date, _direct_oura_sync = _latest_oura_freshness()
     # FIT-271 is provenance-only: preserve the established deterministic
     # consumption of cached Oura factors and report their direct freshness.
     oura_usable = any((
@@ -16088,7 +16087,7 @@ def smart_recommendation_api():
                 hard_training_planned=_workout_looks_hard(next_workout),
                 food_log_entries=food_log_entries,
             )
-    next_workout_before_whoop = copy.deepcopy(next_workout)
+    next_workout_before_whoop = copy.deepcopy(next_workout or {})
     whoop_adjusted = apply_wearable_modifiers(
         recommendation,
         next_workout,
@@ -16267,7 +16266,7 @@ def smart_recommendation_api():
     source_inputs = {
         "open_wearables_modifier_applied": bool(open_wearables_modifier.get("applied")),
         "oura_fields": oura_fields,
-        "oura_status": direct_oura_status,
+        "oura_status": (freshness.get("oura") or {}).get("status"),
         "oura_used_override": bool(oura_fields),
         "oura_modifier_applied": _oura_modifier_rule_applied(
             recommendation_readiness,
