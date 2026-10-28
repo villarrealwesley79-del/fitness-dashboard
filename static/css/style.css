@@ -109,88 +109,6 @@ h2, h3, h4 { margin: 0; color: var(--fg-0); }
 
 .app-header-left { display: flex; align-items: center; gap: 12px; }
 
-.app-header-ai {
-    width: 36px; height: 36px;
-    border-radius: 10px;
-    background: rgba(51,65,85,0.4);
-    border: 1px solid var(--border-1);
-    color: var(--fg-2);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-    transition: background .15s, border-color .15s;
-}
-.app-header-ai:hover { background: rgba(96,165,250,0.12); border-color: var(--accent-blue); }
-.ai-dot {
-    width: 10px; height: 10px;
-    border-radius: 999px;
-    background: var(--fg-dimmer);
-    box-shadow: 0 0 0 0 rgba(100, 116, 139, 0);
-    transition: background .3s, box-shadow .3s;
-}
-.ai-dot.ok { background: var(--accent-green); box-shadow: 0 0 12px rgba(34,197,94,0.55); }
-.ai-dot.warn { background: var(--accent-amber); box-shadow: 0 0 10px rgba(245,158,11,0.45); }
-.ai-dot.err { background: var(--accent-red); box-shadow: 0 0 10px rgba(239,68,68,0.45); }
-
-.popover-ai {
-    position: fixed;
-    top: calc(var(--safe-top) + 58px);
-    right: 12px;
-    z-index: 60;
-    width: min(320px, calc(100vw - 24px));
-    background: linear-gradient(180deg, #131f3a 0%, #0f172a 100%);
-    border: 1px solid var(--border-2);
-    border-radius: 14px;
-    box-shadow: 0 20px 40px rgba(0,0,0,0.5);
-    padding: 14px 14px 12px;
-    color: var(--fg-1);
-}
-.popover-ai[hidden] { display: none; }
-.popover-arrow {
-    position: absolute;
-    top: -6px; right: 12px;
-    width: 12px; height: 12px;
-    background: #131f3a;
-    border-left: 1px solid var(--border-2);
-    border-top: 1px solid var(--border-2);
-    transform: rotate(45deg);
-}
-.popover-title {
-    font-size: 12px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--fg-dim);
-    margin-bottom: 10px;
-}
-.popover-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px 14px;
-    margin-bottom: 8px;
-}
-.pop-label {
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--fg-dimmer);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-}
-.pop-value {
-    font-size: 15px;
-    font-weight: 700;
-    color: var(--fg-0);
-    margin-top: 2px;
-}
-.popover-foot {
-    font-size: 11px;
-    color: var(--fg-dim);
-    padding-top: 8px;
-    border-top: 1px solid var(--border-1);
-    margin-top: 4px;
-}
-
 .app-header-title {
     font-size: 17px;
     font-weight: 700;
@@ -1548,31 +1466,6 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 .state-chip.stale { color: #f87171; background: rgba(248,113,113,0.1); border-color: rgba(248,113,113,0.35); }
 .state-chip.unknown { color: var(--fg-dimmer); background: rgba(51,65,85,0.25); border-color: var(--border-2); font-style: italic; }
 
-/* FIT-166: AI coach card headline row. Surfaces the active host's
-   friendly name (ASUS GX10 / Mac Studio) alongside a one-word state
-   chip so the operator can read routing health at a glance. Sits
-   above the per-host rows; keeps the same density as other settings
-   rows so the card stays scannable at 390x844. */
-.ai-coach-headline-row { padding-top: 10px; padding-bottom: 12px; }
-.ai-coach-headline {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--fg-0);
-    flex-wrap: wrap;
-}
-.ai-coach-headline-sep { color: var(--fg-dimmer); padding: 0 1px; }
-.ai-role-pill {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0;
-    text-transform: uppercase;
-    color: var(--fg-dim);
-    padding: 1px 6px;
-    border: 1px solid var(--border-2);
-    border-radius: 4px;
-    background: rgba(51,65,85,0.25);
-}
-
 /* FIT-111: smaller chip variant used in settings group headers
    (e.g. "2 fresh · 0 stale"). Keeps the same color tokens as the
    full-size chip but fits beside group labels. */
@@ -1864,7 +1757,6 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
 }
 .adjust-kind-changed   { background: rgba(34,197,94,0.14);  color: #a7f3d0; border-color: rgba(34,197,94,0.4); }
 .adjust-kind-unchanged { background: rgba(251,191,36,0.14); color: var(--accent-amber-2); border-color: rgba(245,158,11,0.4); }
-.adjust-kind-refused   { background: rgba(96,165,250,0.14); color: var(--accent-blue); border-color: rgba(96,165,250,0.4); }
 .adjust-restored-banner {
     display: flex;
     align-items: center;
@@ -1995,8 +1887,7 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     margin-top: 10px;
 }
 
-.analyze-section { margin-bottom: 14px; }
-.analyze-label {
+.workout-detail-label {
     font-size: 10px;
     font-weight: 800;
     letter-spacing: 0.12em;
@@ -2004,59 +1895,6 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     text-transform: uppercase;
     margin-bottom: 6px;
 }
-.analyze-summary {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--fg-0);
-    line-height: 1.45;
-    padding: 10px 12px;
-    border-radius: 10px;
-    background: linear-gradient(135deg, rgba(34,211,238,0.08), rgba(96,165,250,0.08));
-    border: 1px solid rgba(34,211,238,0.22);
-}
-.analyze-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-.analyze-list li {
-    font-size: 13px;
-    color: var(--fg-1);
-    line-height: 1.45;
-    padding: 8px 10px 8px 28px;
-    border-radius: 8px;
-    border: 1px solid var(--border-1);
-    background: rgba(15,23,42,0.6);
-    position: relative;
-}
-.analyze-list li::before {
-    position: absolute;
-    left: 10px;
-    top: 8px;
-    font-weight: 800;
-    font-size: 13px;
-}
-.analyze-list.ok li::before { content: '✓'; color: var(--accent-green); }
-.analyze-list.warn li::before { content: '!'; color: var(--accent-amber); }
-.analyze-list:empty { display: none; }
-.analyze-comparison,
-.analyze-cue {
-    font-size: 13px;
-    color: var(--fg-1);
-    line-height: 1.5;
-    padding: 10px 12px;
-    border-radius: 10px;
-    background: rgba(15,23,42,0.6);
-    border: 1px solid var(--border-1);
-}
-.analyze-cue {
-    border-color: rgba(168,85,247,0.28);
-    background: rgba(168,85,247,0.06);
-}
-.analyze-note-context,
 .workout-note {
     font-size: 13px;
     color: var(--fg-1);
@@ -2066,37 +1904,12 @@ input[type="range"] { accent-color: var(--accent-blue); width: 120px; }
     background: rgba(34,197,94,0.06);
     border: 1px solid rgba(34,197,94,0.22);
 }
-.analyze-meta {
-    font-size: 11px;
-    color: var(--fg-dimmer);
-    text-align: right;
-    margin-top: 4px;
-}
-.ex-analyze-btn {
-    background: rgba(51,65,85,0.45);
-    border: 1px solid var(--border-2);
-    border-radius: 6px;
-    color: var(--fg-dim);
-    padding: 3px 7px;
-    font-size: 11px;
-    font-weight: 700;
-    cursor: pointer;
-    margin-left: 6px;
-    flex-shrink: 0;
-    letter-spacing: 0.04em;
-}
-.ex-analyze-btn:hover {
-    background: rgba(34,211,238,0.12);
-    border-color: var(--accent-cyan);
-    color: var(--accent-cyan);
-}
 .w-row { cursor: pointer; }
 .w-row:focus-visible {
     outline: 2px solid var(--accent-blue);
     outline-offset: 2px;
     border-radius: 8px;
 }
-.w-analyze-wrap { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
 
 .workout-detail-kpis {
     display: grid;

@@ -104,7 +104,6 @@ from whoop_store import (
     upsert_whoop_records,
     project_whoop_daily_facts,
 )
-from ai_fact_query import answer_fact_question, build_ai_fact_context, create_pending_suggestion
 from history_normalization import canonical_training_category, normalize_history_item
 from open_wearables_adapter import (
     build_open_wearables_status,
@@ -161,14 +160,6 @@ try:
 except Exception as _e:
     print(f"WARN: apple_health_parser routes not registered: {_e}")
 
-# ── AI coach layer (LM Studio adapter) ──
-try:
-    import lm_studio_adapter as _lm_studio
-except Exception as _e:
-    print(f"WARN: lm_studio_adapter not loaded: {_e}")
-    _lm_studio = None
-
-
 # ==================== DATA PERSISTENCE ====================
 # Store runtime data under DATA_DIR when configured, otherwise next to the app.
 JSON_DATA_LOCK = threading.RLock()
@@ -188,7 +179,6 @@ WEARABLE_FACTS_DB_FILE = data_path("wearable_facts.sqlite3")
 OPEN_WEARABLES_CONFIG_FILE = data_path("open_wearables_config.json")
 WHOOP_CSV_MAX_BYTES = 512 * 1024
 WHOOP_CSV_MAX_ROWS = 5000
-AI_PENDING_SUGGESTIONS = {}
 
 # ==================== WEATHER (wttr.in) ====================
 # Lightweight cache to avoid hammering the free endpoint.
@@ -266,25 +256,6 @@ def _json_restore_sequence(target, value):
         target.update(value)
     else:
         target.extend(value)
-
-
-def _notify_workout_logged(workout_entry):
-    """Fire-and-forget: run workout analysis and write to pending file for OpenClaw pickup."""
-    import threading, subprocess
-    def _do():
-        try:
-            result = subprocess.run(
-                ['python3', os.path.expanduser('~/.openclaw/workspace/scripts/workout-analysis.py')],
-                capture_output=True, text=True, timeout=15
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                analysis_path = os.path.expanduser('~/.openclaw/workspace/.pending-workout-analysis.txt')
-                with open(analysis_path, 'w') as f:
-                    f.write(result.stdout.strip())
-                print(f"[fitness] Analysis written to {analysis_path} — cron will pick it up")
-        except Exception as e:
-            print(f"[fitness] Workout notification failed (non-fatal): {e}")
-    threading.Thread(target=_do, daemon=True).start()
 
 
 # ==================== TRAINING GOAL CONFIGURATION ====================
@@ -2534,44 +2505,7 @@ def _deterministic_swap_candidate(typed_name, candidates):
 
 def _resolve_custom_swap_exercise(typed_name, old_ex, equipment_pref):
     candidates = _swap_resolution_candidates(old_ex, equipment_pref)
-    deterministic = _deterministic_swap_candidate(typed_name, candidates)
-    if deterministic:
-        return deterministic
-    if _is_ambiguous_single_swap_token(typed_name):
-        return None
-
-    if not _lm_studio or not hasattr(_lm_studio, "resolve_swap_candidate") or not candidates:
-        return None
-
-    candidate_payload = [
-        {
-            "name": exercise.get("name"),
-            "equipment": exercise.get("equipment"),
-            "aliases": exercise.get("aliases") or [],
-            "compound": bool(exercise.get("compound")),
-        }
-        for exercise in candidates
-    ]
-    try:
-        resolution = _lm_studio.resolve_swap_candidate(
-            typed_name,
-            current_exercise=old_ex.get("exercise") or "",
-            target_muscle=(old_ex.get("muscle") or "").lower(),
-            candidates=candidate_payload,
-        )
-    except _lm_studio.LmStudioError as exc:
-        print(f"WARN: swap resolver LLM failed: {exc}")
-        return None
-
-    canonical_name = resolution.get("canonical_name") if isinstance(resolution, dict) else None
-    if not canonical_name:
-        return None
-
-    wanted = _normalize_exercise_name(canonical_name)
-    for exercise in candidates:
-        if _normalize_exercise_name(exercise.get("name")) == wanted:
-            return exercise
-    return None
+    return _deterministic_swap_candidate(typed_name, candidates)
 
 
 def _adjust_target_phrase(constraint):
@@ -2846,12 +2780,13 @@ def _deterministic_adjust_payload(
     oura_readiness,
     equipment_pref,
     reason,
+    intent=None,
 ):
     patched = _copy_workout_plan_cas_identity(
         recommendation,
         json.loads(json.dumps(recommendation, default=str)),
     )
-    intent = _merge_deterministic_adjust_swap({}, deterministic_swap)
+    intent = _merge_deterministic_adjust_swap(intent, deterministic_swap)
     patched, applied_notes, skipped_notes = _apply_intent_patch(
         patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
     )
@@ -2860,7 +2795,7 @@ def _deterministic_adjust_payload(
         result_kind,
         applied_notes,
         skipped_notes,
-        "Applied the recognized exercise request without the local coach model.",
+        "Applied the requested change.",
     )
     return {
         "status": "ok",
@@ -5220,7 +5155,6 @@ def add_workout():
     save_json(WORKOUTS_FILE, WORKOUTS)
     LAST_WORKOUT_RECOMMENDATION = None
     delete_current_workout_plan(_current_data_user_id())
-    _notify_workout_logged(entry)
     return jsonify({"status": "success", "workout": entry})
 
 
@@ -5840,161 +5774,10 @@ def swap_workout_exercise():
     return jsonify({"status": "success", "recommendation": _workout_with_display_and_auth_scope(recommendation)})
 
 
-# ==================== AI COACH — ADJUST PLAN ====================
-# AI coach adjustment spec:
-# - LLM returns intent only; Python re-picks exercises and enforces safety.
-# - RPE delta max ±1.0; sets delta max ±20%; weight cap +10% over recent e1RM.
-# - Hard blacklist soreness/readiness-flagged muscles. Never override deload.
-# - Timeout 8s. One concurrent request. Deterministic fallback on any failure.
-# - Cache by workout_id + constraint + readiness_date + model_version + schema/library hash.
-
-_ADJUST_CACHE_DB = os.path.join(DATA_DIR, "ai_coach_cache.sqlite3")
-_ADJUST_CACHE_VERSION = "fit265-honest-adjust-v2"
-
-
-def _ai_cache_init():
-    conn = sqlite3.connect(_ADJUST_CACHE_DB)
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS adjust_cache (
-            cache_key TEXT PRIMARY KEY,
-            created_at TEXT NOT NULL,
-            response_json TEXT NOT NULL
-        )"""
-    )
-    # Observability so remote inference flakiness shows up before user impact.
-    # files a bug. One row per /api/workout/adjust call.
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS adjust_metrics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL,
-            outcome TEXT NOT NULL,
-            latency_ms INTEGER NOT NULL DEFAULT 0,
-            constraint_len INTEGER NOT NULL DEFAULT 0,
-            model_version TEXT NOT NULL DEFAULT '',
-            reason TEXT NOT NULL DEFAULT ''
-        )"""
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_adjust_metrics_ts ON adjust_metrics(ts)")
-    conn.commit()
-    conn.close()
-
-
-_ai_cache_init()
-
-
-def _ai_metric_log(outcome, latency_ms=0, constraint_len=0, model_version="", reason=""):
-    """Record one /api/workout/adjust call. Swallow errors — metrics must
-    never break the user-visible path."""
-    try:
-        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
-            conn.execute(
-                "INSERT INTO adjust_metrics (ts, outcome, latency_ms, constraint_len, model_version, reason) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    datetime.now().isoformat(timespec="seconds"),
-                    outcome,
-                    int(latency_ms or 0),
-                    int(constraint_len or 0),
-                    model_version or "",
-                    (reason or "")[:200],
-                ),
-            )
-            conn.commit()
-    except Exception as exc:
-        print(f"WARN: ai_metric_log failed: {exc}")
-
-
-def _exercise_library_hash(preference: str) -> str:
-    import hashlib
-    settings_fp = {
-        "equipment_preference": preference,
-        "preferred_equipment_brands": USER_SETTINGS.get("preferred_equipment_brands", []),
-        "excluded_exercises": USER_SETTINGS.get("excluded_exercises", []),
-        "exercises": [
-            {
-                "name": ex.get("name", ""),
-                "equipment": ex.get("equipment", ""),
-                "equipment_brands": ex.get("equipment_brands", []),
-                "compound": bool(ex.get("compound")),
-                "joints_loaded": ex.get("joints_loaded", []),
-                "aliases": ex.get("aliases", []),
-                "movement_patterns": ex.get("movement_patterns", []),
-                "movement_pattern": ex.get("movement_pattern", ""),
-                "body_position": ex.get("body_position", ""),
-                "shoulder_position": ex.get("shoulder_position", ""),
-                "primary_emphasis": ex.get("primary_emphasis", ""),
-                "match_tokens": ex.get("match_tokens", []),
-                "confusable_with": ex.get("confusable_with", []),
-                "disambiguation": ex.get("disambiguation", ""),
-            }
-            for ex in _filtered_exercise_library(preference)
-        ],
-    }
-    payload = json.dumps(settings_fp, sort_keys=True, default=str)
-    return hashlib.sha1(payload.encode()).hexdigest()[:12]
-
-
-def _ai_cache_key(recommendation, constraint, readiness_date, model_version, equipment_pref):
-    """Hash of workout-content + constraint + model + library so edits to the
-    recommendation (swaps, adjustments) invalidate the cache properly."""
-    import hashlib
-    # Fingerprint the actual plan content so a swap or prior adjust changes
-    # the key, not just the workout id (which often stays constant).
-    content_fp = json.dumps({
-        "focus": recommendation.get("focus"),
-        "goal": recommendation.get("goal") or recommendation.get("goal_name"),
-        "estimated_minutes": recommendation.get("estimated_minutes"),
-        "exercises": [
-            {
-                "name": ex.get("exercise") or ex.get("machine") or ex.get("name"),
-                "muscle": ex.get("muscle") or ex.get("muscle_group"),
-                "target_sets": ex.get("target_sets") or ex.get("sets"),
-                "target_reps": ex.get("target_reps") or ex.get("reps"),
-                "target_weight": ex.get("target_weight") or ex.get("target_weight_lbs"),
-                "rpe_target": ex.get("rpe_target") or ex.get("rpe"),
-            }
-            for ex in (recommendation.get("exercises") or [])
-        ],
-        "cardio_type": (recommendation.get("cardio") or {}).get("type"),
-    }, default=str, sort_keys=True)
-    parts = [
-        _ADJUST_CACHE_VERSION,
-        str(recommendation.get("id") or ""),
-        hashlib.sha1(content_fp.encode()).hexdigest()[:16],
-        (constraint or "").strip().lower(),
-        readiness_date or "",
-        model_version or "",
-        _exercise_library_hash(equipment_pref),
-    ]
-    return hashlib.sha1("|".join(parts).encode()).hexdigest()
-
-
-def _ai_cache_get(key):
-    try:
-        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
-            row = conn.execute(
-                "SELECT response_json FROM adjust_cache WHERE cache_key = ?", (key,)
-            ).fetchone()
-        return json.loads(row[0]) if row else None
-    except Exception:
-        return None
-
-
-def _ai_cache_put(key, payload):
-    try:
-        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO adjust_cache (cache_key, created_at, response_json) VALUES (?, ?, ?)",
-                (key, datetime.now().isoformat(), json.dumps(payload)),
-            )
-            conn.commit()
-    except Exception as exc:
-        print(f"WARN: adjust_cache write failed: {exc}")
-
-
 def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref):
-    """Apply the LLM's intent patch to the deterministic recommendation.
+    """Apply a deterministic preset/manual intent patch to the recommendation.
 
-    Every mutation is clamped/validated here. The LLM cannot override safety.
+    Every mutation is clamped/validated here, so an intent cannot override safety.
     Returns (patched_recommendation, applied_notes, skipped_notes). Applied
     notes describe actual mutations; skipped notes describe rejected no-ops.
     """
@@ -6301,21 +6084,27 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     # ── 8) Duration cap — if user gave a tight time box, trim tail exercises.
     duration_cap = float(intent.get("duration_cap_min") or 0)
     if duration_cap and duration_cap > 0:
-        budget = duration_cap - 10  # warmup+cooldown
+        # Included cardio (no include_cardio key) stays in the session unless dropped below.
+        cardio = recommendation.get("cardio") or {}
+        keep_cardio = cardio.get("include_cardio", True) is not False and not intent.get("drop_cardio")
+        cardio_min = float(cardio.get("duration_minutes") or 0) if keep_cardio else 0
+        budget = duration_cap - 10 - cardio_min  # warmup+cooldown
         minutes_used = 0
         kept = []
         for ex in exercises:
             ex_minutes = float(ex.get("target_sets") or 3) * time_per_set
-            if minutes_used + ex_minutes > budget:
+            if kept and minutes_used + ex_minutes > budget:  # always keep one exercise
                 break
             minutes_used += ex_minutes
             kept.append(ex)
+        new_estimated_minutes = int(minutes_used + 10 + cardio_min)
         if len(kept) < len(exercises):
-            dropped = [ex.get("exercise") or ex.get("name") or "exercise" for ex in exercises[len(kept):]]
-            applied_notes.append(f"Trimmed: {', '.join(dropped)} — fits {int(duration_cap)} min window")
+            dropped = ", ".join(ex.get("exercise") or ex.get("name") or "exercise" for ex in exercises[len(kept):])
+            fits = new_estimated_minutes <= duration_cap
+            tail = f"fits {int(duration_cap)} min window" if fits else f"kept the first exercise; shortest plan is {new_estimated_minutes} min"
+            applied_notes.append(f"Trimmed: {dropped} — {tail}")
             exercises = kept
         old_estimated_minutes = recommendation.get("estimated_minutes")
-        new_estimated_minutes = int(minutes_used + 10)
         recommendation["estimated_minutes"] = new_estimated_minutes
         if old_estimated_minutes != new_estimated_minutes:
             applied_notes.append(
@@ -6323,7 +6112,9 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             )
 
     # ── 9) Drop cardio if requested.
-    if intent.get("drop_cardio") and recommendation.get("cardio") is not None:
+    cardio = recommendation.get("cardio")
+    # Included cardio has no include_cardio key; only the skip shapes carry False.
+    if intent.get("drop_cardio") and cardio and cardio.get("include_cardio", True) is not False:
         recommendation["cardio"] = None
         applied_notes.append("Removed: Cardio finisher — per your request")
 
@@ -6331,17 +6122,47 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
     return recommendation, applied_notes, skipped_notes
 
 
+_ADJUST_NUMBER_BOUNDS = {"rpe_delta": (-1.0, 1.0), "sets_delta_pct": (-20.0, 20.0), "duration_cap_min": (10, 240)}
+
+
+def _coerce_adjust_intent(raw):
+    """Validate the optional preset edit sent with an adjust request."""
+    if raw is None:
+        return {}, None
+    bad = lambda msg: (None, api_error(msg, 400, code="invalid_intent"))
+    if not isinstance(raw, dict):
+        return bad("intent must be an object")
+    unknown = set(raw) - set(_ADJUST_NUMBER_BOUNDS) - {"drop_cardio", "avoid_muscles"}
+    if unknown:
+        return bad(f"unknown intent field: {sorted(unknown)[0]}")
+    intent = {}
+    for key, (low, high) in _ADJUST_NUMBER_BOUNDS.items():
+        if key in raw:
+            value = raw[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+                return bad(f"{key} must be a number from {low} to {high}")
+            intent[key] = value
+    if "drop_cardio" in raw:
+        if not isinstance(raw["drop_cardio"], bool):
+            return bad("drop_cardio must be true or false")
+        intent["drop_cardio"] = raw["drop_cardio"]
+    if "avoid_muscles" in raw:
+        muscles = raw["avoid_muscles"]
+        if not isinstance(muscles, list) or len(muscles) > 8 or not all(isinstance(m, str) and len(m) <= 32 for m in muscles):
+            return bad("avoid_muscles must be a short list of muscle names")
+        intent["avoid_muscles"] = muscles
+    return intent, None
+
+
 @app.route('/api/workout/adjust', methods=['POST'])
 def adjust_workout():
-    """AI coach adjustment: accept a natural-language constraint and return a
-    safety-validated patch of the current deterministic recommendation.
-
-    On any failure (LM Studio down, bad JSON, anything unexpected) we return
-    the deterministic plan unchanged with status='fallback' so the UI can show
-    a "AI coach unavailable" chip without breaking.
+    """Manual plan adjustment, no model involved: a typed exercise swap
+    ("replace X with Y") or a preset edit sent as `intent` (RPE, sets,
+    time box, cardio, muscles to avoid). Every change goes through
+    _apply_intent_patch, which clamps it and keeps deload and soreness rules.
+    Text that is not a recognised swap returns the plan unchanged with
+    status='fallback'.
     """
-    global LAST_WORKOUT_RECOMMENDATION, LAST_WORKOUT_RECOMMENDATION_FINGERPRINT
-
     data, err = get_json_body(required=True)
     if err:
         return err
@@ -6349,6 +6170,9 @@ def adjust_workout():
     constraint, err2 = _coerce_str(data.get("constraint"), "constraint", required=True, max_len=280)
     if err2:
         return err2
+    client_intent, err3 = _coerce_adjust_intent(data.get("intent"))
+    if err3:
+        return err3
 
     fingerprint = _workout_recommendation_fingerprint()
     recommendation = _current_workout_plan_for_fingerprint(
@@ -6376,284 +6200,34 @@ def adjust_workout():
     meso_plan = MESOCYCLE_PLAN.get(meso_week, MESOCYCLE_PLAN[1])
     oura_readiness = _get_oura_readiness_today()
     equipment_pref = USER_SETTINGS.get("equipment_preference", "machines_only")
-    deterministic_swap = _build_deterministic_adjust_swap(constraint, recommendation, equipment_pref)
+    deterministic_swap = None if client_intent else _build_deterministic_adjust_swap(constraint, recommendation, equipment_pref)
 
-    if not _lm_studio:
-        if deterministic_swap:
-            payload = _deterministic_adjust_payload(
-                recommendation,
-                constraint,
-                deterministic_swap,
-                goal_params,
-                meso_week,
-                meso_plan,
-                oura_readiness,
-                equipment_pref,
-                "adapter_missing",
-            )
-            persisted = _persist_current_workout_plan(
-                payload["recommendation"],
-                fingerprint,
-                customized=payload.get("result_kind") == "changed",
-            )
-            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
-                return api_error(
-                    "Workout plan changed while this request was in progress. Refresh and retry.",
-                    409,
-                    code="workout_plan_conflict",
-                )
-            payload["recommendation"] = persisted or payload["recommendation"]
-            _ai_metric_log("ok", reason="deterministic_fallback: adapter_missing", constraint_len=len(constraint))
-            return jsonify(_payload_with_recommendation_display_scope(payload))
-        _ai_metric_log("fallback", reason="adapter_missing", constraint_len=len(constraint))
+    if not (client_intent or deterministic_swap):
         return jsonify({
             "status": "fallback",
-            "reason": "LM Studio adapter not available on this server",
+            "reason": "No exercise swap recognised in that request",
             "recommendation": _workout_with_display_and_auth_scope(recommendation),
             "summary": None,
             "applied_notes": [],
             "skipped_notes": [],
         })
 
-    readiness_date = _today_str()
-    route_candidate = _lm_studio.active_candidate()
-    route_model_version = _lm_studio.model_version_for(route_candidate)
-    cache_key = None
-    cache_probe_versions = [route_model_version]
-    if route_candidate and route_candidate.get("role") == "primary":
-        cache_probe_versions.extend(_lm_studio.model_versions_after(route_candidate))
-    elif route_candidate is None:
-        cache_probe_versions.extend(_lm_studio.fallback_model_versions())
-    for probe_model_version in dict.fromkeys(cache_probe_versions):
-        probe_cache_key = _ai_cache_key(
-            recommendation,
-            constraint,
-            readiness_date,
-            probe_model_version,
-            equipment_pref,
-        )
-        if probe_model_version == route_model_version:
-            cache_key = probe_cache_key
-        cached = _ai_cache_get(probe_cache_key)
-        if cached:
-            cached["cache_hit"] = True
-            _ai_metric_log("cache_hit", latency_ms=0, constraint_len=len(constraint), model_version=probe_model_version)
-            # Keep server-side canonical plan in sync with what the client sees,
-            # so a follow-up Adjust or Swap operates on the patched plan, not the
-            # pre-adjust plan that's still in LAST_WORKOUT_RECOMMENDATION.
-            if cached.get("recommendation"):
-                cached_recommendation = _copy_workout_plan_cas_identity(
-                    recommendation,
-                    cached["recommendation"],
-                )
-                persisted = _persist_current_workout_plan(
-                    cached_recommendation,
-                    fingerprint,
-                    customized=cached.get("result_kind") == "changed",
-                )
-                if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
-                    return api_error(
-                        "Workout plan changed while this request was in progress. Refresh and retry.",
-                        409,
-                        code="workout_plan_conflict",
-                    )
-                cached["recommendation"] = persisted or cached_recommendation
-            return jsonify(_payload_with_recommendation_display_scope(cached))
-
-    if route_candidate is None:
-        if deterministic_swap:
-            payload = _deterministic_adjust_payload(
-                recommendation,
-                constraint,
-                deterministic_swap,
-                goal_params,
-                meso_week,
-                meso_plan,
-                oura_readiness,
-                equipment_pref,
-                "preflight_unavailable",
-            )
-            persisted = _persist_current_workout_plan(
-                payload["recommendation"],
-                fingerprint,
-                customized=payload.get("result_kind") == "changed",
-            )
-            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
-                return api_error(
-                    "Workout plan changed while this request was in progress. Refresh and retry.",
-                    409,
-                    code="workout_plan_conflict",
-                )
-            payload["recommendation"] = persisted or payload["recommendation"]
-            _ai_metric_log("ok", reason="deterministic_fallback: preflight_unavailable", constraint_len=len(constraint), model_version=route_model_version)
-            return jsonify(_payload_with_recommendation_display_scope(payload))
-        _ai_metric_log(
-            "fallback",
-            constraint_len=len(constraint),
-            model_version=route_model_version,
-            reason="preflight: all endpoints unavailable",
-        )
-        return jsonify({
-            "status": "fallback",
-            "reason": "LM Studio: all endpoints unavailable",
-            "recommendation": _workout_with_display_and_auth_scope(recommendation),
-            "summary": None,
-            "applied_notes": [],
-            "skipped_notes": [],
-        })
-
-    # Send readiness context the LLM can reason about.
-    readiness_ctx = {
-        "oura_readiness": oura_readiness,
-        "mesocycle_week": meso_week,
-        "deload_active": bool((meso_plan.get("name") == "Deload")),
-    }
-
-    try:
-        raw_patch = _lm_studio.adjust_plan(
-            recommendation,
-            constraint,
-            readiness=readiness_ctx,
-            preflighted_candidate=route_candidate,
-        )
-    except _lm_studio.LmStudioError as exc:
-        reason_code = "timeout" if "timeout" in str(exc).lower() else "unreachable" if "unreachable" in str(exc).lower() else "invalid_json" if "json" in str(exc).lower() else "error"
-        if deterministic_swap:
-            payload = _deterministic_adjust_payload(
-                recommendation,
-                constraint,
-                deterministic_swap,
-                goal_params,
-                meso_week,
-                meso_plan,
-                oura_readiness,
-                equipment_pref,
-                reason_code,
-            )
-            persisted = _persist_current_workout_plan(
-                payload["recommendation"],
-                fingerprint,
-                customized=payload.get("result_kind") == "changed",
-            )
-            if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
-                return api_error(
-                    "Workout plan changed while this request was in progress. Refresh and retry.",
-                    409,
-                    code="workout_plan_conflict",
-                )
-            payload["recommendation"] = persisted or payload["recommendation"]
-            _ai_metric_log(
-                "ok",
-                constraint_len=len(constraint),
-                model_version=route_model_version,
-                reason=f"deterministic_fallback: {reason_code}",
-            )
-            return jsonify(_payload_with_recommendation_display_scope(payload))
-        _ai_metric_log(
-            "fallback",
-            constraint_len=len(constraint),
-            model_version=route_model_version,
-            reason=f"{reason_code}: {exc}",
-        )
-        return jsonify({
-            "status": "fallback",
-            "reason": f"LM Studio: {exc}",
-            "recommendation": _workout_with_display_and_auth_scope(recommendation),
-            "summary": None,
-            "applied_notes": [],
-            "skipped_notes": [],
-        })
-
-    intent = _merge_deterministic_adjust_swap(raw_patch.get("intent") or {}, deterministic_swap)
-    trust_model_summary = not bool(
-        intent.pop("_deterministic_swap_replaced_model_swap", False)
-    )
-    summary = raw_patch.get("summary") or ""
-    raw_meta = raw_patch.get("_meta") or {}
-    actual_model_version = raw_meta.get("model_version") or route_model_version
-
-    # Deep-copy the recommendation so the in-memory canonical isn't mutated
-    # if the user re-opens without applying.
-    patched = _copy_workout_plan_cas_identity(
+    payload = _deterministic_adjust_payload(
         recommendation,
-        json.loads(json.dumps(recommendation, default=str)),
+        constraint,
+        deterministic_swap,
+        goal_params,
+        meso_week,
+        meso_plan,
+        oura_readiness,
+        equipment_pref,
+        "manual",
+        intent=client_intent,
     )
-    try:
-        patched, applied_notes, skipped_notes = _apply_intent_patch(
-            patched, intent, goal_params, meso_week, meso_plan, oura_readiness, equipment_pref
-        )
-    except Exception as exc:
-        # Any unexpected failure in safety-rail application (type error from a
-        # drifted LLM output that slipped past validation, missing helper
-        # preconditions, etc.) must not leak as a 500. Fall back to the
-        # deterministic plan, log the failure in metrics.
-        _ai_metric_log(
-            "fallback",
-            constraint_len=len(constraint),
-            model_version=actual_model_version,
-            reason=f"apply_patch_error: {type(exc).__name__}: {str(exc)[:80]}",
-        )
-        return jsonify({
-            "status": "fallback",
-            "reason": f"safety-rail error: {type(exc).__name__}",
-            "recommendation": _workout_with_display_and_auth_scope(recommendation),
-            "summary": None,
-            "applied_notes": [],
-            "skipped_notes": [],
-        })
-
-    intent_is_empty = (
-        not intent.get("avoid_muscles")
-        and not intent.get("avoid_joints")
-        and not intent.get("swap")
-        and not intent.get("rpe_delta")
-        and not intent.get("sets_delta_pct")
-        and not intent.get("duration_cap_min")
-        and not intent.get("drop_cardio")
-    )
-    if applied_notes:
-        result_kind = "changed"
-    elif intent_is_empty:
-        result_kind = "refused"
-    else:
-        result_kind = "unchanged"
-    summary = _adjust_outcome_summary(
-        result_kind,
-        applied_notes,
-        skipped_notes,
-        summary,
-        trust_model_summary=trust_model_summary,
-    )
-
-    payload = {
-        "status": "ok",
-        "result_kind": result_kind,
-        "recommendation": patched,
-        "summary": summary,
-        "applied_notes": applied_notes,
-        "skipped_notes": skipped_notes,
-        "constraint": constraint,
-        "meta": raw_meta,
-        "cache_hit": False,
-    }
-    cache_write_key = (
-        cache_key
-        if actual_model_version == route_model_version
-        else _ai_cache_key(
-            recommendation,
-            constraint,
-            readiness_date,
-            actual_model_version,
-            equipment_pref,
-        )
-    )
-    # Cache and persist the BASE patched plan (display transform must not be
-    # baked into the cache or the durable row -- FIT-256 finding 2); apply the
-    # wearable display transform only on the outgoing response.
     persisted = _persist_current_workout_plan(
-        patched,
+        payload["recommendation"],
         fingerprint,
-        customized=result_kind == "changed",
+        customized=payload.get("result_kind") == "changed",
     )
     if persisted is _WORKOUT_PLAN_PERSISTENCE_CONFLICT:
         return api_error(
@@ -6661,437 +6235,8 @@ def adjust_workout():
             409,
             code="workout_plan_conflict",
         )
-    patched = persisted or patched
-    payload["recommendation"] = patched
-    _ai_cache_put(cache_write_key, payload)
-    _ai_metric_log(
-        "ok",
-        latency_ms=raw_meta.get("elapsed_ms", 0),
-        constraint_len=len(constraint),
-        model_version=actual_model_version,
-    )
+    payload["recommendation"] = persisted or payload["recommendation"]
     return jsonify(_payload_with_recommendation_display_scope(payload))
-
-
-def _exercise_display_name(ex):
-    return ex.get("machine") or ex.get("exercise") or ex.get("name") or "Exercise"
-
-
-def _analysis_number(value, default=0.0):
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def _workout_analysis_response(target, analysis, recent_compact, progression_subset, oura_snapshot, notes_context, *, status="ok", meta=None, cache_hit=False):
-    workout_payload = {
-        "id": target.get("id"),
-        "date": target.get("date"),
-        "session_type": target.get("session_type") or target.get("focus"),
-        "total_sets": target.get("total_sets"),
-        "total_volume": target.get("total_volume"),
-        "duration_minutes": target.get("duration_minutes"),
-    }
-    context_used = {
-        "recent_session_count": len(recent_compact),
-        "exercise_progression_available": list(progression_subset.keys()),
-        "readiness_available": oura_snapshot is not None,
-        **notes_context,
-    }
-    if target.get("source") == "open_wearables":
-        open_wearables_metrics = {
-            "calories_burned": target.get("calories_burned"),
-            "avg_heart_rate": target.get("avg_heart_rate"),
-            "max_heart_rate": target.get("max_heart_rate"),
-        }
-        workout_payload.update({
-            "source": "open_wearables",
-            **open_wearables_metrics,
-        })
-        context_used["open_wearables_metrics"] = open_wearables_metrics
-
-    return {
-        "status": status,
-        "workout": workout_payload,
-        "analysis": {
-            "summary": analysis.get("summary"),
-            "wins": analysis.get("wins") or [],
-            "concerns": analysis.get("concerns") or [],
-            "comparison": analysis.get("comparison"),
-            "next_session_cue": analysis.get("next_session_cue"),
-        },
-        "context_used": context_used,
-        "meta": meta or {},
-        "cache_hit": cache_hit,
-    }
-
-
-def _deterministic_workout_analysis(target, recent_compact, progression_subset, notes_context, reason):
-    exercises = target.get("exercises") or []
-    set_count = sum(len(ex.get("sets") or []) for ex in exercises)
-    volume = target.get("total_volume")
-    if volume is None:
-        volume = sum(
-            _analysis_number(s.get("weight_lbs")) * _analysis_number(s.get("reps"))
-            for ex in exercises
-            for s in (ex.get("sets") or [])
-        )
-    else:
-        volume = _analysis_number(volume)
-    exercise_names = [_exercise_display_name(ex) for ex in exercises]
-    notable_notes = []
-    high_rpe = False
-    for ex in exercises:
-        name = _exercise_display_name(ex)
-        for s in (ex.get("sets") or []):
-            note = (s.get("notes") or "").strip()
-            if note:
-                notable_notes.append(f"{name}: {note}")
-            try:
-                high_rpe = high_rpe or _analysis_number(s.get("rpe")) >= 9
-            except Exception:
-                pass
-
-    wins = []
-    if set_count:
-        wins.append(f"Logged {set_count} working set{'s' if set_count != 1 else ''} across {len(exercises)} exercise{'s' if len(exercises) != 1 else ''}.")
-    if volume:
-        wins.append(f"Captured about {int(round(volume)):,} lb of recorded volume.")
-    if notes_context.get("set_note_count") or notes_context.get("workout_notes_present"):
-        wins.append("Captured session notes, so the next recommendation can account for how sets actually felt.")
-    if not wins:
-        wins.append("Workout data was saved and is available for the training history.")
-
-    concerns = []
-    sore_notes = [n for n in notable_notes if any(term in n.lower() for term in ("sore", "pain", "hurt", "ache", "tight", "struggle"))]
-    if sore_notes:
-        concerns.append("Some set notes mention soreness or struggle; treat those muscles conservatively next session.")
-    if high_rpe:
-        concerns.append("At least one set reached very high RPE, so avoid stacking another hard session on the same area too soon.")
-    if not recent_compact:
-        concerns.append("No recent matching sessions were available for a strong trend comparison.")
-
-    if recent_compact:
-        recent_sets = [int(_analysis_number(w.get("total_sets"))) for w in recent_compact if w.get("total_sets") is not None]
-        recent_volumes = [_analysis_number(w.get("total_volume_lbs")) for w in recent_compact if w.get("total_volume_lbs") is not None]
-        avg_sets = round(sum(recent_sets) / len(recent_sets), 1) if recent_sets else None
-        avg_volume = round(sum(recent_volumes) / len(recent_volumes)) if recent_volumes else None
-        comparison_bits = [f"Compared with {len(recent_compact)} recent related session{'s' if len(recent_compact) != 1 else ''}"]
-        if avg_sets is not None:
-            comparison_bits.append(f"recent average was {avg_sets} sets")
-        if avg_volume:
-            comparison_bits.append(f"about {avg_volume:,} lb average volume")
-        comparison = "; ".join(comparison_bits) + "."
-    else:
-        comparison = "No recent same-muscle sessions were available, so this fallback is based on the logged workout itself."
-
-    if sore_notes or high_rpe:
-        cue = "Next session: keep the affected muscles at moderate RPE, repeat or slightly reduce load, and prioritize clean reps."
-    elif progression_subset:
-        cue = "Next session: use the saved progression data and add load or reps only if warmups feel normal."
-    else:
-        cue = "Next session: repeat the same movement pattern and progress slowly if the first working sets feel solid."
-
-    summary_target = ", ".join(exercise_names[:3]) if exercise_names else "this workout"
-    if len(exercise_names) > 3:
-        summary_target += f", plus {len(exercise_names) - 3} more"
-    summary = f"Fallback analysis used because {reason}. {summary_target} is logged with enough detail to guide the next session."
-
-    return {
-        "summary": summary,
-        "wins": wins,
-        "concerns": concerns,
-        "comparison": comparison,
-        "next_session_cue": cue,
-    }
-
-
-@app.route('/api/workout/analyze', methods=['POST'])
-def analyze_workout():
-    """Post-mortem on one logged workout.
-
-    Accepts either {"workout_id": "..."} to analyze a specific stored workout,
-    {"workout_date": "YYYY-MM-DD"} to pick the most recent session on that day,
-    or {"latest": true} for the most recently completed session.
-    """
-    data, err = get_json_body(required=False) if False else (request.get_json(force=True, silent=True) or {}, None)
-    if err:
-        return err
-
-    workout_id = data.get("workout_id")
-    workout_date = data.get("workout_date")
-    want_latest = bool(data.get("latest"))
-
-    target = None
-    if workout_id:
-        target = next((w for w in WORKOUTS if w.get("id") == workout_id), None)
-        if target is None and str(workout_id).startswith("open_wearables:"):
-            try:
-                target = next(
-                    (w for w in _load_open_wearables_workouts() if w.get("id") == workout_id),
-                    None,
-                )
-            except ConnectionError:
-                return api_error(
-                    "Open Wearables workouts are temporarily unavailable.",
-                    503,
-                    "open_wearables_workouts_unavailable",
-                )
-    elif workout_date:
-        matches = [w for w in WORKOUTS if w.get("date") == workout_date]
-        if matches:
-            target = matches[-1]
-    elif want_latest:
-        if WORKOUTS:
-            # Prefer created_at (precise timestamp) over date alone so the
-            # correct session wins when multiple were logged the same day.
-            target = max(
-                WORKOUTS,
-                key=lambda w: (w.get("created_at") or "", w.get("date") or "", w.get("id") or ""),
-            )
-
-    if not target:
-        return api_error("workout not found — supply workout_id, workout_date, or latest=true", 404, code="not_found")
-
-    set_note_count = sum(
-        1
-        for ex in (target.get("exercises") or [])
-        for s in (ex.get("sets") or [])
-        if (s.get("notes") or "").strip()
-    )
-    notes_context = {
-        "set_note_count": set_note_count,
-        "workout_notes_present": bool((target.get("notes") or "").strip()),
-        "cardio_notes_present": bool(((target.get("cardio") or {}).get("notes") or "").strip()),
-    }
-
-    # Build context: sessions touching any of the same muscles in the 28 days
-    # BEFORE the target workout (not before today) so historical analyses get
-    # the right context, plus progression data for each exercise in the target.
-    target_date = target.get("date")
-    try:
-        target_dt = datetime.strptime(target_date, "%Y-%m-%d").date() if target_date else datetime.now().date()
-    except Exception:
-        target_dt = datetime.now().date()
-    cutoff_date = target_dt - timedelta(days=28)
-    target_muscles = {
-        (ex.get("muscle_group") or ex.get("muscle") or "").lower()
-        for ex in (target.get("exercises") or [])
-        if (ex.get("muscle_group") or ex.get("muscle"))
-    }
-    target_exercise_names = {
-        (ex.get("machine") or ex.get("exercise") or ex.get("name") or "").lower()
-        for ex in (target.get("exercises") or [])
-    }
-
-    recent = []
-    for w in WORKOUTS:
-        d = w.get("date")
-        if not d or d == target_date:
-            continue
-        try:
-            wd = datetime.strptime(d, "%Y-%m-%d").date()
-        except Exception:
-            continue
-        if wd < cutoff_date or wd >= target_dt:
-            continue
-        w_muscles = {
-            (ex.get("muscle_group") or ex.get("muscle") or "").lower()
-            for ex in (w.get("exercises") or [])
-        }
-        if w_muscles & target_muscles:
-            recent.append(w)
-    recent.sort(key=lambda w: w.get("date") or "", reverse=True)
-    recent_compact = []
-    for w in recent[:6]:
-        recent_compact.append({
-            "date": w.get("date"),
-            "session_type": w.get("session_type") or w.get("focus"),
-            "duration_minutes": w.get("duration_minutes"),
-            "total_sets": w.get("total_sets"),
-            "total_volume_lbs": w.get("total_volume"),
-            "exercises": [
-                {
-                    "name": ex.get("machine") or ex.get("exercise") or ex.get("name"),
-                    "muscle": ex.get("muscle_group") or ex.get("muscle"),
-                    "set_count": len(ex.get("sets") or []),
-                    "top_weight": max(
-                        (_analysis_number(s.get("weight_lbs")) for s in (ex.get("sets") or [])),
-                        default=0,
-                    ),
-                    "top_rpe": max(
-                        (_analysis_number(s.get("rpe")) for s in (ex.get("sets") or [])),
-                        default=0,
-                    ),
-                }
-                for ex in (w.get("exercises") or [])
-            ],
-        })
-
-    try:
-        progression_all = calculate_progression_status(WORKOUTS)
-    except Exception:
-        progression_all = {}
-    progression_subset = {
-        name: {
-            "current_e1rm": data_.get("current_e1rm"),
-            "peak_e1rm": data_.get("peak_e1rm"),
-            "trend_pct": data_.get("trend_pct"),
-            "status": data_.get("status"),
-        }
-        for name, data_ in progression_all.items()
-        if name.lower() in target_exercise_names
-    }
-
-    oura_snapshot = None
-    try:
-        oura_row = get_oura_daily(OURA_DB_FILE, target_date)
-        if oura_row:
-            oura_snapshot = {
-                "readiness": oura_row.get("readiness_score"),
-                "sleep_score": oura_row.get("sleep_score"),
-                "hrv": oura_row.get("hrv"),
-                "resting_hr": oura_row.get("resting_hr"),
-            }
-    except Exception:
-        oura_snapshot = None
-
-    goal = USER_SETTINGS.get("training_goal", TrainingGoal.HYPERTROPHY.value)
-    goal_params = GOAL_PARAMETERS.get(goal, GOAL_PARAMETERS[TrainingGoal.HYPERTROPHY.value])
-
-    llm_context = {
-        "recent_sessions": recent_compact,
-        "progression": progression_subset,
-        "readiness": oura_snapshot,
-        "goal": {
-            "name": goal,
-            "rpe_target": goal_params.get("rpe_target"),
-            "rep_range": goal_params.get("rep_range"),
-        },
-    }
-    is_open_wearables = target.get("source") == "open_wearables"
-    if is_open_wearables:
-        llm_context["open_wearables_metrics"] = {
-            "calories_burned": target.get("calories_burned"),
-            "avg_heart_rate": target.get("avg_heart_rate"),
-            "max_heart_rate": target.get("max_heart_rate"),
-        }
-
-    model_version = getattr(_lm_studio, "LM_STUDIO_MODEL_VERSION", "deterministic-fallback")
-    prompt_version = getattr(_lm_studio, "ANALYZE_PROMPT_VERSION", "deterministic-v1")
-
-    if not _lm_studio:
-        reason = "LM Studio adapter not available"
-        analysis = _deterministic_workout_analysis(target, recent_compact, progression_subset, notes_context, reason)
-        _ai_metric_log("fallback", constraint_len=0, model_version=model_version, reason="analyze: adapter_missing")
-        return jsonify(_workout_analysis_response(
-            target,
-            analysis,
-            recent_compact,
-            progression_subset,
-            oura_snapshot,
-            notes_context,
-            status="fallback",
-            meta={
-                "fallback": True,
-                "fallback_reason": reason,
-                "model_version": model_version,
-                "analysis_source": "deterministic",
-            },
-        ))
-
-    # Cache key based on workout content + model version so re-analyzing the
-    # same unchanged workout doesn't re-spend tokens.
-    import hashlib
-    fingerprint_target = {
-        "date": target.get("date"),
-        "exercises": [
-            {
-                "name": ex.get("machine") or ex.get("exercise"),
-                "sets": [
-                    {
-                        "r": s.get("reps"),
-                        "w": s.get("weight_lbs"),
-                        "rpe": s.get("rpe"),
-                        "notes": s.get("notes") or "",
-                    }
-                    for s in (ex.get("sets") or [])
-                ],
-            }
-            for ex in (target.get("exercises") or [])
-        ],
-        "notes": target.get("notes") or "",
-        "cardio": target.get("cardio"),
-    }
-    if is_open_wearables:
-        fingerprint_target.update({
-            "id": target.get("id"),
-            "source": "open_wearables",
-            "session_type": target.get("session_type"),
-            "activity_type": target.get("activity_type"),
-            "duration_minutes": target.get("duration_minutes"),
-            "calories_burned": target.get("calories_burned"),
-            "avg_heart_rate": target.get("avg_heart_rate"),
-            "max_heart_rate": target.get("max_heart_rate"),
-        })
-    fingerprint_src = json.dumps({
-        "analysis_prompt_version": prompt_version,
-        "target": fingerprint_target,
-        "recent_keys": [w.get("date") for w in recent_compact],
-        "model": model_version,
-    }, default=str, sort_keys=True)
-    cache_key = "analyze:" + hashlib.sha1(fingerprint_src.encode()).hexdigest()
-    cached = _ai_cache_get(cache_key)
-    if cached:
-        cached["cache_hit"] = True
-        cached_ctx = cached.setdefault("context_used", {})
-        cached_ctx.update(notes_context)
-        _ai_metric_log("cache_hit", constraint_len=0, model_version=model_version, reason="analyze")
-        return jsonify(cached)
-
-    try:
-        result = _lm_studio.analyze_workout(target, llm_context)
-    except (_lm_studio.LmStudioError, Exception) as exc:
-        reason = f"LM Studio: {exc}" if isinstance(exc, _lm_studio.LmStudioError) else f"analysis failure: {exc}"
-        _ai_metric_log("fallback", constraint_len=0, model_version=model_version, reason=f"analyze: {exc}")
-        analysis = _deterministic_workout_analysis(target, recent_compact, progression_subset, notes_context, reason)
-        return jsonify(_workout_analysis_response(
-            target,
-            analysis,
-            recent_compact,
-            progression_subset,
-            oura_snapshot,
-            notes_context,
-            status="fallback",
-            meta={
-                "fallback": True,
-                "fallback_reason": reason,
-                "model_version": model_version,
-                "analysis_source": "deterministic",
-            },
-        ))
-
-    payload = _workout_analysis_response(
-        target,
-        result,
-        recent_compact,
-        progression_subset,
-        oura_snapshot,
-        notes_context,
-        status="ok",
-        meta=result.get("_meta", {}),
-        cache_hit=False,
-    )
-    _ai_cache_put(cache_key, payload)
-    _ai_metric_log(
-        "ok",
-        latency_ms=(result.get("_meta") or {}).get("elapsed_ms", 0),
-        constraint_len=0,
-        model_version=model_version,
-        reason="analyze",
-    )
-    return jsonify(payload)
 
 
 APP_SHELL_RELOAD_COOKIE = "fd_shell_reload"
@@ -7123,68 +6268,6 @@ def _is_browser_app_shell_request():
         request.headers.get(header)
         for header in ("Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site")
     )
-
-
-@app.route('/api/ai/health')
-def ai_health():
-    if (
-        request.cookies.get("session")
-        and request.cookies.get(APP_SHELL_RELOAD_COOKIE) != APP_SHELL_RELOAD_VERSION
-        and _is_browser_app_shell_request()
-    ):
-        return _shell_reload_required_response()
-    if not _lm_studio:
-        return jsonify({"reachable": False, "error": "adapter not loaded"})
-    return jsonify(_lm_studio.health())
-
-
-@app.route('/api/ai/metrics')
-def ai_metrics():
-    """Aggregate last-N-hours stats so inference flakiness shows up."""
-    try:
-        hours, _ = _coerce_int(request.args.get("hours", 24), "hours", min_v=1, max_v=720)
-        hours = hours or 24
-    except Exception:
-        hours = 24
-
-    cutoff = (datetime.now() - timedelta(hours=hours)).isoformat(timespec="seconds")
-    try:
-        with closing(sqlite3.connect(_ADJUST_CACHE_DB)) as conn:
-            rows = conn.execute(
-                "SELECT outcome, COUNT(*), COALESCE(AVG(NULLIF(latency_ms,0)),0) FROM adjust_metrics WHERE ts >= ? GROUP BY outcome",
-                (cutoff,),
-            ).fetchall()
-            last5 = conn.execute(
-                "SELECT ts, outcome, latency_ms, reason FROM adjust_metrics WHERE ts >= ? ORDER BY id DESC LIMIT 5",
-                (cutoff,),
-            ).fetchall()
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-
-    buckets = {"ok": 0, "cache_hit": 0, "fallback": 0}
-    avg_latency_ms = 0
-    for outcome, count, avg_ms in rows:
-        buckets[outcome] = count
-        if outcome == "ok":
-            avg_latency_ms = int(avg_ms or 0)
-    total = sum(buckets.values())
-    fallback_pct = round(100 * buckets.get("fallback", 0) / total, 1) if total else 0.0
-    cache_hit_pct = round(100 * buckets.get("cache_hit", 0) / total, 1) if total else 0.0
-
-    return jsonify({
-        "window_hours": hours,
-        "adjust_requests": total,
-        "ok": buckets.get("ok", 0),
-        "cache_hits": buckets.get("cache_hit", 0),
-        "fallbacks": buckets.get("fallback", 0),
-        "fallback_pct": fallback_pct,
-        "cache_hit_pct": cache_hit_pct,
-        "avg_latency_ms": avg_latency_ms,
-        "recent": [
-            {"ts": r[0], "outcome": r[1], "latency_ms": r[2], "reason": r[3]}
-            for r in last5
-        ],
-    })
 
 
 # ==================== WEATHER (wttr.in) ====================
@@ -9821,114 +8904,6 @@ def _merge_open_wearables_history_rows(base_rows, open_wearables_rows):
         row for index, row in enumerate(open_wearables)
         if index not in matched_open_wearables
     ]
-
-
-def _ai_history_context(limit=80):
-    rows = []
-    for w in sorted(WORKOUTS, key=lambda x: x.get("date", ""), reverse=True)[:limit]:
-        rows.append(normalize_history_item({
-            "id": w.get("id"),
-            "date": w.get("date", ""),
-            "session_type": w.get("session_type", "general"),
-            "duration_minutes": w.get("duration_minutes", 0),
-            "total_sets": sum(len(e.get("sets", [])) for e in w.get("exercises", [])),
-            "source": "lifted",
-        }, source="lifted"))
-    try:
-        apple_rows = _load_apple_health_recommendation_workouts(days=365)
-    except Exception:
-        apple_rows = []
-    try:
-        open_wearables_rows = _load_open_wearables_workouts()
-    except Exception:
-        open_wearables_rows = []
-    wearable_rows = _merge_open_wearables_history_rows(apple_rows, open_wearables_rows)
-    for row in wearable_rows:
-        source = "open_wearables" if row.get("source") == "open_wearables" else "apple_health"
-        activity_type = row.get("activity_type")
-        if source == "apple_health":
-            activity_type = (row.get("apple_health") or {}).get("activity_type") or row.get("session_type")
-        item = {
-            "id": row.get("id"),
-            "date": row.get("date"),
-            "session_type": row.get("session_type"),
-            "activity_type": activity_type,
-            "duration_minutes": row.get("duration_minutes"),
-            "calories_burned": row.get("calories_burned"),
-            "avg_heart_rate": row.get("avg_heart_rate"),
-            "max_heart_rate": row.get("max_heart_rate"),
-            "source": source,
-        }
-        if source == "open_wearables":
-            item["provider"] = "Open Wearables"
-        rows.append(normalize_history_item(item, source=source))
-    rows.sort(key=lambda x: x.get("date") or "", reverse=True)
-    return rows[:limit]
-
-
-def _build_ai_public_fact_context():
-    freshness = _compute_data_freshness()
-    whoop_context = _whoop_recommendation_context()
-    sources = _wearable_sources_payload(freshness, whoop_context)
-    stored_sources = list_wearable_sources(WEARABLE_FACTS_DB_FILE, profile_key=_open_wearables_profile_key())
-    existing = {row.get("source") for row in sources}
-    sources.extend([row for row in stored_sources if row.get("source") not in existing])
-    return build_ai_fact_context(
-        freshness=freshness,
-        wearable_sources=sources,
-        facts=list_recommendation_facts(
-            WEARABLE_FACTS_DB_FILE,
-            limit=60,
-            profile_key=_open_wearables_profile_key(),
-        ),
-        history=_ai_history_context(),
-    )
-
-
-@app.route('/api/ai/facts/context')
-def ai_facts_context_api():
-    return jsonify(_build_ai_public_fact_context())
-
-
-@app.route('/api/ai/facts/query', methods=['POST'])
-def ai_facts_query_api():
-    body = request.get_json(silent=True) or {}
-    question = str(body.get("question") or "").strip()
-    if not question:
-        return api_error("Question is required", 400, code="missing_question")
-    context = _build_ai_public_fact_context()
-    answer = answer_fact_question(question, context).public_dict()
-    evidence = answer.get("evidence") or []
-    if body.get("suggest") is True and evidence:
-        suggestion = create_pending_suggestion(
-            "review",
-            "Review this AI suggestion before applying any change.",
-            evidence=evidence,
-        )
-        AI_PENDING_SUGGESTIONS[suggestion["id"]] = suggestion
-        answer["suggested_action_id"] = suggestion["id"]
-        answer["suggestion"] = suggestion
-    return jsonify(answer)
-
-
-@app.route('/api/ai/suggestions/<suggestion_id>/approve', methods=['POST'])
-def ai_suggestion_approve_api(suggestion_id):
-    suggestion = AI_PENDING_SUGGESTIONS.get(suggestion_id)
-    if not suggestion:
-        return api_error("Suggestion not found", 404, code="suggestion_not_found")
-    suggestion = {**suggestion, "status": "approved", "approved_at": datetime.now().isoformat(), "mutation_applied": False}
-    AI_PENDING_SUGGESTIONS[suggestion_id] = suggestion
-    return jsonify({"suggestion": suggestion})
-
-
-@app.route('/api/ai/suggestions/<suggestion_id>/reject', methods=['POST'])
-def ai_suggestion_reject_api(suggestion_id):
-    suggestion = AI_PENDING_SUGGESTIONS.get(suggestion_id)
-    if not suggestion:
-        return api_error("Suggestion not found", 404, code="suggestion_not_found")
-    suggestion = {**suggestion, "status": "rejected", "rejected_at": datetime.now().isoformat(), "mutation_applied": False}
-    AI_PENDING_SUGGESTIONS[suggestion_id] = suggestion
-    return jsonify({"suggestion": suggestion})
 
 
 def _whoop_redirect_uri():
@@ -12949,7 +11924,6 @@ def complete_workout():
     # against the freshly-completed session, not the one we just executed.
     LAST_WORKOUT_RECOMMENDATION = None
     delete_current_workout_plan(_current_data_user_id())
-    _notify_workout_logged(workout_entry)
 
     return jsonify({
         "status": "success",

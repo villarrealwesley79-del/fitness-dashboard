@@ -125,8 +125,7 @@
     max-width: 620px;
 }
 
-#modal-open-wearables-setup .modal-sheet,
-#modal-ai-fact-query .modal-sheet {
+#modal-open-wearables-setup .modal-sheet {
     max-width: 620px;
 }
 
@@ -414,27 +413,6 @@
     white-space: nowrap;
 }
 
-.ai-fact-query-input {
-    min-width: 180px;
-    max-width: 260px;
-}
-
-.ai-fact-query-controls {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 12px;
-}
-
-.ai-fact-query-controls .ai-fact-query-input {
-    flex: 1;
-    max-width: none;
-}
-
-.ai-fact-suggestion-actions {
-    margin-top: 10px;
-}
-
 @media (max-width: 640px) {
     .reco-source-strip {
         flex-direction: column;
@@ -470,8 +448,7 @@
         flex-direction: column;
     }
 
-    .whoop-intake-actions .btn,
-    .ai-fact-query-controls .btn {
+    .whoop-intake-actions .btn {
         width: 100%;
     }
 
@@ -482,15 +459,5 @@
 
     .open-wearables-provider-list {
         grid-template-columns: 1fr;
-    }
-
-    .ai-fact-query-controls {
-        align-items: stretch;
-        flex-direction: column;
-    }
-
-    .ai-fact-query-input {
-        max-width: none;
-        width: 100%;
     }
 }

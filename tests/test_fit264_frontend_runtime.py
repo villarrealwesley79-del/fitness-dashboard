@@ -407,7 +407,6 @@ sandbox.setInterval = () => 1;
 sandbox.__fitSet.renderGreeting(() => {});
 sandbox.__fitSet.wireEvents(() => {});
 sandbox.__fitSet.switchTabFromHash(() => {});
-sandbox.__fitSet.refreshAiStatus(() => {});
 sandbox.__fitSet.renderSyncBanner(() => {});
 sandbox.__fitSet.registerServiceWorker(() => {});
 sandbox.__fitSet.refreshAuthScope(async () => scopeResult);
@@ -420,7 +419,7 @@ process.stdout.write(JSON.stringify(settled));
 """,
         mocks=[
             "renderGreeting", "wireEvents", "switchTabFromHash",
-            "refreshAiStatus", "renderSyncBanner", "registerServiceWorker",
+            "renderSyncBanner", "registerServiceWorker",
             "refreshAuthScope", "settleActiveWorkoutDraftAfterAuthScope",
             "scheduleAuthScopeRetry", "flushSyncQueue",
         ],

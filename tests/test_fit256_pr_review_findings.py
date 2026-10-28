@@ -211,9 +211,8 @@ def test_gym_now_swap_adjust_show_same_clamped_plan_as_next_workout_under_deload
     module, client, state = _client(monkeypatch, tmp_path)
     _install_active_deload(monkeypatch, module)
     monkeypatch.setattr(module, "generate_next_workout", lambda *args, **kwargs: _recommendation(module))
-    # Deterministic adjust fallback (no live LLM) so /api/workout/adjust returns
+    # Unrecognised adjust text leaves the plan as is, so /api/workout/adjust returns
     # the persisted plan through its display path.
-    monkeypatch.setattr(module, "_lm_studio", None)
 
     # /api/next-workout is the reference surface: it persists the base plan and
     # applies the deload clamp for display. Exercise index 1 (Lat Pulldown) is

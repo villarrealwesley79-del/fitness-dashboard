@@ -118,13 +118,6 @@ elif path == "/api/weather":
 elif path == "/api/recommendation/smart":
     summary["recommendation"] = body.get("recommendation")
     summary["effective_readiness"] = body.get("effective_readiness")
-elif path == "/api/ai/health":
-    summary["active_role"] = body.get("active_role")
-    summary["model_loaded"] = body.get("model_loaded")
-    summary["routes"] = [
-        {"role": c.get("role"), "reachable": c.get("reachable"), "model_loaded": c.get("model_loaded")}
-        for c in body.get("checks", [])
-    ]
 else:
     summary["keys"] = sorted(body.keys())[:8] if isinstance(body, dict) else type(body).__name__
 print(json.dumps(summary, sort_keys=True))
@@ -170,43 +163,6 @@ hit "/api/oura/trends"
 hit "/api/apple-health/sync/status"
 hit "/api/weather"
 hit "/api/recommendation/smart"
-hit "/api/ai/health"
-
-python3 - <<'PY'
-import json
-import os
-import sys
-
-with open(os.environ.get("BODY_FILE", "/tmp/fitness-dashboard-self-test.json"), "r", encoding="utf-8") as fh:
-    health = json.load(fh)
-
-if not health.get("reachable") or not health.get("model_loaded"):
-    print("FAIL: /api/ai/health is not reachable with a loaded model", file=sys.stderr)
-    sys.exit(1)
-
-candidates = health.get("candidates") or health.get("checks") or []
-primary = next((c for c in candidates if c.get("role") == "primary"), None)
-fallback = next((c for c in candidates if c.get("role") == "fallback"), None)
-if not primary or not fallback:
-    print("FAIL: /api/ai/health did not report both primary and fallback routes", file=sys.stderr)
-    sys.exit(1)
-if not fallback.get("reachable") or not fallback.get("model_loaded"):
-    print("FAIL: Mac fallback LM Studio route is degraded", file=sys.stderr)
-    sys.exit(1)
-primary_healthy = bool(primary.get("reachable") and primary.get("model_loaded"))
-if primary_healthy:
-    if health.get("active_role") != "primary":
-        print(f"FAIL: ASUS primary is healthy but active_role is {health.get('active_role')!r}", file=sys.stderr)
-        sys.exit(1)
-    if health.get("fallback_active"):
-        print("FAIL: Mac fallback is active while ASUS primary is healthy", file=sys.stderr)
-        sys.exit(1)
-else:
-    if health.get("active_role") != "fallback" or not health.get("fallback_active"):
-        print(f"FAIL: ASUS primary is degraded but Mac fallback is not active (active_role={health.get('active_role')!r})", file=sys.stderr)
-        sys.exit(1)
-    print("WARN: ASUS primary route is degraded; Mac fallback is active")
-PY
 
 post_expect_error "/api/complete-workout" '{"client_workout_id":"smoke-invalid-empty","offline":true,"exercises":[]}' "400"
 

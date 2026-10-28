@@ -452,7 +452,6 @@ def test_fit233_adaptation_release_assets_and_reload_contract():
     assert '"reload_required"' in app_py
     assert "response.status_code = 401" in app_py
     assert "response.set_cookie(" in app_py
-    assert 'request.cookies.get("session")' in app_py
     assert "current_user.is_authenticated" in auth_py
     assert 'request.args.get("next")' in auth_py
     assert 'next_page.startswith("//")' in auth_py
@@ -560,7 +559,6 @@ def test_dashboard_release_assets_and_reload_contract_remain_stable():
     assert '"reload_required"' in app_py
     assert "response.status_code = 401" in app_py
     assert "response.set_cookie(" in app_py
-    assert 'request.cookies.get("session")' in app_py
     assert "current_user.is_authenticated" in auth_py
     assert 'request.args.get("next")' in auth_py
     assert 'next_page.startswith("//")' in auth_py
