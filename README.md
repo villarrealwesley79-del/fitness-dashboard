@@ -116,7 +116,7 @@ Run the same smoke against a Tailnet URL by changing `BASE_URL`. If you
 already have a session cookie and do not want the script to log in, pass
 `COOKIE=<session-cookie-value>` instead of the username/password pair. The smoke
 checks authenticated dashboard, settings, history, Oura, Apple Health sync
-status, smart recommendation, AI health, a safe rejected workout write path, and
+status, smart recommendation, a safe rejected workout write path, and
 the existing file-descriptor leak regression.
 
 The smoke script creates per-run temporary cookie/body files and removes them on

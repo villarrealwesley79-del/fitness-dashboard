@@ -6089,7 +6089,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
         kept = []
         for ex in exercises:
             ex_minutes = float(ex.get("target_sets") or 3) * time_per_set
-            if minutes_used + ex_minutes > budget:
+            if kept and minutes_used + ex_minutes > budget:  # always keep one exercise
                 break
             minutes_used += ex_minutes
             kept.append(ex)
@@ -6106,7 +6106,7 @@ def _apply_intent_patch(recommendation, intent, goal_params, meso_week, meso_pla
             )
 
     # ── 9) Drop cardio if requested.
-    if intent.get("drop_cardio") and recommendation.get("cardio") is not None:
+    if intent.get("drop_cardio") and (recommendation.get("cardio") or {}).get("include_cardio"):
         recommendation["cardio"] = None
         applied_notes.append("Removed: Cardio finisher — per your request")
 

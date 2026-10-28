@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _plan(module):
     return {
+        "cardio": {"include_cardio": False, "duration_minutes": 0},
         "id": "per-1583-plan",
         "goal": module.TrainingGoal.HYPERTROPHY.value,
         "goal_name": "Hypertrophy",
@@ -97,6 +98,22 @@ def test_unrecognised_text_leaves_plan_unchanged(client):
     assert response.status_code == 200
     assert payload["status"] == "fallback"
     assert [ex["target_sets"] for ex in payload["recommendation"]["exercises"]] == [3, 3]
+
+
+def test_minimum_time_box_does_not_empty_the_plan(client):
+    response = _adjust(client, {"constraint": "10 minutes", "intent": {"duration_cap_min": 10}})
+
+    assert response.status_code == 200
+    assert len(client.get("/api/next-workout").get_json()["next_workout"]["exercises"]) >= 1
+
+
+def test_drop_cardio_on_a_plan_without_cardio_reports_nothing(client):
+    response = _adjust(client, {"constraint": "No cardio today", "intent": {"drop_cardio": True}})
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["result_kind"] != "changed"
+    assert not any("Cardio" in note for note in payload.get("applied_notes") or [])
 
 
 @pytest.mark.parametrize("intent", [
