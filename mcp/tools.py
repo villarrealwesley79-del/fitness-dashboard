@@ -34,7 +34,12 @@ def _since(rows: list[dict], days: int) -> list[dict]:
 
 def _freshness(block: Any) -> dict:
     block = block if isinstance(block, dict) else {}
-    return {s: _pick(block.get(s), ("status", "last_data_point", "last_sync_attempt")) for s in SOURCES}
+    # source/superseded_by say whose timestamps a node shows (Open Wearables can stand in for oura/apple_health).
+    out = {s: _pick(block.get(s), ("status", "last_data_point", "last_sync_attempt", "source", "superseded_by")) for s in SOURCES}
+    hub = block.get("open_wearables")
+    out["open_wearables"]["providers"] = _rows(
+        hub.get("providers") if isinstance(hub, dict) else None, ("provider_id", "label", "state", "last_sync_at", "stale"))
+    return out
 
 
 class Dashboard:

@@ -653,3 +653,28 @@ def test_main_warns_when_mcp_log_file_is_not_stderrs_file_and_limits_concurrency
     quiet, loud = run({}), run({"MCP_LOG_FILE": str(other)})
     assert "NOT capped" not in quiet.stderr and "NOT capped" in loud.stderr
     assert json.loads(loud.stdout.strip().splitlines()[-1])["limit_concurrency"] == 100
+
+
+def test_freshness_keeps_who_a_node_belongs_to_and_projects_providers_safely(make, monkeypatch):
+    fresh = {
+        **FRESH,
+        "oura": {"status": "fresh", "last_data_point": TODAY, "last_sync_attempt": TODAY, "source": "open_wearables",
+                 "superseded_by": "open_wearables", "superseded_source": "oura", "token": LEAK},
+        "open_wearables": {
+            "status": "fresh", "last_data_point": None, "last_sync_attempt": TODAY, "source": "hub", "token": LEAK,
+            "providers": [{"provider_id": "oura", "label": "Oura", "state": "connected", "last_sync_at": TODAY,
+                           "stale": False, "error_code": LEAK, "capabilities": {"x": True}, "user_id": LEAK, "url": LEAK}],
+        },
+    }
+    monkeypatch.setitem(ROUTES, "/api/recommendation/smart", {**ROUTES["/api/recommendation/smart"], "freshness": fresh})
+    monkeypatch.setitem(ROUTES, "/api/freshness", {"freshness": fresh})
+    with TestClient(make(), base_url="http://127.0.0.1:8765") as c:
+        plan = call(c, "get_today_plan", BOT_TOKEN)["data_freshness"]
+        sleep = call(c, "get_sleep_recovery", BOT_TOKEN)
+    sleep = sleep.get("freshness") or sleep.get("data_freshness")
+    for block in (plan, sleep):
+        assert block["oura"] == {"status": "fresh", "last_data_point": TODAY, "last_sync_attempt": TODAY,
+                                 "source": "open_wearables", "superseded_by": "open_wearables"}
+        assert block["open_wearables"]["providers"] == [
+            {"provider_id": "oura", "label": "Oura", "state": "connected", "last_sync_at": TODAY, "stale": False}]
+        assert LEAK not in str(block)
