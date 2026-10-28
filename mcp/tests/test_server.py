@@ -368,3 +368,64 @@ def test_cardio_prescription_keeps_documented_fields(make, monkeypatch):
         out = call(c, "get_today_plan", BOT_TOKEN)["next_workout"]["cardio"]
     assert out == {"type": "walk", "duration_minutes": 20, "zone": 2, "heart_rate_range": "120-140",
                    "intensity": "low", "reason": "recovery"}
+
+
+def _fake_cimd(monkeypatch, url_doc):
+    """Count the CIMD fetches FastMCP would make; `url_doc` maps client_id URL -> document."""
+    from fastmcp.server.auth.cimd import CIMDDocument, CIMDFetcher
+
+    fetched = []
+
+    async def fetch(self, client_id_url):
+        fetched.append(client_id_url)
+        return CIMDDocument(client_id=client_id_url, client_name="t", redirect_uris=[url_doc])
+
+    monkeypatch.setattr(CIMDFetcher, "fetch", fetch)
+    return fetched
+
+
+def test_cimd_is_fetched_only_from_vendor_hosts(make, monkeypatch):
+    fetched = _fake_cimd(monkeypatch, "https://claude.ai/api/mcp/auth_callback")
+    good, sub = "https://claude.ai/oauth/client.json", "https://mcp.anthropic.com/c.json"
+    bad = ["https://example.com/x", "https://claude.ai.evil.example/x", "https://claude.ai@evil.example/x",
+           "https://evilclaude.ai/x", "https://x.ai.example/x"]
+    with TestClient(make(), base_url="https://frankbox.example.ts.net:8443", follow_redirects=False) as c:
+        def authorize(client_id):
+            return c.get("/authorize", params={
+                "response_type": "code", "client_id": client_id, "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                "code_challenge": "x" * 43, "code_challenge_method": "S256", "state": "s"}).status_code
+
+        refused = [authorize(u) for u in bad]
+        token = [c.post("/token", data={"grant_type": "authorization_code", "code": "c", "client_id": u,
+                                        "redirect_uri": "x", "code_verifier": "v" * 43}).status_code for u in bad]
+        assert fetched == [] and set(refused) <= {400, 401} and set(token) <= {400, 401}
+        assert authorize(good) == 302 and authorize(sub) == 302  # vendor hosts and subdomains still work
+        dcr = c.post("/register", json={"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+                                        "token_endpoint_auth_method": "none"})
+    assert fetched == [good, sub] and dcr.status_code == 201
+
+
+def test_extra_cimd_hosts_come_from_the_environment(make, monkeypatch, tmp_path):
+    for name, value in (("MCP_GITHUB_CLIENT_ID", "x"), ("MCP_GITHUB_CLIENT_SECRET", "y"), ("MCP_OWNER_GITHUB_ID", "1"),
+                        ("MCP_STORAGE_DIR", "z"), ("MCP_EXTRA_CIMD_HOSTS", " grok.example , ,other.example")):
+        monkeypatch.setenv(name, value)
+    for name in ("MCP_JWT_SIGNING_KEY_FILE", "MCP_STORAGE_ENCRYPTION_KEY_FILE", "FITNESS_READ_TOKEN_FILE"):
+        (tmp_path / name).write_text("k")
+        monkeypatch.setenv(name, str(tmp_path / name))
+    assert Config.from_env().extra_cimd_hosts == ("grok.example", "other.example")
+
+
+def test_consent_page_is_rate_limited_and_the_store_stops_growing(make, tmp_path):
+    base = "https://frankbox.example.ts.net:8443"
+    cb = "https://claude.ai/api/mcp/auth_callback"
+    with TestClient(make(), base_url=base, follow_redirects=False) as c:
+        client_id = c.post("/register", json={"redirect_uris": [cb], "token_endpoint_auth_method": "none",
+                                              "grant_types": ["authorization_code"], "response_types": ["code"]}).json()["client_id"]
+        consent = c.get("/authorize", params={
+            "response_type": "code", "client_id": client_id, "redirect_uri": cb, "code_challenge": "x" * 43,
+            "code_challenge_method": "S256", "state": "s", "scope": "read:user"}).headers["location"]
+        files = lambda: sum(f.is_file() for f in (tmp_path / "store").rglob("*"))  # noqa: E731
+        before = files()
+        codes = [c.get(consent).status_code for _ in range(70)]
+    assert codes.count(429) >= 10 and codes[:55] == [200] * 55  # register + authorize + 55 renders fit the window
+    assert files() - before <= 60

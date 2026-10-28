@@ -45,7 +45,12 @@ class OwnerGitHubVerifier(TokenVerifier):
             return None
         if response.status_code != 200:
             return None
-        user_id = str(response.json().get("id", ""))
+        try:
+            user_id = str(response.json().get("id", ""))
+        except (ValueError, AttributeError):
+            return None
+        if not (user_id.isascii() and user_id.isdigit()):
+            return None  # a 200 without a usable id says nothing about the owner: do not cache it
         if not hmac.compare_digest(user_id, self._owner_id):
             log.warning("Rejected GitHub user id %s: not the owner", user_id[:20])
             self._refused.set(token, AccessToken(token="refused", client_id="", scopes=[]))

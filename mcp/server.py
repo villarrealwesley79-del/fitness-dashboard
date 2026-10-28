@@ -39,10 +39,30 @@ REDIRECT_URIS = (
     "http://localhost:*",
     "http://127.0.0.1:*",
 )
+# CIMD: a URL client_id makes this server fetch that URL. Only these hosts (and subdomains) may be fetched.
+CIMD_HOSTS = ("claude.ai", "claude.com", "anthropic.com", "chatgpt.com", "openai.com", "x.ai", "grok.com")
 INSTRUCTIONS = (
     "Read-only view of the owner's training dashboard: today's plan, workout history, "
     "body trend and sleep. It never writes; block calendar time with your own calendar connector."
 )
+
+
+class VendorCIMDProxy(OAuthProxy):
+    """OAuthProxy that fetches CIMD client documents only from `cimd_hosts` (fastmcp 4.1 has no such option).
+
+    get_client is the one place /authorize, /token and /consent resolve a client_id.
+    """
+
+    def __init__(self, *args, cimd_hosts: tuple[str, ...], **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cimd_hosts = tuple(h.lower() for h in cimd_hosts)
+
+    async def get_client(self, client_id: str):
+        if self._cimd_manager is not None and self._cimd_manager.is_cimd_client_id(client_id):
+            host = (urlsplit(client_id).hostname or "").lower()
+            if not any(host == h or host.endswith("." + h) for h in self._cimd_hosts):
+                return None  # refused before any fetch or store read
+        return await super().get_client(client_id)
 
 
 @dataclass(frozen=True)
@@ -58,6 +78,7 @@ class Config:
     api_base: str = "http://127.0.0.1:5050"
     bot_token_sha256: str = ""
     extra_redirect_uris: tuple[str, ...] = ()
+    extra_cimd_hosts: tuple[str, ...] = ()
     host: str = "127.0.0.1"
     port: int = 8765
 
@@ -87,6 +108,7 @@ class Config:
             api_base=env.get("FITNESS_API_BASE", "http://127.0.0.1:5050").strip(),
             bot_token_sha256=env.get("MCP_BOT_TOKEN_SHA256", "").strip(),
             extra_redirect_uris=tuple(u.strip() for u in env.get("MCP_EXTRA_REDIRECT_URIS", "").split(",") if u.strip()),
+            extra_cimd_hosts=tuple(h.strip() for h in env.get("MCP_EXTRA_CIMD_HOSTS", "").split(",") if h.strip()),
             host=env.get("MCP_LISTEN_HOST", "127.0.0.1").strip(),
             port=int(env.get("MCP_LISTEN_PORT", "8765")),
         )
@@ -108,14 +130,14 @@ def make_storage(directory: str, key: str) -> FernetEncryptionWrapper:
 class LogRejectedRedirects:
     """Logs why /authorize or /register refused a client, so the owner can allowlist its redirect_uri.
 
-    Also caps the three anonymous endpoints: /authorize and /register each leave a file that is never
-    cleaned up, and FastMCP logs every failed /auth/callback at ERROR. A real callback is ~250 bytes,
-    so a longer one or one with control characters gets a 400 before FastMCP can log it.
+    Also caps the four anonymous endpoints: /authorize, /register and every /consent render each leave
+    a file that is never cleaned up, and FastMCP logs every failed /auth/callback at ERROR. A real
+    callback is ~250 bytes of printable ASCII, so anything else gets a 400 before FastMCP can log it.
     shortcut: one global fixed window, not per client (behind Funnel every peer is 127.0.0.1);
     a flood can lock the owner out of connecting for up to an hour. It writes one log line per window.
     """
 
-    COUNTED = ("/authorize", "/register", "/auth/callback")
+    COUNTED = ("/authorize", "/register", "/auth/callback", "/consent")
     MAX_CALLBACK_QUERY = 1024
 
     def __init__(self, app, limit: int = 60, window: int = 3600):
@@ -135,8 +157,10 @@ class LogRejectedRedirects:
             return await PlainTextResponse("Too many requests", status_code=429)(scope, receive, send)
         if path == "/auth/callback":
             query = scope["query_string"]
-            if len(query) > self.MAX_CALLBACK_QUERY or re.search(r"[\x00-\x1f\x7f]", unquote_plus(query.decode("latin-1"))):
+            if len(query) > self.MAX_CALLBACK_QUERY or re.search(r"[^\x20-\x7e]", unquote_plus(query.decode("latin-1"))):
                 return await PlainTextResponse("Bad request", status_code=400)(scope, receive, send)
+            return await self.app(scope, receive, send)
+        if path == "/consent":
             return await self.app(scope, receive, send)
         refused = False
 
@@ -165,7 +189,7 @@ def build_app(cfg: Config, *, github: httpx2.AsyncClient | None = None, dashboar
 
     public = urlsplit(cfg.public_url)
     origin, mcp_path = f"{public.scheme}://{public.netloc}", public.path or "/mcp"
-    proxy = OAuthProxy(
+    proxy = VendorCIMDProxy(
         upstream_authorization_endpoint="https://github.com/login/oauth/authorize",
         upstream_token_endpoint="https://github.com/login/oauth/access_token",
         upstream_client_id=cfg.github_client_id,
@@ -176,6 +200,7 @@ def build_app(cfg: Config, *, github: httpx2.AsyncClient | None = None, dashboar
         valid_scopes=["read:user", "offline_access"],
         jwt_signing_key=cfg.jwt_signing_key,
         client_storage=storage or make_storage(cfg.storage_dir, cfg.storage_key),
+        cimd_hosts=(*CIMD_HOSTS, *cfg.extra_cimd_hosts),
     )
     verifiers = {"static": BotTokenVerifier(cfg.bot_token_sha256, cfg.public_url)} if cfg.bot_token_sha256 else {}
     # required_scopes=[]: the OAuth and bot tokens carry different scopes; each verifier is the gate.
@@ -199,10 +224,13 @@ def main() -> None:
 
     os.umask(0o077)  # OAuth store subdirectories follow the umask; keep them private
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    # httpx logs every outbound URL at INFO; an anonymous /token with a URL client_id would write it.
+    for name in ("httpx2", "httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     cfg = Config.from_env()
     app, _ = build_app(cfg)
     # access_log off: /auth/callback?code=... would otherwise be written to the log.
-    uvicorn.run(app, host=cfg.host, port=cfg.port, access_log=False)
+    uvicorn.run(app, host=cfg.host, port=cfg.port, access_log=False, log_level="error")
 
 
 if __name__ == "__main__":
